@@ -93,7 +93,7 @@ async fn validate_nip05(pubkey: &Pubkey, nip05: &str) -> Nip05Status {
 
     let url = format!("https://{}/.well-known/nostr.json?name={}", domain, user);
 
-    let resp = match crate::media::network::http_req(&url).await {
+    let resp = match crate::network::http_req(&url).await {
         Ok(resp) => resp,
         Err(e) => {
             tracing::warn!("NIP-05 validation failed for {}: {}", nip05, e);

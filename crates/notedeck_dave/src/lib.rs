@@ -39,6 +39,7 @@ use nostrdb::{Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
     DataPathType, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
+    SubRelayPolicy,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -232,9 +233,9 @@ fn pns_remote_sub_config(
         .build();
     Ok((
         pns_remote_sub_identity(),
-        SubConfig::live(vec![pns_filter])
-            .explicit_relay(relay)
+        SubConfig::builder(vec![pns_filter])
             .full_history(FullHistoryConfig::new(vec![pns_history_filter]))
+            .explicit([relay], SubRelayPolicy::accounts_read_important())
             .build(),
     ))
 }

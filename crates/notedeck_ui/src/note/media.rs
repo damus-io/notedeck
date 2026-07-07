@@ -79,8 +79,23 @@ pub fn image_carousel(
                                 },
                             );
 
-                            if let Some(action) = media_response.inner {
-                                media_action = Some((i, action))
+                            if let Some(media_ui_action) = media_response.inner {
+                                if media_ui_action.requires_app_action() {
+                                    media_action = Some((i, media_ui_action));
+                                } else {
+                                    let image_type = ImageType::Content(Some(
+                                        PointDimensions::from_vec(size).to_pixels(ui),
+                                    ));
+                                    process_local_media_action(
+                                        media_ui_action,
+                                        &media.url,
+                                        media.media_type,
+                                        image_type,
+                                        img_cache,
+                                        jobs,
+                                        ui.ctx(),
+                                    );
+                                }
                             }
 
                             let rect = media_response.response.rect;
@@ -166,6 +181,10 @@ pub enum MediaUIAction {
 }
 
 impl MediaUIAction {
+    fn requires_app_action(&self) -> bool {
+        matches!(self, Self::Clicked)
+    }
+
     pub fn into_media_action(
         self,
         medias: &[RenderableMedia],
@@ -211,6 +230,31 @@ impl MediaUIAction {
                 cache_type: img_cache.get_cache(medias[selected].media_type).cache_type,
             }),
         }
+    }
+}
+
+fn process_local_media_action(
+    action: MediaUIAction,
+    url: &str,
+    media_type: MediaCacheType,
+    image_type: ImageType,
+    img_cache: &mut Images,
+    jobs: &MediaJobSender,
+    ctx: &Context,
+) {
+    match action {
+        MediaUIAction::DoneLoading => img_cache.textures.blurred.finished_transitioning(url),
+        MediaUIAction::Unblur => match media_type {
+            MediaCacheType::Image => img_cache
+                .textures
+                .static_image
+                .request(jobs, ctx, url, image_type),
+            MediaCacheType::Gif => img_cache
+                .textures
+                .animated
+                .request(jobs, ctx, url, image_type),
+        },
+        MediaUIAction::Error | MediaUIAction::Clicked => {}
     }
 }
 
@@ -510,6 +554,19 @@ fn show_blurhash_with_alpha(ui: &mut egui::Ui, img: Image, alpha: u8) -> egui::R
     ui.add(img)
 }
 
+fn show_blurhash_with_alpha_at_size(
+    ui: &mut egui::Ui,
+    img: Image,
+    alpha: u8,
+    size: Vec2,
+) -> egui::Response {
+    let cur_color = fade_color(alpha);
+    let img = img.tint(cur_color);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    img.paint_at(ui, rect);
+    response
+}
+
 type FinishedTransition = bool;
 
 // return true if transition is finished
@@ -527,7 +584,12 @@ fn render_blur_transition(
     match get_blur_transition_state(ui.ctx(), url) {
         BlurTransitionState::StoppingShimmer { cur_alpha } => egui::InnerResponse::new(
             false,
-            show_blurhash_with_alpha(ui, scaled_blur_img.get_image(), cur_alpha),
+            show_blurhash_with_alpha_at_size(
+                ui,
+                scaled_blur_img.get_image(),
+                cur_alpha,
+                scaled_texture.scaled_size,
+            ),
         ),
         BlurTransitionState::FadingBlur => {
             render_blur_fade(ui, url, scaled_blur_img.get_image(), &scaled_texture)

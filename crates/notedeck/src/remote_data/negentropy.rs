@@ -1,68 +1,10 @@
-use crate::jobs::JobSpawner;
-use enostr::EventChecker;
-use enostr::NegSetProvider;
-use enostr::NoteId;
-use hashbrown::HashSet;
 use negentropy::{Id, NegentropyStorageVector};
-use nostrdb::{Filter, Ndb, SendFilter, Transaction};
+use nostrdb::{Filter, Ndb, Transaction};
 
 const NEGENTROPY_INFINITY_TIMESTAMP: u64 = u64::MAX;
 
-/// Background worker that builds local negentropy sets from `nostrdb`.
-pub(super) struct FullHistoryNegSetProvider {
-    ndb: Ndb,
-    job_spawner: JobSpawner,
-}
-
-impl FullHistoryNegSetProvider {
-    /// Build the negentropy provider backed by `nostrdb` and `JobSpawner`.
-    pub(super) fn new(ndb: Ndb, job_spawner: JobSpawner) -> Self {
-        Self { ndb, job_spawner }
-    }
-}
-
-impl NegSetProvider for FullHistoryNegSetProvider {
-    fn provide(&self, filter: &Filter) -> tokio::sync::oneshot::Receiver<NegentropyStorageVector> {
-        let ndb = self.ndb.clone();
-        let filter_elements = filter.num_elements();
-        let filter = SendFilter::try_clone_from_filter(filter);
-        if filter.is_none() {
-            tracing::warn!(
-                filter_elements,
-                "full-history local negentropy set build skipped: filter is not sendable"
-            );
-        }
-        self.job_spawner.schedule_receivable(move || {
-            let Some(filter) = filter else {
-                return NegentropyStorageVector::new();
-            };
-
-            build_negentropy_storage(&ndb, filter.as_filter())
-        })
-    }
-}
-
-/// Cheap synchronous missing-id filter backed by `nostrdb`.
-pub(super) struct NdbEventChecker {
-    pub(super) ndb: Ndb,
-}
-
-impl EventChecker for NdbEventChecker {
-    fn retain_missing(&self, ids: &mut HashSet<NoteId>) {
-        let Ok(txn) = Transaction::new(&self.ndb) else {
-            tracing::warn!("full-history local presence check skipped: failed to open txn");
-            return;
-        };
-
-        ids.retain(|id| {
-            let missing = self.ndb.get_note_by_id(&txn, id.bytes()).is_err();
-            missing
-        });
-    }
-}
-
 /// Build a sealed negentropy storage vector for one local filter snapshot.
-fn build_negentropy_storage(ndb: &Ndb, filter: &Filter) -> NegentropyStorageVector {
+pub(super) fn build_negentropy_storage(ndb: &Ndb, filter: &Filter) -> NegentropyStorageVector {
     let mut storage = NegentropyStorageVector::new();
     let Ok(txn) = Transaction::new(ndb) else {
         tracing::warn!("full-history local negentropy set build skipped: failed to open txn");
@@ -104,9 +46,8 @@ fn insert_negentropy_record(storage: &mut NegentropyStorageVector, created_at: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::JobPool;
     use enostr::FullKeypair;
-    use hashbrown::HashSet;
+    use enostr::NoteId;
     use negentropy::{Item, NegentropyStorageBase};
     use nostrdb::{Config, IngestMetadata, NoteBuilder};
     use std::time::{Duration, Instant};
@@ -154,13 +95,11 @@ mod tests {
         }
     }
 
-    /// The real nostrdb-backed provider should build a sealed local negentropy
+    /// The real nostrdb-backed builder should build a sealed local negentropy
     /// set containing only notes matched by the filter.
-    #[tokio::test]
-    async fn provider_builds_storage_from_matching_local_notes_only() {
+    #[test]
+    fn builder_builds_storage_from_matching_local_notes_only() {
         let (_tmp, ndb) = test_ndb();
-        let pool = JobPool::default();
-        let provider = FullHistoryNegSetProvider::new(ndb.clone(), pool.spawner());
         let matching_first = ingest_text_note(&ndb, 1, "first", 1_776_000_010);
         let _non_matching = ingest_text_note(&ndb, 7, "skip", 1_776_000_020);
         let matching_second = ingest_text_note(&ndb, 1, "second", 1_776_000_030);
@@ -168,10 +107,7 @@ mod tests {
         wait_for_note(&ndb, matching_first);
         wait_for_note(&ndb, matching_second);
 
-        let storage = provider
-            .provide(&filter)
-            .await
-            .expect("negentropy storage result");
+        let storage = build_negentropy_storage(&ndb, &filter);
 
         assert_eq!(storage.size().expect("sealed storage size"), 2);
         assert_eq!(
@@ -190,13 +126,10 @@ mod tests {
         );
     }
 
-    /// Large filters should use nostrdb's sendable clone path, not the default
-    /// JSON buffer used by `Filter::json`.
-    #[tokio::test]
-    async fn provider_builds_storage_for_filter_larger_than_json_buffer() {
+    /// Large filters can still be evaluated by the direct nostrdb-backed builder.
+    #[test]
+    fn builder_builds_storage_for_filter_larger_than_json_buffer() {
         let (_tmp, ndb) = test_ndb();
-        let pool = JobPool::default();
-        let provider = FullHistoryNegSetProvider::new(ndb.clone(), pool.spawner());
         let matching = ingest_text_note(&ndb, 1, "large filter match", 1_776_000_060);
         wait_for_note(&ndb, matching);
 
@@ -217,10 +150,7 @@ mod tests {
             "test filter should exceed Filter::json default buffer"
         );
 
-        let storage = provider
-            .provide(&filter)
-            .await
-            .expect("negentropy storage result");
+        let storage = build_negentropy_storage(&ndb, &filter);
 
         assert_eq!(storage.size().expect("sealed storage size"), 1);
         assert_eq!(
@@ -250,21 +180,20 @@ mod tests {
         );
     }
 
-    /// The real nostrdb-backed event checker should remove already-present ids
-    /// and leave missing ids untouched.
+    /// The direct nostrdb presence check should distinguish present from missing ids.
     #[test]
-    fn ndb_event_checker_retain_missing_filters_present_ids() {
+    fn local_presence_filter_distinguishes_present_and_missing_ids() {
         let (_tmp, ndb) = test_ndb();
         let present = ingest_text_note(&ndb, 1, "present", 1_776_000_040);
         wait_for_note(&ndb, present);
-        let checker = NdbEventChecker { ndb };
         let missing = NoteId::new({
             let mut bytes = *present.bytes();
             bytes[0] ^= 0xFF;
             bytes
         });
-        let mut ids = HashSet::from([present, missing]);
-        checker.retain_missing(&mut ids);
+        let mut ids: hashbrown::HashSet<NoteId> = hashbrown::HashSet::from([present, missing]);
+        let txn = Transaction::new(&ndb).expect("txn");
+        ids.retain(|id| ndb.get_note_by_id(&txn, id.bytes()).is_err());
 
         assert!(!ids.contains(&present));
         assert!(ids.contains(&missing));

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use egui_kittest::Harness;
 use enostr::FullKeypair;
 use nostr::nips::nip19::ToBech32;
-use notedeck::Notedeck;
+use notedeck::{Notedeck, NotedeckRemoteConfig};
 use tempfile::TempDir;
 
 /// One fully booted Notedeck host used as a single test device.
@@ -51,13 +51,8 @@ impl eframe::App for DeviceState {
 
 /// App factory: given a fully initialized `Notedeck` and the egui context,
 /// install your app. The egui context is provided so apps that need an
-/// `AppContext` (like `Damus`) can obtain one via `notedeck.app_context(&ctx)`.
+/// `AppContext` (like `Damus`) can obtain one via `notedeck.app_context()`.
 pub type AppFactory = Box<dyn FnOnce(&mut Notedeck, &egui::Context) + Send>;
-
-/// Creates one full device against a fresh temporary data directory.
-pub fn build_device(relay: &str, account: &FullKeypair, app_factory: AppFactory) -> DeviceHarness {
-    build_device_with_relays(&[relay], account, app_factory)
-}
 
 /// Creates one full device against a fresh tempdir with multiple relays.
 pub fn build_device_with_relays(
@@ -69,14 +64,24 @@ pub fn build_device_with_relays(
     build_device_in_tmpdir_with_relays(relays, account, tmpdir, app_factory)
 }
 
-/// Creates one full device backed by an already-prepared tempdir.
-pub fn build_device_in_tmpdir(
-    relay: &str,
+/// Creates one full device with explicit remote bridge configuration.
+pub fn build_device_with_relays_and_remote_config(
+    relays: &[&str],
     account: &FullKeypair,
-    tmpdir: TempDir,
+    remote_config: NotedeckRemoteConfig,
     app_factory: AppFactory,
 ) -> DeviceHarness {
-    build_device_in_tmpdir_with_relays(&[relay], account, tmpdir, app_factory)
+    let tmpdir = TempDir::new().expect("tmpdir");
+    let data_dir = tmpdir.path().to_path_buf();
+    build_device_with_data_dir(
+        relays,
+        account,
+        data_dir,
+        DeviceDataDir::Temp { _dir: tmpdir },
+        DeviceKeyMode::Full,
+        remote_config,
+        app_factory,
+    )
 }
 
 /// Creates one full device backed by an already-prepared tempdir with multiple relays.
@@ -93,6 +98,7 @@ pub fn build_device_in_tmpdir_with_relays(
         data_dir,
         DeviceDataDir::Temp { _dir: tmpdir },
         DeviceKeyMode::Full,
+        NotedeckRemoteConfig::default(),
         app_factory,
     )
 }
@@ -111,6 +117,7 @@ pub fn build_public_device_in_tmpdir_with_relays(
         data_dir,
         DeviceDataDir::Temp { _dir: tmpdir },
         DeviceKeyMode::Public,
+        NotedeckRemoteConfig::default(),
         app_factory,
     )
 }
@@ -128,6 +135,7 @@ pub fn build_device_in_path_with_relays(
         data_dir.to_path_buf(),
         DeviceDataDir::External,
         DeviceKeyMode::Full,
+        NotedeckRemoteConfig::default(),
         app_factory,
     )
 }
@@ -143,6 +151,7 @@ fn build_device_with_data_dir(
     data_dir: PathBuf,
     data_dir_guard: DeviceDataDir,
     key_mode: DeviceKeyMode,
+    remote_config: NotedeckRemoteConfig,
     app_factory: AppFactory,
 ) -> DeviceHarness {
     let mut args = vec!["notedeck-test".to_owned(), "--testrunner".to_owned()];
@@ -169,11 +178,12 @@ fn build_device_with_data_dir(
         .with_max_steps(24)
         .with_step_dt(0.05)
         .build_eframe(move |cc| {
-            let mut notedeck = Notedeck::init(&cc.egui_ctx, &data_dir, &args);
+            let mut notedeck =
+                Notedeck::init_with_remote_config(&cc.egui_ctx, &data_dir, &args, remote_config);
 
             notedeck.setup(&cc.egui_ctx);
             {
-                let app_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx);
+                let app_ref = &mut notedeck.notedeck_ref();
                 app_ref.app_ctx.settings.set_animate_nav_transitions(false);
             }
 

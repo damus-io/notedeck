@@ -7,10 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::relay::{BroadcastCache, BroadcastRelay, RawEventData, RelayImplType};
-use crate::{EventClientMessage, RelayStatus, Result, Wakeup};
+use crate::relay::{backoff::FlushBackoff, RawEventData, RelayImplType};
+use crate::{EventClientMessage, RelayStatus, Result};
 use std::net::Ipv4Addr;
 use tracing::{debug, error};
+
+const MAX_MULTICAST_FLUSH_BACKOFF: Duration = Duration::from_secs(60);
 
 pub struct MulticastRelay {
     last_join: Instant,
@@ -67,6 +69,10 @@ impl MulticastRelay {
 
     pub fn should_rejoin_at(&self, now: Instant) -> bool {
         (now - self.last_join) >= self.rejoin_interval
+    }
+
+    pub fn next_rejoin_deadline(&self) -> Instant {
+        self.last_join + self.rejoin_interval
     }
 
     pub fn set_rejoin_interval(&mut self, interval: Duration) {
@@ -202,35 +208,33 @@ pub fn setup_multicast_relay(
 
     Ok(relay)
 }
-/// MulticastRelayCache lazily initializes the multicast connection and buffers
+/// MulticastTransportRuntime lazily initializes the multicast connection and buffers
 /// outbound events until a connection is available.
-pub struct MulticastRelayCache {
+pub(crate) struct MulticastTransportRuntime {
     multicast: Option<MulticastRelay>,
-    cache: BroadcastCache,
+    to_send: Vec<EventClientMessage>,
+    flush_backoff: Option<FlushBackoff>,
     rejoin_interval: Duration,
 }
 
-impl Default for MulticastRelayCache {
+impl Default for MulticastTransportRuntime {
     fn default() -> Self {
         Self {
             multicast: None,
-            cache: BroadcastCache::default(),
+            to_send: Vec::new(),
+            flush_backoff: None,
             rejoin_interval: Duration::from_secs(200),
         }
     }
 }
 
-impl MulticastRelayCache {
-    pub fn is_setup(&self) -> bool {
+impl MulticastTransportRuntime {
+    pub(crate) fn is_setup(&self) -> bool {
         self.multicast.is_some()
     }
 
-    pub fn try_setup<W>(&mut self, wakeup: &W)
-    where
-        W: Wakeup,
-    {
-        let wake = wakeup.clone();
-        let Ok(multicast) = setup_multicast_relay(move || wake.wake()) else {
+    pub(crate) fn try_setup_fn(&mut self, wakeup: impl Fn() + Send + Sync + Clone + 'static) {
+        let Ok(multicast) = setup_multicast_relay(wakeup) else {
             return;
         };
         let mut multicast = multicast;
@@ -238,40 +242,74 @@ impl MulticastRelayCache {
         self.multicast = Some(multicast);
     }
 
-    pub fn set_rejoin_interval(&mut self, interval: Duration) {
-        self.rejoin_interval = interval;
-        if let Some(multicast) = self.multicast.as_mut() {
-            multicast.set_rejoin_interval(interval);
+    pub(crate) fn next_maintenance_deadline(&self) -> Option<Instant> {
+        let multicast = self.multicast.as_ref()?;
+        let rejoin_deadline = multicast.next_rejoin_deadline();
+        let flush_deadline = self.next_flush_deadline(multicast);
+
+        Some(
+            flush_deadline
+                .map(|deadline| deadline.min(rejoin_deadline))
+                .unwrap_or(rejoin_deadline),
+        )
+    }
+
+    fn next_flush_deadline(&self, multicast: &MulticastRelay) -> Option<Instant> {
+        if self.to_send.is_empty() || multicast.status() != RelayStatus::Connected {
+            return None;
+        }
+
+        self.flush_backoff
+            .as_ref()
+            .map(FlushBackoff::retry_deadline)
+            .or_else(|| Some(Instant::now()))
+    }
+
+    pub(crate) fn broadcast(&mut self, msg: EventClientMessage) {
+        let Some(multicast) = &mut self.multicast else {
+            self.to_send.push(msg);
+            return;
+        };
+
+        if multicast.status() != RelayStatus::Connected {
+            self.to_send.push(msg);
+            return;
+        }
+
+        if multicast.send(&msg).is_err() {
+            self.to_send.push(msg);
+            if self.flush_backoff.is_none() {
+                self.flush_backoff = Some(FlushBackoff::new(MAX_MULTICAST_FLUSH_BACKOFF));
+            }
         }
     }
 
-    pub fn broadcast(&mut self, msg: EventClientMessage) {
-        BroadcastRelay::multicast(self.multicast.as_mut(), &mut self.cache).broadcast(msg);
-    }
-
     #[profiling::function]
-    pub fn try_recv<F>(&mut self, mut process: F) -> usize
+    pub(crate) fn try_recv<F>(&mut self, mut process: F) -> usize
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
         self.maintain();
+        self.try_flush_queue();
 
         let Some(multicast) = &mut self.multicast else {
             return 0;
         };
 
-        BroadcastRelay::multicast(Some(multicast), &mut self.cache).try_flush_queue();
+        let mut received = 0;
+        while let Some(event) = multicast.try_recv() {
+            let WsEvent::Message(WsMessage::Text(text)) = event else {
+                continue;
+            };
 
-        let Some(WsEvent::Message(WsMessage::Text(text))) = multicast.try_recv() else {
-            return 0;
-        };
-
-        process(RawEventData {
-            url: "multicast",
-            event_json: &text,
-            relay_type: RelayImplType::Multicast,
-        });
-        1
+            process(RawEventData {
+                url: "multicast",
+                event_json: &text,
+                relay_type: RelayImplType::Multicast,
+            });
+            received += 1;
+        }
+        received
     }
 
     fn maintain(&mut self) {
@@ -283,16 +321,45 @@ impl MulticastRelayCache {
             if let Err(e) = multicast.rejoin() {
                 tracing::error!("multicast: rejoin error: {e}");
             } else {
-                self.cache.flush_backoff = None;
+                self.flush_backoff = None;
             }
+        }
+    }
+
+    fn try_flush_queue(&mut self) {
+        let Some(multicast) = &mut self.multicast else {
+            return;
+        };
+        if multicast.status() != RelayStatus::Connected || self.to_send.is_empty() {
+            return;
+        }
+        if let Some(backoff) = &self.flush_backoff {
+            if !backoff.is_elapsed() {
+                return;
+            }
+        }
+
+        let msgs_before_flush = self.to_send.len();
+        self.to_send.retain(|msg| multicast.send(msg).is_err());
+        let msgs_remaining = self.to_send.len();
+
+        if msgs_remaining == 0 {
+            self.flush_backoff = None;
+        } else if msgs_remaining == msgs_before_flush {
+            match &mut self.flush_backoff {
+                Some(backoff) => backoff.escalate(),
+                None => self.flush_backoff = Some(FlushBackoff::new(MAX_MULTICAST_FLUSH_BACKOFF)),
+            }
+        } else {
+            self.flush_backoff = Some(FlushBackoff::new(MAX_MULTICAST_FLUSH_BACKOFF));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MulticastRelay, MulticastRelayCache};
-    use crate::{relay::BroadcastCache, EventClientMessage, RelayImplType};
+    use super::{MulticastRelay, MulticastTransportRuntime, MAX_MULTICAST_FLUSH_BACKOFF};
+    use crate::{relay::backoff::FlushBackoff, EventClientMessage, RelayImplType, RelayStatus};
     use mio::net::UdpSocket;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
     use std::time::{Duration, Instant};
@@ -338,21 +405,122 @@ mod tests {
         String::from_utf8(buffer[4..size].to_vec()).expect("utf8 frame")
     }
 
-    fn test_cache_with_installed(
+    fn test_runtime_with_installed(
         multicast: MulticastRelay,
         rejoin_interval: Duration,
-    ) -> MulticastRelayCache {
-        MulticastRelayCache {
+    ) -> MulticastTransportRuntime {
+        MulticastTransportRuntime {
             multicast: Some(multicast),
-            cache: BroadcastCache::default(),
+            to_send: Vec::new(),
+            flush_backoff: None,
             rejoin_interval,
         }
     }
 
-    /// A queued note should flush through the real cache once a real relay is
+    fn queued_event(id: &str) -> EventClientMessage {
+        EventClientMessage {
+            note_json: format!(r#"{{"id":"{id}"}}"#),
+        }
+    }
+
+    #[test]
+    fn multicast_maintenance_deadline_uses_flush_backoff_before_rejoin() {
+        let mut relay = test_multicast_relay();
+        relay.set_rejoin_interval(Duration::from_secs(200));
+        let rejoin_deadline = relay.next_rejoin_deadline();
+        let mut runtime = test_runtime_with_installed(relay, Duration::from_secs(200));
+        runtime.to_send.push(queued_event("flush-backoff"));
+        runtime.flush_backoff = Some(FlushBackoff::new(MAX_MULTICAST_FLUSH_BACKOFF));
+
+        let flush_deadline = runtime
+            .flush_backoff
+            .as_ref()
+            .expect("flush backoff")
+            .retry_deadline();
+        let deadline = runtime
+            .next_maintenance_deadline()
+            .expect("maintenance deadline");
+
+        assert_eq!(deadline, flush_deadline);
+        assert!(
+            deadline < rejoin_deadline,
+            "flush retry should wake before multicast rejoin"
+        );
+    }
+
+    #[test]
+    fn multicast_maintenance_deadline_flushes_connected_queue_immediately_without_backoff() {
+        let relay = test_multicast_relay();
+        let mut runtime = test_runtime_with_installed(relay, Duration::from_secs(200));
+        runtime.to_send.push(queued_event("immediate-flush"));
+
+        let before = Instant::now();
+        let deadline = runtime
+            .next_maintenance_deadline()
+            .expect("maintenance deadline");
+        let after = Instant::now();
+
+        assert!(deadline >= before);
+        assert!(deadline <= after);
+    }
+
+    #[test]
+    fn multicast_maintenance_deadline_ignores_flush_backoff_when_disconnected() {
+        let mut relay = test_multicast_relay();
+        relay.set_rejoin_interval(Duration::from_secs(200));
+        relay.status = RelayStatus::Disconnected;
+        let rejoin_deadline = relay.next_rejoin_deadline();
+        let mut runtime = test_runtime_with_installed(relay, Duration::from_secs(200));
+        runtime.to_send.push(queued_event("disconnected-flush"));
+        runtime.flush_backoff = Some(FlushBackoff::new(MAX_MULTICAST_FLUSH_BACKOFF));
+
+        assert_eq!(runtime.next_maintenance_deadline(), Some(rejoin_deadline));
+    }
+
+    /// One backend multicast work item should drain every datagram already
+    /// queued on the socket.
+    #[test]
+    fn receive_drains_currently_available_frames() {
+        let relay = test_multicast_relay();
+        let local_addr = match relay.socket.local_addr().expect("relay local addr") {
+            SocketAddr::V4(addr) => {
+                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, addr.port()))
+            }
+            SocketAddr::V6(_) => panic!("expected ipv4 relay socket"),
+        };
+        let sender = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind sender");
+        let mut runtime = test_runtime_with_installed(relay, Duration::from_millis(20));
+        let frames = [
+            r#"{"id":"queued-a"}"#,
+            r#"{"id":"queued-b"}"#,
+            r#"{"id":"queued-c"}"#,
+        ];
+
+        for frame in frames {
+            sender
+                .send_to(&encode_text_frame(frame), local_addr)
+                .expect("send frame");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+
+        let mut delivered = Vec::new();
+        let received = runtime.try_recv(|event| delivered.push(event.event_json.to_owned()));
+
+        assert_eq!(received, frames.len());
+        assert_eq!(
+            delivered,
+            frames
+                .iter()
+                .map(|frame| frame.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(runtime.try_recv(|_| panic!("socket should be drained")), 0);
+    }
+
+    /// A queued note should flush through the real runtime once a real relay is
     /// installed later.
     #[test]
-    fn queued_broadcast_flushes_after_later_install() {
+    fn queued_publish_flushes_after_later_install() {
         let receiver = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind receiver");
         receiver
             .set_read_timeout(Some(Duration::from_millis(200)))
@@ -368,21 +536,21 @@ mod tests {
             note_json: r#"{"id":"queued-note"}"#.to_owned(),
         };
 
-        let mut cache = MulticastRelayCache::default();
-        cache.broadcast(queued.clone());
-        assert_eq!(cache.cache.queued_len(), 1);
+        let mut runtime = MulticastTransportRuntime::default();
+        runtime.broadcast(queued.clone());
+        assert_eq!(runtime.to_send.len(), 1);
 
-        cache.multicast = Some(relay);
-        cache.try_recv(|_| panic!("queue flush should not fabricate inbound events"));
+        runtime.multicast = Some(relay);
+        runtime.try_recv(|_| panic!("queue flush should not fabricate inbound events"));
 
         assert_eq!(recv_text_frame(&receiver), queued.to_json());
-        assert!(cache.cache.queue_is_empty());
+        assert!(runtime.to_send.is_empty());
     }
 
-    /// The real cache should surface inbound frames both before and after a
+    /// The real runtime should surface inbound frames both before and after a
     /// forced rejoin maintenance pass.
     #[test]
-    fn try_recv_surfaces_frames_before_and_after_rejoin() {
+    fn receive_surfaces_frames_before_and_after_rejoin() {
         let mut relay = test_multicast_relay();
         let local_addr = match relay.socket.local_addr().expect("relay local addr") {
             SocketAddr::V4(addr) => {
@@ -396,13 +564,13 @@ mod tests {
         let mut delivered = Vec::new();
 
         relay.set_rejoin_interval(Duration::from_millis(20));
-        let mut cache = test_cache_with_installed(relay, Duration::from_millis(20));
+        let mut runtime = test_runtime_with_installed(relay, Duration::from_millis(20));
 
         sender
             .send_to(&encode_text_frame(first), local_addr)
             .expect("send first frame");
         for _ in 0..20 {
-            let received = cache.try_recv(|event| {
+            let received = runtime.try_recv(|event| {
                 assert!(matches!(event.relay_type, RelayImplType::Multicast));
                 delivered.push(event.event_json.to_owned());
             });
@@ -415,14 +583,17 @@ mod tests {
         }
         assert_eq!(delivered, vec![first.to_owned()]);
 
-        cache.multicast.as_mut().expect("installed relay").last_join =
-            Instant::now() - Duration::from_millis(25);
-        cache.try_recv(|_| panic!("forced rejoin pass should not surface an inbound frame"));
+        runtime
+            .multicast
+            .as_mut()
+            .expect("installed relay")
+            .last_join = Instant::now() - Duration::from_millis(25);
+        runtime.try_recv(|_| panic!("forced rejoin pass should not surface an inbound frame"));
         sender
             .send_to(&encode_text_frame(second), local_addr)
             .expect("send second frame");
         for _ in 0..20 {
-            let received = cache.try_recv(|event| delivered.push(event.event_json.to_owned()));
+            let received = runtime.try_recv(|event| delivered.push(event.event_json.to_owned()));
             assert!(received <= 1);
             if delivered.len() == 2 {
                 assert_eq!(received, 1);

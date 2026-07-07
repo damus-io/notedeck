@@ -1,15 +1,16 @@
 use nostrdb::Filter;
 
 use crate::relay::{
-    same_canonical_filter_set, subscription::FullHistoryUpsertTask, FullHistorySubId, NormRelayUrl,
+    full_history_filters_from_relay_targets,
+    subscription::{FullHistoryRelayFilter, FullHistoryUpsertTask},
+    FullHistorySubId, NormRelayUrl,
 };
 
 /// Stable snapshot of one background full-history declaration.
 #[derive(Clone, Debug)]
 pub(in crate::relay::outbox) struct FullHistorySnapshot {
     pub(in crate::relay::outbox) id: FullHistorySubId,
-    pub(in crate::relay::outbox) relays: Vec<NormRelayUrl>,
-    pub(in crate::relay::outbox) filters: Vec<Filter>,
+    pub(in crate::relay::outbox) relay_filters: Vec<FullHistoryRelayFilter>,
 }
 
 impl FullHistorySnapshot {
@@ -17,60 +18,73 @@ impl FullHistorySnapshot {
     /// regardless of relay/filter ordering.
     pub(in crate::relay::outbox) fn semantically_matches(&self, other: &Self) -> bool {
         self.id == other.id
-            && self.sorted_relays() == other.sorted_relays()
-            && same_canonical_filter_set(&self.filters, &other.filters)
+            && full_history_relay_filter_diff(&self.relay_filters, &other.relay_filters).is_empty()
+            && full_history_relay_filter_diff(&other.relay_filters, &self.relay_filters).is_empty()
     }
 
-    /// Whether this snapshot still contains one relay/filter pair.
-    pub(in crate::relay::outbox) fn contains_relay_filter(
+    /// Returns true when query routes and relay transport policy are unchanged.
+    #[cfg(test)]
+    pub(in crate::relay::outbox) fn fully_matches_targets(
+        &self,
+        id: FullHistorySubId,
+        targets: &[FullHistoryRelayFilter],
+    ) -> bool {
+        fn full_matches(left: &FullHistoryRelayFilter, right: &FullHistoryRelayFilter) -> bool {
+            left.has_same_relay_filter(right) && left.relay_policy == right.relay_policy
+        }
+
+        fn all_full_match(
+            left: &[FullHistoryRelayFilter],
+            right: &[FullHistoryRelayFilter],
+        ) -> bool {
+            left.iter()
+                .all(|candidate| right.iter().any(|other| full_matches(candidate, other)))
+        }
+
+        self.id == id
+            && all_full_match(&self.relay_filters, targets)
+            && all_full_match(targets, &self.relay_filters)
+    }
+
+    pub(in crate::relay::outbox) fn contains_relay_filter_target(
+        &self,
+        target: &FullHistoryRelayFilter,
+    ) -> bool {
+        self.relay_filters
+            .iter()
+            .any(|relay_filter| relay_filter.semantically_matches(target))
+    }
+
+    pub(in crate::relay::outbox) fn target_for_relay_filter(
         &self,
         relay: &NormRelayUrl,
         filter: &Filter,
-    ) -> bool {
-        self.relays
+    ) -> Option<FullHistoryRelayFilter> {
+        self.relay_filters
             .iter()
-            .any(|snapshot_relay| snapshot_relay == relay)
-            && self
-                .filters
-                .iter()
-                .any(|snapshot_filter| snapshot_filter.same_canonical_attributes(filter))
+            .find(|relay_filter| {
+                &relay_filter.relay == relay
+                    && relay_filter.filter.same_canonical_attributes(filter)
+            })
+            .cloned()
     }
 
     /// Materialize all relay/filter pairs represented by this snapshot.
     pub(in crate::relay::outbox) fn relay_filters(&self) -> Vec<FullHistoryRelayFilter> {
-        self.filters
-            .iter()
-            .flat_map(|filter| {
-                self.relays
-                    .iter()
-                    .cloned()
-                    .map(|relay| FullHistoryRelayFilter {
-                        relay,
-                        filter: filter.clone(),
-                    })
-            })
-            .collect()
+        self.relay_filters.clone()
     }
 
-    /// Canonicalize relay ordering for snapshot comparisons.
-    fn sorted_relays(&self) -> Vec<String> {
-        let mut relays: Vec<String> = self.relays.iter().map(ToString::to_string).collect();
-        relays.sort_unstable();
-        relays
+    /// Return the distinct filter set represented by this snapshot.
+    pub(in crate::relay::outbox) fn filters(&self) -> Vec<Filter> {
+        full_history_filters_from_relay_targets(&self.relay_filters)
     }
-}
 
-/// One relay/filter pair represented by a full-history snapshot.
-#[derive(Clone, Debug)]
-pub(in crate::relay::outbox) struct FullHistoryRelayFilter {
-    pub(in crate::relay::outbox) relay: NormRelayUrl,
-    pub(in crate::relay::outbox) filter: Filter,
-}
+    /// Return the relay packages represented by this snapshot.
+    #[cfg(test)]
+    pub(in crate::relay::outbox) fn relay_pkgs(&self) -> Vec<crate::relay::RelayUrlPkgs> {
+        use crate::relay::subscription::full_history_relay_pkgs_from_relay_targets;
 
-impl FullHistoryRelayFilter {
-    /// Whether two relay/filter pairs target the same relay and canonical filter.
-    fn semantically_matches(&self, other: &Self) -> bool {
-        self.relay == other.relay && self.filter.same_canonical_attributes(&other.filter)
+        full_history_relay_pkgs_from_relay_targets(&self.relay_filters)
     }
 }
 
@@ -105,7 +119,6 @@ pub(in crate::relay::outbox) fn full_history_snapshot_from_task(
 ) -> FullHistorySnapshot {
     FullHistorySnapshot {
         id,
-        relays: task.relays.iter().cloned().collect(),
-        filters: task.filters.to_vec(),
+        relay_filters: task.targets.clone(),
     }
 }

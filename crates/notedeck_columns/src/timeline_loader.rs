@@ -9,7 +9,7 @@ use crate::timeline::TimelineKind;
 
 use tracing::{info, warn};
 
-const FOLD_BATCH_SIZE: usize = 200;
+const FOLD_BATCH_SIZE: usize = 16;
 const MAX_TIMELINE_LOADER_WORKERS: usize = 4;
 
 /// Commands sent to the timeline loader worker thread.

@@ -34,7 +34,7 @@ fn render_horizon(ctx: &egui::Context, state: &mut HorizonTestState) {
 
         let secret = state.account.secret_key.clone();
         let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context(ctx);
+        let app_ctx = &mut state.notedeck.app_context();
         if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
             let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
             resp.unk_id_action
@@ -48,7 +48,7 @@ fn render_horizon(ctx: &egui::Context, state: &mut HorizonTestState) {
         return;
     }
 
-    let mut app_ctx = state.notedeck.app_context(ctx);
+    let mut app_ctx = state.notedeck.app_context();
     // Drive the app's data load (subscribe + reload) then render.
     state.horizon.update(&mut app_ctx, ctx);
     egui::CentralPanel::default().show(ctx, |ui| {

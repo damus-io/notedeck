@@ -244,7 +244,7 @@ async fn from_net_run(
     path: PathBuf,
     imgtype: ImageType,
 ) -> JobOutput<MediaJobResult> {
-    let res = match crate::media::network::http_req(&url).await {
+    let res = match crate::network::http_req(&url).await {
         Ok(r) => r,
         Err(e) => {
             return JobOutput::complete(MediaJobResult::Animation(Err(crate::Error::Generic(

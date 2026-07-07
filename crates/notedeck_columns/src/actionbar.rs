@@ -1,12 +1,11 @@
-use std::collections::HashSet;
-
 use crate::{
-    column::Columns,
+    column::{ColumnId, Columns},
     nav::{RouterAction, RouterType},
     route::Route,
     timeline::{
         thread::{selected_has_at_least_n_replies, NoteSeenFlags, ThreadNode, Threads},
-        InsertionResponse, ThreadSelection, TimelineCache, TimelineKind,
+        InsertNewResult, InsertionResponse, RemoteSubscriptionPolicy, ThreadSelection,
+        TimelineCache, TimelineKind,
     },
     view_state::ViewState,
 };
@@ -18,8 +17,8 @@ use notedeck::{
     get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
     unix_time_secs, Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache,
-    NoteZapTargetOwned, PublishApi, RelayType, RemoteApi, UnknownIds, ZapAction, ZapTarget,
-    ZappingError, Zaps,
+    NoteZapTargetOwned, PublishApi, RemoteApi, UnknownIds, ZapAction, ZapTarget, ZappingError,
+    Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -36,7 +35,7 @@ pub enum NotesOpenResult {
 
 pub struct TimelineOpenResult {
     new_notes: Option<NewNotes>,
-    new_pks: Option<HashSet<Pubkey>>,
+    insert_result: Option<InsertNewResult>,
 }
 
 struct NoteActionResponse {
@@ -62,7 +61,8 @@ fn execute_note_action(
     router_type: RouterType,
     jobs: &MediaJobSender,
     ui: &mut egui::Ui,
-    col: usize,
+    col: ColumnId,
+    remote_policy: RemoteSubscriptionPolicy,
 ) -> NoteActionResponse {
     let mut timeline_res = None;
     let mut router_action = None;
@@ -82,7 +82,7 @@ fn execute_note_action(
         }
         NoteAction::React(react_action) => {
             if let Some(filled) = accounts.selected_filled() {
-                let mut publisher = remote.publisher(&*accounts);
+                let mut publisher = remote.publisher();
                 if let Err(err) =
                     send_reaction_event(ndb, txn, &mut publisher, filled, &react_action)
                 {
@@ -111,6 +111,7 @@ fn execute_note_action(
                     &kind,
                     *accounts.selected_account_pubkey(),
                     false,
+                    remote_policy,
                 )
                 .map(NotesOpenResult::Timeline);
         }
@@ -134,6 +135,7 @@ fn execute_note_action(
                     preview,
                     col,
                     scroll_offset,
+                    remote_policy,
                 )
                 .map(NotesOpenResult::Thread);
 
@@ -157,6 +159,7 @@ fn execute_note_action(
                     &kind,
                     *accounts.selected_account_pubkey(),
                     false,
+                    remote_policy,
                 )
                 .map(NotesOpenResult::Timeline);
         }
@@ -271,17 +274,23 @@ pub fn execute_and_process_note_action(
     view_state: &mut ViewState,
     jobs: &MediaJobSender,
     ui: &mut egui::Ui,
+    use_outbox_relays: bool,
 ) -> Option<RouterAction> {
-    let router_type = {
-        let sheet_router = &mut columns.column_mut(col).sheet_router;
+    let (column_id, router_type) = {
+        let column = columns.column_mut(col);
+        let column_id = column.id();
+        let sheet_router = &mut column.sheet_router;
 
-        if sheet_router.route().is_some() {
+        let router_type = if sheet_router.route().is_some() {
             RouterType::Sheet(sheet_router.split)
         } else {
             RouterType::Stack
-        }
+        };
+
+        (column_id, router_type)
     };
 
+    let remote_policy = RemoteSubscriptionPolicy::from_outbox_relays(use_outbox_relays);
     let resp = execute_note_action(
         action,
         ndb,
@@ -298,7 +307,8 @@ pub fn execute_and_process_note_action(
         router_type,
         jobs,
         ui,
-        col,
+        column_id,
+        remote_policy,
     );
 
     if let Some(br) = resp.timeline_res {
@@ -318,7 +328,7 @@ pub fn execute_and_process_note_action(
 fn send_reaction_event(
     ndb: &mut Ndb,
     txn: &Transaction,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     kp: FilledKeypair<'_>,
     reaction: &ReactAction,
 ) -> Result<(), String> {
@@ -380,7 +390,7 @@ fn send_reaction_event(
 
     let _ = ndb.process_event_with(&json, IngestMetadata::new().client(true));
 
-    publisher.publish_note(&note, RelayType::AccountsWrite);
+    publisher.accounts_write().publish_note(&note);
 
     Ok(())
 }
@@ -433,21 +443,21 @@ impl TimelineOpenResult {
     pub fn new_notes(notes: Vec<NoteKey>, id: TimelineKind) -> Self {
         Self {
             new_notes: Some(NewNotes { id, notes }),
-            new_pks: None,
+            insert_result: None,
         }
     }
 
-    pub fn new_pks(pks: HashSet<Pubkey>) -> Self {
+    pub fn new_insert_result(insert_result: InsertNewResult) -> Self {
         Self {
             new_notes: None,
-            new_pks: Some(pks),
+            insert_result: Some(insert_result),
         }
     }
 
-    pub fn insert_pks(&mut self, pks: HashSet<Pubkey>) {
-        match &mut self.new_pks {
-            Some(cur_pks) => cur_pks.extend(pks),
-            None => self.new_pks = Some(pks),
+    pub fn insert_insert_result(&mut self, insert_result: InsertNewResult) {
+        match &mut self.insert_result {
+            Some(cur_result) => cur_result.extend(insert_result),
+            None => self.insert_result = Some(insert_result),
         }
     }
 
@@ -464,12 +474,8 @@ impl TimelineOpenResult {
             new_notes.process(storage, ndb, txn, unknown_ids, note_cache);
         }
 
-        let Some(pks) = &self.new_pks else {
-            return;
-        };
-
-        for pk in pks {
-            unknown_ids.add_pubkey_if_missing(ndb, txn, pk);
+        if let Some(insert_result) = &self.insert_result {
+            insert_result.process(ndb, txn, unknown_ids, note_cache);
         }
     }
 }

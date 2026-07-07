@@ -4,6 +4,8 @@
 //! `self_replace::self_replace()` via the `update_test_helper` binary,
 //! and process relaunch.
 
+#![cfg(feature = "auto-update")]
+
 #[cfg(unix)]
 mod unix_tests {
     use std::fs;

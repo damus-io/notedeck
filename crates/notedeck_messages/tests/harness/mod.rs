@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use enostr::FullKeypair;
 use nostrdb::Transaction;
-use notedeck::{giftwrap_sub_identity, ScopedSubEoseStatus};
+use notedeck::{giftwrap_sub_identity, ScopedSubReadiness};
 use notedeck_messages::{
     nip17::{conversation_filter, parse_chat_message},
     MessagesApp,
@@ -114,8 +114,7 @@ pub fn build_messages_cluster(
 
 /// Returns the visible local chat messages for the selected account on one device.
 pub fn local_chat_messages(device: &mut DeviceHarness) -> BTreeSet<String> {
-    let ctx = device.ctx.clone();
-    let app_ctx = device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = device.state_mut().notedeck.app_context();
     let me = *app_ctx.accounts.selected_account_pubkey();
     let filters = conversation_filter(&me);
     let txn = Transaction::new(app_ctx.ndb).expect("txn");
@@ -132,8 +131,7 @@ pub fn local_chat_messages(device: &mut DeviceHarness) -> BTreeSet<String> {
 
 /// Returns the number of local chat messages visible for the selected account.
 pub fn local_chat_message_count(device: &mut DeviceHarness) -> usize {
-    let ctx = device.ctx.clone();
-    let app_ctx = device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = device.state_mut().notedeck.app_context();
     let me = *app_ctx.accounts.selected_account_pubkey();
     let filters = conversation_filter(&me);
     let txn = Transaction::new(app_ctx.ndb).expect("txn");
@@ -458,15 +456,14 @@ fn cluster_delivery_report(cluster: &mut AccountCluster, expected: &BTreeSet<Str
 
 /// Returns `true` when a device's giftwrap subscription is live with ALL relays at EOSE.
 pub fn device_giftwrap_sub_ready(device: &mut DeviceHarness) -> bool {
-    let ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
     let status = app_ctx
         .remote
         .scoped_subs(app_ctx.accounts)
-        .sub_eose_status(giftwrap_sub_identity());
+        .sub_readiness(giftwrap_sub_identity());
     matches!(
         status,
-        ScopedSubEoseStatus::Live(live) if live.all_eosed
+        ScopedSubReadiness::Live(live) if live.relay_eose.all_eosed
     )
 }
 

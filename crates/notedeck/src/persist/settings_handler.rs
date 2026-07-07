@@ -15,7 +15,69 @@ const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
 const DEFAULT_TOS_VERSION: &str = "1.0";
+const DEFAULT_COLUMNS_USE_OUTBOX_RELAYS: bool = true;
 pub const DEFAULT_MAX_HASHTAGS_PER_NOTE: usize = 3;
+/// Default bounded websocket cap for Columns outbox relay routing.
+pub const DEFAULT_WEBSOCKET_CONNECTION_LIMIT: u16 = 16;
+/// Lowest user-facing custom websocket cap accepted by settings.
+pub const MIN_CUSTOM_WEBSOCKET_CONNECTION_LIMIT: u16 = 3;
+
+/// Persisted websocket-cap preference for relay transport.
+#[derive(Serialize, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum WebsocketConnectionLimit {
+    /// Let the outbox derive the effective cap from OS fd pressure.
+    Auto,
+    /// Clamp live websocket count to a user-specified maximum.
+    Custom(u16),
+}
+
+impl Default for WebsocketConnectionLimit {
+    fn default() -> Self {
+        Self::Custom(DEFAULT_WEBSOCKET_CONNECTION_LIMIT)
+    }
+}
+
+impl WebsocketConnectionLimit {
+    /// Build a custom websocket cap clamped to the supported settings range.
+    pub fn custom(max: u16) -> Self {
+        Self::Custom(max.max(MIN_CUSTOM_WEBSOCKET_CONNECTION_LIMIT))
+    }
+
+    /// Return the persisted value with custom caps clamped to supported bounds.
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::Auto => Self::Auto,
+            Self::Custom(max) => Self::custom(max),
+        }
+    }
+
+    /// Convert the persisted setting into the pool-level configured cap.
+    pub fn max_connections(self) -> Option<usize> {
+        match self.normalized() {
+            Self::Auto => None,
+            Self::Custom(max) => Some(usize::from(max)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for WebsocketConnectionLimit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        enum RawWebsocketConnectionLimit {
+            Auto,
+            Custom(u16),
+        }
+
+        let raw = RawWebsocketConnectionLimit::deserialize(deserializer)?;
+        Ok(match raw {
+            RawWebsocketConnectionLimit::Auto => Self::Auto,
+            RawWebsocketConnectionLimit::Custom(max) => Self::custom(max),
+        })
+    }
+}
 
 fn deserialize_theme(serialized_theme: &str) -> Option<ThemePreference> {
     match serialized_theme {
@@ -35,6 +97,10 @@ pub struct Settings {
     pub show_replies_newest_first: bool,
     #[serde(default = "default_animate_nav_transitions")]
     pub animate_nav_transitions: bool,
+    #[serde(default = "default_columns_use_outbox_relays")]
+    pub columns_use_outbox_relays: bool,
+    #[serde(default)]
+    pub websocket_connection_limit: WebsocketConnectionLimit,
     pub max_hashtags_per_note: usize,
     #[serde(default)]
     pub welcome_completed: bool,
@@ -64,6 +130,10 @@ fn default_animate_nav_transitions() -> bool {
     true
 }
 
+fn default_columns_use_outbox_relays() -> bool {
+    DEFAULT_COLUMNS_USE_OUTBOX_RELAYS
+}
+
 fn default_sounds_enabled() -> bool {
     true
 }
@@ -85,6 +155,8 @@ impl Default for Settings {
             show_source_client: DEFAULT_SHOW_SOURCE_CLIENT.to_string(),
             show_replies_newest_first: DEFAULT_SHOW_REPLIES_NEWEST_FIRST,
             animate_nav_transitions: default_animate_nav_transitions(),
+            columns_use_outbox_relays: default_columns_use_outbox_relays(),
+            websocket_connection_limit: WebsocketConnectionLimit::default(),
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
             welcome_completed: false,
             tos_accepted: false,
@@ -196,10 +268,7 @@ impl SettingsHandler {
     }
 
     pub fn get_settings_mut(&mut self) -> &mut Settings {
-        if self.current_settings.is_none() {
-            self.current_settings = Some(Settings::default());
-        }
-        self.current_settings.as_mut().unwrap()
+        self.current_settings.get_or_insert_with(Settings::default)
     }
 
     pub fn set_theme(&mut self, theme: ThemePreference) {
@@ -235,6 +304,16 @@ impl SettingsHandler {
 
     pub fn set_animate_nav_transitions(&mut self, value: bool) {
         self.get_settings_mut().animate_nav_transitions = value;
+        self.try_save_settings();
+    }
+
+    pub fn set_columns_use_outbox_relays(&mut self, value: bool) {
+        self.get_settings_mut().columns_use_outbox_relays = value;
+        self.try_save_settings();
+    }
+
+    pub fn set_websocket_connection_limit(&mut self, value: WebsocketConnectionLimit) {
+        self.get_settings_mut().websocket_connection_limit = value;
         self.try_save_settings();
     }
 
@@ -301,6 +380,21 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.show_replies_newest_first)
             .unwrap_or(DEFAULT_SHOW_REPLIES_NEWEST_FIRST)
+    }
+
+    pub fn columns_use_outbox_relays(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.columns_use_outbox_relays)
+            .unwrap_or(DEFAULT_COLUMNS_USE_OUTBOX_RELAYS)
+    }
+
+    pub fn websocket_connection_limit(&self) -> WebsocketConnectionLimit {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.websocket_connection_limit)
+            .unwrap_or_default()
+            .normalized()
     }
 
     pub fn is_loaded(&self) -> bool {

@@ -142,4 +142,40 @@ impl TimelineSub {
     pub fn dependers(&self, account_pk: &Pubkey) -> usize {
         self.state_for_account(account_pk).dependers
     }
+
+    pub fn accounts_with_dependers(&self) -> Vec<Pubkey> {
+        self.by_account
+            .iter()
+            .filter_map(|(account_pk, state)| (state.dependers > 0).then_some(*account_pk))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn new_ndb() -> (TempDir, Ndb) {
+        let tmp = TempDir::new().expect("tmp dir");
+        let ndb =
+            Ndb::new(tmp.path().to_str().expect("path"), &nostrdb::Config::new()).expect("ndb");
+        (tmp, ndb)
+    }
+
+    #[test]
+    fn accounts_with_dependers_omits_unsubscribed_account() {
+        let account_a = Pubkey::new([0xA1; 32]);
+        let account_b = Pubkey::new([0xB2; 32]);
+        let mut sub = TimelineSub::default();
+        let (_tmp, mut ndb) = new_ndb();
+
+        sub.increment(account_a);
+        sub.increment(account_b);
+        sub.mark_remote_registered(account_b);
+        sub.unsubscribe_or_decrement(account_b, &mut ndb);
+
+        assert_eq!(sub.accounts_with_dependers(), vec![account_a]);
+        assert!(!sub.is_remote_registered(&account_b));
+    }
 }

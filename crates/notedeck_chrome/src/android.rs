@@ -4,11 +4,15 @@
 use egui_winit::winit::platform::android::activity::AndroidApp;
 
 use crate::chrome::Chrome;
-use notedeck::Notedeck;
+use notedeck::{Notedeck, RuntimeThreadBudget};
 
 #[no_mangle]
-#[tokio::main]
-pub async fn android_main(android_app: AndroidApp) {
+pub fn android_main(android_app: AndroidApp) {
+    let runtime = RuntimeThreadBudget::from_available_parallelism().build_main_runtime();
+    runtime.block_on(android_main_async(android_app));
+}
+
+async fn android_main_async(android_app: AndroidApp) {
     //use tracing_logcat::{LogcatMakeWriter, LogcatTag};
     use tracing_subscriber::{prelude::*, EnvFilter};
 

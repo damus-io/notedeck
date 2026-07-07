@@ -5,6 +5,7 @@ mod account;
 mod app;
 mod args;
 pub mod async_loader;
+mod author_outbox;
 pub mod compact;
 pub mod contacts;
 mod context;
@@ -21,6 +22,7 @@ pub mod media;
 mod muted;
 pub mod name;
 pub mod nav;
+pub mod network;
 pub mod nip05;
 mod nip51_set;
 pub mod note;
@@ -38,9 +40,7 @@ mod remote_api;
 mod remote_data;
 mod result;
 mod route;
-mod scoped_sub_api;
-mod scoped_sub_owners;
-mod scoped_sub_state;
+mod runtime;
 mod scoped_subs;
 mod setup;
 pub mod sound;
@@ -71,13 +71,12 @@ pub use account::relay::{
     construct_nip65_relays_note, construct_private_relay_list_note, RelayAction,
 };
 pub use account::FALLBACK_PUBKEY;
-pub use app::{App, AppAction, AppResponse, Notedeck, TabNotifications};
+pub use app::{App, AppAction, AppResponse, Notedeck, NotedeckRemoteConfig, TabNotifications};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
 pub use enostr::FullHistoryConfig;
 pub use enostr::RelayRoutingPreference;
-use enostr::{OutboxSessionHandler, Wakeup};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
 pub use filter::{FilterState, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
@@ -112,19 +111,18 @@ pub use options::NotedeckOptions;
 pub use persist::*;
 pub use private_sync::{fan_out_event_frame, PrivateRelaySync};
 pub use profile::*;
-pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};
+pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi};
 pub use relayspec::RelaySpec;
 pub use remote_api::{RelayInspectApi, RelayInspectEntry, RemoteApi};
 pub use result::Result;
 pub use route::{DrawerRouter, ReplacementType, Router};
-pub use scoped_sub_api::ScopedSubApi;
-pub use scoped_sub_owners::SubOwnerKeyBuilder;
-pub use scoped_sub_state::ScopedSubsState;
+pub use runtime::RuntimeThreadBudget;
 pub use scoped_subs::{
-    ClearSubResult, DropSlotResult, EnsureSubResult, RelaySelection, ScopedSubEoseStatus,
-    ScopedSubIdentity, ScopedSubLiveEoseStatus, SetSubResult, SubConfig, SubKey, SubKeyBuilder,
-    SubOwnerKey, SubScope,
+    ClearSubResult, EnsureSubResult, ScopedSubApi, ScopedSubIdentity, ScopedSubsState,
+    SetSubResult, SubConfig, SubKey, SubKeyBuilder, SubOwnerKey, SubRelayPolicy, SubScope,
 };
+pub(crate) use scoped_subs::{ScopedSubCommand, ScopedSubFact, ScopedSubRuntime};
+pub use scoped_subs::{ScopedSubLiveReadiness, ScopedSubReadiness, ScopedSubRelayEoseStatus};
 pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;
@@ -192,20 +190,3 @@ pub use nostrdb;
 
 pub use sound::{hover_entered, state_entered, SoundEffect, SoundManager};
 pub use zaps::Zaps;
-
-pub type Outbox<'a> = OutboxSessionHandler<'a, EguiWakeup>;
-
-#[derive(Clone)]
-pub struct EguiWakeup(egui::Context);
-
-impl EguiWakeup {
-    pub fn new(ctx: egui::Context) -> Self {
-        Self(ctx)
-    }
-}
-
-impl Wakeup for EguiWakeup {
-    fn wake(&self) {
-        self.0.request_repaint();
-    }
-}

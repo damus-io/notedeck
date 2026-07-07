@@ -92,7 +92,8 @@ impl<'a> AppContext<'a> {
     }
 
     pub fn process_relay_action(&mut self, action: crate::RelayAction) {
-        self.accounts.process_relay_action(&mut self.remote, action);
+        self.accounts
+            .process_relay_action(self.ndb, &mut self.remote, action);
     }
 
     pub fn soft_keyboard_rect(&self, screen_rect: Rect, ctx: SoftKeyboardContext) -> Option<Rect> {
@@ -123,6 +124,12 @@ impl<'a> AppContext<'a> {
                 }
             }
         }
+    }
+}
+
+impl Drop for AppContext<'_> {
+    fn drop(&mut self) {
+        self.remote.flush();
     }
 }
 

@@ -2,13 +2,12 @@ use std::sync::mpsc::Sender;
 
 use egui::TextureHandle;
 
-use crate::jobs::JobCache;
 use crate::media::images::TextureRequestKey;
 use crate::{Animation, Error, TextureState, TexturesCache};
 
 use crate::jobs::types::{JobComplete, JobId, JobPackage};
 
-pub type MediaJobs = JobCache<MediaJobKind, MediaJobResult>;
+pub type MediaJobs = crate::jobs::JobCache<MediaJobKind, MediaJobResult>;
 pub type MediaJobSender = Sender<JobPackage<MediaJobKind, MediaJobResult>>;
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]

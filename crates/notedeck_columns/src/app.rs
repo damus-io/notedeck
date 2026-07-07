@@ -9,7 +9,10 @@ use crate::{
     route::Route,
     storage,
     support::Support,
-    timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
+    timeline::{
+        self, kind::ListKind, thread::Threads, RemoteSubscriptionPolicy, TimelineCache,
+        TimelineKind,
+    },
     timeline_loader::{TimelineLoader, TimelineLoaderMsg},
     ui::{self, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
@@ -29,10 +32,11 @@ use notedeck_ui::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
-/// Max timeline loader messages to process per frame to avoid UI stalls.
-const MAX_TIMELINE_LOADER_MSGS_PER_FRAME: usize = 8;
+/// Max wall time spent applying timeline loader messages in one frame.
+const TIMELINE_LOADER_APPLY_BUDGET: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -214,7 +218,15 @@ fn try_process_event(
 
         let is_ready = {
             let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
-            timeline::is_timeline_ready(app_ctx.ndb, &mut scoped_subs, timeline, app_ctx.accounts)
+            timeline::is_timeline_ready(
+                app_ctx.ndb,
+                &mut scoped_subs,
+                timeline,
+                app_ctx.accounts,
+                RemoteSubscriptionPolicy::from_outbox_relays(
+                    app_ctx.settings.columns_use_outbox_relays(),
+                ),
+            )
         };
 
         if is_ready {
@@ -238,6 +250,9 @@ fn try_process_event(
                 reversed,
             ) {
                 Ok(new_note_keys) => {
+                    if !new_note_keys.is_empty() {
+                        ctx.request_repaint();
+                    }
                     if !new_note_keys.is_empty() && matches!(kind, TimelineKind::Notifications(_)) {
                         let muted = app_ctx.accounts.mute();
                         let has_unmuted = new_note_keys.iter().any(|key| {
@@ -278,10 +293,6 @@ fn try_process_event(
                 _ => {}
             }
         }
-
-        if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
-            follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
-        }
     }
 
     Ok(())
@@ -315,9 +326,19 @@ fn schedule_timeline_load(
 
 /// Drain timeline loader messages and apply them to the timeline cache.
 #[profiling::function]
-fn handle_timeline_loader_messages(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
+fn handle_timeline_loader_messages(
+    damus: &mut Damus,
+    app_ctx: &mut AppContext<'_>,
+    ctx: &egui::Context,
+) {
+    let start = Instant::now();
     let mut handled = 0;
-    while handled < MAX_TIMELINE_LOADER_MSGS_PER_FRAME {
+    loop {
+        if handled > 0 && start.elapsed() >= TIMELINE_LOADER_APPLY_BUDGET {
+            ctx.request_repaint();
+            break;
+        }
+
         let Some(msg) = damus.timeline_loader.try_recv() else {
             break;
         };
@@ -330,11 +351,9 @@ fn handle_timeline_loader_messages(damus: &mut Damus, app_ctx: &mut AppContext<'
                     continue;
                 };
                 let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                if let Some(pks) =
-                    timeline.insert_new(&txn, app_ctx.ndb, app_ctx.note_cache, &notes)
-                {
-                    pks.process(app_ctx.ndb, &txn, app_ctx.unknown_ids);
-                }
+                let insert_result =
+                    timeline.insert_new(&txn, app_ctx.ndb, app_ctx.note_cache, &notes);
+                insert_result.process(app_ctx.ndb, &txn, app_ctx.unknown_ids, app_ctx.note_cache);
             }
             TimelineLoaderMsg::TimelineFinished { kind } => {
                 if let Some(timeline) = damus.timeline_cache.get_mut(&kind) {
@@ -388,7 +407,11 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
         DamusState::Initialized => (),
     };
 
-    handle_timeline_loader_messages(damus, app_ctx);
+    handle_timeline_loader_messages(damus, app_ctx, ctx);
+
+    if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
+        follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+    }
 
     if let Err(err) = try_process_event(damus, app_ctx, ctx) {
         error!("error processing event: {}", err);
@@ -526,6 +549,9 @@ impl Damus {
                     &mut scoped_subs,
                     &timeline_kind,
                     *app_context.accounts.selected_account_pubkey(),
+                    RemoteSubscriptionPolicy::from_outbox_relays(
+                        app_context.settings.columns_use_outbox_relays(),
+                    ),
                 ) {
                     add_result.process(
                         app_context.ndb,
@@ -735,15 +761,6 @@ fn render_damus_mobile(
 
                 ProcessNavResult::PfpClicked => {
                     app_action = Some(AppAction::ToggleChrome);
-                }
-
-                ProcessNavResult::SwitchAccount(pubkey) => {
-                    // Add as pubkey-only account if not already present
-                    let kp = enostr::Keypair::only_pubkey(pubkey);
-                    let _ = app_ctx.accounts.add_account(kp);
-
-                    app_ctx.select_account(&pubkey);
-                    setup_selected_account_timeline_subs(&mut app.timeline_cache, app_ctx);
                 }
 
                 ProcessNavResult::ExternalNoteAction(note_action) => {
@@ -976,7 +993,7 @@ fn timelines_view(
     // StripBuilder rendering
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
-        save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
+        save_cols = save_cols || action.process(app, ctx);
     }
 
     let mut app_action: Option<AppAction> = None;
@@ -990,15 +1007,6 @@ fn timelines_view(
 
                 ProcessNavResult::PfpClicked => {
                     app_action = Some(AppAction::ToggleChrome);
-                }
-
-                ProcessNavResult::SwitchAccount(pubkey) => {
-                    // Add as pubkey-only account if not already present
-                    let kp = enostr::Keypair::only_pubkey(pubkey);
-                    let _ = ctx.accounts.add_account(kp);
-
-                    ctx.select_account(&pubkey);
-                    setup_selected_account_timeline_subs(&mut app.timeline_cache, ctx);
                 }
 
                 ProcessNavResult::ExternalNoteAction(note_action) => {

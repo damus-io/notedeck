@@ -1,9 +1,71 @@
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 
 use crate::relay::{
     indexed_queue::IndexedQueue, transparent::TransparentData, OutboxSubId, OutboxSubscriptions,
     RelayRoutingPreference, RelayType,
 };
+
+/// Owns coordinator route assignment plus transparent demotion indexes.
+#[derive(Default)]
+pub(super) struct RouteIndex {
+    routes: HashMap<OutboxSubId, RelayType>,
+    transparent: TransparentRoutingState,
+}
+
+impl RouteIndex {
+    /// Sets a route to transparent and updates demotion indexes.
+    pub(super) fn set_transparent_route(
+        &mut self,
+        id: OutboxSubId,
+        policy: RelayRoutingPreference,
+    ) {
+        self.routes.insert(id, RelayType::Transparent);
+        self.transparent.enter(id, policy);
+    }
+
+    /// Sets a route to compaction and removes transparent index membership.
+    pub(super) fn set_compaction_route(&mut self, id: OutboxSubId) {
+        self.routes.insert(id, RelayType::Compaction);
+        self.transparent.exit(id);
+    }
+
+    /// Clears route ownership and removes transparent index membership.
+    pub(super) fn clear_route(&mut self, id: OutboxSubId) {
+        self.routes.remove(&id);
+        self.transparent.exit(id);
+    }
+
+    /// Rebuilds demotion indexes from current dedicated relay state.
+    pub(super) fn rebuild_from_dedicated(
+        &mut self,
+        subs: &OutboxSubscriptions,
+        transparent: &TransparentData,
+    ) {
+        self.transparent.clear_index();
+        for id in transparent.request_ids() {
+            let policy = subs.routing_preference(&id).unwrap_or_default();
+            self.transparent.enter(id, policy);
+        }
+    }
+
+    /// Returns transparent downgrade victims ordered from least to most
+    /// disruptive: no-preference first, then preferred, then required.
+    pub(super) fn limit_reduction_candidates(&self) -> Vec<OutboxSubId> {
+        self.transparent.limit_reduction_candidates()
+    }
+
+    pub(super) fn route_type(&self, id: &OutboxSubId) -> Option<RelayType> {
+        self.routes.get(id).copied()
+    }
+
+    pub(super) fn route_ids(&self) -> Vec<OutboxSubId> {
+        self.routes.keys().copied().collect()
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&OutboxSubId, &RelayType)> {
+        self.routes.iter()
+    }
+}
 
 /// Tracks transparent routing and demotion candidate order for coordinator decisions.
 ///
@@ -13,7 +75,7 @@ use crate::relay::{
 /// - `RequireDedicated` subscriptions are tracked for downgrade selection but
 ///   never considered demotable during normal transparent pressure handling.
 #[derive(Default)]
-pub(super) struct TransparentRoutingState {
+struct TransparentRoutingState {
     indexed_class: HashMap<OutboxSubId, RelayRoutingPreference>,
     required: IndexedQueue<OutboxSubId>,
     preferred: IndexedQueue<OutboxSubId>,
@@ -21,97 +83,9 @@ pub(super) struct TransparentRoutingState {
 }
 
 impl TransparentRoutingState {
-    /// Sets a route to transparent and updates demotion indexes.
-    pub(super) fn set_transparent_route(
-        &mut self,
-        routes: &mut HashMap<OutboxSubId, RelayType>,
-        subs: &OutboxSubscriptions,
-        id: OutboxSubId,
-    ) {
-        routes.insert(id, RelayType::Transparent);
-        let policy = subs.routing_preference(&id).unwrap_or_default();
-        self.enter(id, policy);
-    }
-
-    /// Sets a route to compaction and removes transparent index membership.
-    pub(super) fn set_compaction_route(
-        &mut self,
-        routes: &mut HashMap<OutboxSubId, RelayType>,
-        id: OutboxSubId,
-    ) {
-        routes.insert(id, RelayType::Compaction);
-        self.exit(id);
-    }
-
-    /// Clears route ownership and removes transparent index membership.
-    pub(super) fn clear_route(
-        &mut self,
-        routes: &mut HashMap<OutboxSubId, RelayType>,
-        id: OutboxSubId,
-    ) {
-        routes.remove(&id);
-        self.exit(id);
-    }
-
-    /// Records a transparent unsubscribe without changing route ownership.
-    pub(super) fn note_transparent_unsubscribe(&mut self, id: OutboxSubId) {
-        self.exit(id);
-    }
-
-    /// Rebuilds demotion indexes from current transparent relay state.
-    pub(super) fn rebuild_from_transparent(
-        &mut self,
-        subs: &OutboxSubscriptions,
-        transparent: &TransparentData,
-    ) {
-        self.clear_index();
-        for id in transparent.request_ids() {
-            let policy = subs.routing_preference(&id).unwrap_or_default();
-            self.enter(id, policy);
-        }
-    }
-
-    /// Picks a demotion candidate, preferring non-preferred transparent routes first.
-    pub(super) fn pick_demotable(
-        &mut self,
-        subs: &OutboxSubscriptions,
-        incoming: OutboxSubId,
-        demoted_in_current_pass: &HashSet<OutboxSubId>,
-    ) -> Option<OutboxSubId> {
-        self.pick_from_preference(
-            RelayRoutingPreference::NoPreference,
-            subs,
-            incoming,
-            demoted_in_current_pass,
-        )
-        .or_else(|| {
-            self.pick_from_preference(
-                RelayRoutingPreference::PreferDedicated,
-                subs,
-                incoming,
-                demoted_in_current_pass,
-            )
-        })
-    }
-
-    /// Picks the oldest non-preferred demotion candidate.
-    pub(super) fn pick_non_preferred(
-        &mut self,
-        subs: &OutboxSubscriptions,
-        incoming: OutboxSubId,
-        demoted_in_current_pass: &HashSet<OutboxSubId>,
-    ) -> Option<OutboxSubId> {
-        self.pick_from_preference(
-            RelayRoutingPreference::NoPreference,
-            subs,
-            incoming,
-            demoted_in_current_pass,
-        )
-    }
-
     /// Returns transparent downgrade victims ordered from least to most
     /// disruptive: no-preference first, then preferred, then required.
-    pub(super) fn limit_reduction_candidates(&self) -> Vec<OutboxSubId> {
+    fn limit_reduction_candidates(&self) -> Vec<OutboxSubId> {
         self.non_preferred
             .iter()
             .chain(self.preferred.iter())
@@ -151,49 +125,6 @@ impl TransparentRoutingState {
         self.non_preferred.clear();
     }
 
-    fn pick_from_preference(
-        &mut self,
-        expected_policy: RelayRoutingPreference,
-        subs: &OutboxSubscriptions,
-        incoming: OutboxSubId,
-        demoted_in_current_pass: &HashSet<OutboxSubId>,
-    ) -> Option<OutboxSubId> {
-        let queue_len = self.queue_len(expected_policy);
-        for _ in 0..queue_len {
-            let Some(sub_id) = self.queue_mut(expected_policy).pop_front() else {
-                break;
-            };
-
-            let current_policy = subs.routing_preference(&sub_id).unwrap_or_default();
-            if current_policy != expected_policy {
-                // Routing preference can change after an entry was indexed. Repair the
-                // queue lazily here so writes stay O(1) and demotion selection amortizes
-                // any stale classification cleanup across future picks.
-                self.indexed_class.insert(sub_id, current_policy);
-                self.queue_mut(current_policy).push_back_if_missing(sub_id);
-                continue;
-            }
-
-            if sub_id == incoming || demoted_in_current_pass.contains(&sub_id) {
-                self.queue_mut(expected_policy).push_back_if_missing(sub_id);
-                continue;
-            }
-
-            self.indexed_class.remove(&sub_id);
-            return Some(sub_id);
-        }
-
-        None
-    }
-
-    fn queue(&self, policy: RelayRoutingPreference) -> &IndexedQueue<OutboxSubId> {
-        match policy {
-            RelayRoutingPreference::RequireDedicated => &self.required,
-            RelayRoutingPreference::PreferDedicated => &self.preferred,
-            RelayRoutingPreference::NoPreference => &self.non_preferred,
-        }
-    }
-
     fn queue_mut(&mut self, policy: RelayRoutingPreference) -> &mut IndexedQueue<OutboxSubId> {
         match policy {
             RelayRoutingPreference::RequireDedicated => &mut self.required,
@@ -202,16 +133,9 @@ impl TransparentRoutingState {
         }
     }
 
-    fn queue_len(&self, policy: RelayRoutingPreference) -> usize {
-        self.queue(policy).len()
-    }
-
     #[cfg(test)]
     fn demotable_queue_lengths(&self) -> (usize, usize) {
-        (
-            self.queue_len(RelayRoutingPreference::NoPreference),
-            self.queue_len(RelayRoutingPreference::PreferDedicated),
-        )
+        (self.non_preferred.len(), self.preferred.len())
     }
 
     #[cfg(test)]
@@ -223,90 +147,50 @@ impl TransparentRoutingState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::test_utils::insert_sub_with_policy_for_relay;
-    use hashbrown::{HashMap, HashSet};
 
     #[test]
-    fn required_routes_are_not_enqueued_for_demotion() {
-        let mut state = TransparentRoutingState::default();
-        let mut routes = HashMap::new();
-        let mut subs = OutboxSubscriptions::default();
+    fn limit_reduction_candidates_include_required_after_demotable_routes() {
+        let mut state = RouteIndex::default();
         let required = OutboxSubId(1);
         let preferred = OutboxSubId(2);
-        insert_sub_with_policy_for_relay(
-            &mut subs,
-            required,
-            RelayRoutingPreference::RequireDedicated,
-            "wss://routing-state.example.com",
-        );
-        insert_sub_with_policy_for_relay(
-            &mut subs,
-            preferred,
-            RelayRoutingPreference::PreferDedicated,
-            "wss://routing-state.example.com",
-        );
 
-        state.set_transparent_route(&mut routes, &subs, required);
-        state.set_transparent_route(&mut routes, &subs, preferred);
+        state.set_transparent_route(required, RelayRoutingPreference::RequireDedicated);
+        state.set_transparent_route(preferred, RelayRoutingPreference::PreferDedicated);
 
-        let demoted = state.pick_demotable(&subs, OutboxSubId(99), &HashSet::new());
-        assert_eq!(demoted, Some(preferred));
-        assert_ne!(demoted, Some(required));
+        assert_eq!(
+            state.limit_reduction_candidates(),
+            vec![preferred, required]
+        );
     }
 
     #[test]
     fn policy_change_reindexes_existing_transparent_route_immediately() {
-        let mut state = TransparentRoutingState::default();
-        let mut routes = HashMap::new();
-        let mut subs = OutboxSubscriptions::default();
+        let mut state = RouteIndex::default();
         let id = OutboxSubId(7);
-        insert_sub_with_policy_for_relay(
-            &mut subs,
-            id,
-            RelayRoutingPreference::RequireDedicated,
-            "wss://routing-state.example.com",
-        );
 
-        state.set_transparent_route(&mut routes, &subs, id);
-        assert_eq!(state.demotable_queue_lengths(), (0, 0));
-        assert!(state.has_indexed_entry(id));
+        state.set_transparent_route(id, RelayRoutingPreference::RequireDedicated);
+        assert_eq!(state.transparent.demotable_queue_lengths(), (0, 0));
+        assert!(state.transparent.has_indexed_entry(id));
 
-        subs.get_mut(&id).unwrap().routing_preference = RelayRoutingPreference::PreferDedicated;
-        state.set_transparent_route(&mut routes, &subs, id);
+        state.set_transparent_route(id, RelayRoutingPreference::PreferDedicated);
 
-        assert_eq!(state.demotable_queue_lengths(), (0, 1));
-        assert!(state.has_indexed_entry(id));
-        let demoted = state.pick_demotable(&subs, OutboxSubId(100), &HashSet::new());
-        assert_eq!(demoted, Some(id));
+        assert_eq!(state.transparent.demotable_queue_lengths(), (0, 1));
+        assert!(state.transparent.has_indexed_entry(id));
+        assert_eq!(state.limit_reduction_candidates(), vec![id]);
     }
 
     #[test]
     fn exit_removes_queue_entry_immediately() {
-        let mut state = TransparentRoutingState::default();
-        let mut routes = HashMap::new();
-        let mut subs = OutboxSubscriptions::default();
+        let mut state = RouteIndex::default();
         let stale = OutboxSubId(11);
         let active = OutboxSubId(12);
-        insert_sub_with_policy_for_relay(
-            &mut subs,
-            stale,
-            RelayRoutingPreference::PreferDedicated,
-            "wss://routing-state.example.com",
-        );
-        insert_sub_with_policy_for_relay(
-            &mut subs,
-            active,
-            RelayRoutingPreference::PreferDedicated,
-            "wss://routing-state.example.com",
-        );
 
-        state.set_transparent_route(&mut routes, &subs, stale);
-        state.set_transparent_route(&mut routes, &subs, active);
-        state.clear_route(&mut routes, stale);
+        state.set_transparent_route(stale, RelayRoutingPreference::PreferDedicated);
+        state.set_transparent_route(active, RelayRoutingPreference::PreferDedicated);
+        state.clear_route(stale);
 
-        assert_eq!(state.demotable_queue_lengths(), (0, 1));
-        assert!(!state.has_indexed_entry(stale));
-        let demoted = state.pick_demotable(&subs, OutboxSubId(101), &HashSet::new());
-        assert_eq!(demoted, Some(active));
+        assert_eq!(state.transparent.demotable_queue_lengths(), (0, 1));
+        assert!(!state.transparent.has_indexed_entry(stale));
+        assert_eq!(state.limit_reduction_candidates(), vec![active]);
     }
 }

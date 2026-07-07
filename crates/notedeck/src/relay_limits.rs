@@ -1,33 +1,13 @@
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use enostr::{Nip11FetchRequest, Nip11LimitationsRaw, NormRelayUrl};
+use enostr::{Nip11LimitationsRaw, NormRelayUrl};
 use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use crate::jobs::{JobCache, JobOutput, JobPackage, JobRun, RunType};
+use crate::network::HyperHttpClient;
 
 const NIP11_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Relay limit background job cache.
-pub type RelayLimitJobs = JobCache<RelayLimitJobKind, RelayLimitJobResult>;
-
-/// Sender for relay limit jobs.
-pub type RelayLimitJobSender = Sender<JobPackage<RelayLimitJobKind, RelayLimitJobResult>>;
-
-/// Supported relay limit job kinds.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum RelayLimitJobKind {
-    Nip11Fetch,
-}
-
-/// Result payload emitted by a completed relay limit job.
-#[derive(Debug, Clone)]
-pub struct RelayLimitJobResult {
-    pub relay: NormRelayUrl,
-    pub result: Result<Nip11LimitationsRaw, Nip11FetchError>,
-}
 
 /// Errors while downloading or parsing relay NIP-11 documents.
 #[derive(Debug, Error, Clone)]
@@ -51,31 +31,14 @@ struct Nip11Document {
     limitation: Option<Nip11LimitationsRaw>,
 }
 
-/// Queue a NIP-11 fetch job for the provided relay request.
-pub fn enqueue_nip11_fetch(sender: &RelayLimitJobSender, req: Nip11FetchRequest) {
-    let id = req.relay.to_string();
-    let relay = req.relay;
-    let run = JobRun::Async(Box::pin(async move {
-        let result = fetch_nip11_raw_limits(&relay).await;
-        JobOutput::complete(RelayLimitJobResult { relay, result })
-    }));
-
-    if let Err(error) = sender.send(JobPackage::new(
-        id,
-        RelayLimitJobKind::Nip11Fetch,
-        RunType::Output(run),
-    )) {
-        tracing::error!("failed to enqueue relay NIP-11 job: {error}");
-    }
-}
-
-async fn fetch_nip11_raw_limits(
+pub(crate) async fn fetch_nip11_raw_limits(
+    http_client: &HyperHttpClient,
     relay: &NormRelayUrl,
 ) -> Result<Nip11LimitationsRaw, Nip11FetchError> {
     let http_url = relay_url_to_http(relay)?;
     let response = tokio::time::timeout(
         NIP11_FETCH_TIMEOUT,
-        crate::media::network::http_req_accept(&http_url, "application/nostr+json"),
+        http_client.req_accept(&http_url, "application/nostr+json"),
     )
     .await
     .map_err(|_| Nip11FetchError::Timeout(NIP11_FETCH_TIMEOUT))?
@@ -206,7 +169,8 @@ mod tests {
         .await;
         let relay = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid relay");
 
-        let result = fetch_nip11_raw_limits(&relay).await;
+        let http_client = HyperHttpClient::new();
+        let result = fetch_nip11_raw_limits(&http_client, &relay).await;
         server.await.expect("server finished");
 
         assert!(matches!(result, Err(Nip11FetchError::HttpStatus(503))));
@@ -225,7 +189,8 @@ mod tests {
         .await;
         let relay = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid relay");
 
-        let result = fetch_nip11_raw_limits(&relay).await;
+        let http_client = HyperHttpClient::new();
+        let result = fetch_nip11_raw_limits(&http_client, &relay).await;
         server.await.expect("server finished");
 
         let raw = result.expect("successful parse");
@@ -246,7 +211,8 @@ mod tests {
         .await;
         let relay = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid relay");
 
-        let result = fetch_nip11_raw_limits(&relay).await;
+        let http_client = HyperHttpClient::new();
+        let result = fetch_nip11_raw_limits(&http_client, &relay).await;
         server.await.expect("server finished");
 
         assert!(matches!(result, Err(Nip11FetchError::Json(_))));
@@ -265,7 +231,8 @@ mod tests {
         .await;
         let relay = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid relay");
 
-        let result = fetch_nip11_raw_limits(&relay).await;
+        let http_client = HyperHttpClient::new();
+        let result = fetch_nip11_raw_limits(&http_client, &relay).await;
         server.await.expect("server finished");
 
         let raw = result.expect("successful parse");
@@ -284,7 +251,8 @@ mod tests {
         drop(listener);
 
         let relay = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid relay");
-        let result = fetch_nip11_raw_limits(&relay).await;
+        let http_client = HyperHttpClient::new();
+        let result = fetch_nip11_raw_limits(&http_client, &relay).await;
         assert!(matches!(result, Err(Nip11FetchError::Http(_))));
     }
 }

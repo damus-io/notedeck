@@ -1,6 +1,5 @@
 use crate::{
     error::Error,
-    scoped_sub_owner_keys::timeline_remote_owner_key,
     timeline::{
         kind::{
             hashtag_filter_state, people_list_note_filter, AlgoTimeline, ListKind, PeopleListRef,
@@ -16,17 +15,23 @@ use notedeck::{
     contacts::{hybrid_contacts_filter, hybrid_last_per_pubkey_filter},
     filter::{self},
     is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
-    FilterState, Localization, NoteCache, NoteRef, ScopedSubApi, ScopedSubIdentity, SubConfig,
-    SubKey, UnknownIds,
+    FilterState, Localization, NoteCache, NoteRef, ScopedSubApi, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
-use enostr::{Pubkey, RelayRoutingPreference};
+use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
-use std::rc::Rc;
-use std::{cell::RefCell, collections::HashSet};
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use tracing::{debug, error, info, warn};
+
+const TIMELINE_LOCAL_INGEST_BUDGET: Duration = Duration::from_millis(2);
+const TIMELINE_LOCAL_POLL_BATCH: u32 = 1;
 
 pub mod cache;
 pub mod kind;
@@ -40,78 +45,22 @@ mod unit;
 pub use cache::TimelineCache;
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
+pub use sub::RemoteSubscriptionPolicy;
+pub(crate) use sub::{
+    drop_timeline_remote_owner, ensure_remote_timeline_subscription,
+    update_remote_timeline_subscription, update_remote_timeline_subscription_for_account,
+};
 pub use timeline_units::{MergeResponse, TimelineUnits, UnknownPks};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, ZapUnit};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum TimelineScopedSub {
-    RemoteByKind,
-}
-
-fn timeline_remote_sub_key(kind: &TimelineKind) -> SubKey {
-    SubKey::builder(TimelineScopedSub::RemoteByKind)
-        .with(kind)
-        .finish()
-}
-
-fn timeline_remote_sub_config(
-    remote_filters: Vec<Filter>,
-    routing_preference: RelayRoutingPreference,
-) -> SubConfig {
-    SubConfig::live(remote_filters)
-        .routing_preference(routing_preference)
-        .build()
-}
-
-pub(crate) fn ensure_remote_timeline_subscription(
-    timeline: &mut Timeline,
-    account_pk: Pubkey,
-    remote_filters: Vec<Filter>,
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
-) {
-    let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
-    let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
-    let config = timeline_remote_sub_config(
-        remote_filters,
-        if matches!(&timeline.kind, TimelineKind::Notifications(_)) {
-            RelayRoutingPreference::RequireDedicated
-        } else {
-            RelayRoutingPreference::default()
-        },
-    );
-    let _ = scoped_subs.ensure_sub(identity, config);
-    timeline.subscription.mark_remote_registered(account_pk);
-}
-
-pub(crate) fn update_remote_timeline_subscription(
-    timeline: &mut Timeline,
-    remote_filters: Vec<Filter>,
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
-) {
-    let owner = timeline_remote_owner_key(scoped_subs.selected_account_pubkey(), &timeline.kind);
-    let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
-    let config = timeline_remote_sub_config(
-        remote_filters,
-        if matches!(&timeline.kind, TimelineKind::Notifications(_)) {
-            RelayRoutingPreference::RequireDedicated
-        } else {
-            RelayRoutingPreference::default()
-        },
-    );
-    let _ = scoped_subs.set_sub(identity, config);
-    timeline
-        .subscription
-        .mark_remote_registered(scoped_subs.selected_account_pubkey());
-}
-
-pub fn drop_timeline_remote_owner(
-    timeline: &Timeline,
-    account_pk: Pubkey,
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
-) {
-    let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
-    let _ = scoped_subs.drop_owner(owner);
-}
+#[cfg(test)]
+use crate::timeline::sub::{
+    timeline_remote_sub_declaration, timeline_remote_sub_key, TimelineScopedSub,
+};
+#[cfg(test)]
+use enostr::RelayRoutingPreference;
+#[cfg(test)]
+use notedeck::SubConfig;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default, PartialOrd, Ord)]
 pub enum ViewFilter {
@@ -328,6 +277,8 @@ pub struct Timeline {
     pub views: Vec<TimelineTab>,
     pub selected_view: usize,
     pub seen_latest_notes: bool,
+    /// Last remote filter set declared for this timeline's scoped subscription.
+    remote_subscription_filters: Option<Vec<Filter>>,
 
     pub subscription: TimelineSub,
     pub enable_front_insert: bool,
@@ -377,13 +328,13 @@ impl Timeline {
         ))
     }
 
-    /// Create a hashtag timeline with ready filters.
+    /// Create a hashtag timeline with the canonical hashtag filter state.
     pub fn hashtag(hashtag: Vec<String>) -> Self {
-        let filter_state = hashtag_filter_state(&hashtag);
+        let filter = hashtag_filter_state(&hashtag);
 
         Timeline::new(
             TimelineKind::Hashtag(hashtag),
-            filter_state,
+            filter,
             TimelineTab::only_notes_and_replies(),
         )
     }
@@ -411,9 +362,21 @@ impl Timeline {
             selected_view,
             enable_front_insert,
             seen_latest_notes: false,
+            remote_subscription_filters: None,
             contact_list_timestamp: None,
             initial_load: InitialLoadState::Pending,
         }
+    }
+
+    /// Remote filters for re-declaring the active scoped subscription.
+    fn remote_filters_for_subscription_refresh(&self) -> Option<Vec<Filter>> {
+        self.remote_subscription_filters.clone().or_else(|| {
+            let FilterState::Ready(filter) = &self.filter else {
+                return None;
+            };
+
+            Some(filter.remote().to_vec())
+        })
     }
 
     pub fn current_view(&self) -> &TimelineTab {
@@ -472,54 +435,53 @@ impl Timeline {
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         notes: &[NoteRef],
-    ) -> Option<UnknownPksOwned> {
-        let filters = {
-            let views = &self.views;
-            let filters: Vec<fn(&CachedNote, &Note) -> bool> =
-                views.iter().map(|v| v.filter.filter()).collect();
-            filters
-        };
-
+    ) -> InsertNewResult {
         let now = unix_time_secs();
-        let mut unknown_pks = HashSet::new();
+        let mut payloads = Vec::with_capacity(notes.len());
+        let mut admitted_note_refs = Vec::with_capacity(notes.len());
         for note_ref in notes {
-            profiling::scope!("inserting notes");
             if is_future_timestamp(note_ref.created_at, now) {
                 continue;
             }
 
-            for (view, filter) in filters.iter().enumerate() {
-                if let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) {
-                    if filter(
-                        note_cache.cached_note_or_insert_mut(note_ref.key, &note),
-                        &note,
-                    ) {
-                        if let Some(resp) = self.views[view]
-                            .units
-                            .merge_new_notes(
-                                vec![&NotePayload {
-                                    note,
-                                    key: note_ref.key,
-                                }],
-                                ndb,
-                                txn,
-                            )
-                            .tl_response
-                        {
-                            let pks: HashSet<Pubkey> = resp
-                                .unknown_pks
-                                .into_iter()
-                                .map(|r| Pubkey::new(*r))
-                                .collect();
+            let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) else {
+                continue;
+            };
+            admitted_note_refs.push(*note_ref);
+            payloads.push(NotePayload {
+                note,
+                key: note_ref.key,
+            });
+        }
 
-                            unknown_pks.extend(pks);
-                        }
-                    }
+        let mut unknown_pks = HashSet::new();
+        for view in &mut self.views {
+            let should_include = view.filter.filter();
+            let mut filtered_payloads = Vec::with_capacity(payloads.len());
+            for payload in &payloads {
+                let cached_note = note_cache.cached_note_or_insert_mut(payload.key, &payload.note);
+                if should_include(cached_note, &payload.note) {
+                    filtered_payloads.push(payload);
                 }
+            }
+
+            let response = view.units.merge_new_notes(filtered_payloads, ndb, txn);
+
+            if let Some(resp) = response.tl_response {
+                let pks: HashSet<Pubkey> = resp
+                    .unknown_pks
+                    .into_iter()
+                    .map(|r| Pubkey::new(*r))
+                    .collect();
+
+                unknown_pks.extend(pks);
             }
         }
 
-        Some(UnknownPksOwned { pks: unknown_pks })
+        InsertNewResult {
+            note_refs: admitted_note_refs,
+            pks: unknown_pks,
+        }
     }
 
     /// The main function used for inserting notes into timelines. Handles
@@ -535,9 +497,21 @@ impl Timeline {
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<bool> {
+        let payloads = self.note_payloads(new_note_ids, ndb, txn);
+        for payload in &payloads {
+            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &payload.note);
+        }
+        self.insert_payloads(&payloads, ndb, txn, unknown_ids, note_cache, reversed)
+    }
+
+    fn note_payloads<'txn>(
+        &self,
+        new_note_ids: &[NoteKey],
+        ndb: &Ndb,
+        txn: &'txn Transaction,
+    ) -> Vec<NotePayload<'txn>> {
         let mut payloads: Vec<NotePayload> = Vec::with_capacity(new_note_ids.len());
         let now = unix_time_secs();
-        let mut any_front_insert = false;
 
         for key in new_note_ids {
             let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
@@ -554,17 +528,27 @@ impl Timeline {
                 continue;
             }
 
-            // Ensure that unknown ids are captured when inserting notes
-            // into the timeline
-            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
-
             payloads.push(NotePayload { note, key: *key });
         }
+
+        payloads
+    }
+
+    fn insert_payloads<'txn>(
+        &mut self,
+        payloads: &[NotePayload<'txn>],
+        ndb: &Ndb,
+        txn: &'txn Transaction,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+        reversed: bool,
+    ) -> Result<bool> {
+        let mut any_front_insert = false;
 
         for view in &mut self.views {
             let should_include = view.filter.filter();
             let mut filtered_payloads = Vec::with_capacity(payloads.len());
-            for payload in &payloads {
+            for payload in payloads {
                 let cached_note = note_cache.cached_note_or_insert(payload.key, &payload.note);
 
                 if should_include(cached_note, &payload.note) {
@@ -612,29 +596,30 @@ impl Timeline {
             .get_local(account_pk)
             .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
 
-        let new_note_ids = {
-            profiling::scope!("big ndb poll");
-            ndb.poll_for_notes(sub, 500)
-        };
+        let start = Instant::now();
+        let mut inserted = Vec::new();
+        let mut any_front_insert = false;
 
-        if new_note_ids.is_empty() {
-            return Ok(vec![]);
-        };
+        loop {
+            if !inserted.is_empty() && start.elapsed() >= TIMELINE_LOCAL_INGEST_BUDGET {
+                break;
+            }
 
-        let any_front_insert =
-            self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)?;
+            let new_note_ids = ndb.poll_for_notes(sub, TIMELINE_LOCAL_POLL_BATCH);
+            if new_note_ids.is_empty() {
+                break;
+            }
+
+            any_front_insert |=
+                self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)?;
+            inserted.extend(new_note_ids);
+        }
 
         if any_front_insert {
-            // front inserts (not merged insert) typically mean we have something new to notify on,
-            // otherwise its likely just an old note that slid into the notification timeline
-            // somewhere
-            //
-            // While this isn't perfect, since we might have a notification that slid in just
-            // behind the latest, it is a pragmatic heuristic for now.
             self.seen_latest_notes = false;
         }
 
-        Ok(new_note_ids)
+        Ok(inserted)
     }
 
     /// Invalidate the timeline, forcing a rebuild on the next check.
@@ -647,23 +632,40 @@ impl Timeline {
     /// [`Self::set_all_states`] can update them during the rebuild.
     pub fn invalidate(&mut self) {
         self.filter = FilterState::NeedsRemote;
+        self.remote_subscription_filters = None;
         self.contact_list_timestamp = None;
         self.initial_load = InitialLoadState::Pending;
     }
 }
 
-pub struct UnknownPksOwned {
-    pub pks: HashSet<Pubkey>,
+#[must_use = "process should be used on this result"]
+#[derive(Debug, Default)]
+pub struct InsertNewResult {
+    note_refs: Vec<NoteRef>,
+    pks: HashSet<Pubkey>,
 }
 
-impl UnknownPksOwned {
-    pub fn process(&self, ndb: &Ndb, txn: &Transaction, unknown_ids: &mut UnknownIds) {
+impl InsertNewResult {
+    pub fn extend(&mut self, next: Self) {
+        self.note_refs.extend(next.note_refs);
+        self.pks.extend(next.pks);
+    }
+
+    pub fn process(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+    ) {
+        UnknownIds::update_from_note_refs(txn, ndb, unknown_ids, note_cache, &self.note_refs);
         self.pks
             .iter()
             .for_each(|p| unknown_ids.add_pubkey_if_missing(ndb, txn, p));
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MergeKind {
     FrontInsert,
     Spliced,
@@ -710,34 +712,44 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, Merg
 ///
 /// We do this by maintaining this sub_id in the filter state, even when
 /// in the ready state. See: [`FilterReady`]
-pub fn setup_new_timeline(
+pub(crate) fn setup_new_timeline(
     timeline: &mut Timeline,
     ndb: &Ndb,
     txn: &Transaction,
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
+    scoped_subs: &mut ScopedSubApi<'_>,
     since_optimize: bool,
     accounts: &Accounts,
+    remote_policy: RemoteSubscriptionPolicy,
 ) {
     let account_pk = *accounts.selected_account_pubkey();
 
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, scoped_subs, timeline, accounts) {
+    if is_timeline_ready(ndb, scoped_subs, timeline, accounts, remote_policy) {
         if let Err(err) = setup_initial_timeline(ndb, timeline, account_pk) {
             error!("setup_new_timeline: {err}");
         }
     }
 
-    send_initial_timeline_filter(since_optimize, ndb, txn, timeline, accounts, scoped_subs);
+    send_initial_timeline_filter(
+        since_optimize,
+        ndb,
+        txn,
+        timeline,
+        accounts,
+        scoped_subs,
+        remote_policy,
+    );
     timeline.subscription.increment(account_pk);
 }
 
-pub fn send_initial_timeline_filter(
+pub(crate) fn send_initial_timeline_filter(
     can_since_optimize: bool,
     ndb: &Ndb,
     txn: &Transaction,
     timeline: &mut Timeline,
     accounts: &Accounts,
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
+    scoped_subs: &mut ScopedSubApi<'_>,
+    remote_policy: RemoteSubscriptionPolicy,
 ) {
     match &timeline.filter {
         FilterState::Broken(err) => {
@@ -783,7 +795,7 @@ pub fn send_initial_timeline_filter(
                 filter
             }).collect();
 
-            update_remote_timeline_subscription(timeline, new_filters, scoped_subs);
+            update_remote_timeline_subscription(timeline, new_filters, scoped_subs, remote_policy);
         }
 
         // we need some data first
@@ -814,7 +826,7 @@ pub fn fetch_contact_list(timeline: &mut Timeline, accounts: &Accounts) {
     timeline.filter = new_filter_state;
 }
 
-pub fn fetch_people_list(ndb: &Ndb, txn: &Transaction, timeline: &mut Timeline) {
+pub(crate) fn fetch_people_list(ndb: &Ndb, txn: &Transaction, timeline: &mut Timeline) {
     if matches!(&timeline.filter, FilterState::Ready(_)) {
         return;
     }
@@ -887,11 +899,12 @@ pub fn setup_initial_nostrdb_subs(
 /// example, when we have to fetch a contact list before we do the actual
 /// following list query.
 #[profiling::function]
-pub fn is_timeline_ready(
+pub(crate) fn is_timeline_ready(
     ndb: &Ndb,
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
+    scoped_subs: &mut ScopedSubApi<'_>,
     timeline: &mut Timeline,
     accounts: &Accounts,
+    remote_policy: RemoteSubscriptionPolicy,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
@@ -901,7 +914,13 @@ pub fn is_timeline_ready(
             && !timeline.subscription.is_remote_registered(&account_pk)
         {
             let remote_filters = filter.remote().to_vec();
-            ensure_remote_timeline_subscription(timeline, account_pk, remote_filters, scoped_subs);
+            ensure_remote_timeline_subscription(
+                timeline,
+                account_pk,
+                remote_filters,
+                scoped_subs,
+                remote_policy,
+            );
         }
         return true;
     }
@@ -953,7 +972,6 @@ pub fn is_timeline_ready(
         let txn = Transaction::new(ndb).expect("txn");
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
         let add_pk = timeline.kind.pubkey().map(|pk| pk.bytes());
-
         hybrid_contacts_filter(&note, add_pk, with_hashtags)
     };
 
@@ -981,7 +999,12 @@ pub fn is_timeline_ready(
             info!("Found list note! Setting up remote timeline query");
             timeline.filter = FilterState::ready_hybrid(filter.clone());
 
-            update_remote_timeline_subscription(timeline, filter.remote().to_vec(), scoped_subs);
+            update_remote_timeline_subscription(
+                timeline,
+                filter.remote().to_vec(),
+                scoped_subs,
+                remote_policy,
+            );
             true
         }
     }
@@ -996,196 +1019,473 @@ fn people_list_ref(kind: &TimelineKind) -> Option<&PeopleListRef> {
 }
 
 #[cfg(test)]
-mod remote_tests {
+mod tests {
     use super::*;
-    use enostr::{
-        Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool, OutboxSessionHandler,
-        RelayUrlPkgs,
-    };
-    use hashbrown::HashSet;
-    use nostrdb::{Config, Transaction};
-    use notedeck::{EguiWakeup, ScopedSubEoseStatus, ScopedSubsState, FALLBACK_PUBKEY};
-    use std::time::{Duration, UNIX_EPOCH};
+    use enostr::{FullKeypair, NormRelayUrl};
+    use nostrdb::{NoteBuilder, Transaction};
+    use notedeck::{Accounts, Notedeck, ScopedSubApi};
+    use serde_json::Value;
     use tempfile::TempDir;
 
     struct TimelineRemoteHarness {
         _tmp: TempDir,
-        _ndb: Ndb,
-        accounts: Accounts,
-        _unknown_ids: UnknownIds,
-        scoped_sub_state: ScopedSubsState,
-        pool: OutboxPool,
+        notedeck: Notedeck,
     }
 
     impl TimelineRemoteHarness {
         fn with_forced_relays(forced_relays: Vec<String>) -> Self {
             let tmp = TempDir::new().expect("tmp dir");
-            let mut ndb =
-                Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
-            let txn = Transaction::new(&ndb).expect("txn");
-            let mut unknown_ids = UnknownIds::default();
-            let accounts = Accounts::new(
-                None,
-                forced_relays,
-                Vec::new(),
-                FALLBACK_PUBKEY(),
-                &mut ndb,
-                &txn,
-                &mut unknown_ids,
-            );
+            let ui_ctx = egui::Context::default();
+            let mut args = vec!["notedeck".to_owned(), "--testrunner".to_owned()];
+            for relay in forced_relays {
+                args.push("--relay".to_owned());
+                args.push(relay);
+            }
+            let notedeck = Notedeck::init(&ui_ctx, tmp.path(), &args);
 
             Self {
                 _tmp: tmp,
-                _ndb: ndb,
-                accounts,
-                _unknown_ids: unknown_ids,
-                scoped_sub_state: ScopedSubsState::default(),
-                pool: OutboxPool::default(),
+                notedeck,
             }
         }
-    }
 
-    /// Saturates one relay to `max_subscriptions = 1`, then promotes a
-    /// `NoPreference` subscription into the live compaction lane by first
-    /// occupying the dedicated slot with a `PreferDedicated` request and then
-    /// unsubscribing it.
-    ///
-    /// Dropping sessions here can build `WebsocketConn` through relay
-    /// coordination; tests using this helper need a Tokio runtime when the
-    /// ewebsock Tokio backend is used.
-    fn install_active_compaction_lane(
-        pool: &mut OutboxPool,
-        relay: &NormRelayUrl,
-    ) -> enostr::OutboxSubId {
-        let relay_pkgs = |routing_preference| {
-            RelayUrlPkgs::with_preference(HashSet::from([relay.clone()]), routing_preference)
-        };
-
-        let preferred_id = {
-            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
-            session.subscribe(
-                vec![Filter::new().kinds(vec![1]).limit(10).build()],
-                relay_pkgs(RelayRoutingPreference::PreferDedicated),
-            )
-        };
-        let applied = pool.apply_nip11_limits(
-            relay,
-            Nip11LimitationsRaw {
-                max_subscriptions: Some(1),
-                ..Default::default()
-            },
-            UNIX_EPOCH + Duration::from_secs(1_700_000_410),
-        );
-        assert!(matches!(
-            applied,
-            Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
-        ));
-
-        let compaction_id = {
-            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
-            session.subscribe(
-                vec![Filter::new().kinds(vec![2]).limit(10).build()],
-                relay_pkgs(RelayRoutingPreference::NoPreference),
-            )
-        };
-
-        assert!(
-            !pool.status(&preferred_id).is_empty(),
-            "preferred baseline subscription should own the only dedicated slot while the fallback request waits"
-        );
-        assert!(
-            pool.status(&compaction_id).is_empty(),
-            "fallback request should stay queued until the preferred dedicated slot is released"
-        );
-
-        {
-            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
-            session.unsubscribe(preferred_id);
+        fn selected_account_pubkey(&mut self) -> Pubkey {
+            *self
+                .notedeck
+                .app_context()
+                .accounts
+                .selected_account_pubkey()
         }
 
-        assert!(
-            !pool.status(&compaction_id).is_empty(),
-            "fallback request should become the active compaction route once the preferred slot is released"
-        );
-
-        compaction_id
+        fn with_scoped_subs<T>(
+            &mut self,
+            f: impl FnOnce(&mut ScopedSubApi<'_>, &Accounts, &Ndb) -> T,
+        ) -> T {
+            let mut app_ctx = self.notedeck.app_context();
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            f(&mut scoped_subs, app_ctx.accounts, app_ctx.ndb)
+        }
     }
 
-    /// Verifies notifications timelines keep `RequireDedicated` routing on both
-    /// create and update by revoking an existing non-preferred compaction leg
-    /// rather than being absorbed into that shared fallback route.
-    #[tokio::test]
-    async fn notifications_remote_sub_keeps_require_dedicated_on_create_and_update() {
-        let relay = NormRelayUrl::new("ws://127.0.0.1:6556").expect("static relay url");
-        let mut h = TimelineRemoteHarness::with_forced_relays(vec![relay.to_string()]);
-        let compaction_id = install_active_compaction_lane(&mut h.pool, &relay);
+    fn expected_accounts_read_with_author_outbox_config(
+        live_filters: Vec<Filter>,
+        routing_preference: RelayRoutingPreference,
+    ) -> SubConfig {
+        SubConfig::builder(live_filters)
+            .accounts_read_important_with_preference(routing_preference)
+            .with_author_outbox_augmentation()
+            .build()
+    }
 
-        let selected = *h.accounts.selected_account_pubkey();
+    fn expected_accounts_read_only_config(
+        live_filters: Vec<Filter>,
+        routing_preference: RelayRoutingPreference,
+    ) -> SubConfig {
+        SubConfig::builder(live_filters)
+            .accounts_read_important_with_preference(routing_preference)
+            .build()
+    }
+
+    fn tag_json(filter: &Filter, tag: &str) -> Vec<String> {
+        let json = filter.json().expect("filter json");
+        let value: Value = serde_json::from_str(&json).expect("filter value");
+        value[tag]
+            .as_array()
+            .expect("tag array")
+            .iter()
+            .map(|entry| entry.as_str().expect("tag value").to_owned())
+            .collect()
+    }
+
+    fn filter_jsons(filters: &[Filter]) -> Vec<String> {
+        filters
+            .iter()
+            .map(|filter| filter.json().expect("filter json"))
+            .collect()
+    }
+
+    fn remote_policy(use_outbox_relays: bool) -> RemoteSubscriptionPolicy {
+        RemoteSubscriptionPolicy::from_outbox_relays(use_outbox_relays)
+    }
+
+    fn new_test_ndb() -> (TempDir, Ndb) {
+        let tmp = TempDir::new().expect("tmp dir");
+        let ndb =
+            Ndb::new(tmp.path().to_str().expect("path"), &nostrdb::Config::new()).expect("ndb");
+        (tmp, ndb)
+    }
+
+    fn wait_for_note_ref(ndb: &Ndb, filter: &Filter) -> NoteRef {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(ndb).expect("txn");
+            if let Ok(mut results) = ndb.query(&txn, std::slice::from_ref(filter), 1) {
+                if let Some(result) = results.pop() {
+                    return NoteRef::from_query_result(result);
+                }
+            }
+
+            assert!(Instant::now() < deadline, "timed out waiting for test note");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn insert_new_tracks_unknown_author_profiles() {
+        let (_tmp, ndb) = new_test_ndb();
+        let author = FullKeypair::generate();
+        let filter = Filter::new()
+            .authors([author.pubkey.bytes()])
+            .kinds([1])
+            .limit(20)
+            .build();
+
+        let note = NoteBuilder::new()
+            .kind(1)
+            .content("missing profile author")
+            .created_at(1)
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("note build");
+        ndb.process_client_event(&note.json().expect("note json"))
+            .expect("ingest note");
+        let note_ref = wait_for_note_ref(&ndb, &filter);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut timeline = Timeline::new(
+            TimelineKind::profile(author.pubkey),
+            FilterState::ready(vec![filter]),
+            TimelineTab::only_notes_and_replies(),
+        );
+        let mut note_cache = NoteCache::default();
+        let mut unknown_ids = UnknownIds::default();
+
+        let insert_result = timeline.insert_new(&txn, &ndb, &mut note_cache, &[note_ref]);
+        insert_result.process(&ndb, &txn, &mut unknown_ids, &mut note_cache);
+
+        let filters = unknown_ids.filter().expect("unknown author filter");
+        let filter_jsons = filter_jsons(&filters);
+        assert!(
+            filter_jsons.iter().any(|json| {
+                json.contains(&author.pubkey.hex()) && json.contains("\"kinds\":[0]")
+            }),
+            "insert_new should queue missing kind-0 author lookup; got {filter_jsons:?}"
+        );
+    }
+
+    #[test]
+    fn contact_timelines_install_author_outbox_without_full_history() {
+        let pk = Pubkey::new([0x11; 32]);
+        let kind = TimelineKind::contact_list(pk);
+        let live_filters = vec![Filter::new()
+            .authors([pk.bytes()])
+            .kinds([1])
+            .limit(20)
+            .build()];
+        let (key, config) = timeline_remote_sub_declaration(
+            &kind,
+            live_filters.clone(),
+            RelayRoutingPreference::PreferDedicated,
+            remote_policy(true),
+        );
+
+        assert_eq!(
+            key,
+            timeline_remote_sub_key(&kind, TimelineScopedSub::RemoteBaselineByKind)
+        );
+
+        assert_eq!(
+            config,
+            expected_accounts_read_with_author_outbox_config(
+                live_filters,
+                RelayRoutingPreference::PreferDedicated,
+            )
+        );
+    }
+
+    #[test]
+    fn last_per_pubkey_author_outbox_does_not_install_timeline_full_history() {
+        let pk = Pubkey::new([0x12; 32]);
+        let kind = TimelineKind::last_per_pubkey(ListKind::contact_list(pk));
+        let live_filters = vec![Filter::new()
+            .authors([pk.bytes()])
+            .kinds([1])
+            .limit(1)
+            .build()];
+        let (key, config) = timeline_remote_sub_declaration(
+            &kind,
+            live_filters.clone(),
+            RelayRoutingPreference::PreferDedicated,
+            remote_policy(true),
+        );
+
+        assert_eq!(
+            key,
+            timeline_remote_sub_key(&kind, TimelineScopedSub::RemoteBaselineByKind)
+        );
+        assert_eq!(
+            config,
+            expected_accounts_read_with_author_outbox_config(
+                live_filters,
+                RelayRoutingPreference::PreferDedicated,
+            )
+        );
+    }
+
+    #[test]
+    fn author_remote_filters_install_author_outbox_remote_sub() {
+        let pk = Pubkey::new([0x44; 32]);
+        let people_list = PeopleListRef {
+            author: pk,
+            identifier: "team".to_owned(),
+        };
+        let cases = [
+            (
+                TimelineKind::profile(pk),
+                vec![Filter::new()
+                    .authors([pk.bytes()])
+                    .kinds([1, 6, 0, 3])
+                    .limit(20)
+                    .build()],
+            ),
+            (
+                TimelineKind::people_list(people_list.author, people_list.identifier.clone()),
+                vec![people_list_note_filter(&people_list)],
+            ),
+            (
+                TimelineKind::search("nostr".to_owned()),
+                vec![Filter::new()
+                    .authors([pk.bytes()])
+                    .kinds([1])
+                    .limit(20)
+                    .build()],
+            ),
+        ];
+
+        for (kind, remote_filters) in cases {
+            let (_key, config) = timeline_remote_sub_declaration(
+                &kind,
+                remote_filters.clone(),
+                RelayRoutingPreference::PreferDedicated,
+                remote_policy(true),
+            );
+
+            assert_eq!(
+                config,
+                expected_accounts_read_with_author_outbox_config(
+                    remote_filters,
+                    RelayRoutingPreference::PreferDedicated,
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn people_list_needs_remote_waits_for_local_list_note() {
+        let relay = NormRelayUrl::new("ws://127.0.0.1:6557").expect("static relay url");
+        let people_list = PeopleListRef {
+            author: Pubkey::new([0x66; 32]),
+            identifier: "team".to_owned(),
+        };
+        let kinds = [
+            TimelineKind::people_list(people_list.author, people_list.identifier.clone()),
+            TimelineKind::last_per_pubkey(ListKind::PeopleList(people_list.clone())),
+        ];
+
+        for kind in kinds {
+            let mut h = TimelineRemoteHarness::with_forced_relays(vec![relay.to_string()]);
+            let selected = h.selected_account_pubkey();
+            let mut timeline = Timeline::new(
+                kind.clone(),
+                FilterState::NeedsRemote,
+                TimelineTab::only_notes_and_replies(),
+            );
+
+            h.with_scoped_subs(|scoped_subs, accounts, ndb| {
+                let txn = Transaction::new(ndb).expect("txn");
+                setup_new_timeline(
+                    &mut timeline,
+                    ndb,
+                    &txn,
+                    scoped_subs,
+                    false,
+                    accounts,
+                    remote_policy(true),
+                );
+            });
+
+            assert!(matches!(timeline.filter, FilterState::FetchingRemote));
+            assert!(!timeline.subscription.is_remote_registered(&selected));
+            assert!(timeline.remote_subscription_filters.is_none());
+        }
+    }
+
+    #[test]
+    fn remote_filters_without_authors_use_accounts_read_only() {
+        let pk = Pubkey::new([0x55; 32]);
+        let kind = TimelineKind::contact_list(pk);
+        let (_key, config) = timeline_remote_sub_declaration(
+            &kind,
+            vec![Filter::new().kinds([1]).limit(20).build()],
+            RelayRoutingPreference::PreferDedicated,
+            remote_policy(true),
+        );
+
+        assert_eq!(
+            config,
+            expected_accounts_read_only_config(
+                vec![Filter::new().kinds([1]).limit(20).build()],
+                RelayRoutingPreference::PreferDedicated,
+            )
+        );
+    }
+
+    #[test]
+    fn empty_remote_filters_clear_timeline_remote_subscription() {
+        let relay = NormRelayUrl::new("ws://127.0.0.1:6558").expect("static relay url");
+        let mut h = TimelineRemoteHarness::with_forced_relays(vec![relay.to_string()]);
+        let selected = h.selected_account_pubkey();
         let mut timeline = Timeline::new(
             TimelineKind::notifications(selected),
             FilterState::ready(vec![Filter::new().kinds(vec![1]).limit(20).build()]),
             TimelineTab::notifications(),
         );
-        let identity = ScopedSubIdentity::account(
-            timeline_remote_owner_key(selected, &timeline.kind),
-            timeline_remote_sub_key(&timeline.kind),
-        );
 
-        {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
-            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+        h.with_scoped_subs(|scoped_subs, _accounts, _ndb| {
             ensure_remote_timeline_subscription(
                 &mut timeline,
                 selected,
                 vec![Filter::new().kinds(vec![1]).limit(20).build()],
-                &mut scoped_subs,
+                scoped_subs,
+                remote_policy(true),
             );
-        }
-        {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
-            let scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
-            assert_eq!(
-                scoped_subs.sub_eose_status(identity),
-                ScopedSubEoseStatus::Live(notedeck::ScopedSubLiveEoseStatus {
-                    tracked_relays: 1,
-                    any_eose: false,
-                    all_eosed: false,
-                })
-            );
-        }
-        assert!(
-            h.pool.status(&compaction_id).is_empty(),
-            "required-dedicated notifications should evict the existing non-preferred compaction leg"
-        );
+        });
+        assert!(timeline.subscription.is_remote_registered(&selected));
 
-        {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
-            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+        h.with_scoped_subs(|scoped_subs, _accounts, _ndb| {
             update_remote_timeline_subscription(
                 &mut timeline,
-                vec![Filter::new().kinds(vec![1]).limit(5).build()],
-                &mut scoped_subs,
+                Vec::new(),
+                scoped_subs,
+                remote_policy(true),
             );
+        });
+
+        assert!(!timeline.subscription.is_remote_registered(&selected));
+        assert!(timeline.remote_subscription_filters.is_none());
+    }
+
+    #[test]
+    fn fetching_people_list_has_no_remote_filters_for_refresh() {
+        let relay = NormRelayUrl::new("ws://127.0.0.1:6557").expect("static relay url");
+        let people_list = PeopleListRef {
+            author: Pubkey::new([0x67; 32]),
+            identifier: "team".to_owned(),
+        };
+        let kinds = [
+            TimelineKind::people_list(people_list.author, people_list.identifier.clone()),
+            TimelineKind::last_per_pubkey(ListKind::PeopleList(people_list.clone())),
+        ];
+
+        for kind in kinds {
+            let mut h = TimelineRemoteHarness::with_forced_relays(vec![relay.to_string()]);
+            let mut timeline = Timeline::new(
+                kind,
+                FilterState::NeedsRemote,
+                TimelineTab::only_notes_and_replies(),
+            );
+
+            h.with_scoped_subs(|scoped_subs, accounts, ndb| {
+                let txn = Transaction::new(ndb).expect("txn");
+                setup_new_timeline(
+                    &mut timeline,
+                    ndb,
+                    &txn,
+                    scoped_subs,
+                    false,
+                    accounts,
+                    remote_policy(false),
+                );
+            });
+
+            assert!(matches!(timeline.filter, FilterState::FetchingRemote));
+            assert!(timeline.remote_filters_for_subscription_refresh().is_none());
         }
-        {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
-            let scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+    }
+
+    #[test]
+    fn contact_timelines_disable_outbox_relays_use_accounts_read_only() {
+        let pk = Pubkey::new([0x33; 32]);
+        let kinds = [
+            TimelineKind::contact_list(pk),
+            TimelineKind::last_per_pubkey(ListKind::contact_list(pk)),
+        ];
+
+        for kind in kinds {
+            let (key, config) = timeline_remote_sub_declaration(
+                &kind,
+                vec![Filter::new()
+                    .authors([pk.bytes()])
+                    .kinds([1])
+                    .limit(20)
+                    .build()],
+                RelayRoutingPreference::PreferDedicated,
+                remote_policy(false),
+            );
+
             assert_eq!(
-                scoped_subs.sub_eose_status(identity),
-                ScopedSubEoseStatus::Live(notedeck::ScopedSubLiveEoseStatus {
-                    tracked_relays: 1,
-                    any_eose: false,
-                    all_eosed: false,
-                })
+                key,
+                timeline_remote_sub_key(&kind, TimelineScopedSub::RemoteBaselineByKind)
+            );
+            assert_eq!(
+                config,
+                expected_accounts_read_only_config(
+                    vec![Filter::new()
+                        .authors([pk.bytes()])
+                        .kinds([1])
+                        .limit(20)
+                        .build()],
+                    RelayRoutingPreference::PreferDedicated,
+                )
             );
         }
-        assert!(
-            h.pool.status(&compaction_id).is_empty(),
-            "updating notifications should keep the dedicated route and leave the old compaction leg revoked"
+    }
+
+    #[test]
+    fn hashtag_timeline_uses_lowercase_tags() {
+        let timeline = Timeline::hashtag(vec!["Nostr".to_owned(), "RUST".to_owned()]);
+        let FilterState::Ready(filter) = timeline.filter else {
+            panic!("hashtag timeline should have ready filters");
+        };
+        let tags = filter
+            .remote()
+            .iter()
+            .map(|filter| tag_json(filter, "#t"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(tags, vec![vec!["nostr"], vec!["rust"]]);
+    }
+
+    #[test]
+    fn notifications_keep_accounts_read_selection() {
+        let pk = Pubkey::new([0x22; 32]);
+        let kind = TimelineKind::notifications(pk);
+        let (key, config) = timeline_remote_sub_declaration(
+            &kind,
+            vec![kind::notifications_filter(&pk)],
+            RelayRoutingPreference::RequireDedicated,
+            remote_policy(true),
+        );
+        assert_eq!(
+            key,
+            timeline_remote_sub_key(&kind, TimelineScopedSub::RemoteBaselineByKind)
+        );
+
+        assert_eq!(
+            config,
+            SubConfig::builder(vec![kind::notifications_filter(&pk)])
+                .accounts_read_critical_with_preference(RelayRoutingPreference::RequireDedicated)
+                .build()
         );
     }
 }

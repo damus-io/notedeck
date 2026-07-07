@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use enostr::NormRelayUrl;
+use nostrdb::Note;
 
 // A Relay specification includes NIP-65 defined "markers" which
 // indicate if the relay should be used for reading or writing (or
@@ -41,6 +42,32 @@ impl RelaySpec {
     pub fn is_writable(&self) -> bool {
         !self.has_read_marker // only "read" relays are not writable
     }
+}
+
+/// Parses NIP-65 relay specs from a kind-10002 note body.
+pub(crate) fn relays_from_nip65_note(note: &Note<'_>) -> Vec<RelaySpec> {
+    let mut relays = Vec::new();
+    for tag in note.tags() {
+        if tag.get(0).and_then(|t| t.variant().str()) != Some("r") {
+            continue;
+        }
+
+        let Some(url) = tag.get(1).and_then(|f| f.variant().str()) else {
+            continue;
+        };
+
+        let has_read_marker = tag
+            .get(2)
+            .is_some_and(|m| m.variant().str() == Some("read"));
+        let has_write_marker = tag
+            .get(2)
+            .is_some_and(|m| m.variant().str() == Some("write"));
+        let Ok(norm_url) = NormRelayUrl::new(url) else {
+            continue;
+        };
+        relays.push(RelaySpec::new(norm_url, has_read_marker, has_write_marker));
+    }
+    relays
 }
 
 // just the url part

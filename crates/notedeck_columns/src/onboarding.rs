@@ -50,7 +50,7 @@ impl Onboarding {
     #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
-        scoped_subs: &mut ScopedSubApi<'_, '_>,
+        scoped_subs: &mut ScopedSubApi<'_>,
         owner: SubOwnerKey,
         ndb: &Ndb,
         unknown_ids: &mut UnknownIds,
@@ -77,7 +77,9 @@ impl Onboarding {
                     let follow_filter = follow_packs_filter(pks);
                     let sub_key = follow_packs_sub_key();
                     let identity = ScopedSubIdentity::account(owner, sub_key);
-                    let sub_config = SubConfig::live(vec![follow_filter.clone()]).build();
+                    let sub_config = SubConfig::builder(vec![follow_filter.clone()])
+                        .accounts_read_important()
+                        .build();
                     let _ = scoped_subs.ensure_sub(identity, sub_config);
 
                     Nip51SetCache::new_local(ndb, &txn, unknown_ids, vec![follow_filter])
@@ -180,56 +182,41 @@ fn get_trusted_authors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::{OutboxPool, OutboxSessionHandler};
-    use notedeck::{Accounts, EguiWakeup, ScopedSubsState, FALLBACK_PUBKEY};
-    use notedeck_testing::fixtures::test_config;
+    use notedeck::Notedeck;
     use tempfile::TempDir;
 
-    fn test_harness() -> (
-        TempDir,
-        Ndb,
-        Accounts,
-        UnknownIds,
-        ScopedSubsState,
-        OutboxPool,
-    ) {
+    struct Harness {
+        _tmp: TempDir,
+        notedeck: Notedeck,
+    }
+
+    fn test_harness() -> Harness {
         let tmp = TempDir::new().expect("tmp dir");
-        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        let txn = Transaction::new(&ndb).expect("txn");
-        let mut unknown_ids = UnknownIds::default();
-        let accounts = Accounts::new(
-            None,
-            vec!["wss://relay-onboarding.example.com".to_owned()],
-            Vec::new(),
-            FALLBACK_PUBKEY(),
-            &mut ndb,
-            &txn,
-            &mut unknown_ids,
+        let ui_ctx = egui::Context::default();
+        let notedeck = Notedeck::init(
+            &ui_ctx,
+            tmp.path(),
+            &["notedeck".to_owned(), "--testrunner".to_owned()],
         );
 
-        (
-            tmp,
-            ndb,
-            accounts,
-            unknown_ids,
-            ScopedSubsState::default(),
-            OutboxPool::default(),
-        )
+        Harness {
+            _tmp: tmp,
+            notedeck,
+        }
     }
 
     /// Verifies onboarding emits a one-time oneshot effect on first process call
     /// and does not emit duplicate oneshot effects on subsequent calls.
     #[test]
     fn process_initially_emits_oneshot_effect_once() {
-        let (_tmp, ndb, accounts, mut unknown_ids, mut scoped_sub_state, mut pool) = test_harness();
+        let mut h = test_harness();
         let owner = SubOwnerKey::new(("onboarding", 1usize));
         let mut onboarding = Onboarding::default();
 
         let first = {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
-            let mut scoped_subs = scoped_sub_state.api(&mut outbox, &accounts);
-            onboarding.process(&mut scoped_subs, owner, &ndb, &mut unknown_ids)
+            let mut app_ctx = h.notedeck.app_context();
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            onboarding.process(&mut scoped_subs, owner, app_ctx.ndb, app_ctx.unknown_ids)
         };
 
         match first {
@@ -244,10 +231,9 @@ mod tests {
         }
 
         let second = {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
-            let mut scoped_subs = scoped_sub_state.api(&mut outbox, &accounts);
-            onboarding.process(&mut scoped_subs, owner, &ndb, &mut unknown_ids)
+            let mut app_ctx = h.notedeck.app_context();
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            onboarding.process(&mut scoped_subs, owner, app_ctx.ndb, app_ctx.unknown_ids)
         };
 
         assert!(second.is_none());

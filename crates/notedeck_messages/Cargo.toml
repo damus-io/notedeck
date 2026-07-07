@@ -26,6 +26,7 @@ crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["eframe"] }
+enostr_test_support = { path = "../enostr_test_support" }
 eframe = { workspace = true }
 nostr-relay-builder = "0.37"
 notedeck_testing = { workspace = true }

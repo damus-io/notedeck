@@ -1,0 +1,12 @@
+[package]
+name = "enostr_test_support"
+version = { workspace = true }
+edition = "2021"
+description = "Shared test support for enostr consumers"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+enostr = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync"] }
+tokio-tungstenite = { workspace = true }

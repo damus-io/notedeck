@@ -3,8 +3,7 @@ use std::time::{Duration, Instant};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{
-    Accounts, RelayType, RemoteApi, ScopedSubEoseStatus, ScopedSubIdentity, SubConfig, SubKey,
-    SubOwnerKey,
+    Accounts, RemoteApi, ScopedSubIdentity, ScopedSubReadiness, SubConfig, SubKey, SubOwnerKey,
 };
 
 use crate::{
@@ -38,7 +37,9 @@ struct EnsureListCtx<'a, 'remote> {
 
 /// Pure builder for the selected account's own DM relay-list ensure scoped-sub spec.
 fn dm_relay_list_spec(selected_account: &Pubkey) -> SubConfig {
-    SubConfig::live(vec![participant_dm_relay_list_filter(selected_account)]).build()
+    SubConfig::builder(vec![participant_dm_relay_list_filter(selected_account)])
+        .accounts_read_important()
+        .build()
 }
 
 #[profiling::function]
@@ -212,8 +213,8 @@ fn handle_fallback_published(
         result.note.created_at()
     );
 
-    let mut publisher = ctx.remote.publisher(ctx.accounts);
-    publisher.publish_note(&result.note, RelayType::AccountsWrite);
+    let mut publisher = ctx.remote.publisher();
+    publisher.accounts_write().publish_note(&result.note);
 
     true
 }
@@ -245,8 +246,8 @@ fn publish_backdated_default_list(ctx: &mut EnsureListCtx<'_, '_>) -> ListFound 
         return false;
     }
 
-    let mut publisher = ctx.remote.publisher(ctx.accounts);
-    publisher.publish_note(&note, RelayType::AccountsWrite);
+    let mut publisher = ctx.remote.publisher();
+    publisher.accounts_write().publish_note(&note);
 
     true
 }
@@ -275,8 +276,8 @@ fn publish_default_list(ctx: &mut EnsureListCtx<'_, '_>) -> ListFound {
         return false;
     }
 
-    let mut publisher = ctx.remote.publisher(ctx.accounts);
-    publisher.publish_note(&note, RelayType::AccountsWrite);
+    let mut publisher = ctx.remote.publisher();
+    publisher.accounts_write().publish_note(&note);
 
     true
 }
@@ -310,8 +311,8 @@ fn republish_existing_or_publish_backdated_default_list(
                 selected_account,
                 created_at
             );
-            let mut publisher = ctx.remote.publisher(ctx.accounts);
-            publisher.publish_note(&result.note, RelayType::AccountsWrite);
+            let mut publisher = ctx.remote.publisher();
+            publisher.accounts_write().publish_note(&result.note);
             // A previously published backdated sentinel (created_at=1) is not
             // a real list — keep watching for the real one via FallbackPublished.
             if created_at <= 1 {
@@ -356,8 +357,8 @@ fn republish_existing_or_publish_default_list(
                 selected_account,
                 result.note.created_at()
             );
-            let mut publisher = ctx.remote.publisher(ctx.accounts);
-            publisher.publish_note(&result.note, RelayType::AccountsWrite);
+            let mut publisher = ctx.remote.publisher();
+            publisher.accounts_write().publish_note(&result.note);
             true
         }
         None => {
@@ -375,8 +376,8 @@ fn all_eosed(ctx: &mut EnsureListCtx<'_, '_>, remote_sub_key: SubKey) -> bool {
     let scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
     let identity = ScopedSubIdentity::account(ctx.owner_key, remote_sub_key);
     let all_eosed = matches!(
-        scoped_subs.sub_eose_status(identity),
-        ScopedSubEoseStatus::Live(live) if live.all_eosed
+        scoped_subs.sub_readiness(identity),
+        ScopedSubReadiness::Live(live) if live.relay_eose.all_eosed
     );
     tracing::trace!(
         "dm relay-list ensure all_eosed check for selected_account={} remote_sub_key={remote_sub_key:?} => {}",

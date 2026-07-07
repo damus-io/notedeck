@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::{Error, Result, WebSocketError};
 use ewebsock::{WsEvent, WsMessage};
 use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -14,6 +14,7 @@ pub struct CommandResult<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum RelayMessage<'a> {
     OK(CommandResult<'a>),
+    Auth(&'a str),
     Eose(&'a str),
     Event(&'a str, &'a str),
     Notice(&'a str),
@@ -39,7 +40,9 @@ impl<'a> From<&'a WsEvent> for RelayEvent<'a> {
             WsEvent::Opened => RelayEvent::Opened,
             WsEvent::Closed => RelayEvent::Closed,
             WsEvent::Message(ref ws_msg) => ws_msg.into(),
-            WsEvent::Error(s) => RelayEvent::Error(Error::Generic(s.to_owned())),
+            WsEvent::Error(err) => {
+                RelayEvent::Error(Error::WebSocket(WebSocketError::from(err.clone())))
+            }
         }
     }
 }
@@ -73,6 +76,10 @@ impl<'a> RelayMessage<'a> {
         })
     }
 
+    pub fn auth(challenge: &'a str) -> Self {
+        RelayMessage::Auth(challenge)
+    }
+
     pub fn event(ev: &'a str, sub_id: &'a str) -> Self {
         RelayMessage::Event(sub_id, ev)
     }
@@ -85,6 +92,12 @@ impl<'a> RelayMessage<'a> {
     pub fn from_json(msg: &'a str) -> Result<RelayMessage<'a>> {
         if msg.is_empty() {
             return Err(Error::Empty);
+        }
+
+        // AUTH (NIP-42)
+        // Relay response format: ["AUTH", <challenge>]
+        if matches!(first_json_array_command(msg), Some("AUTH")) {
+            return parse_auth_frame(msg);
         }
 
         // make sure we can inspect the begning of the message below ...
@@ -199,6 +212,16 @@ impl<'a> RelayMessage<'a> {
             "unrecognized message type: '{msg}'"
         )))
     }
+}
+
+fn parse_auth_frame<'a>(msg: &'a str) -> Result<RelayMessage<'a>> {
+    let parts: Vec<&'a str> =
+        serde_json::from_str(msg).map_err(|err| Error::DecodeFailed(err.to_string()))?;
+    if parts.len() != 2 || parts[0] != "AUTH" {
+        return Err(Error::DecodeFailed("Invalid AUTH format".into()));
+    }
+
+    Ok(RelayMessage::auth(parts[1]))
 }
 
 /// Parse one NIP-77 relay frame as a JSON array and validate its arity.
@@ -329,6 +352,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn websocket_error_event_preserves_error_message_and_raw_os_error() {
+        let websocket_error =
+            ewebsock::Error::from(std::io::Error::from_raw_os_error(libc::EMFILE))
+                .with_context("Connect");
+
+        let websocket_event = ewebsock::WsEvent::Error(websocket_error.clone());
+        let relay_event = RelayEvent::from(&websocket_event);
+
+        match relay_event {
+            RelayEvent::Error(Error::WebSocket(err)) => {
+                assert_eq!(err.raw_os_error(), Some(libc::EMFILE));
+                assert_eq!(err.message(), websocket_error.message());
+            }
+            other => panic!("expected websocket relay error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_handle_various_messages() -> Result<()> {
         let tests = vec![
             // Valid cases
@@ -345,6 +386,10 @@ mod tests {
             (
                 r#"["NOTICE","Invalid event format!"]"#,
                 Ok(RelayMessage::notice("Invalid event format!")),
+            ),
+            (
+                r#"["AUTH","challenge"]"#,
+                Ok(RelayMessage::auth("challenge")),
             ),
             (
                 r#"["EVENT", "random_string", {"id":"example","content":"test"}]"#,
@@ -422,6 +467,10 @@ mod tests {
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,404]"#,
                 Err(Error::DecodeFailed("bad boolean value".into())),
+            ),
+            (
+                r#"["AUTH"]"#,
+                Err(Error::DecodeFailed("Invalid AUTH format".into())),
             ),
             (
                 r#"["CLOSED","sub1"]"#,

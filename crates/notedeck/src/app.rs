@@ -3,15 +3,16 @@ use crate::i18n::Localization;
 use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::remote_data::RemoteState;
+use crate::runtime::{AppAsyncRuntime, RuntimeThreadBudget};
 use crate::wallet::GlobalWallet;
 use crate::zaps::{ZapVerifier, Zaps};
+use crate::Error;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, UnknownIds,
 };
-use crate::{Error, JobCache};
-use crate::{JobPool, MediaJobs};
+use crate::{JobCache, JobPool, MediaJobs};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
@@ -51,6 +52,20 @@ impl TabNotifications {
     /// Whether there's anything to show.
     pub fn is_empty(&self) -> bool {
         self.count == 0
+    }
+}
+
+/// Construction-time configuration for remote bridge behavior.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NotedeckRemoteConfig {
+    pong_timeout: Option<Duration>,
+}
+
+impl NotedeckRemoteConfig {
+    /// Override the websocket pong timeout used by the remote bridge.
+    pub fn with_pong_timeout(mut self, timeout: Duration) -> Self {
+        self.pong_timeout = Some(timeout);
+        self
     }
 }
 
@@ -105,6 +120,7 @@ pub struct Notedeck {
     img_cache: Images,
     unknown_ids: UnknownIds,
     remote: RemoteState,
+    _app_async_runtime: AppAsyncRuntime,
     note_cache: NoteCache,
     accounts: Accounts,
     global_wallet: GlobalWallet,
@@ -200,29 +216,26 @@ impl Notedeck {
             });
         }
 
-        {
-            self.remote.service_relays(&mut self.job_pool);
-            self.remote.process_events(ctx, &self.ndb);
-        }
+        self.remote.poll_bridge();
         self.nip05_cache.poll();
         self.zap_verifier.poll(&self.ndb, self.zaps.pay_cache());
-        let Some(app) = &self.app else {
-            self.remote
-                .request_repaint_for_next_full_history_deadline(ctx);
+        let Some(app) = self.app.clone() else {
             return;
         };
-        let app = app.clone();
 
-        let mut app_ref = self.notedeck_ref(ctx);
+        let mut app_ref = self.notedeck_ref();
 
         {
             let app_ctx = &mut app_ref.app_ctx;
+            // Host remote frame order: relay traffic has already been ingested into NDB;
+            // `Accounts::update` must refresh local projections before author-outbox
+            // demand reconciles against the planner's local relay-list snapshot.
             app_ctx.accounts.update(app_ctx.ndb, &mut app_ctx.remote);
             app_ctx
                 .zaps
                 .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
             if app_ctx.unknown_ids.ready_to_send() {
-                let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
+                let mut oneshot = app_ctx.remote.oneshot();
                 crate::unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
             }
         }
@@ -231,11 +244,9 @@ impl Notedeck {
 
         {
             profiling::scope!("outbox ingestion");
+            app_ref.app_ctx.remote.flush();
             drop(app_ref);
         }
-        self.remote
-            .request_repaint_for_next_full_history_deadline(ctx);
-
         self.settings.update_batch(|settings| {
             settings.zoom_factor = ctx.zoom_factor();
             settings.locale = self.i18n.get_current_locale().to_string();
@@ -256,16 +267,21 @@ impl Notedeck {
         self.app.take();
     }
 
-    pub fn set_pong_timeout(&mut self, timeout: Duration) {
-        self.remote.set_pong_timeout(timeout);
-    }
-
     #[cfg(target_os = "android")]
     pub fn set_android_context(&mut self, context: AndroidApp) {
         self.android_app = Some(context);
     }
 
     pub fn init<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
+        Self::init_with_remote_config(ctx, data_path, args, NotedeckRemoteConfig::default())
+    }
+
+    pub fn init_with_remote_config<P: AsRef<Path>>(
+        ctx: &egui::Context,
+        data_path: P,
+        args: &[String],
+        remote_config: NotedeckRemoteConfig,
+    ) -> Self {
         #[cfg(feature = "puffin")]
         setup_puffin();
 
@@ -327,8 +343,31 @@ impl Notedeck {
         try_swap_compacted_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
-        let job_pool = JobPool::default();
-        let remote = RemoteState::new(&ndb, job_pool.spawner());
+        let runtime_budget = RuntimeThreadBudget::from_available_parallelism();
+        let app_async_runtime = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            AppAsyncRuntime::new_owned(runtime_budget.main_async_threads())
+        } else {
+            AppAsyncRuntime::from_handle(tokio::runtime::Handle::current())
+        };
+        let job_pool = JobPool::with_app_async(
+            runtime_budget.sync_job_threads(),
+            app_async_runtime.spawner(),
+        );
+        let remote_wake_ctx = ctx.clone();
+        let mut bridge_config = crate::remote_data::RemoteBridgeConfig::default();
+        if let Some(timeout) = remote_config.pong_timeout {
+            bridge_config = bridge_config.with_pong_timeout(timeout);
+        }
+        let mut remote = RemoteState::new_with_config(
+            &ndb,
+            job_pool.spawner(),
+            move || {
+                remote_wake_ctx.request_repaint();
+            },
+            bridge_config,
+        );
+        remote
+            .set_max_websocket_connections(settings.websocket_connection_limit().max_connections());
 
         // Tests must not reach the network: hand a fresh account an empty
         // bootstrap set so it connects to nothing (the outbox then has nothing
@@ -366,6 +405,13 @@ impl Notedeck {
 
         if let Some(first) = parsed_args.keys.first() {
             accounts.select_account_for_startup(&first.pubkey, &mut ndb, &txn);
+        }
+
+        {
+            // Seed bridge account context before app construction can queue account-bound remote work.
+            let mut remote_api = remote.api();
+            remote_api.on_selected_account_changed(&accounts);
+            remote_api.flush();
         }
 
         let img_cache = Images::new(img_cache_dir);
@@ -432,6 +478,7 @@ impl Notedeck {
             img_cache,
             unknown_ids,
             remote,
+            _app_async_runtime: app_async_runtime,
             note_cache,
             accounts,
             global_wallet,
@@ -479,12 +526,12 @@ impl Notedeck {
         self
     }
 
-    pub fn app_context(&mut self, ui_ctx: &egui::Context) -> AppContext<'_> {
-        self.notedeck_ref(ui_ctx).app_ctx
+    pub fn app_context(&mut self) -> AppContext<'_> {
+        self.notedeck_ref().app_ctx
     }
 
-    pub fn notedeck_ref<'a>(&'a mut self, ui_ctx: &egui::Context) -> NotedeckRef<'a> {
-        let remote = self.remote.api(ui_ctx);
+    pub fn notedeck_ref<'a>(&'a mut self) -> NotedeckRef<'a> {
+        let remote = self.remote.api();
         NotedeckRef {
             app_ctx: AppContext {
                 ndb: &mut self.ndb,

@@ -5,7 +5,8 @@ use egui::{
 use egui_extras::{Size, StripBuilder};
 use notedeck::{
     tr, ui::richtext_small, DragResponse, LanguageIdentifier, NoteContext, NotedeckTextStyle,
-    Settings, DEFAULT_MAX_HASHTAGS_PER_NOTE,
+    Settings, WebsocketConnectionLimit, DEFAULT_MAX_HASHTAGS_PER_NOTE,
+    DEFAULT_WEBSOCKET_CONNECTION_LIMIT, MIN_CUSTOM_WEBSOCKET_CONNECTION_LIMIT,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -25,6 +26,12 @@ const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
 const ZOOM_STEP: f32 = 0.1;
 const RESET_ZOOM: f32 = 1.0;
+/// Highest manual websocket cap exposed by the settings slider.
+const MAX_CUSTOM_WEBSOCKET_CONNECTION_LIMIT: u16 = 256;
+
+fn initial_custom_websocket_connection_limit() -> WebsocketConnectionLimit {
+    WebsocketConnectionLimit::custom(DEFAULT_WEBSOCKET_CONNECTION_LIMIT)
+}
 
 pub enum SettingsAction {
     SetZoomFactor(f32),
@@ -32,6 +39,8 @@ pub enum SettingsAction {
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
     SetAnimateNavTransitions(bool),
+    SetColumnsUseOutboxRelays(bool),
+    SetWebsocketConnectionLimit(WebsocketConnectionLimit),
     SetMaxHashtagsPerNote(usize),
     SetReleaseChannel(String),
     OpenRelays,
@@ -42,18 +51,27 @@ pub enum SettingsAction {
     SetSoundVolume(f32),
 }
 
+#[must_use = "settings responses must be processed by the caller"]
+pub enum SettingsResponse {
+    Router(RouterAction),
+    ColumnsUseOutboxRelaysChanged { value: bool },
+    WebsocketConnectionLimitChanged { value: WebsocketConnectionLimit },
+}
+
 impl SettingsAction {
     pub fn process_settings_action(
         self,
         app: &mut Damus,
         app_ctx: &mut notedeck::AppContext<'_>,
         egui_ctx: &egui::Context,
-    ) -> Option<RouterAction> {
-        let mut route_action: Option<RouterAction> = None;
+    ) -> Option<SettingsResponse> {
+        let mut response: Option<SettingsResponse> = None;
 
         match self {
             Self::OpenRelays => {
-                route_action = Some(RouterAction::route_to(Route::Relays));
+                response = Some(SettingsResponse::Router(RouterAction::route_to(
+                    Route::Relays,
+                )));
             }
             Self::SetZoomFactor(zoom_factor) => {
                 egui_ctx.set_zoom_factor(zoom_factor);
@@ -81,6 +99,15 @@ impl SettingsAction {
             }
             Self::SetAnimateNavTransitions(value) => {
                 app_ctx.settings.set_animate_nav_transitions(value);
+            }
+            Self::SetColumnsUseOutboxRelays(value) => {
+                app_ctx.settings.set_columns_use_outbox_relays(value);
+                response = Some(SettingsResponse::ColumnsUseOutboxRelaysChanged { value });
+            }
+            Self::SetWebsocketConnectionLimit(value) => {
+                let value = value.normalized();
+                app_ctx.settings.set_websocket_connection_limit(value);
+                response = Some(SettingsResponse::WebsocketConnectionLimitChanged { value });
             }
 
             Self::SetMaxHashtagsPerNote(value) => {
@@ -132,15 +159,52 @@ impl SettingsAction {
                 app.view_state.compact.status = notedeck::compact::CompactStatus::Running(receiver);
             }
         }
-        route_action
+        response
     }
 }
 
 pub struct SettingsView<'a> {
     settings: &'a mut Settings,
+    state: &'a mut SettingsUiState,
     note_context: &'a mut NoteContext<'a>,
     db_path: &'a std::path::Path,
     compact: &'a mut notedeck::compact::CompactState,
+}
+
+/// Ephemeral state for Settings UI controls that need an explicit apply step.
+#[derive(Default)]
+pub struct SettingsUiState {
+    websocket_connection_limit_saved: Option<WebsocketConnectionLimit>,
+    websocket_connection_limit_draft: Option<WebsocketConnectionLimit>,
+}
+
+impl SettingsUiState {
+    fn websocket_connection_limit_draft(
+        &mut self,
+        saved: WebsocketConnectionLimit,
+    ) -> WebsocketConnectionLimit {
+        let saved = saved.normalized();
+        if self.websocket_connection_limit_saved != Some(saved) {
+            self.websocket_connection_limit_saved = Some(saved);
+            self.websocket_connection_limit_draft = Some(saved);
+        }
+
+        self.websocket_connection_limit_draft.unwrap_or(saved)
+    }
+
+    fn set_websocket_connection_limit_draft(&mut self, value: WebsocketConnectionLimit) {
+        self.websocket_connection_limit_draft = Some(value.normalized());
+    }
+
+    fn mark_websocket_connection_limit_saved(&mut self, value: WebsocketConnectionLimit) {
+        let value = value.normalized();
+        self.websocket_connection_limit_saved = Some(value);
+        self.websocket_connection_limit_draft = Some(value);
+    }
+
+    fn websocket_connection_limit_dirty(&mut self, saved: WebsocketConnectionLimit) -> bool {
+        self.websocket_connection_limit_draft(saved) != saved.normalized()
+    }
 }
 
 fn settings_group<S>(ui: &mut egui::Ui, title: S, contents: impl FnOnce(&mut egui::Ui))
@@ -165,12 +229,14 @@ where
 impl<'a> SettingsView<'a> {
     pub fn new(
         settings: &'a mut Settings,
+        state: &'a mut SettingsUiState,
         note_context: &'a mut NoteContext<'a>,
         db_path: &'a std::path::Path,
         compact: &'a mut notedeck::compact::CompactState,
     ) -> Self {
         Self {
             settings,
+            state,
             note_context,
             db_path,
             compact,
@@ -883,19 +949,120 @@ impl<'a> SettingsView<'a> {
     fn manage_relays_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
 
-        if ui
-            .add_sized(
-                [ui.available_width(), 30.0],
-                Button::new(richtext_small(tr!(
+        let title = tr!(
+            self.note_context.i18n,
+            "Relays",
+            "Label for relay transport settings section"
+        );
+        settings_group(ui, title, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small(tr!(
                     self.note_context.i18n,
-                    "Configure relays",
-                    "Label for configure relays, settings section",
-                ))),
-            )
-            .clicked()
-        {
-            action = Some(SettingsAction::OpenRelays);
-        }
+                    "Use outbox relays:",
+                    "Label for toggling explicit outbox relay routing in Columns settings",
+                )));
+
+                if ui
+                    .toggle_value(
+                        &mut self.settings.columns_use_outbox_relays,
+                        RichText::new(tr!(
+                            self.note_context.i18n,
+                            "On",
+                            "Setting to enable explicit outbox relay routing"
+                        ))
+                        .text_style(NotedeckTextStyle::Small.text_style()),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::SetColumnsUseOutboxRelays(
+                        self.settings.columns_use_outbox_relays,
+                    ));
+                }
+            });
+
+            if self.settings.columns_use_outbox_relays {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(richtext_small(tr!(
+                        self.note_context.i18n,
+                        "Max websocket connections:",
+                        "Label for relay websocket connection limit setting",
+                    )));
+
+                    let saved = self.settings.websocket_connection_limit.normalized();
+                    let mut draft = self.state.websocket_connection_limit_draft(saved);
+
+                    if let WebsocketConnectionLimit::Custom(limit) = draft {
+                        let mut value = limit;
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut value,
+                                    MIN_CUSTOM_WEBSOCKET_CONNECTION_LIMIT
+                                        ..=MAX_CUSTOM_WEBSOCKET_CONNECTION_LIMIT,
+                                )
+                                .text("")
+                                .clamping(egui::SliderClamping::Edits),
+                            )
+                            .changed()
+                        {
+                            let limit = WebsocketConnectionLimit::custom(value);
+                            draft = limit;
+                            self.state.set_websocket_connection_limit_draft(draft);
+                        }
+                    }
+
+                    let mut extreme = matches!(draft, WebsocketConnectionLimit::Auto);
+                    if ui
+                        .toggle_value(
+                            &mut extreme,
+                            RichText::new(tr!(
+                                self.note_context.i18n,
+                                "Extreme",
+                                "Setting to derive websocket connection limit from OS fd pressure"
+                            ))
+                            .text_style(NotedeckTextStyle::Small.text_style()),
+                        )
+                        .changed()
+                    {
+                        draft = if extreme {
+                            WebsocketConnectionLimit::Auto
+                        } else {
+                            initial_custom_websocket_connection_limit()
+                        };
+                        self.state.set_websocket_connection_limit_draft(draft);
+                    }
+
+                    if ui
+                        .add_enabled(
+                            self.state.websocket_connection_limit_dirty(saved),
+                            Button::new(richtext_small(tr!(
+                                self.note_context.i18n,
+                                "Apply",
+                                "Button label for applying websocket connection limit setting"
+                            ))),
+                        )
+                        .clicked()
+                    {
+                        self.state.mark_websocket_connection_limit_saved(draft);
+                        action = Some(SettingsAction::SetWebsocketConnectionLimit(draft));
+                    }
+                });
+            }
+
+            if ui
+                .add_sized(
+                    [ui.available_width(), 30.0],
+                    Button::new(richtext_small(tr!(
+                        self.note_context.i18n,
+                        "Configure relays",
+                        "Label for configure relays, settings section",
+                    ))),
+                )
+                .clicked()
+            {
+                action = Some(SettingsAction::OpenRelays);
+            }
+        });
 
         action
     }
@@ -975,4 +1142,47 @@ fn item_frame(ui: &egui::Ui) -> egui::Frame {
         .inner_margin(Margin::same(notedeck::tokens::SPACING_SM as i8))
         .corner_radius(CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
         .fill(ui.visuals().panel_fill)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_custom_websocket_limit_uses_manual_mode_seed() {
+        assert_eq!(
+            initial_custom_websocket_connection_limit(),
+            WebsocketConnectionLimit::Custom(DEFAULT_WEBSOCKET_CONNECTION_LIMIT)
+        );
+    }
+
+    #[test]
+    fn websocket_limit_draft_tracks_saved_value_until_user_changes_it() {
+        let mut state = SettingsUiState::default();
+        let saved = WebsocketConnectionLimit::custom(16);
+
+        assert_eq!(state.websocket_connection_limit_draft(saved), saved);
+
+        state.set_websocket_connection_limit_draft(WebsocketConnectionLimit::custom(100));
+
+        assert_eq!(
+            state.websocket_connection_limit_draft(saved),
+            WebsocketConnectionLimit::custom(100)
+        );
+        assert!(state.websocket_connection_limit_dirty(saved));
+    }
+
+    #[test]
+    fn websocket_limit_draft_resets_after_saved_value_changes() {
+        let mut state = SettingsUiState::default();
+
+        state.set_websocket_connection_limit_draft(WebsocketConnectionLimit::custom(100));
+        state.mark_websocket_connection_limit_saved(WebsocketConnectionLimit::custom(100));
+
+        assert_eq!(
+            state.websocket_connection_limit_draft(WebsocketConnectionLimit::custom(32)),
+            WebsocketConnectionLimit::custom(32)
+        );
+        assert!(!state.websocket_connection_limit_dirty(WebsocketConnectionLimit::custom(32)));
+    }
 }

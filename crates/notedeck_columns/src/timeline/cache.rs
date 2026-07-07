@@ -3,7 +3,7 @@ use crate::{
     error::Error,
     timeline::{
         drop_timeline_remote_owner, ensure_remote_timeline_subscription, InitialLoadState,
-        Timeline, TimelineKind, UnknownPksOwned,
+        InsertNewResult, RemoteSubscriptionPolicy, Timeline, TimelineKind,
     },
 };
 
@@ -58,7 +58,18 @@ impl TimelineCache {
         &mut self,
         id: &TimelineKind,
         ndb: &mut Ndb,
-        scoped_subs: &mut ScopedSubApi<'_, '_>,
+        scoped_subs: &mut ScopedSubApi<'_>,
+    ) -> Result<(), Error> {
+        let account_pk = scoped_subs.selected_account_pubkey();
+        self.pop_for_account(id, account_pk, ndb, scoped_subs)
+    }
+
+    pub(crate) fn pop_for_account(
+        &mut self,
+        id: &TimelineKind,
+        account_pk: Pubkey,
+        ndb: &mut Ndb,
+        scoped_subs: &mut ScopedSubApi<'_>,
     ) -> Result<(), Error> {
         let timeline = if let Some(timeline) = self.timelines.get_mut(id) {
             timeline
@@ -66,7 +77,6 @@ impl TimelineCache {
             return Err(Error::TimelineNotFound);
         };
 
-        let account_pk = scoped_subs.selected_account_pubkey();
         timeline
             .subscription
             .unsubscribe_or_decrement(account_pk, ndb);
@@ -105,7 +115,7 @@ impl TimelineCache {
         ndb: &Ndb,
         notes: &[NoteRef],
         note_cache: &mut NoteCache,
-    ) -> Option<UnknownPksOwned> {
+    ) -> Option<InsertNewResult> {
         let mut timeline = if let Some(timeline) = id.clone().into_timeline(txn, ndb) {
             timeline
         } else {
@@ -117,7 +127,7 @@ impl TimelineCache {
         let res = timeline.insert_new(txn, ndb, note_cache, notes);
         self.timelines.insert(id, timeline);
 
-        res
+        Some(res)
     }
 
     pub fn insert(&mut self, id: TimelineKind, account_pk: Pubkey, mut timeline: Timeline) {
@@ -146,7 +156,7 @@ impl TimelineCache {
         if self.timelines.contains_key(id) {
             return GetNotesResponse {
                 vitality: Vitality::Stale(self.get_expected_mut(id)),
-                unknown_pks: None,
+                insert_result: None,
             };
         }
 
@@ -179,15 +189,15 @@ impl TimelineCache {
             info!("found NotesHolder with {} notes", notes.len());
         }
 
-        let unknown_pks = self.insert_new(id.to_owned(), txn, ndb, &notes, note_cache);
+        let insert_result = self.insert_new(id.to_owned(), txn, ndb, &notes, note_cache);
 
         GetNotesResponse {
             vitality: Vitality::Fresh(self.get_expected_mut(id)),
-            unknown_pks,
+            insert_result,
         }
     }
 
-    /// Open a timeline, optionally loading local notes.
+    /// Open a timeline with a Columns-internal remote subscription policy.
     ///
     /// When `load_local` is false, the timeline is created and subscribed
     /// without running a blocking local query. Use this for startup paths
@@ -199,10 +209,11 @@ impl TimelineCache {
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         txn: &Transaction,
-        scoped_subs: &mut ScopedSubApi<'_, '_>,
+        scoped_subs: &mut ScopedSubApi<'_>,
         id: &TimelineKind,
         account_pk: Pubkey,
         load_local: bool,
+        remote_policy: RemoteSubscriptionPolicy,
     ) -> Option<TimelineOpenResult> {
         if !load_local {
             let timeline = if let Some(timeline) = self.timelines.get_mut(id) {
@@ -224,6 +235,7 @@ impl TimelineCache {
                     account_pk,
                     filter.remote().to_vec(),
                     scoped_subs,
+                    remote_policy,
                 );
             } else {
                 debug!(
@@ -269,6 +281,7 @@ impl TimelineCache {
                 account_pk,
                 filter.remote().to_vec(),
                 scoped_subs,
+                remote_policy,
             );
         } else {
             // This should never happen reasoning, self.notes would have
@@ -280,10 +293,10 @@ impl TimelineCache {
 
         timeline.subscription.increment(account_pk);
 
-        if let Some(unknowns) = notes_resp.unknown_pks {
+        if let Some(insert_result) = notes_resp.insert_result {
             match &mut open_result {
-                Some(o) => o.insert_pks(unknowns.pks),
-                None => open_result = Some(TimelineOpenResult::new_pks(unknowns.pks)),
+                Some(o) => o.insert_insert_result(insert_result),
+                None => open_result = Some(TimelineOpenResult::new_insert_result(insert_result)),
             }
         }
 
@@ -296,6 +309,33 @@ impl TimelineCache {
 
     pub fn get_mut(&mut self, id: &TimelineKind) -> Option<&mut Timeline> {
         self.timelines.get_mut(id)
+    }
+
+    pub(crate) fn refresh_remote_subscriptions(
+        &mut self,
+        scoped_subs: &mut ScopedSubApi<'_>,
+        remote_policy: RemoteSubscriptionPolicy,
+    ) {
+        for timeline in self.timelines.values_mut() {
+            let accounts = timeline.subscription.accounts_with_dependers();
+            if accounts.is_empty() {
+                continue;
+            }
+
+            let Some(remote_filters) = timeline.remote_filters_for_subscription_refresh() else {
+                continue;
+            };
+
+            for account_pk in accounts {
+                super::update_remote_timeline_subscription_for_account(
+                    timeline,
+                    account_pk,
+                    remote_filters.clone(),
+                    scoped_subs,
+                    remote_policy,
+                );
+            }
+        }
     }
 
     pub fn num_timelines(&self) -> usize {
@@ -331,7 +371,7 @@ fn collect_stale_notes(timeline: &Timeline, txn: &Transaction, ndb: &Ndb) -> Vec
 
 pub struct GetNotesResponse<'a> {
     vitality: Vitality<'a, Timeline>,
-    unknown_pks: Option<UnknownPksOwned>,
+    insert_result: Option<InsertNewResult>,
 }
 
 /// Look for new thread notes since our last fetch
@@ -379,55 +419,42 @@ mod tests {
 
     use super::*;
     use crate::timeline::InitialLoadState;
-    use enostr::{FullKeypair, OutboxPool, OutboxSessionHandler};
-    use nostrdb::{Config, NoteBuilder};
-    use notedeck::{Accounts, EguiWakeup, NoteCache, ScopedSubsState, UnknownIds};
+    use enostr::FullKeypair;
+    use nostrdb::NoteBuilder;
+    use notedeck::{NoteCache, Notedeck, UnknownIds};
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
     struct Harness {
         _tmp: TempDir,
-        ndb: Ndb,
-        accounts: Accounts,
-        scoped_sub_state: ScopedSubsState,
-        pool: OutboxPool,
-        note_cache: NoteCache,
+        notedeck: Notedeck,
         kp: FullKeypair,
     }
 
     fn make_harness() -> Harness {
         let tmp = TempDir::new().expect("tmp");
-        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let ui_ctx = egui::Context::default();
         let kp = FullKeypair::generate();
-        let mut unknown_ids = UnknownIds::default();
-        let accounts = {
-            let txn = Transaction::new(&ndb).expect("txn");
-            // Use our test keypair's pubkey as the selected (fallback)
-            // account so scoped_subs.selected_account_pubkey() matches
-            // what we pass to cache.open.
-            Accounts::new(
-                None,
-                Vec::new(),
-                Vec::new(),
-                kp.pubkey,
-                &mut ndb,
-                &txn,
-                &mut unknown_ids,
-            )
-        };
+        let notedeck = Notedeck::init(
+            &ui_ctx,
+            tmp.path(),
+            &[
+                "notedeck".to_owned(),
+                "--testrunner".to_owned(),
+                "--sec".to_owned(),
+                hex::encode(kp.secret_key.to_secret_bytes()),
+            ],
+        );
+
         Harness {
             _tmp: tmp,
-            ndb,
-            accounts,
-            scoped_sub_state: ScopedSubsState::default(),
-            pool: OutboxPool::default(),
-            note_cache: NoteCache::default(),
+            notedeck,
             kp,
         }
     }
 
     /// Publish a kind-1 note authored by the harness keypair.
-    fn publish_note(h: &Harness, content: &str, created_at: u64) {
+    fn publish_note(h: &mut Harness, content: &str, created_at: u64) {
         let note = NoteBuilder::new()
             .kind(1)
             .content(content)
@@ -436,7 +463,11 @@ mod tests {
             .build()
             .expect("note build");
         let json = note.json().expect("note json");
-        h.ndb.process_client_event(&json).expect("ingest");
+        h.notedeck
+            .app_context()
+            .ndb
+            .process_client_event(&json)
+            .expect("ingest");
     }
 
     /// Wait until ndb has at least `n` matching notes. Ingestion is async.
@@ -465,6 +496,7 @@ mod tests {
         kind: &TimelineKind,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
+        unknown_ids: &mut UnknownIds,
     ) {
         let timeline = cache.get_mut(kind).expect("timeline exists");
         if timeline.initial_load != InitialLoadState::Pending {
@@ -479,8 +511,13 @@ mod tests {
             let results = ndb.query(&txn, pkg.filters, 1000).expect("query ok");
             notes.extend(results.into_iter().map(NoteRef::from_query_result));
         }
-        timeline.insert_new(&txn, ndb, note_cache, &notes);
+        let insert_result = timeline.insert_new(&txn, ndb, note_cache, &notes);
+        insert_result.process(ndb, &txn, unknown_ids, note_cache);
         timeline.initial_load = InitialLoadState::Complete;
+    }
+
+    fn remote_policy() -> RemoteSubscriptionPolicy {
+        RemoteSubscriptionPolicy::from_outbox_relays(true)
     }
 
     #[tokio::test]
@@ -493,25 +530,38 @@ mod tests {
         let mut cache = TimelineCache::default();
 
         // --- Step 1: post A, then open profile and run the initial load ---
-        publish_note(&h, "post A", 1_700_000_100);
-        wait_for_count(&h.ndb, &author_filter, 1);
+        publish_note(&mut h, "post A", 1_700_000_100);
+        {
+            let app_ctx = h.notedeck.app_context();
+            wait_for_count(app_ctx.ndb, &author_filter, 1);
+        }
 
         {
-            let txn = Transaction::new(&h.ndb).expect("txn");
-            let mut outbox =
-                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
-            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            let mut app_ctx = h.notedeck.app_context();
+            let ndb = &mut *app_ctx.ndb;
+            let txn = Transaction::new(ndb).expect("txn");
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
             cache.open(
-                &h.ndb,
-                &mut h.note_cache,
+                ndb,
+                app_ctx.note_cache,
                 &txn,
                 &mut scoped_subs,
                 &kind,
                 pk,
                 false,
+                remote_policy(),
             );
         }
-        run_scheduled_initial_load(&mut cache, &kind, &h.ndb, &mut h.note_cache);
+        {
+            let app_ctx = h.notedeck.app_context();
+            run_scheduled_initial_load(
+                &mut cache,
+                &kind,
+                app_ctx.ndb,
+                app_ctx.note_cache,
+                app_ctx.unknown_ids,
+            );
+        }
 
         assert_eq!(
             cache
@@ -526,35 +576,47 @@ mod tests {
 
         // --- Step 2: go back (pop the route) ---
         {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
-            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            let mut app_ctx = h.notedeck.app_context();
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
             cache
-                .pop(&kind, &mut h.ndb, &mut scoped_subs)
+                .pop(&kind, app_ctx.ndb, &mut scoped_subs)
                 .expect("pop ok");
         }
 
         // --- Step 3: post B while the profile is closed ---
-        publish_note(&h, "post B", 1_700_000_200);
-        wait_for_count(&h.ndb, &author_filter, 2);
+        publish_note(&mut h, "post B", 1_700_000_200);
+        {
+            let app_ctx = h.notedeck.app_context();
+            wait_for_count(app_ctx.ndb, &author_filter, 2);
+        }
 
         // --- Step 4: reopen profile and run the scheduled load again ---
         {
-            let txn = Transaction::new(&h.ndb).expect("txn");
-            let mut outbox =
-                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
-            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            let mut app_ctx = h.notedeck.app_context();
+            let ndb = &mut *app_ctx.ndb;
+            let txn = Transaction::new(ndb).expect("txn");
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
             cache.open(
-                &h.ndb,
-                &mut h.note_cache,
+                ndb,
+                app_ctx.note_cache,
                 &txn,
                 &mut scoped_subs,
                 &kind,
                 pk,
                 false,
+                remote_policy(),
             );
         }
-        run_scheduled_initial_load(&mut cache, &kind, &h.ndb, &mut h.note_cache);
+        {
+            let app_ctx = h.notedeck.app_context();
+            run_scheduled_initial_load(
+                &mut cache,
+                &kind,
+                app_ctx.ndb,
+                app_ctx.note_cache,
+                app_ctx.unknown_ids,
+            );
+        }
 
         // --- Step 5: post B must now be visible ---
         let view_len = cache

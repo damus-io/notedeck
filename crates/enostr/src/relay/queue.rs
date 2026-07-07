@@ -25,7 +25,6 @@ impl QueuedTasks {
         self.order.is_empty()
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.order.len()
     }

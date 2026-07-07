@@ -11,7 +11,7 @@ use nostr::{
     util::JsonUtil,
 };
 use nostrdb::{FilterBuilder, Ndb, Note, NoteBuilder, Transaction};
-use notedeck::{unix_time_secs, RelayType};
+use notedeck::unix_time_secs;
 use notedeck_messages::nip17::{
     conversation_filter, parse_chat_message, parse_dm_relay_list_relays,
     participant_dm_relay_list_filter, OsRng,
@@ -116,10 +116,9 @@ pub fn seed_local_dm_relay_list_with_relays(
     seed_local_dm_relay_list_ndb_only_with_relays(device, account, relays, created_at);
 
     let note = build_dm_relay_list_note(account, relays, created_at);
-    let ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
-    let mut publisher = app_ctx.remote.publisher(app_ctx.accounts);
-    publisher.publish_note(&note, RelayType::AccountsWrite);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
+    let mut publisher = app_ctx.remote.publisher();
+    publisher.accounts_write().publish_note(&note);
 }
 
 /// Seeds a kind `10050` DM relay-list note into NDB only (no relay publish).
@@ -140,8 +139,7 @@ pub fn seed_local_dm_relay_list_ndb_only_with_relays(
     let note = build_dm_relay_list_note(account, relays, created_at);
     let expected_created_at = note.created_at();
     let note_json = note.json().expect("dm relay list note json");
-    let ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
     app_ctx
         .ndb
         .process_client_event(&note_json)
@@ -177,8 +175,7 @@ pub fn local_dm_relay_list_relays(
     device: &mut DeviceHarness,
     account: &FullKeypair,
 ) -> Vec<String> {
-    let ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
     let filter = participant_dm_relay_list_filter(&account.pubkey);
     let txn = Transaction::new(app_ctx.ndb).expect("txn");
     let results = app_ctx
@@ -200,8 +197,7 @@ pub fn local_dm_relay_list_versions(
     device: &mut DeviceHarness,
     account: &FullKeypair,
 ) -> Vec<(u64, Vec<String>)> {
-    let ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
     let filter = FilterBuilder::new()
         .kinds([10050])
         .authors([account.pubkey.bytes()])

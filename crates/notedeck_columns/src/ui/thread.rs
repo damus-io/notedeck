@@ -6,13 +6,17 @@ use notedeck::{NoteAction, NoteContext};
 use notedeck_ui::note::NoteResponse;
 use notedeck_ui::{NoteOptions, NoteView};
 
-use crate::timeline::thread::{NoteSeenFlags, ParentState, Threads};
+use crate::{
+    column::ColumnId,
+    timeline::thread::{NoteSeenFlags, ParentState, Threads},
+};
 use notedeck::DragResponse;
 
 pub struct ThreadView<'a, 'd> {
     threads: &'a mut Threads,
     selected_note_id: &'a [u8; 32],
     note_options: NoteOptions,
+    column_id: ColumnId,
     col: usize,
     note_context: &'a mut NoteContext<'d>,
 }
@@ -24,12 +28,14 @@ impl<'a, 'd> ThreadView<'a, 'd> {
         selected_note_id: &'a [u8; 32],
         note_options: NoteOptions,
         note_context: &'a mut NoteContext<'d>,
+        column_id: ColumnId,
         col: usize,
     ) -> Self {
         ThreadView {
             threads,
             selected_note_id,
             note_options,
+            column_id,
             note_context,
             col,
         }
@@ -90,7 +96,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             txn,
             self.note_context.unknown_ids,
             self.note_context.accounts,
-            self.col,
+            self.column_id,
         );
 
         let cur_node = self.threads.threads.get(&self.selected_note_id).unwrap();

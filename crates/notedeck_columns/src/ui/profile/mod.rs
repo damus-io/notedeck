@@ -104,7 +104,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
             let reversed = false;
             // poll for new notes and insert them into our existing notes
-            if let Err(e) = profile_timeline.poll_notes_into_view(
+            match profile_timeline.poll_notes_into_view(
                 self.note_context.accounts.selected_account_pubkey(),
                 self.note_context.ndb,
                 &txn,
@@ -112,7 +112,12 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 self.note_context.note_cache,
                 reversed,
             ) {
-                error!("Profile::poll_notes_into_view: {e}");
+                Ok(new_note_keys) => {
+                    if !new_note_keys.is_empty() {
+                        ui.ctx().request_repaint();
+                    }
+                }
+                Err(e) => error!("Profile::poll_notes_into_view: {e}"),
             }
 
             if let Some(note_action) = TimelineTabView::new(

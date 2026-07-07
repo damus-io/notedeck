@@ -1,4 +1,5 @@
 use crate::{
+    column::ColumnId,
     nav::RenderNavAction,
     profile::ProfileAction,
     timeline::{thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
@@ -54,6 +55,7 @@ pub fn render_timeline_route(
 pub fn render_thread_route(
     threads: &mut Threads,
     selection: &ThreadSelection,
+    column_id: ColumnId,
     col: usize,
     mut note_options: NoteOptions,
     ui: &mut egui::Ui,
@@ -71,6 +73,7 @@ pub fn render_thread_route(
         selection.selected_or_root(),
         note_options,
         note_context,
+        column_id,
         col,
     )
     .ui(ui)

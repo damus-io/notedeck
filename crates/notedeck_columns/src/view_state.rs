@@ -9,6 +9,7 @@ use notedeck_ui::nip51_set::Nip51SetUiCache;
 use crate::deck_state::DeckState;
 use crate::login_manager::AcquireKeyState;
 use crate::ui::search::SearchQueryState;
+use crate::ui::settings::SettingsUiState;
 use enostr::ProfileState;
 use notedeck_ui::media::MediaViewerState;
 
@@ -42,6 +43,9 @@ pub struct ViewState {
 
     /// Database compaction state
     pub compact: CompactState,
+
+    /// Draft state for settings controls that are applied explicitly.
+    pub settings_ui: SettingsUiState,
 
     /// Cache for people list selection in "Add Column" UI
     pub people_lists: Option<Nip51SetCache>,

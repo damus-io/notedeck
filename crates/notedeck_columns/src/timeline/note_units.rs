@@ -21,12 +21,88 @@ pub struct NoteUnits {
     order: Vec<StorageIndex>, // the sorted order of the `NoteUnit`s in `NoteUnits::storage`
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum EdgeInsertPosition {
+    Before,
+    After,
+}
+
 impl NoteUnits {
     pub fn values(&self) -> Values<'_> {
         Values {
             set: self,
             front: 0,
             back: self.order.len(),
+        }
+    }
+
+    /// Remove duplicates already present in storage and sort new units into timeline order.
+    fn prepare_new_units(&self, units: &mut Vec<NoteUnit>) {
+        units.retain(|e| !self.lookup.contains_key(&e.key()));
+        units.sort_unstable();
+        units.dedup_by_key(|u| u.key());
+    }
+
+    /// Return the edge position if all new units fit before or after current order.
+    fn edge_insert_position(&self, units: &[NoteUnit]) -> Option<EdgeInsertPosition> {
+        if units.is_empty() || self.order.is_empty() {
+            return Some(EdgeInsertPosition::After);
+        }
+
+        let first_existing = &self.storage[*self.order.first()?];
+        let last_existing = &self.storage[*self.order.last()?];
+        let first_new = units.first()?;
+        let last_new = units.last()?;
+
+        if last_new <= first_existing {
+            Some(EdgeInsertPosition::Before)
+        } else if first_new >= last_existing {
+            Some(EdgeInsertPosition::After)
+        } else {
+            None
+        }
+    }
+
+    /// Merge a monotonic edge batch without rebuilding the full order vector.
+    fn merge_edge_units(
+        &mut self,
+        units: Vec<NoteUnit>,
+        position: EdgeInsertPosition,
+    ) -> InsertManyResponse {
+        let old_len = self.order.len();
+        let entries_merged = units.len();
+        if entries_merged == 0 {
+            return InsertManyResponse::Zero;
+        }
+
+        let merge_kind = if old_len == 0
+            || (position == EdgeInsertPosition::Before && !self.reversed)
+            || (position == EdgeInsertPosition::After && self.reversed)
+        {
+            MergeKind::FrontInsert
+        } else {
+            MergeKind::Spliced
+        };
+
+        let base = self.storage.len();
+        self.storage.reserve(entries_merged);
+        for (index, unit) in units.into_iter().enumerate() {
+            let idx = base + index;
+            let key = unit.key();
+            self.storage.push(unit);
+            self.lookup.insert(key, idx);
+        }
+
+        match position {
+            EdgeInsertPosition::Before => self.order.splice(0..0, base..base + entries_merged),
+            EdgeInsertPosition::After => self
+                .order
+                .splice(old_len..old_len, base..base + entries_merged),
+        };
+
+        InsertManyResponse::Some {
+            entries_merged,
+            merge_kind,
         }
     }
 
@@ -72,21 +148,24 @@ impl NoteUnits {
         mut units: Vec<NoteUnit>,
         touched_indices: &[usize],
     ) -> InsertManyResponse {
-        units.retain(|e| !self.lookup.contains_key(&e.key()));
+        self.prepare_new_units(&mut units);
         if units.is_empty() && touched_indices.is_empty() {
             return InsertManyResponse::Zero;
+        }
+
+        if touched_indices.is_empty() {
+            if let Some(position) = self.edge_insert_position(&units) {
+                return self.merge_edge_units(units, position);
+            }
         }
 
         let mut touched = Vec::new();
         if !touched_indices.is_empty() {
             touched = touched_indices.to_vec();
-            touched.sort_unstable(); // sort for later reinsertion
+            touched.sort_unstable();
             touched.dedup();
-            self.order.retain(|i| touched.binary_search(i).is_err()); // temporarily remove touched from Self::order
+            self.order.retain(|i| touched.binary_search(i).is_err());
         }
-
-        units.sort_unstable();
-        units.dedup_by_key(|u| u.key());
 
         let base = self.storage.len();
         let mut new_order = Vec::with_capacity(units.len());
@@ -104,22 +183,12 @@ impl NoteUnits {
         let front_insertion = if self.order.is_empty() || new_order.is_empty() {
             !new_order.is_empty()
         } else if self.reversed {
-            // reversed is true, sorting should occur less recent to most recent (oldest to newest, opposite of `self.order`)
-            let first_new = *new_order.first().unwrap(); // most recent unit of the new order
-            let last_old = *self.order.last().unwrap(); // least recent unit of the current order
-
-            // if the most recent unit of the new order is less recent than the least recent unit of the current order,
-            // all current order units are less recent than the new order units.
-            // In other words, they are all being inserted in the front
+            let first_new = *new_order.first().unwrap();
+            let last_old = *self.order.last().unwrap();
             self.storage[first_new] >= self.storage[last_old]
         } else {
-            // reversed is false, sorting should occur most recent to least recent (newest to oldest, as it is in `self.order`)
-            let last_new = *new_order.last().unwrap(); // least recent unit of the new order
-            let first_old = *self.order.first().unwrap(); // most recent unit of the current order
-
-            // if the least recent unit of the new order is more recent than the most recent unit of the current order,
-            // all new units are more recent than the current units.
-            // In other words, they are all being inserted in the front
+            let last_new = *new_order.last().unwrap();
+            let first_old = *self.order.first().unwrap();
             self.storage[last_new] <= self.storage[first_old]
         };
 
@@ -131,7 +200,6 @@ impl NoteUnits {
             let left_unit = &self.storage[index_left];
             let right_unit = &self.storage[index_right];
             if left_unit <= right_unit {
-                // the left unit is more recent than (or the same recency as) the right unit
                 merged.push(index_left);
                 i += 1;
             } else {
@@ -142,7 +210,6 @@ impl NoteUnits {
         merged.extend_from_slice(&self.order[i..]);
         merged.extend_from_slice(&new_order[j..]);
 
-        // reinsert touched
         for touched_index in touched {
             let pos = merged
                 .binary_search_by(|&i2| self.storage[i2].cmp(&self.storage[touched_index]))
@@ -347,7 +414,7 @@ mod tests {
             CompositeFragment, CompositeUnit, NoteUnit, NoteUnitFragment, Reaction,
             ReactionFragment, ReactionUnit, RepostFragment,
         },
-        NoteUnits, RepostUnit,
+        InsertManyResponse, MergeKind, NoteUnits, RepostUnit,
     };
 
     #[derive(Default)]
@@ -540,6 +607,58 @@ mod tests {
         Single(&'a String),
         Reaction(Vec<&'a String>),
         Repost(Vec<&'a String>),
+    }
+
+    fn note_ref(key: u64, created_at: u64) -> NoteRef {
+        NoteRef {
+            key: NoteKey::new(key),
+            created_at,
+        }
+    }
+
+    fn single_frag(key: u64, created_at: u64) -> NoteUnitFragment {
+        NoteUnitFragment::Single(note_ref(key, created_at))
+    }
+
+    fn ordered_created_ats(units: &NoteUnits) -> Vec<u64> {
+        units
+            .values()
+            .map(|unit| unit.get_latest_ref().created_at)
+            .collect()
+    }
+
+    #[test]
+    fn merge_fragments_prepends_monotonic_newer_batch() {
+        let mut units = NoteUnits::new_with_cap(4, false);
+        units.merge_fragments(vec![single_frag(1, 30), single_frag(2, 20)]);
+
+        let response = units.merge_fragments(vec![single_frag(3, 50), single_frag(4, 40)]);
+
+        assert!(matches!(
+            response,
+            InsertManyResponse::Some {
+                entries_merged: 2,
+                merge_kind: MergeKind::FrontInsert,
+            }
+        ));
+        assert_eq!(ordered_created_ats(&units), vec![50, 40, 30, 20]);
+    }
+
+    #[test]
+    fn merge_fragments_appends_monotonic_older_batch() {
+        let mut units = NoteUnits::new_with_cap(4, false);
+        units.merge_fragments(vec![single_frag(1, 50), single_frag(2, 40)]);
+
+        let response = units.merge_fragments(vec![single_frag(3, 30), single_frag(4, 20)]);
+
+        assert!(matches!(
+            response,
+            InsertManyResponse::Some {
+                entries_merged: 2,
+                merge_kind: MergeKind::Spliced,
+            }
+        ));
+        assert_eq!(ordered_created_ats(&units), vec![50, 40, 30, 20]);
     }
 
     #[test]

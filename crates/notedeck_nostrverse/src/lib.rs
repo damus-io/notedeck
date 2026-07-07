@@ -21,10 +21,12 @@ pub use room_state::{
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
-use enostr::{NormRelayUrl, Pubkey, RelayId};
+use enostr::{NormRelayUrl, Pubkey, RelayDemandPriority, RelayId, RelayRoutingPreference};
 use glam::Vec3;
 use nostrdb::Filter;
-use notedeck::{AppContext, AppResponse, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey};
+use notedeck::{
+    AppContext, AppResponse, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey, SubRelayPolicy,
+};
 use renderbud::Transform;
 
 use egui_wgpu::wgpu;
@@ -49,7 +51,7 @@ fn nostrverse_remote_sub_identity() -> ScopedSubIdentity {
 
 /// Publish a locally ingested note to the dedicated nostrverse relay.
 fn publish_ingested_note(
-    publisher: &mut notedeck::ExplicitPublishApi<'_, '_>,
+    publisher: &mut notedeck::ExplicitPublishApi<'_>,
     relay_url: &NormRelayUrl,
     note: &nostrdb::Note<'_>,
 ) {
@@ -399,9 +401,12 @@ impl NostrverseApp {
         self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
 
         // Declare remote room/presence feed on the dedicated relay.
-        let relays = std::iter::once(self.relay_url.clone()).collect();
-        let config = SubConfig::live(vec![room_filter(), presence_filter()])
-            .explicit_relays(relays)
+        let policy = SubRelayPolicy::new(
+            RelayDemandPriority::Important,
+            RelayRoutingPreference::default(),
+        );
+        let config = SubConfig::builder(vec![room_filter(), presence_filter()])
+            .explicit([self.relay_url.clone()], policy)
             .build();
         let _ = ctx
             .remote
