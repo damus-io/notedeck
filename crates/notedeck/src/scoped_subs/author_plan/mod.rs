@@ -901,7 +901,7 @@ fn planned_routed_relay_from_send(route: SendPlannedRoutedRelay) -> PlannedRoute
 mod tests {
     use super::discovery::{
         start_relay_list_discovery, RelayListDiscovery, RelayListDiscoveryAdvance,
-        RELAY_LIST_DISCOVERY_AUTHORS_PER_REQ,
+        RELAY_LIST_DISCOVERY_AUTHORS_PER_REQ, RELAY_LIST_DISCOVERY_EOSE_GRACE,
     };
     use super::*;
     use crate::scoped_subs::ScopedSubOutboxOp;
@@ -1699,6 +1699,10 @@ mod tests {
             .legs
             .iter()
             .any(|leg| leg.relay == eose_relay && leg.id.is_none()));
+        let grace_deadline = discovery.chunks[0]
+            .eose_grace_deadline
+            .expect("first EOSE should start grace deadline");
+        assert!(grace_deadline <= Instant::now() + RELAY_LIST_DISCOVERY_EOSE_GRACE);
         let retrying_id = discovery.chunks[0]
             .legs
             .iter()
@@ -1755,6 +1759,7 @@ mod tests {
             .legs
             .iter()
             .any(|leg| leg.relay == eose_relay && leg.id.is_none()));
+        assert!(discovery.chunks[0].eose_grace_deadline.is_some());
 
         let waiting_id = discovery.chunks[0]
             .legs
@@ -1789,10 +1794,58 @@ mod tests {
             let leg = &discovery.chunks[0].legs[0];
             assert_eq!(
                 leg.retry_attempts, 0,
-                "open discovery should not retry without relay CLOSED"
+                "open discovery should not retry without relay CLOSED or prior EOSE"
             );
             assert!(leg.retry_after.is_none());
+            assert!(discovery.chunks[0].eose_grace_deadline.is_none());
         }
+    }
+
+    #[test]
+    fn relay_list_discovery_eose_grace_completes_silent_remaining_legs() {
+        let author = test_pubkey(2);
+        let eose_relay = NormRelayUrl::new("wss://grace-eose.example.com").expect("eose relay");
+        let silent_relay =
+            NormRelayUrl::new("wss://grace-silent.example.com").expect("silent relay");
+        let relays = HashSet::from([eose_relay.clone(), silent_relay.clone()]);
+        let mut bridge = RemoteOutboxReadModelHarness::default();
+        let mut discovery = start_discovery_for_test(&mut bridge, HashSet::from([author]), relays);
+        let eose_id = discovery.chunks[0]
+            .legs
+            .iter()
+            .find(|leg| leg.relay == eose_relay)
+            .and_then(|leg| leg.id)
+            .expect("eose relay discovery id");
+        let silent_id = discovery.chunks[0]
+            .legs
+            .iter()
+            .find(|leg| leg.relay == silent_relay)
+            .and_then(|leg| leg.id)
+            .expect("silent relay discovery id");
+
+        assert_eq!(
+            bridge.with_returned_outbox_ops(|_| discovery.apply_relay_req_status(
+                eose_id,
+                &eose_relay,
+                Some(RelayReqStatus::Eose),
+            )),
+            RelayListDiscoveryAdvance::Waiting
+        );
+        discovery.chunks[0].eose_grace_deadline = Some(Instant::now() - Duration::from_millis(1));
+
+        assert_eq!(
+            bridge.with_returned_outbox_ops(|_| discovery.apply_retry_due(Instant::now())),
+            RelayListDiscoveryAdvance::Complete
+        );
+        assert!(discovery.chunks[0].legs.iter().all(|leg| leg.id.is_none()));
+        assert!(discovery.chunks[0].eose_grace_deadline.is_none());
+        assert_eq!(
+            bridge.with_returned_outbox_ops(|relay_status| (
+                relay_status(silent_id, &silent_relay),
+                ScopedSubOutboxOps::default(),
+            )),
+            None
+        );
     }
 
     #[test]

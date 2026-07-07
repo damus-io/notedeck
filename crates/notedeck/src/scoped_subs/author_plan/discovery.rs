@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 use super::super::ScopedSubOutboxOps;
 
 pub(super) const RELAY_LIST_DISCOVERY_AUTHORS_PER_REQ: usize = 500;
+/// Grace period for slower selected-account read relays after one discovery
+/// leg has reached EOSE for the same author chunk.
+pub(super) const RELAY_LIST_DISCOVERY_EOSE_GRACE: Duration = Duration::from_secs(10);
 const RELAY_LIST_DISCOVERY_MAX_BACKOFF_ATTEMPTS: u32 = 4;
 const RELAY_LIST_DISCOVERY_RETRY_BASE: Duration = Duration::from_secs(5);
 const RELAY_LIST_DISCOVERY_RETRY_MAX: Duration = Duration::from_secs(60);
@@ -33,6 +36,9 @@ pub(super) struct RelayListDiscovery {
 #[derive(Clone, Debug)]
 pub(super) struct RelayListDiscoveryChunk {
     pub(super) legs: Vec<RelayListDiscoveryLeg>,
+    /// Deadline after the first EOSE in this chunk; remaining legs are cleared
+    /// when it elapses.
+    pub(super) eose_grace_deadline: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,7 +120,13 @@ impl RelayListDiscoveryChunk {
                 leg
             })
             .collect();
-        (Self { legs }, outbox_ops)
+        (
+            Self {
+                legs,
+                eose_grace_deadline: None,
+            },
+            outbox_ops,
+        )
     }
 
     #[cfg(test)]
@@ -135,12 +147,29 @@ impl RelayListDiscoveryChunk {
             return ScopedSubOutboxOps::default();
         }
 
+        let mut completed_by_eose = false;
+        let mut outbox_ops = ScopedSubOutboxOps::default();
         for leg in &mut self.legs {
             if leg.matches(id, relay) {
-                return leg.apply_relay_req_status(status);
+                let was_complete = leg.is_complete();
+                outbox_ops = leg.apply_relay_req_status(status);
+                completed_by_eose = !was_complete
+                    && matches!(status, Some(RelayReqStatus::Eose))
+                    && leg.is_complete();
+                break;
             }
         }
-        ScopedSubOutboxOps::default()
+
+        if self.is_complete() {
+            self.eose_grace_deadline = None;
+            return outbox_ops;
+        }
+
+        if completed_by_eose && self.eose_grace_deadline.is_none() {
+            self.eose_grace_deadline = Some(Instant::now() + RELAY_LIST_DISCOVERY_EOSE_GRACE);
+        }
+
+        outbox_ops
     }
 
     fn apply_retry_due(&mut self, now: Instant) -> ScopedSubOutboxOps {
@@ -148,9 +177,19 @@ impl RelayListDiscoveryChunk {
             return ScopedSubOutboxOps::default();
         }
 
+        if self
+            .eose_grace_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            return self.unsubscribe_all_mut();
+        }
+
         let mut outbox_ops = ScopedSubOutboxOps::default();
         for leg in &mut self.legs {
             outbox_ops.extend(leg.apply_retry_due(now));
+        }
+        if self.is_complete() {
+            self.eose_grace_deadline = None;
         }
         outbox_ops
     }
@@ -167,6 +206,7 @@ impl RelayListDiscoveryChunk {
             };
             outbox_ops.clear_fetch(id);
         }
+        self.eose_grace_deadline = None;
         outbox_ops
     }
 
@@ -175,9 +215,14 @@ impl RelayListDiscoveryChunk {
             return None;
         }
 
-        self.legs
+        let leg_deadline = self
+            .legs
             .iter()
             .filter_map(RelayListDiscoveryLeg::next_deadline)
+            .min();
+        [self.eose_grace_deadline, leg_deadline]
+            .into_iter()
+            .flatten()
             .min()
     }
 
