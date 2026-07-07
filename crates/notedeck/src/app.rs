@@ -234,13 +234,15 @@ impl Notedeck {
             app_ctx
                 .zaps
                 .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
-            if app_ctx.unknown_ids.ready_to_send() {
-                let mut oneshot = app_ctx.remote.oneshot();
-                crate::unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
-            }
         }
 
         render_notedeck(app, &mut app_ref.app_ctx, ctx);
+
+        {
+            let app_ctx = &mut app_ref.app_ctx;
+            let mut oneshot = app_ctx.remote.oneshot();
+            crate::unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
+        }
 
         {
             profiling::scope!("outbox ingestion");

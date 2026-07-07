@@ -109,7 +109,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             match profile_timeline.poll_notes_into_view(
                 self.note_context.accounts.selected_account_pubkey(),
                 self.note_context.ndb,
-                self.note_context.unknown_ids,
                 self.note_context.note_cache,
                 reversed,
             ) {

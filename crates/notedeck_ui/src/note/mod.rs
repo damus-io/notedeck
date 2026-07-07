@@ -622,6 +622,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .note_context
             .ndb
             .get_profile_by_pubkey(txn, self.note.pubkey());
+        if profile.is_err() {
+            self.note_context.unknown_ids.add_pubkey_if_missing(
+                self.note_context.ndb,
+                txn,
+                self.note.pubkey(),
+            );
+        }
 
         let hitbox_id = note_hitbox_id(note_key, self.options(), self.parent);
         let maybe_hitbox = maybe_note_hitbox(ui, hitbox_id);

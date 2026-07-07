@@ -489,13 +489,7 @@ fn handle_navigating_timeline(
         false,
         remote_policy,
     ) {
-        open_result.process(
-            ctx.ndb,
-            ctx.note_cache,
-            &txn,
-            &mut app.timeline_cache,
-            ctx.unknown_ids,
-        );
+        open_result.process(ctx.ndb, ctx.note_cache, &txn, &mut app.timeline_cache);
     }
 }
 

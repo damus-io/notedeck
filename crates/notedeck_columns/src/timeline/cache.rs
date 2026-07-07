@@ -3,7 +3,7 @@ use crate::{
     error::Error,
     timeline::{
         drop_timeline_remote_owner, ensure_remote_timeline_subscription, InitialLoadState,
-        InsertNewResult, RemoteSubscriptionPolicy, Timeline, TimelineKind,
+        RemoteSubscriptionPolicy, Timeline, TimelineKind,
     },
 };
 
@@ -115,19 +115,17 @@ impl TimelineCache {
         ndb: &Ndb,
         notes: &[NoteRef],
         note_cache: &mut NoteCache,
-    ) -> Option<InsertNewResult> {
+    ) {
         let mut timeline = if let Some(timeline) = id.clone().into_timeline(txn, ndb) {
             timeline
         } else {
             error!("Error creating timeline from {:?}", &id);
-            return None;
+            return;
         };
 
         // insert initial notes into timeline
-        let res = timeline.insert_new(txn, ndb, note_cache, notes);
+        timeline.insert_new(txn, ndb, note_cache, notes);
         self.timelines.insert(id, timeline);
-
-        Some(res)
     }
 
     pub fn insert(&mut self, id: TimelineKind, account_pk: Pubkey, mut timeline: Timeline) {
@@ -156,7 +154,6 @@ impl TimelineCache {
         if self.timelines.contains_key(id) {
             return GetNotesResponse {
                 vitality: Vitality::Stale(self.get_expected_mut(id)),
-                insert_result: None,
             };
         }
 
@@ -189,11 +186,10 @@ impl TimelineCache {
             info!("found NotesHolder with {} notes", notes.len());
         }
 
-        let insert_result = self.insert_new(id.to_owned(), txn, ndb, &notes, note_cache);
+        self.insert_new(id.to_owned(), txn, ndb, &notes, note_cache);
 
         GetNotesResponse {
             vitality: Vitality::Fresh(self.get_expected_mut(id)),
-            insert_result,
         }
     }
 
@@ -250,7 +246,7 @@ impl TimelineCache {
 
         let account_pk = scoped_subs.selected_account_pubkey();
         let notes_resp = self.notes(ndb, note_cache, txn, id);
-        let (mut open_result, timeline) = match notes_resp.vitality {
+        let (open_result, timeline) = match notes_resp.vitality {
             Vitality::Stale(timeline) => {
                 // The timeline cache is stale, let's update it
                 let notes = collect_stale_notes(timeline, txn, ndb);
@@ -292,13 +288,6 @@ impl TimelineCache {
         };
 
         timeline.subscription.increment(account_pk);
-
-        if let Some(insert_result) = notes_resp.insert_result {
-            match &mut open_result {
-                Some(o) => o.insert_insert_result(insert_result),
-                None => open_result = Some(TimelineOpenResult::new_insert_result(insert_result)),
-            }
-        }
 
         open_result
     }
@@ -371,7 +360,6 @@ fn collect_stale_notes(timeline: &Timeline, txn: &Transaction, ndb: &Ndb) -> Vec
 
 pub struct GetNotesResponse<'a> {
     vitality: Vitality<'a, Timeline>,
-    insert_result: Option<InsertNewResult>,
 }
 
 /// Look for new thread notes since our last fetch
@@ -421,7 +409,7 @@ mod tests {
     use crate::timeline::InitialLoadState;
     use enostr::FullKeypair;
     use nostrdb::NoteBuilder;
-    use notedeck::{NoteCache, Notedeck, UnknownIds};
+    use notedeck::{NoteCache, Notedeck};
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
@@ -496,7 +484,6 @@ mod tests {
         kind: &TimelineKind,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
-        unknown_ids: &mut UnknownIds,
     ) {
         let timeline = cache.get_mut(kind).expect("timeline exists");
         if timeline.initial_load != InitialLoadState::Pending {
@@ -511,8 +498,7 @@ mod tests {
             let results = ndb.query(&txn, pkg.filters, 1000).expect("query ok");
             notes.extend(results.into_iter().map(NoteRef::from_query_result));
         }
-        let insert_result = timeline.insert_new(&txn, ndb, note_cache, &notes);
-        insert_result.process(ndb, &txn, unknown_ids, note_cache);
+        timeline.insert_new(&txn, ndb, note_cache, &notes);
         timeline.initial_load = InitialLoadState::Complete;
     }
 
@@ -554,13 +540,7 @@ mod tests {
         }
         {
             let app_ctx = h.notedeck.app_context();
-            run_scheduled_initial_load(
-                &mut cache,
-                &kind,
-                app_ctx.ndb,
-                app_ctx.note_cache,
-                app_ctx.unknown_ids,
-            );
+            run_scheduled_initial_load(&mut cache, &kind, app_ctx.ndb, app_ctx.note_cache);
         }
 
         assert_eq!(
@@ -609,13 +589,7 @@ mod tests {
         }
         {
             let app_ctx = h.notedeck.app_context();
-            run_scheduled_initial_load(
-                &mut cache,
-                &kind,
-                app_ctx.ndb,
-                app_ctx.note_cache,
-                app_ctx.unknown_ids,
-            );
+            run_scheduled_initial_load(&mut cache, &kind, app_ctx.ndb, app_ctx.note_cache);
         }
 
         // --- Step 5: post B must now be visible ---

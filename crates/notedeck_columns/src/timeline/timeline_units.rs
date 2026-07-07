@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use enostr::Pubkey;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use notedeck::NoteRef;
@@ -41,33 +39,19 @@ impl TimelineUnits {
 
     /// returns number of new entries merged
     #[profiling::function]
-    pub fn merge_new_notes<'a>(
+    pub fn merge_new_notes(
         &mut self,
-        payloads: Vec<&'a NotePayload>,
+        payloads: Vec<&NotePayload>,
         ndb: &Ndb,
         txn: &Transaction,
-    ) -> MergeResponse<'a> {
-        let mut unknown_pks = HashSet::with_capacity(payloads.len());
+    ) -> MergeResponse {
         let new_fragments = payloads
             .into_iter()
             .filter_map(|p| to_fragment(p, ndb, txn))
-            .map(|f| {
-                if let Some(pk) = f.unknown_pk {
-                    unknown_pks.insert(pk);
-                }
-                f.fragment
-            })
             .collect();
-
-        let tl_response = if unknown_pks.is_empty() {
-            None
-        } else {
-            Some(UnknownPks { unknown_pks })
-        };
 
         MergeResponse {
             insertion_response: self.units.merge_fragments(new_fragments),
-            tl_response,
         }
     }
 
@@ -85,27 +69,16 @@ impl TimelineUnits {
     }
 }
 
-pub struct MergeResponse<'a> {
+pub struct MergeResponse {
     pub insertion_response: InsertManyResponse,
-    pub tl_response: Option<UnknownPks<'a>>,
 }
 
-impl<'a> MergeResponse<'a> {
+impl MergeResponse {
     pub fn empty() -> Self {
         Self {
             insertion_response: InsertManyResponse::Zero,
-            tl_response: None,
         }
     }
-}
-
-pub struct UnknownPks<'a> {
-    pub(crate) unknown_pks: HashSet<&'a [u8; 32]>,
-}
-
-pub struct NoteUnitFragmentResponse<'a> {
-    pub fragment: NoteUnitFragment,
-    pub unknown_pk: Option<&'a [u8; 32]>,
 }
 
 pub struct NotePayload<'a> {
@@ -122,34 +95,21 @@ impl<'a> NotePayload<'a> {
     }
 }
 
-fn to_fragment<'a>(
-    payload: &'a NotePayload,
-    ndb: &Ndb,
-    txn: &Transaction,
-) -> Option<NoteUnitFragmentResponse<'a>> {
+fn to_fragment(payload: &NotePayload, ndb: &Ndb, txn: &Transaction) -> Option<NoteUnitFragment> {
     match payload.note.kind() {
-        1 => Some(NoteUnitFragmentResponse {
-            fragment: NoteUnitFragment::Single(NoteRef {
-                key: payload.key,
-                created_at: payload.note.created_at(),
-            }),
-            unknown_pk: None,
-        }),
-        7 => to_reaction(payload, ndb, txn).map(|r| NoteUnitFragmentResponse {
-            fragment: NoteUnitFragment::Composite(CompositeFragment::Reaction(r.fragment)),
-            unknown_pk: Some(r.pk),
-        }),
+        1 => Some(NoteUnitFragment::Single(NoteRef {
+            key: payload.key,
+            created_at: payload.note.created_at(),
+        })),
+        7 => to_reaction(payload, ndb, txn)
+            .map(|r| NoteUnitFragment::Composite(CompositeFragment::Reaction(r.fragment))),
         6 => to_repost(payload, ndb, txn).map(RepostResponse::into),
         9735 => to_zap(payload, ndb, txn).map(ZapResponse::into),
         _ => None,
     }
 }
 
-fn to_reaction<'a>(
-    payload: &'a NotePayload,
-    ndb: &Ndb,
-    txn: &Transaction,
-) -> Option<ReactionResponse<'a>> {
+fn to_reaction(payload: &NotePayload, ndb: &Ndb, txn: &Transaction) -> Option<ReactionResponse> {
     let reaction = payload.note.content();
 
     let mut note_reacted_to = None;
@@ -196,34 +156,24 @@ fn to_reaction<'a>(
                 sender_profilekey,
             },
         },
-        pk: payload.note.pubkey(),
     })
 }
 
-pub struct ReactionResponse<'a> {
+pub struct ReactionResponse {
     fragment: ReactionFragment,
-    pk: &'a [u8; 32], // reaction sender
 }
 
-pub struct RepostResponse<'a> {
+pub struct RepostResponse {
     fragment: RepostFragment,
-    reposter_pk: &'a [u8; 32],
 }
 
-impl<'a> From<RepostResponse<'a>> for NoteUnitFragmentResponse<'a> {
-    fn from(value: RepostResponse<'a>) -> Self {
-        Self {
-            fragment: NoteUnitFragment::Composite(CompositeFragment::Repost(value.fragment)),
-            unknown_pk: Some(value.reposter_pk),
-        }
+impl From<RepostResponse> for NoteUnitFragment {
+    fn from(value: RepostResponse) -> Self {
+        NoteUnitFragment::Composite(CompositeFragment::Repost(value.fragment))
     }
 }
 
-fn to_repost<'a>(
-    payload: &'a NotePayload,
-    ndb: &Ndb,
-    txn: &Transaction,
-) -> Option<RepostResponse<'a>> {
+fn to_repost(payload: &NotePayload, ndb: &Ndb, txn: &Transaction) -> Option<RepostResponse> {
     let reposted_note = match get_reposted_note(ndb, txn, &payload.note) {
         Some(r) => r,
         None => {
@@ -255,7 +205,6 @@ fn to_repost<'a>(
             repost_noteref: payload.noteref(),
             reposter: Pubkey::new(*payload.note.pubkey()),
         },
-        reposter_pk: payload.note.pubkey(),
     })
 }
 
@@ -263,12 +212,9 @@ struct ZapResponse {
     fragment: ZapFragment,
 }
 
-impl<'a> From<ZapResponse> for NoteUnitFragmentResponse<'a> {
+impl From<ZapResponse> for NoteUnitFragment {
     fn from(value: ZapResponse) -> Self {
-        Self {
-            fragment: NoteUnitFragment::Composite(CompositeFragment::Zap(value.fragment)),
-            unknown_pk: None,
-        }
+        NoteUnitFragment::Composite(CompositeFragment::Zap(value.fragment))
     }
 }
 

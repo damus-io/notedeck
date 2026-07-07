@@ -480,13 +480,7 @@ pub fn add_demo_columns(
             pubkey,
             RemoteSubscriptionPolicy::from_outbox_relays(ctx.settings.columns_use_outbox_relays()),
         ) {
-            results.process(
-                ctx.ndb,
-                ctx.note_cache,
-                &txn,
-                timeline_cache,
-                ctx.unknown_ids,
-            );
+            results.process(ctx.ndb, ctx.note_cache, &txn, timeline_cache);
         }
     }
 }

@@ -146,13 +146,7 @@ impl App for SingleTimelineApp {
             true,
             RemoteSubscriptionPolicy::from_outbox_relays(true),
         ) {
-            open_result.process(
-                ctx.ndb,
-                ctx.note_cache,
-                &txn,
-                &mut self.timelines,
-                ctx.unknown_ids,
-            );
+            open_result.process(ctx.ndb, ctx.note_cache, &txn, &mut self.timelines);
         }
         self.opened = true;
     }
@@ -179,13 +173,7 @@ impl App for TimelineAndThreadLoadApp {
                 true,
                 RemoteSubscriptionPolicy::from_outbox_relays(true),
             ) {
-                open_result.process(
-                    ctx.ndb,
-                    ctx.note_cache,
-                    &txn,
-                    &mut self.timelines,
-                    ctx.unknown_ids,
-                );
+                open_result.process(ctx.ndb, ctx.note_cache, &txn, &mut self.timelines);
             }
             self.timeline_opened = true;
         }

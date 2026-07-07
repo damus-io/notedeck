@@ -243,7 +243,6 @@ fn try_process_event(
             match timeline.poll_notes_into_view(
                 &selected_account_pk,
                 app_ctx.ndb,
-                app_ctx.unknown_ids,
                 app_ctx.note_cache,
                 reversed,
             ) {
@@ -350,9 +349,7 @@ fn handle_timeline_loader_messages(
                     continue;
                 };
                 let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                let insert_result =
-                    timeline.insert_new(&txn, app_ctx.ndb, app_ctx.note_cache, &notes);
-                insert_result.process(app_ctx.ndb, &txn, app_ctx.unknown_ids, app_ctx.note_cache);
+                timeline.insert_new(&txn, app_ctx.ndb, app_ctx.note_cache, &notes);
             }
             TimelineLoaderMsg::TimelineFinished { kind } => {
                 if let Some(timeline) = damus.timeline_cache.get_mut(&kind) {
@@ -557,7 +554,6 @@ impl Damus {
                         app_context.note_cache,
                         &txn,
                         &mut timeline_cache,
-                        app_context.unknown_ids,
                     );
                 }
             }

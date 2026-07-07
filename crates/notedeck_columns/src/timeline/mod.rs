@@ -15,7 +15,7 @@ use notedeck::{
     contacts::{hybrid_contacts_filter, hybrid_last_per_pubkey_filter},
     filter::{self},
     is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
-    FilterState, Localization, NoteCache, NoteRef, ScopedSubApi, UnknownIds,
+    FilterState, Localization, NoteCache, NoteRef, ScopedSubApi,
 };
 
 use egui_virtual_list::VirtualList;
@@ -23,7 +23,6 @@ use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::{
     cell::RefCell,
-    collections::HashSet,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -50,7 +49,7 @@ pub(crate) use sub::{
     drop_timeline_remote_owner, ensure_remote_timeline_subscription,
     update_remote_timeline_subscription, update_remote_timeline_subscription_for_account,
 };
-pub use timeline_units::{MergeResponse, TimelineUnits, UnknownPks};
+pub use timeline_units::{MergeResponse, TimelineUnits};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, ZapUnit};
 
 #[cfg(test)]
@@ -195,7 +194,7 @@ impl TimelineTab {
         txn: &Transaction,
         reversed: bool,
         use_front_insert: bool,
-    ) -> MergeResponse<'a> {
+    ) -> MergeResponse {
         if payloads.is_empty() {
             return MergeResponse::empty();
         }
@@ -256,14 +255,6 @@ impl TimelineTab {
         }
 
         self.selection -= 1;
-    }
-}
-
-impl<'a> UnknownPks<'a> {
-    pub fn process_unknown_pks(&self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
-        for pk in &self.unknown_pks {
-            unknown_ids.add_pubkey_if_missing(ndb, txn, pk);
-        }
     }
 }
 
@@ -436,10 +427,9 @@ impl Timeline {
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         notes: &[NoteRef],
-    ) -> InsertNewResult {
+    ) {
         let now = unix_time_secs();
         let mut payloads = Vec::with_capacity(notes.len());
-        let mut admitted_note_refs = Vec::with_capacity(notes.len());
         for note_ref in notes {
             if is_future_timestamp(note_ref.created_at, now) {
                 continue;
@@ -448,14 +438,12 @@ impl Timeline {
             let Ok(note) = ndb.get_note_by_key(txn, note_ref.key) else {
                 continue;
             };
-            admitted_note_refs.push(*note_ref);
             payloads.push(NotePayload {
                 note,
                 key: note_ref.key,
             });
         }
 
-        let mut unknown_pks = HashSet::new();
         for view in &mut self.views {
             let should_include = view.filter.filter();
             let mut filtered_payloads = Vec::with_capacity(payloads.len());
@@ -466,22 +454,7 @@ impl Timeline {
                 }
             }
 
-            let response = view.units.merge_new_notes(filtered_payloads, ndb, txn);
-
-            if let Some(resp) = response.tl_response {
-                let pks: HashSet<Pubkey> = resp
-                    .unknown_pks
-                    .into_iter()
-                    .map(|r| Pubkey::new(*r))
-                    .collect();
-
-                unknown_pks.extend(pks);
-            }
-        }
-
-        InsertNewResult {
-            note_refs: admitted_note_refs,
-            pks: unknown_pks,
+            view.units.merge_new_notes(filtered_payloads, ndb, txn);
         }
     }
 
@@ -494,7 +467,6 @@ impl Timeline {
         new_note_ids: &[NoteKey],
         ndb: &Ndb,
         txn: &'txn Transaction,
-        unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<bool> {
@@ -505,17 +477,7 @@ impl Timeline {
                 key
             );
         }
-        for payload in &note_payloads.payloads {
-            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &payload.note);
-        }
-        self.insert_payloads(
-            &note_payloads.payloads,
-            ndb,
-            txn,
-            unknown_ids,
-            note_cache,
-            reversed,
-        )
+        self.insert_payloads(&note_payloads.payloads, ndb, txn, note_cache, reversed)
     }
 
     fn note_payloads<'txn>(
@@ -554,28 +516,18 @@ impl Timeline {
         new_note_ids: &[NoteKey],
         ndb: &Ndb,
         txn: &Transaction,
-        unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<PollInsertResult> {
         let note_payloads = self.note_payloads(new_note_ids, ndb, txn);
-        for payload in &note_payloads.payloads {
-            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &payload.note);
-        }
 
         let inserted_keys = note_payloads
             .payloads
             .iter()
             .map(|payload| payload.key)
             .collect();
-        let any_front_insert = self.insert_payloads(
-            &note_payloads.payloads,
-            ndb,
-            txn,
-            unknown_ids,
-            note_cache,
-            reversed,
-        )?;
+        let any_front_insert =
+            self.insert_payloads(&note_payloads.payloads, ndb, txn, note_cache, reversed)?;
 
         Ok(PollInsertResult {
             inserted_keys,
@@ -589,7 +541,6 @@ impl Timeline {
         payloads: &[NotePayload<'txn>],
         ndb: &Ndb,
         txn: &'txn Transaction,
-        unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<bool> {
@@ -615,10 +566,6 @@ impl Timeline {
             );
 
             any_front_insert = any_front_insert || res.insertion_response.is_front_insert();
-
-            if let Some(unknown_pks) = res.tl_response {
-                unknown_pks.process_unknown_pks(unknown_ids, ndb, txn);
-            }
         }
 
         Ok(any_front_insert)
@@ -631,7 +578,6 @@ impl Timeline {
         &mut self,
         account_pk: &Pubkey,
         ndb: &Ndb,
-        unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<Vec<NoteKey>> {
@@ -671,14 +617,8 @@ impl Timeline {
                     return Err(err.into());
                 }
             };
-            let result = self.insert_polled_note_keys(
-                &new_note_ids,
-                ndb,
-                &txn,
-                unknown_ids,
-                note_cache,
-                reversed,
-            )?;
+            let result =
+                self.insert_polled_note_keys(&new_note_ids, ndb, &txn, note_cache, reversed)?;
             any_front_insert |= result.any_front_insert;
             inserted.extend(result.inserted_keys);
 
@@ -722,33 +662,6 @@ struct PollInsertResult {
     inserted_keys: Vec<NoteKey>,
     missing_keys: Vec<NoteKey>,
     any_front_insert: bool,
-}
-
-#[must_use = "process should be used on this result"]
-#[derive(Debug, Default)]
-pub struct InsertNewResult {
-    note_refs: Vec<NoteRef>,
-    pks: HashSet<Pubkey>,
-}
-
-impl InsertNewResult {
-    pub fn extend(&mut self, next: Self) {
-        self.note_refs.extend(next.note_refs);
-        self.pks.extend(next.pks);
-    }
-
-    pub fn process(
-        &self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        unknown_ids: &mut UnknownIds,
-        note_cache: &mut NoteCache,
-    ) {
-        UnknownIds::update_from_note_refs(txn, ndb, unknown_ids, note_cache, &self.note_refs);
-        self.pks
-            .iter()
-            .for_each(|p| unknown_ids.add_pubkey_if_missing(ndb, txn, p));
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1183,13 +1096,6 @@ mod tests {
             .collect()
     }
 
-    fn filter_jsons(filters: &[Filter]) -> Vec<String> {
-        filters
-            .iter()
-            .map(|filter| filter.json().expect("filter json"))
-            .collect()
-    }
-
     fn remote_policy(use_outbox_relays: bool) -> RemoteSubscriptionPolicy {
         RemoteSubscriptionPolicy::from_outbox_relays(use_outbox_relays)
     }
@@ -1217,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_new_tracks_unknown_author_profiles() {
+    fn insert_new_does_not_queue_unknown_author_profiles() {
         let (_tmp, ndb) = new_test_ndb();
         let author = FullKeypair::generate();
         let filter = Filter::new()
@@ -1244,19 +1150,10 @@ mod tests {
             TimelineTab::only_notes_and_replies(),
         );
         let mut note_cache = NoteCache::default();
-        let mut unknown_ids = UnknownIds::default();
 
-        let insert_result = timeline.insert_new(&txn, &ndb, &mut note_cache, &[note_ref]);
-        insert_result.process(&ndb, &txn, &mut unknown_ids, &mut note_cache);
+        timeline.insert_new(&txn, &ndb, &mut note_cache, &[note_ref]);
 
-        let filters = unknown_ids.filter().expect("unknown author filter");
-        let filter_jsons = filter_jsons(&filters);
-        assert!(
-            filter_jsons.iter().any(|json| {
-                json.contains(&author.pubkey.hex()) && json.contains("\"kinds\":[0]")
-            }),
-            "insert_new should queue missing kind-0 author lookup; got {filter_jsons:?}"
-        );
+        assert_eq!(timeline.all_or_any_entries().len(), 1);
     }
 
     #[test]
@@ -1296,7 +1193,6 @@ mod tests {
         );
 
         let mut note_cache = NoteCache::default();
-        let mut unknown_ids = UnknownIds::default();
         let sub = timeline
             .subscription
             .get_local(&account_pk)
@@ -1313,14 +1209,7 @@ mod tests {
         assert_eq!(polled_keys.len(), 1);
 
         let first_insert = timeline
-            .insert_polled_note_keys(
-                &polled_keys,
-                &ndb,
-                &stale_txn,
-                &mut unknown_ids,
-                &mut note_cache,
-                false,
-            )
+            .insert_polled_note_keys(&polled_keys, &ndb, &stale_txn, &mut note_cache, false)
             .expect("insert attempt");
         assert!(first_insert.inserted_keys.is_empty());
         assert_eq!(first_insert.missing_keys, polled_keys);
@@ -1330,7 +1219,7 @@ mod tests {
         drop(stale_txn);
 
         let inserted = timeline
-            .poll_notes_into_view(&account_pk, &ndb, &mut unknown_ids, &mut note_cache, false)
+            .poll_notes_into_view(&account_pk, &ndb, &mut note_cache, false)
             .expect("retry pending polled key");
 
         assert_eq!(inserted, polled_keys);

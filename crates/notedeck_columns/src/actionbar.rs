@@ -4,8 +4,7 @@ use crate::{
     route::Route,
     timeline::{
         thread::{selected_has_at_least_n_replies, NoteSeenFlags, ThreadNode, Threads},
-        InsertNewResult, InsertionResponse, RemoteSubscriptionPolicy, ThreadSelection,
-        TimelineCache, TimelineKind,
+        InsertionResponse, RemoteSubscriptionPolicy, ThreadSelection, TimelineCache, TimelineKind,
     },
     view_state::ViewState,
 };
@@ -35,7 +34,6 @@ pub enum NotesOpenResult {
 
 pub struct TimelineOpenResult {
     new_notes: Option<NewNotes>,
-    insert_result: Option<InsertNewResult>,
 }
 
 struct NoteActionResponse {
@@ -314,7 +312,7 @@ pub fn execute_and_process_note_action(
     if let Some(br) = resp.timeline_res {
         match br {
             NotesOpenResult::Timeline(timeline_open_result) => {
-                timeline_open_result.process(ndb, note_cache, txn, timeline_cache, unknown_ids);
+                timeline_open_result.process(ndb, note_cache, txn, timeline_cache);
             }
             NotesOpenResult::Thread(thread_open_result) => {
                 thread_open_result.process(threads, ndb, txn, unknown_ids, note_cache);
@@ -443,21 +441,6 @@ impl TimelineOpenResult {
     pub fn new_notes(notes: Vec<NoteKey>, id: TimelineKind) -> Self {
         Self {
             new_notes: Some(NewNotes { id, notes }),
-            insert_result: None,
-        }
-    }
-
-    pub fn new_insert_result(insert_result: InsertNewResult) -> Self {
-        Self {
-            new_notes: None,
-            insert_result: Some(insert_result),
-        }
-    }
-
-    pub fn insert_insert_result(&mut self, insert_result: InsertNewResult) {
-        match &mut self.insert_result {
-            Some(cur_result) => cur_result.extend(insert_result),
-            None => self.insert_result = Some(insert_result),
         }
     }
 
@@ -467,15 +450,10 @@ impl TimelineOpenResult {
         note_cache: &mut NoteCache,
         txn: &Transaction,
         storage: &mut TimelineCache,
-        unknown_ids: &mut UnknownIds,
     ) {
         // update the thread for next render if we have new notes
         if let Some(new_notes) = &self.new_notes {
-            new_notes.process(storage, ndb, txn, unknown_ids, note_cache);
-        }
-
-        if let Some(insert_result) = &self.insert_result {
-            insert_result.process(ndb, txn, unknown_ids, note_cache);
+            new_notes.process(storage, ndb, txn, note_cache);
         }
     }
 }
@@ -492,7 +470,6 @@ impl NewNotes {
         timeline_cache: &mut TimelineCache,
         ndb: &Ndb,
         txn: &Transaction,
-        unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
     ) {
         let reversed = false;
@@ -504,8 +481,7 @@ impl NewNotes {
             return;
         };
 
-        if let Err(err) = timeline.insert(&self.notes, ndb, txn, unknown_ids, note_cache, reversed)
-        {
+        if let Err(err) = timeline.insert(&self.notes, ndb, txn, note_cache, reversed) {
             error!("error inserting notes into profile timeline: {err}")
         }
     }
@@ -573,7 +549,6 @@ pub fn process_thread_notes(
             continue;
         }
 
-        // Ensure that unknown ids are captured when inserting notes
         UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
 
         let created_at = note.created_at();

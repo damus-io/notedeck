@@ -781,13 +781,7 @@ fn render_reaction_cluster(
             .filter(|r| !mute.is_pk_muted(r.sender.bytes()))
             .map(|r| (&r.sender, r.sender_profilekey))
             .map(|(p, key)| {
-                let record = if let Some(key) = key {
-                    profiling::scope!("ndb by key");
-                    note_context.ndb.get_profile_by_key(txn, key).ok()
-                } else {
-                    profiling::scope!("ndb by pubkey");
-                    note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok()
-                };
+                let record = profile_entry_record(note_context, txn, p, key);
                 ProfileEntry { record, pk: p }
             })
             .collect()
@@ -1068,7 +1062,7 @@ fn render_repost_cluster(
         .values()
         .filter(|r| !mute.is_pk_muted(r.bytes()))
         .map(|p| ProfileEntry {
-            record: note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok(),
+            record: profile_entry_record(note_context, txn, p, None),
             pk: p,
         })
         .collect();
@@ -1100,14 +1094,7 @@ fn render_zap_cluster(
         .values()
         .filter(|z| !mute.is_pk_muted(z.sender.bytes()))
         .map(|z| {
-            let record = if let Some(key) = z.sender_profilekey {
-                note_context.ndb.get_profile_by_key(txn, key).ok()
-            } else {
-                note_context
-                    .ndb
-                    .get_profile_by_pubkey(txn, z.sender.bytes())
-                    .ok()
-            };
+            let record = profile_entry_record(note_context, txn, &z.sender, z.sender_profilekey);
             ProfileEntry {
                 record,
                 pk: &z.sender,
@@ -1136,4 +1123,27 @@ enum RenderEntryResponse {
 struct ProfileEntry<'a> {
     record: Option<ProfileRecord<'a>>,
     pk: &'a Pubkey,
+}
+
+fn profile_entry_record<'a>(
+    note_context: &mut NoteContext,
+    txn: &'a Transaction,
+    pk: &Pubkey,
+    key: Option<nostrdb::ProfileKey>,
+) -> Option<ProfileRecord<'a>> {
+    let record = if let Some(key) = key {
+        profiling::scope!("ndb by key");
+        note_context.ndb.get_profile_by_key(txn, key).ok()
+    } else {
+        profiling::scope!("ndb by pubkey");
+        note_context.ndb.get_profile_by_pubkey(txn, pk.bytes()).ok()
+    };
+
+    if record.is_none() {
+        note_context
+            .unknown_ids
+            .add_pubkey_if_missing(note_context.ndb, txn, pk.bytes());
+    }
+
+    record
 }
