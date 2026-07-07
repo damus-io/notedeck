@@ -9,20 +9,55 @@
 #   scripts/snapshot-test -p=notedeck_headway   # run only one crate's suite
 #
 # On NixOS, LAVAPIPE_ICD is set by shell.nix. On standard Linux distros,
-# lavapipe is found at /usr/share/vulkan/icd.d/lvp_icd.x86_64.json.
+# lavapipe is found at /usr/share/vulkan/icd.d/lvp_icd.<arch>.json.
+#
+# On macOS there is no lavapipe, so `--update` runs delegate to a per-checkout
+# docker container built from scripts/lavapipe.Dockerfile (which mirrors the
+# CI snapshot job, so the pngs it generates match CI pixel-exactly).
 
 set -euo pipefail
+
+# macOS can't render snapshots natively; when *updating* them, re-exec this
+# script inside a lavapipe container bound to this checkout.
+if [[ "$(uname -s)" == "Darwin" && " $* " == *" --update "* ]]; then
+    if ! command -v docker >/dev/null; then
+        echo "error: updating snapshots on macOS runs lavapipe in docker, but docker was not found." >&2
+        exit 1
+    fi
+    repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    # One container per checkout so parallel checkouts never share a mount.
+    suffix="$(printf %s "$repo" | shasum | cut -c1-8)"
+    name="notedeck-snap-$suffix"
+    image="notedeck-lavapipe"
+
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        echo "building $image image (one-time)..." >&2
+        docker build -t "$image" -f "$repo/scripts/lavapipe.Dockerfile" "$repo/scripts"
+    fi
+    if ! docker container inspect "$name" >/dev/null 2>&1; then
+        docker create --name "$name" \
+            -v "$repo:/repo" \
+            -v notedeck-snap-cargo:/cargo \
+            -v "notedeck-snap-target-$suffix:/target" \
+            "$image" >/dev/null
+    fi
+    # restart, not just start: the macOS bind mount can serve stale file
+    # content to a long-running container, and a restart flushes it
+    docker restart "$name" >/dev/null
+    exec docker exec "$name" /repo/scripts/snapshot-test "$@"
+fi
 
 # Resolve lavapipe ICD path
 if [[ -n "${LAVAPIPE_ICD:-}" ]]; then
     icd="$LAVAPIPE_ICD"
-elif [[ -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json ]]; then
-    icd="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+elif [[ -f "/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json" ]]; then
+    icd="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
 else
     echo "error: lavapipe ICD not found." >&2
     echo "  NixOS: enter the nix shell (LAVAPIPE_ICD is set by shell.nix)" >&2
     echo "  Debian/Ubuntu: sudo apt install mesa-vulkan-drivers" >&2
     echo "  Fedora: sudo dnf install mesa-vulkan-drivers" >&2
+    echo "  macOS: pass --update to run inside the lavapipe docker container" >&2
     exit 1
 fi
 
