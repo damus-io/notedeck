@@ -346,7 +346,11 @@ impl Notedeck {
         try_swap_compacted_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
-        let runtime_budget = RuntimeThreadBudget::from_available_parallelism();
+        let runtime_budget = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            RuntimeThreadBudget::for_test_runner()
+        } else {
+            RuntimeThreadBudget::from_available_parallelism()
+        };
         let app_async_runtime = if parsed_args.options.contains(NotedeckOptions::Tests) {
             AppAsyncRuntime::new_owned(runtime_budget.main_async_threads())
         } else {

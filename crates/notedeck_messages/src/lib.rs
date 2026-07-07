@@ -324,7 +324,7 @@ fn update_initialized(ctx: &mut AppContext, cache: &mut ConversationCache, sub: 
                 continue;
             }
         };
-        cache.ingest_chatroom_msg(note, key, ctx.ndb, &txn, ctx.note_cache, ctx.unknown_ids);
+        cache.ingest_chatroom_msg(note, key, ctx.ndb, &txn, ctx.unknown_ids);
     }
 }
 
@@ -470,7 +470,7 @@ fn ingest_note_keys(
                 continue;
             }
         };
-        cache.ingest_chatroom_msg(note, *key, ctx.ndb, &txn, ctx.note_cache, ctx.unknown_ids);
+        cache.ingest_chatroom_msg(note, *key, ctx.ndb, &txn, ctx.unknown_ids);
     }
 }
 

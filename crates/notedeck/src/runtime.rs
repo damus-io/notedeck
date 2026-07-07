@@ -13,6 +13,7 @@ const OUTBOX_THREAD_COUNT: usize = 1;
 const SMALL_MACHINE_MAX_CORES: usize = 4;
 const SMALL_MACHINE_SYNC_JOB_THREADS: usize = 1;
 const LARGE_MACHINE_SYNC_JOB_THREADS: usize = 2;
+const TEST_RUNNER_CORE_COUNT: usize = SMALL_MACHINE_MAX_CORES;
 
 /// Thread allocation for Notedeck-owned runtime lanes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +46,15 @@ impl RuntimeThreadBudget {
             main_async_threads,
             sync_job_threads,
         }
+    }
+
+    /// Build the budget for `--testrunner` hosts.
+    ///
+    /// Full-app E2E tests can boot several Notedeck hosts in one process; sizing
+    /// each host from machine parallelism over-allocates executor threads and
+    /// makes test stability depend on host core count.
+    pub fn for_test_runner() -> Self {
+        Self::from_core_count(TEST_RUNNER_CORE_COUNT)
     }
 
     /// Threads used by the app-level Tokio runtime.
