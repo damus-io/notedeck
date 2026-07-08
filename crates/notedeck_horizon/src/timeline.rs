@@ -18,6 +18,63 @@ fn grid_stroke() -> Stroke {
     Stroke::new(1.0, theme::GRID)
 }
 
+/// Format a span length the way viscal's `format_time_duration` does:
+/// `1h30m`, `2h`, `45m`, `20s`. Negative durations clamp to zero.
+fn format_duration(d: chrono::Duration) -> String {
+    let secs = d.num_seconds().max(0);
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    match (h, m) {
+        (0, 0) => format!("{s}s"),
+        (_, 0) => format!("{h}h"),
+        (0, _) => format!("{m}m"),
+        (_, _) => format!("{h}h{m}m"),
+    }
+}
+
+/// The "until next" span: from `now` to the start of the next upcoming block,
+/// returned only when `now` is free (inside no timed block) and the gap is
+/// longer than five minutes. Mirrors viscal's `draw_ephemeral_event`, which
+/// shows how much unbooked time is left before the next commitment.
+fn next_gap(
+    blocks: &[Block],
+    indices: &[usize],
+    now: DateTime<Local>,
+) -> Option<(DateTime<Local>, DateTime<Local>)> {
+    // Occupied right now → there's no free gap to advertise.
+    if indices
+        .iter()
+        .any(|&i| blocks[i].start <= now && now < blocks[i].end)
+    {
+        return None;
+    }
+    let next_start = indices
+        .iter()
+        .map(|&i| blocks[i].start)
+        .filter(|&s| s > now)
+        .min()?;
+    (next_start - now >= chrono::Duration::minutes(5)).then_some((now, next_start))
+}
+
+/// The lower "summary" line viscal draws under an event's title: its time span
+/// and length, plus how long you've been in it and how long is left when the
+/// event is happening right now. Rendered on the selected and ongoing blocks.
+fn block_summary(b: &Block, now: DateTime<Local>) -> String {
+    let span = format!(
+        "{}–{}  {}",
+        b.start.format("%-I:%M %p"),
+        b.end.format("%-I:%M %p"),
+        format_duration(b.end - b.start),
+    );
+    if b.start <= now && now < b.end {
+        return format!(
+            "{span}   {} in · {} left",
+            format_duration(now - b.start),
+            format_duration(b.end - now),
+        );
+    }
+    span
+}
+
 fn hour_label(h: u32) -> String {
     match h {
         0 => "12 AM".into(),
@@ -133,6 +190,7 @@ pub(crate) fn center_day(
                 .filter(|(_, b)| !b.all_day && b.covers(date))
                 .map(|(i, _)| i)
                 .collect();
+            let now = Local::now();
             let drawn = draw_blocks(
                 ui,
                 &painter,
@@ -143,10 +201,38 @@ pub(crate) fn center_day(
                 blocks,
                 &day_blocks,
                 selected,
-                editing.is_some(),
+                BlockDraw::Day {
+                    now,
+                    editing: editing.is_some(),
+                },
             );
             if let Some(i) = drawn.clicked {
                 clicked = Some(i);
+            }
+
+            // "Until next" ephemeral block: translucent free-time strip from now
+            // to the next event, labelled with how long is left (viscal's
+            // `draw_ephemeral_event`). Only on today, and only when free.
+            if date == now.date_naive()
+                && let Some((st, et)) = next_gap(blocks, &day_blocks, now)
+            {
+                let y0 = rect.top() + crate::day_fraction(st) * height;
+                let y1 = rect.top() + crate::day_fraction(et) * height;
+                let gap = egui::Rect::from_min_max(pos2(grid_left, y0), pos2(grid_right, y1));
+                painter.rect_filled(gap, 4.0, theme::ephemeral_fill());
+                painter.rect_stroke(
+                    gap,
+                    4.0,
+                    Stroke::new(1.0, theme::ephemeral_stroke()),
+                    StrokeKind::Inside,
+                );
+                painter.with_clip_rect(gap).text(
+                    gap.min + vec2(9.0, 4.0),
+                    Align2::LEFT_TOP,
+                    format!("Until next · {}", format_duration(et - st)),
+                    FontId::proportional(11.0),
+                    theme::TEXT_WEAK,
+                );
             }
 
             // Overlay the inline title editor on the selected block, if editing.
@@ -173,12 +259,21 @@ pub(crate) fn center_day(
                         Stroke::new(1.0, theme::cursor_stroke()),
                         StrokeKind::Inside,
                     );
+                    // Start time at the top edge, end time at the bottom — the
+                    // selection's span read straight off the gutter.
                     painter.text(
                         pos2(grid_left - 10.0, y0),
                         Align2::RIGHT_TOP,
                         cursor.format("%-I:%M %p").to_string(),
                         FontId::proportional(11.0),
                         theme::TEXT,
+                    );
+                    painter.text(
+                        pos2(grid_left - 10.0, y1),
+                        Align2::RIGHT_BOTTOM,
+                        cur_end.format("%-I:%M %p").to_string(),
+                        FontId::proportional(11.0),
+                        theme::TEXT_WEAK,
                     );
                 }
 
@@ -188,7 +283,6 @@ pub(crate) fn center_day(
             }
 
             // "Now" indicator with the time on both edges.
-            let now = Local::now();
             if date == now.date_naive() {
                 now_line(&painter, grid_left, grid_right, rect.top(), height, now);
             }
@@ -332,6 +426,17 @@ struct DrawResult {
     selected_rect: Option<egui::Rect>,
 }
 
+/// How a day's blocks are rendered. `Week` is the plain, read-only rendering
+/// used by the multi-day view; `Day` adds the interactive detail — the live
+/// "now" time that drives the summary and in/out labels, and whether the
+/// selected block is currently being inline-edited (its title is left to the
+/// overlaid `TextEdit`).
+#[derive(Clone, Copy)]
+enum BlockDraw {
+    Week,
+    Day { now: DateTime<Local>, editing: bool },
+}
+
 /// Lay out and draw timed `blocks` (given by global index) within the column
 /// `[left, right]`.
 #[allow(clippy::too_many_arguments)]
@@ -345,7 +450,7 @@ fn draw_blocks(
     all_blocks: &[Block],
     indices: &[usize],
     selected: Option<usize>,
-    editing: bool,
+    draw: BlockDraw,
 ) -> DrawResult {
     if indices.is_empty() {
         return DrawResult {
@@ -423,6 +528,7 @@ fn draw_blocks(
         );
         // Skip the painted title on the block being edited — the overlaid
         // `TextEdit` renders the live buffer there instead.
+        let editing = matches!(draw, BlockDraw::Day { editing: true, .. });
         if tall && !(is_sel && editing) {
             clip.text(
                 pad + vec2(0.0, 15.0),
@@ -431,6 +537,22 @@ fn draw_blocks(
                 FontId::proportional(12.0),
                 text,
             );
+        }
+
+        // Summary line (span · duration [+ in/out]) under the title, for the
+        // selected block and whichever block is happening right now. Only in
+        // the detailed day view, and only when there's a third line of room.
+        if let BlockDraw::Day { now, .. } = draw {
+            let ongoing = b.start <= now && now < b.end;
+            if y1 - y0 > 48.0 && (is_sel || ongoing) {
+                clip.text(
+                    pad + vec2(0.0, 31.0),
+                    Align2::LEFT_TOP,
+                    block_summary(b, now),
+                    FontId::proportional(10.0),
+                    text.gamma_multiply(0.8),
+                );
+            }
         }
 
         if resp.clicked() {
@@ -549,7 +671,7 @@ pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) 
             blocks,
             &day_blocks,
             None,
-            false,
+            BlockDraw::Week,
         );
     }
 
@@ -558,5 +680,54 @@ pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) 
     if (0..7).contains(&days_in) {
         let x0 = grid_left + days_in as f32 * col_w;
         now_line(&painter, x0, x0 + col_w, grid_top, HOUR_H * 24.0, now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, TimeZone};
+
+    fn at(h: u32, m: u32) -> DateTime<Local> {
+        Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap()
+    }
+
+    fn timed(uid: &str, s: (u32, u32), e: (u32, u32)) -> Block {
+        Block::timed([0; 32], uid, "x", at(s.0, s.1), at(e.0, e.1))
+    }
+
+    #[test]
+    fn duration_formatting_matches_viscal() {
+        assert_eq!(format_duration(Duration::seconds(20)), "20s");
+        assert_eq!(format_duration(Duration::minutes(45)), "45m");
+        assert_eq!(format_duration(Duration::hours(2)), "2h");
+        assert_eq!(format_duration(Duration::minutes(90)), "1h30m");
+        // Negative spans clamp to zero rather than printing a sign.
+        assert_eq!(format_duration(Duration::minutes(-5)), "0s");
+    }
+
+    #[test]
+    fn next_gap_spans_now_to_the_next_event() {
+        let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        let indices = [0, 1];
+        // Free at noon: the gap runs to b's 2pm start.
+        let gap = next_gap(&blocks, &indices, at(12, 0));
+        assert_eq!(gap, Some((at(12, 0), at(14, 0))));
+    }
+
+    #[test]
+    fn next_gap_is_none_while_occupied() {
+        let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        // Inside event a → no free gap to advertise.
+        assert_eq!(next_gap(&blocks, &[0, 1], at(9, 30)), None);
+    }
+
+    #[test]
+    fn next_gap_ignores_tiny_gaps_and_past_events() {
+        let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        // Under five minutes to the next event → suppressed.
+        assert_eq!(next_gap(&blocks, &[0, 1], at(13, 57)), None);
+        // Nothing upcoming after the last event → nothing to show.
+        assert_eq!(next_gap(&blocks, &[0, 1], at(16, 0)), None);
     }
 }

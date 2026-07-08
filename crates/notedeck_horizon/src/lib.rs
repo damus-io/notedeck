@@ -1517,11 +1517,12 @@ mod tests {
 
     /// A `Horizon` seeded with `blocks` (sorted by start, as [`reload`] leaves
     /// them) so the cascade planners can be exercised without a db or account.
-    fn horizon_with(blocks: Vec<Block>) -> Horizon {
-        let mut h = Horizon::default();
-        h.blocks = blocks;
-        h.blocks.sort_by_key(|b| b.start);
-        h
+    fn horizon_with(mut blocks: Vec<Block>) -> Horizon {
+        blocks.sort_by_key(|b| b.start);
+        Horizon {
+            blocks,
+            ..Default::default()
+        }
     }
 
     #[test]

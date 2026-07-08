@@ -40,6 +40,16 @@ pub fn cursor_stroke() -> Color32 {
     Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x66)
 }
 
+/// Translucent fill + outline for the "until next" ephemeral block, drawn from
+/// now to the next upcoming event (viscal's `draw_ephemeral_event`). Slightly
+/// more present than the cursor so free time reads as its own thing.
+pub fn ephemeral_fill() -> Color32 {
+    Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x0A)
+}
+pub fn ephemeral_stroke() -> Color32 {
+    Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x33)
+}
+
 /// Translucent fill for an event block painted over the dark timeline.
 pub fn block_fill(color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 0x44)
