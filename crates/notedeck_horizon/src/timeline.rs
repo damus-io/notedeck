@@ -37,19 +37,19 @@ fn format_duration(d: chrono::Duration) -> String {
 /// shows how much unbooked time is left before the next commitment.
 fn next_gap(
     blocks: &[Block],
-    indices: &[usize],
+    timed: &[LaidBlock],
     now: DateTime<Local>,
 ) -> Option<(DateTime<Local>, DateTime<Local>)> {
     // Occupied right now → there's no free gap to advertise.
-    if indices
+    if timed
         .iter()
-        .any(|&i| blocks[i].start <= now && now < blocks[i].end)
+        .any(|l| blocks[l.index].start <= now && now < blocks[l.index].end)
     {
         return None;
     }
-    let next_start = indices
+    let next_start = timed
         .iter()
-        .map(|&i| blocks[i].start)
+        .map(|l| blocks[l.index].start)
         .filter(|&s| s > now)
         .min()?;
     (next_start - now >= chrono::Duration::minutes(5)).then_some((now, next_start))
@@ -90,6 +90,8 @@ fn hour_label(h: u32) -> String {
 pub(crate) struct DayView<'a> {
     pub focus: DateTime<Local>,
     pub blocks: &'a [Block],
+    /// This day's cached all-day/timed layout (built off the per-frame path).
+    pub layout: &'a DayLayout,
     pub selected: Option<usize>,
     pub cursor: DateTime<Local>,
     /// Pixels per hour (zoom level).
@@ -118,6 +120,7 @@ pub(crate) fn center_day(
     let DayView {
         focus,
         blocks,
+        layout,
         selected,
         cursor,
         hour_height,
@@ -127,19 +130,13 @@ pub(crate) fn center_day(
 
     let mut clicked = None;
     let mut edit = None;
-    let date = focus.date_naive();
+    let date = layout.date;
 
     date_header(ui, focus);
     ui.add_space(6.0);
 
     // All-day bars across the top.
-    let all_day: Vec<usize> = blocks
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| b.all_day && b.covers(date))
-        .map(|(i, _)| i)
-        .collect();
-    if let Some(i) = allday_row(ui, blocks, &all_day, selected) {
+    if let Some(i) = allday_row(ui, blocks, &layout.all_day, selected) {
         clicked = Some(i);
     }
 
@@ -183,13 +180,7 @@ pub(crate) fn center_day(
                 }
             }
 
-            // Timed blocks for this day.
-            let day_blocks: Vec<usize> = blocks
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| !b.all_day && b.covers(date))
-                .map(|(i, _)| i)
-                .collect();
+            // Timed blocks for this day, from the cached layout.
             let now = Local::now();
             let drawn = draw_blocks(
                 ui,
@@ -199,7 +190,7 @@ pub(crate) fn center_day(
                 rect.top(),
                 height,
                 blocks,
-                &day_blocks,
+                &layout.timed,
                 selected,
                 BlockDraw::Day {
                     now,
@@ -214,7 +205,7 @@ pub(crate) fn center_day(
             // to the next event, labelled with how long is left (viscal's
             // `draw_ephemeral_event`). Only on today, and only when free.
             if date == now.date_naive()
-                && let Some((st, et)) = next_gap(blocks, &day_blocks, now)
+                && let Some((st, et)) = next_gap(blocks, &layout.timed, now)
             {
                 let y0 = rect.top() + crate::day_fraction(st) * height;
                 let y1 = rect.top() + crate::day_fraction(et) * height;
@@ -437,8 +428,60 @@ enum BlockDraw {
     Day { now: DateTime<Local>, editing: bool },
 }
 
-/// Lay out and draw timed `blocks` (given by global index) within the column
-/// `[left, right]`.
+/// One timed block placed within its day column: its global index into the
+/// block list plus the lane assignment [`block::layout`] gave it (`col` of
+/// `cols` side-by-side lanes). Precomputed so the per-frame draw is a plain
+/// read rather than a re-layout.
+#[derive(Clone, Copy)]
+pub(crate) struct LaidBlock {
+    pub index: usize,
+    pub col: usize,
+    pub cols: usize,
+}
+
+/// The blocks visible on one calendar date, split into the all-day row and the
+/// laid-out timed column. Built by [`Self::build`] only when the underlying
+/// blocks change or a new date scrolls into view — never inside a `*_ui` frame.
+pub(crate) struct DayLayout {
+    pub date: chrono::NaiveDate,
+    pub all_day: Vec<usize>,
+    pub timed: Vec<LaidBlock>,
+}
+
+impl DayLayout {
+    /// Filter `blocks` down to those covering `date` and assign the timed ones
+    /// their side-by-side lanes. Allocates, so callers must cache the result and
+    /// rebuild it only when the inputs change.
+    pub(crate) fn build(blocks: &[Block], date: chrono::NaiveDate) -> Self {
+        let all_day = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.all_day && b.covers(date))
+            .map(|(i, _)| i)
+            .collect();
+        let timed_idx: Vec<usize> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.all_day && b.covers(date))
+            .map(|(i, _)| i)
+            .collect();
+        let refs: Vec<&Block> = timed_idx.iter().map(|&i| &blocks[i]).collect();
+        let timed = timed_idx
+            .iter()
+            .zip(crate::block::layout(&refs))
+            .map(|(&index, (col, cols))| LaidBlock { index, col, cols })
+            .collect();
+        Self {
+            date,
+            all_day,
+            timed,
+        }
+    }
+}
+
+/// Draw the pre-laid-out timed `blocks` within the column `[left, right]`. The
+/// lane assignment comes from the cached [`DayLayout`], so nothing is allocated
+/// or re-laid-out here on the per-frame path.
 #[allow(clippy::too_many_arguments)]
 fn draw_blocks(
     ui: &egui::Ui,
@@ -448,24 +491,20 @@ fn draw_blocks(
     top: f32,
     height: f32,
     all_blocks: &[Block],
-    indices: &[usize],
+    timed: &[LaidBlock],
     selected: Option<usize>,
     draw: BlockDraw,
 ) -> DrawResult {
-    if indices.is_empty() {
-        return DrawResult {
-            clicked: None,
-            selected_rect: None,
-        };
-    }
-
-    let refs: Vec<&Block> = indices.iter().map(|&i| &all_blocks[i]).collect();
-    let lanes = crate::block::layout(&refs);
     let avail = right - left;
     let mut clicked = None;
     let mut selected_rect = None;
 
-    for (&i, (col, cols)) in indices.iter().zip(lanes) {
+    for &LaidBlock {
+        index: i,
+        col,
+        cols,
+    } in timed
+    {
         let b = &all_blocks[i];
         let y0 = top + crate::day_fraction(b.start) * height;
         // Keep a minimum height so very short blocks stay legible.
@@ -598,8 +637,14 @@ fn now_line(
     );
 }
 
-/// Draw a 7-day week timeline with a shared hour grid.
-pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) {
+/// Draw a 7-day week timeline with a shared hour grid. `days` holds the cached
+/// per-day layouts (Monday first), matching the seven columns drawn here.
+pub(crate) fn week(
+    ui: &mut egui::Ui,
+    focus: DateTime<Local>,
+    blocks: &[Block],
+    days: &[DayLayout],
+) {
     let now = Local::now();
     let monday = crate::start_of_week(focus);
 
@@ -651,16 +696,9 @@ pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) 
         painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], grid_stroke());
     }
 
-    // Timed blocks within each day's column.
-    for d in 0..7 {
-        let day = (monday + chrono::Duration::days(d)).date_naive();
+    // Timed blocks within each day's column, from the cached per-day layouts.
+    for (d, layout) in days.iter().enumerate().take(7) {
         let x0 = grid_left + d as f32 * col_w;
-        let day_blocks: Vec<usize> = blocks
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| !b.all_day && b.covers(day))
-            .map(|(i, _)| i)
-            .collect();
         draw_blocks(
             ui,
             &painter,
@@ -669,7 +707,7 @@ pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) 
             grid_top,
             HOUR_H * 24.0,
             blocks,
-            &day_blocks,
+            &layout.timed,
             None,
             BlockDraw::Week,
         );
@@ -696,6 +734,12 @@ mod tests {
         Block::timed([0; 32], uid, "x", at(s.0, s.1), at(e.0, e.1))
     }
 
+    /// The laid-out timed blocks for the sample day, as the cache would hold
+    /// them, so `next_gap` can be exercised on real [`LaidBlock`]s.
+    fn timed_layout(blocks: &[Block]) -> Vec<LaidBlock> {
+        DayLayout::build(blocks, at(0, 0).date_naive()).timed
+    }
+
     #[test]
     fn duration_formatting_matches_viscal() {
         assert_eq!(format_duration(Duration::seconds(20)), "20s");
@@ -709,25 +753,27 @@ mod tests {
     #[test]
     fn next_gap_spans_now_to_the_next_event() {
         let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
-        let indices = [0, 1];
+        let timed = timed_layout(&blocks);
         // Free at noon: the gap runs to b's 2pm start.
-        let gap = next_gap(&blocks, &indices, at(12, 0));
+        let gap = next_gap(&blocks, &timed, at(12, 0));
         assert_eq!(gap, Some((at(12, 0), at(14, 0))));
     }
 
     #[test]
     fn next_gap_is_none_while_occupied() {
         let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        let timed = timed_layout(&blocks);
         // Inside event a → no free gap to advertise.
-        assert_eq!(next_gap(&blocks, &[0, 1], at(9, 30)), None);
+        assert_eq!(next_gap(&blocks, &timed, at(9, 30)), None);
     }
 
     #[test]
     fn next_gap_ignores_tiny_gaps_and_past_events() {
         let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        let timed = timed_layout(&blocks);
         // Under five minutes to the next event → suppressed.
-        assert_eq!(next_gap(&blocks, &[0, 1], at(13, 57)), None);
+        assert_eq!(next_gap(&blocks, &timed, at(13, 57)), None);
         // Nothing upcoming after the last event → nothing to show.
-        assert_eq!(next_gap(&blocks, &[0, 1], at(16, 0)), None);
+        assert_eq!(next_gap(&blocks, &timed, at(16, 0)), None);
     }
 }

@@ -115,6 +115,28 @@ const HOUR_HEIGHT_MAX: f32 = 220.0;
 /// Multiplicative step for one `zi`/`zo` zoom command (viscal's `zoom_amt`).
 const ZOOM_STEP: f32 = 1.15;
 
+/// The inputs the cached [`timeline::DayLayout`]s were built for. A change in
+/// any of them (the blocks moved, or a different date range scrolled into view)
+/// invalidates the cache; an unchanged key lets a frame reuse it as-is.
+#[derive(Clone, Copy, PartialEq)]
+struct LayoutKey {
+    /// Generation counter, bumped whenever [`Horizon::blocks`] changes.
+    generation: u64,
+    /// First visible date (the focused day, or the week's Monday).
+    first: NaiveDate,
+    /// Number of consecutive days laid out (1 for the day view, 7 for the week).
+    days: usize,
+}
+
+/// Cached per-day block layouts, so the timeline draw never re-runs
+/// [`block::layout`] or re-collects per-day index lists on the per-frame path.
+/// Rebuilt by [`Horizon::ensure_layout`] only when its [`LayoutKey`] changes.
+#[derive(Default)]
+struct LayoutCache {
+    key: Option<LayoutKey>,
+    days: Vec<timeline::DayLayout>,
+}
+
 pub struct Horizon {
     view: View,
     /// The date the timeline is focused on.
@@ -173,6 +195,11 @@ pub struct Horizon {
     /// Whether we've already tried to start [`Self::calsync`], so we attempt it
     /// at most once per run rather than every frame.
     calsync_started: bool,
+    /// Bumped every time [`Self::blocks`] changes, to invalidate [`Self::layout`].
+    layout_gen: u64,
+    /// Cached per-day block layouts, rebuilt only when the blocks or the visible
+    /// date range change — see [`Self::ensure_layout`].
+    layout: LayoutCache,
 }
 
 impl Default for Horizon {
@@ -200,6 +227,8 @@ impl Default for Horizon {
             publish_relays: Vec::new(),
             calsync: None,
             calsync_started: false,
+            layout_gen: 0,
+            layout: LayoutCache::default(),
         }
     }
 }
@@ -296,12 +325,56 @@ impl Horizon {
             .filter(|b| !self.deleted.contains(&b.id))
             .collect();
         self.blocks.sort_by_key(|b| b.start);
+        self.invalidate_layout();
         // A reload can invalidate the old index. Re-find a just-created event by
         // its id to keep it selected; otherwise clear the now-stale selection.
         self.selected = self
             .pending_select
             .take()
             .and_then(|id| self.blocks.iter().position(|b| b.id == id));
+    }
+
+    /// Mark the cached [`Self::layout`] stale after a change to [`Self::blocks`].
+    /// Every path that adds, removes, or re-times a block calls this so the next
+    /// frame rebuilds the affected day layouts (title-only edits don't, as they
+    /// can't change lane assignment).
+    fn invalidate_layout(&mut self) {
+        self.layout_gen = self.layout_gen.wrapping_add(1);
+    }
+
+    /// Rebuild [`Self::layout`] for the currently-visible date(s) if the blocks
+    /// or the visible range changed since it was last built. A no-op when the
+    /// [`LayoutKey`] is unchanged, so the common frame does no work; when the
+    /// view shows no timeline (month/agenda) the cache is simply emptied. Must
+    /// run before the timeline reads `self.layout`.
+    fn ensure_layout(&mut self) {
+        let (first, days) = match self.view {
+            View::Day => (self.focus.date_naive(), 1),
+            View::Week => (start_of_week(self.focus).date_naive(), 7),
+            _ => {
+                self.layout.days.clear();
+                self.layout.key = None;
+                return;
+            }
+        };
+
+        let key = LayoutKey {
+            generation: self.layout_gen,
+            first,
+            days,
+        };
+        if self.layout.key == Some(key) {
+            return;
+        }
+
+        self.layout.days.clear();
+        for d in 0..days as i64 {
+            let date = first + Duration::days(d);
+            self.layout
+                .days
+                .push(timeline::DayLayout::build(&self.blocks, date));
+        }
+        self.layout.key = Some(key);
     }
 
     fn show(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
@@ -348,14 +421,18 @@ impl Horizon {
     }
 
     fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+        // Refresh the cached per-day layouts before any borrow of them below.
+        self.ensure_layout();
         match self.view {
             View::Day => {
-                // Split borrows: `DayView` reads `self.blocks`, the editor takes
-                // `&mut self.editing` — disjoint fields, so both can coexist.
+                // Split borrows: `DayView` reads `self.blocks`/`self.layout`, the
+                // editor takes `&mut self.editing` — disjoint fields, so they
+                // coexist. `ensure_layout` guarantees `days[0]` is the focused day.
                 let response = {
                     let dv = timeline::DayView {
                         focus: self.focus,
                         blocks: &self.blocks,
+                        layout: &self.layout.days[0],
                         selected: self.selected,
                         cursor: self.cursor,
                         hour_height: self.hour_height,
@@ -381,7 +458,9 @@ impl Horizon {
             View::Week => {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| timeline::week(ui, self.focus, &self.blocks));
+                    .show(ui, |ui| {
+                        timeline::week(ui, self.focus, &self.blocks, &self.layout.days)
+                    });
             }
             other => {
                 ui.vertical_centered(|ui| {
@@ -804,6 +883,7 @@ impl Horizon {
         // the reload replaces this optimistic copy with the stored one.
         self.blocks.push(Block::timed(id, &d, title, start, end));
         self.blocks.sort_by_key(|b| b.start);
+        self.invalidate_layout();
         self.cursor = start;
         self.selected = self.blocks.iter().position(|b| b.id == id);
         self.pending_select = Some(id);
@@ -924,6 +1004,8 @@ impl Horizon {
         let block = &mut self.blocks[i];
         block.start = start;
         block.end = end;
+        // A re-time can change lane assignment, so drop the cached layout.
+        self.invalidate_layout();
         Some(new_id)
     }
 
@@ -1350,6 +1432,7 @@ impl Horizon {
 
         self.deleted.insert(block.id);
         self.blocks.remove(i);
+        self.invalidate_layout();
     }
 
     /// Re-home the selection on whatever timed event overlaps the cursor window,
