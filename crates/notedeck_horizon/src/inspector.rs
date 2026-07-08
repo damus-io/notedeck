@@ -4,7 +4,7 @@ use crate::block::Block;
 use crate::theme;
 use egui::{RichText, vec2};
 
-pub(crate) fn show(ui: &mut egui::Ui, blocks: &[Block], selected: Option<usize>) {
+pub(crate) fn show(ui: &mut egui::Ui, blocks: &[Block], selected: Option<usize>, locked: bool) {
     ui.add_space(10.0);
     let Some(block) = selected.and_then(|i| blocks.get(i)) else {
         ui.vertical_centered(|ui| {
@@ -47,6 +47,11 @@ pub(crate) fn show(ui: &mut egui::Ui, blocks: &[Block], selected: Option<usize>)
     field(ui, "repeat", "Never");
     field(ui, "alert", "None");
     field(ui, "show as", "Busy");
+    // Locked events (viscal's `EV_IMMOVABLE`) act as anchors a push-move won't
+    // shove; only surface the field when the event is actually locked.
+    if locked {
+        field(ui, "locked", "Yes");
+    }
 }
 
 /// A right-aligned dim field name with its value, matching the reference layout.

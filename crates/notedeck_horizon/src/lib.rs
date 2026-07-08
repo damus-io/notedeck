@@ -52,6 +52,28 @@ impl View {
     }
 }
 
+/// A block's `[start, end)` span, used as scratch state while planning a
+/// push-move cascade before any of it is written back (see [`Horizon::spans`]).
+#[derive(Clone, Copy)]
+struct Span {
+    start: DateTime<Local>,
+    end: DateTime<Local>,
+}
+
+impl Span {
+    fn duration(&self) -> Duration {
+        self.end - self.start
+    }
+}
+
+/// One planned cascade move: block `index` relocated to `[start, end)`. A full
+/// plan is a list of these, applied to the scratch [`Span`]s and re-published.
+struct SpanMove {
+    index: usize,
+    start: DateTime<Local>,
+    end: DateTime<Local>,
+}
+
 /// Minutes spanned by the keyboard selection cursor and one navigation step
 /// (viscal's `timeblock_size`). Resizing it is a later card.
 const SELECTION_MINUTES: i64 = 30;
@@ -104,6 +126,11 @@ pub struct Horizon {
     /// doesn't yet drop deleted notes, so we filter them out of every [`reload`]
     /// ourselves to keep an `x`/`dd` delete from resurrecting on the next poll.
     deleted: HashSet<[u8; 32]>,
+    /// `d`-tags (block UIDs) locked against push-move (viscal's `EV_IMMOVABLE`,
+    /// toggled with `l`). A locked block is an anchor: a push/expand cascade that
+    /// would have to displace it is refused. Keyed on the stable UID so the flag
+    /// survives the re-publish that a move/edit mints. Session-local for now.
+    locked: HashSet<String>,
     /// Cross-device sync of the account's own calendar events over its private
     /// relays (inbound subscription); resolves [`Self::publish_relays`].
     private_sync: PrivateRelaySync,
@@ -138,6 +165,7 @@ impl Default for Horizon {
             sub: None,
             pending_select: None,
             deleted: HashSet::new(),
+            locked: HashSet::new(),
             private_sync: PrivateRelaySync::new("horizon"),
             publish_relays: Vec::new(),
             calsync: None,
@@ -271,12 +299,13 @@ impl Horizon {
                 self.apply_sidebar(action);
             });
 
+        let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
         egui::SidePanel::right("horizon_inspector")
             .resizable(true)
             .default_width(320.0)
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
             .show_inside(ui, |ui| {
-                inspector::show(ui, &self.blocks, self.selected);
+                inspector::show(ui, &self.blocks, self.selected, selected_locked);
             });
 
         egui::CentralPanel::default()
@@ -469,12 +498,15 @@ impl Horizon {
                 continue;
             }
 
-            // Ctrl-d / Ctrl-u scroll the grid by an hour without moving the
-            // cursor (viscal's Ctrl-d/Ctrl-u).
+            // Ctrl-based commands: scroll the grid (Ctrl-d/Ctrl-u) and push-move
+            // the selection, shoving neighbours along (Ctrl-j/Ctrl-k/Ctrl-v).
             if mods.ctrl {
                 match key {
                     Key::D => self.scroll_delta += self.hour_height,
                     Key::U => self.scroll_delta -= self.hour_height,
+                    Key::J => self.pushmove_selected(ctx, 1),
+                    Key::K => self.pushmove_selected(ctx, -1),
+                    Key::V => self.push_expand_selected(ctx),
                     _ => {}
                 }
                 continue;
@@ -497,8 +529,9 @@ impl Horizon {
                 // `v` grows the selected event's end; `V` shrinks it.
                 Key::V if mods.shift => self.resize_selected(ctx, -1),
                 Key::V => self.resize_selected(ctx, 1),
-                // `x` deletes the selected event.
+                // `x` deletes the selected event; `l` locks it against push-move.
                 Key::X => self.delete_selected(ctx),
+                Key::L => self.toggle_lock(),
                 // `i` inserts a block at the cursor; `o` opens one below the
                 // selection (viscal's insert / open_below).
                 Key::I => self.insert_at_cursor(ctx),
@@ -804,9 +837,35 @@ impl Horizon {
         start: DateTime<Local>,
         end: DateTime<Local>,
     ) {
+        let Some(new_id) = self.republish_block(ctx, i, start, end) else {
+            return;
+        };
+        self.blocks.sort_by_key(|b| b.start);
+        self.cursor = start;
+        self.selected = self.blocks.iter().position(|b| b.id == new_id);
+        self.pending_select = Some(new_id);
+        self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    /// Publish a kind-31923 addressable replacement of block `i` over
+    /// `[start, end)` — preserving its `d` tag, content and every non-time tag —
+    /// and point the in-memory block at the new version. Returns the replacement
+    /// event id, or `None` if it couldn't be written (watch-only account, the
+    /// original note vanished, a build/frame failure).
+    ///
+    /// Unlike [`republish_times`] this touches neither the selection nor the
+    /// block ordering, so a cascade can re-publish several blocks by index and
+    /// then re-sort / re-select exactly once (see [`apply_spans`]).
+    fn republish_block(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        i: usize,
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+    ) -> Option<[u8; 32]> {
         let Some(secret) = account_secret(ctx) else {
             tracing::warn!("horizon: can't edit an event with a watch-only account");
-            return;
+            return None;
         };
 
         // Build and frame the replacement while the txn (and the borrowed
@@ -816,12 +875,12 @@ impl Horizon {
                 Ok(txn) => txn,
                 Err(err) => {
                     tracing::error!("horizon: txn failed: {err}");
-                    return;
+                    return None;
                 }
             };
             let Ok(orig) = ctx.ndb.get_note_by_id(&txn, &self.blocks[i].id) else {
                 tracing::error!("horizon: original note is gone; skipping edit");
-                return;
+                return None;
             };
 
             // Copy every tag except start/end, then re-add those with new values
@@ -850,27 +909,226 @@ impl Horizon {
 
             let Some(note) = builder.sign(&secret).build() else {
                 tracing::error!("horizon: failed to build edited note");
-                return;
+                return None;
             };
             frame_note(&note).map(|json| (*note.id(), json))
         };
-        let Some((new_id, json)) = framed else {
-            return;
-        };
+        let (new_id, json) = framed?;
 
         self.publish_json(ctx, json);
 
-        // Point the block at its new version and keep it selected once the
-        // async reload replaces this optimistic copy with the stored one.
+        // Point the block at its new version; the caller fixes up ordering and
+        // selection once the whole batch is published.
         let block = &mut self.blocks[i];
         block.id = new_id;
         block.start = start;
         block.end = end;
+        Some(new_id)
+    }
+
+    /// `Ctrl-j` / `Ctrl-k` — push the selected event down / up by `repeat` × 5
+    /// min, shoving any movable timed events it would collide with along with it
+    /// so nothing ends up overlapping (viscal's `pushmove_down`/`pushmove_up`).
+    /// A locked neighbour (viscal's `EV_IMMOVABLE`) is a wall: a step that would
+    /// have to displace one is refused, stopping the push there.
+    fn pushmove_selected(&mut self, ctx: &mut AppContext<'_>, dir: i64) {
+        let repeat = self.repeat.max(1) as i64;
+        self.repeat = 1;
+        let Some(sel) = self.selected.filter(|&i| !self.blocks[i].all_day) else {
+            return;
+        };
+        // Bail before planning if we couldn't publish the result anyway.
+        if account_secret(ctx).is_none() {
+            tracing::warn!("horizon: can't push an event with a watch-only account");
+            return;
+        }
+
+        // Cascade one 5-minute step at a time over a scratch copy of the spans
+        // (index-aligned with `blocks`), so a multi-step push stacks exactly as
+        // repeating the keypress would and never leaps a block out of order.
+        let mut spans = self.spans();
+        let step = Duration::minutes(MOVE_MINUTES * dir);
+        let mut moved = false;
+        for _ in 0..repeat {
+            let (ns, ne) = (spans[sel].start + step, spans[sel].end + step);
+            let mut plan = match if dir > 0 {
+                self.cascade_after(&spans, sel, ne)
+            } else {
+                self.cascade_before(&spans, sel, ns)
+            } {
+                Some(plan) => plan,
+                None => break, // a locked block blocks this step
+            };
+            plan.push(SpanMove {
+                index: sel,
+                start: ns,
+                end: ne,
+            });
+            for mv in plan {
+                spans[mv.index] = Span {
+                    start: mv.start,
+                    end: mv.end,
+                };
+            }
+            moved = true;
+        }
+        if moved {
+            self.apply_spans(ctx, &spans, sel);
+        }
+    }
+
+    /// `Ctrl-v` — grow the selected event's end by `repeat` × 5 min and push the
+    /// movable events below it down to stay flush (viscal's
+    /// `push_expand_selection`). Refused mid-way if a locked block is in the way.
+    fn push_expand_selected(&mut self, ctx: &mut AppContext<'_>) {
+        let repeat = self.repeat.max(1) as i64;
+        self.repeat = 1;
+        let Some(sel) = self.selected.filter(|&i| !self.blocks[i].all_day) else {
+            return;
+        };
+        if account_secret(ctx).is_none() {
+            tracing::warn!("horizon: can't expand an event with a watch-only account");
+            return;
+        }
+
+        let mut spans = self.spans();
+        let step = Duration::minutes(MOVE_MINUTES);
+        let mut moved = false;
+        for _ in 0..repeat {
+            let ne = spans[sel].end + step;
+            let Some(mut plan) = self.cascade_after(&spans, sel, ne) else {
+                break; // a locked block below blocks the expansion
+            };
+            plan.push(SpanMove {
+                index: sel,
+                start: spans[sel].start,
+                end: ne,
+            });
+            for mv in plan {
+                spans[mv.index] = Span {
+                    start: mv.start,
+                    end: mv.end,
+                };
+            }
+            moved = true;
+        }
+        if moved {
+            self.apply_spans(ctx, &spans, sel);
+        }
+    }
+
+    /// A scratch [`Span`] per block, index-aligned with [`Self::blocks`] (which
+    /// is kept sorted by start), for planning a cascade before writing anything.
+    fn spans(&self) -> Vec<Span> {
+        self.blocks
+            .iter()
+            .map(|b| Span {
+                start: b.start,
+                end: b.end,
+            })
+            .collect()
+    }
+
+    /// Whether block `i` is locked against push-move (viscal's `EV_IMMOVABLE`).
+    fn is_locked(&self, i: usize) -> bool {
+        self.locked.contains(&self.blocks[i].uid)
+    }
+
+    /// Plan flushing the movable timed blocks after `from` downward so none
+    /// starts before `floor`, stacking each flush against the previous. Stops at
+    /// the first block already clear of `floor`. Returns the moves (empty if
+    /// nothing collides), or `None` if a locked block would have to move.
+    fn cascade_after(
+        &self,
+        spans: &[Span],
+        from: usize,
+        floor: DateTime<Local>,
+    ) -> Option<Vec<SpanMove>> {
+        let mut plan = Vec::new();
+        let mut prev_end = floor;
+        for (index, span) in spans.iter().enumerate().skip(from + 1) {
+            if self.blocks[index].all_day {
+                continue; // all-day events live in a separate row, never collide
+            }
+            if span.start >= prev_end {
+                break; // a gap opens here, so the rest is undisturbed
+            }
+            if self.is_locked(index) {
+                return None;
+            }
+            let end = prev_end + span.duration();
+            plan.push(SpanMove {
+                index,
+                start: prev_end,
+                end,
+            });
+            prev_end = end;
+        }
+        Some(plan)
+    }
+
+    /// Mirror of [`cascade_after`] for an upward push: flush the movable timed
+    /// blocks before `from` up so none ends after `ceil`.
+    fn cascade_before(
+        &self,
+        spans: &[Span],
+        from: usize,
+        ceil: DateTime<Local>,
+    ) -> Option<Vec<SpanMove>> {
+        let mut plan = Vec::new();
+        let mut prev_start = ceil;
+        for (index, span) in spans[..from].iter().enumerate().rev() {
+            if self.blocks[index].all_day {
+                continue;
+            }
+            if span.end <= prev_start {
+                break;
+            }
+            if self.is_locked(index) {
+                return None;
+            }
+            let start = prev_start - span.duration();
+            plan.push(SpanMove {
+                index,
+                start,
+                end: prev_start,
+            });
+            prev_start = start;
+        }
+        Some(plan)
+    }
+
+    /// Commit a planned cascade: re-publish every block whose span changed, then
+    /// re-sort and settle the selection back on the block that started at `sel`
+    /// (identified by its stable UID, since the re-publish minted new event ids).
+    fn apply_spans(&mut self, ctx: &mut AppContext<'_>, spans: &[Span], sel: usize) {
+        let sel_uid = self.blocks[sel].uid.clone();
+        // Indices stay valid: `republish_block` updates in place without sorting.
+        for (i, span) in spans.iter().enumerate() {
+            if self.blocks[i].start != span.start || self.blocks[i].end != span.end {
+                self.republish_block(ctx, i, span.start, span.end);
+            }
+        }
         self.blocks.sort_by_key(|b| b.start);
-        self.cursor = start;
-        self.selected = self.blocks.iter().position(|b| b.id == new_id);
-        self.pending_select = Some(new_id);
+        self.selected = self.blocks.iter().position(|b| b.uid == sel_uid);
+        if let Some(i) = self.selected {
+            self.cursor = self.blocks[i].start;
+            self.pending_select = Some(self.blocks[i].id);
+        }
         self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    /// `l` — toggle the selected event's lock (viscal's `lock_selection`). A
+    /// locked event won't be shoved by a neighbouring push-move.
+    fn toggle_lock(&mut self) {
+        self.repeat = 1;
+        let Some(i) = self.selected else {
+            return;
+        };
+        let uid = self.blocks[i].uid.clone();
+        if !self.locked.remove(&uid) {
+            self.locked.insert(uid);
+        }
     }
 
     /// `x` — delete the selected event, then re-home the selection on whatever
@@ -1105,4 +1363,90 @@ fn with_date(dt: DateTime<Local>, date: NaiveDate) -> DateTime<Local> {
 /// Fraction (0.0..1.0) of the way through the day that `dt`'s local time is.
 pub(crate) fn day_fraction(dt: DateTime<Local>) -> f32 {
     dt.num_seconds_from_midnight() as f32 / 86_400.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use block::Block;
+
+    fn at(h: u32, m: u32) -> DateTime<Local> {
+        Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap()
+    }
+
+    fn timed(uid: &str, s: (u32, u32), e: (u32, u32)) -> Block {
+        Block::timed([0; 32], uid, "x", at(s.0, s.1), at(e.0, e.1))
+    }
+
+    /// Flatten a plan to `(index, start, end)` tuples for terse assertions.
+    fn as_tuples(plan: &[SpanMove]) -> Vec<(usize, DateTime<Local>, DateTime<Local>)> {
+        plan.iter().map(|m| (m.index, m.start, m.end)).collect()
+    }
+
+    /// A `Horizon` seeded with `blocks` (sorted by start, as [`reload`] leaves
+    /// them) so the cascade planners can be exercised without a db or account.
+    fn horizon_with(blocks: Vec<Block>) -> Horizon {
+        let mut h = Horizon::default();
+        h.blocks = blocks;
+        h.blocks.sort_by_key(|b| b.start);
+        h
+    }
+
+    #[test]
+    fn cascade_after_stacks_neighbours_flush() {
+        // a 9–10, b 10–11, c 11–11:30, back to back. Pushing a's end to 10:30
+        // shoves b and c down to stay flush.
+        let h = horizon_with(vec![
+            timed("a", (9, 0), (10, 0)),
+            timed("b", (10, 0), (11, 0)),
+            timed("c", (11, 0), (11, 30)),
+        ]);
+        let plan = h.cascade_after(&h.spans(), 0, at(10, 30)).unwrap();
+        assert_eq!(
+            as_tuples(&plan),
+            vec![(1, at(10, 30), at(11, 30)), (2, at(11, 30), at(12, 0)),]
+        );
+    }
+
+    #[test]
+    fn cascade_after_stops_at_a_gap() {
+        // A gap after the floor leaves the later event undisturbed.
+        let h = horizon_with(vec![
+            timed("a", (9, 0), (10, 0)),
+            timed("b", (11, 0), (12, 0)),
+        ]);
+        let plan = h.cascade_after(&h.spans(), 0, at(10, 30)).unwrap();
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn cascade_after_refused_by_a_locked_block() {
+        let mut h = horizon_with(vec![
+            timed("a", (9, 0), (10, 0)),
+            timed("b", (10, 0), (11, 0)),
+        ]);
+        h.locked.insert("b".to_owned());
+        assert!(h.cascade_after(&h.spans(), 0, at(10, 30)).is_none());
+    }
+
+    #[test]
+    fn cascade_before_stacks_neighbours_flush() {
+        // Pushing b up so it starts at 9:30 pulls a up to end at 9:30.
+        let h = horizon_with(vec![
+            timed("a", (9, 0), (10, 0)),
+            timed("b", (10, 0), (11, 0)),
+        ]);
+        let plan = h.cascade_before(&h.spans(), 1, at(9, 30)).unwrap();
+        assert_eq!(as_tuples(&plan), vec![(0, at(8, 30), at(9, 30))]);
+    }
+
+    #[test]
+    fn cascade_before_refused_by_a_locked_block() {
+        let mut h = horizon_with(vec![
+            timed("a", (9, 0), (10, 0)),
+            timed("b", (10, 0), (11, 0)),
+        ]);
+        h.locked.insert("a".to_owned());
+        assert!(h.cascade_before(&h.spans(), 1, at(9, 30)).is_none());
+    }
 }
