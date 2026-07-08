@@ -127,15 +127,18 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | --- | --- |
 | `show [cards...] [--archived] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards) |
 | `seed` | Create the default board if none exists |
-| `add <title...> [--col <c>] [-l <labels>]` | Add a card (defaults to the first column; `-l`/`--label` tags it) |
+| `add <title...> [--col <c>] [-l <labels>] [--parent <card>]` | Add a card (defaults to the first column; `-l`/`--label` tags it; `--parent` creates it as a subissue) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |
 | `title <card> <title...>` | Edit a card's title |
 | `desc <card> <text...>` | Edit a card's description |
 | `label <card> [labels...]` | Set labels (no labels clears them) |
+| `parent <card> [parent]` | Make a card a subissue of `[parent]`; omit the parent to detach |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |
+| `link <card> --to <board>` | Also place the card on another board (it stays on this one) |
+| `move-board <card> --to <board>` | Move the card off this board onto another |
 | `board [id]` | Switch the current board to `id`, or (no arg) list boards and mark the current one |
 | `login <nsec>` | Store a signing key so later runs just work |
 | `logout` | Forget the stored signing key |
@@ -151,6 +154,66 @@ headway add "Fix the relay reconnect" --col todo -l bug,p1
 Other flags: `--board <id>` (target another board for one run; see Multiple
 boards), `--db <path>` (cache dir),
 `--author <pk>` (read someone else's board), `-h`/`--help`.
+
+## Subissues
+
+A card can be a **subissue** of one parent card (GitHub sub-issue semantics:
+one parent per child, any number of children per parent). Use this instead of
+the old hand-maintained epic pattern — an `epic` label plus a word-id checklist
+in the description — whenever work breaks down into trackable pieces: the
+rollup is derived from the board, so it can never go stale.
+
+```bash
+headway add "wire up the parser" --col todo --parent <epic>  # create as a subissue
+headway parent <card> <epic>    # make an existing card a subissue (or re-parent)
+headway parent <card>           # omit the parent to detach
+```
+
+Progress is **positional, not stored**: a child counts as done when it sits in
+the last column of its board (Done on the default board), or is archived.
+There is no checkbox to tick — moving the child card *is* the progress update.
+
+How it renders:
+
+- The board listing (`show`) marks parent cards with a dim `n/m` rollup.
+- Card detail (`show <epic>`) gains a `subissue of` line on children and a
+  derived checklist on parents:
+
+  ```
+  subissues (2/4 done)
+      [x] route media loads through imgproxy   headway#mushroom-include-wolf
+      [ ] cap media cache size with eviction   headway#extend-decrease-visit
+  ```
+
+- `show --json` gains `parent`, `parent_words`, and `subissues` per card.
+
+Notes: re-parenting that would create a cycle is refused; children may live on
+a different board than the parent; nesting works (a child can itself be a
+parent) but each rollup counts direct children only.
+
+## Cross-board cards: `link` and `move-board`
+
+Board membership is **placement-driven**: the same card — one issue with all
+its overlays (title, description, labels, comments, parent/subissues) — can sit
+on several boards at once. Two commands manage this:
+
+```bash
+headway --board work link 1a2b3c4d… --to personal        # now on both boards
+headway --board work move-board 1a2b3c4d… --to personal  # re-homed: off work, on personal
+```
+
+- `link` adds a placement on the target board and keeps every placement the
+  card already has. Edits made anywhere show everywhere — it's the same card,
+  not a copy. Re-linking an already-linked card is harmless (it just re-ranks).
+- `move-board` is link + remove from the source board: the card keeps its id,
+  word-id, and all overlays, and now lives only on the target (plus any other
+  boards it was already linked to).
+- On the target, the card lands in the column whose **id matches its current
+  column** (e.g. a card in `in-review` stays in `in-review`), falling back to
+  the target's first column when no such column exists there.
+- The card is resolved on the **source** board, so combine `--board <source>`
+  with `--to <target>`. The target board must already exist — seed it first
+  with `headway --board <target> seed` if it doesn't.
 
 ## Typical workflow
 
