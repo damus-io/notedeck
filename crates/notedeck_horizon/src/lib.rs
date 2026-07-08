@@ -74,6 +74,31 @@ struct SpanMove {
     end: DateTime<Local>,
 }
 
+/// An in-progress inline title edit of the selected block (viscal's edit buffer
+/// under `CAL_CHANGING`). Rendered as a `TextEdit` overlaid on the block; `c`/`s`
+/// start it cleared, `A` starts it from the current title, insert (`i`/`o`)
+/// starts it fresh.
+pub(crate) struct EditState {
+    /// The working title being typed.
+    buf: String,
+    /// The value to restore into `buf` until the field first grabs focus, so the
+    /// keystroke that opened the editor can't leak in as the first character.
+    initial: String,
+    /// Whether the field has taken keyboard focus yet (see `initial`).
+    focused: bool,
+    /// True when editing a just-inserted event, so cancelling deletes it
+    /// (viscal's `CAL_INSERTING`); a plain rename leaves the event in place.
+    fresh: bool,
+}
+
+/// How an inline edit ended this frame (the `TextEdit` lost focus).
+pub(crate) enum EditOutcome {
+    /// Return / click-away: keep what was typed.
+    Commit,
+    /// Escape: discard; delete the event too if it was a fresh insert.
+    Cancel,
+}
+
 /// Minutes spanned by the keyboard selection cursor and one navigation step
 /// (viscal's `timeblock_size`). Resizing it is a later card.
 const SELECTION_MINUTES: i64 = 30;
@@ -131,6 +156,10 @@ pub struct Horizon {
     /// would have to displace it is refused. Keyed on the stable UID so the flag
     /// survives the re-publish that a move/edit mints. Session-local for now.
     locked: HashSet<String>,
+    /// In-progress inline title edit of the selected block, if any (viscal's
+    /// `CAL_CHANGING`). While set, a `TextEdit` overlays the block and holds
+    /// keyboard focus, so the normal nav keys are suppressed.
+    editing: Option<EditState>,
     /// Cross-device sync of the account's own calendar events over its private
     /// relays (inbound subscription); resolves [`Self::publish_relays`].
     private_sync: PrivateRelaySync,
@@ -166,6 +195,7 @@ impl Default for Horizon {
             pending_select: None,
             deleted: HashSet::new(),
             locked: HashSet::new(),
+            editing: None,
             private_sync: PrivateRelaySync::new("horizon"),
             publish_relays: Vec::new(),
             calsync: None,
@@ -283,6 +313,10 @@ impl Horizon {
         self.scroll_delta = 0.0;
         if self.view == View::Day {
             self.handle_keys(ctx, ui);
+        } else {
+            // Only the day view renders the inline editor; drop any pending edit
+            // so it can't dangle unresolved after a view switch.
+            self.editing = None;
         }
 
         egui::TopBottomPanel::top("horizon_toolbar")
@@ -310,15 +344,16 @@ impl Horizon {
 
         egui::CentralPanel::default()
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 4)))
-            .show_inside(ui, |ui| self.center(ui));
+            .show_inside(ui, |ui| self.center(ctx, ui));
     }
 
-    fn center(&mut self, ui: &mut egui::Ui) {
+    fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
         match self.view {
             View::Day => {
-                let clicked = timeline::center_day(
-                    ui,
-                    &timeline::DayView {
+                // Split borrows: `DayView` reads `self.blocks`, the editor takes
+                // `&mut self.editing` — disjoint fields, so both can coexist.
+                let response = {
+                    let dv = timeline::DayView {
                         focus: self.focus,
                         blocks: &self.blocks,
                         selected: self.selected,
@@ -326,9 +361,18 @@ impl Horizon {
                         hour_height: self.hour_height,
                         scroll_to_cursor: self.scroll_to_cursor,
                         scroll_delta: self.scroll_delta,
-                    },
-                );
-                if let Some(i) = clicked {
+                    };
+                    timeline::center_day(ui, &dv, self.editing.as_mut())
+                };
+
+                // Settle a finished inline edit before a click moves the
+                // selection, so a click-away commits the block being edited.
+                match response.edit {
+                    Some(EditOutcome::Commit) => self.commit_edit(ctx),
+                    Some(EditOutcome::Cancel) => self.cancel_edit(ctx),
+                    None => {}
+                }
+                if let Some(i) = response.clicked {
                     // A mouse click selects a block and snaps the cursor to it.
                     self.selected = Some(i);
                     self.cursor = self.blocks[i].start;
@@ -536,6 +580,10 @@ impl Horizon {
                 // selection (viscal's insert / open_below).
                 Key::I => self.insert_at_cursor(ctx),
                 Key::O => self.open_below(ctx),
+                // `c`/`s` rename the selected event from a blank buffer; `A`
+                // edits its current title (viscal's edit / append).
+                Key::C | Key::S => self.begin_edit(true),
+                Key::A if mods.shift => self.begin_edit(false),
                 // Chord prefixes wait for a second key (`dd` deletes + pulls up).
                 Key::Z | Key::G | Key::A | Key::D => self.chord = Some(key),
                 _ => {}
@@ -760,6 +808,15 @@ impl Horizon {
         self.selected = self.blocks.iter().position(|b| b.id == id);
         self.pending_select = Some(id);
         self.scroll_to_cursor = Some(Align::Center);
+
+        // Drop straight into an inline edit so the new block can be named right
+        // away; Escape here deletes it again (viscal's insert → CAL_INSERTING).
+        self.editing = Some(EditState {
+            buf: String::new(),
+            initial: String::new(),
+            focused: false,
+            fresh: true,
+        });
     }
 
     /// Ingest a pre-framed `["EVENT", …]` json into the local nostrdb, then fan
@@ -847,21 +904,103 @@ impl Horizon {
         self.scroll_to_cursor = Some(Align::Center);
     }
 
-    /// Publish a kind-31923 addressable replacement of block `i` over
-    /// `[start, end)` — preserving its `d` tag, content and every non-time tag —
-    /// and point the in-memory block at the new version. Returns the replacement
-    /// event id, or `None` if it couldn't be written (watch-only account, the
-    /// original note vanished, a build/frame failure).
-    ///
-    /// Unlike [`republish_times`] this touches neither the selection nor the
-    /// block ordering, so a cascade can re-publish several blocks by index and
-    /// then re-sort / re-select exactly once (see [`apply_spans`]).
+    /// Re-publish block `i`'s time span, updating its `.id`/`.start`/`.end` in
+    /// place. Returns the replacement event id, or `None` if it couldn't be
+    /// written. Touches neither the selection nor the block ordering, so a
+    /// cascade can re-publish several blocks by index and then re-sort / re-select
+    /// exactly once (see [`apply_spans`]).
     fn republish_block(
         &mut self,
         ctx: &mut AppContext<'_>,
         i: usize,
         start: DateTime<Local>,
         end: DateTime<Local>,
+    ) -> Option<[u8; 32]> {
+        let overrides = [
+            ("start", start.timestamp().to_string()),
+            ("end", end.timestamp().to_string()),
+        ];
+        let new_id = self.republish_with(ctx, i, &overrides)?;
+        let block = &mut self.blocks[i];
+        block.start = start;
+        block.end = end;
+        Some(new_id)
+    }
+
+    /// Re-publish block `i` with its title changed, updating the block in place
+    /// and keeping it selected across the reload. No move, so no re-sort needed.
+    fn republish_title(&mut self, ctx: &mut AppContext<'_>, i: usize, title: &str) {
+        let overrides = [("title", title.to_owned())];
+        if self.republish_with(ctx, i, &overrides).is_some() {
+            self.blocks[i].title = title.to_owned();
+            self.pending_select = Some(self.blocks[i].id);
+        }
+    }
+
+    /// `c`/`s` (from a blank buffer) or `A` (from the current title) — start an
+    /// inline title edit of the selected event. No-op when nothing's selected.
+    fn begin_edit(&mut self, clear: bool) {
+        self.repeat = 1;
+        let Some(i) = self.selected else {
+            return;
+        };
+        let initial = if clear {
+            String::new()
+        } else {
+            self.blocks[i].title.clone()
+        };
+        self.editing = Some(EditState {
+            buf: initial.clone(),
+            initial,
+            focused: false,
+            fresh: false,
+        });
+    }
+
+    /// Finish an inline edit (Return / click-away): publish the new title when it
+    /// changed and isn't blank; a blank buffer just keeps the existing title (so
+    /// a fresh insert stays "New event").
+    fn commit_edit(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(edit) = self.editing.take() else {
+            return;
+        };
+        let Some(i) = self.selected else {
+            return;
+        };
+        let title = edit.buf.trim();
+        if title.is_empty() || title == self.blocks[i].title {
+            return;
+        }
+        self.republish_title(ctx, i, title);
+    }
+
+    /// Abort an inline edit (Escape): drop the buffer, and delete the event too
+    /// if the edit was on a fresh insert (viscal's `cancel_editing` under
+    /// `CAL_INSERTING`), since an unnamed just-inserted block is throwaway.
+    fn cancel_edit(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(edit) = self.editing.take() else {
+            return;
+        };
+        if edit.fresh
+            && let Some(i) = self.selected
+        {
+            self.delete_block(ctx, i);
+            self.reselect_at_cursor();
+        }
+    }
+
+    /// Publish a kind-31923 addressable replacement of block `i`, copying every
+    /// tag from the stored note except those named in `overrides` and re-adding
+    /// each override as a single `[key, value]` tag — so the `d` tag, content and
+    /// untouched tags carry over and only the overridden ones change. Ingests and
+    /// fans it out, and points the in-memory block at the new id. Returns the new
+    /// id, or `None` if it couldn't be written (watch-only account, the original
+    /// note vanished, a build/frame failure).
+    fn republish_with(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        i: usize,
+        overrides: &[(&str, String)],
     ) -> Option<[u8; 32]> {
         let Some(secret) = account_secret(ctx) else {
             tracing::warn!("horizon: can't edit an event with a watch-only account");
@@ -883,13 +1022,15 @@ impl Horizon {
                 return None;
             };
 
-            // Copy every tag except start/end, then re-add those with new values
-            // so the replacement carries exactly one fresh start and end.
             let mut builder = NoteBuilder::new()
                 .content(orig.content())
                 .kind(block::KIND_TIME_BASED as u32);
+            // Copy every tag whose key we're not overriding…
             for tag in orig.tags() {
-                if matches!(tag.get_str(0), Some("start") | Some("end")) {
+                if tag
+                    .get_str(0)
+                    .is_some_and(|k| overrides.iter().any(|(key, _)| *key == k))
+                {
                     continue;
                 }
                 builder = builder.start_tag();
@@ -899,13 +1040,10 @@ impl Horizon {
                     }
                 }
             }
-            builder = builder
-                .start_tag()
-                .tag_str("start")
-                .tag_str(&start.timestamp().to_string())
-                .start_tag()
-                .tag_str("end")
-                .tag_str(&end.timestamp().to_string());
+            // …then add the overrides, so exactly one of each survives.
+            for (key, value) in overrides {
+                builder = builder.start_tag().tag_str(key).tag_str(value);
+            }
 
             let Some(note) = builder.sign(&secret).build() else {
                 tracing::error!("horizon: failed to build edited note");
@@ -916,13 +1054,7 @@ impl Horizon {
         let (new_id, json) = framed?;
 
         self.publish_json(ctx, json);
-
-        // Point the block at its new version; the caller fixes up ordering and
-        // selection once the whole batch is published.
-        let block = &mut self.blocks[i];
-        block.id = new_id;
-        block.start = start;
-        block.end = end;
+        self.blocks[i].id = new_id;
         Some(new_id)
     }
 

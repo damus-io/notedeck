@@ -43,10 +43,21 @@ pub(crate) struct DayView<'a> {
     pub scroll_delta: f32,
 }
 
+/// What the day view reports back after a frame: any block clicked, and how an
+/// in-progress inline edit ended (if one was active).
+pub(crate) struct DayResponse {
+    pub clicked: Option<usize>,
+    pub edit: Option<crate::EditOutcome>,
+}
+
 /// Draw the whole center pane for the day view: big date header, the all-day
-/// row, then the scrollable hour grid. Returns the block index that was clicked
-/// this frame, if any.
-pub(crate) fn center_day(ui: &mut egui::Ui, dv: &DayView) -> Option<usize> {
+/// row, then the scrollable hour grid. When `editing` is set, a `TextEdit` is
+/// overlaid on the selected block and its outcome reported in the response.
+pub(crate) fn center_day(
+    ui: &mut egui::Ui,
+    dv: &DayView,
+    editing: Option<&mut crate::EditState>,
+) -> DayResponse {
     let DayView {
         focus,
         blocks,
@@ -58,6 +69,7 @@ pub(crate) fn center_day(ui: &mut egui::Ui, dv: &DayView) -> Option<usize> {
     } = *dv;
 
     let mut clicked = None;
+    let mut edit = None;
     let date = focus.date_naive();
 
     date_header(ui, focus);
@@ -81,6 +93,7 @@ pub(crate) fn center_day(ui: &mut egui::Ui, dv: &DayView) -> Option<usize> {
             if scroll_delta != 0.0 {
                 ui.scroll_with_delta(vec2(0.0, -scroll_delta));
             }
+            let mut editing = editing;
 
             let width = ui.available_width();
             let height = hour_height * 24.0;
@@ -120,7 +133,7 @@ pub(crate) fn center_day(ui: &mut egui::Ui, dv: &DayView) -> Option<usize> {
                 .filter(|(_, b)| !b.all_day && b.covers(date))
                 .map(|(i, _)| i)
                 .collect();
-            if let Some(i) = draw_blocks(
+            let drawn = draw_blocks(
                 ui,
                 &painter,
                 grid_left,
@@ -130,8 +143,15 @@ pub(crate) fn center_day(ui: &mut egui::Ui, dv: &DayView) -> Option<usize> {
                 blocks,
                 &day_blocks,
                 selected,
-            ) {
+                editing.is_some(),
+            );
+            if let Some(i) = drawn.clicked {
                 clicked = Some(i);
+            }
+
+            // Overlay the inline title editor on the selected block, if editing.
+            if let (Some(state), Some(edit_rect)) = (editing.as_mut(), drawn.selected_rect) {
+                edit = place_editor(ui, edit_rect, state);
             }
 
             // Keyboard selection cursor: a translucent block at the cursor
@@ -174,7 +194,44 @@ pub(crate) fn center_day(ui: &mut egui::Ui, dv: &DayView) -> Option<usize> {
             }
         });
 
-    clicked
+    DayResponse { clicked, edit }
+}
+
+/// Render the inline title `TextEdit` over the selected block's `rect`, grabbing
+/// focus on entry. Returns `Some` once the field loses focus: `Cancel` on
+/// Escape, `Commit` otherwise (Return or a click away). To keep the keystroke
+/// that opened the editor from landing in the buffer, the text is held at its
+/// initial value until the field actually takes focus.
+fn place_editor(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    state: &mut crate::EditState,
+) -> Option<crate::EditOutcome> {
+    let resp = ui.put(
+        rect,
+        egui::TextEdit::singleline(&mut state.buf)
+            .frame(false)
+            .margin(vec2(9.0, 4.0))
+            .text_color(theme::SELECTED_TEXT)
+            .font(FontId::proportional(12.0)),
+    );
+
+    if !state.focused {
+        resp.request_focus();
+        state.buf = state.initial.clone();
+        state.focused = resp.has_focus();
+    }
+
+    if resp.lost_focus() {
+        let escaped = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+        return Some(if escaped {
+            crate::EditOutcome::Cancel
+        } else {
+            crate::EditOutcome::Commit
+        });
+    }
+
+    None
 }
 
 /// The large colored date title, e.g. "Saturday June 27, 2026".
@@ -268,8 +325,15 @@ fn allday_row(
     clicked
 }
 
+/// The outcome of drawing a day's timed blocks: any block clicked this frame,
+/// and the on-screen rect of the selected block (for the inline edit overlay).
+struct DrawResult {
+    clicked: Option<usize>,
+    selected_rect: Option<egui::Rect>,
+}
+
 /// Lay out and draw timed `blocks` (given by global index) within the column
-/// `[left, right]`. Returns the index of any block clicked this frame.
+/// `[left, right]`.
 #[allow(clippy::too_many_arguments)]
 fn draw_blocks(
     ui: &egui::Ui,
@@ -281,15 +345,20 @@ fn draw_blocks(
     all_blocks: &[Block],
     indices: &[usize],
     selected: Option<usize>,
-) -> Option<usize> {
+    editing: bool,
+) -> DrawResult {
     if indices.is_empty() {
-        return None;
+        return DrawResult {
+            clicked: None,
+            selected_rect: None,
+        };
     }
 
     let refs: Vec<&Block> = indices.iter().map(|&i| &all_blocks[i]).collect();
     let lanes = crate::block::layout(&refs);
     let avail = right - left;
     let mut clicked = None;
+    let mut selected_rect = None;
 
     for (&i, (col, cols)) in indices.iter().zip(lanes) {
         let b = &all_blocks[i];
@@ -302,7 +371,18 @@ fn draw_blocks(
         let rect = egui::Rect::from_min_max(pos2(x0 + 1.0, y0 + 1.0), pos2(x0 + lane_w - 1.0, y1));
 
         let is_sel = selected == Some(i);
+        let tall = y1 - y0 > 30.0;
         let resp = ui.interact(rect, ui.id().with(("block", i)), Sense::click());
+
+        if is_sel {
+            // Where the inline editor sits: the title line when there's room,
+            // else the whole block. Kept below the time label so it stays legible.
+            let editor_top = if tall { rect.top() + 15.0 } else { rect.top() };
+            selected_rect = Some(egui::Rect::from_min_max(
+                pos2(rect.left(), editor_top),
+                pos2(rect.right(), y1),
+            ));
+        }
 
         let (fill, accent, text) = if is_sel {
             (
@@ -341,7 +421,9 @@ fn draw_blocks(
             FontId::proportional(11.0),
             text,
         );
-        if y1 - y0 > 30.0 {
+        // Skip the painted title on the block being edited — the overlaid
+        // `TextEdit` renders the live buffer there instead.
+        if tall && !(is_sel && editing) {
             clip.text(
                 pad + vec2(0.0, 15.0),
                 Align2::LEFT_TOP,
@@ -356,7 +438,10 @@ fn draw_blocks(
         }
     }
 
-    clicked
+    DrawResult {
+        clicked,
+        selected_rect,
+    }
 }
 
 /// Draw the horizontal "now" line with a dot and the time on each edge.
@@ -464,6 +549,7 @@ pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) 
             blocks,
             &day_blocks,
             None,
+            false,
         );
     }
 
