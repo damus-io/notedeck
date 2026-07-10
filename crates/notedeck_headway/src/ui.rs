@@ -26,13 +26,6 @@ const COLUMN_WIDTH: f32 = 280.0;
 /// comfortably instead of stretching across a wide window.
 const DETAIL_CONTENT_WIDTH: f32 = 760.0;
 
-/// Width of the comment thread's right rail in the two-column detail layout.
-const DETAIL_COMMENTS_WIDTH: f32 = 380.0;
-
-/// Pane width at or above which the detail view splits into two columns (body
-/// left, comment thread right); below it the thread stacks under the body.
-const DETAIL_TWO_COL_MIN: f32 = 1024.0;
-
 /// How long a card takes to slide from its old slot to its new one when it
 /// jumps columns (e.g. a `headway move` landing from the CLI).
 const MOVE_ANIM_SECS: f32 = 0.28;
@@ -1411,9 +1404,9 @@ fn add_column_ui(
 /// is selected. A top bar (back to board, current-status pill, ✕) sits above a
 /// scrollable body holding the title, description, labels, status and card
 /// actions. Edits are emitted as [`BoardAction`]s (title/description commit on
-/// focus loss); dismissing (back / ✕ / Escape) clears the selection. Unlike the
-/// old floating sheet this gives a card room to breathe — and room for the
-/// comment thread that lives alongside it.
+/// focus loss); dismissing (back / ✕ / Escape) clears the selection. Laid out
+/// Linear-style as a single reading column: the comment thread always sits
+/// beneath the body, never beside it.
 fn card_detail_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1506,59 +1499,21 @@ fn card_detail_pane_ui(
             ui.separator();
             ui.add_space(SPACING_MD);
 
-            // On a wide pane the card body and its comment thread sit side by
-            // side; on a narrow one the thread stacks beneath the body. Shrink to
-            // content height (only the width is pinned) so the trailing actions
-            // sit right under the body rather than floating in the centre of an
-            // over-tall scroll area.
-            let avail = ui.available_width();
-            let two_col = avail >= DETAIL_TWO_COL_MIN;
+            // Linear-style single column: the comment thread always stacks
+            // beneath the body, whatever the pane width. Shrink to content
+            // height (only the width is pinned) so the thread sits right under
+            // the body rather than floating in the centre of an over-tall
+            // scroll area.
+            let content_width = ui.available_width().min(DETAIL_CONTENT_WIDTH);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    if two_col {
-                        // Cap the combined width so body+thread don't sprawl, then
-                        // split: comments take a fixed right rail, the body the rest
-                        // (floored so it never collapses).
-                        let total =
-                            avail.min(DETAIL_CONTENT_WIDTH + SPACING_LG + DETAIL_COMMENTS_WIDTH);
-                        let body_w = (total - DETAIL_COMMENTS_WIDTH - SPACING_LG).max(360.0);
-                        ui.set_max_width(total);
-                        ui.horizontal_top(|ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(body_w, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    ui.set_width(body_w);
-                                    detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
-                                },
-                            );
-                            ui.add_space(SPACING_LG);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(DETAIL_COMMENTS_WIDTH, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    ui.set_width(DETAIL_COMMENTS_WIDTH);
-                                    detail_comments_ui(
-                                        ui,
-                                        theme,
-                                        note_context,
-                                        &ctx,
-                                        state,
-                                        &mut outcome,
-                                    );
-                                },
-                            );
-                        });
-                    } else {
-                        let content_width = avail.min(DETAIL_CONTENT_WIDTH);
-                        ui.set_max_width(content_width);
-                        detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
-                        ui.add_space(SPACING_MD);
-                        ui.separator();
-                        ui.add_space(SPACING_MD);
-                        detail_comments_ui(ui, theme, note_context, &ctx, state, &mut outcome);
-                    }
+                    ui.set_max_width(content_width);
+                    detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                    ui.add_space(SPACING_MD);
+                    ui.separator();
+                    ui.add_space(SPACING_MD);
+                    detail_comments_ui(ui, theme, note_context, &ctx, state, &mut outcome);
                 });
         });
 
@@ -2174,7 +2129,7 @@ fn comment_note_ui(
 
     // No actionbar/options menu: there's no relay publishing or note-nav wired up
     // here, so the reply/zap/repost affordances would be dead. A small framed pfp
-    // keeps each comment compact in the thread rail.
+    // keeps each comment compact in the thread.
     let flags = notedeck_ui::NoteOptions::SelectableText
         | notedeck_ui::NoteOptions::SmallPfp
         | notedeck_ui::NoteOptions::Framed;
