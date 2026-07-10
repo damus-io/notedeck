@@ -78,8 +78,11 @@ pub struct BoardUiState {
     /// (move to / link onto another board). The app reads and clears it to act.
     card_move: Option<CardBoardMove>,
     /// Free-text board filter. Empty means no filtering. Plain words match a
-    /// card's title/description/labels (all must match, case-insensitive); a
-    /// `label:foo` token narrows to cards carrying a label containing `foo`.
+    /// card's title/description/labels/word-id (all must match,
+    /// case-insensitive); a `label:foo` token narrows to cards carrying a
+    /// label containing `foo`. Pasting a full card reference filters to that
+    /// card, switching boards first if it lives on another known board (see
+    /// [`CardFilter`] and [`filter_ref_jump`]).
     filter: String,
     /// Where each card was drawn last frame (screen rect + column), so a card
     /// that has jumped to a new column since can be animated sliding in from its
@@ -206,8 +209,15 @@ struct DragCard(NoteId);
 
 /// A parsed board filter. Linear-inspired: whitespace splits the query into
 /// AND-ed terms, a `label:` prefix scopes a term to labels, and everything else
-/// is free text matched against a card's title, description and labels. All
-/// matching is case-insensitive substring; an empty filter matches everything.
+/// is free text matched against a card's title, description, labels and its
+/// word-id (`maple-river-canyon`), so a card can be pulled up by any of its id
+/// words. A pasted reference to a card on *this* board
+/// (`headway#maple-river-canyon`, or `#maple-river-canyon` as rendered on the
+/// card) matches by its id words — the board prefix carries no signal within a
+/// single board. Other `#` terms are plain text: a card citing an issue on
+/// another board stays searchable by that citation. (Pasting another *known*
+/// board's reference switches to it — see [`filter_ref_jump`].) All matching is
+/// case-insensitive substring; an empty filter matches everything.
 #[derive(Default)]
 struct CardFilter {
     /// Free-text terms (lowercased); each must appear somewhere in the card.
@@ -217,7 +227,9 @@ struct CardFilter {
 }
 
 impl CardFilter {
-    fn parse(query: &str) -> Self {
+    /// Parse `query` into a filter for the board whose slug is `board` (needed
+    /// to recognise pasted references to this board's own cards).
+    fn parse(query: &str, board: &str) -> Self {
         let mut filter = CardFilter::default();
         for term in query.split_whitespace() {
             // Accept `label:` and `l:` as the label-scoping prefix.
@@ -228,7 +240,23 @@ impl CardFilter {
                 Some(value) if !value.is_empty() => filter.labels.push(value.to_lowercase()),
                 // A bare `label:` with no value isn't a constraint; ignore it.
                 Some(_) => {}
-                None => filter.text.push(term.to_lowercase()),
+                None => match term.split_once('#') {
+                    // A reference to a card on *this* board — pasted in full
+                    // (`headway#maple-river-canyon`) or as rendered on the card
+                    // (`#maple-river-canyon`): the prefix is redundant here, so
+                    // match on the id words alone. A term that ends at the `#`
+                    // has nothing left to match; ignore it.
+                    Some((prefix, words))
+                        if prefix.is_empty() || prefix.eq_ignore_ascii_case(board) =>
+                    {
+                        if !words.is_empty() {
+                            filter.text.push(words.to_lowercase());
+                        }
+                    }
+                    // Any other `#` term is plain text — cards can cite issues
+                    // on other boards, and those citations stay searchable.
+                    _ => filter.text.push(term.to_lowercase()),
+                },
             }
         }
         filter
@@ -260,8 +288,67 @@ impl CardFilter {
             haystack.push('\n');
             haystack.push_str(&l.to_lowercase());
         }
+        // The card's id words (`maple-river-canyon`), already lowercase BIP-39
+        // words. No board slug: the filter is scoped to a single board, so the
+        // slug carries no signal and would make its text match every card.
+        haystack.push('\n');
+        haystack.push_str(&headway::wordid::encode(card.id.bytes()));
         self.text.iter().all(|needle| haystack.contains(needle))
     }
+}
+
+/// A full reference to a card on *another* board found in the filter query:
+/// the raw term as typed, the id words after the `#`, and the referenced
+/// board's slug. Borrowed from the query and the board list.
+struct CrossBoardRef<'a> {
+    /// The whole term as it appears in the query (`otherboard#maple-river-canyon`).
+    term: &'a str,
+    /// The id words after the `#`; may be empty (`otherboard#` alone).
+    words: &'a str,
+    /// The referenced board's slug, in its canonical casing from the board list.
+    board: &'a str,
+}
+
+/// Find the first term in `query` that is a reference to a card on another
+/// known board (`otherboard#maple-river-canyon`). Terms referencing `board`
+/// itself are the filter's business ([`CardFilter::parse`]), and prefixes that
+/// aren't a known board slug are plain search text; both return `None` here.
+fn cross_board_ref<'a>(
+    query: &'a str,
+    board: &str,
+    boards: &'a [BoardSummary],
+) -> Option<CrossBoardRef<'a>> {
+    query.split_whitespace().find_map(|term| {
+        let (prefix, words) = term.split_once('#')?;
+        if prefix.eq_ignore_ascii_case(board) {
+            return None;
+        }
+        let target = boards.iter().find(|b| b.id.eq_ignore_ascii_case(prefix))?;
+        Some(CrossBoardRef {
+            term,
+            words,
+            board: &target.id,
+        })
+    })
+}
+
+/// React to a full cross-board reference pasted into the filter field: a
+/// `otherboard#maple-river-canyon` term addresses a card on another board, so
+/// the intuitive read is "take me there" — raise a switch to that board and
+/// reduce the term to its id words, which then filter the target board down to
+/// the referenced card. Runs only on an edit of the field, not per frame.
+fn filter_ref_jump(view: &BoardView, boards: &[BoardSummary], state: &mut BoardUiState) {
+    let Some(r) = cross_board_ref(&state.filter, &view.id, boards) else {
+        return;
+    };
+    let rewritten = state
+        .filter
+        .split_whitespace()
+        .map(|t| if t == r.term { r.words } else { t })
+        .collect::<Vec<_>>()
+        .join(" ");
+    state.nav = Some(BoardNav::Switch(r.board.to_string()));
+    state.filter = rewritten;
 }
 
 /// Render the board (header, columns, the add-column affordance and the floating
@@ -306,7 +393,7 @@ pub fn board_ui(
         .show(ui, |ui| {
             // Parsed once per frame from the persisted query; reflects the prior
             // frame's keystroke, which is imperceptible in an immediate-mode UI.
-            let filter = CardFilter::parse(&state.filter);
+            let filter = CardFilter::parse(&state.filter, &view.id);
 
             // Board switcher: the active board's title as a dropdown listing the
             // account's other boards, plus a "+ New board" composer.
@@ -370,7 +457,11 @@ pub fn board_ui(
                         .id(egui::Id::new("headway-filter-field"))
                         .desired_width(220.0)
                         .hint_text("Filter… e.g. label:bug perf");
-                    ui.add(field);
+                    // A pasted reference to a card on another board switches
+                    // to that board (see [`filter_ref_jump`]).
+                    if ui.add(field).changed() {
+                        filter_ref_jump(view, boards, state);
+                    }
                 });
             });
             ui.add_space(SPACING_SM);
@@ -2564,9 +2655,12 @@ mod tests {
         }
     }
 
+    /// Board slug used by tests that don't care about reference parsing.
+    const BOARD: &str = "headway";
+
     #[test]
     fn empty_filter_is_inactive_and_matches_all() {
-        let f = CardFilter::parse("   ");
+        let f = CardFilter::parse("   ", BOARD);
         assert!(!f.is_active());
         assert!(f.matches(&card("anything", "", &[])));
     }
@@ -2574,39 +2668,98 @@ mod tests {
     #[test]
     fn text_terms_match_title_description_and_labels() {
         let c = card("Fix the bar", "wobbles on resize", &["ui"]);
-        assert!(CardFilter::parse("bar").matches(&c));
-        assert!(CardFilter::parse("WOBBLES").matches(&c)); // case-insensitive
-        assert!(CardFilter::parse("ui").matches(&c)); // also searches labels
-        assert!(!CardFilter::parse("missing").matches(&c));
+        assert!(CardFilter::parse("bar", BOARD).matches(&c));
+        assert!(CardFilter::parse("WOBBLES", BOARD).matches(&c)); // case-insensitive
+        assert!(CardFilter::parse("ui", BOARD).matches(&c)); // also searches labels
+        assert!(!CardFilter::parse("missing", BOARD).matches(&c));
     }
 
     #[test]
     fn multiple_text_terms_are_anded() {
         let c = card("Fix the bar", "wobbles on resize", &[]);
-        assert!(CardFilter::parse("fix wobbles").matches(&c));
-        assert!(!CardFilter::parse("fix nope").matches(&c));
+        assert!(CardFilter::parse("fix wobbles", BOARD).matches(&c));
+        assert!(!CardFilter::parse("fix nope", BOARD).matches(&c));
     }
 
     #[test]
     fn label_token_scopes_to_labels_only() {
         let c = card("perf work", "", &["bug", "headway"]);
-        assert!(CardFilter::parse("label:bug").matches(&c));
-        assert!(CardFilter::parse("l:head").matches(&c)); // short prefix, substring
+        assert!(CardFilter::parse("label:bug", BOARD).matches(&c));
+        assert!(CardFilter::parse("l:head", BOARD).matches(&c)); // short prefix, substring
         // `perf` is in the title but not a label, so a label: term rejects it.
-        assert!(!CardFilter::parse("label:perf").matches(&c));
+        assert!(!CardFilter::parse("label:perf", BOARD).matches(&c));
     }
 
     #[test]
     fn label_and_text_terms_combine() {
         let c = card("perf work", "", &["bug"]);
-        assert!(CardFilter::parse("label:bug perf").matches(&c));
-        assert!(!CardFilter::parse("label:bug missing").matches(&c));
+        assert!(CardFilter::parse("label:bug perf", BOARD).matches(&c));
+        assert!(!CardFilter::parse("label:bug missing", BOARD).matches(&c));
     }
 
     #[test]
     fn bare_label_prefix_is_not_a_constraint() {
-        let f = CardFilter::parse("label:");
+        let f = CardFilter::parse("label:", BOARD);
         assert!(!f.is_active());
         assert!(f.matches(&card("whatever", "", &[])));
+    }
+
+    /// The test card's id is all zeroes, which encodes to
+    /// `abandon-abandon-abandon` (see [`headway::wordid`]).
+    #[test]
+    fn text_terms_match_word_id() {
+        let c = card("Fix the bar", "", &[]);
+        assert!(CardFilter::parse("abandon", BOARD).matches(&c));
+        assert!(CardFilter::parse("abandon-abandon-abandon", BOARD).matches(&c));
+        assert!(!CardFilter::parse("zoo", BOARD).matches(&c));
+    }
+
+    /// A pasted reference to a card on this board matches by its id words,
+    /// whether it carries the board prefix (`headway#…`, any casing) or just
+    /// the on-card `#…` form.
+    #[test]
+    fn own_board_reference_matches_by_id_words() {
+        let c = card("Fix the bar", "", &[]);
+        assert!(CardFilter::parse("headway#abandon-abandon-abandon", BOARD).matches(&c));
+        assert!(CardFilter::parse("HEADWAY#abandon", BOARD).matches(&c));
+        assert!(CardFilter::parse("#abandon", BOARD).matches(&c));
+        assert!(!CardFilter::parse("headway#zoo", BOARD).matches(&c));
+        // The stripped prefix alone isn't a constraint.
+        let f = CardFilter::parse("headway#", BOARD);
+        assert!(!f.is_active());
+    }
+
+    /// A `#` term whose prefix isn't this board is plain search text: it finds
+    /// cards that cite that reference, not this board's ids.
+    #[test]
+    fn foreign_reference_is_plain_text() {
+        let citing = card("dup", "see other#abandon-abandon-abandon", &[]);
+        let plain = card("dup", "", &[]);
+        assert!(CardFilter::parse("other#abandon", BOARD).matches(&citing));
+        assert!(!CardFilter::parse("other#abandon", BOARD).matches(&plain));
+    }
+
+    #[test]
+    fn cross_board_ref_finds_only_known_foreign_boards() {
+        let boards = vec![
+            BoardSummary {
+                id: "headway".into(),
+                title: "Headway".into(),
+            },
+            BoardSummary {
+                id: "notebook".into(),
+                title: "Notebook".into(),
+            },
+        ];
+        // A known foreign board's reference is found, slug in canonical casing.
+        let r = cross_board_ref("bug NOTEBOOK#maple-river-canyon", "headway", &boards)
+            .expect("foreign ref");
+        assert_eq!(r.term, "NOTEBOOK#maple-river-canyon");
+        assert_eq!(r.words, "maple-river-canyon");
+        assert_eq!(r.board, "notebook");
+        // Own-board and unknown-prefix terms are not jumps.
+        assert!(cross_board_ref("headway#maple", "headway", &boards).is_none());
+        assert!(cross_board_ref("other#maple c#", "headway", &boards).is_none());
+        assert!(cross_board_ref("no refs here", "headway", &boards).is_none());
     }
 }
