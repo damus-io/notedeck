@@ -26,6 +26,14 @@ const COLUMN_WIDTH: f32 = 280.0;
 /// comfortably instead of stretching across a wide window.
 const DETAIL_CONTENT_WIDTH: f32 = 760.0;
 
+/// Width of the card detail's fixed right-hand properties sidebar (status,
+/// labels, actions), in the Linear-style wide layout.
+const DETAIL_SIDEBAR_WIDTH: f32 = 220.0;
+
+/// Pane width at or above which the detail view shows the properties sidebar;
+/// below it the properties stack between the card body and its activity.
+const DETAIL_SIDEBAR_MIN: f32 = 720.0;
+
 /// How long a card takes to slide from its old slot to its new one when it
 /// jumps columns (e.g. a `headway move` landing from the CLI).
 const MOVE_ANIM_SECS: f32 = 0.28;
@@ -1402,11 +1410,12 @@ fn add_column_ui(
 
 /// The card detail screen, rendered full-pane in place of the board while a card
 /// is selected. A top bar (back to board, current-status pill, ✕) sits above a
-/// scrollable body holding the title, description, labels, status and card
-/// actions. Edits are emitted as [`BoardAction`]s (title/description commit on
-/// focus loss); dismissing (back / ✕ / Escape) clears the selection. Laid out
-/// Linear-style as a single reading column: the comment thread always sits
-/// beneath the body, never beside it.
+/// Linear-style layout: a scrolling reading column (title, description,
+/// subissues, then the activity thread — always beneath the body, never beside
+/// it) with the card's properties (status, labels, actions) in a fixed right
+/// sidebar on wide panes, stacked inline on narrow ones. Edits are emitted as
+/// [`BoardAction`]s (title/description commit on focus loss); dismissing
+/// (back / ✕ / Escape) clears the selection.
 fn card_detail_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1499,22 +1508,56 @@ fn card_detail_pane_ui(
             ui.separator();
             ui.add_space(SPACING_MD);
 
-            // Linear-style single column: the comment thread always stacks
-            // beneath the body, whatever the pane width. Shrink to content
-            // height (only the width is pinned) so the thread sits right under
-            // the body rather than floating in the centre of an over-tall
-            // scroll area.
-            let content_width = ui.available_width().min(DETAIL_CONTENT_WIDTH);
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.set_max_width(content_width);
-                    detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
-                    ui.add_space(SPACING_MD);
+            // Linear-style layout: one reading column — body, then activity
+            // always beneath it — with the card's properties (status, labels,
+            // actions) in a fixed right sidebar on a wide pane. Only the main
+            // column scrolls, so the sidebar stays put under a long thread; on
+            // a narrow pane the properties stack between body and activity.
+            let avail = ui.available_width();
+            if avail >= DETAIL_SIDEBAR_MIN {
+                let main_w = avail - DETAIL_SIDEBAR_WIDTH - 2.0 * SPACING_LG;
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(main_w, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            detail_main_column_ui(
+                                ui,
+                                theme,
+                                note_context,
+                                &ctx,
+                                state,
+                                action,
+                                &mut outcome,
+                            );
+                        },
+                    );
                     ui.separator();
-                    ui.add_space(SPACING_MD);
-                    detail_comments_ui(ui, theme, note_context, &ctx, state, &mut outcome);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(DETAIL_SIDEBAR_WIDTH, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(DETAIL_SIDEBAR_WIDTH);
+                            detail_properties_ui(ui, theme, &ctx, state, &mut outcome);
+                        },
+                    );
                 });
+            } else {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.set_max_width(avail.min(DETAIL_CONTENT_WIDTH));
+                        detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                        ui.add_space(SPACING_MD);
+                        ui.separator();
+                        ui.add_space(SPACING_MD);
+                        detail_properties_ui(ui, theme, &ctx, state, &mut outcome);
+                        ui.add_space(SPACING_MD);
+                        ui.separator();
+                        ui.add_space(SPACING_MD);
+                        detail_comments_ui(ui, theme, note_context, &ctx, state, &mut outcome);
+                    });
+            }
         });
 
     resolve_detail_outcome(state, action, view, &ctx, outcome);
@@ -1657,9 +1700,34 @@ fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
         .inner_margin(egui::Margin::same(pad as i8))
 }
 
-/// The scrollable sheet body: title, description, labels, status and delete.
+/// The wide layout's scrolling main column: the card body with the activity
+/// thread beneath it, width-capped so it reads like a document while the
+/// properties sidebar sits fixed to its right.
+fn detail_main_column_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note_context: &mut notedeck::NoteContext,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+    outcome: &mut DetailOutcome,
+) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.set_max_width(ui.available_width().min(DETAIL_CONTENT_WIDTH));
+            detail_body_ui(ui, theme, ctx, state, action, outcome);
+            ui.add_space(SPACING_MD);
+            ui.separator();
+            ui.add_space(SPACING_MD);
+            detail_comments_ui(ui, theme, note_context, ctx, state, outcome);
+        });
+}
+
+/// The card body proper: breadcrumb, title, ref, description and subissues.
 /// Title/description commit directly on focus loss; the rest is collected into
-/// `outcome` and resolved by the caller.
+/// `outcome` and resolved by the caller. Properties (status, labels, actions)
+/// live in [`detail_properties_ui`], Linear-style.
 fn detail_body_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1678,26 +1746,34 @@ fn detail_body_ui(
     ui.add_space(SPACING_MD);
     detail_description_section_ui(ui, theme, ctx, state, action);
 
-    ui.add_space(SPACING_MD);
+    ui.add_space(SPACING_LG);
     detail_subissues_section_ui(ui, theme, ctx, state, outcome);
+}
 
-    ui.add_space(SPACING_MD);
-    detail_labels_section_ui(ui, theme, ctx, state, outcome);
-
+/// The card's properties — status, labels, and the archive/delete actions —
+/// rendered as the fixed right sidebar on a wide pane and stacked between the
+/// body and activity on a narrow one.
+fn detail_properties_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    outcome: &mut DetailOutcome,
+) {
     // Move the card between lanes without dragging.
     if ctx.columns.len() > 1 {
-        ui.add_space(SPACING_MD);
         detail_status_section_ui(ui, theme, ctx, outcome);
+        ui.add_space(SPACING_MD);
     }
+
+    detail_labels_section_ui(ui, theme, ctx, state, outcome);
 
     ui.add_space(SPACING_MD);
     ui.separator();
     ui.add_space(SPACING_SM);
-    // A plain horizontal row (not a right-to-left, full-height layout): in the
-    // full-pane view the body lays out in the whole viewport, and a centre-aligned
-    // layout would float these actions in the middle of the empty space below the
-    // card. Left-aligned directly under the separator keeps them anchored to the
-    // content.
+    // A plain horizontal row (not a right-to-left, full-height layout): a
+    // centre-aligned layout would float these actions in the middle of the
+    // empty space below, and left-aligned keeps them anchored to the content.
     ui.horizontal(|ui| {
         if ui.button("Archive").clicked() {
             *outcome = DetailOutcome::Archive;
@@ -1798,10 +1874,11 @@ fn detail_card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, ctx: &DetailCtx) {
     });
 }
 
-/// Description section: rendered markdown by default with an ✎ edit affordance,
-/// switching to a raw multiline editor on demand (or a double-click on the
-/// rendered text). Edits commit as a [`BoardAction::EditDescription`] when the
-/// editor loses focus, which also returns the section to its rendered view.
+/// The card's description: rendered markdown flowing straight under the title
+/// (no section header, Linear-style), with a muted ✎ affordance beneath it and
+/// double-click on the rendered text as the shortcut into the raw multiline
+/// editor. Edits commit as a [`BoardAction::EditDescription`] when the editor
+/// loses focus, which also returns the section to its rendered view.
 fn detail_description_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1809,21 +1886,6 @@ fn detail_description_section_ui(
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
 ) {
-    ui.horizontal(|ui| {
-        section_label(ui, theme, "Description");
-        // Offer the edit affordance just right of the label, only while showing
-        // rendered markdown.
-        if matches!(state.detail_desc_mode, EditMode::Rendered) {
-            let edit = egui::Button::new(egui::RichText::new("✎").color(theme.text_muted))
-                .fill(egui::Color32::TRANSPARENT)
-                .frame(false);
-            if ui.add(edit).on_hover_text("Edit description").clicked() {
-                state.detail_desc_mode = EditMode::Editing { focus: true };
-            }
-        }
-    });
-    ui.add_space(SPACING_XS);
-
     match state.detail_desc_mode {
         EditMode::Rendered => {
             // Render with interactive task-list checkboxes; a click flips the
@@ -1841,6 +1903,15 @@ fn detail_description_section_ui(
                 });
             }
             if resp.double_clicked() {
+                state.detail_desc_mode = EditMode::Editing { focus: true };
+            }
+            // With no section header, this muted row under the text is the
+            // discoverable way into the editor (double-click is the shortcut).
+            ui.add_space(SPACING_XS);
+            let edit = egui::Button::new(egui::RichText::new("✎").color(theme.text_muted))
+                .fill(egui::Color32::TRANSPARENT)
+                .frame(false);
+            if ui.add(edit).on_hover_text("Edit description").clicked() {
                 state.detail_desc_mode = EditMode::Editing { focus: true };
             }
         }
@@ -1932,7 +2003,7 @@ fn detail_subissues_section_ui(
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
-        section_label(ui, theme, "Subissues");
+        section_label(ui, theme, "Sub-issues");
         if !ctx.subissues.is_empty() {
             let done = ctx.subissues.iter().filter(|s| s.done).count();
             ui.label(
@@ -2052,7 +2123,7 @@ fn detail_status_section_ui(
     });
 }
 
-/// The comment thread for the open card: a section heading with a count, the
+/// The open card's activity: a section heading with a comment count, the
 /// flat list of comments (oldest first), and a composer to add one. Replies
 /// aren't indented yet (`store now, render flat`) but each comment still shows
 /// who it threads under. Posting is collected into `outcome`.
@@ -2065,7 +2136,7 @@ fn detail_comments_ui(
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
-        section_label(ui, theme, "Comments");
+        section_label(ui, theme, "Activity");
         if !ctx.comments.is_empty() {
             count_badge(ui, theme, ctx.comments.len());
         }
@@ -2197,7 +2268,7 @@ fn detail_comment_composer_ui(
         egui::TextEdit::multiline(&mut state.comment_draft)
             .desired_rows(3)
             .desired_width(f32::INFINITY)
-            .hint_text("Write a comment… (markdown supported)"),
+            .hint_text("Leave a comment… (markdown supported)"),
     );
     let submit =
         resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
