@@ -108,6 +108,16 @@ const SELECTION_MINUTES: i64 = 30;
 /// purpose: nudging an event should feel precise.
 const MOVE_MINUTES: i64 = 5;
 
+/// Minimum Horizon-content width (points) for the persistent inspector side
+/// pane. Below it the three-pane layout squeezes the timeline unusably — a
+/// ~300px sidebar plus a ~320px inspector eat 620px of chrome — so the
+/// inspector is dropped and the selected event opens as a separate detail view
+/// instead. Measured from `ui.available_width()` (Horizon's real allotment,
+/// minus the chrome nav rail), not the screen: there's no notedeck helper for
+/// this tier, since `is_narrow` (550px) only covers the single-column phone
+/// case, so it's a Horizon-local breakpoint.
+const INSPECTOR_MIN_WIDTH: f32 = 1100.0;
+
 /// Default / min / max pixels per hour for the day grid (viscal's `zoom`).
 const HOUR_HEIGHT_DEFAULT: f32 = 56.0;
 const HOUR_HEIGHT_MIN: f32 = 22.0;
@@ -407,6 +417,11 @@ impl Horizon {
         }
 
         let narrow = notedeck::ui::is_narrow(ui.ctx());
+        // Three width tiers, from Horizon's own allotment (see
+        // [`INSPECTOR_MIN_WIDTH`]): below `is_narrow` (550) a single column;
+        // between that and `wide` the sidebar + timeline but no inspector; at
+        // `wide` and up the full three panes.
+        let wide = ui.available_width() >= INSPECTOR_MIN_WIDTH;
 
         egui::TopBottomPanel::top("horizon_toolbar")
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
@@ -437,14 +452,20 @@ impl Horizon {
                     self.apply_sidebar(action);
                 });
 
-            let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
-            egui::SidePanel::right("horizon_inspector")
-                .resizable(true)
-                .default_width(320.0)
-                .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
-                .show_inside(ui, |ui| {
-                    inspector::show(ui, &self.blocks, self.selected, selected_locked);
-                });
+            // The inspector is a persistent pane only when there's room for it
+            // beside the sidebar and timeline; on tablet / phone-landscape it
+            // would squeeze the timeline, so it's dropped (the selected event
+            // opens as its own detail view — see hole-grape-artist).
+            if wide {
+                let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
+                egui::SidePanel::right("horizon_inspector")
+                    .resizable(true)
+                    .default_width(320.0)
+                    .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
+                    .show_inside(ui, |ui| {
+                        inspector::show(ui, &self.blocks, self.selected, selected_locked);
+                    });
+            }
         }
 
         egui::CentralPanel::default()
