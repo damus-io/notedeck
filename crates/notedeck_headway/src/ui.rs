@@ -1580,13 +1580,14 @@ fn detail_pane_topbar_ui(
         ui.label(egui::RichText::new("›").color(theme.text_muted));
         // A frameless button, not a Label: labels are selectable by default, so
         // a click would start a text selection instead of a one-click copy.
+        // NB: `Button::fill()` silently re-enables the frame, so it must not
+        // follow `.frame(false)` — a transparent fill still paints the border.
         let card_ref = egui::Button::new(
             egui::RichText::new(&ctx.card_ref)
                 .color(theme.text_muted)
                 .small(),
         )
-        .frame(false)
-        .fill(egui::Color32::TRANSPARENT);
+        .frame(false);
         if ui.add(card_ref).on_hover_text("Click to copy").clicked() {
             ui.ctx().copy_text(ctx.card_ref.clone());
         }
@@ -1978,14 +1979,14 @@ fn detail_parent_breadcrumb_ui(
         );
         match &parent.title {
             Some(title) => {
-                let btn = egui::Button::new(
+                // A Link, not a boxed button: plain text with an underline on
+                // hover, the way Linear treats issue references.
+                let link = egui::Link::new(
                     egui::RichText::new(title)
                         .small()
                         .color(theme.text_secondary),
-                )
-                .frame(false)
-                .fill(egui::Color32::TRANSPARENT);
-                if ui.add(btn).on_hover_text("Open parent").clicked() {
+                );
+                if ui.add(link).on_hover_text("Open parent").clicked() {
                     *outcome = DetailOutcome::OpenCard(parent.id);
                 }
             }
@@ -2000,8 +2001,7 @@ fn detail_parent_breadcrumb_ui(
             }
         }
         let x = egui::Button::new(egui::RichText::new("✕").small().color(theme.text_muted))
-            .frame(false)
-            .fill(egui::Color32::TRANSPARENT);
+            .frame(false);
         if ui.add(x).on_hover_text("Detach from parent").clicked() {
             *outcome = DetailOutcome::DetachParent;
         }
@@ -2055,11 +2055,11 @@ fn detail_subissues_section_ui(
             };
             status_icon_ui(ui, theme, icon, 14.0);
             if sub.on_board {
-                let btn =
-                    egui::Button::new(egui::RichText::new(&sub.title).color(theme.text_primary))
-                        .frame(false)
-                        .fill(egui::Color32::TRANSPARENT);
-                if ui.add(btn).on_hover_text("Open subissue").clicked() {
+                // A Link, not a boxed button: the row reads as plain text and
+                // underlines on hover, like Linear's sub-issue list.
+                let link =
+                    egui::Link::new(egui::RichText::new(&sub.title).color(theme.text_primary));
+                if ui.add(link).on_hover_text("Open subissue").clicked() {
                     *outcome = DetailOutcome::OpenCard(sub.id);
                 }
             } else {
