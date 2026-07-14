@@ -1004,7 +1004,7 @@ pub fn render_add_column_routes(
     // borrow ViewState fields directly (conflicting with AddColumnView)
     let resp = match route {
         AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map),
-        AddColumnRoute::CreatePeopleList => create_people_list_ui(ui, app, ctx),
+        AddColumnRoute::CreatePeopleList => create_people_list_ui(ui, app, ctx, col),
         _ => {
             let account = ctx.accounts.get_selected_account();
             let contacts = account.data.contacts.get_state();
@@ -1135,8 +1135,21 @@ pub fn render_add_column_routes(
     }
 }
 
+/// Id keying the create-people-list "list name" buffer for a given column.
+///
+/// Keyed by column so two columns creating a list at once don't share the same
+/// name buffer. Must match the id used by [`create_people_list_ui`].
+fn create_people_list_name_id(col: usize) -> Id {
+    Id::new(("create_people_list_name", col))
+}
+
+/// Id keying the create-people-list profile-search buffer for a given column.
+fn create_people_list_search_id(col: usize) -> Id {
+    Id::new(("create_people_list_search", col))
+}
+
 fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usize) {
-    let name_id = Id::new("create_people_list_name");
+    let name_id = create_people_list_name_id(col);
     let name = app
         .view_state
         .id_string_map
@@ -1178,7 +1191,7 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
 
     // Clear creation state
     app.view_state.id_string_map.remove(&name_id);
-    let search_id = Id::new("create_people_list_search");
+    let search_id = create_people_list_search_id(col);
     app.view_state.id_string_map.remove(&search_id);
     app.view_state.create_people_list.selected_members.clear();
 
@@ -1269,13 +1282,16 @@ pub fn create_people_list_ui(
     ui: &mut Ui,
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
+    col: usize,
 ) -> Option<AddColumnResponse> {
     let account = ctx.accounts.get_selected_account();
     let contacts = account.data.contacts.get_state();
 
     padding(16.0, ui, |ui| {
-        // Use Id::new so IDs are stable across UI contexts (not dependent on parent widget)
-        let name_id = Id::new("create_people_list_name");
+        // Key by column so IDs are stable across UI contexts (not dependent on
+        // parent widget) while still being unique per column — otherwise two
+        // create-list columns share the same name/search buffers.
+        let name_id = create_people_list_name_id(col);
         let name_buffer = app.view_state.id_string_map.entry(name_id).or_default();
 
         ui.label(RichText::new("List Name").text_style(NotedeckTextStyle::Body.text_style()));
@@ -1304,7 +1320,7 @@ pub fn create_people_list_ui(
         ui.add_space(8.0);
 
         // Search bar
-        let search_id = Id::new("create_people_list_search");
+        let search_id = create_people_list_search_id(col);
         let search_buffer = app.view_state.id_string_map.entry(search_id).or_default();
 
         ui.add(search_input_box(search_buffer, "Search profiles..."));
