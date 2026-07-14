@@ -32,17 +32,23 @@ pub struct MentionHint {
 pub struct Drafts {
     replies: HashMap<[u8; 32], Draft>,
     quotes: HashMap<[u8; 32], Draft>,
-    compose: Draft,
+    compose: HashMap<usize, Draft>,
 }
 
 impl Drafts {
-    pub fn compose_mut(&mut self) -> &mut Draft {
-        &mut self.compose
+    /// Get the compose draft for a given column.
+    ///
+    /// Each column keeps its own compose buffer, keyed by column index, so that
+    /// composing a fresh note in two columns at once doesn't share a single
+    /// text buffer and focus state (which would make the two inputs mirror each
+    /// other and fight over focus).
+    pub fn compose_mut(&mut self, col: usize) -> &mut Draft {
+        self.compose.entry(col).or_default()
     }
 
-    pub fn get_from_post_type(&mut self, post_type: &PostType) -> &mut Draft {
+    pub fn get_from_post_type(&mut self, post_type: &PostType, col: usize) -> &mut Draft {
         match post_type {
-            PostType::New => self.compose_mut(),
+            PostType::New => self.compose_mut(col),
             PostType::Quote(note_id) => self.quote_mut(note_id.bytes()),
             PostType::Reply(note_id) => self.reply_mut(note_id.bytes()),
         }
