@@ -141,6 +141,14 @@ pub struct Horizon {
     view: View,
     /// The date the timeline is focused on.
     focus: DateTime<Local>,
+    /// Reference "now" for this frame — the wall clock, refreshed each render,
+    /// or a pinned instant when [`Self::now_override`] is set. Centralizing it
+    /// keeps the now-line, the "today" badge and date highlighting in agreement
+    /// instead of each reading `Local::now()` at a slightly different moment.
+    now: DateTime<Local>,
+    /// When set, pins [`Self::now`] instead of reading the wall clock — a
+    /// test-only seam (see [`Horizon::pin_now`]) for deterministic snapshots.
+    now_override: Option<DateTime<Local>>,
     /// First-of-month date shown by the sidebar's mini calendar.
     cal_month: NaiveDate,
     /// Index into [`Self::blocks`] of the inspected event, if any.
@@ -208,6 +216,8 @@ impl Default for Horizon {
         Self {
             view: View::Day,
             focus: now,
+            now,
+            now_override: None,
             cal_month: sidebar::month_of(now),
             selected: None,
             cursor: snap_to_step(now),
@@ -380,6 +390,10 @@ impl Horizon {
     fn show(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
         apply_theme(ui);
 
+        // Resolve this frame's reference clock once (pinned in tests) so the
+        // now-line, the "today" badge and any "jump to now" keys agree on it.
+        self.now = self.now_override.unwrap_or_else(Local::now);
+
         // Keyboard navigation drives the day view's cursor/selection. Reset the
         // per-frame scroll signals, then let `handle_keys` raise them again.
         self.scroll_to_cursor = None;
@@ -396,24 +410,36 @@ impl Horizon {
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
             .show_inside(ui, |ui| self.toolbar(ui));
 
-        egui::SidePanel::left("horizon_sidebar")
-            .resizable(true)
-            .default_width(300.0)
-            .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 4)))
-            .show_inside(ui, |ui| {
-                let action =
-                    sidebar::show(ui, self.focus, self.cal_month, &self.blocks, self.selected);
-                self.apply_sidebar(action);
-            });
+        // On phones the sidebar + inspector leave the timeline no usable room,
+        // so collapse to a single-column layout. The fuller mobile treatment —
+        // a bottom control bar and a tap-to-open detail sheet — is a later card.
+        if !notedeck::ui::is_narrow(ui.ctx()) {
+            let today = self.now.date_naive();
+            egui::SidePanel::left("horizon_sidebar")
+                .resizable(true)
+                .default_width(300.0)
+                .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 4)))
+                .show_inside(ui, |ui| {
+                    let action = sidebar::show(
+                        ui,
+                        self.focus,
+                        today,
+                        self.cal_month,
+                        &self.blocks,
+                        self.selected,
+                    );
+                    self.apply_sidebar(action);
+                });
 
-        let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
-        egui::SidePanel::right("horizon_inspector")
-            .resizable(true)
-            .default_width(320.0)
-            .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
-            .show_inside(ui, |ui| {
-                inspector::show(ui, &self.blocks, self.selected, selected_locked);
-            });
+            let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
+            egui::SidePanel::right("horizon_inspector")
+                .resizable(true)
+                .default_width(320.0)
+                .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
+                .show_inside(ui, |ui| {
+                    inspector::show(ui, &self.blocks, self.selected, selected_locked);
+                });
+        }
 
         egui::CentralPanel::default()
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 4)))
@@ -431,6 +457,7 @@ impl Horizon {
                 let response = {
                     let dv = timeline::DayView {
                         focus: self.focus,
+                        now: self.now,
                         blocks: &self.blocks,
                         layout: &self.layout.days[0],
                         selected: self.selected,
@@ -459,7 +486,7 @@ impl Horizon {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        timeline::week(ui, self.focus, &self.blocks, &self.layout.days)
+                        timeline::week(ui, self.focus, self.now, &self.blocks, &self.layout.days)
                     });
             }
             other => {
@@ -491,7 +518,7 @@ impl Horizon {
             }
 
             // Red "today" day-of-month badge.
-            let today = Local::now().day();
+            let today = self.now.day();
             let (badge, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
             ui.painter().circle_filled(badge.center(), 11.0, theme::NOW);
             ui.painter().text(
@@ -549,7 +576,7 @@ impl Horizon {
     }
 
     fn go_today(&mut self) {
-        self.focus = Local::now();
+        self.focus = self.now;
         self.cal_month = sidebar::month_of(self.focus);
         self.cursor = with_date(self.cursor, self.focus.date_naive());
         self.selected = None;
@@ -807,11 +834,32 @@ impl Horizon {
 
     /// Jump the cursor (and focus) to "now", deselecting any event.
     fn cursor_now(&mut self) {
-        let now = Local::now();
+        let now = self.now;
         self.focus = now;
         self.cal_month = sidebar::month_of(now);
         self.cursor = snap_to_step(now);
         self.selected = None;
+    }
+
+    /// Pin the reference clock to `at` and re-home the view onto it — a
+    /// test-only seam (used by the snapshot suite) so rendering is deterministic
+    /// regardless of the wall clock. Production never calls this.
+    #[doc(hidden)]
+    pub fn pin_now(&mut self, at: DateTime<Local>) {
+        self.now_override = Some(at);
+        self.now = at;
+        self.focus = at;
+        self.cal_month = sidebar::month_of(at);
+        self.cursor = snap_to_step(at);
+        self.selected = None;
+    }
+
+    /// Number of calendar blocks currently materialized from nostrdb. A
+    /// test-only seam so the snapshot harness can wait out nostrdb's async
+    /// ingest before rendering; production never calls it.
+    #[doc(hidden)]
+    pub fn loaded_block_count(&self) -> usize {
+        self.blocks.len()
     }
 
     /// `i` — insert a new timed block at the cursor (viscal's `insert_event`).
@@ -956,7 +1004,7 @@ impl Horizon {
         let Some(i) = self.selected.filter(|&i| !self.blocks[i].all_day) else {
             return;
         };
-        let start = snap_to_step(Local::now());
+        let start = snap_to_step(self.now);
         let end = start + (self.blocks[i].end - self.blocks[i].start);
         self.focus = start;
         self.cal_month = sidebar::month_of(start);

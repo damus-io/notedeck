@@ -89,6 +89,8 @@ fn hour_label(h: u32) -> String {
 /// per-frame keyboard scroll signals.
 pub(crate) struct DayView<'a> {
     pub focus: DateTime<Local>,
+    /// Reference "now" (wall clock, or pinned in tests) for the now-line.
+    pub now: DateTime<Local>,
     pub blocks: &'a [Block],
     /// This day's cached all-day/timed layout (built off the per-frame path).
     pub layout: &'a DayLayout,
@@ -119,6 +121,7 @@ pub(crate) fn center_day(
 ) -> DayResponse {
     let DayView {
         focus,
+        now,
         blocks,
         layout,
         selected,
@@ -181,7 +184,6 @@ pub(crate) fn center_day(
             }
 
             // Timed blocks for this day, from the cached layout.
-            let now = Local::now();
             let drawn = draw_blocks(
                 ui,
                 &painter,
@@ -642,10 +644,10 @@ fn now_line(
 pub(crate) fn week(
     ui: &mut egui::Ui,
     focus: DateTime<Local>,
+    now: DateTime<Local>,
     blocks: &[Block],
     days: &[DayLayout],
 ) {
-    let now = Local::now();
     let monday = crate::start_of_week(focus);
 
     let width = ui.available_width();

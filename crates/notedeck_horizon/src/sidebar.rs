@@ -19,6 +19,7 @@ pub(crate) struct SidebarAction {
 pub(crate) fn show(
     ui: &mut egui::Ui,
     focus: DateTime<Local>,
+    today: NaiveDate,
     month: NaiveDate,
     blocks: &[Block],
     selected: Option<usize>,
@@ -28,7 +29,7 @@ pub(crate) fn show(
     ui.add_space(8.0);
     month_header(ui, month, &mut action);
     ui.add_space(6.0);
-    mini_month(ui, month, focus.date_naive(), blocks, &mut action);
+    mini_month(ui, month, focus.date_naive(), today, blocks, &mut action);
     ui.add_space(10.0);
     ui.separator();
     ui.add_space(6.0);
@@ -81,13 +82,13 @@ fn mini_month(
     ui: &mut egui::Ui,
     month: NaiveDate,
     focused: NaiveDate,
+    today: NaiveDate,
     blocks: &[Block],
     action: &mut SidebarAction,
 ) {
     const WEEKDAY_H: f32 = 18.0;
     const CELL_H: f32 = 38.0;
 
-    let today = Local::now().date_naive();
     let width = ui.available_width();
     let height = WEEKDAY_H + CELL_H * 6.0;
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());

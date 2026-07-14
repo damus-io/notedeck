@@ -5,12 +5,17 @@
 //! calendar and snapshot it. Like the other Notedeck snapshot suites they are
 //! `#[ignore]`d and run via `scripts/snapshot-test` (lavapipe) on CI.
 
-use chrono::{Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use egui_kittest::Harness;
-use enostr::{FullKeypair, Keypair};
+use enostr::{FullKeypair, Keypair, SecretKey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 use notedeck::{App, Notedeck};
 use notedeck_horizon::Horizon;
+use std::time::{Duration, Instant};
+
+/// How many calendar events [`seed_calendar`] ingests (2 all-day + 6 timed);
+/// the harness waits for all of them before snapshotting.
+const SEEDED_EVENTS: usize = 8;
 
 struct HorizonTestState {
     notedeck: Notedeck,
@@ -51,9 +56,15 @@ fn render_horizon(ctx: &egui::Context, state: &mut HorizonTestState) {
     });
 }
 
-/// Ingest one signed note built by `builder`.
+/// Ingest one signed note built by `builder`. Pins `created_at` to the fixed
+/// clock so nostrdb returns the seeded notes in a stable order — otherwise
+/// same-start events tie-break on the wall clock and reshuffle between runs.
 fn ingest(ndb: &Ndb, builder: NoteBuilder, secret: &[u8; 32]) {
-    let note = builder.sign(secret).build().expect("note builds");
+    let note = builder
+        .created_at(fixed_now().timestamp() as u64)
+        .sign(secret)
+        .build()
+        .expect("note builds");
     let json = enostr::ClientMessage::event(&note)
         .expect("client msg")
         .to_json()
@@ -108,10 +119,32 @@ fn all_day(ndb: &Ndb, secret: &[u8; 32], id: &str, title: &str, start: NaiveDate
     );
 }
 
+/// A fixed reference "now" the tests pin Horizon to (via [`Horizon::pin_now`]),
+/// so the now-line, the "today" badge and the seeded demo calendar all render
+/// deterministically instead of drifting with the wall clock. Constructing it
+/// from local calendar fields (Monday, 29 June 2026, 09:30) keeps the rendered
+/// times identical regardless of the machine's timezone. It is also the day the
+/// demo calendar is seeded around, so events land on the focused day.
+fn fixed_now() -> DateTime<Local> {
+    Local
+        .with_ymd_and_hms(2026, 6, 29, 9, 30, 0)
+        .single()
+        .expect("valid local time")
+}
+
+/// A fixed signing account, so the seeded notes' ids are stable across runs. A
+/// random author reshuffles same-start events (their ids tie-break the order),
+/// which would make the snapshots non-deterministic.
+fn test_account() -> FullKeypair {
+    let secret = SecretKey::from_slice(&[7u8; 32]).expect("valid secret key");
+    let keypair = Keypair::from_secret(secret.clone());
+    FullKeypair::new(keypair.pubkey, secret)
+}
+
 /// Seed a small, entirely fictional demo calendar around "today" so the day
 /// view and agenda have content to render against.
 fn seed_calendar(ndb: &Ndb, secret: &[u8; 32]) {
-    let today = Local::now().date_naive();
+    let today = fixed_now().date_naive();
     let unix = |d: NaiveDate, h: u32, m: u32| {
         Local
             .from_local_datetime(&d.and_hms_opt(h, m, 0).unwrap())
@@ -207,10 +240,15 @@ fn horizon_harness(size: egui::Vec2) -> Harness<'static, HorizonTestState> {
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
     let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
+    // Pin the reference clock before the first render so the now-line, badge
+    // and date highlighting are deterministic across runs and machines.
+    let mut horizon = Horizon::default();
+    horizon.pin_now(fixed_now());
+
     let state = HorizonTestState {
         notedeck,
-        horizon: Horizon::default(),
-        account: FullKeypair::generate(),
+        horizon,
+        account: test_account(),
         _tmpdir: tmpdir,
         setup_done: false,
     };
@@ -221,9 +259,21 @@ fn horizon_harness(size: egui::Vec2) -> Harness<'static, HorizonTestState> {
         .renderer(renderer())
         .build_state(render_horizon, state);
 
-    // First frame installs fonts + seeds; pump more so ndb ingests and the
-    // app's reload picks the events up.
-    harness.run_steps(8);
+    // Seeded notes ingest on nostrdb's writer thread, so pump frames until the
+    // app has reloaded them all before any snapshot — otherwise the first size
+    // rendered can race a half-loaded calendar and differ between runs.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_steps(2);
+        if harness.state().horizon.loaded_block_count() >= SEEDED_EVENTS {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the seeded calendar to load"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     harness
 }
 
