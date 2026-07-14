@@ -17,6 +17,7 @@ use block::Block;
 
 mod block;
 mod inspector;
+mod month;
 mod sidebar;
 mod theme;
 mod timeline;
@@ -104,6 +105,10 @@ pub(crate) enum EditOutcome {
 /// for "~3 day columns, not 7").
 const WEEK_DAYS: usize = 7;
 const WEEK_DAYS_NARROW: usize = 3;
+
+/// Day cells in the month grid: six Sunday-first weeks, enough to cover any
+/// month's layout without the number of rows jumping around.
+const MONTH_CELLS: usize = 42;
 
 /// Minutes spanned by the keyboard selection cursor and one navigation step
 /// (viscal's `timeblock_size`). Resizing it is a later card.
@@ -389,6 +394,9 @@ impl Horizon {
             // from the focused day so ‹ / › page through three days at a time.
             View::Week if narrow => (self.focus.date_naive(), WEEK_DAYS_NARROW),
             View::Week => (start_of_week(self.focus).date_naive(), WEEK_DAYS),
+            // The month grid is six Sunday-first weeks: start on the Sunday on
+            // or before the 1st, then lay out all 42 cells.
+            View::Month => (month_grid_start(self.focus), MONTH_CELLS),
             _ => {
                 self.layout.days.clear();
                 self.layout.key = None;
@@ -575,6 +583,23 @@ impl Horizon {
                         timeline::week(ui, self.now, &self.blocks, &self.layout.days)
                     });
             }
+            View::Month => {
+                if let Some(date) = month::show(
+                    ui,
+                    self.focus,
+                    self.now,
+                    &self.blocks,
+                    &self.layout.days,
+                    narrow,
+                ) {
+                    // Tapping a day cell drops into that day's timeline.
+                    self.focus = at_local_midnight(date).unwrap_or(self.focus);
+                    self.cal_month = date.with_day(1).unwrap_or(self.cal_month);
+                    self.cursor = with_date(self.cursor, date);
+                    self.selected = None;
+                    self.view = View::Day;
+                }
+            }
             other => {
                 ui.vertical_centered(|ui| {
                     ui.add_space(60.0);
@@ -697,14 +722,18 @@ impl Horizon {
 
     /// Move the focused range forward/backward by one unit of the current view.
     /// The week pages by its visible span — a full week normally, three days on
-    /// a narrow phone — so ‹ / › always turn one screenful.
+    /// a narrow phone — and the month by a whole month, so ‹ / › always turn one
+    /// screenful.
     fn shift(&mut self, units: i64, narrow: bool) {
-        let days = match self.view {
-            View::Week if narrow => units * WEEK_DAYS_NARROW as i64,
-            View::Week => units * WEEK_DAYS as i64,
-            _ => units,
+        self.focus = match self.view {
+            View::Month => {
+                let month = sidebar::step_month(sidebar::month_of(self.focus), units as i32);
+                with_date(self.focus, month)
+            }
+            View::Week if narrow => self.focus + Duration::days(units * WEEK_DAYS_NARROW as i64),
+            View::Week => self.focus + Duration::days(units * WEEK_DAYS as i64),
+            _ => self.focus + Duration::days(units),
         };
-        self.focus += Duration::days(days);
         self.cal_month = sidebar::month_of(self.focus);
         self.cursor = with_date(self.cursor, self.focus.date_naive());
         self.selected = None;
@@ -1759,6 +1788,17 @@ fn tab(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
         btn = btn.fill(theme::SURFACE);
     }
     ui.add(btn).clicked()
+}
+
+/// First cell of the month grid containing `dt`: the Sunday on or before the
+/// 1st of that month (Sunday-first, matching the sidebar mini-month).
+fn month_grid_start(dt: DateTime<Local>) -> NaiveDate {
+    let first = dt
+        .date_naive()
+        .with_day(1)
+        .unwrap_or_else(|| dt.date_naive());
+    let back = first.weekday().num_days_from_sunday() as i64;
+    first - Duration::days(back)
 }
 
 /// The local midnight that starts the (Monday-based) week containing `dt`.

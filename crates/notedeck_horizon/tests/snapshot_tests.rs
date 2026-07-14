@@ -315,6 +315,17 @@ fn snapshot_horizon_day() {
     harness.run_steps(4);
     harness.snapshot("horizon_week_phone");
 
+    // Month view: a six-week day-cell grid with truncated event chips, on both
+    // desktop and phone widths (the phone cells simply carry fewer chips).
+    harness.state_mut().horizon.set_view(View::Month);
+    harness.set_size(egui::Vec2::new(1400.0, 900.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_month_desktop");
+
+    harness.set_size(egui::Vec2::new(390.0, 844.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_month_phone");
+
     // The fullscreen event-detail view: below desktop width there's no
     // inspector pane, so a selected event opens over the timeline with a
     // back / prev-next nav bar. Open it on the first timed event and snapshot
