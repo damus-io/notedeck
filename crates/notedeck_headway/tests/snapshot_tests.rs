@@ -237,22 +237,18 @@ fn add_subissue_flow() {
     harness.run();
 
     // The fixture rollup: one of the two children sits in Done.
-    harness.get_by_label("1/2 done");
+    harness.get_by_label("1/2");
 
-    // The subissues section sits above Labels, so its composer is the first
-    // single-line text input in the pane. Click to focus it, then type.
-    harness
-        .get_all_by_role(egui::accesskit::Role::TextInput)
-        .next()
-        .expect("the add-subissue field")
-        .simulate_click();
+    // The composer is collapsed behind "+ Add sub-issue" (Linear-style);
+    // opening it focuses the field, so typing can start immediately.
+    harness.get_by_label("+ Add sub-issue").simulate_click();
     harness.run();
     focused_text_input(&harness).type_text("Write a relay conformance suite");
     harness.run();
     focused_text_input(&harness).key_press(Key::Enter);
 
     // The new child lands in the checklist (in Backlog, so not done).
-    wait_for_label(&mut harness, "1/3 done");
+    wait_for_label(&mut harness, "1/3");
     wait_for_label(&mut harness, "Write a relay conformance suite");
 }
 

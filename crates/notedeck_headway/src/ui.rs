@@ -34,6 +34,18 @@ const DETAIL_SIDEBAR_WIDTH: f32 = 220.0;
 /// below it the properties stack between the card body and its activity.
 const DETAIL_SIDEBAR_MIN: f32 = 720.0;
 
+/// Linear's status-circle yellow, painted for columns in the first half of the
+/// board's middle (e.g. In Progress). Deliberately theme-independent, like the
+/// status colors it mirrors.
+const STATUS_STARTED_EARLY: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xC9, 0x4C);
+
+/// Linear's status-circle green, for columns in the second half of the middle
+/// (e.g. In Review).
+const STATUS_STARTED_LATE: egui::Color32 = egui::Color32::from_rgb(0x4C, 0xB7, 0x82);
+
+/// Linear's status-circle indigo, for the board's final (done) column.
+const STATUS_DONE: egui::Color32 = egui::Color32::from_rgb(0x5E, 0x6A, 0xD2);
+
 /// How long a card takes to slide from its old slot to its new one when it
 /// jumps columns (e.g. a `headway move` landing from the CLI).
 const MOVE_ANIM_SECS: f32 = 0.28;
@@ -65,8 +77,13 @@ pub struct BoardUiState {
     detail_desc_mode: EditMode,
     /// Buffer backing the "add label" field in the detail sheet.
     new_label: String,
+    /// Whether the detail sheet's "add label" composer is open (it collapses to
+    /// a "+ Add label" affordance, Linear-style).
+    label_composer: bool,
     /// Buffer backing the "add subissue" field in the detail sheet.
     new_subissue: String,
+    /// Whether the detail sheet's "add sub-issue" composer is open.
+    subissue_composer: bool,
     /// Buffer backing the "write a comment" composer in the detail pane.
     comment_draft: String,
     /// Whether the archived-cards sheet is open.
@@ -1060,32 +1077,6 @@ fn label_chip(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) {
         });
 }
 
-/// A label pill with a trailing ✕ to remove it. Returns true if ✕ was clicked.
-fn removable_label_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) -> bool {
-    let color = label_color(label);
-    let mut remove = false;
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.30))
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
-        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(label).small().color(theme.text_primary))
-                        .extend(),
-                );
-                if ui
-                    .add(egui::Button::new(egui::RichText::new("✕").small()).frame(false))
-                    .on_hover_text(format!("Remove {label}"))
-                    .clicked()
-                {
-                    remove = true;
-                }
-            });
-        });
-    remove
-}
-
 /// A small rounded pill showing a count (e.g. cards in a column).
 fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
     egui::Frame::new()
@@ -1447,7 +1438,9 @@ fn card_detail_pane_ui(
         state.detail_title_mode = seed_edit_mode(&card.title);
         state.detail_desc_mode = seed_edit_mode(&card.description);
         state.new_label.clear();
+        state.label_composer = false;
         state.new_subissue.clear();
+        state.subissue_composer = false;
         state.comment_draft.clear();
     }
 
@@ -1482,6 +1475,10 @@ fn card_detail_pane_ui(
                         .map(|c| c.name.clone())
                         .unwrap_or_else(|| col_id.clone())
                 }),
+                col_idx: s
+                    .column
+                    .as_ref()
+                    .and_then(|col_id| view.columns.iter().position(|c| &c.id == col_id)),
                 done: s.done,
                 archived: s.archived,
                 on_board: find_card(view, s.id).is_some(),
@@ -1563,9 +1560,10 @@ fn card_detail_pane_ui(
     resolve_detail_outcome(state, action, view, &ctx, outcome);
 }
 
-/// The full-pane detail top bar: a back-to-board button, the card's current
-/// status pill, and a trailing ✕ that also dismisses. All three resolve to
-/// [`DetailOutcome::Close`].
+/// The full-pane detail top bar, a Linear-style breadcrumb: back-to-board,
+/// then the card's word-id reference (click to copy — the GUI mirror of what
+/// the CLI prints, a stable handle for commits/chat), and a trailing ✕ that
+/// also dismisses.
 fn detail_pane_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1579,8 +1577,19 @@ fn detail_pane_topbar_ui(
         if ui.add(back).clicked() {
             *outcome = DetailOutcome::Close;
         }
-        ui.add_space(SPACING_SM);
-        status_pill(ui, theme, &ctx.columns[ctx.current_col]);
+        ui.label(egui::RichText::new("›").color(theme.text_muted));
+        // A frameless button, not a Label: labels are selectable by default, so
+        // a click would start a text selection instead of a one-click copy.
+        let card_ref = egui::Button::new(
+            egui::RichText::new(&ctx.card_ref)
+                .color(theme.text_muted)
+                .small(),
+        )
+        .frame(false)
+        .fill(egui::Color32::TRANSPARENT);
+        if ui.add(card_ref).on_hover_text("Click to copy").clicked() {
+            ui.ctx().copy_text(ctx.card_ref.clone());
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
                 .fill(egui::Color32::TRANSPARENT)
@@ -1634,6 +1643,9 @@ struct DetailSubissue {
     /// The live column's display *name*, or the raw column id for a child
     /// placed only on another board. `None` when unplaced or archived.
     column: Option<String>,
+    /// The live column's index on *this* board, for the status circle. `None`
+    /// when the child is archived, unplaced, or lives on another board.
+    col_idx: Option<usize>,
     done: bool,
     archived: bool,
     /// Whether the child is on this board, i.e. clickable to open its detail.
@@ -1741,7 +1753,6 @@ fn detail_body_ui(
         ui.add_space(SPACING_XS);
     }
     detail_title_section_ui(ui, ctx, state, action);
-    detail_card_ref_ui(ui, theme, ctx);
 
     ui.add_space(SPACING_MD);
     detail_description_section_ui(ui, theme, ctx, state, action);
@@ -1750,9 +1761,10 @@ fn detail_body_ui(
     detail_subissues_section_ui(ui, theme, ctx, state, outcome);
 }
 
-/// The card's properties — status, labels, and the archive/delete actions —
-/// rendered as the fixed right sidebar on a wide pane and stacked between the
-/// body and activity on a narrow one.
+/// The card's properties — status, labels, dates and the archive/delete
+/// actions — rendered as Linear-style bordered sidebar panels: fixed to the
+/// right on a wide pane, stacked between the body and activity on a narrow
+/// one.
 fn detail_properties_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1760,28 +1772,67 @@ fn detail_properties_ui(
     state: &mut BoardUiState,
     outcome: &mut DetailOutcome,
 ) {
-    // Move the card between lanes without dragging.
-    if ctx.columns.len() > 1 {
-        detail_status_section_ui(ui, theme, ctx, outcome);
-        ui.add_space(SPACING_MD);
-    }
+    sidebar_panel(theme).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        section_label(ui, theme, "Properties");
+        ui.add_space(SPACING_SM);
+        // Move the card between lanes without dragging (meaningless on a
+        // single-column board).
+        if ctx.columns.len() > 1 {
+            detail_status_row_ui(ui, theme, ctx, outcome);
+            ui.add_space(SPACING_SM);
+        }
 
-    detail_labels_section_ui(ui, theme, ctx, state, outcome);
+        // Same `rel_time` as the comment thread, so the two read alike. The
+        // updated time only appears once it has drifted past creation.
+        ui.label(
+            egui::RichText::new(format!(
+                "Created {}",
+                headway::fmt::rel_time(ctx.created_at)
+            ))
+            .small()
+            .color(theme.text_muted),
+        );
+        if ctx.updated_at > ctx.created_at {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Updated {}",
+                    headway::fmt::rel_time(ctx.updated_at)
+                ))
+                .small()
+                .color(theme.text_muted),
+            );
+        }
+    });
 
-    ui.add_space(SPACING_MD);
-    ui.separator();
     ui.add_space(SPACING_SM);
-    // A plain horizontal row (not a right-to-left, full-height layout): a
-    // centre-aligned layout would float these actions in the middle of the
-    // empty space below, and left-aligned keeps them anchored to the content.
+    sidebar_panel(theme).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        detail_labels_section_ui(ui, theme, ctx, state, outcome);
+    });
+
+    // Quiet, frameless actions under the panels — Linear keeps these out of
+    // the way rather than as filled buttons.
+    ui.add_space(SPACING_SM);
     ui.horizontal(|ui| {
-        if ui.button("Archive").clicked() {
+        let archive = egui::Button::new(
+            egui::RichText::new("Archive")
+                .small()
+                .color(theme.text_muted),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .frame(false);
+        if ui.add(archive).clicked() {
             *outcome = DetailOutcome::Archive;
         }
-        if ui
-            .button(egui::RichText::new("Delete card").color(theme.destructive))
-            .clicked()
-        {
+        let delete = egui::Button::new(
+            egui::RichText::new("Delete card")
+                .small()
+                .color(theme.destructive),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .frame(false);
+        if ui.add(delete).clicked() {
             *outcome = DetailOutcome::Delete;
         }
     });
@@ -1838,40 +1889,6 @@ fn detail_title_section_ui(
             }
         }
     }
-}
-
-/// The card's word-id reference, rendered as a muted, click-to-copy caption
-/// directly under the title — the GUI mirror of what the CLI prints, and a
-/// stable handle to paste into commits/chat (see [`headway::wordid`]) —
-/// followed by the card's created/updated relative times.
-fn detail_card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, ctx: &DetailCtx) {
-    // Wrapped so the times fold under the ref on a narrow (mobile) pane.
-    ui.horizontal_wrapped(|ui| {
-        // A frameless button, not a Label: in this egui version labels are selectable
-        // by default, so a click starts a text selection and "copy" is only reachable
-        // through the built-in right-click menu. A button gives a true one-click copy.
-        let btn = egui::Button::new(
-            egui::RichText::new(&ctx.card_ref)
-                .color(theme.text_muted)
-                .small(),
-        )
-        .frame(false)
-        .fill(egui::Color32::TRANSPARENT);
-        if ui.add(btn).on_hover_text("Click to copy").clicked() {
-            ui.ctx().copy_text(ctx.card_ref.clone());
-        }
-
-        // Same `rel_time` as the comment thread, so the two read alike. The
-        // updated time only appears once it has drifted past creation.
-        let mut times = format!("· created {}", headway::fmt::rel_time(ctx.created_at));
-        if ctx.updated_at > ctx.created_at {
-            times.push_str(&format!(
-                " · updated {}",
-                headway::fmt::rel_time(ctx.updated_at)
-            ));
-        }
-        ui.label(egui::RichText::new(times).color(theme.text_muted).small());
-    });
 }
 
 /// The card's description: rendered markdown flowing straight under the title
@@ -1991,10 +2008,11 @@ fn detail_parent_breadcrumb_ui(
     });
 }
 
-/// Subissues section: the derived checklist — a read-only checkbox (done =
-/// where the child sits on its board, never a stored tick), the child's title
-/// (click to open when it's on this board) and a muted column/archived hint —
-/// plus an inline composer that creates a card already parented to this one.
+/// Sub-issues section: the derived checklist, Linear-style — a painted status
+/// circle (derived from where the child sits on its board, never a stored
+/// tick), the child's title (click to open when it's on this board) and a
+/// muted column/archived hint — plus a collapsed "+ Add sub-issue" affordance
+/// that opens an inline composer creating a card already parented to this one.
 fn detail_subissues_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -2003,11 +2021,19 @@ fn detail_subissues_section_ui(
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
-        section_label(ui, theme, "Sub-issues");
+        detail_heading(ui, theme, "Sub-issues");
         if !ctx.subissues.is_empty() {
             let done = ctx.subissues.iter().filter(|s| s.done).count();
+            // Linear's rollup donut: the same started-pie, filled to the
+            // completed fraction, next to a muted count.
+            status_icon_ui(
+                ui,
+                theme,
+                StatusIcon::Started(done as f32 / ctx.subissues.len() as f32),
+                12.0,
+            );
             ui.label(
-                egui::RichText::new(format!("{done}/{} done", ctx.subissues.len()))
+                egui::RichText::new(format!("{done}/{}", ctx.subissues.len()))
                     .small()
                     .color(theme.text_muted),
             );
@@ -2018,10 +2044,16 @@ fn detail_subissues_section_ui(
     for sub in &ctx.subissues {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = SPACING_XS;
-            // Same read-only checkbox the markdown task lists render — but this
-            // one is derived from the board, so it can never go stale.
-            let mut done = sub.done;
-            ui.add_enabled(false, egui::Checkbox::without_text(&mut done));
+            // The child's status circle, derived from the board so it can
+            // never go stale. Off-board children fall back to a todo ring.
+            let icon = if sub.done || sub.archived {
+                StatusIcon::Done
+            } else {
+                sub.col_idx
+                    .map(|i| StatusIcon::for_column(i, ctx.columns.len()))
+                    .unwrap_or(StatusIcon::Todo)
+            };
+            status_icon_ui(ui, theme, icon, 14.0);
             if sub.on_board {
                 let btn =
                     egui::Button::new(egui::RichText::new(&sub.title).color(theme.text_primary))
@@ -2058,14 +2090,33 @@ fn detail_subissues_section_ui(
         ui.add_space(SPACING_XS);
     }
 
-    // Mirrors the "add label" composer: commit on the button or Enter. The new
-    // card lands in the first column, parented to this one.
+    // Collapsed behind "+ Add sub-issue" (Linear-style); once open, commit on
+    // the button or Enter. The new card lands in the first column, parented to
+    // this one, and the composer stays open for rapid entry.
+    if !state.subissue_composer {
+        let add = egui::Button::new(
+            egui::RichText::new("+ Add sub-issue")
+                .small()
+                .color(theme.text_muted),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .frame(false);
+        if ui.add(add).clicked() {
+            state.subissue_composer = true;
+            state.focus_edit = true;
+        }
+        return;
+    }
     ui.horizontal(|ui| {
         let field = ui.add(
             egui::TextEdit::singleline(&mut state.new_subissue)
                 .desired_width(220.0)
-                .hint_text("Add subissue…"),
+                .hint_text("Add sub-issue…"),
         );
+        if state.focus_edit {
+            field.request_focus();
+            state.focus_edit = false;
+        }
         let submit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if ui.button("Add").clicked() || submit {
             *outcome = DetailOutcome::AddSubissue;
@@ -2073,7 +2124,9 @@ fn detail_subissues_section_ui(
     });
 }
 
-/// Labels section: removable chips plus an "add label" field.
+/// Labels section: removable Linear-style chips (a colored dot in a neutral
+/// outline pill) plus a collapsed "+ Add label" affordance opening the
+/// composer field.
 fn detail_labels_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -2085,18 +2138,36 @@ fn detail_labels_section_ui(
     ui.add_space(SPACING_XS);
     ui.horizontal_wrapped(|ui| {
         for label in &ctx.labels {
-            if removable_label_chip_ui(ui, theme, label) {
+            if detail_label_chip_ui(ui, theme, label) {
                 *outcome = DetailOutcome::RemoveLabel(label.clone());
             }
         }
     });
     ui.add_space(SPACING_XS);
+    if !state.label_composer {
+        let add = egui::Button::new(
+            egui::RichText::new("+ Add label")
+                .small()
+                .color(theme.text_muted),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .frame(false);
+        if ui.add(add).clicked() {
+            state.label_composer = true;
+            state.focus_edit = true;
+        }
+        return;
+    }
     ui.horizontal(|ui| {
         let field = ui.add(
             egui::TextEdit::singleline(&mut state.new_label)
-                .desired_width(140.0)
+                .desired_width(110.0)
                 .hint_text("Add label…"),
         );
+        if state.focus_edit {
+            field.request_focus();
+            state.focus_edit = false;
+        }
         let submit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if ui.button("Add").clicked() || submit {
             *outcome = DetailOutcome::AddLabel;
@@ -2104,22 +2175,78 @@ fn detail_labels_section_ui(
     });
 }
 
-/// Status section: a chip per column to move the card without dragging.
-fn detail_status_section_ui(
+/// One of the detail sheet's label chips, Linear-style: a colored dot and the
+/// label's name in a neutral outline pill, with a trailing ✕ to remove it.
+/// Returns true if ✕ was clicked.
+fn detail_label_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) -> bool {
+    let mut remove = false;
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACING_XS;
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(dot.center(), 4.0, label_color(label));
+                // Extend (don't wrap) so the chip reports its full natural
+                // width and wraps as a whole (see `label_chip`).
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(label)
+                            .small()
+                            .color(theme.text_secondary),
+                    )
+                    .extend(),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("✕").small().color(theme.text_muted))
+                            .frame(false),
+                    )
+                    .on_hover_text(format!("Remove {label}"))
+                    .clicked()
+                {
+                    remove = true;
+                }
+            });
+        });
+    remove
+}
+
+/// The Properties panel's status row: the current column's status circle and
+/// name, opening a dropdown of every column (each with its own circle) to move
+/// the card without dragging — Linear's status control.
+fn detail_status_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     ctx: &DetailCtx,
     outcome: &mut DetailOutcome,
 ) {
-    section_label(ui, theme, "Status");
-    ui.add_space(SPACING_XS);
-    ui.horizontal_wrapped(|ui| {
-        for (i, name) in ctx.columns.iter().enumerate() {
-            let selected = i == ctx.current_col;
-            if ui.selectable_label(selected, name).clicked() && !selected {
-                *outcome = DetailOutcome::MoveTo(i);
+    let n = ctx.columns.len();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+        status_icon_ui(ui, theme, StatusIcon::for_column(ctx.current_col, n), 14.0);
+        let name = egui::RichText::new(&ctx.columns[ctx.current_col]).color(theme.text_primary);
+        // Flatten the dropdown's idle state so the row reads as plain text
+        // (Linear-style); hover still highlights it as clickable.
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+        ui.menu_button(name, |ui| {
+            for (i, col) in ctx.columns.iter().enumerate() {
+                let selected = i == ctx.current_col;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = SPACING_XS;
+                    status_icon_ui(ui, theme, StatusIcon::for_column(i, n), 14.0);
+                    if ui.selectable_label(selected, col).clicked() {
+                        if !selected {
+                            *outcome = DetailOutcome::MoveTo(i);
+                        }
+                        ui.close_menu();
+                    }
+                });
             }
-        }
+        });
     });
 }
 
@@ -2136,7 +2263,7 @@ fn detail_comments_ui(
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
-        section_label(ui, theme, "Activity");
+        detail_heading(ui, theme, "Activity");
         if !ctx.comments.is_empty() {
             count_badge(ui, theme, ctx.comments.len());
         }
@@ -2255,40 +2382,67 @@ fn comment_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, comment: &CommentView) 
     ui.add_space(SPACING_SM);
 }
 
-/// The "write a comment" composer at the foot of the thread: a multiline field
-/// plus a Comment button. Posts on the button or ⌘/Ctrl+Enter (a multiline field
-/// keeps plain Enter for newlines). Empty drafts are ignored.
+/// The "leave a comment" composer at the foot of the thread, Linear-style: a
+/// bordered rounded panel holding a frameless multiline field with a round ↑
+/// submit button in its bottom-right corner. Posts on the button or
+/// ⌘/Ctrl+Enter (a multiline field keeps plain Enter for newlines). Empty
+/// drafts are ignored.
 fn detail_comment_composer_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     state: &mut BoardUiState,
     outcome: &mut DetailOutcome,
 ) {
-    let resp = ui.add(
-        egui::TextEdit::multiline(&mut state.comment_draft)
-            .desired_rows(3)
-            .desired_width(f32::INFINITY)
-            .hint_text("Leave a comment… (markdown supported)"),
-    );
-    let submit =
-        resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
-    ui.add_space(SPACING_XS);
-    ui.horizontal(|ui| {
-        let post = ui
-            .add_enabled(
-                !state.comment_draft.trim().is_empty(),
-                egui::Button::new("Comment"),
-            )
-            .clicked();
-        if post || submit {
-            *outcome = DetailOutcome::AddComment;
-        }
-        ui.label(
-            egui::RichText::new("⌘↵ to post")
-                .small()
-                .color(theme.text_muted),
-        );
-    });
+    let mut submit = false;
+    egui::Frame::new()
+        .fill(theme.surface_secondary)
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let resp = ui.add(
+                egui::TextEdit::multiline(&mut state.comment_draft)
+                    .frame(false)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Leave a comment…"),
+            );
+            submit = resp.has_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
+            // A fixed-height row for the submit button: a bare right-to-left
+            // `with_layout` would greedily absorb all remaining vertical space
+            // and balloon the panel to the bottom of the pane.
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 24.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let ready = !state.comment_draft.trim().is_empty();
+                    let post = egui::Button::new(
+                        egui::RichText::new("↑")
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(if ready {
+                        STATUS_DONE
+                    } else {
+                        theme.surface_elevated
+                    })
+                    .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+                    .min_size(egui::vec2(24.0, 24.0));
+                    if ui
+                        .add_enabled(ready, post)
+                        .on_hover_text("Post (⌘↵)")
+                        .clicked()
+                    {
+                        submit = true;
+                    }
+                },
+            );
+        });
+    if submit {
+        *outcome = DetailOutcome::AddComment;
+    }
 }
 
 /// Resolve the collected [`DetailOutcome`] into a single [`BoardAction`].
@@ -2509,29 +2663,146 @@ fn archived_row_ui(
     ui.add_space(SPACING_XS);
 }
 
-/// A small muted, uppercase section heading used inside the card detail sheet.
+/// A small muted, sentence-case group heading (Linear-style) used for the
+/// detail sheet's sidebar panels.
 fn section_label(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(theme.text_muted));
+}
+
+/// A semibold sentence-case heading for the detail pane's main-column sections
+/// ("Sub-issues", "Activity"), matching Linear's typography rather than the
+/// muted all-caps sidebar labels.
+fn detail_heading(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
     ui.label(
-        egui::RichText::new(text.to_uppercase())
-            .small()
+        egui::RichText::new(text)
+            .size(14.0)
             .strong()
-            .color(theme.text_muted),
+            .color(theme.text_primary),
     );
 }
 
-/// A filled pill showing the card's current column (status) in the sheet header.
-fn status_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
+/// The subtle bordered, rounded panel each sidebar group (Properties, Labels)
+/// sits in — Linear's sidebar look. A builder, so no `_ui` suffix.
+fn sidebar_panel(theme: &ColorTheme) -> egui::Frame {
     egui::Frame::new()
-        .fill(theme.surface_elevated)
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
-        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(text)
-                    .small()
-                    .color(theme.text_secondary),
+        .fill(theme.surface_secondary)
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+}
+
+/// Which Linear-style status circle to paint for a column or subissue.
+#[derive(Clone, Copy)]
+enum StatusIcon {
+    /// The first column: a dashed muted ring.
+    Backlog,
+    /// The second column: a plain muted ring.
+    Todo,
+    /// A middle column: a ring with a pie-slice fill of this fraction —
+    /// yellow through the first half of the middle columns, green after.
+    Started(f32),
+    /// The final column (or an archived child): a filled indigo disc with a
+    /// check.
+    Done,
+}
+
+impl StatusIcon {
+    /// The icon for the column at `idx` on a board of `n` columns, mapped
+    /// positionally the way Linear maps status types: first = backlog,
+    /// second = todo, last = done, and anything between = started, filled in
+    /// proportion to how far along the middle it sits.
+    fn for_column(idx: usize, n: usize) -> Self {
+        if idx + 1 >= n {
+            Self::Done
+        } else if idx == 0 {
+            Self::Backlog
+        } else if idx == 1 {
+            Self::Todo
+        } else {
+            Self::Started((idx - 1) as f32 / (n - 2) as f32)
+        }
+    }
+
+    /// The circle's stroke/fill color: muted for unstarted, Linear's yellow →
+    /// green through the middle, indigo for done.
+    fn color(self, theme: &ColorTheme) -> egui::Color32 {
+        match self {
+            Self::Backlog | Self::Todo => theme.text_muted,
+            Self::Started(f) if f <= 0.5 => STATUS_STARTED_EARLY,
+            Self::Started(_) => STATUS_STARTED_LATE,
+            Self::Done => STATUS_DONE,
+        }
+    }
+}
+
+/// Paint one Linear-style status circle, `size` px square, and return its
+/// response (hover only; callers wrap it when a click target is needed).
+fn status_icon_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    icon: StatusIcon,
+    size: f32,
+) -> egui::Response {
+    use std::f32::consts::TAU;
+
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let painter = ui.painter();
+    let center = rect.center();
+    let r = size * 0.5 - 1.0;
+    let stroke = egui::Stroke::new(1.5, icon.color(theme));
+
+    // Sample an arc of the ring into line points. Twelve o'clock start,
+    // clockwise, matching Linear's pies.
+    let arc = |from: f32, to: f32| -> Vec<egui::Pos2> {
+        let steps = 16;
+        (0..=steps)
+            .map(|k| {
+                let a = -TAU / 4.0 + from + (to - from) * k as f32 / steps as f32;
+                center + r * egui::vec2(a.cos(), a.sin())
+            })
+            .collect()
+    };
+
+    match icon {
+        StatusIcon::Backlog => {
+            // A dashed ring: six dashes with even gaps.
+            for k in 0..6 {
+                let a0 = k as f32 / 6.0 * TAU;
+                painter.add(egui::Shape::line(arc(a0, a0 + TAU / 10.0), stroke));
+            }
+        }
+        StatusIcon::Todo => {
+            painter.circle_stroke(center, r, stroke);
+        }
+        StatusIcon::Started(f) => {
+            painter.circle_stroke(center, r, stroke);
+            // The pie wedge: centre plus an inset arc of the fill fraction.
+            let inset = r - 2.5;
+            let mut points = vec![center];
+            points.extend(
+                arc(0.0, TAU * f.clamp(0.0, 1.0))
+                    .into_iter()
+                    .map(|p| center + (p - center) * (inset / r)),
             );
-        });
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                stroke.color,
+                egui::Stroke::NONE,
+            ));
+        }
+        StatusIcon::Done => {
+            painter.circle_filled(center, r + 0.5, stroke.color);
+            // The check, drawn as two strokes on the disc.
+            let p = |dx: f32, dy: f32| center + r * egui::vec2(dx, dy);
+            let check = egui::Stroke::new(1.5, egui::Color32::WHITE);
+            painter.line_segment([p(-0.45, 0.05), p(-0.1, 0.4)], check);
+            painter.line_segment([p(-0.1, 0.4), p(0.5, -0.3)], check);
+        }
+    }
+    resp
 }
 
 /// A `nostr:nevent…` URI for an issue card, ready to paste into a notebook note
