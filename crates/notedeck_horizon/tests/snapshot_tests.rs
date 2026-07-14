@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 use enostr::{FullKeypair, Keypair, SecretKey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 use notedeck::{App, Notedeck};
-use notedeck_horizon::Horizon;
+use notedeck_horizon::{Horizon, View};
 use std::time::{Duration, Instant};
 
 /// How many calendar events [`seed_calendar`] ingests (2 all-day + 6 timed);
@@ -304,10 +304,22 @@ fn snapshot_horizon_day() {
         harness.snapshot(name);
     }
 
+    // Week view: the full seven columns on desktop, but only a three-day
+    // window on a phone (seven are unreadable at ~390px).
+    harness.state_mut().horizon.set_view(View::Week);
+    harness.set_size(egui::Vec2::new(1400.0, 900.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_week_desktop");
+
+    harness.set_size(egui::Vec2::new(390.0, 844.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_week_phone");
+
     // The fullscreen event-detail view: below desktop width there's no
     // inspector pane, so a selected event opens over the timeline with a
     // back / prev-next nav bar. Open it on the first timed event and snapshot
     // at phone-portrait width.
+    harness.state_mut().horizon.set_view(View::Day);
     harness.state_mut().horizon.open_first_timed_detail();
     harness.set_size(egui::Vec2::new(390.0, 844.0));
     harness.run_steps(4);

@@ -99,6 +99,12 @@ pub(crate) enum EditOutcome {
     Cancel,
 }
 
+/// Day columns the week view shows: the full week normally, but only a narrow
+/// span on phones, where seven columns are unreadable at ~390px (the epic asks
+/// for "~3 day columns, not 7").
+const WEEK_DAYS: usize = 7;
+const WEEK_DAYS_NARROW: usize = 3;
+
 /// Minutes spanned by the keyboard selection cursor and one navigation step
 /// (viscal's `timeblock_size`). Resizing it is a later card.
 const SELECTION_MINUTES: i64 = 30;
@@ -374,11 +380,15 @@ impl Horizon {
     /// or the visible range changed since it was last built. A no-op when the
     /// [`LayoutKey`] is unchanged, so the common frame does no work; when the
     /// view shows no timeline (month/agenda) the cache is simply emptied. Must
-    /// run before the timeline reads `self.layout`.
-    fn ensure_layout(&mut self) {
+    /// run before the timeline reads `self.layout`. `narrow` picks the phone
+    /// week span (a 3-day window from the focused day) over the full week.
+    fn ensure_layout(&mut self, narrow: bool) {
         let (first, days) = match self.view {
             View::Day => (self.focus.date_naive(), 1),
-            View::Week => (start_of_week(self.focus).date_naive(), 7),
+            // The full week starts on its Monday; the narrow phone window runs
+            // from the focused day so ‹ / › page through three days at a time.
+            View::Week if narrow => (self.focus.date_naive(), WEEK_DAYS_NARROW),
+            View::Week => (start_of_week(self.focus).date_naive(), WEEK_DAYS),
             _ => {
                 self.layout.days.clear();
                 self.layout.key = None;
@@ -499,7 +509,7 @@ impl Horizon {
                 if show_detail {
                     self.event_detail(ui);
                 } else {
-                    self.center(ctx, ui, wide);
+                    self.center(ctx, ui, wide, narrow);
                 }
             });
     }
@@ -517,9 +527,9 @@ impl Horizon {
         }
     }
 
-    fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui, wide: bool) {
+    fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui, wide: bool, narrow: bool) {
         // Refresh the cached per-day layouts before any borrow of them below.
-        self.ensure_layout();
+        self.ensure_layout(narrow);
         match self.view {
             View::Day => {
                 // Split borrows: `DayView` reads `self.blocks`/`self.layout`, the
@@ -562,7 +572,7 @@ impl Horizon {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        timeline::week(ui, self.focus, self.now, &self.blocks, &self.layout.days)
+                        timeline::week(ui, self.now, &self.blocks, &self.layout.days)
                     });
             }
             other => {
@@ -581,7 +591,7 @@ impl Horizon {
     fn toolbar(&mut self, ui: &mut egui::Ui, narrow: bool) {
         ui.horizontal(|ui| {
             if nav_button(ui, "‹") {
-                self.shift(-1);
+                self.shift(-1, narrow);
             }
             if ui
                 .add(egui::Button::new(RichText::new("Today").color(theme::TEXT)))
@@ -590,7 +600,7 @@ impl Horizon {
                 self.go_today();
             }
             if nav_button(ui, "›") {
-                self.shift(1);
+                self.shift(1, narrow);
             }
 
             // Red "today" day-of-month badge.
@@ -686,9 +696,12 @@ impl Horizon {
     }
 
     /// Move the focused range forward/backward by one unit of the current view.
-    fn shift(&mut self, units: i64) {
+    /// The week pages by its visible span — a full week normally, three days on
+    /// a narrow phone — so ‹ / › always turn one screenful.
+    fn shift(&mut self, units: i64, narrow: bool) {
         let days = match self.view {
-            View::Week => units * 7,
+            View::Week if narrow => units * WEEK_DAYS_NARROW as i64,
+            View::Week => units * WEEK_DAYS as i64,
             _ => units,
         };
         self.focus += Duration::days(days);
@@ -996,6 +1009,13 @@ impl Horizon {
     #[doc(hidden)]
     pub fn loaded_block_count(&self) -> usize {
         self.blocks.len()
+    }
+
+    /// Switch the active view — a test-only seam so the snapshot suite can
+    /// render the week/month layouts (production switches from the view tabs).
+    #[doc(hidden)]
+    pub fn set_view(&mut self, view: View) {
+        self.view = view;
     }
 
     /// Select the first timed block and open the fullscreen event-detail view
