@@ -406,14 +406,20 @@ impl Horizon {
             self.editing = None;
         }
 
+        let narrow = notedeck::ui::is_narrow(ui.ctx());
+
         egui::TopBottomPanel::top("horizon_toolbar")
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
-            .show_inside(ui, |ui| self.toolbar(ui));
+            .show_inside(ui, |ui| self.toolbar(ui, narrow));
 
         // On phones the sidebar + inspector leave the timeline no usable room,
-        // so collapse to a single-column layout. The fuller mobile treatment —
-        // a bottom control bar and a tap-to-open detail sheet — is a later card.
-        if !notedeck::ui::is_narrow(ui.ctx()) {
+        // so collapse to a single column and move the view switcher into a
+        // bottom bar. The tap-to-open detail sheet is a later card.
+        if narrow {
+            egui::TopBottomPanel::bottom("horizon_mobile_bar")
+                .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 8)))
+                .show_inside(ui, |ui| self.mobile_view_bar(ui));
+        } else {
             let today = self.now.date_naive();
             egui::SidePanel::left("horizon_sidebar")
                 .resizable(true)
@@ -502,7 +508,7 @@ impl Horizon {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
+    fn toolbar(&mut self, ui: &mut egui::Ui, narrow: bool) {
         ui.horizontal(|ui| {
             if nav_button(ui, "‹") {
                 self.shift(-1);
@@ -529,13 +535,12 @@ impl Horizon {
                 theme::TEXT,
             );
 
-            ui.add_space(16.0);
-
-            // View segmented control.
-            for v in View::ALL {
-                if tab(ui, v.label(), self.view == v) {
-                    self.view = v;
-                }
+            // On phones the view switcher moves to the bottom bar and the search
+            // box is dropped (it isn't wired to filtering yet), so the toolbar
+            // keeps only the date controls and nothing overflows the width.
+            if !narrow {
+                ui.add_space(16.0);
+                self.view_tabs(ui);
             }
 
             // Pending keyboard command (repeat count + chord prefix), à la
@@ -546,15 +551,43 @@ impl Horizon {
                 ui.label(RichText::new(pending).monospace().color(theme::ACCENT_BLUE));
             }
 
-            // Search at the far right.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("Search")
-                        .desired_width(200.0),
-                );
-            });
+            if !narrow {
+                // Search at the far right.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search")
+                            .desired_width(200.0),
+                    );
+                });
+            }
         });
+    }
+
+    /// The Day/Week/Month/… segmented control, laid out inline (desktop toolbar).
+    fn view_tabs(&mut self, ui: &mut egui::Ui) {
+        for v in View::ALL {
+            if tab(ui, v.label(), self.view == v) {
+                self.view = v;
+            }
+        }
+    }
+
+    /// The phone bottom bar: the same view switcher spread evenly across the
+    /// width as a tab bar, since it doesn't fit up top on a narrow screen.
+    fn mobile_view_bar(&mut self, ui: &mut egui::Ui) {
+        let current = self.view;
+        let mut chosen = current;
+        ui.columns(View::ALL.len(), |cols| {
+            for (col, v) in cols.iter_mut().zip(View::ALL) {
+                col.vertical_centered(|ui| {
+                    if tab(ui, v.label(), current == v) {
+                        chosen = v;
+                    }
+                });
+            }
+        });
+        self.view = chosen;
     }
 
     fn apply_sidebar(&mut self, action: sidebar::SidebarAction) {
