@@ -17,6 +17,7 @@ use block::Block;
 
 mod block;
 mod inspector;
+mod month;
 mod sidebar;
 mod theme;
 mod timeline;
@@ -99,6 +100,16 @@ pub(crate) enum EditOutcome {
     Cancel,
 }
 
+/// Day columns the week view shows: the full week normally, but only a narrow
+/// span on phones, where seven columns are unreadable at ~390px (the epic asks
+/// for "~3 day columns, not 7").
+const WEEK_DAYS: usize = 7;
+const WEEK_DAYS_NARROW: usize = 3;
+
+/// Day cells in the month grid: six Sunday-first weeks, enough to cover any
+/// month's layout without the number of rows jumping around.
+const MONTH_CELLS: usize = 42;
+
 /// Minutes spanned by the keyboard selection cursor and one navigation step
 /// (viscal's `timeblock_size`). Resizing it is a later card.
 const SELECTION_MINUTES: i64 = 30;
@@ -107,6 +118,16 @@ const SELECTION_MINUTES: i64 = 30;
 /// `SMALLEST_TIMEBLOCK`). Coarser than [`SELECTION_MINUTES`] navigation on
 /// purpose: nudging an event should feel precise.
 const MOVE_MINUTES: i64 = 5;
+
+/// Minimum Horizon-content width (points) for the persistent inspector side
+/// pane. Below it the three-pane layout squeezes the timeline unusably — a
+/// ~300px sidebar plus a ~320px inspector eat 620px of chrome — so the
+/// inspector is dropped and the selected event opens as a separate detail view
+/// instead. Measured from `ui.available_width()` (Horizon's real allotment,
+/// minus the chrome nav rail), not the screen: there's no notedeck helper for
+/// this tier, since `is_narrow` (550px) only covers the single-column phone
+/// case, so it's a Horizon-local breakpoint.
+const INSPECTOR_MIN_WIDTH: f32 = 1100.0;
 
 /// Default / min / max pixels per hour for the day grid (viscal's `zoom`).
 const HOUR_HEIGHT_DEFAULT: f32 = 56.0;
@@ -141,6 +162,14 @@ pub struct Horizon {
     view: View,
     /// The date the timeline is focused on.
     focus: DateTime<Local>,
+    /// Reference "now" for this frame — the wall clock, refreshed each render,
+    /// or a pinned instant when [`Self::now_override`] is set. Centralizing it
+    /// keeps the now-line, the "today" badge and date highlighting in agreement
+    /// instead of each reading `Local::now()` at a slightly different moment.
+    now: DateTime<Local>,
+    /// When set, pins [`Self::now`] instead of reading the wall clock — a
+    /// test-only seam (see [`Horizon::pin_now`]) for deterministic snapshots.
+    now_override: Option<DateTime<Local>>,
     /// First-of-month date shown by the sidebar's mini calendar.
     cal_month: NaiveDate,
     /// Index into [`Self::blocks`] of the inspected event, if any.
@@ -200,6 +229,13 @@ pub struct Horizon {
     /// Cached per-day block layouts, rebuilt only when the blocks or the visible
     /// date range change — see [`Self::ensure_layout`].
     layout: LayoutCache,
+    /// Whether the fullscreen event-detail view is open. Only meaningful below
+    /// desktop width, where there's no inspector pane: tapping an event opens
+    /// it over the timeline, its nav bar's back affordance (or Escape) closes
+    /// it, and prev/next hop events in the `gj`/`gk` order. Forced back to
+    /// `false` on any frame it can't apply (widened to show the pane, or the
+    /// selection cleared), so it never dangles.
+    detail: bool,
 }
 
 impl Default for Horizon {
@@ -208,6 +244,8 @@ impl Default for Horizon {
         Self {
             view: View::Day,
             focus: now,
+            now,
+            now_override: None,
             cal_month: sidebar::month_of(now),
             selected: None,
             cursor: snap_to_step(now),
@@ -229,6 +267,7 @@ impl Default for Horizon {
             calsync_started: false,
             layout_gen: 0,
             layout: LayoutCache::default(),
+            detail: false,
         }
     }
 }
@@ -346,11 +385,18 @@ impl Horizon {
     /// or the visible range changed since it was last built. A no-op when the
     /// [`LayoutKey`] is unchanged, so the common frame does no work; when the
     /// view shows no timeline (month/agenda) the cache is simply emptied. Must
-    /// run before the timeline reads `self.layout`.
-    fn ensure_layout(&mut self) {
+    /// run before the timeline reads `self.layout`. `narrow` picks the phone
+    /// week span (a 3-day window from the focused day) over the full week.
+    fn ensure_layout(&mut self, narrow: bool) {
         let (first, days) = match self.view {
             View::Day => (self.focus.date_naive(), 1),
-            View::Week => (start_of_week(self.focus).date_naive(), 7),
+            // The full week starts on its Monday; the narrow phone window runs
+            // from the focused day so ‹ / › page through three days at a time.
+            View::Week if narrow => (self.focus.date_naive(), WEEK_DAYS_NARROW),
+            View::Week => (start_of_week(self.focus).date_naive(), WEEK_DAYS),
+            // The month grid is six Sunday-first weeks: start on the Sunday on
+            // or before the 1st, then lay out all 42 cells.
+            View::Month => (month_grid_start(self.focus), MONTH_CELLS),
             _ => {
                 self.layout.days.clear();
                 self.layout.key = None;
@@ -380,11 +426,33 @@ impl Horizon {
     fn show(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
         apply_theme(ui);
 
+        // Resolve this frame's reference clock once (pinned in tests) so the
+        // now-line, the "today" badge and any "jump to now" keys agree on it.
+        self.now = self.now_override.unwrap_or_else(Local::now);
+
+        let narrow = notedeck::ui::is_narrow(ui.ctx());
+        // Three width tiers, from Horizon's own allotment (see
+        // [`INSPECTOR_MIN_WIDTH`]): below `is_narrow` (550) a single column;
+        // between that and `wide` the sidebar + timeline but no inspector; at
+        // `wide` and up the full three panes.
+        let wide = ui.available_width() >= INSPECTOR_MIN_WIDTH;
+
+        // Below desktop width the selected event opens as a fullscreen detail
+        // view over the timeline (there's no inspector pane to hold it). Keep
+        // the flag honest: it can't apply once the pane is back or nothing is
+        // selected.
+        let show_detail = self.detail && !wide && self.selected.is_some();
+        self.detail = show_detail;
+
         // Keyboard navigation drives the day view's cursor/selection. Reset the
-        // per-frame scroll signals, then let `handle_keys` raise them again.
+        // per-frame scroll signals, then let the handlers raise them again. The
+        // detail view has its own keys (back / prev / next); otherwise the day
+        // view takes them.
         self.scroll_to_cursor = None;
         self.scroll_delta = 0.0;
-        if self.view == View::Day {
+        if show_detail {
+            self.handle_detail_keys(ui);
+        } else if self.view == View::Day {
             self.handle_keys(ctx, ui);
         } else {
             // Only the day view renders the inline editor; drop any pending edit
@@ -394,35 +462,82 @@ impl Horizon {
 
         egui::TopBottomPanel::top("horizon_toolbar")
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
-            .show_inside(ui, |ui| self.toolbar(ui));
+            .show_inside(ui, |ui| self.toolbar(ui, narrow));
 
-        egui::SidePanel::left("horizon_sidebar")
-            .resizable(true)
-            .default_width(300.0)
-            .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 4)))
-            .show_inside(ui, |ui| {
-                let action =
-                    sidebar::show(ui, self.focus, self.cal_month, &self.blocks, self.selected);
-                self.apply_sidebar(action);
-            });
+        // On phones the sidebar + inspector leave the timeline no usable room,
+        // so collapse to a single column and move the view switcher into a
+        // bottom bar. The tap-to-open detail sheet is a later card.
+        if narrow {
+            egui::TopBottomPanel::bottom("horizon_mobile_bar")
+                .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 8)))
+                .show_inside(ui, |ui| self.mobile_view_bar(ui));
+        } else {
+            let today = self.now.date_naive();
+            egui::SidePanel::left("horizon_sidebar")
+                .resizable(true)
+                .default_width(300.0)
+                .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 4)))
+                .show_inside(ui, |ui| {
+                    let action = sidebar::show(
+                        ui,
+                        self.focus,
+                        today,
+                        self.cal_month,
+                        &self.blocks,
+                        self.selected,
+                    );
+                    // Tapping an agenda row below desktop width opens the event
+                    // in the fullscreen detail view (no inspector pane here).
+                    let picked = action.selected.is_some();
+                    self.apply_sidebar(action);
+                    if picked && !wide {
+                        self.detail = true;
+                    }
+                });
 
-        let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
-        egui::SidePanel::right("horizon_inspector")
-            .resizable(true)
-            .default_width(320.0)
-            .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
-            .show_inside(ui, |ui| {
-                inspector::show(ui, &self.blocks, self.selected, selected_locked);
-            });
+            // The inspector is a persistent pane only when there's room for it
+            // beside the sidebar and timeline; on tablet / phone-landscape it
+            // would squeeze the timeline, so it's dropped (the selected event
+            // opens as its own detail view — see hole-grape-artist).
+            if wide {
+                let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
+                egui::SidePanel::right("horizon_inspector")
+                    .resizable(true)
+                    .default_width(320.0)
+                    .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
+                    .show_inside(ui, |ui| {
+                        inspector::show(ui, &self.blocks, self.selected, selected_locked);
+                    });
+            }
+        }
 
         egui::CentralPanel::default()
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 4)))
-            .show_inside(ui, |ui| self.center(ctx, ui));
+            .show_inside(ui, |ui| {
+                if show_detail {
+                    self.event_detail(ui);
+                } else {
+                    self.center(ctx, ui, wide, narrow);
+                }
+            });
     }
 
-    fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+    /// The fullscreen event-detail screen (below desktop width): a nav bar over
+    /// the same fields the inspector pane shows. Back closes it; prev/next hop
+    /// to the neighbouring event in `gj`/`gk` order, keeping it open.
+    fn event_detail(&mut self, ui: &mut egui::Ui) {
+        let locked = self.selected.is_some_and(|i| self.is_locked(i));
+        match inspector::show_fullscreen(ui, &self.blocks, self.selected, locked) {
+            inspector::DetailAction::Back => self.detail = false,
+            inspector::DetailAction::Prev => self.select_event(-1, 1),
+            inspector::DetailAction::Next => self.select_event(1, 1),
+            inspector::DetailAction::None => {}
+        }
+    }
+
+    fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui, wide: bool, narrow: bool) {
         // Refresh the cached per-day layouts before any borrow of them below.
-        self.ensure_layout();
+        self.ensure_layout(narrow);
         match self.view {
             View::Day => {
                 // Split borrows: `DayView` reads `self.blocks`/`self.layout`, the
@@ -431,6 +546,7 @@ impl Horizon {
                 let response = {
                     let dv = timeline::DayView {
                         focus: self.focus,
+                        now: self.now,
                         blocks: &self.blocks,
                         layout: &self.layout.days[0],
                         selected: self.selected,
@@ -453,14 +569,36 @@ impl Horizon {
                     // A mouse click selects a block and snaps the cursor to it.
                     self.selected = Some(i);
                     self.cursor = self.blocks[i].start;
+                    // Below desktop width there's no inspector pane, so surface
+                    // the tapped event in the fullscreen detail view instead.
+                    if !wide {
+                        self.detail = true;
+                    }
                 }
             }
             View::Week => {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        timeline::week(ui, self.focus, &self.blocks, &self.layout.days)
+                        timeline::week(ui, self.now, &self.blocks, &self.layout.days)
                     });
+            }
+            View::Month => {
+                if let Some(date) = month::show(
+                    ui,
+                    self.focus,
+                    self.now,
+                    &self.blocks,
+                    &self.layout.days,
+                    narrow,
+                ) {
+                    // Tapping a day cell drops into that day's timeline.
+                    self.focus = at_local_midnight(date).unwrap_or(self.focus);
+                    self.cal_month = date.with_day(1).unwrap_or(self.cal_month);
+                    self.cursor = with_date(self.cursor, date);
+                    self.selected = None;
+                    self.view = View::Day;
+                }
             }
             other => {
                 ui.vertical_centered(|ui| {
@@ -475,10 +613,10 @@ impl Horizon {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
+    fn toolbar(&mut self, ui: &mut egui::Ui, narrow: bool) {
         ui.horizontal(|ui| {
             if nav_button(ui, "‹") {
-                self.shift(-1);
+                self.shift(-1, narrow);
             }
             if ui
                 .add(egui::Button::new(RichText::new("Today").color(theme::TEXT)))
@@ -487,11 +625,11 @@ impl Horizon {
                 self.go_today();
             }
             if nav_button(ui, "›") {
-                self.shift(1);
+                self.shift(1, narrow);
             }
 
             // Red "today" day-of-month badge.
-            let today = Local::now().day();
+            let today = self.now.day();
             let (badge, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
             ui.painter().circle_filled(badge.center(), 11.0, theme::NOW);
             ui.painter().text(
@@ -502,13 +640,12 @@ impl Horizon {
                 theme::TEXT,
             );
 
-            ui.add_space(16.0);
-
-            // View segmented control.
-            for v in View::ALL {
-                if tab(ui, v.label(), self.view == v) {
-                    self.view = v;
-                }
+            // On phones the view switcher moves to the bottom bar and the search
+            // box is dropped (it isn't wired to filtering yet), so the toolbar
+            // keeps only the date controls and nothing overflows the width.
+            if !narrow {
+                ui.add_space(16.0);
+                self.view_tabs(ui);
             }
 
             // Pending keyboard command (repeat count + chord prefix), à la
@@ -519,15 +656,43 @@ impl Horizon {
                 ui.label(RichText::new(pending).monospace().color(theme::ACCENT_BLUE));
             }
 
-            // Search at the far right.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("Search")
-                        .desired_width(200.0),
-                );
-            });
+            if !narrow {
+                // Search at the far right.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search")
+                            .desired_width(200.0),
+                    );
+                });
+            }
         });
+    }
+
+    /// The Day/Week/Month/… segmented control, laid out inline (desktop toolbar).
+    fn view_tabs(&mut self, ui: &mut egui::Ui) {
+        for v in View::ALL {
+            if tab(ui, v.label(), self.view == v) {
+                self.view = v;
+            }
+        }
+    }
+
+    /// The phone bottom bar: the same view switcher spread evenly across the
+    /// width as a tab bar, since it doesn't fit up top on a narrow screen.
+    fn mobile_view_bar(&mut self, ui: &mut egui::Ui) {
+        let current = self.view;
+        let mut chosen = current;
+        ui.columns(View::ALL.len(), |cols| {
+            for (col, v) in cols.iter_mut().zip(View::ALL) {
+                col.vertical_centered(|ui| {
+                    if tab(ui, v.label(), current == v) {
+                        chosen = v;
+                    }
+                });
+            }
+        });
+        self.view = chosen;
     }
 
     fn apply_sidebar(&mut self, action: sidebar::SidebarAction) {
@@ -549,19 +714,26 @@ impl Horizon {
     }
 
     fn go_today(&mut self) {
-        self.focus = Local::now();
+        self.focus = self.now;
         self.cal_month = sidebar::month_of(self.focus);
         self.cursor = with_date(self.cursor, self.focus.date_naive());
         self.selected = None;
     }
 
     /// Move the focused range forward/backward by one unit of the current view.
-    fn shift(&mut self, units: i64) {
-        let days = match self.view {
-            View::Week => units * 7,
-            _ => units,
+    /// The week pages by its visible span — a full week normally, three days on
+    /// a narrow phone — and the month by a whole month, so ‹ / › always turn one
+    /// screenful.
+    fn shift(&mut self, units: i64, narrow: bool) {
+        self.focus = match self.view {
+            View::Month => {
+                let month = sidebar::step_month(sidebar::month_of(self.focus), units as i32);
+                with_date(self.focus, month)
+            }
+            View::Week if narrow => self.focus + Duration::days(units * WEEK_DAYS_NARROW as i64),
+            View::Week => self.focus + Duration::days(units * WEEK_DAYS as i64),
+            _ => self.focus + Duration::days(units),
         };
-        self.focus += Duration::days(days);
         self.cal_month = sidebar::month_of(self.focus);
         self.cursor = with_date(self.cursor, self.focus.date_naive());
         self.selected = None;
@@ -665,6 +837,39 @@ impl Horizon {
                 Key::A if mods.shift => self.begin_edit(false),
                 // Chord prefixes wait for a second key (`dd` deletes + pulls up).
                 Key::Z | Key::G | Key::A | Key::D => self.chord = Some(key),
+                _ => {}
+            }
+        }
+    }
+
+    /// Keys for the fullscreen event-detail view: Escape (or Backspace) backs
+    /// out to the timeline; `j`/`k` and the down/up arrows hop to the next /
+    /// previous event, matching the nav bar's arrows and the `gj`/`gk` order.
+    /// No-op while a text field holds focus.
+    fn handle_detail_keys(&mut self, ui: &egui::Ui) {
+        use egui::Key;
+
+        if ui.memory(|m| m.focused().is_some()) {
+            return;
+        }
+
+        let presses: Vec<Key> = ui.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key, pressed: true, ..
+                    } => Some(*key),
+                    _ => None,
+                })
+                .collect()
+        });
+
+        for key in presses {
+            match key {
+                Key::Escape | Key::Backspace => self.detail = false,
+                Key::J | Key::ArrowDown => self.select_event(1, 1),
+                Key::K | Key::ArrowUp => self.select_event(-1, 1),
                 _ => {}
             }
         }
@@ -807,11 +1012,52 @@ impl Horizon {
 
     /// Jump the cursor (and focus) to "now", deselecting any event.
     fn cursor_now(&mut self) {
-        let now = Local::now();
+        let now = self.now;
         self.focus = now;
         self.cal_month = sidebar::month_of(now);
         self.cursor = snap_to_step(now);
         self.selected = None;
+    }
+
+    /// Pin the reference clock to `at` and re-home the view onto it — a
+    /// test-only seam (used by the snapshot suite) so rendering is deterministic
+    /// regardless of the wall clock. Production never calls this.
+    #[doc(hidden)]
+    pub fn pin_now(&mut self, at: DateTime<Local>) {
+        self.now_override = Some(at);
+        self.now = at;
+        self.focus = at;
+        self.cal_month = sidebar::month_of(at);
+        self.cursor = snap_to_step(at);
+        self.selected = None;
+    }
+
+    /// Number of calendar blocks currently materialized from nostrdb. A
+    /// test-only seam so the snapshot harness can wait out nostrdb's async
+    /// ingest before rendering; production never calls it.
+    #[doc(hidden)]
+    pub fn loaded_block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Switch the active view — a test-only seam so the snapshot suite can
+    /// render the week/month layouts (production switches from the view tabs).
+    #[doc(hidden)]
+    pub fn set_view(&mut self, view: View) {
+        self.view = view;
+    }
+
+    /// Select the first timed block and open the fullscreen event-detail view
+    /// on it — a test-only seam so the snapshot suite can exercise the detail
+    /// screen deterministically (production opens it from a tap). No-op with no
+    /// timed blocks loaded.
+    #[doc(hidden)]
+    pub fn open_first_timed_detail(&mut self) {
+        if let Some(i) = self.blocks.iter().position(|b| !b.all_day) {
+            self.selected = Some(i);
+            self.cursor = self.blocks[i].start;
+            self.detail = true;
+        }
     }
 
     /// `i` — insert a new timed block at the cursor (viscal's `insert_event`).
@@ -956,7 +1202,7 @@ impl Horizon {
         let Some(i) = self.selected.filter(|&i| !self.blocks[i].all_day) else {
             return;
         };
-        let start = snap_to_step(Local::now());
+        let start = snap_to_step(self.now);
         let end = start + (self.blocks[i].end - self.blocks[i].start);
         self.focus = start;
         self.cal_month = sidebar::month_of(start);
@@ -1542,6 +1788,17 @@ fn tab(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
         btn = btn.fill(theme::SURFACE);
     }
     ui.add(btn).clicked()
+}
+
+/// First cell of the month grid containing `dt`: the Sunday on or before the
+/// 1st of that month (Sunday-first, matching the sidebar mini-month).
+fn month_grid_start(dt: DateTime<Local>) -> NaiveDate {
+    let first = dt
+        .date_naive()
+        .with_day(1)
+        .unwrap_or_else(|| dt.date_naive());
+    let back = first.weekday().num_days_from_sunday() as i64;
+    first - Duration::days(back)
 }
 
 /// The local midnight that starts the (Monday-based) week containing `dt`.

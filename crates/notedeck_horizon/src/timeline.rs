@@ -89,6 +89,8 @@ fn hour_label(h: u32) -> String {
 /// per-frame keyboard scroll signals.
 pub(crate) struct DayView<'a> {
     pub focus: DateTime<Local>,
+    /// Reference "now" (wall clock, or pinned in tests) for the now-line.
+    pub now: DateTime<Local>,
     pub blocks: &'a [Block],
     /// This day's cached all-day/timed layout (built off the per-frame path).
     pub layout: &'a DayLayout,
@@ -119,6 +121,7 @@ pub(crate) fn center_day(
 ) -> DayResponse {
     let DayView {
         focus,
+        now,
         blocks,
         layout,
         selected,
@@ -181,7 +184,6 @@ pub(crate) fn center_day(
             }
 
             // Timed blocks for this day, from the cached layout.
-            let now = Local::now();
             let drawn = draw_blocks(
                 ui,
                 &painter,
@@ -637,16 +639,13 @@ fn now_line(
     );
 }
 
-/// Draw a 7-day week timeline with a shared hour grid. `days` holds the cached
-/// per-day layouts (Monday first), matching the seven columns drawn here.
-pub(crate) fn week(
-    ui: &mut egui::Ui,
-    focus: DateTime<Local>,
-    blocks: &[Block],
-    days: &[DayLayout],
-) {
-    let now = Local::now();
-    let monday = crate::start_of_week(focus);
+/// Draw a multi-day week timeline with a shared hour grid, one column per
+/// entry in `days` (the cached per-day layouts, in ascending date order). The
+/// full week passes seven; a narrow phone passes three (see `WEEK_DAYS_NARROW`)
+/// so the columns stay legible. Each column's date, header and now-line come
+/// straight off its [`DayLayout`], so the count is however many are handed in.
+pub(crate) fn week(ui: &mut egui::Ui, now: DateTime<Local>, blocks: &[Block], days: &[DayLayout]) {
+    let cols = days.len().max(1);
 
     let width = ui.available_width();
     let height = WEEK_HEADER_H + HOUR_H * 24.0;
@@ -655,17 +654,16 @@ pub(crate) fn week(
 
     let grid_left = rect.left() + GUTTER_W;
     let grid_top = rect.top() + WEEK_HEADER_H;
-    let col_w = (rect.right() - grid_left) / 7.0;
+    let col_w = (rect.right() - grid_left) / cols as f32;
 
-    // Weekday headers.
-    for d in 0..7 {
-        let day = monday + chrono::Duration::days(d);
-        let is_today = day.date_naive() == now.date_naive();
+    // Weekday headers, from each column's own date.
+    for (d, layout) in days.iter().enumerate() {
+        let is_today = layout.date == now.date_naive();
         let x = grid_left + d as f32 * col_w;
         painter.text(
             pos2(x + col_w / 2.0, rect.top() + 4.0),
             Align2::CENTER_TOP,
-            day.format("%a %-d").to_string(),
+            layout.date.format("%a %-d").to_string(),
             FontId::proportional(12.0),
             if is_today {
                 theme::ACCENT_BLUE
@@ -691,13 +689,13 @@ pub(crate) fn week(
     }
 
     // Vertical day separators.
-    for d in 0..=7 {
+    for d in 0..=cols {
         let x = grid_left + d as f32 * col_w;
         painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], grid_stroke());
     }
 
     // Timed blocks within each day's column, from the cached per-day layouts.
-    for (d, layout) in days.iter().enumerate().take(7) {
+    for (d, layout) in days.iter().enumerate() {
         let x0 = grid_left + d as f32 * col_w;
         draw_blocks(
             ui,
@@ -713,10 +711,9 @@ pub(crate) fn week(
         );
     }
 
-    // "Now" indicator, confined to today's column if it's in this week.
-    let days_in = (now.date_naive() - monday.date_naive()).num_days();
-    if (0..7).contains(&days_in) {
-        let x0 = grid_left + days_in as f32 * col_w;
+    // "Now" indicator, confined to today's column when today is on screen.
+    if let Some(d) = days.iter().position(|l| l.date == now.date_naive()) {
+        let x0 = grid_left + d as f32 * col_w;
         now_line(&painter, x0, x0 + col_w, grid_top, HOUR_H * 24.0, now);
     }
 }

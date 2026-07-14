@@ -5,12 +5,17 @@
 //! calendar and snapshot it. Like the other Notedeck snapshot suites they are
 //! `#[ignore]`d and run via `scripts/snapshot-test` (lavapipe) on CI.
 
-use chrono::{Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use egui_kittest::Harness;
-use enostr::{FullKeypair, Keypair};
+use enostr::{FullKeypair, Keypair, SecretKey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 use notedeck::{App, Notedeck};
-use notedeck_horizon::Horizon;
+use notedeck_horizon::{Horizon, View};
+use std::time::{Duration, Instant};
+
+/// How many calendar events [`seed_calendar`] ingests (2 all-day + 6 timed);
+/// the harness waits for all of them before snapshotting.
+const SEEDED_EVENTS: usize = 8;
 
 struct HorizonTestState {
     notedeck: Notedeck,
@@ -51,9 +56,15 @@ fn render_horizon(ctx: &egui::Context, state: &mut HorizonTestState) {
     });
 }
 
-/// Ingest one signed note built by `builder`.
+/// Ingest one signed note built by `builder`. Pins `created_at` to the fixed
+/// clock so nostrdb returns the seeded notes in a stable order — otherwise
+/// same-start events tie-break on the wall clock and reshuffle between runs.
 fn ingest(ndb: &Ndb, builder: NoteBuilder, secret: &[u8; 32]) {
-    let note = builder.sign(secret).build().expect("note builds");
+    let note = builder
+        .created_at(fixed_now().timestamp() as u64)
+        .sign(secret)
+        .build()
+        .expect("note builds");
     let json = enostr::ClientMessage::event(&note)
         .expect("client msg")
         .to_json()
@@ -108,10 +119,32 @@ fn all_day(ndb: &Ndb, secret: &[u8; 32], id: &str, title: &str, start: NaiveDate
     );
 }
 
+/// A fixed reference "now" the tests pin Horizon to (via [`Horizon::pin_now`]),
+/// so the now-line, the "today" badge and the seeded demo calendar all render
+/// deterministically instead of drifting with the wall clock. Constructing it
+/// from local calendar fields (Monday, 29 June 2026, 09:30) keeps the rendered
+/// times identical regardless of the machine's timezone. It is also the day the
+/// demo calendar is seeded around, so events land on the focused day.
+fn fixed_now() -> DateTime<Local> {
+    Local
+        .with_ymd_and_hms(2026, 6, 29, 9, 30, 0)
+        .single()
+        .expect("valid local time")
+}
+
+/// A fixed signing account, so the seeded notes' ids are stable across runs. A
+/// random author reshuffles same-start events (their ids tie-break the order),
+/// which would make the snapshots non-deterministic.
+fn test_account() -> FullKeypair {
+    let secret = SecretKey::from_slice(&[7u8; 32]).expect("valid secret key");
+    let keypair = Keypair::from_secret(secret.clone());
+    FullKeypair::new(keypair.pubkey, secret)
+}
+
 /// Seed a small, entirely fictional demo calendar around "today" so the day
 /// view and agenda have content to render against.
 fn seed_calendar(ndb: &Ndb, secret: &[u8; 32]) {
-    let today = Local::now().date_naive();
+    let today = fixed_now().date_naive();
     let unix = |d: NaiveDate, h: u32, m: u32| {
         Local
             .from_local_datetime(&d.and_hms_opt(h, m, 0).unwrap())
@@ -207,10 +240,15 @@ fn horizon_harness(size: egui::Vec2) -> Harness<'static, HorizonTestState> {
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
     let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
+    // Pin the reference clock before the first render so the now-line, badge
+    // and date highlighting are deterministic across runs and machines.
+    let mut horizon = Horizon::default();
+    horizon.pin_now(fixed_now());
+
     let state = HorizonTestState {
         notedeck,
-        horizon: Horizon::default(),
-        account: FullKeypair::generate(),
+        horizon,
+        account: test_account(),
         _tmpdir: tmpdir,
         setup_done: false,
     };
@@ -221,21 +259,80 @@ fn horizon_harness(size: egui::Vec2) -> Harness<'static, HorizonTestState> {
         .renderer(renderer())
         .build_state(render_horizon, state);
 
-    // First frame installs fonts + seeds; pump more so ndb ingests and the
-    // app's reload picks the events up.
-    harness.run_steps(8);
+    // Seeded notes ingest on nostrdb's writer thread, so pump frames until the
+    // app has reloaded them all before any snapshot — otherwise the first size
+    // rendered can race a half-loaded calendar and differ between runs.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_steps(2);
+        if harness.state().horizon.loaded_block_count() >= SEEDED_EVENTS {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the seeded calendar to load"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     harness
 }
 
-// No baseline image is committed yet: the golden must be generated on the
-// canonical lavapipe renderer (Linux) so it's reproducible in CI. Generate it
-// with `scripts/snapshot-test --update` on Linux, then commit the resulting
-// `tests/snapshots/horizon_day.png`. Until then this test has nothing to
-// compare against and will write a `.new.png` rather than pass.
+/// Viewports to snapshot the day view at, from a phone in portrait up to a
+/// desktop. The three-pane layout is fixed-width (a ~300px sidebar + ~320px
+/// inspector), so the narrow sizes exercise how it degrades when the timeline
+/// is squeezed — see the `horizon: responsive layout` follow-up.
+const SIZES: &[(&str, f32, f32)] = &[
+    ("horizon_phone_portrait", 390.0, 844.0),
+    ("horizon_phone_landscape", 844.0, 390.0),
+    ("horizon_tablet", 768.0, 1024.0),
+    ("horizon_desktop", 1400.0, 900.0),
+];
+
+// No baseline images are committed yet: the goldens must be generated on the
+// canonical lavapipe renderer (Linux) so they're reproducible in CI. Generate
+// them with `scripts/snapshot-test --update` on Linux, then commit the
+// resulting `tests/snapshots/horizon_*.png`. Until then this test has nothing
+// to compare against and will write `.new.png` files rather than pass.
 #[test]
 #[ignore] // requires a GPU/lavapipe renderer — run via scripts/snapshot-test
 fn snapshot_horizon_day() {
     let mut harness = horizon_harness(egui::Vec2::new(1400.0, 900.0));
+
+    for &(name, w, h) in SIZES {
+        harness.set_size(egui::Vec2::new(w, h));
+        harness.run_steps(4);
+        harness.snapshot(name);
+    }
+
+    // Week view: the full seven columns on desktop, but only a three-day
+    // window on a phone (seven are unreadable at ~390px).
+    harness.state_mut().horizon.set_view(View::Week);
+    harness.set_size(egui::Vec2::new(1400.0, 900.0));
     harness.run_steps(4);
-    harness.snapshot("horizon_day");
+    harness.snapshot("horizon_week_desktop");
+
+    harness.set_size(egui::Vec2::new(390.0, 844.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_week_phone");
+
+    // Month view: a six-week day-cell grid with truncated event chips, on both
+    // desktop and phone widths (the phone cells simply carry fewer chips).
+    harness.state_mut().horizon.set_view(View::Month);
+    harness.set_size(egui::Vec2::new(1400.0, 900.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_month_desktop");
+
+    harness.set_size(egui::Vec2::new(390.0, 844.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_month_phone");
+
+    // The fullscreen event-detail view: below desktop width there's no
+    // inspector pane, so a selected event opens over the timeline with a
+    // back / prev-next nav bar. Open it on the first timed event and snapshot
+    // at phone-portrait width.
+    harness.state_mut().horizon.set_view(View::Day);
+    harness.state_mut().horizon.open_first_timed_detail();
+    harness.set_size(egui::Vec2::new(390.0, 844.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_event_detail");
 }

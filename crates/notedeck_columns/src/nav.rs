@@ -540,7 +540,7 @@ fn process_render_nav_action(
         RenderNavAction::PostAction(new_post_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
             let mut publisher = ctx.remote.publisher(ctx.accounts);
-            match new_post_action.execute(ctx.ndb, &txn, &mut publisher, &mut app.drafts) {
+            match new_post_action.execute(ctx.ndb, &txn, &mut publisher, &mut app.drafts, col) {
                 Err(err) => tracing::error!("Error executing post action: {err}"),
                 Ok(_) => tracing::debug!("Post action executed"),
             }
@@ -1057,7 +1057,7 @@ fn render_nav_body(
                     .column(col)
                     .router()
                     .navigating();
-            let draft = app.drafts.compose_mut();
+            let draft = app.drafts.compose_mut(col);
 
             if navigating {
                 draft.focus_state = FocusState::Navigating

@@ -1,4 +1,5 @@
 use enostr::{NoteId, Pubkey, RelayId};
+use nostr::RelayUrl;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use tracing::error;
 
@@ -32,9 +33,22 @@ pub struct ContextSelection {
     pub action: NoteContextSelection,
 }
 
-/// Collects relay URLs where the note was actually observed.
+/// Sanitizes a raw relay string into a relay hint usable in a NIP-19 `nevent`,
+/// or `None` if it isn't a real websocket relay.
+///
+/// Notes ingested over the local network carry the placeholder `multicast`
+/// relay (see `enostr`'s `MulticastRelayCache`), which is not a real relay.
+/// Parsing through [`RelayUrl`] drops it — and any other malformed or
+/// non-`ws`/`wss` entry — while normalizing the URL, so placeholder relays
+/// never leak into shareable `nevent` links.
+fn sanitize_relay_hint(url: &str) -> Option<String> {
+    RelayUrl::parse(url).ok().map(|url| url.to_string())
+}
+
+/// Collects relay URLs where the note was actually observed, keeping only valid
+/// websocket relays so placeholder relays don't end up in the encoded nevent.
 fn relay_hints_for_note(note: &Note<'_>, txn: &Transaction) -> Vec<String> {
-    note.relays(txn).map(|relay| relay.to_owned()).collect()
+    note.relays(txn).filter_map(sanitize_relay_hint).collect()
 }
 
 fn note_nip19_event_bech(note: &Note<'_>, txn: &Transaction) -> Option<String> {
@@ -126,5 +140,33 @@ impl NoteContextSelection {
                 // Handled at Chrome level — routed to Dave
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_relay_hint;
+
+    #[test]
+    fn keeps_websocket_relay_urls() {
+        assert_eq!(
+            sanitize_relay_hint("wss://relay.damus.io").as_deref(),
+            Some("wss://relay.damus.io")
+        );
+        assert_eq!(
+            sanitize_relay_hint("ws://localhost:7777").as_deref(),
+            Some("ws://localhost:7777")
+        );
+    }
+
+    #[test]
+    fn drops_multicast_placeholder() {
+        assert_eq!(sanitize_relay_hint("multicast"), None);
+    }
+
+    #[test]
+    fn drops_non_websocket_urls() {
+        assert_eq!(sanitize_relay_hint("https://damus.io"), None);
+        assert_eq!(sanitize_relay_hint(""), None);
     }
 }

@@ -1,8 +1,70 @@
-//! The right pane: details for the currently selected event.
+//! The right pane: details for the currently selected event. The same fields
+//! render as a fullscreen detail screen below desktop width (see
+//! [`show_fullscreen`]), where there's no room for a persistent side pane.
 
 use crate::block::Block;
 use crate::theme;
 use egui::{RichText, vec2};
+
+/// What the fullscreen detail nav bar reported this frame.
+pub(crate) enum DetailAction {
+    None,
+    /// Back affordance (or Escape): return to the timeline.
+    Back,
+    /// Hop to the previous event (earlier), à la `gk`.
+    Prev,
+    /// Hop to the next event (later), à la `gj`.
+    Next,
+}
+
+/// The fullscreen event-detail screen shown below desktop width. A top nav bar
+/// — a back affordance on the left, prev/next chevrons on the right — over the
+/// same fields [`show`] renders in the side pane. The chevrons hop events in
+/// the `gj`/`gk` order (down = next/later, up = previous/earlier).
+pub(crate) fn show_fullscreen(
+    ui: &mut egui::Ui,
+    blocks: &[Block],
+    selected: Option<usize>,
+    locked: bool,
+) -> DetailAction {
+    let mut action = DetailAction::None;
+
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        if ui
+            .add(
+                egui::Button::new(RichText::new("‹ Back").size(15.0).color(theme::ACCENT_BLUE))
+                    .frame(false),
+            )
+            .clicked()
+        {
+            action = DetailAction::Back;
+        }
+        // Prev/next on the right: down = later event, up = earlier, matching
+        // the timeline's top-to-bottom order.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if nav_chevron(ui, "⌄") {
+                action = DetailAction::Next;
+            }
+            if nav_chevron(ui, "⌃") {
+                action = DetailAction::Prev;
+            }
+        });
+    });
+    ui.add_space(2.0);
+    ui.separator();
+
+    show(ui, blocks, selected, locked);
+    action
+}
+
+/// A prev/next chevron button for the fullscreen detail nav bar.
+fn nav_chevron(ui: &mut egui::Ui, glyph: &str) -> bool {
+    ui.add(egui::Button::new(
+        RichText::new(glyph).size(18.0).color(theme::TEXT_WEAK),
+    ))
+    .clicked()
+}
 
 pub(crate) fn show(ui: &mut egui::Ui, blocks: &[Block], selected: Option<usize>, locked: bool) {
     ui.add_space(10.0);

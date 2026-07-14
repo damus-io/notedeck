@@ -402,7 +402,13 @@ fn show_default_zap(
                         notedeck_ui::include_input(ui, &r);
                     }
 
-                    if !notedeck::ui::is_narrow(ui.ctx()) { // TODO: this should really be checking if we are using a virtual keyboard instead of narrow
+                    // Auto-focus the amount field when it first appears, but
+                    // only when nothing else is focused. Requesting focus every
+                    // frame would steal it back from other columns (or other
+                    // widgets) each frame, so two such fields could never both
+                    // be edited. TODO: this should really be checking if we are
+                    // using a virtual keyboard instead of narrow
+                    if !notedeck::ui::is_narrow(ui.ctx()) && ui.memory(|m| m.focused().is_none()) {
                         ui.memory_mut(|m| m.request_focus(id));
                     }
 
