@@ -303,4 +303,13 @@ fn snapshot_horizon_day() {
         harness.run_steps(4);
         harness.snapshot(name);
     }
+
+    // The fullscreen event-detail view: below desktop width there's no
+    // inspector pane, so a selected event opens over the timeline with a
+    // back / prev-next nav bar. Open it on the first timed event and snapshot
+    // at phone-portrait width.
+    harness.state_mut().horizon.open_first_timed_detail();
+    harness.set_size(egui::Vec2::new(390.0, 844.0));
+    harness.run_steps(4);
+    harness.snapshot("horizon_event_detail");
 }

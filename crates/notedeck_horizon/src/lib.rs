@@ -218,6 +218,13 @@ pub struct Horizon {
     /// Cached per-day block layouts, rebuilt only when the blocks or the visible
     /// date range change — see [`Self::ensure_layout`].
     layout: LayoutCache,
+    /// Whether the fullscreen event-detail view is open. Only meaningful below
+    /// desktop width, where there's no inspector pane: tapping an event opens
+    /// it over the timeline, its nav bar's back affordance (or Escape) closes
+    /// it, and prev/next hop events in the `gj`/`gk` order. Forced back to
+    /// `false` on any frame it can't apply (widened to show the pane, or the
+    /// selection cleared), so it never dangles.
+    detail: bool,
 }
 
 impl Default for Horizon {
@@ -249,6 +256,7 @@ impl Default for Horizon {
             calsync_started: false,
             layout_gen: 0,
             layout: LayoutCache::default(),
+            detail: false,
         }
     }
 }
@@ -404,24 +412,35 @@ impl Horizon {
         // now-line, the "today" badge and any "jump to now" keys agree on it.
         self.now = self.now_override.unwrap_or_else(Local::now);
 
-        // Keyboard navigation drives the day view's cursor/selection. Reset the
-        // per-frame scroll signals, then let `handle_keys` raise them again.
-        self.scroll_to_cursor = None;
-        self.scroll_delta = 0.0;
-        if self.view == View::Day {
-            self.handle_keys(ctx, ui);
-        } else {
-            // Only the day view renders the inline editor; drop any pending edit
-            // so it can't dangle unresolved after a view switch.
-            self.editing = None;
-        }
-
         let narrow = notedeck::ui::is_narrow(ui.ctx());
         // Three width tiers, from Horizon's own allotment (see
         // [`INSPECTOR_MIN_WIDTH`]): below `is_narrow` (550) a single column;
         // between that and `wide` the sidebar + timeline but no inspector; at
         // `wide` and up the full three panes.
         let wide = ui.available_width() >= INSPECTOR_MIN_WIDTH;
+
+        // Below desktop width the selected event opens as a fullscreen detail
+        // view over the timeline (there's no inspector pane to hold it). Keep
+        // the flag honest: it can't apply once the pane is back or nothing is
+        // selected.
+        let show_detail = self.detail && !wide && self.selected.is_some();
+        self.detail = show_detail;
+
+        // Keyboard navigation drives the day view's cursor/selection. Reset the
+        // per-frame scroll signals, then let the handlers raise them again. The
+        // detail view has its own keys (back / prev / next); otherwise the day
+        // view takes them.
+        self.scroll_to_cursor = None;
+        self.scroll_delta = 0.0;
+        if show_detail {
+            self.handle_detail_keys(ui);
+        } else if self.view == View::Day {
+            self.handle_keys(ctx, ui);
+        } else {
+            // Only the day view renders the inline editor; drop any pending edit
+            // so it can't dangle unresolved after a view switch.
+            self.editing = None;
+        }
 
         egui::TopBottomPanel::top("horizon_toolbar")
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
@@ -449,7 +468,13 @@ impl Horizon {
                         &self.blocks,
                         self.selected,
                     );
+                    // Tapping an agenda row below desktop width opens the event
+                    // in the fullscreen detail view (no inspector pane here).
+                    let picked = action.selected.is_some();
                     self.apply_sidebar(action);
+                    if picked && !wide {
+                        self.detail = true;
+                    }
                 });
 
             // The inspector is a persistent pane only when there's room for it
@@ -470,10 +495,29 @@ impl Horizon {
 
         egui::CentralPanel::default()
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 4)))
-            .show_inside(ui, |ui| self.center(ctx, ui));
+            .show_inside(ui, |ui| {
+                if show_detail {
+                    self.event_detail(ui);
+                } else {
+                    self.center(ctx, ui, wide);
+                }
+            });
     }
 
-    fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
+    /// The fullscreen event-detail screen (below desktop width): a nav bar over
+    /// the same fields the inspector pane shows. Back closes it; prev/next hop
+    /// to the neighbouring event in `gj`/`gk` order, keeping it open.
+    fn event_detail(&mut self, ui: &mut egui::Ui) {
+        let locked = self.selected.is_some_and(|i| self.is_locked(i));
+        match inspector::show_fullscreen(ui, &self.blocks, self.selected, locked) {
+            inspector::DetailAction::Back => self.detail = false,
+            inspector::DetailAction::Prev => self.select_event(-1, 1),
+            inspector::DetailAction::Next => self.select_event(1, 1),
+            inspector::DetailAction::None => {}
+        }
+    }
+
+    fn center(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui, wide: bool) {
         // Refresh the cached per-day layouts before any borrow of them below.
         self.ensure_layout();
         match self.view {
@@ -507,6 +551,11 @@ impl Horizon {
                     // A mouse click selects a block and snaps the cursor to it.
                     self.selected = Some(i);
                     self.cursor = self.blocks[i].start;
+                    // Below desktop width there's no inspector pane, so surface
+                    // the tapped event in the fullscreen detail view instead.
+                    if !wide {
+                        self.detail = true;
+                    }
                 }
             }
             View::Week => {
@@ -751,6 +800,39 @@ impl Horizon {
         }
     }
 
+    /// Keys for the fullscreen event-detail view: Escape (or Backspace) backs
+    /// out to the timeline; `j`/`k` and the down/up arrows hop to the next /
+    /// previous event, matching the nav bar's arrows and the `gj`/`gk` order.
+    /// No-op while a text field holds focus.
+    fn handle_detail_keys(&mut self, ui: &egui::Ui) {
+        use egui::Key;
+
+        if ui.memory(|m| m.focused().is_some()) {
+            return;
+        }
+
+        let presses: Vec<Key> = ui.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key, pressed: true, ..
+                    } => Some(*key),
+                    _ => None,
+                })
+                .collect()
+        });
+
+        for key in presses {
+            match key {
+                Key::Escape | Key::Backspace => self.detail = false,
+                Key::J | Key::ArrowDown => self.select_event(1, 1),
+                Key::K | Key::ArrowUp => self.select_event(-1, 1),
+                _ => {}
+            }
+        }
+    }
+
     /// Run `move_cursor` `repeat` times then center the cursor, resetting the
     /// repeat count.
     fn repeat_move(&mut self, rel: i64) {
@@ -914,6 +996,19 @@ impl Horizon {
     #[doc(hidden)]
     pub fn loaded_block_count(&self) -> usize {
         self.blocks.len()
+    }
+
+    /// Select the first timed block and open the fullscreen event-detail view
+    /// on it — a test-only seam so the snapshot suite can exercise the detail
+    /// screen deterministically (production opens it from a tap). No-op with no
+    /// timed blocks loaded.
+    #[doc(hidden)]
+    pub fn open_first_timed_detail(&mut self) {
+        if let Some(i) = self.blocks.iter().position(|b| !b.all_day) {
+            self.selected = Some(i);
+            self.cursor = self.blocks[i].start;
+            self.detail = true;
+        }
     }
 
     /// `i` — insert a new timed block at the cursor (viscal's `insert_event`).
