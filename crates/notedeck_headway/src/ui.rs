@@ -16,7 +16,9 @@ use notedeck::tokens::{
 };
 
 use crate::BoardSummary;
-use crate::event::{self, ArchivedCard, BoardView, CardView, ColumnView, CommentView};
+use crate::event::{
+    self, ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
+};
 use crate::store::BoardAction;
 
 /// Width of a single kanban column.
@@ -1456,6 +1458,7 @@ fn card_detail_pane_ui(
         created_at: card.created_at,
         updated_at: card.updated_at,
         comments: card.comments.clone(),
+        activity: card.activity.clone(),
         parent: card.parent.map(|pid| DetailParent {
             id: pid,
             title: find_card(view, pid).map(|(_, p)| p.title.clone()),
@@ -1621,6 +1624,9 @@ struct DetailCtx {
     /// The card's comment thread, oldest first. Rendered flat (replies aren't
     /// indented yet) but each carries its `parent` for forward-compatibility.
     comments: Vec<CommentView>,
+    /// The card's derived activity timeline (created / moved / renamed / …),
+    /// oldest first, interleaved chronologically with the comments.
+    activity: Vec<ActivityView>,
     /// The card's parent, when it's a subissue (rendered as a breadcrumb).
     parent: Option<DetailParent>,
     /// The card's subissues, precomputed for the checklist rows.
@@ -2250,10 +2256,12 @@ fn detail_status_row_ui(
     });
 }
 
-/// The open card's activity: a section heading with a comment count, the
-/// flat list of comments (oldest first), and a composer to add one. Replies
-/// aren't indented yet (`store now, render flat`) but each comment still shows
-/// who it threads under. Posting is collected into `outcome`.
+/// The open card's activity feed, Linear-style: a section heading with a
+/// comment count, then the derived activity timeline (created / moved /
+/// renamed / …) interleaved chronologically with the comment thread, and a
+/// composer to add a comment. Replies aren't indented yet (`store now, render
+/// flat`) but each comment still shows who it threads under. Posting is
+/// collected into `outcome`.
 fn detail_comments_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -2270,24 +2278,160 @@ fn detail_comments_ui(
     });
     ui.add_space(SPACING_SM);
 
-    if ctx.comments.is_empty() {
-        ui.label(
-            egui::RichText::new("No comments yet.")
-                .small()
-                .color(theme.text_muted),
-        );
-    } else {
-        // One read txn for the whole thread; each kind-1111 comment is drawn with
-        // the shared notedeck_ui note renderer so headway comments carry the same
-        // pfp/name/time chrome they'd get anywhere else in notedeck.
-        let txn = nostrdb::Transaction::new(note_context.ndb).ok();
-        for comment in &ctx.comments {
-            comment_note_ui(ui, theme, note_context, txn.as_ref(), comment);
+    // One read txn for the whole feed; each kind-1111 comment is drawn with
+    // the shared notedeck_ui note renderer so headway comments carry the same
+    // pfp/name/time chrome they'd get anywhere else in notedeck. Both lists
+    // arrive sorted oldest-first, so a two-pointer merge interleaves them
+    // without allocating; a same-second tie shows the activity row first.
+    let txn = nostrdb::Transaction::new(note_context.ndb).ok();
+    let (mut ai, mut ci) = (0, 0);
+    while ai < ctx.activity.len() || ci < ctx.comments.len() {
+        let comment_first = match (ctx.activity.get(ai), ctx.comments.get(ci)) {
+            (Some(a), Some(c)) => c.created_at < a.created_at,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if comment_first {
+            comment_note_ui(ui, theme, note_context, txn.as_ref(), &ctx.comments[ci]);
+            ci += 1;
+        } else {
+            activity_row_ui(
+                ui,
+                theme,
+                note_context,
+                txn.as_ref(),
+                &ctx.activity[ai],
+                ctx.columns.len(),
+            );
+            ai += 1;
         }
     }
 
     ui.add_space(SPACING_MD);
     detail_comment_composer_ui(ui, theme, state, outcome);
+}
+
+/// One derived activity-timeline row, Linear-style: a small gutter icon (the
+/// destination's status circle for a move, a plain dot otherwise), the actor,
+/// a muted phrase describing the change, and a relative time. Deliberately
+/// much quieter than a comment card — these rows are the connective tissue
+/// between comments, not content.
+fn activity_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note_context: &mut notedeck::NoteContext,
+    txn: Option<&nostrdb::Transaction>,
+    activity: &ActivityView,
+    ncols: usize,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+
+        match &activity.kind {
+            ActivityKind::Moved {
+                to_idx: Some(i), ..
+            }
+            | ActivityKind::Restored {
+                to_idx: Some(i), ..
+            } => {
+                status_icon_ui(ui, theme, StatusIcon::for_column(*i, ncols), 12.0);
+            }
+            _ => {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(rect.center(), 2.0, theme.text_muted);
+            }
+        }
+
+        let strong = |ui: &mut egui::Ui, s: &str| {
+            ui.label(egui::RichText::new(s).small().color(theme.text_secondary));
+        };
+        let muted = |ui: &mut egui::Ui, s: &str| {
+            ui.label(egui::RichText::new(s).small().color(theme.text_muted));
+        };
+
+        strong(ui, &author_name(note_context, txn, &activity.author));
+        match &activity.kind {
+            ActivityKind::Created => muted(ui, "created the card"),
+            ActivityKind::Moved { from, to, .. } => {
+                match from {
+                    Some(from) => {
+                        muted(ui, "moved from");
+                        strong(ui, from);
+                        muted(ui, "to");
+                    }
+                    None => muted(ui, "moved to"),
+                }
+                strong(ui, to);
+            }
+            ActivityKind::Archived => muted(ui, "archived the card"),
+            ActivityKind::Restored { to, .. } => {
+                muted(ui, "restored the card to");
+                strong(ui, to);
+            }
+            ActivityKind::Renamed { to } => {
+                muted(ui, "renamed the card to");
+                strong(ui, &format!("“{to}”"));
+            }
+            ActivityKind::DescriptionEdited => muted(ui, "updated the description"),
+            ActivityKind::LabelsChanged { added, removed } => {
+                if !added.is_empty() {
+                    muted(
+                        ui,
+                        if added.len() == 1 {
+                            "added label"
+                        } else {
+                            "added labels"
+                        },
+                    );
+                    strong(ui, &added.join(", "));
+                }
+                if !removed.is_empty() {
+                    if !added.is_empty() {
+                        muted(ui, "and removed");
+                    } else {
+                        muted(
+                            ui,
+                            if removed.len() == 1 {
+                                "removed label"
+                            } else {
+                                "removed labels"
+                            },
+                        );
+                    }
+                    strong(ui, &removed.join(", "));
+                }
+            }
+            ActivityKind::ParentSet { parent, title } => {
+                muted(ui, "set the parent to");
+                match title {
+                    Some(title) => strong(ui, title),
+                    None => strong(ui, &format!("#{}", headway::wordid::encode(parent.bytes()))),
+                }
+            }
+            ActivityKind::ParentRemoved => muted(ui, "detached from its parent"),
+        }
+        muted(ui, "·");
+        muted(ui, &headway::fmt::rel_time(activity.created_at));
+    });
+    ui.add_space(SPACING_XS);
+}
+
+/// Resolve a pubkey to its profile display name out of the local db, falling
+/// back to the shared short-hex handle ([`headway::fmt::short_author`]) when
+/// no usable profile is known.
+fn author_name(
+    note_context: &notedeck::NoteContext,
+    txn: Option<&nostrdb::Transaction>,
+    author: &[u8; 32],
+) -> String {
+    txn.and_then(|txn| note_context.ndb.get_profile_by_pubkey(txn, author).ok())
+        .and_then(|record| {
+            let name = notedeck::name::get_display_name(Some(&record));
+            name.display_name.or(name.username).map(str::to_owned)
+        })
+        .unwrap_or_else(|| headway::fmt::short_author(author))
 }
 
 /// Render one comment with the shared notedeck_ui note renderer, loading the
@@ -2947,6 +3091,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             comments: vec![],
+            activity: vec![],
             parent: None,
             subissues: vec![],
         }

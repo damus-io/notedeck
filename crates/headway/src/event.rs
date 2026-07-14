@@ -337,7 +337,7 @@ pub struct IssueEvent {
     pub created_at: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PlacementEvent {
     pub author: [u8; 32],
     /// The board this placement targets, as `(author, board_id)` from the `a`
@@ -356,7 +356,7 @@ pub struct PlacementEvent {
     pub created_at: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SubjectEdit {
     pub author: [u8; 32],
     pub issue_id: [u8; 32],
@@ -364,7 +364,7 @@ pub struct SubjectEdit {
     pub created_at: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LabelSet {
     pub author: [u8; 32],
     pub issue_id: [u8; 32],
@@ -372,7 +372,7 @@ pub struct LabelSet {
     pub created_at: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CoverNote {
     pub author: [u8; 32],
     pub issue_id: [u8; 32],
@@ -380,7 +380,7 @@ pub struct CoverNote {
     pub created_at: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RelationEvent {
     pub author: [u8; 32],
     /// The subissue this relation is about (the addressable `d` slot).
@@ -680,6 +680,55 @@ pub struct CommentView {
     pub created_at: u64,
 }
 
+/// One entry of a card's derived activity timeline: who did what, when. Folded
+/// from the card's full event history (the superseded placements, subject
+/// edits, label sets, cover notes and relations the latest-wins overlays would
+/// otherwise discard), so it needs no storage of its own — every row is just a
+/// reading of an event that already exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityView {
+    pub author: [u8; 32],
+    pub created_at: u64,
+    pub kind: ActivityKind,
+}
+
+/// What an [`ActivityView`] row says happened. Column-bearing variants carry
+/// the display *name* (resolved against the rendered board) plus the column's
+/// index for status-icon rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActivityKind {
+    /// The card was created (the kind-1621 issue event itself).
+    Created,
+    /// The card moved between columns. `from` is `None` when the previous
+    /// placement isn't a real column on this board (e.g. a lost event).
+    Moved {
+        from: Option<String>,
+        to: String,
+        /// Index of `to` on the rendered board, for the status circle.
+        to_idx: Option<usize>,
+    },
+    /// The card was archived off the board.
+    Archived,
+    /// The card came back from the archived (or deleted) sentinel.
+    Restored { to: String, to_idx: Option<usize> },
+    /// The card's title was edited.
+    Renamed { to: String },
+    /// The card's description (cover note) was edited.
+    DescriptionEdited,
+    /// The card's label set changed; either side may be empty (but not both).
+    LabelsChanged {
+        added: Vec<String>,
+        removed: Vec<String>,
+    },
+    /// The card was made a subissue of `parent` (title resolved when known).
+    ParentSet {
+        parent: NoteId,
+        title: Option<String>,
+    },
+    /// The card was detached from its parent.
+    ParentRemoved,
+}
+
 /// A direct subissue of a card, resolved for display on its parent. Doneness is
 /// positional — derived from where the child sits on its board(s) — never a
 /// stored checkbox (see `crates/notedeck_headway/docs/subissues-design.md`).
@@ -726,6 +775,10 @@ pub struct CardView {
     pub updated_at: u64,
     /// Comments on the card, oldest first (sorted by `created_at`, then id).
     pub comments: Vec<CommentView>,
+    /// The card's derived activity timeline (created / moved / renamed / …),
+    /// oldest first. See [`ActivityView`]; comments are kept separately above
+    /// and interleaved by the renderer.
+    pub activity: Vec<ActivityView>,
     /// The parent card when this one is a subissue (authorised relation slot).
     pub parent: Option<NoteId>,
     /// Direct subissues, ordered by child `(created_at, id)`.
@@ -810,7 +863,36 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
             "archived": s.archived,
         })).collect::<Vec<_>>(),
         "comments": card.comments.iter().map(comment_json).collect::<Vec<_>>(),
+        "activity": card.activity.iter().map(activity_json).collect::<Vec<_>>(),
     })
+}
+
+/// Render one activity-timeline entry as JSON: a `type` discriminant plus that
+/// variant's fields, flattened. See [`card_json`].
+pub fn activity_json(activity: &ActivityView) -> serde_json::Value {
+    let mut v = match &activity.kind {
+        ActivityKind::Created => serde_json::json!({"type": "created"}),
+        ActivityKind::Moved { from, to, .. } => {
+            serde_json::json!({"type": "moved", "from": from, "to": to})
+        }
+        ActivityKind::Archived => serde_json::json!({"type": "archived"}),
+        ActivityKind::Restored { to, .. } => serde_json::json!({"type": "restored", "to": to}),
+        ActivityKind::Renamed { to } => serde_json::json!({"type": "renamed", "to": to}),
+        ActivityKind::DescriptionEdited => serde_json::json!({"type": "description_edited"}),
+        ActivityKind::LabelsChanged { added, removed } => {
+            serde_json::json!({"type": "labels_changed", "added": added, "removed": removed})
+        }
+        ActivityKind::ParentSet { parent, title } => serde_json::json!({
+            "type": "parent_set",
+            "parent": parent.hex(),
+            "parent_words": crate::wordid::encode(parent.bytes()),
+            "parent_title": title,
+        }),
+        ActivityKind::ParentRemoved => serde_json::json!({"type": "parent_removed"}),
+    };
+    v["author"] = serde_json::json!(Pubkey::new(activity.author).hex());
+    v["created_at"] = serde_json::json!(activity.created_at);
+    v
 }
 
 /// Render a single comment as JSON. See [`card_json`].
@@ -842,6 +924,32 @@ struct PlacementKey {
     issue_id: [u8; 32],
 }
 
+/// One raw event retained for the activity timeline: a clone of the parsed
+/// event as it arrived, kept even after a newer one supersedes it in the
+/// latest-wins overlays. Stored in a [`std::collections::BTreeSet`] per issue,
+/// so duplicate deliveries dedupe by value (keeping ingest idempotent) and
+/// iteration order is deterministic.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ActivityRecord {
+    Placement(PlacementEvent),
+    Subject(SubjectEdit),
+    Cover(CoverNote),
+    Labels(LabelSet),
+    Relation(RelationEvent),
+}
+
+impl ActivityRecord {
+    fn created_at(&self) -> u64 {
+        match self {
+            ActivityRecord::Placement(p) => p.created_at,
+            ActivityRecord::Subject(s) => s.created_at,
+            ActivityRecord::Cover(c) => c.created_at,
+            ActivityRecord::Labels(l) => l.created_at,
+            ActivityRecord::Relation(r) => r.created_at,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct BoardReducer {
     /// Latest board event per (author, board_id).
@@ -867,6 +975,11 @@ pub struct BoardReducer {
     /// Latest-authorised-wins like every other overlay; authority needs the
     /// issue maps so it's checked at resolve time, not here.
     relations: HashMap<[u8; 32], RelationEvent>,
+    /// Full mutation history per issue, feeding the derived activity timeline
+    /// ([`CardView::activity`]). The overlays above keep only the winner;
+    /// nostrdb keeps every superseded event, so the fold sees them all and this
+    /// set remembers them. Value-deduped, so re-ingesting stays idempotent.
+    history: HashMap<[u8; 32], std::collections::BTreeSet<ActivityRecord>>,
 }
 
 impl BoardReducer {
@@ -887,6 +1000,7 @@ impl BoardReducer {
                 self.issues.insert(i.id, i);
             }
             HeadwayEvent::Placement(p) => {
+                self.remember(p.issue_id, ActivityRecord::Placement(p.clone()));
                 let key = PlacementKey {
                     board_author: p.board_author,
                     board_id: p.board_id.clone(),
@@ -901,6 +1015,7 @@ impl BoardReducer {
                 }
             }
             HeadwayEvent::Subject(s) => {
+                self.remember(s.issue_id, ActivityRecord::Subject(s.clone()));
                 if self
                     .subjects
                     .get(&s.issue_id)
@@ -910,6 +1025,7 @@ impl BoardReducer {
                 }
             }
             HeadwayEvent::Cover(c) => {
+                self.remember(c.issue_id, ActivityRecord::Cover(c.clone()));
                 if self
                     .covers
                     .get(&c.issue_id)
@@ -919,6 +1035,7 @@ impl BoardReducer {
                 }
             }
             HeadwayEvent::Labels(l) => {
+                self.remember(l.issue_id, ActivityRecord::Labels(l.clone()));
                 if self
                     .labels
                     .get(&l.issue_id)
@@ -933,6 +1050,7 @@ impl BoardReducer {
                 self.comments.entry(c.id).or_insert(c);
             }
             HeadwayEvent::Relation(r) => {
+                self.remember(r.child_id, ActivityRecord::Relation(r.clone()));
                 if self
                     .relations
                     .get(&r.child_id)
@@ -942,6 +1060,192 @@ impl BoardReducer {
                 }
             }
         }
+    }
+
+    /// Retain `record` on `issue`'s activity history. Value-deduped by the
+    /// set, so duplicate relay deliveries are no-ops and ingest stays
+    /// idempotent and commutative.
+    fn remember(&mut self, issue: [u8; 32], record: ActivityRecord) {
+        self.history.entry(issue).or_default().insert(record);
+    }
+
+    /// Derive `issue`'s activity timeline for the board being rendered: replay
+    /// its retained history chronologically and emit a row for every visible
+    /// state change (see [`ActivityKind`]). Rules that keep the timeline
+    /// honest rather than noisy:
+    ///
+    /// - Unauthorised events are ignored, exactly like the overlays.
+    /// - Records stamped at (or before) the issue's own `created_at` are part
+    ///   of card creation — the write paths stamp genuine amendments strictly
+    ///   later (see `store::next_after`) — so only the `Created` row shows.
+    /// - The first placement is where the card started, not a move; placements
+    ///   on other boards and same-column re-ranks (drag reorders) are skipped.
+    /// - Label rows are the *diff* between consecutive authorised sets.
+    fn card_activity(
+        &self,
+        issue: &IssueEvent,
+        board_author: &[u8; 32],
+        board_id: &str,
+    ) -> Vec<ActivityView> {
+        let authorised = |who: &[u8; 32]| who == &issue.author || who == board_author;
+        let mut out = vec![ActivityView {
+            author: issue.author,
+            created_at: issue.created_at,
+            kind: ActivityKind::Created,
+        }];
+        let Some(records) = self.history.get(&issue.id) else {
+            return out;
+        };
+
+        let board = self
+            .boards
+            .get(&(board_author.to_vec(), board_id.to_owned()));
+        let col_name = |col: &str| {
+            board
+                .and_then(|b| b.columns.iter().find(|c| c.id == col))
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| col.to_owned())
+        };
+        let col_idx = |col: &str| board.and_then(|b| b.columns.iter().position(|c| c.id == col));
+
+        // Chronological replay; the stable sort keeps the set's deterministic
+        // order for same-second records.
+        let mut sorted: Vec<&ActivityRecord> = records.iter().collect();
+        sorted.sort_by_key(|r| r.created_at());
+
+        // Running state the diffs are computed against.
+        let mut prev_col: Option<&str> = None;
+        let mut labels: Vec<&str> = issue.inline_labels.iter().map(String::as_str).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        let mut has_parent = false;
+
+        for rec in sorted {
+            // Creation-time records still seed the running state (so the first
+            // post-creation diff is computed against them) but emit no row.
+            let silent = rec.created_at() <= issue.created_at;
+            match rec {
+                ActivityRecord::Placement(p) => {
+                    if p.board_author != *board_author
+                        || p.board_id != board_id
+                        || !authorised(&p.author)
+                    {
+                        continue;
+                    }
+                    let from = prev_col.replace(p.col.as_str());
+                    if silent || from.is_none() || from == Some(p.col.as_str()) {
+                        continue;
+                    }
+                    let kind = match (p.col.as_str(), from) {
+                        (COL_DELETED, _) => continue,
+                        (COL_ARCHIVED, _) => ActivityKind::Archived,
+                        (to, Some(COL_ARCHIVED | COL_DELETED)) => ActivityKind::Restored {
+                            to: col_name(to),
+                            to_idx: col_idx(to),
+                        },
+                        (to, from) => ActivityKind::Moved {
+                            from: from.map(col_name),
+                            to: col_name(to),
+                            to_idx: col_idx(to),
+                        },
+                    };
+                    out.push(ActivityView {
+                        author: p.author,
+                        created_at: p.created_at,
+                        kind,
+                    });
+                }
+                ActivityRecord::Subject(s) => {
+                    if silent || !authorised(&s.author) {
+                        continue;
+                    }
+                    out.push(ActivityView {
+                        author: s.author,
+                        created_at: s.created_at,
+                        kind: ActivityKind::Renamed {
+                            to: s.subject.clone(),
+                        },
+                    });
+                }
+                ActivityRecord::Cover(c) => {
+                    if silent || !authorised(&c.author) {
+                        continue;
+                    }
+                    out.push(ActivityView {
+                        author: c.author,
+                        created_at: c.created_at,
+                        kind: ActivityKind::DescriptionEdited,
+                    });
+                }
+                ActivityRecord::Labels(l) => {
+                    if !authorised(&l.author) {
+                        continue;
+                    }
+                    let mut new: Vec<&str> = l.labels.iter().map(String::as_str).collect();
+                    new.sort_unstable();
+                    new.dedup();
+                    let added: Vec<String> = new
+                        .iter()
+                        .filter(|x| !labels.contains(x))
+                        .map(|x| x.to_string())
+                        .collect();
+                    let removed: Vec<String> = labels
+                        .iter()
+                        .filter(|x| !new.contains(x))
+                        .map(|x| x.to_string())
+                        .collect();
+                    labels = new;
+                    if silent || (added.is_empty() && removed.is_empty()) {
+                        continue;
+                    }
+                    out.push(ActivityView {
+                        author: l.author,
+                        created_at: l.created_at,
+                        kind: ActivityKind::LabelsChanged { added, removed },
+                    });
+                }
+                ActivityRecord::Relation(r) => {
+                    if !self.relation_authorised(r, board_author) {
+                        continue;
+                    }
+                    let was = has_parent;
+                    has_parent = r.parent_id.is_some();
+                    if silent {
+                        continue;
+                    }
+                    let kind = match r.parent_id {
+                        Some(p) => ActivityKind::ParentSet {
+                            parent: NoteId::new(p),
+                            title: self.card_title(&p, board_author),
+                        },
+                        // A detach with no prior attach says nothing.
+                        None if !was => continue,
+                        None => ActivityKind::ParentRemoved,
+                    };
+                    out.push(ActivityView {
+                        author: r.author,
+                        created_at: r.created_at,
+                        kind,
+                    });
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Resolve an issue's effective title (subject overlay applied), for
+    /// naming other cards inside activity rows. `None` if the issue is unknown.
+    fn card_title(&self, issue_id: &[u8; 32], board_author: &[u8; 32]) -> Option<String> {
+        let issue = self.issues.get(issue_id)?;
+        let authorised = |who: &[u8; 32]| who == &issue.author || who == board_author;
+        Some(
+            self.subjects
+                .get(issue_id)
+                .filter(|s| authorised(&s.author))
+                .map(|s| s.subject.clone())
+                .unwrap_or_else(|| issue.subject.clone()),
+        )
     }
 
     /// A relation is honoured when its author is the child's author, the named
@@ -1159,6 +1463,7 @@ impl BoardReducer {
             created_at: issue.created_at,
             updated_at,
             comments,
+            activity: self.card_activity(issue, board_author, board_id),
             parent,
             subissues,
         }
@@ -1656,6 +1961,132 @@ mod tests {
             &owner,
         ));
         assert_eq!(reduce(&events)[0].columns[0].cards[0].updated_at, 3_000);
+    }
+
+    /// The activity timeline replays a card's full history: creation-time
+    /// events are silent (only `Created` shows), then every move, rename,
+    /// label diff, description edit, archive/restore and parent change gets a
+    /// chronological row. Unauthorised events and same-column re-ranks don't.
+    #[test]
+    fn reduce_derives_activity_timeline() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("doing", "Doing"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let card = note_id(&owner, build_issue(&addr, "Card", "").created_at(1_000));
+        let parent = note_id(&owner, build_issue(&addr, "Epic", "").created_at(900));
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Epic", "").created_at(900), &owner),
+            parse_owned(build_issue(&addr, "Card", "").created_at(1_000), &owner),
+            // Creation-time placement + labels: part of creation, no rows.
+            parse_owned(
+                build_placement("b1", &addr, &card, "todo", "m").created_at(1_000),
+                &owner,
+            ),
+            parse_owned(build_labels(&card, &["bug"]).created_at(1_000), &owner),
+            // The history proper, one event per second.
+            parse_owned(
+                build_placement("b1", &addr, &card, "doing", "m").created_at(2_000),
+                &owner,
+            ),
+            // Same-column re-rank (drag reorder): no row.
+            parse_owned(
+                build_placement("b1", &addr, &card, "doing", "t").created_at(2_500),
+                &owner,
+            ),
+            parse_owned(
+                build_subject_edit(&card, "Card v2").created_at(3_000),
+                &owner,
+            ),
+            // A stranger's rename is ignored, exactly like the overlays.
+            parse_owned(
+                build_subject_edit(&card, "hijacked").created_at(3_500),
+                &stranger,
+            ),
+            parse_owned(
+                build_labels(&card, &["bug", "ui"]).created_at(4_000),
+                &owner,
+            ),
+            parse_owned(build_labels(&card, &["ui"]).created_at(5_000), &owner),
+            parse_owned(
+                build_cover_note(&card, &owner.pubkey, "details").created_at(6_000),
+                &owner,
+            ),
+            parse_owned(
+                build_archive_placement("b1", &addr, &card, "doing", "t").created_at(7_000),
+                &owner,
+            ),
+            parse_owned(
+                build_placement("b1", &addr, &card, "doing", "t").created_at(8_000),
+                &owner,
+            ),
+            parse_owned(
+                build_relation(&card, Some(&parent)).created_at(9_000),
+                &owner,
+            ),
+            parse_owned(build_relation(&card, None).created_at(10_000), &owner),
+        ];
+
+        let view = &reduce(&events)[0];
+        let card = view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .expect("card in doing");
+
+        let kinds: Vec<&ActivityKind> = card.activity.iter().map(|a| &a.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &ActivityKind::Created,
+                &ActivityKind::Moved {
+                    from: Some("Todo".into()),
+                    to: "Doing".into(),
+                    to_idx: Some(1),
+                },
+                &ActivityKind::Renamed {
+                    to: "Card v2".into()
+                },
+                &ActivityKind::LabelsChanged {
+                    added: vec!["ui".into()],
+                    removed: vec![],
+                },
+                &ActivityKind::LabelsChanged {
+                    added: vec![],
+                    removed: vec!["bug".into()],
+                },
+                &ActivityKind::DescriptionEdited,
+                &ActivityKind::Archived,
+                &ActivityKind::Restored {
+                    to: "Doing".into(),
+                    to_idx: Some(1),
+                },
+                &ActivityKind::ParentSet {
+                    parent,
+                    title: Some("Epic".into()),
+                },
+                &ActivityKind::ParentRemoved,
+            ]
+        );
+        // Rows are chronological and stamped with the underlying events' times.
+        assert_eq!(card.activity[0].created_at, 1_000);
+        assert_eq!(card.activity[1].created_at, 2_000);
+        assert!(
+            card.activity
+                .windows(2)
+                .all(|w| w[0].created_at <= w[1].created_at)
+        );
     }
 
     #[test]

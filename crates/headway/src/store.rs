@@ -213,20 +213,27 @@ pub fn seed_demo_board(
     seed_default_board(ndb, author, secret, board_id, publisher);
 
     let addr = board_address(author, board_id);
+    // The cards are created a fortnight before `at` and amended at instants in
+    // between (below), so the demo board's activity timelines — and the
+    // relative times next to them — have real depth instead of a wall of
+    // "just now". The drag card starts in Todo and the event-model card with
+    // an earlier title/description/label set; the post-creation amendments
+    // resolve every card to the exact state listed here-adjacent, so tests
+    // addressing cards by their final title/column are unaffected.
+    let created = at - 14 * 86_400;
     let cards: [(&str, &str, &str, &[&str]); 7] = [
         (
             "backlog",
-            "Define nostr event model for boards",
-            "Decide how boards, columns and cards map to nostr events. \
-             Likely an addressable (NIP-33) board event plus per-card events.",
-            &["nostr"],
+            "Nostr event model",
+            "Decide how boards, columns and cards map to nostr events.",
+            &["protocol"],
         ),
         ("backlog", "Sync cards across relays", "", &["nostr"]),
         ("backlog", "Card detail / comments view", "", &["ui"]),
         ("todo", "Inline card creation", "", &["ui"]),
         ("todo", "Column reordering", "", &[]),
         (
-            "in-progress",
+            "todo",
             "Drag-and-drop between columns",
             "Reorder within a lane and move across lanes with a live insertion line.",
             &["ux"],
@@ -235,15 +242,15 @@ pub fn seed_demo_board(
     ];
 
     // Hand out increasing ranks per column so cards keep their seeded order.
-    // Stamp each card's events with the one shared timestamp: a label event
-    // that landed a second after its issue would count as an "update" and show
-    // a nondeterministic "updated" time in the detail view (and its snapshots).
+    // Stamp each card's creation events with the one shared timestamp: a label
+    // event that landed a second after its issue would count as an "update"
+    // (and an activity row) rather than part of creation.
     let mut last_rank: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     let mut ids: std::collections::HashMap<&str, NoteId> = std::collections::HashMap::new();
     for (col_id, title, body, labels) in cards {
         let Some(id) = ingest(
             ndb,
-            build_issue(&addr, title, body).created_at(at),
+            build_issue(&addr, title, body).created_at(created),
             secret,
             publisher,
         ) else {
@@ -253,14 +260,14 @@ pub fn seed_demo_board(
         let rank = rank_between(last_rank.get(col_id).map(|s| s.as_str()), None);
         ingest(
             ndb,
-            build_placement(board_id, &addr, &id, col_id, &rank).created_at(at),
+            build_placement(board_id, &addr, &id, col_id, &rank).created_at(created),
             secret,
             publisher,
         );
         if !labels.is_empty() {
             ingest(
                 ndb,
-                build_labels(&id, labels).created_at(at),
+                build_labels(&id, labels).created_at(created),
                 secret,
                 publisher,
             );
@@ -272,17 +279,58 @@ pub fn seed_demo_board(
     // board exercises subissue rendering: a 1/2 rollup on the parent (the
     // scaffold child sits in Done, the sync child in Backlog) and a parent
     // breadcrumb on each child.
-    if let Some(parent) = ids.get("Define nostr event model for boards") {
+    if let Some(parent) = ids.get("Nostr event model") {
         for child in ["Sync cards across relays", "Scaffold the Headway app crate"] {
             if let Some(child) = ids.get(child) {
                 ingest(
                     ndb,
-                    build_relation(child, Some(parent)).created_at(at),
+                    build_relation(child, Some(parent)).created_at(created),
                     secret,
                     publisher,
                 );
             }
         }
+    }
+
+    // Post-creation history: amend the event-model card (rename → label swap →
+    // description edit) and move the drag card into In Progress, each at its
+    // own instant, so the detail views showcase a populated activity timeline.
+    // These land the cards on their final, test-visible state.
+    if let Some(card) = ids.get("Nostr event model") {
+        ingest(
+            ndb,
+            build_subject_edit(card, "Define nostr event model for boards")
+                .created_at(at - 10 * 86_400),
+            secret,
+            publisher,
+        );
+        ingest(
+            ndb,
+            build_labels(card, &["nostr"]).created_at(at - 6 * 86_400),
+            secret,
+            publisher,
+        );
+        ingest(
+            ndb,
+            build_cover_note(
+                card,
+                author,
+                "Decide how boards, columns and cards map to nostr events. \
+                 Likely an addressable (NIP-33) board event plus per-card events.",
+            )
+            .created_at(at - 3 * 86_400),
+            secret,
+            publisher,
+        );
+    }
+    if let Some(card) = ids.get("Drag-and-drop between columns") {
+        let rank = rank_between(None, None);
+        ingest(
+            ndb,
+            build_placement(board_id, &addr, card, "in-progress", &rank).created_at(at - 86_400),
+            secret,
+            publisher,
+        );
     }
 }
 

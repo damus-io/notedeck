@@ -277,6 +277,7 @@ fn snapshot_inline_card() {
         created_at: 0,
         updated_at: 0,
         comments: vec![],
+        activity: vec![],
         parent: None,
         subissues: vec![],
     };
