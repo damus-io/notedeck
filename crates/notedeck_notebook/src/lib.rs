@@ -55,8 +55,9 @@ pub(crate) struct LiveGeometry {
     pub pos: Option<Pos2>,
     /// Exact width override; narrowing reflows the node's content.
     pub width: Option<f32>,
-    /// Minimum-height (grow-only) override: the box never renders shorter than its
-    /// content, so this floor only takes effect when it exceeds the content height.
+    /// Declared-height override: the height the user dragged the box to. The box
+    /// still never renders shorter than its content, so this can shrink the box
+    /// down to (but not below) the content floor. See [`Notebook::node_rect`].
     pub height: Option<f32>,
 }
 
@@ -91,11 +92,13 @@ pub struct Notebook {
     /// Rebuilt every frame from egui's animation manager (the real state lives
     /// there, keyed by [`move_anim_ids`]).
     anim_pos: HashMap<NodeId, Pos2>,
-    /// Per-node actual rendered height, measured last frame. A node's content
-    /// (markdown, embedded note widgets) can overflow its declared height, so the
-    /// visible box is taller than the canvas geometry. Edges and connection
-    /// handles anchor to this measured height instead, so they land on the real
-    /// box edge rather than floating inside it.
+    /// Per-node *intrinsic* content height (margins included), measured last
+    /// frame — the height the node's content (markdown, embedded note widgets)
+    /// actually needs, independent of the box it was drawn in. [`Notebook::node_rect`]
+    /// uses it as the box's floor: the box never renders shorter than this, so
+    /// edges and connection handles land on the real box edge, and a resize can
+    /// shrink the declared height no further than the content requires. Measuring
+    /// the padded box instead would ratchet the height and forbid shrinking.
     rendered_heights: HashMap<NodeId, f32>,
     /// Currently selected node, if any.
     selected: Option<NodeId>,
@@ -147,8 +150,9 @@ pub(crate) enum UiIntent {
     /// A node was dragged to `pos` (its new top-left, in canvas coords).
     Move { node: NodeId, pos: Pos2 },
     /// A node was resized: `pos` is its (possibly shifted, for a left/top-edge
-    /// drag) top-left and `width`/`height` its new size, in canvas coords. Height
-    /// is a grow-only minimum (see [`Notebook::node_rect`]).
+    /// drag) top-left and `width`/`height` its new size, in canvas coords. The
+    /// height is the declared box height, clamped up to the content when rendered
+    /// (see [`Notebook::node_rect`]).
     Resize {
         node: NodeId,
         pos: Pos2,
@@ -180,11 +184,11 @@ pub(crate) enum UiIntent {
 /// canvas pixels — deliberately roomy so there's space to type.
 pub(crate) const NEW_NODE_SIZE: egui::Vec2 = egui::vec2(250.0, 120.0);
 
-/// Committed height of a freshly-created node, in canvas pixels. A tight floor
-/// so the box hugs its content (which drives the box taller as needed; height is
-/// a grow-only minimum, see [`Notebook::node_rect`]). Kept below the roomier
-/// [`NEW_NODE_SIZE`] compose box so a new node settles onto its content, not the
-/// editor's typing height.
+/// Committed height of a freshly-created node, in canvas pixels. A tight value
+/// so the box hugs its content (which drives the box taller as needed; the box
+/// renders at whichever of the declared and content heights is taller, see
+/// [`Notebook::node_rect`]). Kept below the roomier [`NEW_NODE_SIZE`] compose box
+/// so a new node settles onto its content, not the editor's typing height.
 const NEW_NODE_HEIGHT: f32 = 40.0;
 
 /// How long a node's slide-to-new-position animation runs, in seconds. Matches
@@ -221,14 +225,15 @@ impl Notebook {
             .unwrap_or(default.min);
         // Width is exact (the live override, else committed).
         let width = live.width.unwrap_or(default.width());
-        // Height is grow-only: the committed/overridden height is a *minimum*, so
-        // the box never renders shorter than its measured content. The floor only
-        // shows when it exceeds the content height.
-        let floor = live.height.unwrap_or(default.height());
+        // Height is the user's declared height clamped up to the content: the box
+        // renders at whichever is taller, so it can be resized shorter than it is
+        // now (down to the content) yet never clips content. `rendered_heights`
+        // holds the *intrinsic* content height, so this no longer ratchets.
+        let declared = live.height.unwrap_or(default.height());
         let height = self
             .rendered_heights
             .get(id)
-            .map_or(floor, |content| content.max(floor));
+            .map_or(declared, |content| content.max(declared));
         Rect::from_min_size(min, egui::vec2(width, height))
     }
 

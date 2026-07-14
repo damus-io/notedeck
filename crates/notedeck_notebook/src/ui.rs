@@ -50,9 +50,9 @@ const RESIZE_GRAB: f32 = 8.0;
 /// Smallest width a node can be resized to, in canvas pixels, so it never
 /// collapses to an ungrabbable sliver.
 const MIN_NODE_WIDTH: f32 = 80.0;
-/// Smallest height a node can be resized to, in canvas pixels. Height is a
-/// grow-only minimum, so this only bites when dragging a box shorter than its
-/// content floor would already allow.
+/// Smallest declared height a node can be resized to, in canvas pixels, so it
+/// never collapses to an ungrabbable sliver. The box can still render taller when
+/// its content needs more room (see [`Notebook::node_rect`]).
 const MIN_NODE_HEIGHT: f32 = 40.0;
 /// How close (canvas pixels) the pointer must be to an edge's curve to count as
 /// hovering it — the threshold that reveals the edge's midpoint delete handle.
@@ -311,13 +311,18 @@ pub fn notebook_ui(
                 continue;
             }
 
-            let egui::InnerResponse {
-                response: resp,
-                inner: toggled_text,
+            let NodeRender {
+                resp:
+                    egui::InnerResponse {
+                        response: resp,
+                        inner: toggled_text,
+                    },
+                content_height,
             } = node_ui(ui, ctx, node, rect, selected == Some(id));
-            // `resp.rect` is the real drawn box (content may overflow `rect`);
-            // remember its height so edges/handles anchor to the visible edge.
-            out.rendered_heights.insert(id.clone(), resp.rect.height());
+            // Remember the node's *intrinsic* content height (what the content
+            // needs, not the padded box) so `node_rect` can use it as the
+            // grow/shrink floor and let the box be resized shorter than it is now.
+            out.rendered_heights.insert(id.clone(), content_height);
             // A node's body senses click and drag; a checkbox in its content sits
             // on top and wins clicks (see `node_box_ui`), so at most one of these
             // fires per frame — hence a single `out.gesture`.
@@ -370,8 +375,9 @@ pub fn notebook_ui(
 
         // Resize affordance: grab handles on the selected node's edges and
         // corners. Edge handles resize one axis, corner handles both. Width is
-        // exact (narrowing reflows the content); height is a grow-only minimum
-        // (see `Notebook::node_rect`). Registered after the node bodies (so a
+        // exact (narrowing reflows the content); height is the declared box height
+        // clamped up to the content (see `Notebook::node_rect`), so it can shrink
+        // down to the content. Registered after the node bodies (so a
         // handle drag resizes instead of moving) and before the connection handles
         // (so the side-midpoint connection dots still win the center of each edge).
         if let Some(sel) = selected
@@ -1088,28 +1094,22 @@ fn arrow_verts(side: &Side, point: Pos2) -> [Pos2; 3] {
     }
 }
 
-/// Render `node` at `rect`, returning its whole-node drag/select handle as the
-/// [`egui::InnerResponse::response`]. The `inner` is `None` for most node kinds;
-/// for a text node whose GFM task-list checkbox was clicked this frame it carries
-/// the node text with that box flipped, for the caller to persist.
-pub fn node_ui(
+/// Render `node` at `rect`, returning a [`NodeRender`] whose `resp.response` is
+/// the whole-node drag/select handle and whose `resp.inner` is `None` for most
+/// node kinds; for a text node whose GFM task-list checkbox was clicked this frame
+/// it carries the node text with that box flipped, for the caller to persist.
+pub(crate) fn node_ui(
     ui: &mut egui::Ui,
     ctx: &mut AppContext,
     node: &Node,
     rect: Rect,
     selected: bool,
-) -> egui::InnerResponse<Option<String>> {
+) -> NodeRender<Option<String>> {
     match node {
         Node::Text(text_node) => text_node_ui(ui, ctx, text_node, rect, selected),
-        Node::File(file_node) => {
-            egui::InnerResponse::new(None, file_node_ui(ui, file_node, rect, selected))
-        }
-        Node::Link(link_node) => {
-            egui::InnerResponse::new(None, link_node_ui(ui, link_node, rect, selected))
-        }
-        Node::Group(group_node) => {
-            egui::InnerResponse::new(None, group_node_ui(ui, group_node, rect, selected))
-        }
+        Node::File(file_node) => file_node_ui(ui, file_node, rect, selected).map(|()| None),
+        Node::Link(link_node) => link_node_ui(ui, link_node, rect, selected).map(|()| None),
+        Node::Group(group_node) => group_node_ui(ui, group_node, rect, selected).map(|()| None),
     }
 }
 
@@ -1119,7 +1119,7 @@ fn text_node_ui(
     node: &TextNode,
     rect: Rect,
     selected: bool,
-) -> egui::InnerResponse<Option<String>> {
+) -> NodeRender<Option<String>> {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
         node_text_ui(ui, ctx, node.text())
     })
@@ -1135,18 +1135,16 @@ fn node_text_ui(ui: &mut egui::Ui, ctx: &mut AppContext, text: &str) -> Option<S
         .then_some(source)
 }
 
-fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) -> egui::Response {
+fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) -> NodeRender<()> {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
         ui.label("file node");
     })
-    .response
 }
 
-fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode, rect: Rect, selected: bool) -> egui::Response {
+fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode, rect: Rect, selected: bool) -> NodeRender<()> {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
         ui.label("link node");
     })
-    .response
 }
 
 fn group_node_ui(
@@ -1154,11 +1152,35 @@ fn group_node_ui(
     node: &GroupNode,
     rect: Rect,
     selected: bool,
-) -> egui::Response {
+) -> NodeRender<()> {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
         ui.label("group node");
     })
-    .response
+}
+
+/// A rendered node's outcome: the interaction [`egui::InnerResponse`] plus the
+/// node's *intrinsic* content height (the box height its content actually needs,
+/// margins included). The two travel together because a node's edge/handle
+/// anchoring reads the response while [`Notebook::node_rect`] uses the intrinsic
+/// height as the box's grow/shrink floor.
+pub(crate) struct NodeRender<R> {
+    /// The whole-node click-and-drag handle response, with the `contents`
+    /// closure's result as its `inner`.
+    resp: egui::InnerResponse<R>,
+    /// The height (canvas pixels) the content needs, margins included — the floor
+    /// a resize may shrink the box down to before content would clip.
+    content_height: f32,
+}
+
+impl<R> NodeRender<R> {
+    /// Map the inner result, keeping the response and measured content height —
+    /// lets node kinds without toggle output collapse their `inner` to `None`.
+    fn map<T>(self, f: impl FnOnce(R) -> T) -> NodeRender<T> {
+        NodeRender {
+            resp: egui::InnerResponse::new(f(self.resp.inner), self.resp.response),
+            content_height: self.content_height,
+        }
+    }
 }
 
 /// Render a node's frame and contents at `rect`. The [`egui::InnerResponse`]'s
@@ -1170,13 +1192,19 @@ fn group_node_ui(
 /// interactive content — e.g. a task-list checkbox — sits on top and wins
 /// clicks, while non-interactive content (labels, which only sense hover) lets
 /// clicks fall through to the handle so dragging the body still moves the node.
+///
+/// Returns the interaction response/inner result alongside the node's
+/// *intrinsic* content height — the box height its content actually needs,
+/// margins included. That height (not the padded box) is what
+/// [`Notebook::node_rect`] uses as the grow/shrink floor, so a node can be
+/// resized shorter than its current box right down to its content.
 fn node_box_ui<R>(
     ui: &mut egui::Ui,
     node: &GenericNode,
     rect: Rect,
     selected: bool,
     contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<R> {
+) -> NodeRender<R> {
     // Colored nodes get an accent border and a faint accent-tinted fill; plain
     // nodes fall back to the neutral theme colors. Selected nodes get a
     // brighter, thicker border.
@@ -1202,29 +1230,48 @@ fn node_box_ui<R>(
         egui::Sense::click_and_drag(),
     );
 
+    let margin = notedeck::tokens::SPACING_LG;
     let mut out = None;
+    let mut content_height = rect.height();
     let frame_resp = ui.put(rect, |ui: &mut egui::Ui| {
         egui::Frame::default()
             .fill(fill)
-            .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
+            .inner_margin(egui::Margin::same(margin as i8))
             .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
             .stroke(egui::Stroke::new(stroke_width, stroke_color))
             .show(ui, |ui| {
                 let inner = ui.available_rect_before_wrap();
+                // Lay the content out in its own child so `min_rect` reports the
+                // height it *intrinsically* needs rather than the declared box
+                // height. A non-justified vertical child hugs content shorter than
+                // `inner` and grows past it for taller content, so this is the
+                // floor a resize may shrink down to (see `Notebook::node_rect`);
+                // measuring the padded box instead would ratchet the height and
+                // forbid shrinking. (`inner` bounds the wrap width; an infinite
+                // max_rect would feed NaNs into egui's layout.)
+                let content =
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| contents(ui));
+                out = Some(content.inner);
+                content_height = content.response.rect.height() + margin * 2.0;
+                // Pad the frame down to the declared box height so the fill and
+                // border still cover the user's chosen size when the content is
+                // shorter; when it's taller the frame grows past `rect` instead.
                 ui.allocate_at_least(ui.available_size(), egui::Sense::hover());
-                ui.put(inner, |ui: &mut egui::Ui| {
-                    out = Some(contents(ui));
-                    ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
-                });
             })
             .response
     });
 
     // Content can overflow the declared rect (markdown, embedded notes), so the
     // visible box is whatever the frame actually drew. Union it into the returned
-    // response so callers see the real rendered rect — used to remember each
-    // node's true height for next frame's edge/handle anchoring.
-    egui::InnerResponse::new(out.expect("frame body always runs"), resp.union(frame_resp))
+    // response so callers see the real rendered rect — used to anchor edges and
+    // handles to the visible edge next frame.
+    NodeRender {
+        resp: egui::InnerResponse::new(
+            out.expect("frame body always runs"),
+            resp.union(frame_resp),
+        ),
+        content_height,
+    }
 }
 
 #[cfg(test)]
@@ -1270,6 +1317,44 @@ mod tests {
             *source.borrow(),
             "- [x] task\n",
             "the node drag handle swallowed the checkbox click"
+        );
+    }
+
+    /// Regression for "you can't make a node smaller vertically": a node's
+    /// reported content height must reflect what the content *intrinsically*
+    /// needs, not the (possibly much taller) box it was drawn in. Before the fix
+    /// [`node_box_ui`] measured the padded frame, so a tall box's height ratcheted
+    /// — [`Notebook::node_rect`] fed the previous box height back as the floor and
+    /// the node could never be resized shorter. Draw a one-line label in a
+    /// deliberately tall box and assert the measured content height stays well
+    /// below the box, so a resize can shrink down to it.
+    #[test]
+    fn node_content_height_hugs_content_not_box() {
+        let node = TextNode::new(
+            "node1".parse().unwrap(),
+            0,
+            0,
+            250,
+            400,
+            None,
+            String::new(),
+        );
+        let measured = RefCell::new(0.0_f32);
+
+        let mut harness = Harness::new_ui(|ui| {
+            let rect = Rect::from_min_size(ui.max_rect().min, vec2(250.0, 400.0));
+            let render = node_box_ui(ui, node.node(), rect, false, |ui| {
+                ui.label("hello");
+            });
+            *measured.borrow_mut() = render.content_height;
+        });
+        harness.run();
+
+        let h = *measured.borrow();
+        assert!(h > 0.0, "content height should be measured");
+        assert!(
+            h < 400.0,
+            "content height {h} should hug the one-line label, not the 400px box"
         );
     }
 
