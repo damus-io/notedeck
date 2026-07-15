@@ -442,6 +442,16 @@ impl AgenticSessionData {
         }
     }
 
+    /// Mark a subagent as failed
+    pub fn fail_subagent(&mut self, chat: &mut [Message], task_id: &str, error: &str) {
+        if let Some(&idx) = self.subagent_indices.get(task_id) {
+            if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
+                subagent.status = SubagentStatus::Failed;
+                subagent.output = error.to_string();
+            }
+        }
+    }
+
     /// Try to fold a tool result into its parent subagent.
     /// Returns None if folded, Some(result) if it couldn't be folded.
     pub fn fold_tool_result(
@@ -806,6 +816,13 @@ impl ChatSession {
     pub fn complete_subagent(&mut self, task_id: &str, result: &str) {
         if let Some(ref mut agentic) = self.agentic {
             agentic.complete_subagent(&mut self.chat, task_id, result);
+        }
+    }
+
+    /// Mark a subagent as failed
+    pub fn fail_subagent(&mut self, task_id: &str, error: &str) {
+        if let Some(ref mut agentic) = self.agentic {
+            agentic.fail_subagent(&mut self.chat, task_id, error);
         }
     }
 
@@ -1368,10 +1385,16 @@ impl ChatSession {
         self.dispatch_state.backend_responded();
         self.last_activity = Some(Instant::now());
 
-        // Fast path: last message is the active assistant response
+        // Fast path: last message is the ACTIVE (still-streaming) assistant
+        // response. A finalized assistant must NOT be extended — e.g. when a
+        // spontaneous wake-up turn begins with no separating user message, the
+        // last message is the previous turn's finalized assistant, and its
+        // parser is already dropped. Fall through to start a new message.
         if let Some(Message::Assistant(msg)) = self.chat.last_mut() {
-            msg.push_token(token);
-            return;
+            if msg.is_streaming() {
+                msg.push_token(token);
+                return;
+            }
         }
 
         // Slow path: look backwards through only trailing User messages.
@@ -1768,6 +1791,43 @@ mod tests {
 
         // No pending user message — assistant is last
         assert!(!session.has_pending_user_message());
+    }
+
+    /// A spontaneous wake-up turn (a background task completing) begins with no
+    /// separating user message: the last chat message is the PREVIOUS turn's
+    /// finalized assistant. Its tokens must start a NEW assistant bubble, not
+    /// extend the finalized one (whose parser is already dropped, so appended
+    /// text would neither render nor belong to that turn).
+    #[test]
+    fn wakeup_tokens_after_finalized_assistant_start_new_bubble() {
+        let mut session = test_session();
+
+        // Complete turn 1 (user + finalized assistant) with no queued message.
+        session
+            .chat
+            .push(Message::User("start a background task".into()));
+        session.append_token("started it");
+        session.finalize_last_assistant();
+        session.dispatch_state.stream_ended();
+
+        let before = session.chat.len();
+
+        // Wake-up turn tokens arrive with the finalized assistant last and no
+        // user message in between.
+        session.append_token("bg task ");
+        session.append_token("done");
+
+        // A new assistant bubble was created for the wake-up turn.
+        assert_eq!(session.chat.len(), before + 1);
+        assert!(matches!(session.chat.last(), Some(Message::Assistant(_))));
+        assert_eq!(session.last_assistant_text().unwrap(), "bg task done");
+
+        // The previous turn's assistant is preserved untouched.
+        let preserved = session
+            .chat
+            .iter()
+            .any(|m| matches!(m, Message::Assistant(msg) if msg.text() == "started it"));
+        assert!(preserved, "previous assistant should be preserved");
     }
 
     /// When a queued message arrives before the first token, the new
@@ -2517,6 +2577,7 @@ mod tests {
             output: String::new(),
             max_output_size: 1000,
             tool_results: vec![],
+            background: false,
         }
     }
 
@@ -2559,6 +2620,27 @@ mod tests {
         if let Some(Message::Subagent(s)) = session.chat.get(idx) {
             assert_eq!(s.status, crate::messages::SubagentStatus::Completed);
             assert_eq!(s.output, "final result");
+        } else {
+            panic!("expected Subagent message at index {}", idx);
+        }
+    }
+
+    #[test]
+    fn subagent_failure() {
+        let mut session = test_session();
+        let subagent = make_subagent("task-1", "exploring");
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        session.fail_subagent(&task_id, "it crashed");
+
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert_eq!(s.status, crate::messages::SubagentStatus::Failed);
+            assert_eq!(s.output, "it crashed");
         } else {
             panic!("expected Subagent message at index {}", idx);
         }

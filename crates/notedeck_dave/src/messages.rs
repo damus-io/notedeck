@@ -404,6 +404,14 @@ pub struct SubagentInfo {
     pub max_output_size: usize,
     /// Tool results produced by this subagent
     pub tool_results: Vec<ExecutedTool>,
+    /// Whether this subagent runs in the background (`run_in_background`).
+    ///
+    /// A background subagent's lifecycle is driven by the CLI's
+    /// `task_started` / `task_notification` system messages: it keeps running
+    /// after the launching turn's `Result` and completes on a spontaneous
+    /// wake-up turn, not on its launch tool result. The UI renders it as
+    /// "running in background" until the wake-up lands.
+    pub background: bool,
 }
 
 /// An assistant message with incremental markdown parsing support.
@@ -611,6 +619,13 @@ pub enum DaveApiResponse {
     SubagentCompleted {
         task_id: String,
         result: String,
+    },
+    /// Subagent failed (e.g. a background subagent whose `task_notification`
+    /// reported a non-completed status). `task_id` is the originating tool_use
+    /// id, matching the entry created on spawn.
+    SubagentFailed {
+        task_id: String,
+        error: String,
     },
     /// Conversation compaction started
     CompactionStarted,

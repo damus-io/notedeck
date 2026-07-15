@@ -649,6 +649,15 @@ fn column_ui(
                     if state.edit == InlineEdit::RenameColumn(col_idx) {
                         column_rename_field(ui, state, col_idx, action);
                     } else {
+                        // The column's positional status circle, tying the
+                        // board header to the detail pane's visual language
+                        // (Linear renders its board headers the same way).
+                        status_icon_ui(
+                            ui,
+                            theme,
+                            StatusIcon::for_column(col_idx, view.columns.len()),
+                            14.0,
+                        );
                         ui.label(egui::RichText::new(&column.name).strong());
                         // When filtering, the badge reflects how many of this
                         // column's cards match rather than the column's total.
@@ -1435,10 +1444,12 @@ fn card_detail_pane_ui(
         state.detail_for = Some(card_id);
         state.detail_title = card.title.clone();
         state.detail_desc = card.description.clone();
-        // A blank field opens straight into the editor; one with content shows
-        // its render (heading / markdown) until the user asks to edit.
+        // A blank title opens straight into the editor; one with content shows
+        // its render until the user asks to edit. The description always opens
+        // rendered — its empty state is a quiet "Add description…" placeholder
+        // (Linear-style) rather than a bare input box.
         state.detail_title_mode = seed_edit_mode(&card.title);
-        state.detail_desc_mode = seed_edit_mode(&card.description);
+        state.detail_desc_mode = EditMode::Rendered;
         state.new_label.clear();
         state.label_composer = false;
         state.new_subissue.clear();
@@ -1912,6 +1923,20 @@ fn detail_description_section_ui(
 ) {
     match state.detail_desc_mode {
         EditMode::Rendered => {
+            // Empty description: a quiet Linear-style placeholder that becomes
+            // the editor on click, instead of dropping a fresh card straight
+            // into a big input box.
+            if state.detail_desc.trim().is_empty() {
+                let add = egui::Button::new(
+                    egui::RichText::new("Add description…").color(theme.text_muted),
+                )
+                .frame(false);
+                if ui.add(add).clicked() {
+                    state.detail_desc_mode = EditMode::Editing { focus: true };
+                }
+                return;
+            }
+
             // Render with interactive task-list checkboxes; a click flips the
             // box in `detail_desc` in place and we persist it like any edit.
             let scope = ui.scope(|ui| {
@@ -1950,8 +1975,8 @@ fn detail_description_section_ui(
                 desc_resp.request_focus();
                 state.detail_desc_mode = EditMode::Editing { focus: false };
             }
-            // Commit on focus loss and drop back to the rendered view, unless the
-            // description is still empty (nothing to render, so stay in the editor).
+            // Commit on focus loss and drop back to the rendered view — an
+            // empty description renders as the "Add description…" placeholder.
             if desc_resp.lost_focus() {
                 if state.detail_desc != ctx.desc {
                     *action = Some(BoardAction::EditDescription {
@@ -1959,9 +1984,7 @@ fn detail_description_section_ui(
                         description: state.detail_desc.clone(),
                     });
                 }
-                if !state.detail_desc.trim().is_empty() {
-                    state.detail_desc_mode = EditMode::Rendered;
-                }
+                state.detail_desc_mode = EditMode::Rendered;
             }
         }
     }

@@ -51,10 +51,19 @@ headway board headway    # switch back to the default board
 ```
 
 Board selection precedence, highest first: the `--board <id>` flag (one run
-only) → `$HEADWAY_BOARD` → the board stored by `headway board <id>` → the default
+only) → the board named by a full `<board>#<word-id>` card ref (see below) →
+`$HEADWAY_BOARD` → the board stored by `headway board <id>` → the default
 `headway`. So `--board <id> <command>` targets another board for a single command
 without changing the persisted selection. The current board lives in
 `<data-dir>/headway-cli/board`.
+
+**Full card refs self-route.** A selector like `commerce#purse-metal-toilet`
+already names its board, so `headway show commerce#purse-metal-toilet` (and
+`move`, `comment`, etc.) targets the `commerce` board automatically — the
+display id `show` prints is a working address wherever it's pasted, no
+`--board` needed. Bare `#word-id`, plain word ids and hex prefixes still
+resolve against the current board. Refs naming two different boards in one
+command, or a ref disagreeing with an explicit `--board`, are an error.
 
 > **The persisted board is shared mutable state — scope your edits with
 > `--board`.** Because the current board is stored on disk, *another session, a

@@ -146,6 +146,9 @@ fn run_timed(url: &str, db: &str, args: &[&str], secs: u64) -> std::process::Out
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_headway"))
         .args(&full)
+        // Pin the default board so the developer's persisted `headway board
+        // <id>` selection can't leak into the test run.
+        .env("HEADWAY_BOARD", "headway")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

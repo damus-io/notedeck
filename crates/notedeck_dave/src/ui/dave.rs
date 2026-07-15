@@ -1218,6 +1218,17 @@ impl<'a> DaveUi<'a> {
                     .color(ui.visuals().text_color().gamma_multiply(0.7)),
             );
 
+            // A background subagent keeps running after the launching turn ends;
+            // flag it as such until its wake-up completion lands.
+            if info.background && info.status == SubagentStatus::Running {
+                ui.label(
+                    egui::RichText::new("· in background")
+                        .size(10.0)
+                        .italics()
+                        .color(ui.visuals().text_color().gamma_multiply(0.5)),
+                );
+            }
+
             // Show spinner for running subagents
             if info.status == SubagentStatus::Running {
                 ui.add(SquareLoadingSpinner::new().size(11.0));

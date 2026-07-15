@@ -109,6 +109,63 @@ enum Command {
     Logout,
 }
 
+impl Command {
+    /// The board named by this command's card selectors, when any of them
+    /// carries a `<board>#<word-id>` prefix (see [`ref_board`]). Used to
+    /// self-route the command to that board. Errors when two selectors name
+    /// different boards — cards are resolved against a single board per run.
+    fn selector_board(&self) -> Result<Option<String>> {
+        let mut selectors: Vec<&str> = Vec::new();
+        match self {
+            Command::Show { cards } => selectors.extend(cards.iter().map(String::as_str)),
+            Command::Add { parent, .. } => selectors.extend(parent.as_deref()),
+            Command::Parent { card, parent } => {
+                selectors.push(card);
+                selectors.extend(parent.as_deref());
+            }
+            Command::Move { card, .. }
+            | Command::Title { card, .. }
+            | Command::Desc { card, .. }
+            | Command::Label { card, .. }
+            | Command::Comment { card, .. }
+            | Command::Delete { card }
+            | Command::Archive { card }
+            | Command::Restore { card }
+            | Command::Link { card, .. }
+            | Command::MoveBoard { card, .. } => selectors.push(card),
+            Command::Seed | Command::Board { .. } | Command::Login { .. } | Command::Logout => {}
+        }
+
+        let mut found: Option<String> = None;
+        for slug in selectors.into_iter().filter_map(ref_board) {
+            match &found {
+                Some(cur) if cur != &slug => {
+                    return Err(
+                        format!("card refs name different boards ('{cur}' and '{slug}')").into(),
+                    );
+                }
+                _ => found = Some(slug),
+            }
+        }
+        Ok(found)
+    }
+}
+
+/// The `<board>` prefix of a full `<board>#<word-id>` card reference, lowercased
+/// (board slugs are lowercase). `None` for anything that isn't one: bare
+/// `#word-id` refs, plain word ids, hex ids/prefixes, and prefixes that aren't
+/// slug-shaped (slugs are ascii alphanumerics and `-`, see `store::board_slug`).
+fn ref_board(sel: &str) -> Option<String> {
+    let (slug, words) = sel.split_once('#')?;
+    if slug.is_empty()
+        || words.is_empty()
+        || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return None;
+    }
+    Some(slug.to_lowercase())
+}
+
 async fn run() -> Result<()> {
     let cli = match Cli::parse(env::args().skip(1))? {
         Some(cli) => cli,
@@ -753,13 +810,11 @@ impl Cli {
             .ok()
             .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string());
         let mut db = None;
-        // Same precedence shape as the key/relay: `--board` (set below) overrides
+        // Resolved after the command is parsed: `--board` overrides the board
+        // named by a `<board>#<word-id>` card ref, which overrides
         // `$HEADWAY_BOARD`, which overrides the board stored by `headway board
         // <id>`, which overrides the default board.
-        let mut board = env::var("HEADWAY_BOARD")
-            .ok()
-            .or_else(|| relay_sync::read_config(APP, "board"))
-            .unwrap_or_else(|| store::BOARD_ID.to_string());
+        let mut board: Option<String> = None;
         let mut author = None;
         let mut json = false;
         let mut archived = false;
@@ -783,7 +838,7 @@ impl Cli {
                 "--nsec" => nsec = Some(value("--nsec")?),
                 "--relay" => relay = value("--relay")?,
                 "--db" => db = Some(value("--db")?),
-                "--board" => board = value("--board")?,
+                "--board" => board = Some(value("--board")?),
                 "--author" => author = Some(Pubkey::parse(&value("--author")?)?),
                 "--col" => col = Some(value("--col")?),
                 "--to" => to = Some(value("--to")?),
@@ -820,6 +875,27 @@ impl Cli {
             return Ok(None);
         };
         let command = parse_command(name, rest, col, row, to, reply_to, parent, labels)?;
+
+        // A card selector like `commerce#purse-metal-toilet` already names its
+        // board, so the command self-routes there — the display id `show`
+        // prints is a working address wherever it's pasted, with no `--board`
+        // needed. An explicit `--board` must agree with it rather than being
+        // silently ignored (or silently winning and then failing "no card
+        // matching" on the wrong board).
+        if let Some(named) = command.selector_board()? {
+            match &board {
+                Some(flag) if flag != &named => {
+                    return Err(
+                        format!("--board {flag} conflicts with card ref board '{named}'").into(),
+                    );
+                }
+                _ => board = Some(named),
+            }
+        }
+        let board = board
+            .or_else(|| env::var("HEADWAY_BOARD").ok())
+            .or_else(|| relay_sync::read_config(APP, "board"))
+            .unwrap_or_else(|| store::BOARD_ID.to_string());
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured — that would
@@ -965,7 +1041,8 @@ COMMANDS:
     login <nsec>               Store a signing key for later runs
     logout                     Forget the stored signing key
 
-    <card> is a card id or a unique short prefix (see `show`).
+    <card> is a card id or a unique short prefix (see `show`). A full
+    <board>#<word-id> ref routes the command to that board automatically.
     <c> is a column id or name (case-insensitive).
 
 OPTIONS:
@@ -975,7 +1052,8 @@ OPTIONS:
     --author <pk>     Board author to read (defaults to the signer)
     --relay <url>     Relay URL (or $HEADWAY_RELAY) [default: {DEFAULT_RELAY}]
     --board <id>      Board for this run (or $HEADWAY_BOARD). Normally
-                      unnecessary — `headway board <id>` sets it persistently.
+                      unnecessary — a <board>#<word-id> card ref routes itself,
+                      and `headway board <id>` sets it persistently.
                       [default: {board}]
     --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
     -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
@@ -989,4 +1067,90 @@ OPTIONS:
         DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
         board = store::BOARD_ID,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::parse(args.iter().map(|s| s.to_string()))
+            .expect("parse ok")
+            .expect("a command")
+    }
+
+    /// A full `<board>#<word-id>` selector routes the run to that board; the
+    /// forms `show` prints for other addressing (bare `#words`, plain words,
+    /// hex prefixes) don't.
+    #[test]
+    fn card_ref_routes_to_its_board() {
+        assert_eq!(
+            parse(&["show", "commerce#purse-metal-toilet"]).board,
+            "commerce"
+        );
+        assert_eq!(
+            parse(&["move", "dave#stage-injury-surprise", "--col", "done"]).board,
+            "dave"
+        );
+        // Case-normalised like the slugs themselves.
+        assert_eq!(
+            parse(&["show", "Commerce#purse-metal-toilet"]).board,
+            "commerce"
+        );
+    }
+
+    #[test]
+    fn non_ref_selectors_do_not_route() {
+        // These fall through to the usual precedence; with no env/config in a
+        // test environment that may be the stored board, so only assert the
+        // selector itself didn't force one by checking against a routed run.
+        let routed = parse(&["show", "commerce#purse-metal-toilet"]).board;
+        assert_eq!(routed, "commerce");
+        for sel in ["#purse-metal-toilet", "purse-metal-toilet", "2716e5db"] {
+            let cli = parse(&["show", sel]);
+            // Whatever board was picked, it wasn't derived from the selector.
+            assert_eq!(cli.command.selector_board().unwrap(), None);
+        }
+    }
+
+    /// Parse args expecting an error, returning its message.
+    fn parse_err(args: &[&str]) -> String {
+        match Cli::parse(args.iter().map(|s| s.to_string())) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an error for {args:?}"),
+        }
+    }
+
+    #[test]
+    fn conflicting_refs_error() {
+        let err = parse_err(&["show", "commerce#a-b-c", "dave#d-e-f"]);
+        assert!(err.contains("different boards"), "{err}");
+
+        let err = parse_err(&["--board", "headway", "show", "commerce#a-b-c"]);
+        assert!(err.contains("conflicts"), "{err}");
+    }
+
+    /// `--board` agreeing with the ref is fine, and two refs naming the same
+    /// board are too.
+    #[test]
+    fn agreeing_refs_are_fine() {
+        assert_eq!(
+            parse(&["--board", "commerce", "show", "commerce#a-b-c"]).board,
+            "commerce"
+        );
+        assert_eq!(
+            parse(&["show", "commerce#a-b-c", "commerce#d-e-f"]).board,
+            "commerce"
+        );
+    }
+
+    #[test]
+    fn ref_board_shapes() {
+        assert_eq!(ref_board("commerce#a-b-c"), Some("commerce".into()));
+        assert_eq!(ref_board("ios-port#a-b-c"), Some("ios-port".into()));
+        assert_eq!(ref_board("#a-b-c"), None);
+        assert_eq!(ref_board("a-b-c"), None);
+        assert_eq!(ref_board("commerce#"), None);
+        assert_eq!(ref_board("not a slug#a-b-c"), None);
+    }
 }
