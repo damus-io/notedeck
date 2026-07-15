@@ -1368,10 +1368,16 @@ impl ChatSession {
         self.dispatch_state.backend_responded();
         self.last_activity = Some(Instant::now());
 
-        // Fast path: last message is the active assistant response
+        // Fast path: last message is the ACTIVE (still-streaming) assistant
+        // response. A finalized assistant must NOT be extended — e.g. when a
+        // spontaneous wake-up turn begins with no separating user message, the
+        // last message is the previous turn's finalized assistant, and its
+        // parser is already dropped. Fall through to start a new message.
         if let Some(Message::Assistant(msg)) = self.chat.last_mut() {
-            msg.push_token(token);
-            return;
+            if msg.is_streaming() {
+                msg.push_token(token);
+                return;
+            }
         }
 
         // Slow path: look backwards through only trailing User messages.
@@ -1768,6 +1774,43 @@ mod tests {
 
         // No pending user message — assistant is last
         assert!(!session.has_pending_user_message());
+    }
+
+    /// A spontaneous wake-up turn (a background task completing) begins with no
+    /// separating user message: the last chat message is the PREVIOUS turn's
+    /// finalized assistant. Its tokens must start a NEW assistant bubble, not
+    /// extend the finalized one (whose parser is already dropped, so appended
+    /// text would neither render nor belong to that turn).
+    #[test]
+    fn wakeup_tokens_after_finalized_assistant_start_new_bubble() {
+        let mut session = test_session();
+
+        // Complete turn 1 (user + finalized assistant) with no queued message.
+        session
+            .chat
+            .push(Message::User("start a background task".into()));
+        session.append_token("started it");
+        session.finalize_last_assistant();
+        session.dispatch_state.stream_ended();
+
+        let before = session.chat.len();
+
+        // Wake-up turn tokens arrive with the finalized assistant last and no
+        // user message in between.
+        session.append_token("bg task ");
+        session.append_token("done");
+
+        // A new assistant bubble was created for the wake-up turn.
+        assert_eq!(session.chat.len(), before + 1);
+        assert!(matches!(session.chat.last(), Some(Message::Assistant(_))));
+        assert_eq!(session.last_assistant_text().unwrap(), "bg task done");
+
+        // The previous turn's assistant is preserved untouched.
+        let preserved = session
+            .chat
+            .iter()
+            .any(|m| matches!(m, Message::Assistant(msg) if msg.text() == "started it"));
+        assert!(preserved, "previous assistant should be preserved");
     }
 
     /// When a queued message arrives before the first token, the new
