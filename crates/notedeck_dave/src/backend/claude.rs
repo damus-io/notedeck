@@ -75,10 +75,23 @@ fn parse_user_content_blocks(user_msg: &UserMessage) -> Vec<ContentBlock> {
         .unwrap_or_default()
 }
 
+/// Whether a tool_use requests background execution (`run_in_background: true`).
+fn is_background_task(input: &serde_json::Value) -> bool {
+    input
+        .get("run_in_background")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Process a single tool result: complete any in-flight subagent, fold the
 /// harness task list into the sidebar, and forward the result to the UI.
+///
+/// `parent_override` is the message's `parent_tool_use_id` when set — a
+/// subagent-internal result attributes to that (root) subagent regardless of
+/// the foreground `subagent_stack`.
 fn handle_tool_result(
     tool_result: &ToolResultBlock,
+    parent_override: Option<&str>,
     pending_tools: &mut HashMap<String, (String, serde_json::Value)>,
     subagent_stack: &mut Vec<String>,
     task_tracker: &mut TaskTracker,
@@ -91,8 +104,11 @@ fn handle_tool_result(
     };
     let result_value = tool_result_content_to_value(&tool_result.content);
 
-    // A Task tool completion ends the current subagent.
-    if tool_name == "Task" {
+    // A foreground Task tool completion ends the current subagent. A background
+    // subagent's launch produces an immediate tool result ("Async agent
+    // launched successfully") that is NOT completion — it completes later via
+    // `task_notification`, so skip it here.
+    if tool_name == "Task" && !is_background_task(&tool_input) {
         let result_text =
             extract_response_content(&result_value).unwrap_or_else(|| "completed".to_string());
         shared::complete_subagent(tool_use_id, &result_text, subagent_stack, response_tx, ctx);
@@ -111,10 +127,95 @@ fn handle_tool_result(
         &tool_input,
         &result_value,
         file_update,
+        parent_override,
         subagent_stack,
         response_tx,
         ctx,
     );
+}
+
+/// Handle a `system` / `task_started` message: a background task began.
+///
+/// Only `local_agent` tasks (background subagents) get a sidebar entry — a
+/// background `local_bash` still renders as an ordinary Bash tool result in
+/// chat. The entry is keyed by the originating `tool_use_id`, which matches
+/// both the `parent_tool_use_id` on the subagent's internal messages and the
+/// `tool_use_id` on its eventual `task_notification`.
+fn handle_task_started(
+    data: &serde_json::Value,
+    pending_tools: &HashMap<String, (String, serde_json::Value)>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) {
+    if data.get("task_type").and_then(|v| v.as_str()) != Some("local_agent") {
+        return;
+    }
+    let Some(tool_use_id) = data.get("tool_use_id").and_then(|v| v.as_str()) else {
+        return;
+    };
+
+    // `task_started` carries a description but not the subagent type; recover
+    // the type from the originating Task tool_use input still in `pending_tools`
+    // (it's removed only when its launch tool result lands).
+    let spawn_input = pending_tools.get(tool_use_id).map(|(_, input)| input);
+    let description = data
+        .get("description")
+        .and_then(|v| v.as_str())
+        .or_else(|| spawn_input.and_then(|i| i.get("description").and_then(|v| v.as_str())))
+        .unwrap_or("background task")
+        .to_string();
+    let subagent_type = spawn_input
+        .and_then(|i| i.get("subagent_type").and_then(|v| v.as_str()))
+        .unwrap_or("agent")
+        .to_string();
+
+    let subagent_info = SubagentInfo {
+        task_id: tool_use_id.to_string(),
+        description,
+        subagent_type,
+        status: SubagentStatus::Running,
+        output: String::new(),
+        max_output_size: 4000,
+        tool_results: Vec::new(),
+        background: true,
+    };
+    let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
+    ctx.request_repaint();
+}
+
+/// Handle a `system` / `task_notification` message: a background task finished.
+///
+/// Completes (or fails) the subagent entry keyed by `tool_use_id`. This is the
+/// authoritative completion for a background subagent — its launch tool result
+/// only confirmed the task started.
+fn handle_task_notification(
+    data: &serde_json::Value,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) {
+    let Some(tool_use_id) = data.get("tool_use_id").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let status = data.get("status").and_then(|v| v.as_str());
+    let summary = data
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("completed")
+        .to_string();
+
+    let response = if status == Some("completed") {
+        DaveApiResponse::SubagentCompleted {
+            task_id: tool_use_id.to_string(),
+            result: summary,
+        }
+    } else {
+        DaveApiResponse::SubagentFailed {
+            task_id: tool_use_id.to_string(),
+            error: summary,
+        }
+    };
+    let _ = response_tx.send(response);
+    ctx.request_repaint();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,8 +275,13 @@ fn handle_stream_message(
                 if let ContentBlock::ToolUse(ToolUseBlock { id, name, input }) = block {
                     pending_tools.insert(id.clone(), (name.clone(), input.clone()));
 
-                    // Emit SubagentSpawned for Task tool calls
-                    if name == "Task" {
+                    // Emit SubagentSpawned for foreground Task tool calls. A
+                    // background subagent (`run_in_background`) is spawned from
+                    // its `task_started` system message instead — it outlives
+                    // this turn and completes on a wake-up, so it must not join
+                    // the foreground `subagent_stack` nor complete on its launch
+                    // tool result.
+                    if name == "Task" && !is_background_task(input) {
                         let description = input
                             .get("description")
                             .and_then(|v| v.as_str())
@@ -196,6 +302,7 @@ fn handle_stream_message(
                             output: String::new(),
                             max_output_size: 4000,
                             tool_results: Vec::new(),
+                            background: false,
                         };
                         let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
                         ctx.request_repaint();
@@ -266,10 +373,17 @@ fn handle_stream_message(
             let _ = response_tx.send(DaveApiResponse::QueryComplete(usage_info));
         }
         ClaudeMessage::User(user_msg) => {
+            // A subagent's internal tool results carry `parent_tool_use_id` =
+            // the originating (root) Task tool_use id, which is the key of its
+            // sidebar entry. Route by it so background-subagent output folds
+            // into the right entry even though it arrives on a wake-up turn with
+            // no foreground `subagent_stack` context.
+            let parent_override = user_msg.parent_tool_use_id.as_deref();
             for block in parse_user_content_blocks(&user_msg) {
                 if let ContentBlock::ToolResult(tool_result) = block {
                     handle_tool_result(
                         &tool_result,
+                        parent_override,
                         pending_tools,
                         subagent_stack,
                         task_tracker,
@@ -304,6 +418,10 @@ fn handle_stream_message(
                 let info = CompactionInfo { pre_tokens };
                 let _ = response_tx.send(DaveApiResponse::CompactionComplete(info));
                 ctx.request_repaint();
+            } else if system_msg.subtype == "task_started" {
+                handle_task_started(&system_msg.data, pending_tools, response_tx, ctx);
+            } else if system_msg.subtype == "task_notification" {
+                handle_task_notification(&system_msg.data, response_tx, ctx);
             } else {
                 tracing::debug!("Received system message subtype: {}", system_msg.subtype);
             }
@@ -952,6 +1070,178 @@ mod tests {
         assert_eq!(
             cancelled_turn_message_action(&result),
             CancelledTurnMessageAction::FinishTurn
+        );
+    }
+
+    #[test]
+    fn task_started_local_agent_spawns_background_subagent() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+
+        // The originating Task tool_use is still pending (its launch result
+        // hasn't landed), so the subagent type is recoverable from its input.
+        let mut pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+        pending.insert(
+            "toolu_root".to_string(),
+            (
+                "Task".to_string(),
+                serde_json::json!({ "subagent_type": "general-purpose", "run_in_background": true }),
+            ),
+        );
+
+        let data = serde_json::json!({
+            "task_id": "abc123",
+            "tool_use_id": "toolu_root",
+            "description": "do background work",
+            "task_type": "local_agent",
+        });
+        handle_task_started(&data, &pending, &tx, &ctx);
+
+        match rx.try_recv().expect("expected a spawn response") {
+            DaveApiResponse::SubagentSpawned(info) => {
+                // Keyed by tool_use_id so parent_tool_use_id + task_notification align.
+                assert_eq!(info.task_id, "toolu_root");
+                assert_eq!(info.subagent_type, "general-purpose");
+                assert_eq!(info.description, "do background work");
+                assert_eq!(info.status, SubagentStatus::Running);
+                assert!(info.background);
+            }
+            other => panic!(
+                "expected SubagentSpawned, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn task_started_local_bash_is_not_a_subagent() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+
+        let data = serde_json::json!({
+            "task_id": "b4dg5o2ra",
+            "tool_use_id": "toolu_bash",
+            "description": "sleep 6",
+            "task_type": "local_bash",
+        });
+        handle_task_started(&data, &pending, &tx, &ctx);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a background shell must not create a subagent sidebar entry"
+        );
+    }
+
+    #[test]
+    fn task_notification_completes_and_fails_by_tool_use_id() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+
+        handle_task_notification(
+            &serde_json::json!({
+                "tool_use_id": "toolu_root",
+                "status": "completed",
+                "summary": "all done",
+            }),
+            &tx,
+            &ctx,
+        );
+        match rx.try_recv().expect("expected a completion") {
+            DaveApiResponse::SubagentCompleted { task_id, result } => {
+                assert_eq!(task_id, "toolu_root");
+                assert_eq!(result, "all done");
+            }
+            other => panic!(
+                "expected SubagentCompleted, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+
+        handle_task_notification(
+            &serde_json::json!({
+                "tool_use_id": "toolu_root",
+                "status": "failed",
+                "summary": "it broke",
+            }),
+            &tx,
+            &ctx,
+        );
+        match rx.try_recv().expect("expected a failure") {
+            DaveApiResponse::SubagentFailed { task_id, error } => {
+                assert_eq!(task_id, "toolu_root");
+                assert_eq!(error, "it broke");
+            }
+            other => panic!(
+                "expected SubagentFailed, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn subagent_internal_tool_result_routes_by_parent_tool_use_id() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+        let mut subagent_stack: Vec<String> = Vec::new();
+        let mut task_tracker = TaskTracker::new();
+
+        // The subagent's internal Bash tool_use registers in pending_tools.
+        let assistant = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_root",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_bash",
+                    "name": "Bash",
+                    "input": { "command": "echo hi" }
+                }]
+            }
+        }))
+        .expect("assistant should deserialize");
+        handle_stream_message(
+            assistant,
+            &tx,
+            &ctx,
+            &mut pending,
+            &mut subagent_stack,
+            &mut task_tracker,
+        );
+
+        // Its tool_result arrives with parent_tool_use_id = the root subagent.
+        let user = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_root",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_bash",
+                    "content": "hi"
+                }]
+            }
+        }))
+        .expect("user should deserialize");
+        handle_stream_message(
+            user,
+            &tx,
+            &ctx,
+            &mut pending,
+            &mut subagent_stack,
+            &mut task_tracker,
+        );
+
+        let routed = rx.try_iter().any(|resp| {
+            matches!(
+                resp,
+                DaveApiResponse::ToolResult(tool)
+                    if tool.parent_task_id.as_deref() == Some("toolu_root")
+            )
+        });
+        assert!(
+            routed,
+            "tool result should attribute to the root subagent via parent_tool_use_id"
         );
     }
 

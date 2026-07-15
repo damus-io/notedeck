@@ -736,6 +736,7 @@ fn handle_codex_message(
                                 output: String::new(),
                                 max_output_size: 4000,
                                 tool_results: Vec::new(),
+                                background: false,
                             };
                             let _ = response_tx.send(DaveApiResponse::SubagentSpawned(info));
                             ctx.request_repaint();
@@ -748,6 +749,7 @@ fn handle_codex_message(
                                 "Bash",
                                 &tool_input,
                                 &result_value,
+                                None,
                                 None,
                                 subagent_stack,
                                 response_tx,
@@ -762,6 +764,7 @@ fn handle_codex_message(
                                 "Edit",
                                 &tool_input,
                                 &result_value,
+                                None,
                                 None,
                                 subagent_stack,
                                 response_tx,
@@ -978,6 +981,7 @@ fn handle_codex_message(
                             &tool_input,
                             &result_value,
                             file_update,
+                            None,
                             subagent_stack,
                             response_tx,
                             ctx,
@@ -1434,6 +1438,7 @@ fn handle_item_completed(
                 &tool_input,
                 &result_value,
                 None,
+                None,
                 subagent_stack,
                 response_tx,
                 ctx,
@@ -1471,6 +1476,7 @@ fn handle_item_completed(
                 &tool_input,
                 &result_value,
                 file_update,
+                None,
                 subagent_stack,
                 response_tx,
                 ctx,

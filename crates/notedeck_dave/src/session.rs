@@ -442,6 +442,16 @@ impl AgenticSessionData {
         }
     }
 
+    /// Mark a subagent as failed
+    pub fn fail_subagent(&mut self, chat: &mut [Message], task_id: &str, error: &str) {
+        if let Some(&idx) = self.subagent_indices.get(task_id) {
+            if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
+                subagent.status = SubagentStatus::Failed;
+                subagent.output = error.to_string();
+            }
+        }
+    }
+
     /// Try to fold a tool result into its parent subagent.
     /// Returns None if folded, Some(result) if it couldn't be folded.
     pub fn fold_tool_result(
@@ -806,6 +816,13 @@ impl ChatSession {
     pub fn complete_subagent(&mut self, task_id: &str, result: &str) {
         if let Some(ref mut agentic) = self.agentic {
             agentic.complete_subagent(&mut self.chat, task_id, result);
+        }
+    }
+
+    /// Mark a subagent as failed
+    pub fn fail_subagent(&mut self, task_id: &str, error: &str) {
+        if let Some(ref mut agentic) = self.agentic {
+            agentic.fail_subagent(&mut self.chat, task_id, error);
         }
     }
 
@@ -2560,6 +2577,7 @@ mod tests {
             output: String::new(),
             max_output_size: 1000,
             tool_results: vec![],
+            background: false,
         }
     }
 
@@ -2602,6 +2620,27 @@ mod tests {
         if let Some(Message::Subagent(s)) = session.chat.get(idx) {
             assert_eq!(s.status, crate::messages::SubagentStatus::Completed);
             assert_eq!(s.output, "final result");
+        } else {
+            panic!("expected Subagent message at index {}", idx);
+        }
+    }
+
+    #[test]
+    fn subagent_failure() {
+        let mut session = test_session();
+        let subagent = make_subagent("task-1", "exploring");
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        session.fail_subagent(&task_id, "it crashed");
+
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert_eq!(s.status, crate::messages::SubagentStatus::Failed);
+            assert_eq!(s.output, "it crashed");
         } else {
             panic!("expected Subagent message at index {}", idx);
         }

@@ -1012,6 +1012,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::SubagentCompleted { task_id, result } => {
                         session.complete_subagent(&task_id, &result);
                     }
+                    DaveApiResponse::SubagentFailed { task_id, error } => {
+                        session.fail_subagent(&task_id, &error);
+                    }
                     DaveApiResponse::CompactionStarted => {
                         if let Some(agentic) = &mut session.agentic {
                             if agentic.compact_intent.is_none() {
