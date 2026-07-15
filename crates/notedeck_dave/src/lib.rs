@@ -888,16 +888,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         for session_id in session_ids {
             // Take the receiver out to avoid borrow conflicts
-            let recvr = {
+            let (recvr, backend_type) = {
                 let Some(session) = self.session_manager.get_mut(session_id) else {
                     continue;
                 };
-                session.incoming_tokens.take()
+                (session.incoming_tokens.take(), session.backend_type)
             };
 
             let Some(recvr) = recvr else {
                 continue;
             };
+
+            // Persistent-stream backends (Claude) keep one channel for the whole
+            // session, so a turn ends via an explicit `QueryComplete` rather than
+            // the channel disconnecting. Non-persistent backends end a turn by
+            // dropping the sender (see the disconnect branch below).
+            let persistent_stream = self
+                .backends
+                .get(&backend_type)
+                .map(|b| b.persistent_stream())
+                .unwrap_or(false);
+            let mut turn_ended = false;
 
             while let Ok(res) = recvr.try_recv() {
                 // Nudge avatar only for active session
@@ -1016,6 +1027,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                     DaveApiResponse::QueryComplete(info) => {
                         handle_query_complete(session, info);
+                        // For a persistent-stream backend this is the turn
+                        // boundary — the channel stays open, so run stream-end
+                        // handling after the drain instead of on disconnect.
+                        if persistent_stream {
+                            turn_ended = true;
+                        }
                     }
 
                     DaveApiResponse::TodoUpdate(todos) => {
@@ -1025,7 +1042,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
 
-            // Check if channel is disconnected (stream ended)
+            // Decide the turn boundary. A disconnected channel means the backend
+            // dropped its sender (per-query turn end, or the persistent actor
+            // died); an explicit `QueryComplete` (`turn_ended`) ends a turn on a
+            // persistent channel that stays open for the next turn / wake-up.
             match recvr.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     if let Some(session) = self.session_manager.get_mut(session_id) {
@@ -1039,8 +1059,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             &mut needs_compact,
                         );
                     }
+                    // Receiver intentionally dropped — the stream is over.
                 }
                 _ => {
+                    // Persistent channel: run stream-end handling for the turn
+                    // that just completed, but keep the receiver installed so the
+                    // next turn (including a spontaneous wake-up) still flows.
+                    if turn_ended {
+                        if let Some(session) = self.session_manager.get_mut(session_id) {
+                            handle_stream_end(
+                                session,
+                                session_id,
+                                &secret_key,
+                                app_ctx.ndb,
+                                &mut events_to_publish,
+                                &mut needs_send,
+                                &mut needs_compact,
+                            );
+                        }
+                    }
+
                     // Channel still open, put receiver back. Waiting on the
                     // backend is intentionally stateless — a session blocked on
                     // user input (a pending permission / NeedsInput) or a slow
@@ -3314,7 +3352,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let model_name = session.details.resolve_model();
         let ctx = ctx.clone();
 
-        // Use backend to stream request
+        // Use backend to stream request. `rx` is `None` for persistent-stream
+        // backends on subsequent turns — the session already owns a long-lived
+        // channel we must keep, so only replace `incoming_tokens` when a new
+        // receiver was minted.
         let (rx, task_handle) = get_backend(&self.backends, backend_type).stream_request(
             messages,
             tools,
@@ -3325,7 +3366,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             resume_session_id,
             ctx,
         );
-        session.incoming_tokens = Some(rx);
+        if let Some(rx) = rx {
+            session.incoming_tokens = Some(rx);
+        }
         session.task_handle = task_handle;
     }
 
@@ -4752,11 +4795,20 @@ fn dispatch_compact_for_active(
     };
     let session_id = format!("dave-session-{}", session.id);
     tracing::info!("Compact requested for session {}", session_id);
-    if let Some(rx) = get_backend(backends, bt).compact_session(session_id.clone(), ctx.clone()) {
+    let backend = get_backend(backends, bt);
+    let persistent = backend.persistent_stream();
+    if let Some(rx) = backend.compact_session(session_id.clone(), ctx.clone()) {
         tracing::info!("Compact dispatched for session {}", session_id);
         if let Some(session) = session_manager.get_active_mut() {
             session.incoming_tokens = Some(rx);
         }
+    } else if persistent {
+        // Persistent-stream backend: compaction responses flow on the session's
+        // existing channel, so there's no new receiver to install.
+        tracing::info!(
+            "Compact dispatched on persistent channel for session {}",
+            session_id
+        );
     } else {
         tracing::warn!("Compact failed: no backend session for {}", session_id);
     }
@@ -4778,12 +4830,21 @@ fn dispatch_compact_for_session(
         "Session {}: dispatching compact for compact-and-proceed",
         session_id
     );
-    if let Some(rx) = get_backend(backends, bt).compact_session(backend_session_id, ctx.clone()) {
-        if let Some(session) = session_manager.get_mut(session_id) {
+    let backend = get_backend(backends, bt);
+    let persistent = backend.persistent_stream();
+    let compact_rx = backend.compact_session(backend_session_id, ctx.clone());
+    // A non-persistent backend that returned no receiver has no live session to
+    // compact — nothing to do. A persistent backend reuses its existing channel
+    // (None) and must still record the compact-and-proceed intent.
+    if compact_rx.is_none() && !persistent {
+        return;
+    }
+    if let Some(session) = session_manager.get_mut(session_id) {
+        if let Some(rx) = compact_rx {
             session.incoming_tokens = Some(rx);
-            if let Some(agentic) = &mut session.agentic {
-                agentic.compact_intent = Some(session::CompactIntent::ProceedAfterCompaction);
-            }
+        }
+        if let Some(agentic) = &mut session.agentic {
+            agentic.compact_intent = Some(session::CompactIntent::ProceedAfterCompaction);
         }
     }
 }

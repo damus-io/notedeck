@@ -212,6 +212,13 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 response_tx,
                 ctx,
             } => {
+                // Codex mints a fresh UI channel per query, so response_tx is
+                // always present. (Only persistent-stream backends pass None.)
+                let Some(response_tx) = response_tx else {
+                    tracing::error!("Codex Query without a response channel; ignoring");
+                    continue;
+                };
+
                 // Emit session info on the first query so Nostr replication can start
                 if !sent_session_info {
                     sent_session_info = true;
@@ -321,9 +328,11 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                         return;
                                     }
                                     SessionCommand::Query { response_tx: new_tx, .. } => {
-                                        let _ = new_tx.send(DaveApiResponse::Failed(
-                                            "Query already in progress".to_string(),
-                                        ));
+                                        if let Some(new_tx) = new_tx {
+                                            let _ = new_tx.send(DaveApiResponse::Failed(
+                                                "Query already in progress".to_string(),
+                                            ));
+                                        }
                                         // Restore the pending approval — still waiting
                                         pending_approval = Some(approval);
                                     }
@@ -380,9 +389,11 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                         int_ctx.request_repaint();
                                     }
                                     SessionCommand::Query { response_tx: new_tx, .. } => {
-                                        let _ = new_tx.send(DaveApiResponse::Failed(
-                                            "Query already in progress".to_string(),
-                                        ));
+                                        if let Some(new_tx) = new_tx {
+                                            let _ = new_tx.send(DaveApiResponse::Failed(
+                                                "Query already in progress".to_string(),
+                                            ));
+                                        }
                                     }
                                     SessionCommand::SetPermissionMode { mode, ctx: mode_ctx } => {
                                         tracing::debug!(
@@ -1868,8 +1879,13 @@ async fn drain_commands_with_error(
 ) {
     while let Some(cmd) = command_rx.recv().await {
         match &cmd {
-            SessionCommand::Query { response_tx, .. }
-            | SessionCommand::Compact { response_tx, .. } => {
+            SessionCommand::Query {
+                response_tx: Some(response_tx),
+                ..
+            } => {
+                let _ = response_tx.send(DaveApiResponse::Failed(error.to_string()));
+            }
+            SessionCommand::Compact { response_tx, .. } => {
                 let _ = response_tx.send(DaveApiResponse::Failed(error.to_string()));
             }
             _ => {}
@@ -1910,7 +1926,7 @@ impl AiBackend for CodexBackend {
         resume_session_id: Option<String>,
         ctx: egui::Context,
     ) -> (
-        mpsc::Receiver<DaveApiResponse>,
+        Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
     ) {
         let (response_tx, response_rx) = mpsc::channel();
@@ -1954,7 +1970,7 @@ impl AiBackend for CodexBackend {
                 .send(SessionCommand::Query {
                     prompt,
                     images,
-                    response_tx,
+                    response_tx: Some(response_tx),
                     ctx,
                 })
                 .await
@@ -1963,7 +1979,7 @@ impl AiBackend for CodexBackend {
             }
         });
 
-        (response_rx, Some(handle))
+        (Some(response_rx), Some(handle))
     }
 
     fn cleanup_session(&self, session_id: String) {
@@ -3660,7 +3676,7 @@ mod tests {
             .send(SessionCommand::Query {
                 prompt: prompt.to_string(),
                 images: vec![],
-                response_tx,
+                response_tx: Some(response_tx),
                 ctx: egui::Context::default(),
             })
             .await
@@ -4203,7 +4219,7 @@ mod tests {
             .send(SessionCommand::Query {
                 prompt: "hello".to_string(),
                 images: vec![],
-                response_tx,
+                response_tx: Some(response_tx),
                 ctx: egui::Context::default(),
             })
             .await
@@ -4664,7 +4680,7 @@ mod tests {
                 .send(SessionCommand::Query {
                     prompt: "Say exactly: hello world".to_string(),
                     images: vec![],
-                    response_tx,
+                    response_tx: Some(response_tx),
                     ctx: egui::Context::default(),
                 })
                 .await

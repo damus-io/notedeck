@@ -141,8 +141,15 @@ pub trait AiBackend: Send + Sync {
     /// Returns a receiver that will receive tokens and tool calls as they arrive,
     /// plus an optional JoinHandle to the spawned task for cleanup on session deletion.
     ///
+    /// The receiver is `Some` when this call establishes a new UI channel the
+    /// caller must install. It is `None` for [`persistent_stream`] backends on
+    /// subsequent turns, where the session already owns a long-lived channel the
+    /// caller is still holding — the caller must keep its existing receiver.
+    ///
     /// If `resume_session_id` is Some, the backend should resume the specified Claude
     /// session instead of starting a new conversation.
+    ///
+    /// [`persistent_stream`]: AiBackend::persistent_stream
     #[allow(clippy::too_many_arguments)]
     fn stream_request(
         &self,
@@ -155,9 +162,20 @@ pub trait AiBackend: Send + Sync {
         resume_session_id: Option<String>,
         ctx: egui::Context,
     ) -> (
-        mpsc::Receiver<DaveApiResponse>,
+        Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
     );
+
+    /// Whether a session's UI channel lives for the whole session (across turns)
+    /// rather than being minted fresh per query.
+    ///
+    /// Persistent-stream backends (Claude) never disconnect the channel at
+    /// turn-end — a turn ends via an explicit `QueryComplete` — so the actor can
+    /// forward spontaneous wake-up turns on the same channel. Per-query backends
+    /// end a turn by dropping the sender (channel disconnect).
+    fn persistent_stream(&self) -> bool {
+        false
+    }
 
     /// Clean up resources associated with a session.
     /// Called when a session is deleted to allow backends to shut down any persistent connections.

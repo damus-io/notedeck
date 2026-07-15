@@ -21,7 +21,13 @@ pub(crate) enum SessionCommand {
     Query {
         prompt: String,
         images: Vec<crate::messages::ImageAttachment>,
-        response_tx: mpsc::Sender<DaveApiResponse>,
+        /// UI response channel for this turn.
+        ///
+        /// `Some` for backends that mint a fresh channel per query (Codex).
+        /// `None` for backends whose session actor owns one long-lived channel
+        /// for the session's whole lifetime (Claude) — the actor already holds
+        /// the sender, so the command doesn't carry one.
+        response_tx: Option<mpsc::Sender<DaveApiResponse>>,
         ctx: egui::Context,
     },
     /// Interrupt the current query - stops the stream but preserves session
