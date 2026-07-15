@@ -24,6 +24,10 @@ fn headway(url: &str, db: &str, extra: &[&str]) -> std::process::Output {
     args.extend_from_slice(extra);
     Command::new(env!("CARGO_BIN_EXE_headway"))
         .args(&args)
+        // Pin the default board: without this the binary falls back to the
+        // *developer's* persisted `headway board <id>` selection, and the test
+        // seeds/reads whatever board they happened to leave current.
+        .env("HEADWAY_BOARD", "headway")
         .output()
         .expect("run headway")
 }
