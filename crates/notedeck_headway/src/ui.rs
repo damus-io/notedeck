@@ -649,6 +649,15 @@ fn column_ui(
                     if state.edit == InlineEdit::RenameColumn(col_idx) {
                         column_rename_field(ui, state, col_idx, action);
                     } else {
+                        // The column's positional status circle, tying the
+                        // board header to the detail pane's visual language
+                        // (Linear renders its board headers the same way).
+                        status_icon_ui(
+                            ui,
+                            theme,
+                            StatusIcon::for_column(col_idx, view.columns.len()),
+                            14.0,
+                        );
                         ui.label(egui::RichText::new(&column.name).strong());
                         // When filtering, the badge reflects how many of this
                         // column's cards match rather than the column's total.
