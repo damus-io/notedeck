@@ -99,6 +99,8 @@ you actually see — never assume an id or that a card is where you expect.
 ```bash
 headway show            # human-readable: columns, titles, labels, word-ids
 headway show --archived # also list archived cards in full (default: count only)
+headway show --all      # every board in the cache, each printed in full and led
+                        # by its slug (with --json, a JSON array of boards)
 headway show --json     # machine-readable, for parsing (always includes archived)
 headway show <card>...  # print the given cards (word-id or hex) in full
                         # `git show`-style detail, not the whole board; with
@@ -134,7 +136,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 
 | Command | What it does |
 | --- | --- |
-| `show [cards...] [--archived] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards) |
+| `show [cards...] [--archived] [--all] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards; `--all` prints every board) |
 | `seed` | Create the default board if none exists |
 | `add <title...> [--col <c>] [-l <labels>] [--parent <card>]` | Add a card (defaults to the first column; `-l`/`--label` tags it; `--parent` creates it as a subissue) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |

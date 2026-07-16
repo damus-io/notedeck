@@ -211,9 +211,16 @@ async fn run() -> Result<()> {
     let board = cli.board;
     let as_json = cli.json;
     let show_archived = cli.archived;
+    let show_all = cli.all;
     let secret = cli.secret.map(|(s, _)| s);
 
     match cli.command {
+        // `--all` fans the render across every board in the cache, ignoring any
+        // card selectors (which address a single board).
+        Command::Show { .. } if show_all => {
+            print_all_boards(&list_boards(&ndb, &author), as_json, show_archived)
+        }
+
         Command::Show { cards } => match load_board(&ndb, &author, &board) {
             Some(view) if cards.is_empty() => print_board(&view, as_json, show_archived),
             Some(view) => print_cards(&view, &cards, as_json)?,
@@ -617,6 +624,34 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
     }
 }
 
+/// Render every board in the cache. In text mode each board is printed with
+/// [`print_board`], the boards separated by a blank line; in JSON mode they
+/// become a single array so the combined output stays machine-parseable.
+fn print_all_boards(boards: &[BoardView], as_json: bool, show_archived: bool) {
+    if as_json {
+        let arr: Vec<_> = boards.iter().map(event::board_json).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).unwrap_or_else(|_| "[]".into())
+        );
+        return;
+    }
+    if boards.is_empty() {
+        println!("no boards yet — run `headway seed` to create one");
+        return;
+    }
+    for (i, view) in boards.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        // Lead with the addressable slug: board titles can collide (two boards
+        // both titled "Headway"), and the slug is what `--board`/`board <id>`
+        // take, so it's the anchor for the human-readable title that follows.
+        println!("{}", relay_sync::dim(&view.id));
+        print_board(view, false, show_archived);
+    }
+}
+
 /// Print only the cards named by `sels` (each a card id or unique short prefix).
 /// In JSON mode this is an array of card objects, each with the `column` it
 /// currently sits in; otherwise one card per line.
@@ -794,6 +829,8 @@ struct Cli {
     board: String,
     json: bool,
     archived: bool,
+    /// `show` renders every board in the cache instead of just the current one.
+    all: bool,
     command: Command,
 }
 
@@ -818,6 +855,7 @@ impl Cli {
         let mut author = None;
         let mut json = false;
         let mut archived = false;
+        let mut all = false;
         let mut col = None;
         let mut row = None;
         let mut to = None;
@@ -864,6 +902,7 @@ impl Cli {
                 }
                 "--json" => json = true,
                 "--archived" => archived = true,
+                "--all" => all = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -914,6 +953,7 @@ impl Cli {
             board,
             json,
             archived,
+            all,
             command,
         }))
     }
@@ -1018,8 +1058,8 @@ USAGE:
 
 COMMANDS:
     show [cards...]            Print the board, or the given cards in full
-                               detail (--archived to list archived, --json for
-                               machine output)
+                               detail (--archived to list archived, --all for
+                               every board, --json for machine output)
     seed                       Seed the default board if none exists
     add <title...>             Add a card (--col <c> column, -l <labels> to tag,
                                --parent <card> to create it as a subissue)
@@ -1063,6 +1103,7 @@ OPTIONS:
     --parent <card>   Parent card for `add` (created as its subissue)
     --json            Machine-readable output (show)
     --archived        List archived cards in full (show)
+    --all             Show every board in the cache, not just the current (show)
     -h, --help        Print this help",
         DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
         board = store::BOARD_ID,
@@ -1097,6 +1138,13 @@ mod tests {
             parse(&["show", "Commerce#purse-metal-toilet"]).board,
             "commerce"
         );
+    }
+
+    /// `--all` is an independent flag on `show`, off unless passed.
+    #[test]
+    fn all_flag_toggles_show() {
+        assert!(!parse(&["show"]).all);
+        assert!(parse(&["show", "--all"]).all);
     }
 
     #[test]
