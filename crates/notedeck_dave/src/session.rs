@@ -826,6 +826,26 @@ impl ChatSession {
         }
     }
 
+    /// Whether any background subagent is still running.
+    ///
+    /// A background subagent (`run_in_background`) keeps executing after the
+    /// foreground turn that launched it completes; the CLI resumes the session
+    /// with a wake-up turn once it finishes. Until then the session is still
+    /// doing work even though no foreground turn is in flight, so
+    /// [`status`](Self::status) reports `Working`.
+    pub fn has_running_background_subagent(&self) -> bool {
+        let Some(agentic) = &self.agentic else {
+            return false;
+        };
+        agentic.subagent_indices.values().any(|&idx| {
+            matches!(
+                self.chat.get(idx),
+                Some(Message::Subagent(info))
+                    if info.background && info.status == SubagentStatus::Running
+            )
+        })
+    }
+
     /// Try to fold a tool result into its parent subagent.
     /// Returns None if folded, Some(result) if it couldn't be folded.
     pub fn fold_tool_result(&mut self, result: ExecutedTool) -> Option<ExecutedTool> {
@@ -921,6 +941,13 @@ impl ChatSession {
 
         // Check if actively working (has task handle and receiving tokens)
         if self.task_handle.is_some() && self.incoming_tokens.is_some() {
+            return AgentStatus::Working;
+        }
+
+        // A background subagent is still running: the foreground turn has ended
+        // (no task handle) but a wake-up turn will resume the session when the
+        // task finishes, so it's still Working.
+        if self.has_running_background_subagent() {
             return AgentStatus::Working;
         }
 
@@ -2623,6 +2650,56 @@ mod tests {
         } else {
             panic!("expected Subagent message at index {}", idx);
         }
+    }
+
+    #[test]
+    fn running_background_subagent_keeps_session_working() {
+        let mut session = test_session();
+        // A finished foreground turn that launched a background subagent: the
+        // task handle is cleared, but the subagent is still running.
+        session
+            .chat
+            .push(Message::User("do background work".into()));
+        let mut subagent = make_subagent("toolu_root", "background task");
+        subagent.background = true;
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic
+                .subagent_indices
+                .insert("toolu_root".to_string(), idx);
+        }
+        session.task_handle = None;
+
+        session.update_status();
+        assert_eq!(
+            session.status(),
+            AgentStatus::Working,
+            "a running background subagent should keep the session Working"
+        );
+
+        // Once it completes, the session is no longer Working on its account.
+        session.complete_subagent("toolu_root", "done");
+        session.update_status();
+        assert_ne!(session.status(), AgentStatus::Working);
+    }
+
+    #[test]
+    fn foreground_subagent_does_not_keep_session_working() {
+        let mut session = test_session();
+        session.chat.push(Message::User("explore".into()));
+        // A foreground subagent (background: false) must not by itself hold the
+        // session in Working after the turn ends.
+        let subagent = make_subagent("toolu_fg", "foreground task");
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert("toolu_fg".to_string(), idx);
+        }
+        session.task_handle = None;
+
+        session.update_status();
+        assert_ne!(session.status(), AgentStatus::Working);
     }
 
     #[test]
