@@ -2,7 +2,7 @@ use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 use tracing::info;
 
-use crate::{Muted, PublishApi, RelayType};
+use crate::{Bookmarks, Muted, PublishApi, RelayType};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ReportType {
@@ -202,6 +202,108 @@ pub fn send_mute_event(
             .options(NoteBuildOptions::default())
             .start_tag()
             .tag_str("p")
+            .tag_str(&target.hex())
+    };
+
+    publish_note_builder(builder, ndb, publisher, kp);
+}
+
+pub fn send_unbookmark_event(
+    ndb: &Ndb,
+    txn: &Transaction,
+    publisher: &mut PublishApi<'_, '_>,
+    kp: FilledKeypair,
+    bookmarks: &Bookmarks,
+    target: &NoteId,
+) {
+    if !bookmarks.is_bookmarked(target.bytes()) {
+        tracing::info!(
+            "note {} is not bookmarked, nothing to unbookmark",
+            target.hex()
+        );
+        return;
+    }
+
+    let filter = Filter::new()
+        .authors([kp.pubkey.bytes()])
+        .kinds([10003])
+        .limit(1)
+        .build();
+
+    let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
+
+    let Some(existing_note) = ndb
+        .query(txn, std::slice::from_ref(&filter), lim)
+        .ok()
+        .and_then(|results| results.first().map(|qr| qr.note_key))
+        .and_then(|nk| ndb.get_note_by_key(txn, nk).ok())
+    else {
+        tracing::warn!("no existing kind 10003 bookmarks list found, nothing to unbookmark from");
+        return;
+    };
+
+    let target_bytes = target.bytes();
+    let builder = builder_from_note(
+        existing_note,
+        Some(|tag: &nostrdb::Tag<'_>| {
+            if tag.count() < 2 {
+                return false;
+            }
+            let Some("e") = tag.get_str(0) else {
+                return false;
+            };
+            let Some(val) = tag.get_id(1) else {
+                return false;
+            };
+            val == target_bytes
+        }),
+    );
+
+    publish_note_builder(builder, ndb, publisher, kp);
+}
+
+pub fn send_bookmark_event(
+    ndb: &Ndb,
+    txn: &Transaction,
+    publisher: &mut PublishApi<'_, '_>,
+    kp: FilledKeypair,
+    bookmarks: &Bookmarks,
+    target: &NoteId,
+) {
+    if bookmarks.is_bookmarked(target.bytes()) {
+        tracing::info!("note {} is already bookmarked", target.hex());
+        return;
+    }
+
+    // Query for the existing bookmarks list (kind 10003)
+    let filter = Filter::new()
+        .authors([kp.pubkey.bytes()])
+        .kinds([10003])
+        .limit(1)
+        .build();
+
+    let lim = filter.limit().unwrap_or(crate::filter::default_limit()) as i32;
+
+    let existing_note = ndb
+        .query(txn, std::slice::from_ref(&filter), lim)
+        .ok()
+        .and_then(|results| results.first().map(|qr| qr.note_key))
+        .and_then(|nk| ndb.get_note_by_key(txn, nk).ok());
+
+    let builder = if let Some(note) = existing_note {
+        // Append new "e" tag to existing bookmarks list
+        builder_from_note(note, None::<fn(&nostrdb::Tag<'_>) -> bool>)
+            .start_tag()
+            .tag_str("e")
+            .tag_str(&target.hex())
+    } else {
+        // Create a fresh bookmarks list
+        NoteBuilder::new()
+            .content("")
+            .kind(10003)
+            .options(NoteBuildOptions::default())
+            .start_tag()
+            .tag_str("e")
             .tag_str(&target.hex())
     };
 

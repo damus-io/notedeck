@@ -24,6 +24,7 @@ pub enum NoteContextSelection {
     MuteUser,
     ReportUser,
     SummarizeThread(NoteId),
+    BookmarkNote,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -124,6 +125,32 @@ impl NoteContextSelection {
             NoteContextSelection::ReportUser => {}
             NoteContextSelection::SummarizeThread(_) => {
                 // Handled at Chrome level — routed to Dave
+            }
+            NoteContextSelection::BookmarkNote => {
+                let target = NoteId::new(*note.id());
+                let Some(kp) = accounts.get_selected_account().key.to_full() else {
+                    return;
+                };
+                let bookmarks = accounts.bookmarks();
+                if bookmarks.is_bookmarked(target.bytes()) {
+                    super::publish::send_unbookmark_event(
+                        ndb,
+                        txn,
+                        &mut remote.publisher(accounts),
+                        kp,
+                        &bookmarks,
+                        &target,
+                    );
+                } else {
+                    super::publish::send_bookmark_event(
+                        ndb,
+                        txn,
+                        &mut remote.publisher(accounts),
+                        kp,
+                        &bookmarks,
+                        &target,
+                    );
+                }
             }
         }
     }

@@ -72,6 +72,7 @@ pub enum AlgoOption {
 #[derive(Clone, Debug)]
 enum AddColumnOption {
     Universe,
+    Bookmarks,
     UndecidedNotification,
     ExternalNotification,
     Algo(AlgoOption),
@@ -171,6 +172,9 @@ impl AddColumnOption {
         match self {
             AddColumnOption::Algo(algo_option) => AddColumnResponse::Algo(algo_option),
             AddColumnOption::Universe => AddColumnResponse::Timeline(TimelineKind::Universe),
+            AddColumnOption::Bookmarks => {
+                AddColumnResponse::Timeline(TimelineKind::bookmarks(cur_account.key.pubkey))
+            }
             AddColumnOption::Notification(pubkey) => AddColumnResponse::Timeline(
                 TimelineKind::Notifications(*pubkey.as_pubkey(&cur_account.key.pubkey)),
             ),
@@ -653,6 +657,16 @@ impl<'a> AddColumnView<'a> {
             ),
             icon: app_images::universe_image(),
             option: AddColumnOption::Universe,
+        });
+        vec.push(ColumnOptionData {
+            title: tr!(self.i18n, "Bookmarks", "Title for bookmarks column"),
+            description: tr!(
+                self.i18n,
+                "See all of your bookmarked notes",
+                "Description for bookmarks column"
+            ),
+            icon: app_images::home_image(),
+            option: AddColumnOption::Bookmarks,
         });
         vec.push(ColumnOptionData {
             title: tr!(self.i18n, "Hashtags", "Title for hashtags column"),

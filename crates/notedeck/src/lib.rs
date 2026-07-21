@@ -5,6 +5,7 @@ mod account;
 mod app;
 mod args;
 pub mod async_loader;
+mod bookmarks;
 pub mod compact;
 pub mod contacts;
 mod context;
@@ -70,6 +71,7 @@ pub use account::FALLBACK_PUBKEY;
 pub use app::{App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
+pub use bookmarks::{bookmarks_from_note, Bookmarks};
 pub use context::{AppContext, SoftKeyboardContext};
 pub use enostr::FullHistoryConfig;
 pub use enostr::RelayRoutingPreference;
@@ -96,10 +98,11 @@ pub use nav::DragResponse;
 pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
-    builder_from_note, construct_people_list_note, get_p_tags, send_mute_event,
-    send_people_list_event, send_report_event, send_unmute_event, BroadcastContext,
-    ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteRef, ReportTarget,
-    ReportType, RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
+    builder_from_note, construct_people_list_note, get_p_tags, send_bookmark_event,
+    send_mute_event, send_people_list_event, send_report_event, send_unbookmark_event,
+    send_unmute_event, BroadcastContext, ContextSelection, NoteAction, NoteContext,
+    NoteContextSelection, NoteRef, ReportTarget, ReportType, RootIdError, RootNoteId,
+    RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use oneshot_api::OneshotApi;
