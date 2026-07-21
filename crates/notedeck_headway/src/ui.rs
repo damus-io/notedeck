@@ -371,6 +371,72 @@ fn filter_ref_jump(view: &BoardView, boards: &[BoardSummary], state: &mut BoardU
     state.filter = rewritten;
 }
 
+/// Whether the board is reaching a private relay for cross-device sync, shown as
+/// a small status dot in the board header. Derived each frame in
+/// [`crate::Headway::render`] from the resolved private relay set and the relay
+/// pool's live connection status.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SyncStatus {
+    /// No private relay configured — the board lives only on this device.
+    LocalOnly,
+    /// A private relay is configured but not currently connected, so edits
+    /// aren't reaching the user's other devices yet.
+    Offline,
+    /// Connected to a private relay; edits sync across devices.
+    Syncing,
+}
+
+/// A small colored dot + label leading the board header, telling the user
+/// whether the board is syncing to a private relay. Hover reveals the detail and
+/// the next step (mark a relay private / check the relay is online). Colors
+/// mirror the relay-management status pill (`selection.bg_fill` / `warn_fg_color`).
+fn sync_indicator(ui: &mut egui::Ui, theme: &ColorTheme, status: SyncStatus) {
+    // `filled` distinguishes an active relay (solid dot) from local-only (hollow
+    // ring). The dot is painted rather than a ○/● glyph, whose font metrics sit
+    // high and misalign with the adjacent text.
+    let (filled, color, label, tip): (bool, egui::Color32, &str, &str) = match status {
+        SyncStatus::Syncing => (
+            true,
+            ui.visuals().selection.bg_fill,
+            "Synced",
+            "Syncing to your private relay — edits reach your other devices.",
+        ),
+        SyncStatus::Offline => (
+            true,
+            ui.visuals().warn_fg_color,
+            "Not connected",
+            "A private relay is set but not connected, so this board isn't \
+             syncing right now. Check that the relay is online in relay settings.",
+        ),
+        SyncStatus::LocalOnly => (
+            false,
+            theme.text_muted,
+            "Local only",
+            "This board lives only on this device. Mark a relay as private in \
+             relay settings to sync it across your devices.",
+        ),
+    };
+    let resp = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_XS;
+            // Allocate over the text row height so the dot centers on the label.
+            let radius = 4.0;
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(radius * 2.0, ui.text_style_height(&egui::TextStyle::Body)),
+                egui::Sense::hover(),
+            );
+            if filled {
+                ui.painter().circle_filled(rect.center(), radius, color);
+            } else {
+                ui.painter()
+                    .circle_stroke(rect.center(), radius, egui::Stroke::new(1.5, color));
+            }
+            ui.label(egui::RichText::new(label).color(color));
+        })
+        .response;
+    resp.on_hover_text(tip);
+}
+
 /// Render the board (header, columns, the add-column affordance and the floating
 /// card detail sheet) and return the edit the user made this frame, if any.
 pub fn board_ui(
@@ -379,6 +445,7 @@ pub fn board_ui(
     note_context: &mut notedeck::NoteContext,
     view: &BoardView,
     boards: &[BoardSummary],
+    sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
     // A selected card takes over the whole view as a full-pane detail screen,
@@ -442,6 +509,9 @@ pub fn board_ui(
             };
             let summary = egui::RichText::new(summary_text).color(theme.text_muted);
             ui.horizontal(|ui| {
+                // Sync affordance: is this board reaching a private relay?
+                sync_indicator(ui, theme, sync);
+                ui.add_space(SPACING_MD);
                 ui.label(summary);
                 // The archived entry point only appears when there's something
                 // behind it, so the header stays quiet on a fresh board.
