@@ -865,6 +865,29 @@ pub fn handle_key_action(
                 None => KeyActionResult::None,
             }
         }
+        KeyAction::ToggleAutoExecute => {
+            // Toggle the dangerous Auto Execute mode on/off. On leaves the
+            // session in BypassPermissions; off returns it to Default.
+            use claude_agent_sdk_rs::PermissionMode;
+            let currently_on = session_manager
+                .get_active()
+                .and_then(|s| s.agentic.as_ref())
+                .map(|a| a.permission_mode == PermissionMode::BypassPermissions)
+                .unwrap_or(false);
+            let new_mode = if currently_on {
+                PermissionMode::Default
+            } else {
+                PermissionMode::BypassPermissions
+            };
+            let publish = update::set_permission_mode(session_manager, backend, new_mode, ctx);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
+            match publish {
+                Some(cmd) => KeyActionResult::PublishModeCommand(cmd),
+                None => KeyActionResult::None,
+            }
+        }
         KeyAction::DeleteActiveSession => {
             if let Some(id) = session_manager.active_id() {
                 KeyActionResult::DeleteSession(id)
@@ -1111,6 +1134,16 @@ pub fn handle_ui_action(
         ),
         DaveAction::CyclePermissionMode => {
             let publish = update::cycle_permission_mode(session_manager, backend, ctx);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
+            match publish {
+                Some(cmd) => UiActionResult::PublishModeCommand(cmd),
+                None => UiActionResult::Handled,
+            }
+        }
+        DaveAction::SetPermissionMode(mode) => {
+            let publish = update::set_permission_mode(session_manager, backend, mode, ctx);
             if let Some(session) = session_manager.get_active_mut() {
                 session.focus_requested = true;
             }

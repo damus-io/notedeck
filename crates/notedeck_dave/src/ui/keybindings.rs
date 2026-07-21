@@ -32,6 +32,9 @@ pub enum KeyAction {
     ToggleView,
     /// Cycle permission mode: Default → Plan → AcceptEdits (Ctrl+M)
     CyclePermissionMode,
+    /// Toggle the dangerous Auto Execute (BypassPermissions) mode on/off
+    /// (Ctrl+Shift+M). Deliberately a distinct chord, not part of the cycle.
+    ToggleAutoExecute,
     /// Delete the active session
     DeleteActiveSession,
     /// Navigate to next item in focus queue (Ctrl+N)
@@ -147,6 +150,12 @@ pub fn check_keybindings(
     // Ctrl+M to cycle permission mode - agentic only
     if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::M)) {
         return Some(KeyAction::CyclePermissionMode);
+    }
+
+    // Ctrl+Shift+M to toggle the dangerous Auto Execute mode - agentic only.
+    // A distinct chord so it can't be reached by accidental cycling.
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::M)) {
+        return Some(KeyAction::ToggleAutoExecute);
     }
 
     // Ctrl+D to toggle Done status for current focus queue item - agentic only

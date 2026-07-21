@@ -192,6 +192,9 @@ pub enum DaveAction {
     },
     /// Cycle permission mode: Default → Plan → AcceptEdits (clicked mode badge)
     CyclePermissionMode,
+    /// Set a specific permission mode (chosen from the mode badge's right-click
+    /// menu). The only way to reach the dangerous `BypassPermissions` mode.
+    SetPermissionMode(PermissionMode),
     /// Toggle auto-steal focus mode (clicked AUTO badge)
     ToggleAutoSteal,
     /// Trigger manual context compaction
@@ -2041,21 +2044,56 @@ fn toggle_badges_ui(
         action = Some(DaveAction::ToggleAutoSteal);
     }
 
-    // Permission mode badge: cycles Default → Plan → AcceptEdits
+    // Permission mode badge. Left-click / Ctrl+M cycles Default → Plan → Auto
+    // Edit. Auto Execute (BypassPermissions) is red and deliberately kept OUT of
+    // the cycle — it's only reachable from the right-click menu so it can't be
+    // hit by accident.
     let (label, variant) = match permission_mode {
         PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
         PermissionMode::AcceptEdits => ("AUTO EDIT", BadgeVariant::Warning),
+        PermissionMode::BypassPermissions => ("AUTO EXEC", BadgeVariant::Destructive),
         _ => ("PLAN", BadgeVariant::Default),
     };
     let mut mode_badge = StatusBadge::new(label).variant(variant);
     if ctrl_held {
         mode_badge = mode_badge.keybind("M");
     }
-    if mode_badge
-        .show(ui)
-        .on_hover_text("Click or Ctrl+M to cycle: Default → Plan → Auto Edit")
-        .clicked()
-    {
+    let mode_resp = mode_badge.show(ui).on_hover_text(
+        "Click / Ctrl+M to cycle: Default → Plan → Auto Edit · right-click for more modes",
+    );
+    notedeck_ui::context_menu::context_menu(&mode_resp, |ui| {
+        ui.label(egui::RichText::new("Permission mode").small().weak());
+        if ui.button("Default").clicked() {
+            action = Some(DaveAction::SetPermissionMode(PermissionMode::Default));
+            ui.close_menu();
+        }
+        if ui.button("Plan").clicked() {
+            action = Some(DaveAction::SetPermissionMode(PermissionMode::Plan));
+            ui.close_menu();
+        }
+        if ui.button("Auto Edit").clicked() {
+            action = Some(DaveAction::SetPermissionMode(PermissionMode::AcceptEdits));
+            ui.close_menu();
+        }
+        ui.separator();
+        // Dangerous: auto-accepts and executes EVERY tool call, including shell.
+        // Rendered in the theme's error color and separated so it reads as a
+        // deliberate, distinct choice — never part of the cycle.
+        let danger = ui.visuals().error_fg_color;
+        if ui
+            .button(egui::RichText::new("⚠ Auto Execute").color(danger))
+            .on_hover_text(
+                "Auto-accept & run ALL tool calls (including shell). Ctrl+Shift+M. Use with care.",
+            )
+            .clicked()
+        {
+            action = Some(DaveAction::SetPermissionMode(
+                PermissionMode::BypassPermissions,
+            ));
+            ui.close_menu();
+        }
+    });
+    if mode_resp.clicked() {
         action = Some(DaveAction::CyclePermissionMode);
     }
 

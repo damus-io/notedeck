@@ -134,9 +134,48 @@ pub struct ModeCommandPublish {
     pub mode: &'static str,
 }
 
+/// The next mode in the click / Ctrl+M cycle: Default → Plan → AcceptEdits →
+/// Default. `BypassPermissions` (Auto Execute) is intentionally excluded — it's
+/// dangerous and must be selected deliberately (mode menu / Ctrl+Shift+M), so
+/// cycling can never land on it. If somehow already in it, cycling exits to
+/// Default.
+fn next_cycle_permission_mode(mode: PermissionMode) -> PermissionMode {
+    match mode {
+        PermissionMode::Default => PermissionMode::Plan,
+        PermissionMode::Plan => PermissionMode::AcceptEdits,
+        _ => PermissionMode::Default,
+    }
+}
+
 pub fn cycle_permission_mode(
     session_manager: &mut SessionManager,
     backend: &dyn AiBackend,
+    ctx: &egui::Context,
+) -> Option<ModeCommandPublish> {
+    let current = session_manager
+        .get_active()?
+        .agentic
+        .as_ref()?
+        .permission_mode;
+
+    set_permission_mode(
+        session_manager,
+        backend,
+        next_cycle_permission_mode(current),
+        ctx,
+    )
+}
+
+/// Apply an explicit permission mode to the active session.
+///
+/// Shared by [`cycle_permission_mode`] and by deliberate selection from the mode
+/// menu (the only way to reach the dangerous `BypassPermissions` / Auto Execute
+/// mode). Local sessions apply on the backend and mark state dirty; remote
+/// sessions return a command for the caller to publish to the host.
+pub fn set_permission_mode(
+    session_manager: &mut SessionManager,
+    backend: &dyn AiBackend,
+    new_mode: PermissionMode,
     ctx: &egui::Context,
 ) -> Option<ModeCommandPublish> {
     let session = session_manager.get_active_mut()?;
@@ -144,11 +183,6 @@ pub fn cycle_permission_mode(
     let session_id = session.id;
     let agentic = session.agentic.as_mut()?;
 
-    let new_mode = match agentic.permission_mode {
-        PermissionMode::Default => PermissionMode::Plan,
-        PermissionMode::Plan => PermissionMode::AcceptEdits,
-        _ => PermissionMode::Default,
-    };
     agentic.permission_mode = new_mode;
 
     let mode_str = crate::session::permission_mode_to_str(new_mode);
@@ -169,7 +203,7 @@ pub fn cycle_permission_mode(
     };
 
     tracing::debug!(
-        "Cycled permission mode for session {} to {:?} (remote={})",
+        "Set permission mode for session {} to {:?} (remote={})",
         session_id,
         new_mode,
         is_remote,
@@ -1372,6 +1406,48 @@ mod tests {
     use crate::collapse_state::CollapseState;
     use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::{SessionId, SessionSource};
+
+    #[test]
+    fn cycle_never_reaches_bypass_permissions() {
+        // The click / Ctrl+M cycle must be a closed 3-cycle that never lands on
+        // the dangerous Auto Execute mode.
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::Default),
+            PermissionMode::Plan
+        );
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::Plan),
+            PermissionMode::AcceptEdits
+        );
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::AcceptEdits),
+            PermissionMode::Default
+        );
+
+        // Walking the cycle from every mode never yields BypassPermissions.
+        for start in [
+            PermissionMode::Default,
+            PermissionMode::Plan,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+        ] {
+            let mut mode = start;
+            for _ in 0..8 {
+                mode = next_cycle_permission_mode(mode);
+                assert_ne!(
+                    mode,
+                    PermissionMode::BypassPermissions,
+                    "cycling from {start:?} reached BypassPermissions"
+                );
+            }
+        }
+
+        // Cycling out of Auto Execute exits to Default.
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::BypassPermissions),
+            PermissionMode::Default
+        );
+    }
 
     fn create_named_agent_session(
         sm: &mut SessionManager,
