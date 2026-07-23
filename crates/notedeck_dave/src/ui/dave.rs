@@ -2099,16 +2099,19 @@ fn toggle_badges_ui(
         } else {
             "⚠ Auto Accept All"
         };
-        if ui
-            .button(egui::RichText::new(label).color(danger))
-            .on_hover_text(
-                "Auto-accept ALL tool calls this session, on any backend (Ctrl+Shift+M). Use with care.",
-            )
-            .clicked()
-        {
-            action = Some(DaveAction::ToggleAutoAcceptAll);
-            ui.close_menu();
-        }
+        ui.horizontal(|ui| {
+            if ui
+                .button(egui::RichText::new(label).color(danger))
+                .on_hover_text(
+                    "Auto-accept ALL tool calls this session, on any backend. Use with care.",
+                )
+                .clicked()
+            {
+                action = Some(DaveAction::ToggleAutoAcceptAll);
+                ui.close_menu();
+            }
+            super::keybind_hint::keybind_hint(ui, "⌃⇧M");
+        });
     });
     if mode_resp.clicked() {
         action = Some(DaveAction::CyclePermissionMode);
