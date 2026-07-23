@@ -135,16 +135,37 @@ pub struct ModeCommandPublish {
 }
 
 /// The next mode in the click / Ctrl+M cycle: Default → Plan → AcceptEdits →
-/// Default. `BypassPermissions` (Auto Execute) is intentionally excluded — it's
-/// dangerous and must be selected deliberately (mode menu / Ctrl+Shift+M), so
-/// cycling can never land on it. If somehow already in it, cycling exits to
-/// Default.
+/// Default. These are the modes the CLI honors as a runtime switch.
+/// `BypassPermissions` is never used — dave can't enter it mid-session, and the
+/// dangerous "run everything" behaviour is instead handled dave-side by Auto
+/// Accept All (see [`toggle_auto_accept_all`]).
 fn next_cycle_permission_mode(mode: PermissionMode) -> PermissionMode {
     match mode {
         PermissionMode::Default => PermissionMode::Plan,
         PermissionMode::Plan => PermissionMode::AcceptEdits,
         _ => PermissionMode::Default,
     }
+}
+
+/// Toggle dave-side "Auto Accept All" for the active session and return the new
+/// state. When on, every permission request is auto-accepted by dave (via
+/// [`should_runtime_allow`](crate::session::AgenticSessionData::should_runtime_allow)),
+/// regardless of backend — no CLI permission mode involved.
+pub fn toggle_auto_accept_all(session_manager: &mut SessionManager) -> bool {
+    let Some(session) = session_manager.get_active_mut() else {
+        return false;
+    };
+    let Some(agentic) = session.agentic.as_mut() else {
+        return false;
+    };
+    agentic.auto_accept_all = !agentic.auto_accept_all;
+    let now_on = agentic.auto_accept_all;
+    tracing::info!(
+        "Auto Accept All {} for session {}",
+        if now_on { "enabled" } else { "disabled" },
+        session.id,
+    );
+    now_on
 }
 
 pub fn cycle_permission_mode(
@@ -166,11 +187,11 @@ pub fn cycle_permission_mode(
     )
 }
 
-/// Apply an explicit permission mode to the active session.
+/// Apply an explicit permission mode (Default / Plan / AcceptEdits) to the
+/// active session.
 ///
 /// Shared by [`cycle_permission_mode`] and by deliberate selection from the mode
-/// menu (the only way to reach the dangerous `BypassPermissions` / Auto Execute
-/// mode). Local sessions apply on the backend and mark state dirty; remote
+/// menu. Local sessions apply on the backend and mark state dirty; remote
 /// sessions return a command for the caller to publish to the host.
 pub fn set_permission_mode(
     session_manager: &mut SessionManager,
@@ -1409,8 +1430,9 @@ mod tests {
 
     #[test]
     fn cycle_never_reaches_bypass_permissions() {
-        // The click / Ctrl+M cycle must be a closed 3-cycle that never lands on
-        // the dangerous Auto Execute mode.
+        // The click / Ctrl+M cycle must be a closed 3-cycle over the modes the
+        // CLI honors at runtime, never landing on BypassPermissions (which dave
+        // can't enter mid-session anyway).
         assert_eq!(
             next_cycle_permission_mode(PermissionMode::Default),
             PermissionMode::Plan

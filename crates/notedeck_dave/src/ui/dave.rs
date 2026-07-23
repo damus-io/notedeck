@@ -41,6 +41,7 @@ bitflags! {
         const IsCompacting     = 1 << 5;
         const AutoStealFocus   = 1 << 6;
         const IsRemote         = 1 << 7;
+        const AutoAcceptAll    = 1 << 8;
     }
 }
 
@@ -193,8 +194,10 @@ pub enum DaveAction {
     /// Cycle permission mode: Default → Plan → AcceptEdits (clicked mode badge)
     CyclePermissionMode,
     /// Set a specific permission mode (chosen from the mode badge's right-click
-    /// menu). The only way to reach the dangerous `BypassPermissions` mode.
+    /// menu): Default / Plan / AcceptEdits.
     SetPermissionMode(PermissionMode),
+    /// Toggle dave-side "Auto Accept All" (right-click menu / Ctrl+Shift+M).
+    ToggleAutoAcceptAll,
     /// Toggle auto-steal focus mode (clicked AUTO badge)
     ToggleAutoSteal,
     /// Trigger manual context compaction
@@ -307,6 +310,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn permission_mode(mut self, mode: PermissionMode) -> Self {
         self.permission_mode = mode;
+        self
+    }
+
+    pub fn auto_accept_all(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::AutoAcceptAll, val);
         self
     }
 
@@ -1887,6 +1895,7 @@ impl DaveUi<'_> {
                                 toggle_badges_ui(
                                     ui,
                                     self.permission_mode,
+                                    self.flags.contains(DaveUiFlags::AutoAcceptAll),
                                     self.flags.contains(DaveUiFlags::AutoStealFocus),
                                     self.focus_queue_info,
                                 )
@@ -1998,6 +2007,7 @@ fn usage_bar_ui(
 fn toggle_badges_ui(
     ui: &mut egui::Ui,
     permission_mode: PermissionMode,
+    auto_accept_all: bool,
     auto_steal_focus: bool,
     focus_queue_info: Option<(usize, usize, FocusPriority)>,
 ) -> Option<DaveAction> {
@@ -2045,21 +2055,25 @@ fn toggle_badges_ui(
     }
 
     // Permission mode badge. Left-click / Ctrl+M cycles Default → Plan → Auto
-    // Edit. Auto Execute (BypassPermissions) is red and deliberately kept OUT of
-    // the cycle — it's only reachable from the right-click menu so it can't be
-    // hit by accident.
-    let (label, variant) = match permission_mode {
-        PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
-        PermissionMode::AcceptEdits => ("AUTO EDIT", BadgeVariant::Warning),
-        PermissionMode::BypassPermissions => ("AUTO EXEC", BadgeVariant::Destructive),
-        _ => ("PLAN", BadgeVariant::Default),
+    // Edit. "Auto Accept All" is a separate dave-side toggle (not a CLI mode);
+    // when on it takes over the badge as a red "AUTO ACCEPT" and is reachable
+    // only from the right-click menu or Ctrl+Shift+M, so it can't be hit by
+    // accidental cycling.
+    let (label, variant) = if auto_accept_all {
+        ("AUTO ACCEPT", BadgeVariant::Destructive)
+    } else {
+        match permission_mode {
+            PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
+            PermissionMode::AcceptEdits => ("AUTO EDIT", BadgeVariant::Warning),
+            _ => ("PLAN", BadgeVariant::Default),
+        }
     };
     let mut mode_badge = StatusBadge::new(label).variant(variant);
     if ctrl_held {
         mode_badge = mode_badge.keybind("M");
     }
     let mode_resp = mode_badge.show(ui).on_hover_text(
-        "Click / Ctrl+M to cycle: Default → Plan → Auto Edit · right-click for more modes",
+        "Click / Ctrl+M to cycle: Default → Plan → Auto Edit · right-click for more",
     );
     notedeck_ui::context_menu::context_menu(&mode_resp, |ui| {
         ui.label(egui::RichText::new("Permission mode").small().weak());
@@ -2076,20 +2090,23 @@ fn toggle_badges_ui(
             ui.close_menu();
         }
         ui.separator();
-        // Dangerous: auto-accepts and executes EVERY tool call, including shell.
-        // Rendered in the theme's error color and separated so it reads as a
-        // deliberate, distinct choice — never part of the cycle.
+        // Dangerous: dave auto-accepts EVERY permission request this session
+        // (any backend). Rendered in the theme's error color, checkmarked when
+        // on, and separated so it reads as a deliberate, distinct toggle.
         let danger = ui.visuals().error_fg_color;
+        let label = if auto_accept_all {
+            "⚠ Auto Accept All  ✓"
+        } else {
+            "⚠ Auto Accept All"
+        };
         if ui
-            .button(egui::RichText::new("⚠ Auto Execute").color(danger))
+            .button(egui::RichText::new(label).color(danger))
             .on_hover_text(
-                "Auto-accept & run ALL tool calls (including shell). Ctrl+Shift+M. Use with care.",
+                "Auto-accept ALL tool calls this session, on any backend (Ctrl+Shift+M). Use with care.",
             )
             .clicked()
         {
-            action = Some(DaveAction::SetPermissionMode(
-                PermissionMode::BypassPermissions,
-            ));
+            action = Some(DaveAction::ToggleAutoAcceptAll);
             ui.close_menu();
         }
     });
@@ -2190,17 +2207,27 @@ mod tests {
     /// menu in isolation.
     struct BadgeHarnessState {
         mode: PermissionMode,
+        auto_accept_all: bool,
         action: Option<DaveAction>,
     }
 
-    fn badge_harness(mode: PermissionMode) -> Harness<'static, BadgeHarnessState> {
+    fn badge_harness(
+        mode: PermissionMode,
+        auto_accept_all: bool,
+    ) -> Harness<'static, BadgeHarnessState> {
         Harness::new_ui_state(
             |ui, state: &mut BadgeHarnessState| {
-                if let Some(action) = toggle_badges_ui(ui, state.mode, false, None) {
+                if let Some(action) =
+                    toggle_badges_ui(ui, state.mode, state.auto_accept_all, false, None)
+                {
                     state.action = Some(action);
                 }
             },
-            BadgeHarnessState { mode, action: None },
+            BadgeHarnessState {
+                mode,
+                auto_accept_all,
+                action: None,
+            },
         )
     }
 
@@ -2233,7 +2260,7 @@ mod tests {
     fn mode_badge_left_click_cycles() {
         // Left-clicking the badge (shows "PLAN" in Default) cycles — it must NOT
         // jump straight to a specific mode.
-        let mut harness = badge_harness(PermissionMode::Default);
+        let mut harness = badge_harness(PermissionMode::Default, false);
         harness.run();
         harness.get_by_label("PLAN").click();
         harness.run();
@@ -2247,34 +2274,32 @@ mod tests {
     }
 
     #[test]
-    fn auto_execute_reachable_only_via_right_click_menu() {
-        let mut harness = badge_harness(PermissionMode::Default);
+    fn auto_accept_all_reachable_only_via_right_click_menu() {
+        let mut harness = badge_harness(PermissionMode::Default, false);
         harness.run();
 
         // Open the mode badge's context menu and pick the dangerous entry.
         right_click(&mut harness, "PLAN");
-        harness.get_by_label("⚠ Auto Execute").click();
+        harness.get_by_label("⚠ Auto Accept All").click();
         harness.run();
 
         assert!(
             matches!(
                 harness.state().action,
-                Some(DaveAction::SetPermissionMode(
-                    PermissionMode::BypassPermissions
-                ))
+                Some(DaveAction::ToggleAutoAcceptAll)
             ),
-            "the menu's Auto Execute item should set BypassPermissions"
+            "the menu's Auto Accept All item should toggle the dave-side flag"
         );
     }
 
     #[test]
-    fn auto_execute_badge_renders_red_label() {
-        // When already in Auto Execute, the badge reads "AUTO EXEC" (Destructive
-        // variant) rather than a safe-mode label.
-        let mut harness = badge_harness(PermissionMode::BypassPermissions);
+    fn auto_accept_all_takes_over_the_badge() {
+        // With the dave-side flag on, the badge reads "AUTO ACCEPT" (Destructive)
+        // regardless of the underlying permission mode.
+        let mut harness = badge_harness(PermissionMode::Plan, true);
         harness.run();
         // Queryable by its text means the label rendered.
-        let _ = harness.get_by_label("AUTO EXEC");
+        let _ = harness.get_by_label("AUTO ACCEPT");
     }
 
     struct PermissionUiHarnessState {

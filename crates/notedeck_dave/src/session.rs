@@ -303,6 +303,10 @@ pub struct AgenticSessionData {
     /// For Bash: stores binary names (first word of command).
     /// For other tools: stores the tool name.
     pub runtime_allows: HashSet<String>,
+    /// Auto-accept EVERY permission request this session (dave-side "Auto
+    /// Accept All"). Unlike the CLI's bypass mode this is enforced by dave, so
+    /// it works across all backends and can be toggled at runtime.
+    pub auto_accept_all: bool,
     /// Stable Nostr event identity for this session (d-tag for kind-31988
     /// and kind-1988 events).  Generated at creation, never changes.
     /// Separate from the Claude CLI session ID used for `--resume`.
@@ -342,6 +346,7 @@ impl AgenticSessionData {
             max_seen_seq: None,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
+            auto_accept_all: false,
             event_id: uuid::Uuid::new_v4().to_string(),
         }
     }
@@ -361,8 +366,14 @@ impl AgenticSessionData {
         }
     }
 
-    /// Check if a permission request matches the runtime allowlist.
+    /// Check if a permission request should be auto-accepted this session —
+    /// either because "Auto Accept All" is on, or the tool matches the runtime
+    /// allowlist. This is the single dave-side checkpoint every backend's
+    /// permission requests flow through, so it is backend-agnostic.
     pub fn should_runtime_allow(&self, tool_name: &str, tool_input: &serde_json::Value) -> bool {
+        if self.auto_accept_all {
+            return true;
+        }
         if let Some(key) = Self::runtime_allow_key(tool_name, tool_input) {
             self.runtime_allows.contains(&key)
         } else {
@@ -798,6 +809,11 @@ impl ChatSession {
             .as_ref()
             .map(|a| a.permission_mode)
             .unwrap_or(PermissionMode::Default)
+    }
+
+    /// Whether dave-side "Auto Accept All" is on for this session.
+    pub fn auto_accept_all(&self) -> bool {
+        self.agentic.as_ref().is_some_and(|a| a.auto_accept_all)
     }
 
     /// Get the working directory (agentic only)
@@ -1574,6 +1590,21 @@ mod tests {
     use crate::config::AiMode;
     use crate::messages::AssistantMessage;
     use std::sync::mpsc;
+
+    #[test]
+    fn auto_accept_all_allows_every_tool() {
+        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+
+        // Off: an arbitrary tool not on the allowlist is not auto-accepted.
+        let scary = serde_json::json!({ "command": "rm -rf /" });
+        assert!(!agentic.should_runtime_allow("Bash", &scary));
+
+        // On: dave auto-accepts everything, regardless of tool or allowlist.
+        agentic.auto_accept_all = true;
+        assert!(agentic.should_runtime_allow("Bash", &scary));
+        assert!(agentic
+            .should_runtime_allow("Write", &serde_json::json!({ "file_path": "/etc/passwd" })));
+    }
 
     fn test_session() -> ChatSession {
         ChatSession::new(
