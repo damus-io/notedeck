@@ -2760,4 +2760,78 @@ mod tests {
         harness.run();
         harness.snapshot("responded_permission_widgets");
     }
+
+    /// Visualize the responded permission widgets in their *expanded* state —
+    /// the Bash command revealed inline and the denied Edit's file diff. Render
+    /// with `scripts/snapshot-test snapshot_responded_permission_widgets_expanded`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_responded_permission_widgets_expanded() {
+        let requests = vec![
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Bash".to_string(),
+                json!({ "command": "cargo test --all -- --nocapture" }),
+                None,
+                Some(PermissionResponseType::Allowed),
+                None,
+            ),
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Edit".to_string(),
+                json!({
+                    "file_path": "crates/notedeck_dave/src/ui/badge.rs",
+                    "old_string": "let expandable = false;",
+                    "new_string": "let expandable = detail.is_some();",
+                }),
+                None,
+                Some(PermissionResponseType::Denied),
+                None,
+            ),
+        ];
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 320.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut input = String::new();
+                let mut focus = false;
+                for request in &requests {
+                    let mut dave_ui =
+                        DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
+                    dave_ui.permission_request_ui(request, ui);
+                    ui.add_space(8.0);
+                }
+            });
+
+        harness.run();
+        // "Allowed" and "Denied" are each unique here, so clicking those status
+        // labels expands each row's disclosure. Labels are no-op-clickable in
+        // accesskit, so dispatch a real positional primary click.
+        for status in ["Allowed", "Denied"] {
+            let bounds = harness
+                .get_by_label(status)
+                .raw_bounds()
+                .expect("status label bounds");
+            let center = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            harness
+                .input_mut()
+                .events
+                .push(egui::Event::PointerMoved(center));
+            for pressed in [true, false] {
+                harness.input_mut().events.push(egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            harness.step();
+        }
+        harness.run();
+        harness.snapshot("responded_permission_widgets_expanded");
+    }
 }
