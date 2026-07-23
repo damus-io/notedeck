@@ -14,9 +14,11 @@
 pub mod config;
 pub mod file_update;
 pub mod messages;
+pub mod session;
 pub mod session_converter;
 pub mod session_events;
 pub mod session_jsonl;
+pub mod session_loader;
 pub mod session_reconstructor;
 pub mod tools;
 mod util;

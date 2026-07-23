@@ -16,6 +16,7 @@ uuid = { version = "1.10.0", features = ["v4"] }
 md-stream = { workspace = true }
 similar = "2"
 tokio = { version = "1", features = ["sync"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

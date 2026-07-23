@@ -14,15 +14,14 @@ pub(crate) mod path_utils;
 mod quaternion;
 pub mod session;
 pub mod session_discovery;
-pub mod session_loader;
 
 // The pure, egui-free engine modules live in the platform-neutral
 // `agentium-core` crate. Re-export them under their historical `crate::` paths
 // so the rest of dave keeps referring to `crate::messages`, `crate::tools`, etc.
 // The async_openai request mapping for these types lives in `backend/openai.rs`.
 pub use agentium_core::{
-    file_update, messages, session_converter, session_events, session_jsonl, session_reconstructor,
-    tools,
+    file_update, messages, session_converter, session_events, session_jsonl, session_loader,
+    session_reconstructor, tools,
 };
 pub mod ui;
 pub mod update;
