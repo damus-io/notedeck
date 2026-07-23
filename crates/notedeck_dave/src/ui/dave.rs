@@ -1789,9 +1789,10 @@ fn permission_operation_detail(tool_input: &serde_json::Value) -> Option<&str> {
     None
 }
 
-/// Render a responded (Allowed/Denied) permission request. Shows the status
-/// label, the tool name, and — so the user can still see what was approved
-/// after the fact — the operation detail (bash command / edited file).
+/// Render a responded (Allowed/Denied) permission request as a collapsible
+/// row: a status header with a disclosure chevron that expands to reveal what
+/// was actually allowed/denied (the edit diff, or the bash command / argument),
+/// so the operation stays inspectable after the fact without cluttering chat.
 fn responded_permission_ui(
     request: &PermissionRequest,
     label: &str,
@@ -1800,22 +1801,49 @@ fn responded_permission_ui(
     corner_radius: f32,
     ui: &mut egui::Ui,
 ) {
+    // The row is only expandable if there's an operation to reveal. Edit/Write
+    // carry a file_path, so `detail.is_some()` already covers them.
+    let detail = permission_operation_detail(&request.tool_input);
+    let expandable = detail.is_some();
+
     egui::Frame::new()
         .fill(ui.visuals().widgets.noninteractive.bg_fill)
         .inner_margin(inner_margin)
         .corner_radius(corner_radius)
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(label).color(label_color).strong());
-                    ui.label(
-                        egui::RichText::new(&request.tool_name).color(ui.visuals().text_color()),
-                    );
-                });
+                // Persisted disclosure state, keyed by request id.
+                let expand_id = ui.id().with(("responded_perm", request.id));
+                let mut expanded =
+                    expandable && ui.data(|d| d.get_temp(expand_id).unwrap_or(false));
 
-                // Show what was actually allowed/denied (e.g. the bash command
-                // or the edited file path) on its own line.
-                if let Some(detail) = permission_operation_detail(&request.tool_input) {
+                let header = responded_permission_header_ui(
+                    request,
+                    label,
+                    label_color,
+                    expanded,
+                    expandable,
+                    ui,
+                );
+
+                // Clicking anywhere on the header toggles the disclosure.
+                if expandable && header.clicked() {
+                    expanded = !expanded;
+                    ui.data_mut(|d| d.insert_temp(expand_id, expanded));
+                }
+
+                if !expanded {
+                    return;
+                }
+
+                // Prefer a rich diff for file edits; otherwise show the raw
+                // operation (bash command / single argument) in monospace.
+                if let Some(file_update) =
+                    FileUpdate::from_tool_call(&request.tool_name, &request.tool_input)
+                {
+                    diff::file_path_header(&file_update, ui);
+                    diff::file_update_ui(&file_update, false, ui);
+                } else if let Some(detail) = detail {
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(detail)
@@ -1828,6 +1856,41 @@ fn responded_permission_ui(
                 }
             });
         });
+}
+
+/// Header row for a responded permission: optional disclosure chevron, the
+/// status label (Allowed/Denied), and the tool name. Returns a click response
+/// covering the whole row so the caller can toggle the disclosure.
+fn responded_permission_header_ui(
+    request: &PermissionRequest,
+    label: &str,
+    label_color: egui::Color32,
+    expanded: bool,
+    expandable: bool,
+    ui: &mut egui::Ui,
+) -> egui::Response {
+    let header = ui.horizontal(|ui| {
+        if expandable {
+            notedeck_ui::header::disclosure_chevron(
+                ui,
+                expanded,
+                egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
+            );
+        }
+        ui.label(egui::RichText::new(label).color(label_color).strong());
+        ui.label(egui::RichText::new(&request.tool_name).color(ui.visuals().text_color()));
+    });
+
+    if !expandable {
+        return header.response;
+    }
+
+    // Re-sensing the horizontal layout's response (`.interact(Sense::click())`)
+    // doesn't reliably register hover/click, so allocate a dedicated clickable
+    // region over the row's rect with a stable id keyed by the request.
+    let click_id = ui.id().with(("responded_perm_header", request.id));
+    ui.interact(header.response.rect, click_id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Send button + clickable accept/deny toggle shown when in tentative state.
@@ -2568,10 +2631,38 @@ mod tests {
         )
     }
 
+    /// Primary-click the center of a labelled node. `.click()` on a plain
+    /// egui `Label` is a no-op in accesskit (labels expose no default action),
+    /// so a disclosure driven by `Response::interact(Sense::click())` must be
+    /// exercised with a real positional pointer event instead.
+    fn click_label(harness: &mut Harness<'static, PermissionUiHarnessState>, label: &str) {
+        let bounds = harness
+            .get_by_label(label)
+            .raw_bounds()
+            .expect("label bounds");
+        let center = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(center));
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.step();
+    }
+
     #[test]
-    fn allowed_bash_widget_still_shows_the_command() {
-        // After accepting, the user must still be able to see *what* they
-        // allowed — the bash command, not just "Allowed  Bash".
+    fn allowed_bash_widget_reveals_command_when_expanded() {
+        // After accepting, the row is collapsed to "Allowed  Bash"; expanding
+        // it must reveal *what* was allowed — the bash command.
         let request = PermissionRequest::new(
             Uuid::new_v4(),
             "Bash".to_string(),
@@ -2585,12 +2676,18 @@ mod tests {
 
         harness.get_by_label("Allowed");
         harness.get_by_label("Bash");
+        // Collapsed by default: the command is hidden until disclosed.
+        assert!(harness.query_by_label("cargo test --all").is_none());
+
+        // Clicking the header expands the row.
+        click_label(&mut harness, "Bash");
+        harness.run();
         harness.get_by_label("cargo test --all");
     }
 
     #[test]
-    fn denied_edit_widget_shows_the_edited_file() {
-        // Likewise for a denied Edit: the file path stays visible afterward.
+    fn denied_edit_widget_reveals_file_when_expanded() {
+        // Likewise for a denied Edit: expanding reveals the edited file path.
         let request = PermissionRequest::new(
             Uuid::new_v4(),
             "Edit".to_string(),
@@ -2607,7 +2704,14 @@ mod tests {
         harness.run();
 
         harness.get_by_label("Denied");
-        harness.get_by_label("Edit");
+        // Collapsed by default: the path is hidden until disclosed.
+        assert!(harness
+            .query_by_label("crates/notedeck_dave/src/lib.rs")
+            .is_none());
+
+        // Clicking the header expands the row to show the file + diff.
+        click_label(&mut harness, "Denied");
+        harness.run();
         harness.get_by_label("crates/notedeck_dave/src/lib.rs");
     }
 
