@@ -1785,7 +1785,12 @@ fn tab(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
     };
     let mut btn = egui::Button::new(RichText::new(label).color(color)).frame(false);
     if active {
-        btn = btn.fill(theme::SURFACE);
+        // `Button::fill()` silently re-enables the frame, so a bare
+        // `.fill()` after `.frame(false)` would repaint the theme's border
+        // stroke (and button padding) around the active tab. Re-assert
+        // `.frame(false)`: the SURFACE fill is still painted, just without the
+        // stray box, keeping the tab flush with its inactive siblings.
+        btn = btn.fill(theme::SURFACE).frame(false);
     }
     ui.add(btn).clicked()
 }
