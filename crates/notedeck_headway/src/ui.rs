@@ -2503,6 +2503,14 @@ fn activity_row_ui(
                     None => strong(ui, &format!("#{}", headway::wordid::encode(parent.bytes()))),
                 }
             }
+            ActivityKind::PriorityChanged { to } => {
+                if *to == headway::event::Priority::None {
+                    muted(ui, "cleared the priority");
+                } else {
+                    muted(ui, "set priority to");
+                    strong(ui, to.as_str());
+                }
+            }
             ActivityKind::ParentRemoved => muted(ui, "detached from its parent"),
         }
         muted(ui, "·");
@@ -3179,6 +3187,7 @@ mod tests {
             title: title.to_string(),
             description: description.to_string(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
+            priority: headway::event::Priority::None,
             rank: String::new(),
             placed_at: 0,
             created_at: 0,

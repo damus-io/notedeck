@@ -14,7 +14,7 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView, CommentView};
+use headway::event::{self, BoardView, CardView, CommentView, Priority};
 use headway::store::{self, BoardAction, Publisher};
 use headway::wordid;
 
@@ -68,6 +68,11 @@ enum Command {
     Label {
         card: String,
         labels: Vec<String>,
+    },
+    /// Set a card's priority (none/low/medium/high/urgent).
+    Priority {
+        card: String,
+        level: String,
     },
     /// Make a card a subissue of another card, or detach it (no parent given).
     Parent {
@@ -130,6 +135,7 @@ impl Command {
             | Command::Title { card, .. }
             | Command::Desc { card, .. }
             | Command::Label { card, .. }
+            | Command::Priority { card, .. }
             | Command::Comment { card, .. }
             | Command::Delete { card }
             | Command::Archive { card }
@@ -400,6 +406,10 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             card: resolve_card(view, &card)?,
             labels,
         },
+        Command::Priority { card, level } => BoardAction::SetPriority {
+            card: resolve_card(view, &card)?,
+            priority: Priority::parse(&level),
+        },
         Command::Parent { card, parent } => BoardAction::SetParent {
             card: resolve_card(view, &card)?,
             parent: parent
@@ -604,7 +614,8 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         println!("\n{} ({})", col.name, col.cards.len());
         for c in &col.cards {
             println!(
-                "  {}{}{}  {}",
+                "  {}{}{}{}  {}",
+                priority_prefix(c.priority),
                 c.title,
                 progress_suffix(c),
                 labels_suffix(&c.labels),
@@ -704,6 +715,9 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
     if !card.labels.is_empty() {
         println!("labels  {}", card.labels.join(", "));
     }
+    if card.priority != Priority::None {
+        println!("priority {}", card.priority.as_str());
+    }
     if let Some(parent) = &card.parent {
         println!("parent  {}", card_ref(view, parent));
     }
@@ -795,6 +809,19 @@ fn labels_suffix(labels: &[String]) -> String {
         String::new()
     } else {
         format!("  [{}]", labels.join(", "))
+    }
+}
+
+/// A compact at-a-glance priority marker printed before a card's title on the
+/// board listing: a dim glyph for the lower priorities and a bold `!` for urgent,
+/// empty for [`Priority::None`] so unprioritised cards stay unadorned.
+fn priority_prefix(priority: Priority) -> String {
+    match priority {
+        Priority::None => String::new(),
+        Priority::Low => relay_sync::dim("↓ "),
+        Priority::Medium => relay_sync::dim("= "),
+        Priority::High => relay_sync::dim("↑ "),
+        Priority::Urgent => "! ".to_string(),
     }
 }
 
@@ -1002,6 +1029,10 @@ fn parse_command(
             card: card()?,
             labels: rest.get(1..).unwrap_or_default().to_vec(),
         },
+        "priority" => Command::Priority {
+            card: card()?,
+            level: arg(rest, 1, name)?,
+        },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
         "parent" => Command::Parent {
@@ -1070,6 +1101,7 @@ COMMANDS:
     title <card> <title...>    Edit a card's title
     desc <card> <text...>      Edit a card's description
     label <card> [labels...]   Set a card's labels (empty clears)
+    priority <card> <level>    Set priority (none/low/medium/high/urgent)
     parent <card> [parent]     Make a card a subissue of [parent] (omit to
                                detach)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
@@ -1141,6 +1173,21 @@ mod tests {
             parse(&["show", "Commerce#purse-metal-toilet"]).board,
             "commerce"
         );
+    }
+
+    /// `priority <card> <level>` parses into a Priority command, and a full
+    /// card ref self-routes it to that card's board.
+    #[test]
+    fn priority_command_parses_and_routes() {
+        let cli = parse(&["priority", "commerce#purse-metal-toilet", "high"]);
+        assert_eq!(cli.board, "commerce");
+        match cli.command {
+            Command::Priority { card, level } => {
+                assert_eq!(card, "commerce#purse-metal-toilet");
+                assert_eq!(level, "high");
+            }
+            _ => panic!("expected a Priority command"),
+        }
     }
 
     /// `--all` is an independent flag on `show`, off unless passed.

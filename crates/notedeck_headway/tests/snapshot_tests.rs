@@ -272,6 +272,7 @@ fn snapshot_inline_card() {
         title: "Update headway-cli to use negentropy for sync".to_string(),
         description: String::new(),
         labels: vec!["headway".to_string()],
+        priority: headway::event::Priority::None,
         rank: String::new(),
         placed_at: 0,
         created_at: 0,

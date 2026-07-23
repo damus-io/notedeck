@@ -13,9 +13,10 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 
 use crate::event::{
-    self, BoardView, COL_DELETED, CardView, ColumnDef, board_address, build_archive_placement,
-    build_board, build_comment, build_cover_note, build_issue, build_labels, build_placement,
-    build_relation, build_subject_edit, rank_between,
+    self, BoardView, COL_DELETED, CardView, ColumnDef, Priority, board_address,
+    build_archive_placement, build_board, build_comment, build_cover_note, build_issue,
+    build_labels, build_placement, build_priority, build_relation, build_subject_edit,
+    rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -47,6 +48,8 @@ pub enum BoardAction {
     EditDescription { card: NoteId, description: String },
     /// Set a card's labels (additive union with any existing labels).
     SetLabels { card: NoteId, labels: Vec<String> },
+    /// Set a card's priority (latest-authorised-wins; `Priority::None` clears it).
+    SetPriority { card: NoteId, priority: Priority },
     /// Make `card` a subissue of `parent`, or detach it when `parent` is `None`.
     /// Refused (no events) when it would create a parent cycle.
     SetParent {
@@ -409,6 +412,9 @@ pub fn apply(
         }
         BoardAction::SetLabels { card, labels } => {
             ingest(ndb, build_labels(&card, &labels), secret, publisher);
+        }
+        BoardAction::SetPriority { card, priority } => {
+            ingest(ndb, build_priority(&card, priority), secret, publisher);
         }
         BoardAction::SetParent { card, parent } => {
             if let Some(parent) = parent {

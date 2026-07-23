@@ -146,6 +146,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `title <card> <title...>` | Edit a card's title |
 | `desc <card> <text...>` | Edit a card's description |
 | `label <card> [labels...]` | Set labels (no labels clears them) |
+| `priority <card> <level>` | Set priority: `none`/`low`/`medium`/`high`/`urgent` (`none` clears it) |
 | `parent <card> [parent]` | Make a card a subissue of `[parent]`; omit the parent to detach |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
 | `delete <card>` | Remove a card (reversible tombstone) |
