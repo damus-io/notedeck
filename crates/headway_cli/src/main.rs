@@ -103,6 +103,11 @@ enum Command {
     Board {
         id: Option<String>,
     },
+    /// Rename the current board's display title (its slug is unchanged, so
+    /// existing card refs keep working).
+    Rename {
+        title: String,
+    },
     Login {
         nsec: String,
     },
@@ -133,7 +138,11 @@ impl Command {
             | Command::Restore { card }
             | Command::Link { card, .. }
             | Command::MoveBoard { card, .. } => selectors.push(card),
-            Command::Seed | Command::Board { .. } | Command::Login { .. } | Command::Logout => {}
+            Command::Seed
+            | Command::Rename { .. }
+            | Command::Board { .. }
+            | Command::Login { .. }
+            | Command::Logout => {}
         }
 
         let mut found: Option<String> = None;
@@ -422,6 +431,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Restore { card } => BoardAction::RestoreCard {
             card: resolve_card(view, &card)?,
         },
+        Command::Rename { title } => BoardAction::RenameBoard { title },
         Command::Show { .. }
         | Command::Seed
         | Command::Link { .. }
@@ -981,6 +991,9 @@ fn parse_command(
             card: card()?,
             to_board: to.ok_or("move-board needs --to <board>")?,
         },
+        "rename" => Command::Rename {
+            title: joined(rest, 0, name)?,
+        },
         "board" => Command::Board {
             id: rest.first().cloned(),
         },
@@ -1036,6 +1049,8 @@ COMMANDS:
     restore <card>             Restore an archived card
     link <card> --to <board>   Also place a card on another board (keep both)
     move-board <card> --to <b> Move a card from this board to another board
+    rename <title...>          Rename the current board's display title (slug
+                               unchanged)
     board [id]                 Switch the current board to <id>, or list boards
                                and mark the current one
     login <nsec>               Store a signing key for later runs

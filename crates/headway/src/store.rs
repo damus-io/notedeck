@@ -77,6 +77,9 @@ pub enum BoardAction {
     RemoveColumn { col: usize },
     /// Move the column at `from` to index `to`.
     MoveColumn { from: usize, to: usize },
+    /// Rename the board itself: republish its definition with a new display
+    /// `title`, preserving the slug, columns, and description.
+    RenameBoard { title: String },
 }
 
 /// A sink for events that have been ingested locally and should also be fanned
@@ -541,6 +544,19 @@ pub fn apply(
             let def = cols.remove(from);
             cols.insert(to, def);
             republish_board(ndb, board_id, view, secret, &cols, publisher);
+        }
+        BoardAction::RenameBoard { title } => {
+            // Same addressable-event republish as `republish_board`, but swapping
+            // the title instead of the columns. Bump `created_at` past the current
+            // board so the reducer keeps the renamed version (see `republish_board`).
+            let cols = column_defs(view);
+            let created_at = now_secs().max(view.created_at + 1);
+            ingest(
+                ndb,
+                build_board(board_id, &title, &view.description, &cols).created_at(created_at),
+                secret,
+                publisher,
+            );
         }
     }
 }
@@ -1213,6 +1229,28 @@ mod tests {
         let view = t.wait(|v| !v.columns.iter().any(|c| c.name == "Inbox"));
         // The removed column's cards aren't lost; they fall back to column 0.
         assert!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>() >= 7);
+    }
+
+    #[test]
+    fn rename_board_changes_title_preserving_columns_and_cards() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
+        let cols_before = col_titles(&view);
+
+        t.apply(
+            &view,
+            BoardAction::RenameBoard {
+                title: "Renamed Board".to_string(),
+            },
+        );
+
+        let view = t.wait(|v| v.title == "Renamed Board");
+        // Slug (the addressable `d`-tag) is untouched, so refs still resolve.
+        assert_eq!(view.id, BOARD_ID);
+        // Columns and cards ride along the republished definition unchanged.
+        assert_eq!(col_titles(&view), cols_before);
+        assert_eq!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 7);
     }
 
     #[test]
