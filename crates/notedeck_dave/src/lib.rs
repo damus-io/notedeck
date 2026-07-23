@@ -4,12 +4,10 @@ mod avatar;
 pub mod backend;
 pub(crate) mod collapse_state;
 pub mod config;
-pub mod file_update;
 mod focus_queue;
 pub(crate) mod git_status;
 pub mod ipc;
 pub(crate) mod mesh;
-mod messages;
 mod notifications;
 mod path_normalize;
 pub(crate) mod path_utils;
@@ -18,11 +16,14 @@ pub mod session;
 pub mod session_discovery;
 pub mod session_loader;
 
-// The pure nostr session-protocol modules live in the platform-neutral
+// The pure, egui-free engine modules live in the platform-neutral
 // `agentium-core` crate. Re-export them under their historical `crate::` paths
-// so the rest of dave keeps referring to `crate::session_events`, etc.
-pub use agentium_core::{session_converter, session_events, session_jsonl, session_reconstructor};
-mod tools;
+// so the rest of dave keeps referring to `crate::messages`, `crate::tools`, etc.
+// The async_openai request mapping for these types lives in `backend/openai.rs`.
+pub use agentium_core::{
+    file_update, messages, session_converter, session_events, session_jsonl, session_reconstructor,
+    tools,
+};
 pub mod ui;
 pub mod update;
 mod vec3;
@@ -47,13 +48,13 @@ use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
 
-pub use avatar::DaveAvatar;
-pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
-pub use messages::{
+pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
     PermissionResponseType, QuestionAnswer, QuestionSetInput, SessionInfo, SubagentInfo,
     SubagentStatus, UserMessage,
 };
+pub use avatar::DaveAvatar;
+pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
 pub use session_discovery::{discover_sessions, format_relative_time, ResumableSession};
@@ -4157,7 +4158,7 @@ fn handle_tool_calls(
                 needs_send = true;
             }
             ToolCalls::Query(search_call) => {
-                let resp = tools::execute_query(search_call, &txn, ndb);
+                let resp = search_call.execute(&txn, ndb);
                 session.chat.push(Message::ToolResponse(ToolResponse::new(
                     call.id().to_owned(),
                     ToolResponses::Query(resp),

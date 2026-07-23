@@ -9,7 +9,13 @@ enostr = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+hex = { workspace = true }
 uuid = { version = "1.10.0", features = ["v4"] }
+# md-stream is a zero-dependency, egui-free markdown parser (String -> elements);
+# it backs AssistantMessage's incremental parse and stays platform-neutral.
+md-stream = { workspace = true }
+similar = "2"
+tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

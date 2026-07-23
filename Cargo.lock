@@ -172,9 +172,12 @@ version = "0.10.0-beta.4"
 dependencies = [
  "chrono",
  "enostr",
+ "hex",
+ "md-stream",
  "nostrdb",
  "serde",
  "serde_json",
+ "similar",
  "tempfile",
  "tokio",
  "uuid",

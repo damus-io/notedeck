@@ -1,12 +1,8 @@
 use crate::backend::traits::AiBackend;
 use crate::messages::DaveApiResponse;
-use crate::tools::{PartialToolCall, Tool, ToolCall};
+use crate::tools::{PartialToolCall, Tool, ToolCall, ToolCalls, ToolResponses};
 use crate::Message;
-use async_openai::{
-    config::OpenAIConfig,
-    types::{ChatCompletionRequestMessage, CreateChatCompletionRequest},
-    Client,
-};
+use async_openai::{config::OpenAIConfig, types::*, Client};
 use claude_agent_sdk_rs::PermissionMode;
 use futures::StreamExt;
 use nostrdb::{Ndb, Transaction};
@@ -47,12 +43,12 @@ impl AiBackend for OpenAiBackend {
             let txn = Transaction::new(&self.ndb).expect("txn");
             messages
                 .iter()
-                .filter_map(|c| c.to_api_msg(&txn, &self.ndb))
+                .filter_map(|c| message_to_api(c, &txn, &self.ndb))
                 .collect()
         };
 
         let client = self.client.clone();
-        let tool_list: Vec<_> = tools.values().map(|t| t.to_api()).collect();
+        let tool_list: Vec<_> = tools.values().map(tool_to_api).collect();
 
         let handle = tokio::spawn(async move {
             // Timeout for the initial API connection (creating the stream).
@@ -210,5 +206,109 @@ impl AiBackend for OpenAiBackend {
     fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _ctx: egui::Context) {
         // OpenAI backend doesn't support permission modes / plan mode
         tracing::warn!("Plan mode is not supported with the OpenAI backend");
+    }
+}
+
+// --- async_openai request mapping -------------------------------------------
+//
+// `Message`/`ToolCall`/`Tool` live in the egui- and async_openai-free
+// `agentium-core` engine crate. The mapping to async_openai's request types is
+// an OpenAI-backend concern, so it lives here as free functions rather than as
+// inherent methods on the engine types.
+
+/// Map a dave `Message` to an async_openai chat message. UI-only messages
+/// (errors, permission requests, executed-tool results, compaction, subagents,
+/// todo updates) are not sent to the API and map to `None`.
+fn message_to_api(
+    msg: &Message,
+    txn: &Transaction,
+    ndb: &Ndb,
+) -> Option<ChatCompletionRequestMessage> {
+    match msg {
+        Message::Error(_err) => None,
+
+        Message::User(m) => Some(ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                name: None,
+                content: ChatCompletionRequestUserMessageContent::Text(m.text.clone()),
+            },
+        )),
+
+        Message::Assistant(m) => Some(ChatCompletionRequestMessage::Assistant(
+            ChatCompletionRequestAssistantMessage {
+                content: Some(ChatCompletionRequestAssistantMessageContent::Text(
+                    m.text().to_string(),
+                )),
+                ..Default::default()
+            },
+        )),
+
+        Message::System(m) => Some(ChatCompletionRequestMessage::System(
+            ChatCompletionRequestSystemMessage {
+                content: ChatCompletionRequestSystemMessageContent::Text(m.clone()),
+                ..Default::default()
+            },
+        )),
+
+        Message::ToolCalls(calls) => Some(ChatCompletionRequestMessage::Assistant(
+            ChatCompletionRequestAssistantMessage {
+                tool_calls: Some(calls.iter().map(toolcall_to_api).collect()),
+                ..Default::default()
+            },
+        )),
+
+        Message::ToolResponse(resp) => {
+            // ExecutedTool results are UI-only, not sent to the API
+            if matches!(resp.responses(), ToolResponses::ExecutedTool(_)) {
+                return None;
+            }
+
+            let tool_response = resp.responses().format_for_dave(txn, ndb);
+
+            Some(ChatCompletionRequestMessage::Tool(
+                ChatCompletionRequestToolMessage {
+                    tool_call_id: resp.id().to_owned(),
+                    content: ChatCompletionRequestToolMessageContent::Text(tool_response),
+                },
+            ))
+        }
+
+        // The remaining variants are UI-only, not sent to the API.
+        Message::PermissionRequest(_)
+        | Message::CompactionComplete(_)
+        | Message::Subagent(_)
+        | Message::TodoUpdate(_) => None,
+    }
+}
+
+/// Map a dave `ToolCall` to an async_openai tool call.
+fn toolcall_to_api(call: &ToolCall) -> ChatCompletionMessageToolCall {
+    ChatCompletionMessageToolCall {
+        id: call.id().to_owned(),
+        r#type: ChatCompletionToolType::Function,
+        function: toolcalls_to_function(call.calls()),
+    }
+}
+
+/// Map the inner `ToolCalls` payload to an async_openai function call.
+fn toolcalls_to_function(calls: &ToolCalls) -> FunctionCall {
+    FunctionCall {
+        name: calls.api_name().to_owned(),
+        arguments: calls.arguments(),
+    }
+}
+
+/// Map a dave `Tool` definition to an async_openai tool (function) definition.
+/// The JSON-Schema `parameters` come from the engine's backend-agnostic
+/// [`Tool::parameters_schema`]; this wraps them in async_openai's envelope.
+fn tool_to_api(tool: &Tool) -> ChatCompletionTool {
+    ChatCompletionTool {
+        r#type: ChatCompletionToolType::Function,
+        function: FunctionObject {
+            name: tool.name().to_owned(),
+            description: Some(tool.description().to_owned()),
+            strict: Some(false),
+            parameters: Some(tool.parameters_schema()),
+        },
     }
 }
