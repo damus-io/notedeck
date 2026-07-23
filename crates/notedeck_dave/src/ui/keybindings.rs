@@ -255,3 +255,45 @@ pub fn check_keybindings(
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AiMode;
+    use egui::{Key, Modifiers};
+    use egui_kittest::Harness;
+
+    /// Press `modifiers`+`key` in a headless egui frame and return whatever
+    /// `check_keybindings` detects (agentic mode, no pending prompts).
+    fn detect(modifiers: Modifiers, key: Key) -> Option<KeyAction> {
+        // Accumulate: `press_key_modifiers` runs the key-down frame internally
+        // and then a key-up frame, so we must not clobber the detection with the
+        // later (keys-released) frame's `None`.
+        let mut harness = Harness::new_ui_state(
+            |ui, action: &mut Option<KeyAction>| {
+                if let Some(a) = check_keybindings(ui.ctx(), false, false, false, AiMode::Agentic) {
+                    *action = Some(a);
+                }
+            },
+            None,
+        );
+        harness.run();
+        harness.press_key_modifiers(modifiers, key);
+        harness.state().clone()
+    }
+
+    #[test]
+    fn ctrl_m_cycles_but_ctrl_shift_m_toggles_auto_execute() {
+        // The safe cycle stays on Ctrl+M...
+        assert_eq!(
+            detect(Modifiers::CTRL, Key::M),
+            Some(KeyAction::CyclePermissionMode),
+        );
+        // ...and the dangerous Auto Execute needs the distinct Ctrl+Shift+M
+        // chord, so it can't be triggered by the cycle key.
+        assert_eq!(
+            detect(Modifiers::CTRL | Modifiers::SHIFT, Key::M),
+            Some(KeyAction::ToggleAutoExecute),
+        );
+    }
+}

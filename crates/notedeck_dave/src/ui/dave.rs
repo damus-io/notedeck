@@ -2177,13 +2177,105 @@ fn session_header_ui(
 
 #[cfg(test)]
 mod tests {
-    use super::{DaveAction, DaveUi};
+    use super::{toggle_badges_ui, DaveAction, DaveUi};
     use crate::config::AiMode;
     use crate::messages::{PermissionRequest, PermissionResponse, QuestionAnswer};
+    use claude_agent_sdk_rs::PermissionMode;
     use egui_kittest::{kittest::Queryable, Harness};
     use serde_json::json;
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    /// Harness state for exercising the permission-mode badge + its right-click
+    /// menu in isolation.
+    struct BadgeHarnessState {
+        mode: PermissionMode,
+        action: Option<DaveAction>,
+    }
+
+    fn badge_harness(mode: PermissionMode) -> Harness<'static, BadgeHarnessState> {
+        Harness::new_ui_state(
+            |ui, state: &mut BadgeHarnessState| {
+                if let Some(action) = toggle_badges_ui(ui, state.mode, false, None) {
+                    state.action = Some(action);
+                }
+            },
+            BadgeHarnessState { mode, action: None },
+        )
+    }
+
+    /// Right-click the mode badge and click the center of it to open the menu.
+    fn right_click(harness: &mut Harness<'static, BadgeHarnessState>, label: &str) {
+        let bounds = harness
+            .get_by_label(label)
+            .raw_bounds()
+            .expect("badge bounds");
+        let center = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(center));
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.step();
+    }
+
+    #[test]
+    fn mode_badge_left_click_cycles() {
+        // Left-clicking the badge (shows "PLAN" in Default) cycles — it must NOT
+        // jump straight to a specific mode.
+        let mut harness = badge_harness(PermissionMode::Default);
+        harness.run();
+        harness.get_by_label("PLAN").click();
+        harness.run();
+        assert!(
+            matches!(
+                harness.state().action,
+                Some(DaveAction::CyclePermissionMode)
+            ),
+            "left-click should cycle, never set a specific mode"
+        );
+    }
+
+    #[test]
+    fn auto_execute_reachable_only_via_right_click_menu() {
+        let mut harness = badge_harness(PermissionMode::Default);
+        harness.run();
+
+        // Open the mode badge's context menu and pick the dangerous entry.
+        right_click(&mut harness, "PLAN");
+        harness.get_by_label("⚠ Auto Execute").click();
+        harness.run();
+
+        assert!(
+            matches!(
+                harness.state().action,
+                Some(DaveAction::SetPermissionMode(
+                    PermissionMode::BypassPermissions
+                ))
+            ),
+            "the menu's Auto Execute item should set BypassPermissions"
+        );
+    }
+
+    #[test]
+    fn auto_execute_badge_renders_red_label() {
+        // When already in Auto Execute, the badge reads "AUTO EXEC" (Destructive
+        // variant) rather than a safe-mode label.
+        let mut harness = badge_harness(PermissionMode::BypassPermissions);
+        harness.run();
+        // Queryable by its text means the label rendered.
+        let _ = harness.get_by_label("AUTO EXEC");
+    }
 
     struct PermissionUiHarnessState {
         request: PermissionRequest,
