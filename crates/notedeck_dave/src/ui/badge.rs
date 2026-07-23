@@ -92,11 +92,21 @@ impl BadgeVariant {
     }
 }
 
+/// An icon a badge can paint in place of its text glyph. Drawn with vector
+/// strokes so it stays crisp at any DPI (unlike a unicode glyph).
+#[derive(Clone, Copy)]
+pub enum BadgeIcon {
+    /// A right-pointing chevron (›), e.g. "next" navigation.
+    ChevronRight,
+}
+
 /// A pill-shaped status badge widget (shadcn-style)
 pub struct StatusBadge<'a> {
     text: &'a str,
     variant: BadgeVariant,
     keybind: Option<&'a str>,
+    min_size: Option<Vec2>,
+    icon: Option<BadgeIcon>,
 }
 
 impl<'a> StatusBadge<'a> {
@@ -106,6 +116,8 @@ impl<'a> StatusBadge<'a> {
             text,
             variant: BadgeVariant::Default,
             keybind: None,
+            min_size: None,
+            icon: None,
         }
     }
 
@@ -118,6 +130,21 @@ impl<'a> StatusBadge<'a> {
     /// Add a keybind hint inside the badge (e.g., "P" for Ctrl+P)
     pub fn keybind(mut self, key: &'a str) -> Self {
         self.keybind = Some(key);
+        self
+    }
+
+    /// Enforce a minimum size for the badge's interactive rect. Useful for
+    /// icon-only badges (e.g. a single glyph) whose natural size is too small
+    /// to comfortably tap on touch/narrow layouts.
+    pub fn min_size(mut self, min_size: Vec2) -> Self {
+        self.min_size = Some(min_size);
+        self
+    }
+
+    /// Paint a vector icon in place of the text glyph. The `text` still serves
+    /// as the accessibility label (so the badge stays queryable in tests).
+    pub fn icon(mut self, icon: BadgeIcon) -> Self {
+        self.icon = Some(icon);
         self
     }
 
@@ -140,10 +167,24 @@ impl<'a> StatusBadge<'a> {
             0.0
         };
 
+        // An icon replaces the text glyph; size the content to a fixed icon
+        // footprint instead of the (label-only) galley.
+        let icon_size = Vec2::new(9.0, 11.0);
+        let content_size = if self.icon.is_some() {
+            icon_size
+        } else {
+            galley.size()
+        };
+
         // Padding: horizontal 8px, vertical 2px
         let padding = Vec2::new(8.0, 3.0);
-        let desired_size =
-            Vec2::new(galley.size().x + keybind_extra, galley.size().y) + padding * 2.0;
+        let mut desired_size =
+            Vec2::new(content_size.x + keybind_extra, content_size.y) + padding * 2.0;
+
+        // Grow the tap target to the requested minimum (icon-only badges).
+        if let Some(min) = self.min_size {
+            desired_size = desired_size.max(min);
+        }
 
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
         response
@@ -167,14 +208,32 @@ impl<'a> StatusBadge<'a> {
             // Background
             painter.rect_filled(rect, rounding, bg_color);
 
-            // Text (offset left if keybind present)
-            let text_offset_x = if self.keybind.is_some() {
+            // Content (offset left if keybind present)
+            let content_offset_x = if self.keybind.is_some() {
                 -keybind_extra / 2.0
             } else {
                 0.0
             };
-            let text_pos = rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
-            painter.galley(text_pos, galley, text_color);
+            let content_center = rect.center() + Vec2::new(content_offset_x, 0.0);
+
+            match self.icon {
+                Some(BadgeIcon::ChevronRight) => {
+                    // Reuse the shared chevron painter so the glyph matches the
+                    // rest of the app and stays crisp at any DPI.
+                    let icon_rect = egui::Rect::from_center_size(content_center, icon_size);
+                    notedeck_ui::header::paint_chevron(
+                        painter,
+                        icon_rect,
+                        1.5,
+                        notedeck_ui::header::ChevronDir::Right,
+                        egui::Stroke::new(1.5, text_color),
+                    );
+                }
+                None => {
+                    let text_pos = content_center - galley.size() / 2.0;
+                    painter.galley(text_pos, galley, text_color);
+                }
+            }
 
             // Draw keybind box if present
             if let Some(key) = self.keybind {
@@ -320,5 +379,71 @@ impl<'a> ActionButton<'a> {
         }
 
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+
+    /// A tiny icon-only badge (a single glyph) has a tap target that's too small
+    /// to hit comfortably; `min_size` must grow the interactive rect to at least
+    /// the requested size while leaving the natural size for wider badges.
+    #[test]
+    fn min_size_grows_tiny_badge_tap_target() {
+        let want = Vec2::new(40.0, 28.0);
+
+        let mut harness = Harness::new_ui_state(
+            |ui, state: &mut (Vec2, Vec2)| {
+                let chevron = || StatusBadge::new("Next").icon(BadgeIcon::ChevronRight);
+                state.0 = chevron().show(ui).rect.size();
+                state.1 = chevron().min_size(want).show(ui).rect.size();
+            },
+            (Vec2::ZERO, Vec2::ZERO),
+        );
+        harness.run();
+
+        let (natural, enlarged) = *harness.state();
+
+        // The bare chevron badge is genuinely small — that's the problem we fix.
+        assert!(
+            natural.x < want.x,
+            "expected the chevron badge to be narrower than the tap target, got {natural:?}"
+        );
+        // min_size lifts it to (at least) the requested tap target.
+        assert!(
+            enlarged.x >= want.x && enlarged.y >= want.y,
+            "min_size should grow the badge to at least {want:?}, got {enlarged:?}"
+        );
+    }
+
+    /// Visualize the chevron icon badge across variants. Ignored by default;
+    /// render with `scripts/snapshot-test snapshot_chevron_badge`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_chevron_badge() {
+        let mut harness = Harness::builder()
+            .with_size(Vec2::new(220.0, 40.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(|ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for variant in [
+                        BadgeVariant::Warning,
+                        BadgeVariant::Destructive,
+                        BadgeVariant::Info,
+                    ] {
+                        StatusBadge::new("Next")
+                            .icon(BadgeIcon::ChevronRight)
+                            .variant(variant)
+                            .min_size(Vec2::new(40.0, 28.0))
+                            .show(ui);
+                    }
+                });
+            });
+
+        harness.run();
+        harness.snapshot("chevron_badge");
     }
 }

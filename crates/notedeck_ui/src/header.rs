@@ -1,6 +1,48 @@
 use egui::{Frame, Layout, Margin, Stroke, UiBuilder};
 use egui_extras::{Size, StripBuilder};
 
+/// Direction a [`paint_chevron`] chevron points.
+#[derive(Clone, Copy)]
+pub enum ChevronDir {
+    /// Apex on the left (‹).
+    Left,
+    /// Apex on the right (›).
+    Right,
+}
+
+/// Paint a two-stroke chevron inside `rect`, inset by `pad`, pointing `dir`.
+///
+/// Shared by the clickable [`chevron`] widget and other callers (e.g. icon
+/// badges) that already own a painter and just want the glyph.
+pub fn paint_chevron(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    pad: f32,
+    dir: ChevronDir,
+    stroke: impl Into<Stroke>,
+) {
+    let min = rect.min;
+    let max = rect.max;
+    let mid_y = (min.y + max.y) / 2.0;
+
+    let (apex, top, bottom) = match dir {
+        ChevronDir::Left => (
+            egui::Pos2::new(min.x + pad, mid_y),
+            egui::Pos2::new(max.x - pad, min.y + pad),
+            egui::Pos2::new(max.x - pad, max.y - pad),
+        ),
+        ChevronDir::Right => (
+            egui::Pos2::new(max.x - pad, mid_y),
+            egui::Pos2::new(min.x + pad, min.y + pad),
+            egui::Pos2::new(min.x + pad, max.y - pad),
+        ),
+    };
+
+    let stroke = stroke.into();
+    painter.line_segment([apex, top], stroke);
+    painter.line_segment([apex, bottom], stroke);
+}
+
 pub fn chevron(
     ui: &mut egui::Ui,
     pad: f32,
@@ -8,18 +50,7 @@ pub fn chevron(
     stroke: impl Into<Stroke>,
 ) -> egui::Response {
     let (r, painter) = ui.allocate_painter(size, egui::Sense::click());
-
-    let min = r.rect.min;
-    let max = r.rect.max;
-
-    let apex = egui::Pos2::new(min.x + pad, min.y + size.y / 2.0);
-    let top = egui::Pos2::new(max.x - pad, min.y + pad);
-    let bottom = egui::Pos2::new(max.x - pad, max.y - pad);
-
-    let stroke = stroke.into();
-    painter.line_segment([apex, top], stroke);
-    painter.line_segment([apex, bottom], stroke);
-
+    paint_chevron(&painter, r.rect, pad, ChevronDir::Left, stroke);
     r
 }
 

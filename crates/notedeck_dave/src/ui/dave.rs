@@ -2023,7 +2023,12 @@ fn toggle_badges_ui(
                 FocusPriority::Error => super::badge::BadgeVariant::Destructive,
                 FocusPriority::Done => super::badge::BadgeVariant::Info,
             };
-            let mut next_badge = super::badge::StatusBadge::new("\u{25b6}").variant(variant);
+            // A proper chevron icon with a comfortable tap target so it's easy
+            // to hit on narrow/touch layouts (the old ▶ glyph was tiny).
+            let mut next_badge = super::badge::StatusBadge::new("Next focus")
+                .icon(super::badge::BadgeIcon::ChevronRight)
+                .variant(variant)
+                .min_size(egui::vec2(40.0, 28.0));
             if ctrl_held {
                 next_badge = next_badge.keybind("N");
             }
