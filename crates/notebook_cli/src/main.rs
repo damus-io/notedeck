@@ -526,7 +526,8 @@ impl Cli {
                 "-x" | "--x" => geo.x = Some(num_i("--x")?),
                 "-y" | "--y" => geo.y = Some(num_i("--y")?),
                 "-w" | "--w" => geo.w = Some(num_i("--w")?.max(0) as u64),
-                "--height" | "--h" => geo.h = Some(num_i("--h")?.max(0) as u64),
+                // No `-h` short: clap-style, `-h` is help. Height is `--height` only.
+                "--height" => geo.h = Some(num_i("--height")?.max(0) as u64),
                 "--json" => json = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
@@ -654,8 +655,8 @@ COMMANDS:
     show [nodes...]            Print the canvas, or just the given nodes
                               (--json for machine output)
     seed [title...]           Seed the canvas if none exists (default \"Notebook\")
-    add <text...>             Add a text node (-x -y -w -h to place/size it)
-    move <node> -x <n> -y <n> Move/resize a node (-w -h to resize)
+    add <text...>             Add a text node (-x -y -w --height to place/size it)
+    move <node> -x <n> -y <n> Move/resize a node (-w --height to resize)
     edit <node> <text...>     Replace a node's text
     color <node> <color>      Recolor a node (none/- clears)
     restack <node> <index>    Restack a node to a display index (0 = bottom)
@@ -677,7 +678,8 @@ OPTIONS:
     --relay <url>     Relay URL (or $NOTEBOOK_RELAY) [default: {DEFAULT_RELAY}]
     --canvas <id>     Canvas id [default: {canvas}]
     --db <path>       nostrdb cache dir [default: <data-dir>/notebook-cli]
-    -x, -y, -w, -h    Node geometry for `add`/`move`
+    -x, -y, -w        Node geometry for `add`/`move`
+    --height <n>      Node height for `add`/`move` (no `-h`; that's --help)
     --color <c>       Color for `color`
     --json            Machine-readable output (show)
     -h, --help        Print this help",
