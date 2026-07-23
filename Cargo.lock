@@ -167,6 +167,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentium-core"
+version = "0.10.0-beta.4"
+dependencies = [
+ "chrono",
+ "enostr",
+ "nostrdb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

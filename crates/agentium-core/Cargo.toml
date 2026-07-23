@@ -1,0 +1,16 @@
+[package]
+name = "agentium-core"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+nostrdb = { workspace = true }
+enostr = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { version = "1.10.0", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }
