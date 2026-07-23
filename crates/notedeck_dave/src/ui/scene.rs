@@ -163,7 +163,7 @@ impl AgentScene {
 
                         let id = session.id;
                         let keybind_number = keybind_idx + 1; // 1-indexed for display
-                        let position = agentic.scene_position;
+                        let position: Vec2 = agentic.scene_position.into();
                         let status = session.status();
                         let title = session.details.display_title();
                         let is_selected = selected_ids.contains(&id);
@@ -284,7 +284,7 @@ impl AgentScene {
                 for session in session_manager.iter() {
                     if let Some(agentic) = &session.agentic {
                         let agent_pos =
-                            Pos2::new(agentic.scene_position.x, agentic.scene_position.y);
+                            Pos2::new(agentic.scene_position.0, agentic.scene_position.1);
                         if selection_rect.contains(agent_pos) {
                             self.selected.push(session.id);
                         }

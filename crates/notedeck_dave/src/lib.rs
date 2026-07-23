@@ -1658,7 +1658,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if self.show_scene {
                     self.scene.select(id);
                     if let Some(agentic) = &session.agentic {
-                        self.scene.focus_on(agentic.scene_position);
+                        self.scene.focus_on(agentic.scene_position.into());
                     }
                 }
             }

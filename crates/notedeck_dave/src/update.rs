@@ -572,7 +572,7 @@ pub fn switch_and_focus_session(
         scene.select(id);
         if let Some(session) = session_manager.get(id) {
             if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position);
+                scene.focus_on(agentic.scene_position.into());
             }
         }
     }
@@ -1254,7 +1254,7 @@ pub fn create_session_with_cwd(
         if show_scene {
             scene.select(id);
             if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position);
+                scene.focus_on(agentic.scene_position.into());
             }
         }
 
@@ -1306,7 +1306,7 @@ pub fn create_resumed_session_with_cwd(
         if show_scene {
             scene.select(id);
             if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position);
+                scene.focus_on(agentic.scene_position.into());
             }
         }
     }

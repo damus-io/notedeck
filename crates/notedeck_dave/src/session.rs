@@ -249,8 +249,10 @@ impl Default for PermissionTracker {
 pub struct AgenticSessionData {
     /// Permission state (pending channels, note IDs, responded set)
     pub permissions: PermissionTracker,
-    /// Position in the RTS scene (in scene coordinates)
-    pub scene_position: egui::Vec2,
+    /// Position in the RTS scene, as plain `(x, y)` scene coordinates.
+    /// Kept egui-free so `AgenticSessionData` stays platform-neutral; the UI
+    /// converts to/from `egui::Vec2` at the rendering boundary.
+    pub scene_position: (f32, f32),
     /// Permission mode for Claude (Default or Plan)
     pub permission_mode: PermissionMode,
     /// State for permission response message (tentative accept/deny)
@@ -325,7 +327,7 @@ impl AgenticSessionData {
 
         AgenticSessionData {
             permissions: PermissionTracker::new(),
-            scene_position: egui::Vec2::new(x, y),
+            scene_position: (x, y),
             permission_mode: PermissionMode::Default,
             permission_message_state: PermissionMessageState::None,
             question_answers: HashMap::new(),
