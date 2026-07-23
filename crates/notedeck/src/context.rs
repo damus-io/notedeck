@@ -80,6 +80,19 @@ impl<'a> AppContext<'a> {
         }
     }
 
+    /// Borrow the browser state an agent tool executes against as a
+    /// [`ToolContext`](crate::ToolContext), for a backend dispatching a
+    /// [`ToolCall`](crate::ToolCall). Like [`note_context`](Self::note_context),
+    /// this reborrows the relevant fields, so the returned context holds a
+    /// mutable borrow of `self` for its lifetime.
+    pub fn tool_context(&mut self) -> crate::ToolContext<'_> {
+        crate::ToolContext {
+            ndb: self.ndb,
+            note_cache: self.note_cache,
+            accounts: self.accounts,
+        }
+    }
+
     pub fn select_account(&mut self, pubkey: &Pubkey) {
         let txn = Transaction::new(self.ndb).expect("txn");
         self.accounts
