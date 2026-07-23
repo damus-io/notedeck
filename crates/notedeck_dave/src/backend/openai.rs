@@ -312,3 +312,84 @@ fn tool_to_api(tool: &Tool) -> ChatCompletionTool {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Network-free coverage for the async_openai request mapping extracted
+    //! from `agentium-core`. Guards the wire shape (roles, tool-call ids,
+    //! function names, and the tool schema envelope) without a live API.
+    use super::*;
+    use crate::messages::AssistantMessage;
+    use crate::tools::{dave_tools, ToolCall};
+    use nostrdb::Config;
+
+    fn test_ndb() -> (tempfile::TempDir, Ndb) {
+        let dir = tempfile::tempdir().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        (dir, ndb)
+    }
+
+    #[test]
+    fn message_to_api_maps_core_roles() {
+        let (_dir, ndb) = test_ndb();
+        let txn = Transaction::new(&ndb).unwrap();
+
+        assert!(matches!(
+            message_to_api(&Message::User("hello".into()), &txn, &ndb),
+            Some(ChatCompletionRequestMessage::User(_))
+        ));
+        assert!(matches!(
+            message_to_api(&Message::System("sys".to_string()), &txn, &ndb),
+            Some(ChatCompletionRequestMessage::System(_))
+        ));
+        assert!(matches!(
+            message_to_api(
+                &Message::Assistant(AssistantMessage::from_text("hi".to_string())),
+                &txn,
+                &ndb
+            ),
+            Some(ChatCompletionRequestMessage::Assistant(_))
+        ));
+
+        // UI-only messages are never sent to the API.
+        assert!(message_to_api(&Message::Error("e".to_string()), &txn, &ndb).is_none());
+    }
+
+    #[test]
+    fn message_to_api_maps_tool_calls() {
+        let (_dir, ndb) = test_ndb();
+        let txn = Transaction::new(&ndb).unwrap();
+
+        let call = ToolCall::invalid(
+            "call_1".to_string(),
+            Some("mytool".to_string()),
+            Some("{}".to_string()),
+            "bad".to_string(),
+        );
+        let api = message_to_api(&Message::ToolCalls(vec![call]), &txn, &ndb).unwrap();
+        let ChatCompletionRequestMessage::Assistant(a) = api else {
+            panic!("tool calls must map to an assistant message");
+        };
+        let calls = a.tool_calls.expect("tool_calls present");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id.as_str(), "call_1");
+        assert_eq!(calls[0].function.name.as_str(), "error");
+    }
+
+    #[test]
+    fn tool_to_api_preserves_schema_envelope() {
+        for tool in dave_tools() {
+            let api = tool_to_api(&tool);
+            assert!(matches!(api.r#type, ChatCompletionToolType::Function));
+            assert_eq!(api.function.name.as_str(), tool.name());
+            assert_eq!(api.function.strict, Some(false));
+            let params = api.function.parameters.expect("parameters present");
+            assert_eq!(params.get("type").and_then(|v| v.as_str()), Some("object"));
+            assert!(
+                params.get("properties").is_some(),
+                "schema for `{}` must carry properties",
+                tool.name()
+            );
+        }
+    }
+}
