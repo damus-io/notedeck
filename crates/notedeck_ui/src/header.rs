@@ -8,6 +8,8 @@ pub enum ChevronDir {
     Left,
     /// Apex on the right (›).
     Right,
+    /// Apex at the bottom (⌄), e.g. an expanded disclosure.
+    Down,
 }
 
 /// Paint a two-stroke chevron inside `rect`, inset by `pad`, pointing `dir`.
@@ -23,6 +25,7 @@ pub fn paint_chevron(
 ) {
     let min = rect.min;
     let max = rect.max;
+    let mid_x = (min.x + max.x) / 2.0;
     let mid_y = (min.y + max.y) / 2.0;
 
     let (apex, top, bottom) = match dir {
@@ -35,6 +38,11 @@ pub fn paint_chevron(
             egui::Pos2::new(max.x - pad, mid_y),
             egui::Pos2::new(min.x + pad, min.y + pad),
             egui::Pos2::new(min.x + pad, max.y - pad),
+        ),
+        ChevronDir::Down => (
+            egui::Pos2::new(mid_x, max.y - pad),
+            egui::Pos2::new(min.x + pad, min.y + pad),
+            egui::Pos2::new(max.x - pad, min.y + pad),
         ),
     };
 
@@ -52,6 +60,22 @@ pub fn chevron(
     let (r, painter) = ui.allocate_painter(size, egui::Sense::click());
     paint_chevron(&painter, r.rect, pad, ChevronDir::Left, stroke);
     r
+}
+
+/// Paint a small disclosure chevron in a fixed slot: pointing right when
+/// collapsed, down when expanded. Purely visual — the caller is expected to
+/// sense clicks on the surrounding row/header to drive the toggle.
+pub fn disclosure_chevron(ui: &mut egui::Ui, expanded: bool, stroke: impl Into<Stroke>) {
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(10.0, 12.0), egui::Sense::hover());
+    if expanded {
+        // Draw the down caret into a short, vertically-centred band so it stays
+        // wide-and-shallow (⌄). Using the full slot height would make it taller
+        // than wide and read as the letter "V".
+        let caret = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 6.0));
+        paint_chevron(ui.painter(), caret, 1.0, ChevronDir::Down, stroke);
+    } else {
+        paint_chevron(ui.painter(), rect, 2.0, ChevronDir::Right, stroke);
+    }
 }
 
 /// Generic UI Widget to render widgets horizontally where each is aligned vertically
