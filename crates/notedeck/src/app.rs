@@ -73,6 +73,14 @@ pub trait App {
     fn kind_renderers(&self) -> Vec<Box<dyn crate::KindRenderer>> {
         Vec::new()
     }
+
+    /// Agent tools this app contributes over its nostr-backed data, for AI
+    /// backends (Dave's OpenAI loop, a future `notedeck --mcp`). Registered once
+    /// at startup so a tool resolves even for apps the user never opens. Defaults
+    /// to none. See [`AppTool`](crate::AppTool)/[`RegisteredTool`](crate::RegisteredTool).
+    fn tools(&self) -> Vec<crate::RegisteredTool> {
+        Vec::new()
+    }
 }
 
 #[derive(Default)]
@@ -126,6 +134,8 @@ pub struct Notedeck {
     /// Renderers for nostr events embedded inline (by kind), e.g. headway issues
     /// referenced from a notebook note. Populated at app startup.
     kind_renderers: crate::kind_renderer::KindRendererRegistry,
+    /// App-contributed agent tools for AI backends. Populated at app startup.
+    tool_registry: crate::tool::ToolRegistry,
 
     /// Embedded localhost nostr relay, when enabled. Held so it shuts down with
     /// the app (its `Drop` stops the accept loop). Gated behind the `local-relay`
@@ -451,6 +461,7 @@ impl Notedeck {
             i18n,
             sound,
             kind_renderers: crate::kind_renderer::KindRendererRegistry::default(),
+            tool_registry: crate::tool::ToolRegistry::default(),
             #[cfg(feature = "local-relay")]
             local_relay,
             #[cfg(target_os = "android")]
@@ -507,6 +518,7 @@ impl Notedeck {
                 i18n: &mut self.i18n,
                 sound: &self.sound,
                 kind_renderers: &self.kind_renderers,
+                tools: &self.tool_registry,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
@@ -524,6 +536,12 @@ impl Notedeck {
     /// like the notebook can draw referenced entities inline. Call at startup.
     pub fn register_kind_renderer(&mut self, renderer: Box<dyn crate::KindRenderer>) {
         self.kind_renderers.register(renderer);
+    }
+
+    /// Register an app-contributed agent tool, so AI backends can advertise and
+    /// dispatch it. Call at startup (see [`App::tools`]).
+    pub fn register_tool(&mut self, tool: crate::RegisteredTool) {
+        self.tool_registry.register(tool);
     }
 
     pub fn args(&self) -> &Args {

@@ -133,7 +133,10 @@ pub use time::{
     is_future_timestamp, time_ago_since, time_format, unix_time_secs, MAX_FUTURE_NOTE_SKEW_SECS,
 };
 pub use timecache::TimeCached;
-pub use tool::{QueryCall, ToolArg, ToolArgType, ToolCall, ToolContext, ToolOutcome, ToolSpec};
+pub use tool::{
+    AppTool, QueryCall, RegisteredTool, ToolArg, ToolArgType, ToolCall, ToolContext, ToolOutcome,
+    ToolRegistry, ToolSpec,
+};
 pub use unknowns::{
     get_unknown_note_ids, unknown_id_send, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds,
 };

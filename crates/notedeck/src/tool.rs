@@ -24,9 +24,11 @@
 //! [`tool_context`](crate::AppContext::tool_context) — the tool analogue of
 //! `note_context()`.
 
+use std::collections::HashMap;
+
 use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, Transaction};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{Accounts, AppAction, NoteCache};
@@ -253,6 +255,145 @@ impl ToolCall {
     }
 }
 
+/// A typed, per-app agent tool contributed by an [`App`](crate::App) over its
+/// nostr-backed data.
+///
+/// Where [`ToolCall`] is the browser's *privileged* built-in tool set — it can
+/// emit an [`Intent`](ToolOutcome::Intent) and may grow wider host access — an
+/// `AppTool` is an app extension. It sees only a [`ToolContext`] (the same
+/// shared db/caches/accounts every tool gets), never the app's private
+/// `&mut self`, yet that is enough to do real work: most app data *is* nostr
+/// data (a headway board or a notebook node is a nostr event), so the tool's
+/// value is its app-specific schema and query logic, not privileged state
+/// access. A tool that needs an app's in-memory state belongs in that app's own
+/// update loop instead.
+///
+/// The trait is *typed*: [`Args`](Self::Args) and [`Output`](Self::Output) are
+/// plain serde types, so an implementor never juggles [`Value`] by hand. The
+/// registry erases those types into a [`RegisteredTool`], which performs the
+/// `Value` ⇆ typed conversion at the boundary.
+pub trait AppTool: Send + Sync {
+    /// The tool's typed arguments, deserialized from the backend's JSON.
+    type Args: DeserializeOwned;
+
+    /// The tool's typed result, serialized back to the backend as JSON.
+    type Output: Serialize;
+
+    /// The portable [`ToolSpec`] advertised for this tool. Keep it in sync with
+    /// [`Args`](Self::Args) by hand (a future revision may derive it).
+    fn spec(&self) -> ToolSpec;
+
+    /// Run the tool against `cx` with typed `args`, returning typed output or a
+    /// human-readable error to relay to the backend. App tools produce data
+    /// only — the browser owns [`Intent`](ToolOutcome::Intent) side effects.
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String>;
+}
+
+/// A type-erased [`AppTool`], ready to store in a [`ToolRegistry`] next to tools
+/// with different `Args`/`Output` types.
+///
+/// `AppTool`'s associated types make it non-object-safe, so it can't be held as
+/// `dyn AppTool`. Rather than introduce a second object-safe trait, this struct
+/// captures the concrete tool in a boxed closure that does the `Value` ⇆ typed
+/// serde conversion, and caches the tool's [`ToolSpec`] up front. Build one with
+/// [`RegisteredTool::new`].
+/// The erased body of a [`RegisteredTool`]: takes raw JSON args, does the
+/// `Value` ⇆ typed serde conversion around the concrete [`AppTool::call`], and
+/// returns a [`ToolOutcome`].
+type ErasedHandler = Box<dyn Fn(&mut ToolContext, &Value) -> ToolOutcome + Send + Sync>;
+
+pub struct RegisteredTool {
+    spec: ToolSpec,
+    handler: ErasedHandler,
+}
+
+impl RegisteredTool {
+    /// Erase a concrete [`AppTool`] into a registrable tool. The returned tool
+    /// deserializes incoming JSON into `T::Args`, runs `tool.call`, and
+    /// serializes the output into [`ToolOutcome::Data`] — reporting any serde or
+    /// execution failure as [`ToolOutcome::Error`].
+    pub fn new<T: AppTool + 'static>(tool: T) -> Self {
+        let spec = tool.spec();
+        let handler = Box::new(move |cx: &mut ToolContext, args: &Value| {
+            let args = match serde_json::from_value::<T::Args>(args.clone()) {
+                Ok(args) => args,
+                Err(err) => return ToolOutcome::Error(format!("invalid arguments: {err}")),
+            };
+            match tool.call(cx, args) {
+                Ok(output) => match serde_json::to_value(&output) {
+                    Ok(value) => ToolOutcome::Data(value),
+                    Err(err) => ToolOutcome::Error(format!("failed to serialize output: {err}")),
+                },
+                Err(err) => ToolOutcome::Error(err),
+            }
+        });
+        Self { spec, handler }
+    }
+
+    /// The portable spec advertised for this tool.
+    pub fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    /// The tool's registered name (shorthand for `self.spec().name()`).
+    pub fn name(&self) -> &'static str {
+        self.spec.name()
+    }
+
+    /// Run the erased tool with raw JSON `args`.
+    pub fn call(&self, cx: &mut ToolContext, args: &Value) -> ToolOutcome {
+        (self.handler)(cx, args)
+    }
+}
+
+/// A set of app-contributed [`RegisteredTool`]s, indexed by name.
+///
+/// Populated once at startup from every [`App::tools`](crate::App::tools) and
+/// exposed read-only on [`AppContext`](crate::AppContext), so a backend can
+/// advertise ([`specs`](Self::specs)) and dispatch ([`call`](Self::call)) app
+/// tools uniformly. Mirrors
+/// [`KindRendererRegistry`](crate::KindRendererRegistry).
+#[derive(Default)]
+pub struct ToolRegistry {
+    tools: Vec<RegisteredTool>,
+    by_name: HashMap<String, usize>,
+}
+
+impl ToolRegistry {
+    /// Register an app tool. A duplicate name is logged and skipped, so the
+    /// first registration for a name wins (registration order is app-startup
+    /// order).
+    pub fn register(&mut self, tool: RegisteredTool) {
+        let name = tool.name();
+        if self.by_name.contains_key(name) {
+            tracing::warn!("ignoring duplicate agent tool '{name}'");
+            return;
+        }
+        let idx = self.tools.len();
+        self.by_name.insert(name.to_owned(), idx);
+        self.tools.push(tool);
+    }
+
+    /// The specs for every registered app tool — what a backend advertises.
+    pub fn specs(&self) -> impl Iterator<Item = &ToolSpec> {
+        self.tools.iter().map(RegisteredTool::spec)
+    }
+
+    /// Whether a tool with `name` is registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    /// Dispatch a tool call by `name` with raw JSON `args`, returning an
+    /// [`Error`](ToolOutcome::Error) for an unknown tool.
+    pub fn call(&self, cx: &mut ToolContext, name: &str, args: &Value) -> ToolOutcome {
+        match self.by_name.get(name) {
+            Some(&idx) => self.tools[idx].call(cx, args),
+            None => ToolOutcome::Error(format!("unknown tool '{name}'")),
+        }
+    }
+}
+
 /// Whether a note is a reply (used to exclude replies from query results, so
 /// searches surface root notes rather than conversation fragments).
 fn is_reply(note: Note) -> bool {
@@ -384,6 +525,114 @@ impl QueryCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{test_util::test_config, UnknownIds, FALLBACK_PUBKEY};
+    use tempfile::TempDir;
+
+    /// An app tool whose typed `Args`/`Output` exercise the serde boundary. It
+    /// ignores the [`ToolContext`], so registry dispatch is testable without
+    /// touching the db.
+    struct Echo;
+
+    #[derive(Deserialize)]
+    struct EchoArgs {
+        message: String,
+    }
+
+    #[derive(Serialize)]
+    struct EchoOutput {
+        echoed: String,
+    }
+
+    impl AppTool for Echo {
+        type Args = EchoArgs;
+        type Output = EchoOutput;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new(
+                "echo",
+                "Echo a message back.",
+                vec![ToolArg::new("message", ToolArgType::String, "the message").required(true)],
+            )
+        }
+
+        fn call(&self, _cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+            Ok(EchoOutput {
+                echoed: args.message,
+            })
+        }
+    }
+
+    /// A live [`ToolContext`] over a throwaway db, for exercising dispatch. The
+    /// [`TempDir`] and owned pieces are returned so they outlive the borrows.
+    fn test_tool_env() -> (TempDir, Ndb, NoteCache, Accounts) {
+        let tmp = TempDir::new().expect("tmp dir");
+        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut unknown_ids = UnknownIds::default();
+        let accounts = Accounts::new(
+            None,
+            Vec::new(),
+            Vec::new(),
+            FALLBACK_PUBKEY(),
+            &mut ndb,
+            &txn,
+            &mut unknown_ids,
+        );
+        drop(txn);
+        (tmp, ndb, NoteCache::default(), accounts)
+    }
+
+    #[test]
+    fn registry_dispatches_typed_app_tool() {
+        let (_tmp, ndb, mut note_cache, accounts) = test_tool_env();
+        let mut cx = ToolContext {
+            ndb: &ndb,
+            note_cache: &mut note_cache,
+            accounts: &accounts,
+        };
+
+        let mut reg = ToolRegistry::default();
+        reg.register(RegisteredTool::new(Echo));
+
+        // A valid, typed call round-trips through serde to Data.
+        let out = reg.call(&mut cx, "echo", &json!({ "message": "hi" }));
+        let ToolOutcome::Data(value) = out else {
+            panic!("expected data");
+        };
+        assert_eq!(value["echoed"], "hi");
+    }
+
+    #[test]
+    fn registry_rejects_bad_args_and_unknown_tools() {
+        let (_tmp, ndb, mut note_cache, accounts) = test_tool_env();
+        let mut cx = ToolContext {
+            ndb: &ndb,
+            note_cache: &mut note_cache,
+            accounts: &accounts,
+        };
+
+        let mut reg = ToolRegistry::default();
+        reg.register(RegisteredTool::new(Echo));
+
+        // Args that don't match the typed struct never reach `call`.
+        let bad = reg.call(&mut cx, "echo", &json!({ "wrong": 1 }));
+        assert!(matches!(bad, ToolOutcome::Error(e) if e.contains("invalid arguments")));
+
+        // An unknown name is a clean error, not a panic.
+        let unknown = reg.call(&mut cx, "nope", &json!({}));
+        assert!(matches!(unknown, ToolOutcome::Error(e) if e.contains("unknown tool")));
+    }
+
+    #[test]
+    fn registry_skips_duplicate_names() {
+        let mut reg = ToolRegistry::default();
+        reg.register(RegisteredTool::new(Echo));
+        reg.register(RegisteredTool::new(Echo));
+
+        // The duplicate is dropped; only one spec is advertised.
+        assert_eq!(reg.specs().filter(|s| s.name() == "echo").count(), 1);
+        assert!(reg.contains("echo"));
+    }
 
     #[test]
     fn query_spec_json_schema_shape() {

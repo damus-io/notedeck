@@ -36,6 +36,10 @@ pub struct AppContext<'a> {
     pub sound: &'a SoundManager,
     /// Renderers for nostr events embedded inline, keyed by kind.
     pub kind_renderers: &'a crate::kind_renderer::KindRendererRegistry,
+    /// App-contributed agent tools, for AI backends. Read-only enumeration
+    /// coexists with a disjoint [`tool_context`](AppContext::tool_context)
+    /// mut-borrow via the same `&'a` trick as `kind_renderers`.
+    pub tools: &'a crate::tool::ToolRegistry,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,
@@ -91,6 +95,39 @@ impl<'a> AppContext<'a> {
             note_cache: self.note_cache,
             accounts: self.accounts,
         }
+    }
+
+    /// Every agent-tool spec available to a backend: the browser's built-in
+    /// [`ToolCall`](crate::ToolCall) set followed by the app-contributed
+    /// [`tools`](Self::tools). This is the advertise surface (OpenAI `tools`, MCP
+    /// `tools/list`); [`call_tool`](Self::call_tool) is the matching dispatch.
+    pub fn tool_specs(&self) -> Vec<crate::ToolSpec> {
+        let mut specs = crate::ToolCall::specs();
+        specs.extend(self.tools.specs().cloned());
+        specs
+    }
+
+    /// Dispatch an agent tool by `name` with raw JSON `args`, over a
+    /// [`tool_context`](Self::tool_context). Browser
+    /// [`ToolCall`](crate::ToolCall)s take precedence over app tools of the same
+    /// name; an unknown name yields [`ToolOutcome::Error`](crate::ToolOutcome).
+    pub fn call_tool(&mut self, name: &str, args: &serde_json::Value) -> crate::ToolOutcome {
+        // Browser tools are privileged and win on a name clash.
+        if crate::ToolCall::specs()
+            .iter()
+            .any(|spec| spec.name() == name)
+        {
+            return match crate::ToolCall::parse(name, args) {
+                Ok(call) => call.call(&mut self.tool_context()),
+                Err(err) => crate::ToolOutcome::Error(err),
+            };
+        }
+
+        // `tools` is a shared `&'a` borrow, so copying the reference out frees
+        // `self` to be mut-borrowed by `tool_context()` (same trick as
+        // `kind_renderers`).
+        let tools = self.tools;
+        tools.call(&mut self.tool_context(), name, args)
     }
 
     pub fn select_account(&mut self, pubkey: &Pubkey) {
