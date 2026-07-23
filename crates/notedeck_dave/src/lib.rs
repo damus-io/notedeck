@@ -15,12 +15,13 @@ mod path_normalize;
 pub(crate) mod path_utils;
 mod quaternion;
 pub mod session;
-pub mod session_converter;
 pub mod session_discovery;
-pub mod session_events;
-pub mod session_jsonl;
 pub mod session_loader;
-pub mod session_reconstructor;
+
+// The pure nostr session-protocol modules live in the platform-neutral
+// `agentium-core` crate. Re-export them under their historical `crate::` paths
+// so the rest of dave keeps referring to `crate::session_events`, etc.
+pub use agentium_core::{session_converter, session_events, session_jsonl, session_reconstructor};
 mod tools;
 pub mod ui;
 pub mod update;

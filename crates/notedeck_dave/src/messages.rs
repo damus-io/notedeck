@@ -335,12 +335,9 @@ impl PermissionResponse {
     }
 }
 
-/// The recorded response type for display purposes (without channel details)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionResponseType {
-    Allowed,
-    Denied,
-}
+// The recorded response type (without channel details) now lives in
+// `agentium-core`; keep it reachable as `crate::messages::PermissionResponseType`.
+pub use agentium_core::messages::PermissionResponseType;
 
 /// Metadata about a completed tool execution from an agentic backend.
 /// Used as a variant in `ToolResponses` to unify with other tool responses.

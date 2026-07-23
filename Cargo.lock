@@ -5507,6 +5507,7 @@ dependencies = [
 name = "notedeck_dave"
 version = "0.10.0-beta.4"
 dependencies = [
+ "agentium-core",
  "arboard",
  "async-openai",
  "base64 0.22.1",

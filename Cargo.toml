@@ -31,6 +31,7 @@ members = [
 ]
 
 [workspace.dependencies]
+agentium-core = { path = "crates/agentium-core" }
 opener = "0.8.2"
 chrono = "0.4.40" 
 crossbeam-channel = "0.5"
