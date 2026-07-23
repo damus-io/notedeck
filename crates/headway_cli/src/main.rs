@@ -26,6 +26,9 @@ const APP: &str = "headway-cli";
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Terminate quietly on a closed pipe (`headway show | head`) instead of
+    // panicking in println! on EPIPE.
+    relay_sync::reset_sigpipe();
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;

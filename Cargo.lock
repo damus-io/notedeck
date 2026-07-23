@@ -7293,6 +7293,7 @@ dependencies = [
  "enostr",
  "futures-util",
  "hex",
+ "libc",
  "negentropy 0.5.0",
  "nostrdb",
  "serde_json",
