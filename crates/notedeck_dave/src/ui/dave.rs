@@ -732,43 +732,25 @@ impl<'a> DaveUi<'a> {
                 }
 
                 // Responded state: Allowed (generic fallback)
-                egui::Frame::new()
-                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(inner_margin)
-                    .corner_radius(corner_radius)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Allowed")
-                                    .color(egui::Color32::from_rgb(100, 180, 100))
-                                    .strong(),
-                            );
-                            ui.label(
-                                egui::RichText::new(&request.tool_name)
-                                    .color(ui.visuals().text_color()),
-                            );
-                        });
-                    });
+                responded_permission_ui(
+                    request,
+                    "Allowed",
+                    egui::Color32::from_rgb(100, 180, 100),
+                    inner_margin,
+                    corner_radius,
+                    ui,
+                );
             }
             Some(PermissionResponseType::Denied) => {
                 // Responded state: Denied
-                egui::Frame::new()
-                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(inner_margin)
-                    .corner_radius(corner_radius)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Denied")
-                                    .color(egui::Color32::from_rgb(200, 100, 100))
-                                    .strong(),
-                            );
-                            ui.label(
-                                egui::RichText::new(&request.tool_name)
-                                    .color(ui.visuals().text_color()),
-                            );
-                        });
-                    });
+                responded_permission_ui(
+                    request,
+                    "Denied",
+                    egui::Color32::from_rgb(200, 100, 100),
+                    inner_margin,
+                    corner_radius,
+                    ui,
+                );
             }
             None => {
                 if request.view.is_plan_review() {
@@ -1781,6 +1763,73 @@ fn image_thumbnail_strip(pending: &mut Vec<ImageAttachment>, ui: &mut egui::Ui) 
     }
 }
 
+/// Extract a concise, human-readable summary of what a tool call operates on
+/// (bash command, file path, or a single argument), borrowing from the tool
+/// input so it stays allocation-free in the per-frame render path.
+fn permission_operation_detail(tool_input: &serde_json::Value) -> Option<&str> {
+    let obj = tool_input.as_object()?;
+
+    // Bash and friends: the command being run.
+    if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+        return Some(cmd);
+    }
+
+    // Edit/Write: the file being changed.
+    if let Some(path) = obj.get("file_path").and_then(|v| v.as_str()) {
+        return Some(path);
+    }
+
+    // Single-argument tools: the lone value.
+    if obj.len() == 1 {
+        if let Some(value) = obj.values().next().and_then(|v| v.as_str()) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+/// Render a responded (Allowed/Denied) permission request. Shows the status
+/// label, the tool name, and — so the user can still see what was approved
+/// after the fact — the operation detail (bash command / edited file).
+fn responded_permission_ui(
+    request: &PermissionRequest,
+    label: &str,
+    label_color: egui::Color32,
+    inner_margin: f32,
+    corner_radius: f32,
+    ui: &mut egui::Ui,
+) {
+    egui::Frame::new()
+        .fill(ui.visuals().widgets.noninteractive.bg_fill)
+        .inner_margin(inner_margin)
+        .corner_radius(corner_radius)
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).color(label_color).strong());
+                    ui.label(
+                        egui::RichText::new(&request.tool_name).color(ui.visuals().text_color()),
+                    );
+                });
+
+                // Show what was actually allowed/denied (e.g. the bash command
+                // or the edited file path) on its own line.
+                if let Some(detail) = permission_operation_detail(&request.tool_input) {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(detail)
+                                .monospace()
+                                .size(11.0)
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                    );
+                }
+            });
+        });
+}
+
 /// Send button + clickable accept/deny toggle shown when in tentative state.
 fn tentative_send_ui(
     state: PermissionMessageState,
@@ -2204,7 +2253,9 @@ fn session_header_ui(
 mod tests {
     use super::{toggle_badges_ui, DaveAction, DaveUi};
     use crate::config::AiMode;
-    use crate::messages::{PermissionRequest, PermissionResponse, QuestionAnswer};
+    use crate::messages::{
+        PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
+    };
     use claude_agent_sdk_rs::PermissionMode;
     use egui_kittest::{kittest::Queryable, Harness};
     use serde_json::json;
@@ -2492,5 +2543,117 @@ mod tests {
             }
             other => panic!("expected QuestionResponse action, got {:?}", other),
         }
+    }
+
+    /// Build a harness that renders a single (already-responded) permission
+    /// request through the real `permission_request_ui`.
+    fn responded_permission_harness(
+        request: PermissionRequest,
+    ) -> Harness<'static, PermissionUiHarnessState> {
+        Harness::new_ui_state(
+            |ui, state: &mut PermissionUiHarnessState| {
+                let mut dave_ui = DaveUi::new(
+                    false,
+                    1,
+                    &[],
+                    &mut state.input,
+                    &mut state.focus_requested,
+                    AiMode::Agentic,
+                );
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                    state.action = Some(action);
+                }
+            },
+            PermissionUiHarnessState::new(request),
+        )
+    }
+
+    #[test]
+    fn allowed_bash_widget_still_shows_the_command() {
+        // After accepting, the user must still be able to see *what* they
+        // allowed — the bash command, not just "Allowed  Bash".
+        let request = PermissionRequest::new(
+            Uuid::new_v4(),
+            "Bash".to_string(),
+            json!({ "command": "cargo test --all" }),
+            None,
+            Some(PermissionResponseType::Allowed),
+            None,
+        );
+        let mut harness = responded_permission_harness(request);
+        harness.run();
+
+        harness.get_by_label("Allowed");
+        harness.get_by_label("Bash");
+        harness.get_by_label("cargo test --all");
+    }
+
+    #[test]
+    fn denied_edit_widget_shows_the_edited_file() {
+        // Likewise for a denied Edit: the file path stays visible afterward.
+        let request = PermissionRequest::new(
+            Uuid::new_v4(),
+            "Edit".to_string(),
+            json!({
+                "file_path": "crates/notedeck_dave/src/lib.rs",
+                "old_string": "a",
+                "new_string": "b",
+            }),
+            None,
+            Some(PermissionResponseType::Denied),
+            None,
+        );
+        let mut harness = responded_permission_harness(request);
+        harness.run();
+
+        harness.get_by_label("Denied");
+        harness.get_by_label("Edit");
+        harness.get_by_label("crates/notedeck_dave/src/lib.rs");
+    }
+
+    /// Visualize the responded permission widgets. Ignored by default; render
+    /// with `scripts/snapshot-test snapshot_responded_permission_widgets`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_responded_permission_widgets() {
+        let requests = vec![
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Bash".to_string(),
+                json!({ "command": "cargo test --all -- --nocapture" }),
+                None,
+                Some(PermissionResponseType::Allowed),
+                None,
+            ),
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Edit".to_string(),
+                json!({
+                    "file_path": "crates/notedeck_dave/src/ui/badge.rs",
+                    "old_string": "a",
+                    "new_string": "b",
+                }),
+                None,
+                Some(PermissionResponseType::Denied),
+                None,
+            ),
+        ];
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 180.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut input = String::new();
+                let mut focus = false;
+                for request in &requests {
+                    let mut dave_ui =
+                        DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
+                    dave_ui.permission_request_ui(request, ui);
+                    ui.add_space(8.0);
+                }
+            });
+
+        harness.run();
+        harness.snapshot("responded_permission_widgets");
     }
 }
