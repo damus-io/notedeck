@@ -1,11 +1,16 @@
 use crate::messages::ExecutedTool;
 use async_openai::types::*;
 use chrono::DateTime;
-use enostr::{NoteId, Pubkey};
+use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
+use notedeck::{ToolArg, ToolArgType, ToolSpec};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{collections::HashMap, fmt};
+
+/// The nostrdb query tool call, shared with the browser-level tool module so
+/// dave doesn't carry a second copy of the filter/execution logic.
+pub use notedeck::QueryCall;
 
 /// A tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,49 +211,23 @@ impl fmt::Display for ToolCallError {
     }
 }
 
-#[derive(Debug, Clone)]
-enum ArgType {
-    String,
-    Number,
-
-    #[allow(dead_code)]
-    Enum(Vec<&'static str>),
-}
-
-impl ArgType {
-    pub fn type_string(&self) -> &'static str {
-        match self {
-            Self::String => "string",
-            Self::Number => "number",
-            Self::Enum(_) => "string",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ToolArg {
-    typ: ArgType,
-    name: &'static str,
-    required: bool,
-    description: &'static str,
-    default: Option<Value>,
-}
-
+/// A dave tool: the portable [`ToolSpec`] advertised to the model (shared with
+/// notedeck's browser-level tool module) plus dave's parser that turns the
+/// model's raw arguments into a typed [`ToolCalls`] for dave's streaming,
+/// persistence, and UI layers.
 #[derive(Debug, Clone)]
 pub struct Tool {
     parse_call: fn(&str) -> Result<ToolCalls, ToolCallError>,
-    name: &'static str,
-    description: &'static str,
-    arguments: Vec<ToolArg>,
+    spec: ToolSpec,
 }
 
 impl Tool {
     pub fn name(&self) -> &'static str {
-        self.name
+        self.spec.name()
     }
 
     pub fn description(&self) -> &'static str {
-        self.description
+        self.spec.description()
     }
 
     pub fn parse_call(&self) -> fn(&str) -> Result<ToolCalls, ToolCallError> {
@@ -256,61 +235,11 @@ impl Tool {
     }
 
     pub fn to_function_object(&self) -> FunctionObject {
-        let required_args = self
-            .arguments
-            .iter()
-            .filter_map(|arg| {
-                if arg.required {
-                    Some(Value::String(arg.name.to_owned()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let mut parameters: serde_json::Map<String, Value> = serde_json::Map::new();
-        parameters.insert("type".to_string(), Value::String("object".to_string()));
-        parameters.insert("required".to_string(), Value::Array(required_args));
-        parameters.insert("additionalProperties".to_string(), Value::Bool(false));
-
-        let mut properties: serde_json::Map<String, Value> = serde_json::Map::new();
-
-        for arg in &self.arguments {
-            let mut props: serde_json::Map<String, Value> = serde_json::Map::new();
-            props.insert(
-                "type".to_string(),
-                Value::String(arg.typ.type_string().to_string()),
-            );
-
-            let description = if let Some(default) = &arg.default {
-                format!("{} (Default: {default})", arg.description)
-            } else {
-                arg.description.to_owned()
-            };
-
-            props.insert("description".to_string(), Value::String(description));
-            if let ArgType::Enum(enums) = &arg.typ {
-                props.insert(
-                    "enum".to_string(),
-                    Value::Array(
-                        enums
-                            .iter()
-                            .map(|s| Value::String((*s).to_owned()))
-                            .collect(),
-                    ),
-                );
-            }
-
-            properties.insert(arg.name.to_owned(), Value::Object(props));
-        }
-
-        parameters.insert("properties".to_string(), Value::Object(properties));
-
         FunctionObject {
-            name: self.name.to_owned(),
-            description: Some(self.description.to_owned()),
+            name: self.spec.name().to_owned(),
+            description: Some(self.spec.description().to_owned()),
             strict: Some(false),
-            parameters: Some(Value::Object(parameters)),
+            parameters: Some(self.spec.json_schema()),
         }
     }
 
@@ -406,104 +335,28 @@ impl PresentNotesCall {
     }
 }
 
-/// The parsed nostrdb query that dave wants to use to satisfy a request
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct QueryCall {
-    pub author: Option<Pubkey>,
-    pub limit: Option<u64>,
-    pub since: Option<u64>,
-    pub kind: Option<u64>,
-    pub until: Option<u64>,
-    pub search: Option<String>,
+/// Parse a `query` tool call's raw arguments into a typed [`QueryCall`] wrapped
+/// in dave's [`ToolCalls`]. The `QueryCall` type and its filter logic live in
+/// notedeck's browser tool module; this is the dave-side adapter to its
+/// streaming/parse machinery.
+fn parse_query(args: &str) -> Result<ToolCalls, ToolCallError> {
+    match serde_json::from_str::<QueryCall>(args) {
+        Ok(call) => Ok(ToolCalls::Query(call)),
+        Err(e) => Err(ToolCallError::ArgParseFailure(format!(
+            "{args}, error: {e}"
+        ))),
+    }
 }
 
-fn is_reply(note: Note) -> bool {
-    for tag in note.tags() {
-        if tag.count() < 4 {
-            continue;
-        }
-
-        let Some("e") = tag.get_str(0) else {
-            continue;
-        };
-
-        let Some(s) = tag.get_str(3) else {
-            continue;
-        };
-
-        if s == "root" || s == "reply" {
-            return true;
-        }
-    }
-
-    false
-}
-
-impl QueryCall {
-    pub fn to_filter(&self) -> nostrdb::Filter {
-        let mut filter = nostrdb::Filter::new()
-            .limit(self.limit())
-            .custom(|n| !is_reply(n))
-            .kinds([self.kind.unwrap_or(1)]);
-
-        if let Some(author) = &self.author {
-            filter = filter.authors([author.bytes()]);
-        }
-
-        if let Some(search) = &self.search {
-            filter = filter.search(search);
-        }
-
-        if let Some(until) = self.until {
-            filter = filter.until(until);
-        }
-
-        if let Some(since) = self.since {
-            filter = filter.since(since);
-        }
-
-        filter.build()
-    }
-
-    fn limit(&self) -> u64 {
-        self.limit.unwrap_or(10)
-    }
-
-    pub fn author(&self) -> Option<&Pubkey> {
-        self.author.as_ref()
-    }
-
-    pub fn since(&self) -> Option<u64> {
-        self.since
-    }
-
-    pub fn until(&self) -> Option<u64> {
-        self.until
-    }
-
-    pub fn search(&self) -> Option<&str> {
-        self.search.as_deref()
-    }
-
-    pub fn execute(&self, txn: &Transaction, ndb: &Ndb) -> QueryResponse {
-        let notes = {
-            if let Ok(results) = ndb.query(txn, &[self.to_filter()], self.limit() as i32) {
-                results.into_iter().map(|r| r.note_key.as_u64()).collect()
-            } else {
-                vec![]
-            }
-        };
-        QueryResponse { notes }
-    }
-
-    pub fn parse(args: &str) -> Result<ToolCalls, ToolCallError> {
-        match serde_json::from_str::<QueryCall>(args) {
-            Ok(call) => Ok(ToolCalls::Query(call)),
-            Err(e) => Err(ToolCallError::ArgParseFailure(format!(
-                "{args}, error: {e}"
-            ))),
-        }
-    }
+/// Run a [`QueryCall`] and collect the matched note keys, using notedeck's
+/// shared filter. Note keys are stable for the life of the db, so they are
+/// resolved back to notes later when formatting the response for the AI.
+pub fn execute_query(call: &QueryCall, txn: &Transaction, ndb: &Ndb) -> QueryResponse {
+    let notes = ndb
+        .query(txn, &[call.to_filter()], call.limit() as i32)
+        .map(|results| results.into_iter().map(|r| r.note_key.as_u64()).collect())
+        .unwrap_or_default();
+    QueryResponse { notes }
 }
 
 /// A simple note format for use when formatting
@@ -589,83 +442,24 @@ fn _note_kind_desc(kind: u64) -> String {
 
 fn present_tool() -> Tool {
     Tool {
-        name: "present_notes",
         parse_call: PresentNotesCall::parse,
-        description: "A tool for presenting notes to the user for display. Should be called at the end of a response so that the UI can present the notes referred to in the previous message.",
-        arguments: vec![ToolArg {
-            name: "note_ids",
-            description: "A comma-separated list of hex note ids",
-            typ: ArgType::String,
-            required: true,
-            default: None,
-        }],
+        spec: ToolSpec::new(
+            "present_notes",
+            "A tool for presenting notes to the user for display. Should be called at the end of a response so that the UI can present the notes referred to in the previous message.",
+            vec![ToolArg::new(
+                "note_ids",
+                ToolArgType::String,
+                "A comma-separated list of hex note ids",
+            )
+            .required(true)],
+        ),
     }
 }
 
 fn query_tool() -> Tool {
     Tool {
-        name: "query",
-        parse_call: QueryCall::parse,
-        description: "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
-        arguments: vec![
-            ToolArg {
-                name: "search",
-                typ: ArgType::String,
-                required: false,
-                default: None,
-                description: "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
-            },
-
-            ToolArg {
-                name: "limit",
-                typ: ArgType::Number,
-                required: true,
-                default: Some(Value::Number(serde_json::Number::from_i128(50).unwrap())),
-                description: "The number of results to return.",
-            },
-
-            ToolArg {
-                name: "since",
-                typ: ArgType::Number,
-                required: false,
-                default: None,
-                description: "Only pull notes after this unix timestamp",
-            },
-
-            ToolArg {
-                name: "until",
-                typ: ArgType::Number,
-                required: false,
-                default: None,
-                description: "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
-            },
-
-            ToolArg {
-                name: "author",
-                typ: ArgType::String,
-                required: false,
-                default: None,
-                description: "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to u
-se, you can query for kind 0 profiles with the search argument.",
-            },
-
-            ToolArg {
-                name: "kind",
-                typ: ArgType::Number,
-                required: false,
-                default: Some(Value::Number(serde_json::Number::from_i128(1).unwrap())),
-                description: r#"The kind of note. Kind list:
-                - 0: profiles
-                - 1: microblogs/\"tweets\"/posts
-                - 6: reposts of kind 1 notes
-                - 7: emoji reactions/likes
-                - 9735: zaps (bitcoin micropayment receipts)
-                - 30023: longform articles, blog posts, etc
-
-                "#,
-            },
-
-        ]
+        parse_call: parse_query,
+        spec: QueryCall::spec(),
     }
 }
 
