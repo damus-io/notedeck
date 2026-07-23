@@ -62,6 +62,7 @@ fn build_dave_ui<'a>(
     let is_working = session.status() == AgentStatus::Working;
     let has_pending_permission = session.has_pending_permissions();
     let permission_mode = session.permission_mode();
+    let auto_accept_all = session.auto_accept_all();
     let is_remote = session.is_remote();
     // Look up the run configs for this session's CWD
     let session_run_configs: &'a [crate::config::RunConfig] = session
@@ -84,6 +85,7 @@ fn build_dave_ui<'a>(
     .interrupt_pending(is_interrupt_pending)
     .has_pending_permission(has_pending_permission)
     .permission_mode(permission_mode)
+    .auto_accept_all(auto_accept_all)
     .auto_steal_focus(auto_steal_focus)
     .is_remote(is_remote)
     .dispatch_state(session.dispatch_state)
@@ -865,6 +867,13 @@ pub fn handle_key_action(
                 None => KeyActionResult::None,
             }
         }
+        KeyAction::ToggleAutoAcceptAll => {
+            update::toggle_auto_accept_all(session_manager);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
+            KeyActionResult::None
+        }
         KeyAction::DeleteActiveSession => {
             if let Some(id) = session_manager.active_id() {
                 KeyActionResult::DeleteSession(id)
@@ -1118,6 +1127,23 @@ pub fn handle_ui_action(
                 Some(cmd) => UiActionResult::PublishModeCommand(cmd),
                 None => UiActionResult::Handled,
             }
+        }
+        DaveAction::SetPermissionMode(mode) => {
+            let publish = update::set_permission_mode(session_manager, backend, mode, ctx);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
+            match publish {
+                Some(cmd) => UiActionResult::PublishModeCommand(cmd),
+                None => UiActionResult::Handled,
+            }
+        }
+        DaveAction::ToggleAutoAcceptAll => {
+            update::toggle_auto_accept_all(session_manager);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
+            UiActionResult::Handled
         }
         DaveAction::ToggleAutoSteal => UiActionResult::ToggleAutoSteal,
         DaveAction::FocusQueueNext => UiActionResult::FocusQueueNext,

@@ -303,6 +303,10 @@ pub struct AgenticSessionData {
     /// For Bash: stores binary names (first word of command).
     /// For other tools: stores the tool name.
     pub runtime_allows: HashSet<String>,
+    /// Auto-accept EVERY permission request this session (dave-side "Auto
+    /// Accept All"). Unlike the CLI's bypass mode this is enforced by dave, so
+    /// it works across all backends and can be toggled at runtime.
+    pub auto_accept_all: bool,
     /// Stable Nostr event identity for this session (d-tag for kind-31988
     /// and kind-1988 events).  Generated at creation, never changes.
     /// Separate from the Claude CLI session ID used for `--resume`.
@@ -342,6 +346,7 @@ impl AgenticSessionData {
             max_seen_seq: None,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
+            auto_accept_all: false,
             event_id: uuid::Uuid::new_v4().to_string(),
         }
     }
@@ -361,8 +366,14 @@ impl AgenticSessionData {
         }
     }
 
-    /// Check if a permission request matches the runtime allowlist.
+    /// Check if a permission request should be auto-accepted this session —
+    /// either because "Auto Accept All" is on, or the tool matches the runtime
+    /// allowlist. This is the single dave-side checkpoint every backend's
+    /// permission requests flow through, so it is backend-agnostic.
     pub fn should_runtime_allow(&self, tool_name: &str, tool_input: &serde_json::Value) -> bool {
+        if self.auto_accept_all {
+            return true;
+        }
         if let Some(key) = Self::runtime_allow_key(tool_name, tool_input) {
             self.runtime_allows.contains(&key)
         } else {
@@ -800,6 +811,11 @@ impl ChatSession {
             .unwrap_or(PermissionMode::Default)
     }
 
+    /// Whether dave-side "Auto Accept All" is on for this session.
+    pub fn auto_accept_all(&self) -> bool {
+        self.agentic.as_ref().is_some_and(|a| a.auto_accept_all)
+    }
+
     /// Get the working directory (agentic only)
     pub fn cwd(&self) -> Option<&PathBuf> {
         self.agentic.as_ref().map(|a| &a.cwd)
@@ -824,6 +840,26 @@ impl ChatSession {
         if let Some(ref mut agentic) = self.agentic {
             agentic.fail_subagent(&mut self.chat, task_id, error);
         }
+    }
+
+    /// Whether any background subagent is still running.
+    ///
+    /// A background subagent (`run_in_background`) keeps executing after the
+    /// foreground turn that launched it completes; the CLI resumes the session
+    /// with a wake-up turn once it finishes. Until then the session is still
+    /// doing work even though no foreground turn is in flight, so
+    /// [`status`](Self::status) reports `Working`.
+    pub fn has_running_background_subagent(&self) -> bool {
+        let Some(agentic) = &self.agentic else {
+            return false;
+        };
+        agentic.subagent_indices.values().any(|&idx| {
+            matches!(
+                self.chat.get(idx),
+                Some(Message::Subagent(info))
+                    if info.background && info.status == SubagentStatus::Running
+            )
+        })
     }
 
     /// Try to fold a tool result into its parent subagent.
@@ -921,6 +957,13 @@ impl ChatSession {
 
         // Check if actively working (has task handle and receiving tokens)
         if self.task_handle.is_some() && self.incoming_tokens.is_some() {
+            return AgentStatus::Working;
+        }
+
+        // A background subagent is still running: the foreground turn has ended
+        // (no task handle) but a wake-up turn will resume the session when the
+        // task finishes, so it's still Working.
+        if self.has_running_background_subagent() {
             return AgentStatus::Working;
         }
 
@@ -1547,6 +1590,21 @@ mod tests {
     use crate::config::AiMode;
     use crate::messages::AssistantMessage;
     use std::sync::mpsc;
+
+    #[test]
+    fn auto_accept_all_allows_every_tool() {
+        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+
+        // Off: an arbitrary tool not on the allowlist is not auto-accepted.
+        let scary = serde_json::json!({ "command": "rm -rf /" });
+        assert!(!agentic.should_runtime_allow("Bash", &scary));
+
+        // On: dave auto-accepts everything, regardless of tool or allowlist.
+        agentic.auto_accept_all = true;
+        assert!(agentic.should_runtime_allow("Bash", &scary));
+        assert!(agentic
+            .should_runtime_allow("Write", &serde_json::json!({ "file_path": "/etc/passwd" })));
+    }
 
     fn test_session() -> ChatSession {
         ChatSession::new(
@@ -2623,6 +2681,56 @@ mod tests {
         } else {
             panic!("expected Subagent message at index {}", idx);
         }
+    }
+
+    #[test]
+    fn running_background_subagent_keeps_session_working() {
+        let mut session = test_session();
+        // A finished foreground turn that launched a background subagent: the
+        // task handle is cleared, but the subagent is still running.
+        session
+            .chat
+            .push(Message::User("do background work".into()));
+        let mut subagent = make_subagent("toolu_root", "background task");
+        subagent.background = true;
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic
+                .subagent_indices
+                .insert("toolu_root".to_string(), idx);
+        }
+        session.task_handle = None;
+
+        session.update_status();
+        assert_eq!(
+            session.status(),
+            AgentStatus::Working,
+            "a running background subagent should keep the session Working"
+        );
+
+        // Once it completes, the session is no longer Working on its account.
+        session.complete_subagent("toolu_root", "done");
+        session.update_status();
+        assert_ne!(session.status(), AgentStatus::Working);
+    }
+
+    #[test]
+    fn foreground_subagent_does_not_keep_session_working() {
+        let mut session = test_session();
+        session.chat.push(Message::User("explore".into()));
+        // A foreground subagent (background: false) must not by itself hold the
+        // session in Working after the turn ends.
+        let subagent = make_subagent("toolu_fg", "foreground task");
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert("toolu_fg".to_string(), idx);
+        }
+        session.task_handle = None;
+
+        session.update_status();
+        assert_ne!(session.status(), AgentStatus::Working);
     }
 
     #[test]

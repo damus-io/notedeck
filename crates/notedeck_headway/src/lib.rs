@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use enostr::{Pubkey, RelayId};
+use enostr::{Pubkey, RelayId, RelayStatus};
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{
     App, AppContext, AppResponse, ColorTheme, DataPath, DataPathType, ExplicitPublishApi,
@@ -350,6 +350,8 @@ impl App for Headway {
         // needs a `NoteContext` borrowed off `ctx` — dropped before we touch `ctx`
         // again to ingest the action below.
         let boards = self.sync.boards();
+        // Header sync indicator: are we reaching a private relay right now?
+        let sync = sync_status(ctx, &private_relays);
         let action = {
             let mut note_context = ctx.note_context();
             board_ui(
@@ -358,6 +360,7 @@ impl App for Headway {
                 &mut note_context,
                 self.sync.view().expect("view present"),
                 &boards,
+                sync,
                 &mut self.state,
             )
         };
@@ -456,6 +459,35 @@ impl App for Headway {
 
         self.pump_repaint(ui);
         AppResponse::default()
+    }
+}
+
+/// Derive the header sync indicator from the resolved private relay set and the
+/// relay pool's live connection status. Mirrors the diagnostic in
+/// [`notedeck::PrivateRelaySync`]'s change logging: an empty set (or one with no
+/// websocket relay) is local-only; a set with at least one *connected* relay is
+/// syncing; otherwise a relay is configured but we're not reaching it yet.
+fn sync_status(ctx: &AppContext, private_relays: &[RelayId]) -> ui::SyncStatus {
+    let has_private = private_relays
+        .iter()
+        .any(|relay| matches!(relay, RelayId::Websocket(_)));
+    if !has_private {
+        return ui::SyncStatus::LocalOnly;
+    }
+    let inspect = ctx.remote.relay_inspect();
+    let infos = inspect.relay_infos();
+    let connected = private_relays.iter().any(|relay| {
+        let RelayId::Websocket(url) = relay else {
+            return false;
+        };
+        infos
+            .iter()
+            .any(|info| info.relay_url == url && info.status == RelayStatus::Connected)
+    });
+    if connected {
+        ui::SyncStatus::Syncing
+    } else {
+        ui::SyncStatus::Offline
     }
 }
 

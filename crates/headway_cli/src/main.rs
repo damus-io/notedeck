@@ -14,7 +14,7 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView, CommentView};
+use headway::event::{self, BoardView, CardView, CommentView, Priority};
 use headway::store::{self, BoardAction, Publisher};
 use headway::wordid;
 
@@ -26,6 +26,9 @@ const APP: &str = "headway-cli";
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Terminate quietly on a closed pipe (`headway show | head`) instead of
+    // panicking in println! on EPIPE.
+    relay_sync::reset_sigpipe();
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -66,6 +69,11 @@ enum Command {
         card: String,
         labels: Vec<String>,
     },
+    /// Set a card's priority (none/low/medium/high/urgent).
+    Priority {
+        card: String,
+        level: String,
+    },
     /// Make a card a subissue of another card, or detach it (no parent given).
     Parent {
         card: String,
@@ -103,6 +111,11 @@ enum Command {
     Board {
         id: Option<String>,
     },
+    /// Rename the current board's display title (its slug is unchanged, so
+    /// existing card refs keep working).
+    Rename {
+        title: String,
+    },
     Login {
         nsec: String,
     },
@@ -127,13 +140,18 @@ impl Command {
             | Command::Title { card, .. }
             | Command::Desc { card, .. }
             | Command::Label { card, .. }
+            | Command::Priority { card, .. }
             | Command::Comment { card, .. }
             | Command::Delete { card }
             | Command::Archive { card }
             | Command::Restore { card }
             | Command::Link { card, .. }
             | Command::MoveBoard { card, .. } => selectors.push(card),
-            Command::Seed | Command::Board { .. } | Command::Login { .. } | Command::Logout => {}
+            Command::Seed
+            | Command::Rename { .. }
+            | Command::Board { .. }
+            | Command::Login { .. }
+            | Command::Logout => {}
         }
 
         let mut found: Option<String> = None;
@@ -211,9 +229,16 @@ async fn run() -> Result<()> {
     let board = cli.board;
     let as_json = cli.json;
     let show_archived = cli.archived;
+    let show_all = cli.all;
     let secret = cli.secret.map(|(s, _)| s);
 
     match cli.command {
+        // `--all` fans the render across every board in the cache, ignoring any
+        // card selectors (which address a single board).
+        Command::Show { .. } if show_all => {
+            print_all_boards(&list_boards(&ndb, &author), as_json, show_archived)
+        }
+
         Command::Show { cards } => match load_board(&ndb, &author, &board) {
             Some(view) if cards.is_empty() => print_board(&view, as_json, show_archived),
             Some(view) => print_cards(&view, &cards, as_json)?,
@@ -390,6 +415,10 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             card: resolve_card(view, &card)?,
             labels,
         },
+        Command::Priority { card, level } => BoardAction::SetPriority {
+            card: resolve_card(view, &card)?,
+            priority: Priority::parse(&level),
+        },
         Command::Parent { card, parent } => BoardAction::SetParent {
             card: resolve_card(view, &card)?,
             parent: parent
@@ -422,6 +451,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Restore { card } => BoardAction::RestoreCard {
             card: resolve_card(view, &card)?,
         },
+        Command::Rename { title } => BoardAction::RenameBoard { title },
         Command::Show { .. }
         | Command::Seed
         | Command::Link { .. }
@@ -594,7 +624,8 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         println!("\n{} ({})", col.name, col.cards.len());
         for c in &col.cards {
             println!(
-                "  {}{}{}  {}",
+                "  {}{}{}{}  {}",
+                priority_prefix(c.priority),
                 c.title,
                 progress_suffix(c),
                 labels_suffix(&c.labels),
@@ -614,6 +645,34 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
                 view.archived.len()
             );
         }
+    }
+}
+
+/// Render every board in the cache. In text mode each board is printed with
+/// [`print_board`], the boards separated by a blank line; in JSON mode they
+/// become a single array so the combined output stays machine-parseable.
+fn print_all_boards(boards: &[BoardView], as_json: bool, show_archived: bool) {
+    if as_json {
+        let arr: Vec<_> = boards.iter().map(event::board_json).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).unwrap_or_else(|_| "[]".into())
+        );
+        return;
+    }
+    if boards.is_empty() {
+        println!("no boards yet — run `headway seed` to create one");
+        return;
+    }
+    for (i, view) in boards.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        // Lead with the addressable slug: board titles can collide (two boards
+        // both titled "Headway"), and the slug is what `--board`/`board <id>`
+        // take, so it's the anchor for the human-readable title that follows.
+        println!("{}", relay_sync::dim(&view.id));
+        print_board(view, false, show_archived);
     }
 }
 
@@ -665,6 +724,9 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
     println!("column  {col}");
     if !card.labels.is_empty() {
         println!("labels  {}", card.labels.join(", "));
+    }
+    if card.priority != Priority::None {
+        println!("priority {}", card.priority.as_str());
     }
     if let Some(parent) = &card.parent {
         println!("parent  {}", card_ref(view, parent));
@@ -760,6 +822,19 @@ fn labels_suffix(labels: &[String]) -> String {
     }
 }
 
+/// A compact at-a-glance priority marker printed before a card's title on the
+/// board listing: a dim glyph for the lower priorities and a bold `!` for urgent,
+/// empty for [`Priority::None`] so unprioritised cards stay unadorned.
+fn priority_prefix(priority: Priority) -> String {
+    match priority {
+        Priority::None => String::new(),
+        Priority::Low => relay_sync::dim("↓ "),
+        Priority::Medium => relay_sync::dim("= "),
+        Priority::High => relay_sync::dim("↑ "),
+        Priority::Urgent => "! ".to_string(),
+    }
+}
+
 /// A dim `n/m` subissue rollup shown after a parent card's title on the board
 /// listing; empty for cards with no children.
 fn progress_suffix(card: &CardView) -> String {
@@ -794,6 +869,8 @@ struct Cli {
     board: String,
     json: bool,
     archived: bool,
+    /// `show` renders every board in the cache instead of just the current one.
+    all: bool,
     command: Command,
 }
 
@@ -818,6 +895,7 @@ impl Cli {
         let mut author = None;
         let mut json = false;
         let mut archived = false;
+        let mut all = false;
         let mut col = None;
         let mut row = None;
         let mut to = None;
@@ -864,6 +942,7 @@ impl Cli {
                 }
                 "--json" => json = true,
                 "--archived" => archived = true,
+                "--all" => all = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -914,6 +993,7 @@ impl Cli {
             board,
             json,
             archived,
+            all,
             command,
         }))
     }
@@ -959,6 +1039,10 @@ fn parse_command(
             card: card()?,
             labels: rest.get(1..).unwrap_or_default().to_vec(),
         },
+        "priority" => Command::Priority {
+            card: card()?,
+            level: arg(rest, 1, name)?,
+        },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
         "parent" => Command::Parent {
@@ -980,6 +1064,9 @@ fn parse_command(
         "move-board" => Command::MoveBoard {
             card: card()?,
             to_board: to.ok_or("move-board needs --to <board>")?,
+        },
+        "rename" => Command::Rename {
+            title: joined(rest, 0, name)?,
         },
         "board" => Command::Board {
             id: rest.first().cloned(),
@@ -1018,8 +1105,8 @@ USAGE:
 
 COMMANDS:
     show [cards...]            Print the board, or the given cards in full
-                               detail (--archived to list archived, --json for
-                               machine output)
+                               detail (--archived to list archived, --all for
+                               every board, --json for machine output)
     seed                       Seed the default board if none exists
     add <title...>             Add a card (--col <c> column, -l <labels> to tag,
                                --parent <card> to create it as a subissue)
@@ -1027,6 +1114,7 @@ COMMANDS:
     title <card> <title...>    Edit a card's title
     desc <card> <text...>      Edit a card's description
     label <card> [labels...]   Set a card's labels (empty clears)
+    priority <card> <level>    Set priority (none/low/medium/high/urgent)
     parent <card> [parent]     Make a card a subissue of [parent] (omit to
                                detach)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
@@ -1036,6 +1124,8 @@ COMMANDS:
     restore <card>             Restore an archived card
     link <card> --to <board>   Also place a card on another board (keep both)
     move-board <card> --to <b> Move a card from this board to another board
+    rename <title...>          Rename the current board's display title (slug
+                               unchanged)
     board [id]                 Switch the current board to <id>, or list boards
                                and mark the current one
     login <nsec>               Store a signing key for later runs
@@ -1063,6 +1153,7 @@ OPTIONS:
     --parent <card>   Parent card for `add` (created as its subissue)
     --json            Machine-readable output (show)
     --archived        List archived cards in full (show)
+    --all             Show every board in the cache, not just the current (show)
     -h, --help        Print this help",
         DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
         board = store::BOARD_ID,
@@ -1097,6 +1188,28 @@ mod tests {
             parse(&["show", "Commerce#purse-metal-toilet"]).board,
             "commerce"
         );
+    }
+
+    /// `priority <card> <level>` parses into a Priority command, and a full
+    /// card ref self-routes it to that card's board.
+    #[test]
+    fn priority_command_parses_and_routes() {
+        let cli = parse(&["priority", "commerce#purse-metal-toilet", "high"]);
+        assert_eq!(cli.board, "commerce");
+        match cli.command {
+            Command::Priority { card, level } => {
+                assert_eq!(card, "commerce#purse-metal-toilet");
+                assert_eq!(level, "high");
+            }
+            _ => panic!("expected a Priority command"),
+        }
+    }
+
+    /// `--all` is an independent flag on `show`, off unless passed.
+    #[test]
+    fn all_flag_toggles_show() {
+        assert!(!parse(&["show"]).all);
+        assert!(parse(&["show", "--all"]).all);
     }
 
     #[test]

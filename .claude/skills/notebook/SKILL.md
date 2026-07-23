@@ -91,8 +91,8 @@ too and is fine for one-offs.
 | --- | --- |
 | `show [nodes...] [--json]` | Print the canvas, or only the given nodes |
 | `seed [title...]` | Create the canvas if none exists (default title `Notebook`) |
-| `add <text...> [-x -y -w -h]` | Add a text node, optionally placed/sized |
-| `move <node> [-x -y -w -h]` | Move/resize a node (unset fields keep current geometry) |
+| `add <text...> [-x -y -w --height]` | Add a text node, optionally placed/sized |
+| `move <node> [-x -y -w --height]` | Move/resize a node (unset fields keep current geometry) |
 | `edit <node> <text...>` | Replace a node's text |
 | `color <node> [color]` | Recolor a node (`none`/`-`/empty clears; `--color` also works) |
 | `restack <node> <index>` | Restack a node to a display index (`0` = bottom) |
@@ -111,7 +111,8 @@ latest-wins).
 ### Geometry flags
 
 `add` and `move` take geometry in canvas pixels: `-x`/`--x`, `-y`/`--y` for
-position and `-w`/`--w`, `-h`/`--height` for size. `add` fills any unset field
+position and `-w`/`--w`, `--height` for size (height has no `-h` short — that's
+`--help`). `add` fills any unset field
 from defaults (a new text node is `250×120` at the origin); `move` fills unset
 fields from the node's current geometry, so `move <node> -x 400` slides it
 horizontally without touching its size or `y`.

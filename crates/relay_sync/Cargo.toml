@@ -14,3 +14,6 @@ tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 negentropy = { workspace = true }
 hex = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

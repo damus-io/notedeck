@@ -39,47 +39,48 @@ If a command fails because you're not logged in, ask the user to run
 ## Multiple boards
 
 A board is identified by a slug scoped to your key, so one identity can hold
-several boards (e.g. a personal `headway` board and a `work` board). The current
-board is **persisted** like the signing key — set it once and every later command
-uses it:
+several boards (e.g. a personal `headway` board and a `work` board).
+
+**Always target a non-default board with the per-run `--board <id>` flag — never
+the stateful `headway board <id>` switch.** Pass `--board <id>` on *every*
+command in a sequence, so each call is self-contained:
 
 ```bash
-headway board            # list boards in the cache; the current one is marked *
-headway board work       # switch the current board to 'work' (persisted)
-headway seed             # seed 'work' if it didn't exist yet
-headway board headway    # switch back to the default board
+headway --board work show
+headway --board work add "Fix the relay reconnect" --col todo -l bug
+headway --board work move 1a2b3c4d… --col done
 ```
+
+Why avoid the stateful switch: `headway board <id>` persists the selection to a
+file (`<data-dir>/headway-cli/board`) that is **shared mutable state**. The
+running notedeck app — or any other `headway` process — can flip it between your
+commands, so a `show` that targeted `work` can be followed by an edit that
+silently lands on `headway` (you'll see a confusing "no card matching" when the
+card "vanishes"). The `--board` flag is scoped to one run and can't be changed
+underneath you, so a multi-step edit always hits the board you meant.
 
 Board selection precedence, highest first: the `--board <id>` flag (one run
 only) → the board named by a full `<board>#<word-id>` card ref (see below) →
 `$HEADWAY_BOARD` → the board stored by `headway board <id>` → the default
-`headway`. So `--board <id> <command>` targets another board for a single command
-without changing the persisted selection. The current board lives in
-`<data-dir>/headway-cli/board`.
+`headway`. If you're acting on many boards in one session, prefer `--board`; only
+fall back to `$HEADWAY_BOARD` (an env var, also stable for the session) when you
+truly want every command to default to the same non-default board.
 
 **Full card refs self-route.** A selector like `commerce#purse-metal-toilet`
 already names its board, so `headway show commerce#purse-metal-toilet` (and
-`move`, `comment`, etc.) targets the `commerce` board automatically — the
-display id `show` prints is a working address wherever it's pasted, no
-`--board` needed. Bare `#word-id`, plain word ids and hex prefixes still
-resolve against the current board. Refs naming two different boards in one
-command, or a ref disagreeing with an explicit `--board`, are an error.
+`move`, `comment`, …) targets `commerce` automatically — no `--board` needed.
+The `<board>#<word-id>` that `show` prints is a working address wherever you
+paste it, which gives you the same self-contained, un-raceable targeting that
+`--board` does — prefer either over relying on the stateful switch. Bare
+`#word-id`, plain word-ids, and hex prefixes still resolve against the current
+board (so they still need `--board` to reach another one). Two refs naming
+different boards in one command — or a ref that disagrees with an explicit
+`--board` — are an error, not a silent resolution on the wrong board.
 
-> **The persisted board is shared mutable state — scope your edits with
-> `--board`.** Because the current board is stored on disk, *another session, a
-> different terminal, or an earlier you* can switch it between your commands. A
-> command then silently targets whatever board is current, and an edit aimed at a
-> card on a different board just fails with **"no card matching"** (cards are
-> scoped per board). Two habits avoid this:
->
-> - When you know which board the work belongs to, pass `--board <id>` on every
->   command (read *and* edit) rather than relying on the persisted selection —
->   e.g. `headway --board headway show` / `headway --board headway move … --col done`.
->   This is stateless and can't be raced.
-> - If you do rely on the persisted board, run `headway board` (no arg) first to
->   confirm the `*`-marked current board is the one you mean, and treat a sudden
->   "no card matching" on an id you just read as a sign the board switched —
->   re-check with `headway board` before retrying.
+`headway board` with **no argument** is a harmless read — it lists the boards in
+the cache and marks the current one with `*`; use it to discover slugs. Just
+don't rely on its persisted `*` selection for edits. To create a board that
+doesn't exist yet, `headway --board work seed`.
 
 ## The golden rule: `show` before you edit
 
@@ -99,6 +100,8 @@ you actually see — never assume an id or that a card is where you expect.
 ```bash
 headway show            # human-readable: columns, titles, labels, word-ids
 headway show --archived # also list archived cards in full (default: count only)
+headway show --all      # every board in the cache, each printed in full and led
+                        # by its slug (with --json, a JSON array of boards)
 headway show --json     # machine-readable, for parsing (always includes archived)
 headway show <card>...  # print the given cards (word-id or hex) in full
                         # `git show`-style detail, not the whole board; with
@@ -121,9 +124,11 @@ automated edit can never hit the wrong card.
 All of these resolve as a `<card>` argument, to the same card every time:
 
 - a hex event id, full or any unique prefix (a 16-char prefix is plenty) — preferred for editing
-- `headway#maple-river-canyon` — the full word-id (works unquoted in a shell)
-- `#maple-river-canyon` — bare; quote it in a shell so `#` isn't read as a comment
-- `maple-river-canyon` — the bare words, no sigil
+- `headway#maple-river-canyon` — the full word-id; it names its board, so it
+  self-routes there without `--board` (see Multiple boards)
+- `#maple-river-canyon` — bare; quote it in a shell so `#` isn't read as a
+  comment. Resolves against the current board only (no self-routing)
+- `maple-river-canyon` — the bare words, no sigil; current board only
 
 Default board columns: **Backlog**, **Todo**, **In Progress** (`in-progress`),
 **In Review** (`in-review`), **Done** (`done`). A column argument matches an id
@@ -134,13 +139,14 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 
 | Command | What it does |
 | --- | --- |
-| `show [cards...] [--archived] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards) |
+| `show [cards...] [--archived] [--all] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards; `--all` prints every board) |
 | `seed` | Create the default board if none exists |
 | `add <title...> [--col <c>] [-l <labels>] [--parent <card>]` | Add a card (defaults to the first column; `-l`/`--label` tags it; `--parent` creates it as a subissue) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |
 | `title <card> <title...>` | Edit a card's title |
 | `desc <card> <text...>` | Edit a card's description |
 | `label <card> [labels...]` | Set labels (no labels clears them) |
+| `priority <card> <level>` | Set priority: `none`/`low`/`medium`/`high`/`urgent` (`none` clears it) |
 | `parent <card> [parent]` | Make a card a subissue of `[parent]`; omit the parent to detach |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
 | `delete <card>` | Remove a card (reversible tombstone) |

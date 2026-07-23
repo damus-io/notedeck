@@ -54,6 +54,50 @@ pub const KIND_RELATION: u32 = 30621;
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
+/// NIP-32 label namespace carrying a card's [`Priority`], one `l` value.
+const NS_PRIORITY: &str = "#priority";
+
+/// A card's priority. Latest-authorised-wins like every other overlay, carried
+/// as a kind-1985 label in the [`NS_PRIORITY`] namespace. Ordered
+/// least-to-most urgent so a "sort by priority" descends from [`Priority::Urgent`];
+/// [`Priority::None`] (the default, "no priority") sorts last, matching Linear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Priority {
+    /// No priority set — the default when a card has never been prioritised.
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+    Urgent,
+}
+
+impl Priority {
+    /// The stable wire/JSON string for this priority.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Priority::None => "none",
+            Priority::Low => "low",
+            Priority::Medium => "medium",
+            Priority::High => "high",
+            Priority::Urgent => "urgent",
+        }
+    }
+
+    /// Parse a priority from its wire string (case-insensitive). `"med"` is
+    /// accepted as an alias for `"medium"`. Unknown values (and `"none"`) map to
+    /// [`Priority::None`], so a malformed overlay reads as "no priority" rather
+    /// than failing the fold.
+    pub fn parse(s: &str) -> Priority {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "urgent" => Priority::Urgent,
+            "high" => Priority::High,
+            "medium" | "med" => Priority::Medium,
+            "low" => Priority::Low,
+            _ => Priority::None,
+        }
+    }
+}
 
 /// Sentinel placement column id meaning the card has been removed from the
 /// board. A card whose latest *authorised* placement points here is dropped by
@@ -202,6 +246,23 @@ pub fn build_subject_edit<'a>(issue: &NoteId, subject: &str) -> NoteBuilder<'a> 
         .tag_str("l")
         .tag_str(subject)
         .tag_str(NS_SUBJECT)
+}
+
+/// Build a priority edit for `issue` (NIP-32 label, `#priority`). Carries the
+/// single priority value; republishing supersedes it latest-authorised-wins, so
+/// setting [`Priority::None`] clears an earlier priority.
+pub fn build_priority<'a>(issue: &NoteId, priority: Priority) -> NoteBuilder<'a> {
+    base(KIND_LABEL, "")
+        .start_tag()
+        .tag_str("e")
+        .tag_id(issue.bytes())
+        .start_tag()
+        .tag_str("L")
+        .tag_str(NS_PRIORITY)
+        .start_tag()
+        .tag_str("l")
+        .tag_str(priority.as_str())
+        .tag_str(NS_PRIORITY)
 }
 
 /// Build a label event for `issue` (NIP-32, `#t` namespace), one `l` per label.
@@ -365,6 +426,14 @@ pub struct SubjectEdit {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PriorityEdit {
+    pub author: [u8; 32],
+    pub issue_id: [u8; 32],
+    pub priority: Priority,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LabelSet {
     pub author: [u8; 32],
     pub issue_id: [u8; 32],
@@ -412,6 +481,7 @@ pub enum HeadwayEvent {
     Placement(PlacementEvent),
     Subject(SubjectEdit),
     Labels(LabelSet),
+    Priority(PriorityEdit),
     Cover(CoverNote),
     Comment(CommentEvent),
     Relation(RelationEvent),
@@ -573,6 +643,14 @@ fn parse_label(note: &Note) -> Option<HeadwayEvent> {
             labels: values,
             created_at,
         })),
+        Some(NS_PRIORITY) => Some(HeadwayEvent::Priority(PriorityEdit {
+            author,
+            issue_id,
+            priority: values
+                .first()
+                .map_or(Priority::None, |v| Priority::parse(v)),
+            created_at,
+        })),
         _ => None,
     }
 }
@@ -720,6 +798,8 @@ pub enum ActivityKind {
         added: Vec<String>,
         removed: Vec<String>,
     },
+    /// The card's priority changed to `to`.
+    PriorityChanged { to: Priority },
     /// The card was made a subissue of `parent` (title resolved when known).
     ParentSet {
         parent: NoteId,
@@ -758,6 +838,9 @@ pub struct CardView {
     pub title: String,
     pub description: String,
     pub labels: Vec<String>,
+    /// Resolved priority (latest-authorised-wins overlay), [`Priority::None`]
+    /// when the card was never prioritised.
+    pub priority: Priority,
     /// Fractional rank within its column; cards are sorted ascending.
     pub rank: String,
     /// `created_at` of the winning placement (0 if the card is unplaced). A
@@ -849,6 +932,7 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
         "title": card.title,
         "description": card.description,
         "labels": card.labels,
+        "priority": card.priority.as_str(),
         "rank": card.rank,
         "created_at": card.created_at,
         "updated_at": card.updated_at,
@@ -881,6 +965,9 @@ pub fn activity_json(activity: &ActivityView) -> serde_json::Value {
         ActivityKind::DescriptionEdited => serde_json::json!({"type": "description_edited"}),
         ActivityKind::LabelsChanged { added, removed } => {
             serde_json::json!({"type": "labels_changed", "added": added, "removed": removed})
+        }
+        ActivityKind::PriorityChanged { to } => {
+            serde_json::json!({"type": "priority_changed", "to": to.as_str()})
         }
         ActivityKind::ParentSet { parent, title } => serde_json::json!({
             "type": "parent_set",
@@ -935,6 +1022,7 @@ enum ActivityRecord {
     Subject(SubjectEdit),
     Cover(CoverNote),
     Labels(LabelSet),
+    Priority(PriorityEdit),
     Relation(RelationEvent),
 }
 
@@ -945,6 +1033,7 @@ impl ActivityRecord {
             ActivityRecord::Subject(s) => s.created_at,
             ActivityRecord::Cover(c) => c.created_at,
             ActivityRecord::Labels(l) => l.created_at,
+            ActivityRecord::Priority(p) => p.created_at,
             ActivityRecord::Relation(r) => r.created_at,
         }
     }
@@ -963,6 +1052,9 @@ pub struct BoardReducer {
     placements: HashMap<PlacementKey, PlacementEvent>,
     subjects: HashMap<[u8; 32], SubjectEdit>,
     covers: HashMap<[u8; 32], CoverNote>,
+    /// Latest priority per issue (latest-authorised-wins). Absent = no priority
+    /// has ever been set, resolving to [`Priority::None`].
+    priorities: HashMap<[u8; 32], PriorityEdit>,
     /// Latest label set per issue. Each label event is the *complete* set for
     /// the card (snapshot semantics), so the newest authorised one wins — this
     /// is what makes label *removal* expressible: republish the set without it.
@@ -1044,6 +1136,16 @@ impl BoardReducer {
                     self.labels.insert(l.issue_id, l);
                 }
             }
+            HeadwayEvent::Priority(p) => {
+                self.remember(p.issue_id, ActivityRecord::Priority(p.clone()));
+                if self
+                    .priorities
+                    .get(&p.issue_id)
+                    .is_none_or(|cur| newer(p.created_at, &p.author, cur.created_at, &cur.author))
+                {
+                    self.priorities.insert(p.issue_id, p);
+                }
+            }
             HeadwayEvent::Comment(c) => {
                 // Append-only and immutable: keep the first sighting; later
                 // duplicates of the same id are no-ops.
@@ -1119,6 +1221,7 @@ impl BoardReducer {
         labels.sort_unstable();
         labels.dedup();
         let mut has_parent = false;
+        let mut priority = Priority::None;
 
         for rec in sorted {
             // Creation-time records still seed the running state (so the first
@@ -1202,6 +1305,21 @@ impl BoardReducer {
                         author: l.author,
                         created_at: l.created_at,
                         kind: ActivityKind::LabelsChanged { added, removed },
+                    });
+                }
+                ActivityRecord::Priority(p) => {
+                    if !authorised(&p.author) {
+                        continue;
+                    }
+                    let changed = p.priority != priority;
+                    priority = p.priority;
+                    if silent || !changed {
+                        continue;
+                    }
+                    out.push(ActivityView {
+                        author: p.author,
+                        created_at: p.created_at,
+                        kind: ActivityKind::PriorityChanged { to: p.priority },
                     });
                 }
                 ActivityRecord::Relation(r) => {
@@ -1401,6 +1519,14 @@ impl BoardReducer {
         labels.sort();
         labels.dedup();
 
+        // Priority resolves latest-authorised-wins like the other overlays;
+        // absent (or an unauthorised edit) leaves the card at `Priority::None`.
+        let priority_edit = self
+            .priorities
+            .get(&issue.id)
+            .filter(|p| authorised(&p.author));
+        let priority = priority_edit.map_or(Priority::None, |p| p.priority);
+
         // Comments thread under the issue (the NIP-22 root). Append-only, shown
         // oldest first; the id breaks same-second ties.
         let mut comments: Vec<CommentView> = self
@@ -1424,6 +1550,7 @@ impl BoardReducer {
             .max(subject.map_or(0, |s| s.created_at))
             .max(cover.map_or(0, |c| c.created_at))
             .max(label_set.map_or(0, |l| l.created_at))
+            .max(priority_edit.map_or(0, |p| p.created_at))
             .max(comments.last().map_or(0, |c| c.created_at));
 
         // This card as a child: its one relation slot names its parent.
@@ -1458,6 +1585,7 @@ impl BoardReducer {
             title,
             description,
             labels,
+            priority,
             rank,
             placed_at,
             created_at: issue.created_at,
@@ -2150,6 +2278,69 @@ mod tests {
         let views = reduce(&events);
         // "bug" is gone; only "ux" remains (not a union of both).
         assert_eq!(views[0].columns[0].cards[0].labels, vec!["ux".to_string()]);
+    }
+
+    #[test]
+    fn priority_parses_and_orders() {
+        assert_eq!(Priority::parse("Urgent"), Priority::Urgent);
+        assert_eq!(Priority::parse(" high "), Priority::High);
+        assert_eq!(Priority::parse("med"), Priority::Medium);
+        assert_eq!(Priority::parse("none"), Priority::None);
+        assert_eq!(Priority::parse("nonsense"), Priority::None);
+        // "no priority" sorts below every real priority (Linear ordering).
+        assert!(Priority::None < Priority::Low);
+        assert!(Priority::Low < Priority::Urgent);
+        assert_eq!(Priority::High.as_str(), "high");
+    }
+
+    #[test]
+    fn reduce_resolves_latest_authorised_priority() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let i1 = note_id(&owner, build_issue(&addr, "Card", ""));
+
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Card", ""), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            parse_owned(build_priority(&i1, Priority::Low), &owner),
+        ];
+        // No priority overlay yet? default None. With the Low overlay above:
+        assert_eq!(
+            reduce(&events)[0].columns[0].cards[0].priority,
+            Priority::Low
+        );
+
+        // A later overlay wins latest-wins — raise it to Urgent.
+        let mut bumped = match parse_owned(build_priority(&i1, Priority::Urgent), &owner) {
+            HeadwayEvent::Priority(p) => p,
+            _ => unreachable!(),
+        };
+        bumped.created_at += 1;
+        events.push(HeadwayEvent::Priority(bumped));
+        assert_eq!(
+            reduce(&events)[0].columns[0].cards[0].priority,
+            Priority::Urgent
+        );
+
+        // Clearing republishes None, and it wins as the newest.
+        let mut cleared = match parse_owned(build_priority(&i1, Priority::None), &owner) {
+            HeadwayEvent::Priority(p) => p,
+            _ => unreachable!(),
+        };
+        cleared.created_at += 2;
+        events.push(HeadwayEvent::Priority(cleared));
+        assert_eq!(
+            reduce(&events)[0].columns[0].cards[0].priority,
+            Priority::None
+        );
     }
 
     #[test]

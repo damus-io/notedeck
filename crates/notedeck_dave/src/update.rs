@@ -134,9 +134,69 @@ pub struct ModeCommandPublish {
     pub mode: &'static str,
 }
 
+/// The next mode in the click / Ctrl+M cycle: Default → Plan → AcceptEdits →
+/// Default. These are the modes the CLI honors as a runtime switch.
+/// `BypassPermissions` is never used — dave can't enter it mid-session, and the
+/// dangerous "run everything" behaviour is instead handled dave-side by Auto
+/// Accept All (see [`toggle_auto_accept_all`]).
+fn next_cycle_permission_mode(mode: PermissionMode) -> PermissionMode {
+    match mode {
+        PermissionMode::Default => PermissionMode::Plan,
+        PermissionMode::Plan => PermissionMode::AcceptEdits,
+        _ => PermissionMode::Default,
+    }
+}
+
+/// Toggle dave-side "Auto Accept All" for the active session and return the new
+/// state. When on, every permission request is auto-accepted by dave (via
+/// [`should_runtime_allow`](crate::session::AgenticSessionData::should_runtime_allow)),
+/// regardless of backend — no CLI permission mode involved.
+pub fn toggle_auto_accept_all(session_manager: &mut SessionManager) -> bool {
+    let Some(session) = session_manager.get_active_mut() else {
+        return false;
+    };
+    let Some(agentic) = session.agentic.as_mut() else {
+        return false;
+    };
+    agentic.auto_accept_all = !agentic.auto_accept_all;
+    let now_on = agentic.auto_accept_all;
+    tracing::info!(
+        "Auto Accept All {} for session {}",
+        if now_on { "enabled" } else { "disabled" },
+        session.id,
+    );
+    now_on
+}
+
 pub fn cycle_permission_mode(
     session_manager: &mut SessionManager,
     backend: &dyn AiBackend,
+    ctx: &egui::Context,
+) -> Option<ModeCommandPublish> {
+    let current = session_manager
+        .get_active()?
+        .agentic
+        .as_ref()?
+        .permission_mode;
+
+    set_permission_mode(
+        session_manager,
+        backend,
+        next_cycle_permission_mode(current),
+        ctx,
+    )
+}
+
+/// Apply an explicit permission mode (Default / Plan / AcceptEdits) to the
+/// active session.
+///
+/// Shared by [`cycle_permission_mode`] and by deliberate selection from the mode
+/// menu. Local sessions apply on the backend and mark state dirty; remote
+/// sessions return a command for the caller to publish to the host.
+pub fn set_permission_mode(
+    session_manager: &mut SessionManager,
+    backend: &dyn AiBackend,
+    new_mode: PermissionMode,
     ctx: &egui::Context,
 ) -> Option<ModeCommandPublish> {
     let session = session_manager.get_active_mut()?;
@@ -144,11 +204,6 @@ pub fn cycle_permission_mode(
     let session_id = session.id;
     let agentic = session.agentic.as_mut()?;
 
-    let new_mode = match agentic.permission_mode {
-        PermissionMode::Default => PermissionMode::Plan,
-        PermissionMode::Plan => PermissionMode::AcceptEdits,
-        _ => PermissionMode::Default,
-    };
     agentic.permission_mode = new_mode;
 
     let mode_str = crate::session::permission_mode_to_str(new_mode);
@@ -169,7 +224,7 @@ pub fn cycle_permission_mode(
     };
 
     tracing::debug!(
-        "Cycled permission mode for session {} to {:?} (remote={})",
+        "Set permission mode for session {} to {:?} (remote={})",
         session_id,
         new_mode,
         is_remote,
@@ -1372,6 +1427,49 @@ mod tests {
     use crate::collapse_state::CollapseState;
     use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::{SessionId, SessionSource};
+
+    #[test]
+    fn cycle_never_reaches_bypass_permissions() {
+        // The click / Ctrl+M cycle must be a closed 3-cycle over the modes the
+        // CLI honors at runtime, never landing on BypassPermissions (which dave
+        // can't enter mid-session anyway).
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::Default),
+            PermissionMode::Plan
+        );
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::Plan),
+            PermissionMode::AcceptEdits
+        );
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::AcceptEdits),
+            PermissionMode::Default
+        );
+
+        // Walking the cycle from every mode never yields BypassPermissions.
+        for start in [
+            PermissionMode::Default,
+            PermissionMode::Plan,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+        ] {
+            let mut mode = start;
+            for _ in 0..8 {
+                mode = next_cycle_permission_mode(mode);
+                assert_ne!(
+                    mode,
+                    PermissionMode::BypassPermissions,
+                    "cycling from {start:?} reached BypassPermissions"
+                );
+            }
+        }
+
+        // Cycling out of Auto Execute exits to Default.
+        assert_eq!(
+            next_cycle_permission_mode(PermissionMode::BypassPermissions),
+            PermissionMode::Default
+        );
+    }
 
     fn create_named_agent_session(
         sm: &mut SessionManager,

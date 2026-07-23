@@ -41,6 +41,7 @@ bitflags! {
         const IsCompacting     = 1 << 5;
         const AutoStealFocus   = 1 << 6;
         const IsRemote         = 1 << 7;
+        const AutoAcceptAll    = 1 << 8;
     }
 }
 
@@ -192,6 +193,11 @@ pub enum DaveAction {
     },
     /// Cycle permission mode: Default → Plan → AcceptEdits (clicked mode badge)
     CyclePermissionMode,
+    /// Set a specific permission mode (chosen from the mode badge's right-click
+    /// menu): Default / Plan / AcceptEdits.
+    SetPermissionMode(PermissionMode),
+    /// Toggle dave-side "Auto Accept All" (right-click menu / Ctrl+Shift+M).
+    ToggleAutoAcceptAll,
     /// Toggle auto-steal focus mode (clicked AUTO badge)
     ToggleAutoSteal,
     /// Trigger manual context compaction
@@ -304,6 +310,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn permission_mode(mut self, mode: PermissionMode) -> Self {
         self.permission_mode = mode;
+        self
+    }
+
+    pub fn auto_accept_all(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::AutoAcceptAll, val);
         self
     }
 
@@ -721,43 +732,25 @@ impl<'a> DaveUi<'a> {
                 }
 
                 // Responded state: Allowed (generic fallback)
-                egui::Frame::new()
-                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(inner_margin)
-                    .corner_radius(corner_radius)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Allowed")
-                                    .color(egui::Color32::from_rgb(100, 180, 100))
-                                    .strong(),
-                            );
-                            ui.label(
-                                egui::RichText::new(&request.tool_name)
-                                    .color(ui.visuals().text_color()),
-                            );
-                        });
-                    });
+                responded_permission_ui(
+                    request,
+                    "Allowed",
+                    egui::Color32::from_rgb(100, 180, 100),
+                    inner_margin,
+                    corner_radius,
+                    ui,
+                );
             }
             Some(PermissionResponseType::Denied) => {
                 // Responded state: Denied
-                egui::Frame::new()
-                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(inner_margin)
-                    .corner_radius(corner_radius)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Denied")
-                                    .color(egui::Color32::from_rgb(200, 100, 100))
-                                    .strong(),
-                            );
-                            ui.label(
-                                egui::RichText::new(&request.tool_name)
-                                    .color(ui.visuals().text_color()),
-                            );
-                        });
-                    });
+                responded_permission_ui(
+                    request,
+                    "Denied",
+                    egui::Color32::from_rgb(200, 100, 100),
+                    inner_margin,
+                    corner_radius,
+                    ui,
+                );
             }
             None => {
                 if request.view.is_plan_review() {
@@ -1770,6 +1763,136 @@ fn image_thumbnail_strip(pending: &mut Vec<ImageAttachment>, ui: &mut egui::Ui) 
     }
 }
 
+/// Extract a concise, human-readable summary of what a tool call operates on
+/// (bash command, file path, or a single argument), borrowing from the tool
+/// input so it stays allocation-free in the per-frame render path.
+fn permission_operation_detail(tool_input: &serde_json::Value) -> Option<&str> {
+    let obj = tool_input.as_object()?;
+
+    // Bash and friends: the command being run.
+    if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+        return Some(cmd);
+    }
+
+    // Edit/Write: the file being changed.
+    if let Some(path) = obj.get("file_path").and_then(|v| v.as_str()) {
+        return Some(path);
+    }
+
+    // Single-argument tools: the lone value.
+    if obj.len() == 1 {
+        if let Some(value) = obj.values().next().and_then(|v| v.as_str()) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+/// Render a responded (Allowed/Denied) permission request as a collapsible
+/// row: a status header with a disclosure chevron that expands to reveal what
+/// was actually allowed/denied (the edit diff, or the bash command / argument),
+/// so the operation stays inspectable after the fact without cluttering chat.
+fn responded_permission_ui(
+    request: &PermissionRequest,
+    label: &str,
+    label_color: egui::Color32,
+    inner_margin: f32,
+    corner_radius: f32,
+    ui: &mut egui::Ui,
+) {
+    // The row is only expandable if there's an operation to reveal. Edit/Write
+    // carry a file_path, so `detail.is_some()` already covers them.
+    let detail = permission_operation_detail(&request.tool_input);
+    let expandable = detail.is_some();
+
+    egui::Frame::new()
+        .fill(ui.visuals().widgets.noninteractive.bg_fill)
+        .inner_margin(inner_margin)
+        .corner_radius(corner_radius)
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                // Persisted disclosure state, keyed by request id.
+                let expand_id = ui.id().with(("responded_perm", request.id));
+                let mut expanded =
+                    expandable && ui.data(|d| d.get_temp(expand_id).unwrap_or(false));
+
+                let header = responded_permission_header_ui(
+                    request,
+                    label,
+                    label_color,
+                    expanded,
+                    expandable,
+                    ui,
+                );
+
+                // Clicking anywhere on the header toggles the disclosure.
+                if expandable && header.clicked() {
+                    expanded = !expanded;
+                    ui.data_mut(|d| d.insert_temp(expand_id, expanded));
+                }
+
+                if !expanded {
+                    return;
+                }
+
+                // Prefer a rich diff for file edits; otherwise show the raw
+                // operation (bash command / single argument) in monospace.
+                if let Some(file_update) =
+                    FileUpdate::from_tool_call(&request.tool_name, &request.tool_input)
+                {
+                    diff::file_path_header(&file_update, ui);
+                    diff::file_update_ui(&file_update, false, ui);
+                } else if let Some(detail) = detail {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(detail)
+                                .monospace()
+                                .size(11.0)
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                    );
+                }
+            });
+        });
+}
+
+/// Header row for a responded permission: optional disclosure chevron, the
+/// status label (Allowed/Denied), and the tool name. Returns a click response
+/// covering the whole row so the caller can toggle the disclosure.
+fn responded_permission_header_ui(
+    request: &PermissionRequest,
+    label: &str,
+    label_color: egui::Color32,
+    expanded: bool,
+    expandable: bool,
+    ui: &mut egui::Ui,
+) -> egui::Response {
+    let header = ui.horizontal(|ui| {
+        if expandable {
+            notedeck_ui::header::disclosure_chevron(
+                ui,
+                expanded,
+                egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
+            );
+        }
+        ui.label(egui::RichText::new(label).color(label_color).strong());
+        ui.label(egui::RichText::new(&request.tool_name).color(ui.visuals().text_color()));
+    });
+
+    if !expandable {
+        return header.response;
+    }
+
+    // Re-sensing the horizontal layout's response (`.interact(Sense::click())`)
+    // doesn't reliably register hover/click, so allocate a dedicated clickable
+    // region over the row's rect with a stable id keyed by the request.
+    let click_id = ui.id().with(("responded_perm_header", request.id));
+    ui.interact(header.response.rect, click_id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Send button + clickable accept/deny toggle shown when in tentative state.
 fn tentative_send_ui(
     state: PermissionMessageState,
@@ -1884,6 +2007,7 @@ impl DaveUi<'_> {
                                 toggle_badges_ui(
                                     ui,
                                     self.permission_mode,
+                                    self.flags.contains(DaveUiFlags::AutoAcceptAll),
                                     self.flags.contains(DaveUiFlags::AutoStealFocus),
                                     self.focus_queue_info,
                                 )
@@ -1995,6 +2119,7 @@ fn usage_bar_ui(
 fn toggle_badges_ui(
     ui: &mut egui::Ui,
     permission_mode: PermissionMode,
+    auto_accept_all: bool,
     auto_steal_focus: bool,
     focus_queue_info: Option<(usize, usize, FocusPriority)>,
 ) -> Option<DaveAction> {
@@ -2010,7 +2135,12 @@ fn toggle_badges_ui(
                 FocusPriority::Error => super::badge::BadgeVariant::Destructive,
                 FocusPriority::Done => super::badge::BadgeVariant::Info,
             };
-            let mut next_badge = super::badge::StatusBadge::new("\u{25b6}").variant(variant);
+            // A proper chevron icon with a comfortable tap target so it's easy
+            // to hit on narrow/touch layouts (the old ▶ glyph was tiny).
+            let mut next_badge = super::badge::StatusBadge::new("Next focus")
+                .icon(super::badge::BadgeIcon::ChevronRight)
+                .variant(variant)
+                .min_size(egui::vec2(40.0, 28.0));
             if ctrl_held {
                 next_badge = next_badge.keybind("N");
             }
@@ -2041,21 +2171,66 @@ fn toggle_badges_ui(
         action = Some(DaveAction::ToggleAutoSteal);
     }
 
-    // Permission mode badge: cycles Default → Plan → AcceptEdits
-    let (label, variant) = match permission_mode {
-        PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
-        PermissionMode::AcceptEdits => ("AUTO EDIT", BadgeVariant::Warning),
-        _ => ("PLAN", BadgeVariant::Default),
+    // Permission mode badge. Left-click / Ctrl+M cycles Default → Plan → Auto
+    // Edit. "Auto Accept All" is a separate dave-side toggle (not a CLI mode);
+    // when on it takes over the badge as a red "AUTO ACCEPT" and is reachable
+    // only from the right-click menu or Ctrl+Shift+M, so it can't be hit by
+    // accidental cycling.
+    let (label, variant) = if auto_accept_all {
+        ("AUTO ACCEPT", BadgeVariant::Destructive)
+    } else {
+        match permission_mode {
+            PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
+            PermissionMode::AcceptEdits => ("AUTO EDIT", BadgeVariant::Warning),
+            _ => ("PLAN", BadgeVariant::Default),
+        }
     };
     let mut mode_badge = StatusBadge::new(label).variant(variant);
     if ctrl_held {
         mode_badge = mode_badge.keybind("M");
     }
-    if mode_badge
-        .show(ui)
-        .on_hover_text("Click or Ctrl+M to cycle: Default → Plan → Auto Edit")
-        .clicked()
-    {
+    let mode_resp = mode_badge.show(ui).on_hover_text(
+        "Click / Ctrl+M to cycle: Default → Plan → Auto Edit · right-click for more",
+    );
+    notedeck_ui::context_menu::context_menu(&mode_resp, |ui| {
+        ui.label(egui::RichText::new("Permission mode").small().weak());
+        if ui.button("Default").clicked() {
+            action = Some(DaveAction::SetPermissionMode(PermissionMode::Default));
+            ui.close_menu();
+        }
+        if ui.button("Plan").clicked() {
+            action = Some(DaveAction::SetPermissionMode(PermissionMode::Plan));
+            ui.close_menu();
+        }
+        if ui.button("Auto Edit").clicked() {
+            action = Some(DaveAction::SetPermissionMode(PermissionMode::AcceptEdits));
+            ui.close_menu();
+        }
+        ui.separator();
+        // Dangerous: dave auto-accepts EVERY permission request this session
+        // (any backend). Rendered in the theme's error color, checkmarked when
+        // on, and separated so it reads as a deliberate, distinct toggle.
+        let danger = ui.visuals().error_fg_color;
+        let label = if auto_accept_all {
+            "⚠ Auto Accept All  ✓"
+        } else {
+            "⚠ Auto Accept All"
+        };
+        ui.horizontal(|ui| {
+            if ui
+                .button(egui::RichText::new(label).color(danger))
+                .on_hover_text(
+                    "Auto-accept ALL tool calls this session, on any backend. Use with care.",
+                )
+                .clicked()
+            {
+                action = Some(DaveAction::ToggleAutoAcceptAll);
+                ui.close_menu();
+            }
+            super::keybind_hint::keybind_hint(ui, "⌃⇧M");
+        });
+    });
+    if mode_resp.clicked() {
         action = Some(DaveAction::CyclePermissionMode);
     }
 
@@ -2139,13 +2314,115 @@ fn session_header_ui(
 
 #[cfg(test)]
 mod tests {
-    use super::{DaveAction, DaveUi};
+    use super::{toggle_badges_ui, DaveAction, DaveUi};
     use crate::config::AiMode;
-    use crate::messages::{PermissionRequest, PermissionResponse, QuestionAnswer};
+    use crate::messages::{
+        PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
+    };
+    use claude_agent_sdk_rs::PermissionMode;
     use egui_kittest::{kittest::Queryable, Harness};
     use serde_json::json;
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    /// Harness state for exercising the permission-mode badge + its right-click
+    /// menu in isolation.
+    struct BadgeHarnessState {
+        mode: PermissionMode,
+        auto_accept_all: bool,
+        action: Option<DaveAction>,
+    }
+
+    fn badge_harness(
+        mode: PermissionMode,
+        auto_accept_all: bool,
+    ) -> Harness<'static, BadgeHarnessState> {
+        Harness::new_ui_state(
+            |ui, state: &mut BadgeHarnessState| {
+                if let Some(action) =
+                    toggle_badges_ui(ui, state.mode, state.auto_accept_all, false, None)
+                {
+                    state.action = Some(action);
+                }
+            },
+            BadgeHarnessState {
+                mode,
+                auto_accept_all,
+                action: None,
+            },
+        )
+    }
+
+    /// Right-click the mode badge and click the center of it to open the menu.
+    fn right_click(harness: &mut Harness<'static, BadgeHarnessState>, label: &str) {
+        let bounds = harness
+            .get_by_label(label)
+            .raw_bounds()
+            .expect("badge bounds");
+        let center = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(center));
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.step();
+    }
+
+    #[test]
+    fn mode_badge_left_click_cycles() {
+        // Left-clicking the badge (shows "PLAN" in Default) cycles — it must NOT
+        // jump straight to a specific mode.
+        let mut harness = badge_harness(PermissionMode::Default, false);
+        harness.run();
+        harness.get_by_label("PLAN").click();
+        harness.run();
+        assert!(
+            matches!(
+                harness.state().action,
+                Some(DaveAction::CyclePermissionMode)
+            ),
+            "left-click should cycle, never set a specific mode"
+        );
+    }
+
+    #[test]
+    fn auto_accept_all_reachable_only_via_right_click_menu() {
+        let mut harness = badge_harness(PermissionMode::Default, false);
+        harness.run();
+
+        // Open the mode badge's context menu and pick the dangerous entry.
+        right_click(&mut harness, "PLAN");
+        harness.get_by_label("⚠ Auto Accept All").click();
+        harness.run();
+
+        assert!(
+            matches!(
+                harness.state().action,
+                Some(DaveAction::ToggleAutoAcceptAll)
+            ),
+            "the menu's Auto Accept All item should toggle the dave-side flag"
+        );
+    }
+
+    #[test]
+    fn auto_accept_all_takes_over_the_badge() {
+        // With the dave-side flag on, the badge reads "AUTO ACCEPT" (Destructive)
+        // regardless of the underlying permission mode.
+        let mut harness = badge_harness(PermissionMode::Plan, true);
+        harness.run();
+        // Queryable by its text means the label rendered.
+        let _ = harness.get_by_label("AUTO ACCEPT");
+    }
 
     struct PermissionUiHarnessState {
         request: PermissionRequest,
@@ -2329,5 +2606,232 @@ mod tests {
             }
             other => panic!("expected QuestionResponse action, got {:?}", other),
         }
+    }
+
+    /// Build a harness that renders a single (already-responded) permission
+    /// request through the real `permission_request_ui`.
+    fn responded_permission_harness(
+        request: PermissionRequest,
+    ) -> Harness<'static, PermissionUiHarnessState> {
+        Harness::new_ui_state(
+            |ui, state: &mut PermissionUiHarnessState| {
+                let mut dave_ui = DaveUi::new(
+                    false,
+                    1,
+                    &[],
+                    &mut state.input,
+                    &mut state.focus_requested,
+                    AiMode::Agentic,
+                );
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                    state.action = Some(action);
+                }
+            },
+            PermissionUiHarnessState::new(request),
+        )
+    }
+
+    /// Primary-click the center of a labelled node. `.click()` on a plain
+    /// egui `Label` is a no-op in accesskit (labels expose no default action),
+    /// so a disclosure driven by `Response::interact(Sense::click())` must be
+    /// exercised with a real positional pointer event instead.
+    fn click_label(harness: &mut Harness<'static, PermissionUiHarnessState>, label: &str) {
+        let bounds = harness
+            .get_by_label(label)
+            .raw_bounds()
+            .expect("label bounds");
+        let center = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(center));
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.step();
+    }
+
+    #[test]
+    fn allowed_bash_widget_reveals_command_when_expanded() {
+        // After accepting, the row is collapsed to "Allowed  Bash"; expanding
+        // it must reveal *what* was allowed — the bash command.
+        let request = PermissionRequest::new(
+            Uuid::new_v4(),
+            "Bash".to_string(),
+            json!({ "command": "cargo test --all" }),
+            None,
+            Some(PermissionResponseType::Allowed),
+            None,
+        );
+        let mut harness = responded_permission_harness(request);
+        harness.run();
+
+        harness.get_by_label("Allowed");
+        harness.get_by_label("Bash");
+        // Collapsed by default: the command is hidden until disclosed.
+        assert!(harness.query_by_label("cargo test --all").is_none());
+
+        // Clicking the header expands the row.
+        click_label(&mut harness, "Bash");
+        harness.run();
+        harness.get_by_label("cargo test --all");
+    }
+
+    #[test]
+    fn denied_edit_widget_reveals_file_when_expanded() {
+        // Likewise for a denied Edit: expanding reveals the edited file path.
+        let request = PermissionRequest::new(
+            Uuid::new_v4(),
+            "Edit".to_string(),
+            json!({
+                "file_path": "crates/notedeck_dave/src/lib.rs",
+                "old_string": "a",
+                "new_string": "b",
+            }),
+            None,
+            Some(PermissionResponseType::Denied),
+            None,
+        );
+        let mut harness = responded_permission_harness(request);
+        harness.run();
+
+        harness.get_by_label("Denied");
+        // Collapsed by default: the path is hidden until disclosed.
+        assert!(harness
+            .query_by_label("crates/notedeck_dave/src/lib.rs")
+            .is_none());
+
+        // Clicking the header expands the row to show the file + diff.
+        click_label(&mut harness, "Denied");
+        harness.run();
+        harness.get_by_label("crates/notedeck_dave/src/lib.rs");
+    }
+
+    /// Visualize the responded permission widgets. Ignored by default; render
+    /// with `scripts/snapshot-test snapshot_responded_permission_widgets`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_responded_permission_widgets() {
+        let requests = vec![
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Bash".to_string(),
+                json!({ "command": "cargo test --all -- --nocapture" }),
+                None,
+                Some(PermissionResponseType::Allowed),
+                None,
+            ),
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Edit".to_string(),
+                json!({
+                    "file_path": "crates/notedeck_dave/src/ui/badge.rs",
+                    "old_string": "a",
+                    "new_string": "b",
+                }),
+                None,
+                Some(PermissionResponseType::Denied),
+                None,
+            ),
+        ];
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 180.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut input = String::new();
+                let mut focus = false;
+                for request in &requests {
+                    let mut dave_ui =
+                        DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
+                    dave_ui.permission_request_ui(request, ui);
+                    ui.add_space(8.0);
+                }
+            });
+
+        harness.run();
+        harness.snapshot("responded_permission_widgets");
+    }
+
+    /// Visualize the responded permission widgets in their *expanded* state —
+    /// the Bash command revealed inline and the denied Edit's file diff. Render
+    /// with `scripts/snapshot-test snapshot_responded_permission_widgets_expanded`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_responded_permission_widgets_expanded() {
+        let requests = vec![
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Bash".to_string(),
+                json!({ "command": "cargo test --all -- --nocapture" }),
+                None,
+                Some(PermissionResponseType::Allowed),
+                None,
+            ),
+            PermissionRequest::new(
+                Uuid::new_v4(),
+                "Edit".to_string(),
+                json!({
+                    "file_path": "crates/notedeck_dave/src/ui/badge.rs",
+                    "old_string": "let expandable = false;",
+                    "new_string": "let expandable = detail.is_some();",
+                }),
+                None,
+                Some(PermissionResponseType::Denied),
+                None,
+            ),
+        ];
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 320.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut input = String::new();
+                let mut focus = false;
+                for request in &requests {
+                    let mut dave_ui =
+                        DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
+                    dave_ui.permission_request_ui(request, ui);
+                    ui.add_space(8.0);
+                }
+            });
+
+        harness.run();
+        // "Allowed" and "Denied" are each unique here, so clicking those status
+        // labels expands each row's disclosure. Labels are no-op-clickable in
+        // accesskit, so dispatch a real positional primary click.
+        for status in ["Allowed", "Denied"] {
+            let bounds = harness
+                .get_by_label(status)
+                .raw_bounds()
+                .expect("status label bounds");
+            let center = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            harness
+                .input_mut()
+                .events
+                .push(egui::Event::PointerMoved(center));
+            for pressed in [true, false] {
+                harness.input_mut().events.push(egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            harness.step();
+        }
+        harness.run();
+        harness.snapshot("responded_permission_widgets_expanded");
     }
 }

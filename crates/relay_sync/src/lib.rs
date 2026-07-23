@@ -302,6 +302,25 @@ pub fn offline_note(relay: &Option<Relay>) -> &'static str {
     }
 }
 
+/// Restore the OS default disposition for `SIGPIPE` at process startup.
+///
+/// The Rust runtime installs `SIG_IGN` for `SIGPIPE` before `main`, so writing
+/// to a closed pipe returns `EPIPE` instead of killing the process — and
+/// `println!` turns that `EPIPE` into a panic ("failed printing to stdout:
+/// Broken pipe"). CLIs are piped constantly (`headway show | head`), so restore
+/// the default `SIG_DFL` here: a closed reader then terminates us quietly via
+/// the signal, which is the conventional behavior for a text-emitting tool. Call
+/// once at the top of `main`. A no-op on non-unix platforms.
+pub fn reset_sigpipe() {
+    #[cfg(unix)]
+    // SAFETY: `signal(2)` with `SIG_DFL` for `SIGPIPE` just resets a signal
+    // disposition to its OS default; it touches no memory we own and is safe to
+    // call from a single-threaded startup before any pipe writes happen.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 /// Mute `s` with an ANSI color, but only when stdout is a terminal — so ids
 /// read as muted beside titles interactively, while a piped or redirected listing
 /// stays plain text for scripts to parse.
