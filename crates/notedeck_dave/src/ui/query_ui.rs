@@ -17,7 +17,7 @@ pub fn query_call_ui(
     ui: &mut egui::Ui,
 ) {
     ui.spacing_mut().item_spacing.x = 8.0;
-    if let Some(pubkey) = query.author() {
+    if let Some(pubkey) = query.author.as_ref() {
         let txn = Transaction::new(ndb).unwrap();
         pill_label_ui(
             "author",

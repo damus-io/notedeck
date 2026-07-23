@@ -4156,7 +4156,7 @@ fn handle_tool_calls(
                 needs_send = true;
             }
             ToolCalls::Query(search_call) => {
-                let resp = search_call.execute(&txn, ndb);
+                let resp = tools::execute_query(search_call, &txn, ndb);
                 session.chat.push(Message::ToolResponse(ToolResponse::new(
                     call.id().to_owned(),
                     ToolResponses::Query(resp),
