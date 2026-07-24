@@ -61,6 +61,14 @@ pub const KIND_EDGE: u32 = 31610;
 /// state is published only on gesture-end via [`KIND_TRANSFORM`]. Not yet used.
 pub const KIND_PRESENCE: u32 = 21606;
 
+/// Longform note: NIP-23 addressable article (`d` = note id). This is a
+/// *standalone* document, not a canvas element — the agreed "document" primitive
+/// is just a nostr note, and a later card references one by `nostr:` naddr. It is
+/// deliberately **not** in [`NOTEBOOK_KINDS`], [`parse`] or [`is_addressable`]:
+/// those drive the canvas reducer, and a longform note must never be folded into a
+/// canvas. It gets its own [`longform_filter`] / [`load_longform`] load path.
+pub const KIND_LONGFORM: u32 = 30023;
+
 /// Every kind the notebook cares about, for querying / subscribing.
 pub const NOTEBOOK_KINDS: [u32; 5] = [
     KIND_CANVAS,
@@ -125,9 +133,27 @@ pub struct NodeContent {
     pub background_style: Option<String>,
 }
 
+/// A longform note to author or edit: the NIP-23 metadata plus the markdown body.
+/// `d` (the note's stable id) isn't here — it's chosen by the store on create and
+/// carried back so an edit can reuse it (see [`build_longform`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LongformInput {
+    pub title: String,
+    pub summary: Option<String>,
+    pub content: String,
+    pub published_at: Option<u64>,
+    pub hashtags: Vec<String>,
+}
+
 /// The addressable coordinate of a canvas: `31606:<author-hex>:<canvas-id>`.
 pub fn canvas_address(author: &Pubkey, canvas_id: &str) -> String {
     format!("{KIND_CANVAS}:{}:{canvas_id}", author.hex())
+}
+
+/// The addressable coordinate of a longform note: `30023:<author-hex>:<d>` — the
+/// `nostr:` naddr coordinate a canvas node or link references (later cards).
+pub fn longform_address(author: &Pubkey, d: &str) -> String {
+    format!("{KIND_LONGFORM}:{}:{d}", author.hex())
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +187,35 @@ pub fn build_canvas<'a>(
 
     for m in members {
         b = b.start_tag().tag_str("p").tag_id(m.bytes());
+    }
+
+    b
+}
+
+/// Build a longform note (kind 30023, NIP-23) keyed by `d`. The markdown body is
+/// the note content; `title`/`summary`/`published_at` and one `t` tag per hashtag
+/// are the standard NIP-23 metadata. Addressable, so an edit republishes with the
+/// same `d` (the store stamps a superseding `created_at`).
+pub fn build_longform<'a>(d: &str, input: &'a LongformInput) -> NoteBuilder<'a> {
+    let mut b = base(KIND_LONGFORM, &input.content)
+        .start_tag()
+        .tag_str("d")
+        .tag_str(d)
+        .start_tag()
+        .tag_str("title")
+        .tag_str(&input.title);
+
+    if let Some(summary) = &input.summary {
+        b = b.start_tag().tag_str("summary").tag_str(summary);
+    }
+    if let Some(published_at) = input.published_at {
+        b = b
+            .start_tag()
+            .tag_str("published_at")
+            .tag_str(&published_at.to_string());
+    }
+    for topic in &input.hashtags {
+        b = b.start_tag().tag_str("t").tag_str(topic);
     }
 
     b
@@ -470,6 +525,66 @@ fn parse_canvas(note: &Note) -> Option<CanvasEvent> {
         title,
         members,
         open,
+        created_at: note.created_at(),
+    })
+}
+
+/// A parsed longform note (kind 30023). Standalone — deliberately *not* a
+/// [`NotebookEvent`] variant, so it never reaches the canvas reducer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LongformNote {
+    pub author: [u8; 32],
+    pub d: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub content: String,
+    pub published_at: Option<u64>,
+    pub hashtags: Vec<String>,
+    pub created_at: u64,
+}
+
+/// Parse a note into a [`LongformNote`], or `None` if it isn't a well-formed
+/// kind-30023 note (a `d` tag is required — it's the note's addressable id).
+pub fn parse_longform(note: &Note) -> Option<LongformNote> {
+    if note.kind() != KIND_LONGFORM {
+        return None;
+    }
+
+    let mut d = None;
+    let mut title = String::new();
+    let mut summary = None;
+    let mut published_at = None;
+    let mut hashtags = Vec::new();
+
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            Some("d") => d = tag.get_str(1).map(|s| s.to_owned()),
+            Some("title") => {
+                if let Some(t) = tag.get_str(1) {
+                    title = t.to_owned();
+                }
+            }
+            Some("summary") => summary = tag.get_str(1).map(|s| s.to_owned()),
+            Some("published_at") => {
+                published_at = tag.get_str(1).and_then(|s| s.parse::<u64>().ok())
+            }
+            Some("t") => {
+                if let Some(topic) = tag.get_str(1) {
+                    hashtags.push(topic.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(LongformNote {
+        author: *note.pubkey(),
+        d: d?,
+        title,
+        summary,
+        content: note.content().to_owned(),
+        published_at,
+        hashtags,
         created_at: note.created_at(),
     })
 }
@@ -991,6 +1106,37 @@ pub fn load_canvas(
     pick_canvas(&fold_canvas(ndb, txn, author)?, author, canvas_id)
 }
 
+/// A filter for all of `author`'s longform notes (kind 30023).
+///
+/// Separate from [`notebook_filter`] on purpose: longform notes stand alone and
+/// must not be pulled into the canvas fold. A per-`d` `#d` filter would be
+/// tighter, but [`load_longform`] is the only reader for now and it selects the
+/// `d` in memory; a `list_longform` for the vault is a later card.
+pub fn longform_filter(author: &Pubkey) -> Filter {
+    Filter::new()
+        .authors([author.bytes()])
+        .kinds([KIND_LONGFORM as u64])
+        .limit(20000)
+        .build()
+}
+
+/// Load `author`'s longform note with id `d`, or `None` if there isn't one.
+/// Kind 30023 is replaceable, so of any duplicates the newest by `created_at`
+/// wins (latest-wins), mirroring the canvas reducer's resolution.
+pub fn load_longform(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &Pubkey,
+    d: &str,
+) -> Option<LongformNote> {
+    let results = ndb.query(txn, &[longform_filter(author)], 20000).ok()?;
+    results
+        .into_iter()
+        .filter_map(|r| parse_longform(&r.note))
+        .filter(|n| n.d == d)
+        .max_by_key(|n| n.created_at)
+}
+
 /// Whether `kind` is one of the notebook's addressable (latest-wins, keyed per
 /// `(kind, d-tag)`) kinds. Everything but the immutable node-creation event is
 /// addressable. Used by the CLI sync to push only the winning revision of each
@@ -1134,6 +1280,37 @@ mod tests {
         assert!(c.open);
         assert_eq!(c.members, vec![*member.pubkey.bytes()]);
         assert_eq!(c.author, *owner.pubkey.bytes());
+    }
+
+    #[test]
+    fn longform_roundtrips() {
+        let author = FullKeypair::generate();
+        let input = LongformInput {
+            title: "My Note".to_string(),
+            summary: Some("a summary".to_string()),
+            content: "# Heading\n\nbody text".to_string(),
+            published_at: Some(1_700_000_000),
+            hashtags: vec!["rust".to_string(), "nostr".to_string()],
+        };
+        let note = build_longform("note-1", &input)
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("build longform");
+        let parsed = parse_longform(&note).expect("parse longform");
+
+        assert_eq!(parsed.d, "note-1");
+        assert_eq!(parsed.title, "My Note");
+        assert_eq!(parsed.summary.as_deref(), Some("a summary"));
+        assert_eq!(parsed.content, "# Heading\n\nbody text");
+        assert_eq!(parsed.published_at, Some(1_700_000_000));
+        assert_eq!(
+            parsed.hashtags,
+            vec!["rust".to_string(), "nostr".to_string()]
+        );
+        assert_eq!(parsed.author, *author.pubkey.bytes());
+
+        // A longform note is not a canvas event — it must not reach the reducer.
+        assert!(parse(&note).is_none());
     }
 
     #[test]

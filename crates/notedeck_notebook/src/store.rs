@@ -25,8 +25,8 @@ use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 
 use crate::event::{
     self, CanvasView, EdgeEnds, Geometry, NodeContent, NodeKind, NodeView, build_canvas,
-    build_content, build_edge, build_edge_tombstone, build_node, build_node_tombstone,
-    build_transform, canvas_address, rank_between,
+    build_content, build_edge, build_edge_tombstone, build_longform, build_node,
+    build_node_tombstone, build_transform, canvas_address, rank_between,
 };
 
 /// The single canvas the notebook manages for now. Multi-canvas support will
@@ -132,6 +132,70 @@ pub fn seed_canvas(
         secret,
         publisher,
     );
+}
+
+/// The id and stable `d` of a longform note that was just created, so the caller
+/// (the editor) can hold the `d` to drive later edits via [`edit_longform`].
+pub struct LongformSaved {
+    pub id: NoteId,
+    pub d: String,
+}
+
+/// Mint a fresh, opaque longform `d` — 8 random bytes as 16 hex chars. Not a
+/// [`crate::wordid`] (that encodes an *existing* event id; a replaceable `d` must
+/// be chosen before the event exists and stay stable across edits). Reuses the
+/// same OS RNG `enostr::FullKeypair::generate` already pulls in — no new crate.
+fn mint_d() -> String {
+    use nostr::secp256k1::rand::{RngCore, rngs::OsRng};
+    let mut bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().fold(String::with_capacity(16), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// Create a new longform note (NIP-23, kind 30023). Mints a fresh `d` when one
+/// isn't supplied and returns it in [`LongformSaved`] so the editor can reuse it
+/// for edits. `author` is kept in the signature for symmetry with the canvas
+/// actions and a future `a`-tag; the note is keyed by `(author, d)` implicitly
+/// via the signature.
+pub fn create_longform(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    input: &LongformInput,
+    d: Option<String>,
+    publisher: &mut dyn Publisher,
+) -> Option<LongformSaved> {
+    let _ = author;
+    let d = d.unwrap_or_else(mint_d);
+    let id = ingest(ndb, build_longform(&d, input), secret, publisher)?;
+    Some(LongformSaved { id, d })
+}
+
+/// Edit an existing longform note, republishing with the same `d`. Kind 30023 is
+/// replaceable, so the edit supersedes by `created_at`; stamp strictly past
+/// `prev_created_at` (the loaded note's timestamp) so a same-second edit still
+/// wins the reducer's latest-wins instead of tying (same reasoning as
+/// [`next_after`]).
+pub fn edit_longform(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    d: &str,
+    prev_created_at: u64,
+    input: &LongformInput,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let _ = author;
+    ingest(
+        ndb,
+        build_longform(d, input).created_at(next_after(prev_created_at)),
+        secret,
+        publisher,
+    )
 }
 
 /// Apply one [`CanvasAction`] against the current `view`, ingesting the events it
@@ -386,6 +450,10 @@ fn rank_for_restack(nodes: &[NodeView], node: NoteId, to_index: usize) -> String
 /// Convenience re-export so the app layer can load a canvas without naming the
 /// event module directly.
 pub use event::load_canvas;
+
+/// Convenience re-exports so the app layer can author/load a longform note
+/// without naming the event module directly.
+pub use event::{LongformInput, LongformNote, load_longform};
 
 #[cfg(test)]
 mod tests {
@@ -716,5 +784,173 @@ mod tests {
         assert_eq!(view.title, "Renamed");
         // The mode edit didn't get clobbered by the rename.
         assert!(view.open);
+    }
+
+    /// Async harness for the standalone longform functions. Longform notes aren't
+    /// in `notebook_filter`, so this subscribes to `longform_filter` and awaits
+    /// commits on the stream directly — no blocking, the runtime wakes the task on
+    /// subscription activity (see [`CanvasSync::poll`] for the app-side analogue).
+    struct LongformTest {
+        ndb: Ndb,
+        _dir: tempfile::TempDir,
+        kp: FullKeypair,
+        stream: SubscriptionStream,
+    }
+
+    impl LongformTest {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let kp = FullKeypair::generate();
+            let sub = ndb
+                .subscribe(&[event::longform_filter(&kp.pubkey)])
+                .unwrap();
+            let stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
+            Self {
+                ndb,
+                _dir: dir,
+                kp,
+                stream,
+            }
+        }
+
+        fn secret(&self) -> [u8; 32] {
+            self.kp.secret_key.secret_bytes()
+        }
+
+        /// Await `n` committed notes on the subscription (counting notes, not
+        /// `next` calls, since a batch may carry several), so a following
+        /// [`LongformTest::load`] sees them. Mirrors lib.rs's `await_notes`.
+        async fn await_notes(&mut self, n: usize) {
+            let mut seen = 0;
+            while seen < n {
+                seen += self.stream.next().await.expect("subscription open").len();
+            }
+        }
+
+        fn load(&self, d: &str) -> Option<LongformNote> {
+            let txn = Transaction::new(&self.ndb).unwrap();
+            load_longform(&self.ndb, &txn, &self.kp.pubkey, d)
+        }
+    }
+
+    fn sample_input() -> LongformInput {
+        LongformInput {
+            title: "Draft".to_string(),
+            summary: Some("a summary".to_string()),
+            content: "# Draft\n\nfirst body".to_string(),
+            published_at: Some(1_700_000_000),
+            hashtags: vec!["rust".to_string(), "nostr".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn create_then_load() {
+        let mut t = LongformTest::new();
+        let input = sample_input();
+        let saved = create_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &input,
+            None,
+            &mut NoPublish,
+        )
+        .expect("create longform");
+        assert!(!saved.d.is_empty(), "a d was minted");
+
+        t.await_notes(1).await;
+        let note = t.load(&saved.d).expect("note loads");
+        assert_eq!(note.d, saved.d);
+        assert_eq!(note.title, "Draft");
+        assert_eq!(note.summary.as_deref(), Some("a summary"));
+        assert_eq!(note.content, "# Draft\n\nfirst body");
+        assert_eq!(note.published_at, Some(1_700_000_000));
+        assert_eq!(note.hashtags, vec!["rust".to_string(), "nostr".to_string()]);
+        assert_eq!(note.author, *t.kp.pubkey.bytes());
+    }
+
+    #[tokio::test]
+    async fn edit_supersedes() {
+        let mut t = LongformTest::new();
+        let input = sample_input();
+        let saved = create_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &input,
+            None,
+            &mut NoPublish,
+        )
+        .expect("create longform");
+        t.await_notes(1).await;
+        let before = t.load(&saved.d).expect("note loads");
+
+        let edited = LongformInput {
+            content: "# Draft\n\nedited body".to_string(),
+            ..input
+        };
+        edit_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &saved.d,
+            before.created_at,
+            &edited,
+            &mut NoPublish,
+        )
+        .expect("edit longform");
+        t.await_notes(1).await;
+
+        let after = t.load(&saved.d).expect("note loads");
+        // The edit wins (superseding created_at beats the same-second tie) and the
+        // stable d is unchanged.
+        assert_eq!(after.d, saved.d);
+        assert_eq!(after.content, "# Draft\n\nedited body");
+        assert!(after.created_at > before.created_at);
+    }
+
+    #[tokio::test]
+    async fn distinct_ids_coexist() {
+        let mut t = LongformTest::new();
+        let first = LongformInput {
+            title: "First".to_string(),
+            content: "one".to_string(),
+            ..Default::default()
+        };
+        let second = LongformInput {
+            title: "Second".to_string(),
+            content: "two".to_string(),
+            ..Default::default()
+        };
+        let a = create_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &first,
+            None,
+            &mut NoPublish,
+        )
+        .expect("create first");
+        let b = create_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &second,
+            None,
+            &mut NoPublish,
+        )
+        .expect("create second");
+        assert_ne!(a.d, b.d, "fresh d per note, no collision");
+
+        // Await both commits (in one call — they may land in a single batch),
+        // then both notes resolve independently.
+        t.await_notes(2).await;
+        let na = t.load(&a.d).expect("first loads");
+        let nb = t.load(&b.d).expect("second loads");
+        assert_eq!(na.title, "First");
+        assert_eq!(na.content, "one");
+        assert_eq!(nb.title, "Second");
+        assert_eq!(nb.content, "two");
     }
 }
