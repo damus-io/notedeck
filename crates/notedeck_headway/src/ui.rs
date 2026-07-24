@@ -2511,12 +2511,18 @@ fn activity_row_ui(
                     None => strong(ui, &format!("#{}", headway::wordid::encode(parent.bytes()))),
                 }
             }
-            ActivityKind::PriorityChanged { to } => {
-                if *to == headway::event::Priority::None {
-                    muted(ui, "cleared the priority");
+            ActivityKind::FieldChanged { field, to } => {
+                use headway::event::Field;
+                if to.is_empty() {
+                    muted(ui, &format!("cleared the {}", field.label()));
                 } else {
-                    muted(ui, "set priority to");
-                    strong(ui, to.as_str());
+                    let verb = match field {
+                        Field::Priority => "set priority to",
+                        Field::Due => "set the due date to",
+                        Field::Estimate => "set the estimate to",
+                    };
+                    muted(ui, verb);
+                    strong(ui, to);
                 }
             }
             ActivityKind::ParentRemoved => muted(ui, "detached from its parent"),
@@ -3196,6 +3202,8 @@ mod tests {
             description: description.to_string(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
             priority: headway::event::Priority::None,
+            due: None,
+            estimate: None,
             rank: String::new(),
             placed_at: 0,
             created_at: 0,

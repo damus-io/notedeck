@@ -54,13 +54,62 @@ pub const KIND_RELATION: u32 = 30621;
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
-/// NIP-32 label namespace carrying a card's [`Priority`], one `l` value.
-const NS_PRIORITY: &str = "#priority";
 
-/// A card's priority. Latest-authorised-wins like every other overlay, carried
-/// as a kind-1985 label in the [`NS_PRIORITY`] namespace. Ordered
-/// least-to-most urgent so a "sort by priority" descends from [`Priority::Urgent`];
-/// [`Priority::None`] (the default, "no priority") sorts last, matching Linear.
+/// A single-value scalar overlay on a card. Each [`Field`] is carried as a
+/// kind-1985 NIP-32 label in its own `L` namespace with one `l` value, resolved
+/// latest-authorised-wins exactly like the subject overlay ([`build_field`],
+/// [`FieldEdit`]). Publishing an empty (or, for priority, `"none"`) value clears
+/// the field.
+///
+/// This is deliberately only for *single scalar* fields — multi-valued concerns
+/// (labels, a set) and entity references (a parent relation, a board placement)
+/// keep their own mechanisms rather than being forced through here. The plumbing
+/// (builder, parse, reducer overlay, activity row) is generic over the field;
+/// each field's *value type* and rendering stay typed at the edges, landing in a
+/// typed [`CardView`] field (e.g. [`CardView::priority`], [`CardView::due`],
+/// [`CardView::estimate`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Field {
+    Priority,
+    Due,
+    Estimate,
+}
+
+impl Field {
+    /// The NIP-32 `L` namespace that carries this field on a kind-1985 label.
+    fn namespace(self) -> &'static str {
+        match self {
+            Field::Priority => "#priority",
+            Field::Due => "#due",
+            Field::Estimate => "#estimate",
+        }
+    }
+
+    /// The field carried by an `L` namespace, or `None` if it isn't a scalar
+    /// field namespace (e.g. `#subject`/`#t`, which are handled separately).
+    fn from_namespace(ns: &str) -> Option<Field> {
+        match ns {
+            "#priority" => Some(Field::Priority),
+            "#due" => Some(Field::Due),
+            "#estimate" => Some(Field::Estimate),
+            _ => None,
+        }
+    }
+
+    /// A human label for the field, used in the activity timeline and JSON.
+    pub fn label(self) -> &'static str {
+        match self {
+            Field::Priority => "priority",
+            Field::Due => "due",
+            Field::Estimate => "estimate",
+        }
+    }
+}
+
+/// A card's priority. Ordered least-to-most urgent so a "sort by priority"
+/// descends from [`Priority::Urgent`]; [`Priority::None`] (the default, "no
+/// priority") sorts last, matching Linear. Carried as the [`Field::Priority`]
+/// scalar overlay.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     /// No priority set — the default when a card has never been prioritised.
@@ -96,6 +145,54 @@ impl Priority {
             "low" => Priority::Low,
             _ => Priority::None,
         }
+    }
+}
+
+/// A calendar day — the value type of the [`Field::Due`] due-date overlay. Day
+/// granularity (not an instant): a due date is "the 30th", independent of
+/// timezone. Fields are ordered year→month→day so the derived `Ord` is
+/// chronological, which is exactly the sort the list view wants. Rendered and
+/// parsed as ISO `YYYY-MM-DD`, which also happens to sort lexicographically the
+/// same way, so the wire form sorts correctly too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Date {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+}
+
+impl Date {
+    /// Parse an ISO `YYYY-MM-DD` date, validating the month and the day against
+    /// that month's length (leap years included). `None` for anything malformed
+    /// or out of range, so a junk overlay reads as "no due date".
+    pub fn parse(s: &str) -> Option<Date> {
+        let (y, rest) = s.trim().split_once('-')?;
+        let (m, d) = rest.split_once('-')?;
+        let year: i32 = y.parse().ok()?;
+        let month: u8 = m.parse().ok()?;
+        let day: u8 = d.parse().ok()?;
+        if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+            return None;
+        }
+        Some(Date { year, month, day })
+    }
+}
+
+impl std::fmt::Display for Date {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+}
+
+/// Days in `month` of `year` (1-indexed month), honouring leap years for
+/// February. Used to validate [`Date::parse`].
+fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
     }
 }
 
@@ -248,21 +345,24 @@ pub fn build_subject_edit<'a>(issue: &NoteId, subject: &str) -> NoteBuilder<'a> 
         .tag_str(NS_SUBJECT)
 }
 
-/// Build a priority edit for `issue` (NIP-32 label, `#priority`). Carries the
-/// single priority value; republishing supersedes it latest-authorised-wins, so
-/// setting [`Priority::None`] clears an earlier priority.
-pub fn build_priority<'a>(issue: &NoteId, priority: Priority) -> NoteBuilder<'a> {
+/// Build a scalar [`Field`] edit for `issue` (NIP-32 label in the field's `L`
+/// namespace, carrying one `l` value). Republishing supersedes it
+/// latest-authorised-wins, so an empty (or, for priority, `"none"`) `value`
+/// clears the field. The value is the field's wire form — e.g. `Priority::as_str`,
+/// a `Date`'s `YYYY-MM-DD`, or an estimate's decimal.
+pub fn build_field<'a>(issue: &NoteId, field: Field, value: &str) -> NoteBuilder<'a> {
+    let ns = field.namespace();
     base(KIND_LABEL, "")
         .start_tag()
         .tag_str("e")
         .tag_id(issue.bytes())
         .start_tag()
         .tag_str("L")
-        .tag_str(NS_PRIORITY)
+        .tag_str(ns)
         .start_tag()
         .tag_str("l")
-        .tag_str(priority.as_str())
-        .tag_str(NS_PRIORITY)
+        .tag_str(value)
+        .tag_str(ns)
 }
 
 /// Build a label event for `issue` (NIP-32, `#t` namespace), one `l` per label.
@@ -425,11 +525,14 @@ pub struct SubjectEdit {
     pub created_at: u64,
 }
 
+/// A resolved scalar [`Field`] overlay event: which field, and its wire value
+/// (the field's typed value is parsed from `value` at the read site).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PriorityEdit {
+pub struct FieldEdit {
     pub author: [u8; 32],
     pub issue_id: [u8; 32],
-    pub priority: Priority,
+    pub field: Field,
+    pub value: String,
     pub created_at: u64,
 }
 
@@ -481,7 +584,7 @@ pub enum HeadwayEvent {
     Placement(PlacementEvent),
     Subject(SubjectEdit),
     Labels(LabelSet),
-    Priority(PriorityEdit),
+    Field(FieldEdit),
     Cover(CoverNote),
     Comment(CommentEvent),
     Relation(RelationEvent),
@@ -643,12 +746,11 @@ fn parse_label(note: &Note) -> Option<HeadwayEvent> {
             labels: values,
             created_at,
         })),
-        Some(NS_PRIORITY) => Some(HeadwayEvent::Priority(PriorityEdit {
+        Some(ns) if Field::from_namespace(ns).is_some() => Some(HeadwayEvent::Field(FieldEdit {
             author,
             issue_id,
-            priority: values
-                .first()
-                .map_or(Priority::None, |v| Priority::parse(v)),
+            field: Field::from_namespace(ns)?,
+            value: values.into_iter().next().unwrap_or_default(),
             created_at,
         })),
         _ => None,
@@ -798,8 +900,8 @@ pub enum ActivityKind {
         added: Vec<String>,
         removed: Vec<String>,
     },
-    /// The card's priority changed to `to`.
-    PriorityChanged { to: Priority },
+    /// A scalar [`Field`] changed to the wire value `to` (empty = cleared).
+    FieldChanged { field: Field, to: String },
     /// The card was made a subissue of `parent` (title resolved when known).
     ParentSet {
         parent: NoteId,
@@ -841,6 +943,11 @@ pub struct CardView {
     /// Resolved priority (latest-authorised-wins overlay), [`Priority::None`]
     /// when the card was never prioritised.
     pub priority: Priority,
+    /// Resolved due date, `None` when unset (or cleared). See [`Field::Due`].
+    pub due: Option<Date>,
+    /// Resolved estimate (arbitrary points), `None` when unset. See
+    /// [`Field::Estimate`].
+    pub estimate: Option<u32>,
     /// Fractional rank within its column; cards are sorted ascending.
     pub rank: String,
     /// `created_at` of the winning placement (0 if the card is unplaced). A
@@ -933,6 +1040,8 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
         "description": card.description,
         "labels": card.labels,
         "priority": card.priority.as_str(),
+        "due": card.due.map(|d| d.to_string()),
+        "estimate": card.estimate,
         "rank": card.rank,
         "created_at": card.created_at,
         "updated_at": card.updated_at,
@@ -966,8 +1075,8 @@ pub fn activity_json(activity: &ActivityView) -> serde_json::Value {
         ActivityKind::LabelsChanged { added, removed } => {
             serde_json::json!({"type": "labels_changed", "added": added, "removed": removed})
         }
-        ActivityKind::PriorityChanged { to } => {
-            serde_json::json!({"type": "priority_changed", "to": to.as_str()})
+        ActivityKind::FieldChanged { field, to } => {
+            serde_json::json!({"type": "field_changed", "field": field.label(), "to": to})
         }
         ActivityKind::ParentSet { parent, title } => serde_json::json!({
             "type": "parent_set",
@@ -1022,7 +1131,7 @@ enum ActivityRecord {
     Subject(SubjectEdit),
     Cover(CoverNote),
     Labels(LabelSet),
-    Priority(PriorityEdit),
+    Field(FieldEdit),
     Relation(RelationEvent),
 }
 
@@ -1033,7 +1142,7 @@ impl ActivityRecord {
             ActivityRecord::Subject(s) => s.created_at,
             ActivityRecord::Cover(c) => c.created_at,
             ActivityRecord::Labels(l) => l.created_at,
-            ActivityRecord::Priority(p) => p.created_at,
+            ActivityRecord::Field(f) => f.created_at,
             ActivityRecord::Relation(r) => r.created_at,
         }
     }
@@ -1052,9 +1161,10 @@ pub struct BoardReducer {
     placements: HashMap<PlacementKey, PlacementEvent>,
     subjects: HashMap<[u8; 32], SubjectEdit>,
     covers: HashMap<[u8; 32], CoverNote>,
-    /// Latest priority per issue (latest-authorised-wins). Absent = no priority
-    /// has ever been set, resolving to [`Priority::None`].
-    priorities: HashMap<[u8; 32], PriorityEdit>,
+    /// Latest scalar [`Field`] overlays per issue, one slot per field
+    /// (latest-authorised-wins). Absent = the field was never set; the resolved
+    /// typed value comes from parsing [`FieldEdit::value`] at finalize.
+    fields: HashMap<[u8; 32], HashMap<Field, FieldEdit>>,
     /// Latest label set per issue. Each label event is the *complete* set for
     /// the card (snapshot semantics), so the newest authorised one wins — this
     /// is what makes label *removal* expressible: republish the set without it.
@@ -1136,14 +1246,14 @@ impl BoardReducer {
                     self.labels.insert(l.issue_id, l);
                 }
             }
-            HeadwayEvent::Priority(p) => {
-                self.remember(p.issue_id, ActivityRecord::Priority(p.clone()));
-                if self
-                    .priorities
-                    .get(&p.issue_id)
-                    .is_none_or(|cur| newer(p.created_at, &p.author, cur.created_at, &cur.author))
+            HeadwayEvent::Field(f) => {
+                self.remember(f.issue_id, ActivityRecord::Field(f.clone()));
+                let slot = self.fields.entry(f.issue_id).or_default();
+                if slot
+                    .get(&f.field)
+                    .is_none_or(|cur| newer(f.created_at, &f.author, cur.created_at, &cur.author))
                 {
-                    self.priorities.insert(p.issue_id, p);
+                    slot.insert(f.field, f);
                 }
             }
             HeadwayEvent::Comment(c) => {
@@ -1221,7 +1331,9 @@ impl BoardReducer {
         labels.sort_unstable();
         labels.dedup();
         let mut has_parent = false;
-        let mut priority = Priority::None;
+        // The last wire value seen per scalar field, so a field row is emitted
+        // only on an actual change (an empty entry means "never set").
+        let mut field_values: HashMap<Field, String> = HashMap::new();
 
         for rec in sorted {
             // Creation-time records still seed the running state (so the first
@@ -1307,19 +1419,26 @@ impl BoardReducer {
                         kind: ActivityKind::LabelsChanged { added, removed },
                     });
                 }
-                ActivityRecord::Priority(p) => {
-                    if !authorised(&p.author) {
+                ActivityRecord::Field(f) => {
+                    if !authorised(&f.author) {
                         continue;
                     }
-                    let changed = p.priority != priority;
-                    priority = p.priority;
+                    // Normalise "no value" so priority's explicit "none" and an
+                    // empty due/estimate both read as cleared and don't churn.
+                    let norm = |v: &str| match f.field {
+                        Field::Priority if Priority::parse(v) == Priority::None => String::new(),
+                        _ => v.trim().to_string(),
+                    };
+                    let to = norm(&f.value);
+                    let changed = field_values.get(&f.field) != Some(&to);
+                    field_values.insert(f.field, to.clone());
                     if silent || !changed {
                         continue;
                     }
                     out.push(ActivityView {
-                        author: p.author,
-                        created_at: p.created_at,
-                        kind: ActivityKind::PriorityChanged { to: p.priority },
+                        author: f.author,
+                        created_at: f.created_at,
+                        kind: ActivityKind::FieldChanged { field: f.field, to },
                     });
                 }
                 ActivityRecord::Relation(r) => {
@@ -1519,13 +1638,27 @@ impl BoardReducer {
         labels.sort();
         labels.dedup();
 
-        // Priority resolves latest-authorised-wins like the other overlays;
-        // absent (or an unauthorised edit) leaves the card at `Priority::None`.
-        let priority_edit = self
-            .priorities
-            .get(&issue.id)
-            .filter(|p| authorised(&p.author));
-        let priority = priority_edit.map_or(Priority::None, |p| p.priority);
+        // Scalar field overlays (priority/due/estimate) resolve
+        // latest-authorised-wins from the per-issue field slots; an unauthorised
+        // edit is ignored, leaving the field unset. Each value is parsed into its
+        // typed form here at the read site.
+        let field_slots = self.fields.get(&issue.id);
+        let field = |f: Field| {
+            field_slots
+                .and_then(|m| m.get(&f))
+                .filter(|e| authorised(&e.author))
+        };
+        let priority = field(Field::Priority).map_or(Priority::None, |e| Priority::parse(&e.value));
+        let due = field(Field::Due).and_then(|e| Date::parse(&e.value));
+        let estimate = field(Field::Estimate).and_then(|e| e.value.trim().parse::<u32>().ok());
+        // Newest authorised field edit, folded into `updated_at` below.
+        let fields_touched = field_slots.map_or(0, |m| {
+            m.values()
+                .filter(|e| authorised(&e.author))
+                .map(|e| e.created_at)
+                .max()
+                .unwrap_or(0)
+        });
 
         // Comments thread under the issue (the NIP-22 root). Append-only, shown
         // oldest first; the id breaks same-second ties.
@@ -1550,7 +1683,7 @@ impl BoardReducer {
             .max(subject.map_or(0, |s| s.created_at))
             .max(cover.map_or(0, |c| c.created_at))
             .max(label_set.map_or(0, |l| l.created_at))
-            .max(priority_edit.map_or(0, |p| p.created_at))
+            .max(fields_touched)
             .max(comments.last().map_or(0, |c| c.created_at));
 
         // This card as a child: its one relation slot names its parent.
@@ -1586,6 +1719,8 @@ impl BoardReducer {
             description,
             labels,
             priority,
+            due,
+            estimate,
             rank,
             placed_at,
             created_at: issue.created_at,
@@ -2294,7 +2429,25 @@ mod tests {
     }
 
     #[test]
-    fn reduce_resolves_latest_authorised_priority() {
+    fn date_parses_and_orders() {
+        assert_eq!(
+            Date::parse("2026-07-30"),
+            Some(Date {
+                year: 2026,
+                month: 7,
+                day: 30
+            })
+        );
+        assert_eq!(Date::parse("2024-02-29").map(|d| d.day), Some(29)); // leap
+        assert_eq!(Date::parse("2026-02-29"), None); // not a leap year
+        assert_eq!(Date::parse("2026-13-01"), None); // bad month
+        assert_eq!(Date::parse("nonsense"), None);
+        assert!(Date::parse("2026-01-31") < Date::parse("2026-02-01"));
+        assert_eq!(Date::parse("2026-07-30").unwrap().to_string(), "2026-07-30");
+    }
+
+    #[test]
+    fn reduce_resolves_scalar_fields_latest_authorised() {
         let owner = FullKeypair::generate();
         let addr = board_address(&owner.pubkey, "b1");
         let cols = vec![ColumnDef::new("todo", "Todo")];
@@ -2310,37 +2463,42 @@ mod tests {
             parse_owned(build_board("b1", "Board", "", &cols), &owner),
             parse_owned(build_issue(&addr, "Card", ""), &owner),
             parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
-            parse_owned(build_priority(&i1, Priority::Low), &owner),
+            parse_owned(
+                build_field(&i1, Field::Priority, Priority::Low.as_str()),
+                &owner,
+            ),
+            parse_owned(build_field(&i1, Field::Due, "2026-07-30"), &owner),
+            parse_owned(build_field(&i1, Field::Estimate, "3"), &owner),
         ];
-        // No priority overlay yet? default None. With the Low overlay above:
-        assert_eq!(
-            reduce(&events)[0].columns[0].cards[0].priority,
-            Priority::Low
-        );
+        let card = |events: &[HeadwayEvent]| reduce(events)[0].columns[0].cards[0].clone();
+        let c = card(&events);
+        assert_eq!(c.priority, Priority::Low);
+        assert_eq!(c.due.unwrap().to_string(), "2026-07-30");
+        assert_eq!(c.estimate, Some(3));
 
-        // A later overlay wins latest-wins — raise it to Urgent.
-        let mut bumped = match parse_owned(build_priority(&i1, Priority::Urgent), &owner) {
-            HeadwayEvent::Priority(p) => p,
+        // A later priority overlay wins latest-wins — raise it to Urgent.
+        let mut bumped = match parse_owned(
+            build_field(&i1, Field::Priority, Priority::Urgent.as_str()),
+            &owner,
+        ) {
+            HeadwayEvent::Field(f) => f,
             _ => unreachable!(),
         };
         bumped.created_at += 1;
-        events.push(HeadwayEvent::Priority(bumped));
-        assert_eq!(
-            reduce(&events)[0].columns[0].cards[0].priority,
-            Priority::Urgent
-        );
+        events.push(HeadwayEvent::Field(bumped));
+        assert_eq!(card(&events).priority, Priority::Urgent);
 
-        // Clearing republishes None, and it wins as the newest.
-        let mut cleared = match parse_owned(build_priority(&i1, Priority::None), &owner) {
-            HeadwayEvent::Priority(p) => p,
+        // Clearing one field republishes an empty value; fields are independent.
+        let mut cleared = match parse_owned(build_field(&i1, Field::Due, ""), &owner) {
+            HeadwayEvent::Field(f) => f,
             _ => unreachable!(),
         };
         cleared.created_at += 2;
-        events.push(HeadwayEvent::Priority(cleared));
-        assert_eq!(
-            reduce(&events)[0].columns[0].cards[0].priority,
-            Priority::None
-        );
+        events.push(HeadwayEvent::Field(cleared));
+        let c = card(&events);
+        assert_eq!(c.due, None);
+        assert_eq!(c.priority, Priority::Urgent); // other fields untouched
+        assert_eq!(c.estimate, Some(3));
     }
 
     #[test]

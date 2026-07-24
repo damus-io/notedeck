@@ -14,7 +14,7 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView, CommentView, Priority};
+use headway::event::{self, BoardView, CardView, CommentView, Date, Priority};
 use headway::store::{self, BoardAction, Publisher};
 use headway::wordid;
 
@@ -73,6 +73,16 @@ enum Command {
     Priority {
         card: String,
         level: String,
+    },
+    /// Set a card's due date (`YYYY-MM-DD`, or `none` to clear).
+    Due {
+        card: String,
+        date: String,
+    },
+    /// Set a card's estimate (a number, or `none` to clear).
+    Estimate {
+        card: String,
+        points: String,
     },
     /// Make a card a subissue of another card, or detach it (no parent given).
     Parent {
@@ -141,6 +151,8 @@ impl Command {
             | Command::Desc { card, .. }
             | Command::Label { card, .. }
             | Command::Priority { card, .. }
+            | Command::Due { card, .. }
+            | Command::Estimate { card, .. }
             | Command::Comment { card, .. }
             | Command::Delete { card }
             | Command::Archive { card }
@@ -419,6 +431,19 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             card: resolve_card(view, &card)?,
             priority: Priority::parse(&level),
         },
+        Command::Due { card, date } => BoardAction::SetDue {
+            card: resolve_card(view, &card)?,
+            due: parse_clearable(&date, |s| {
+                Date::parse(s).ok_or_else(|| format!("invalid date '{s}' (want YYYY-MM-DD)").into())
+            })?,
+        },
+        Command::Estimate { card, points } => BoardAction::SetEstimate {
+            card: resolve_card(view, &card)?,
+            estimate: parse_clearable(&points, |s| {
+                s.parse::<u32>()
+                    .map_err(|_| format!("invalid estimate '{s}' (want a number)").into())
+            })?,
+        },
         Command::Parent { card, parent } => BoardAction::SetParent {
             card: resolve_card(view, &card)?,
             parent: parent
@@ -462,6 +487,17 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             unreachable!("handled before build_action")
         }
     })
+}
+
+/// Parse a "set or clear" scalar CLI value: `none` (or an empty string) clears
+/// the field (`Ok(None)`); any other value is run through `parse`. Shared by the
+/// `due`/`estimate` commands so both take `none` to clear.
+fn parse_clearable<T>(s: &str, parse: impl Fn(&str) -> Result<T>) -> Result<Option<T>> {
+    let s = s.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    parse(s).map(Some)
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +763,12 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
     }
     if card.priority != Priority::None {
         println!("priority {}", card.priority.as_str());
+    }
+    if let Some(due) = card.due {
+        println!("due     {due}");
+    }
+    if let Some(estimate) = card.estimate {
+        println!("estimate {estimate}");
     }
     if let Some(parent) = &card.parent {
         println!("parent  {}", card_ref(view, parent));
@@ -1043,6 +1085,14 @@ fn parse_command(
             card: card()?,
             level: arg(rest, 1, name)?,
         },
+        "due" => Command::Due {
+            card: card()?,
+            date: arg(rest, 1, name)?,
+        },
+        "estimate" => Command::Estimate {
+            card: card()?,
+            points: arg(rest, 1, name)?,
+        },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
         "parent" => Command::Parent {
@@ -1115,6 +1165,8 @@ COMMANDS:
     desc <card> <text...>      Edit a card's description
     label <card> [labels...]   Set a card's labels (empty clears)
     priority <card> <level>    Set priority (none/low/medium/high/urgent)
+    due <card> <date>          Set a due date (YYYY-MM-DD, or none to clear)
+    estimate <card> <n>        Set an estimate (a number, or none to clear)
     parent <card> [parent]     Make a card a subissue of [parent] (omit to
                                detach)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under

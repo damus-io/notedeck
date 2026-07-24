@@ -13,10 +13,9 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 
 use crate::event::{
-    self, BoardView, COL_DELETED, CardView, ColumnDef, Priority, board_address,
-    build_archive_placement, build_board, build_comment, build_cover_note, build_issue,
-    build_labels, build_placement, build_priority, build_relation, build_subject_edit,
-    rank_between,
+    self, BoardView, COL_DELETED, CardView, ColumnDef, Date, Field, Priority, board_address,
+    build_archive_placement, build_board, build_comment, build_cover_note, build_field,
+    build_issue, build_labels, build_placement, build_relation, build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -50,6 +49,10 @@ pub enum BoardAction {
     SetLabels { card: NoteId, labels: Vec<String> },
     /// Set a card's priority (latest-authorised-wins; `Priority::None` clears it).
     SetPriority { card: NoteId, priority: Priority },
+    /// Set a card's due date, or clear it with `None`.
+    SetDue { card: NoteId, due: Option<Date> },
+    /// Set a card's estimate, or clear it with `None`.
+    SetEstimate { card: NoteId, estimate: Option<u32> },
     /// Make `card` a subissue of `parent`, or detach it when `parent` is `None`.
     /// Refused (no events) when it would create a parent cycle.
     SetParent {
@@ -417,7 +420,22 @@ pub fn apply(
             ingest(ndb, build_labels(&card, &labels), secret, publisher);
         }
         BoardAction::SetPriority { card, priority } => {
-            ingest(ndb, build_priority(&card, priority), secret, publisher);
+            let f = build_field(&card, Field::Priority, priority.as_str());
+            ingest(ndb, f, secret, publisher);
+        }
+        BoardAction::SetDue { card, due } => {
+            let value = due.map(|d| d.to_string()).unwrap_or_default();
+            ingest(
+                ndb,
+                build_field(&card, Field::Due, &value),
+                secret,
+                publisher,
+            );
+        }
+        BoardAction::SetEstimate { card, estimate } => {
+            let value = estimate.map(|e| e.to_string()).unwrap_or_default();
+            let f = build_field(&card, Field::Estimate, &value);
+            ingest(ndb, f, secret, publisher);
         }
         BoardAction::SetParent { card, parent } => {
             if let Some(parent) = parent {
