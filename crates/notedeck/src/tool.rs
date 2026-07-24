@@ -383,6 +383,19 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
+    /// Replace the whole registry with `tools`, keeping the same
+    /// duplicate-skipping rules as [`register`](Self::register). The chrome shell
+    /// calls this to re-derive the app-tool set from the currently-running apps
+    /// when that set changes, so a backend only ever sees tools whose app is live
+    /// (and therefore syncing its data).
+    pub fn reset(&mut self, tools: impl IntoIterator<Item = RegisteredTool>) {
+        self.tools.clear();
+        self.by_name.clear();
+        for tool in tools {
+            self.register(tool);
+        }
+    }
+
     /// The specs for every registered app tool — what a backend advertises.
     pub fn specs(&self) -> impl Iterator<Item = &ToolSpec> {
         self.tools.iter().map(RegisteredTool::spec)

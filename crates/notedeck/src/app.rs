@@ -75,11 +75,24 @@ pub trait App {
     }
 
     /// Agent tools this app contributes over its nostr-backed data, for AI
-    /// backends (Dave's OpenAI loop, a future `notedeck --mcp`). Registered once
-    /// at startup so a tool resolves even for apps the user never opens. Defaults
-    /// to none. See [`AppTool`](crate::AppTool)/[`RegisteredTool`](crate::RegisteredTool).
+    /// backends (Dave's OpenAI loop, a future `notedeck --mcp`). The shell
+    /// collects these from its *running* apps (see [`take_tool_update`](Self::take_tool_update)),
+    /// so a tool is only advertised while its app is live and syncing its data.
+    /// Defaults to none. See [`AppTool`](crate::AppTool)/[`RegisteredTool`](crate::RegisteredTool).
     fn tools(&self) -> Vec<crate::RegisteredTool> {
         Vec::new()
+    }
+
+    /// Host hook, invoked each frame **only on the top-level app** (the shell):
+    /// return `Some(tools)` to replace the host's agent-tool
+    /// [`ToolRegistry`](crate::ToolRegistry) when the contributed set changes, or
+    /// `None` to leave it untouched. The body lives in the shell (it diffs its
+    /// running apps and aggregates their [`tools`](Self::tools)); this defaulted
+    /// declaration exists only so the host can call it across the erased
+    /// `dyn App`, exactly like [`render`](Self::render). Because the host only
+    /// ever invokes it on the top app, an ordinary app can't replace the registry.
+    fn take_tool_update(&mut self) -> Option<Vec<crate::RegisteredTool>> {
+        None
     }
 }
 
@@ -222,6 +235,12 @@ impl Notedeck {
             return;
         };
         let app = app.clone();
+
+        // Let the shell refresh the agent-tool registry from its running apps
+        // before we hand a borrow of it to this frame's AppContext.
+        if let Some(tools) = app.borrow_mut().take_tool_update() {
+            self.tool_registry.reset(tools);
+        }
 
         let mut app_ref = self.notedeck_ref(ctx);
 
