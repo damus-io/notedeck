@@ -21,7 +21,7 @@
 //! `next_after`.
 
 use enostr::{NoteId, Pubkey};
-use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
+use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder};
 
 use crate::event::{
     self, CanvasView, EdgeEnds, Geometry, NodeContent, NodeKind, NodeView, build_canvas,
@@ -106,12 +106,58 @@ pub fn ingest(
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
     let note = builder.sign(secret).build()?;
+    ingest_signed(ndb, &note, publisher)
+}
+
+/// Ingest an already-signed `note` into the local nostrdb, then hand its
+/// `["EVENT", {...}]` frame to `publisher`. Split out of [`ingest`] so callers
+/// that need the signed note's own fields — notably its `created_at` — can read
+/// them off `note` before it's ingested. Returns the note id, or `None` if
+/// building the frame or ingesting failed (in which case nothing is published).
+fn ingest_signed(ndb: &Ndb, note: &Note, publisher: &mut dyn Publisher) -> Option<NoteId> {
     let id = NoteId::new(*note.id());
-    let json = enostr::ClientMessage::event(&note).ok()?.to_json().ok()?;
+    let json = enostr::ClientMessage::event(note).ok()?.to_json().ok()?;
     ndb.process_event_with(&json, IngestMetadata::new().client(true))
         .ok()?;
     publisher.publish(&json);
     Some(id)
+}
+
+/// PNS-wrap a signed inner note (NIP-PNS, kind 1080) and ingest the *wrapper*
+/// into the local nostrdb, then publish the wrapper frame. The inner note is
+/// NIP-44-encrypted with PNS keys derived from `device_secret` — the account key
+/// nostrdb was already seeded with via [`nostrdb::Ndb::add_key`] at sign-in — so
+/// nostrdb transparently unwraps it on read and the inner note stays queryable by
+/// its own author/kind (canvas subscriptions, [`load_longform`], the reducer).
+/// On a relay, though, only the opaque kind-1080 envelope is ever visible: a
+/// private note can't surface as a public NIP-23 article in anyone's feed, and
+/// its contents don't leak in plaintext.
+///
+/// Returns the **inner** note's id (what callers and every longform query key on;
+/// the wrapper's own id is an implementation detail). Used for longform notes;
+/// canvas events still go through the plaintext [`ingest`] for now (their custom
+/// kinds are never feed-rendered — encrypting them too is a separate change).
+fn ingest_pns(
+    ndb: &Ndb,
+    inner: &Note,
+    device_secret: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let inner_id = NoteId::new(*inner.id());
+    let inner_json = inner.json().ok()?;
+    let pns_keys = enostr::pns::derive_pns_keys(device_secret);
+    let ciphertext = enostr::pns::encrypt(&pns_keys.conversation_key, &inner_json).ok()?;
+    // The kind-1080 envelope is signed by the derived PNS keypair (not the user's
+    // key), so even the wrapper's author reveals nothing linkable to the account.
+    let pns_secret = pns_keys.keypair.secret_key.secret_bytes();
+    let wrapper = NoteBuilder::new()
+        .content(&ciphertext)
+        .kind(enostr::pns::PNS_KIND)
+        .created_at(now_secs())
+        .sign(&pns_secret)
+        .build()?;
+    ingest_signed(ndb, &wrapper, publisher)?;
+    Some(inner_id)
 }
 
 /// Seed a fresh, closed canvas document for `author` (no nodes). The canvas is
@@ -139,6 +185,11 @@ pub fn seed_canvas(
 pub struct LongformSaved {
     pub id: NoteId,
     pub d: String,
+    /// The `created_at` stamped on the signed note. The editor keeps this as the
+    /// supersede baseline: the next [`edit_longform`] passes it as
+    /// `prev_created_at` so the edit is stamped strictly past it (see
+    /// [`next_after`]).
+    pub created_at: u64,
 }
 
 /// Mint a fresh, opaque longform `d` — 8 random bytes as 16 hex chars. Not a
@@ -171,15 +222,21 @@ pub fn create_longform(
 ) -> Option<LongformSaved> {
     let _ = author;
     let d = d.unwrap_or_else(mint_d);
-    let id = ingest(ndb, build_longform(&d, input), secret, publisher)?;
-    Some(LongformSaved { id, d })
+    // Sign the inner NIP-23 note (read its `created_at` before it moves), then
+    // PNS-wrap + ingest so relays only ever see the opaque envelope.
+    let note = build_longform(&d, input).sign(secret).build()?;
+    let created_at = note.created_at();
+    let id = ingest_pns(ndb, &note, secret, publisher)?;
+    Some(LongformSaved { id, d, created_at })
 }
 
 /// Edit an existing longform note, republishing with the same `d`. Kind 30023 is
 /// replaceable, so the edit supersedes by `created_at`; stamp strictly past
 /// `prev_created_at` (the loaded note's timestamp) so a same-second edit still
 /// wins the reducer's latest-wins instead of tying (same reasoning as
-/// [`next_after`]).
+/// [`next_after`]). Returns the same `d` and the new `created_at` in
+/// [`LongformSaved`], so the caller can advance its supersede baseline for the
+/// next edit.
 pub fn edit_longform(
     ndb: &Ndb,
     author: &Pubkey,
@@ -188,14 +245,19 @@ pub fn edit_longform(
     prev_created_at: u64,
     input: &LongformInput,
     publisher: &mut dyn Publisher,
-) -> Option<NoteId> {
+) -> Option<LongformSaved> {
     let _ = author;
-    ingest(
-        ndb,
-        build_longform(d, input).created_at(next_after(prev_created_at)),
-        secret,
-        publisher,
-    )
+    let note = build_longform(d, input)
+        .created_at(next_after(prev_created_at))
+        .sign(secret)
+        .build()?;
+    let created_at = note.created_at();
+    let id = ingest_pns(ndb, &note, secret, publisher)?;
+    Some(LongformSaved {
+        id,
+        d: d.to_string(),
+        created_at,
+    })
 }
 
 /// Apply one [`CanvasAction`] against the current `view`, ingesting the events it
@@ -802,6 +864,11 @@ mod tests {
             let dir = tempfile::TempDir::new().unwrap();
             let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
             let kp = FullKeypair::generate();
+            // Longform notes are ingested PNS-wrapped (kind 1080); nostrdb only
+            // unwraps them — exposing the inner kind-30023 to queries and this
+            // subscription — once the device key is registered. The app does this
+            // when the account is added; here we do it directly.
+            assert!(ndb.add_key(&kp.secret_key.secret_bytes()));
             let sub = ndb
                 .subscribe(&[event::longform_filter(&kp.pubkey)])
                 .unwrap();
@@ -858,6 +925,7 @@ mod tests {
         )
         .expect("create longform");
         assert!(!saved.d.is_empty(), "a d was minted");
+        assert!(saved.created_at > 0, "a created_at was stamped");
 
         t.await_notes(1).await;
         let note = t.load(&saved.d).expect("note loads");
@@ -890,7 +958,7 @@ mod tests {
             content: "# Draft\n\nedited body".to_string(),
             ..input
         };
-        edit_longform(
+        let saved_edit = edit_longform(
             &t.ndb,
             &t.kp.pubkey,
             &t.secret(),
@@ -900,14 +968,17 @@ mod tests {
             &mut NoPublish,
         )
         .expect("edit longform");
+        // The returned supersede baseline: same d, a strictly-later created_at (so
+        // a same-second edit still beats the tie).
+        assert_eq!(saved_edit.d, saved.d);
+        assert!(saved_edit.created_at > before.created_at);
         t.await_notes(1).await;
 
         let after = t.load(&saved.d).expect("note loads");
-        // The edit wins (superseding created_at beats the same-second tie) and the
-        // stable d is unchanged.
+        // The edit wins and the loaded note reflects the returned baseline.
         assert_eq!(after.d, saved.d);
         assert_eq!(after.content, "# Draft\n\nedited body");
-        assert!(after.created_at > before.created_at);
+        assert_eq!(after.created_at, saved_edit.created_at);
     }
 
     #[tokio::test]
