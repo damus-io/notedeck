@@ -902,11 +902,12 @@ impl CoordinationData {
         };
 
         let msg = match &event {
-            WsEvent::Opened => {
+            WsEvent::Opened(local_addr) => {
                 let Some(websocket) = self.websocket.as_mut() else {
                     return RecvResponse::received();
                 };
                 websocket.set_connected(reconnect_delay);
+                websocket.local_addr = *local_addr;
                 self.pending_tracker_invalidations.extend(handle_relay_open(
                     websocket,
                     &mut self.broadcast_cache,

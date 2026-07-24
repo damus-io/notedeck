@@ -8,6 +8,7 @@ mod limits;
 pub mod message;
 mod multicast;
 mod negentropy;
+mod netwatch;
 mod nip11;
 mod outbox;
 mod queue;

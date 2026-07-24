@@ -10,6 +10,7 @@ use crate::{
     relay::{
         backoff,
         coordinator::{CoordinationData, CoordinationSession, RelayEoseDelta},
+        netwatch::NetworkWatcher,
         same_canonical_filter_set, FullHistorySubId, FullModificationTask, ModifyTask,
         MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
         NormRelayUrl, OutboxSubId, OutboxSubscriptions, OutboxTask, RawEventData, RelayId,
@@ -18,6 +19,7 @@ use crate::{
     },
     EventClientMessage, Wakeup,
 };
+use if_watch::IpNet;
 
 mod eose;
 mod full_history;
@@ -61,6 +63,12 @@ pub struct OutboxPool {
     keepalive_reconnect_backoff_base: Duration,
     pong_timeout: Duration,
     full_history: FullHistoryTracker,
+    /// Interface watcher for realtime route-loss detection, lazily started on
+    /// the first keepalive pass (it needs a wakeup). `None` until started, and
+    /// stays `None` if the platform watcher is unavailable.
+    network_watcher: Option<NetworkWatcher>,
+    /// Set once starting the watcher has failed, so we don't retry every frame.
+    network_watch_failed: bool,
 }
 
 impl Default for OutboxPool {
@@ -77,6 +85,8 @@ impl Default for OutboxPool {
             keepalive_reconnect_backoff_base: DEFAULT_RECONNECT_BACKOFF_BASE,
             pong_timeout: PONG_TIMEOUT,
             full_history: FullHistoryTracker::default(),
+            network_watcher: None,
+            network_watch_failed: false,
         }
     }
 }
@@ -586,8 +596,72 @@ impl OutboxPool {
             }
         }
     }
+    /// React to OS network-interface changes: when the route behind a live
+    /// relay connection disappears (VPN/tunnel down, interface dropped), mark
+    /// that leg disconnected immediately instead of waiting for TCP keepalive
+    /// or the application-level pong timeout. The watcher is lazily started
+    /// here because it needs a wakeup, which only arrives per-frame.
+    #[profiling::function]
+    fn poll_network_changes(&mut self, wakeup: &(impl Fn() + Send + Sync + Clone + 'static)) {
+        if self.network_watcher.is_none() && !self.network_watch_failed {
+            match NetworkWatcher::spawn(wakeup.clone()) {
+                Some(watcher) => self.network_watcher = Some(watcher),
+                None => self.network_watch_failed = true,
+            }
+        }
+
+        // Drain interface-down subnets. Non-empty only on an actual network
+        // change, so the allocation stays off the steady-state per-frame path.
+        let down_subnets: Vec<IpNet> = {
+            let Some(watcher) = self.network_watcher.as_mut() else {
+                return;
+            };
+            let mut subnets = Vec::new();
+            while let Some(subnet) = watcher.try_recv() {
+                subnets.push(subnet);
+            }
+            subnets
+        };
+        if down_subnets.is_empty() {
+            return;
+        }
+
+        for (relay_id, relay) in &mut self.relays {
+            let Some(websocket) = relay.websocket.as_ref() else {
+                continue;
+            };
+            if websocket.conn.status != RelayStatus::Connected {
+                continue;
+            }
+            let Some(local) = websocket.local_addr else {
+                continue;
+            };
+            if down_subnets
+                .iter()
+                .any(|subnet| subnet.contains(&local.ip()))
+            {
+                tracing::info!(
+                    relay = %relay_id,
+                    local = %local,
+                    "network route down, marking relay disconnected"
+                );
+                relay.disconnect_websocket_leg();
+            }
+        }
+    }
+
+    /// Test-only: install a controllable interface watcher so tests can inject
+    /// interface-down events. Also marks the real watcher as already-attempted
+    /// so [`Self::poll_network_changes`] won't replace it.
+    #[cfg(test)]
+    fn set_network_watcher_for_test(&mut self, watcher: NetworkWatcher) {
+        self.network_watcher = Some(watcher);
+        self.network_watch_failed = true;
+    }
+
     #[profiling::function]
     pub fn keepalive_ping(&mut self, wakeup: impl Fn() + Send + Sync + Clone + 'static) {
+        self.poll_network_changes(&wakeup);
         for (relay_id, relay) in &mut self.relays {
             relay
                 .websocket
@@ -1256,6 +1330,39 @@ mod tests {
 
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    /// An interface-down event for the subnet a live relay is routed through
+    /// drops that connection immediately, without waiting for keepalive or the
+    /// pong timeout.
+    #[tokio::test]
+    async fn interface_down_disconnects_routed_relay() {
+        let (_relay_task, relay, _captured, _notify) = create_req_capture_relay().await;
+        let wakeup = MockWakeup::default();
+        let mut pool = OutboxPool::default();
+
+        let _ = pool.ensure_relay(&relay, &wakeup);
+        wait_for_websocket_connected(&mut pool, &relay, Duration::from_secs(5)).await;
+        assert_eq!(
+            websocket_status(&pool, &relay),
+            Some(RelayStatus::Connected)
+        );
+
+        // Signal that the loopback subnet — the one this connection is routed
+        // through — has gone away, via a controllable watcher.
+        let (watcher, down_tx) = NetworkWatcher::for_test();
+        pool.set_network_watcher_for_test(watcher);
+        down_tx
+            .send("127.0.0.0/8".parse::<IpNet>().unwrap())
+            .unwrap();
+
+        pool.keepalive_ping(|| {});
+
+        assert_eq!(
+            websocket_status(&pool, &relay),
+            Some(RelayStatus::Disconnected),
+            "relay routed through a downed interface should disconnect immediately"
+        );
     }
 
     /// Ensures the subscription registry always yields unique IDs.

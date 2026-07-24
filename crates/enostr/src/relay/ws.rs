@@ -15,6 +15,7 @@
 use crate::{Error, Result};
 use futures_util::{SinkExt, StreamExt};
 use socket2::{SockRef, TcpKeepalive};
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -46,8 +47,10 @@ pub enum WsMessage {
 /// A connection lifecycle or data event surfaced by the transport.
 #[derive(Debug)]
 pub enum WsEvent {
-    /// The websocket handshake completed; the connection is live.
-    Opened,
+    /// The websocket handshake completed; the connection is live. Carries the
+    /// local socket address, when known, so the pool can tie the connection to
+    /// the network interface it is routed through.
+    Opened(Option<SocketAddr>),
     /// The peer (or transport) closed the connection.
     Closed,
     /// A data frame arrived.
@@ -129,15 +132,15 @@ async fn run<W>(
         true
     };
 
-    let stream = match connect_stream(request).await {
-        Ok(stream) => stream,
+    let (stream, local_addr) = match connect_stream(request).await {
+        Ok(opened) => opened,
         Err(err) => {
             emit(WsEvent::Error(err.to_string()));
             return;
         }
     };
 
-    if !emit(WsEvent::Opened) {
+    if !emit(WsEvent::Opened(local_addr)) {
         return;
     }
 
@@ -184,7 +187,13 @@ async fn run<W>(
 /// aggressive TCP keepalive, then complete the websocket (and, for `wss://`,
 /// TLS) handshake over it. Owning the socket is what lets the relay stack
 /// observe connection liveness at the socket level.
-async fn connect_stream(request: Request) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+#[allow(clippy::type_complexity)]
+async fn connect_stream(
+    request: Request,
+) -> Result<(
+    WebSocketStream<MaybeTlsStream<TcpStream>>,
+    Option<SocketAddr>,
+)> {
     let uri = request.uri();
     let host = uri
         .host()
@@ -199,6 +208,10 @@ async fn connect_stream(request: Request) -> Result<WebSocketStream<MaybeTlsStre
         .await
         .map_err(|e| Error::Generic(format!("tcp connect to {host}:{port} failed: {e}")))?;
 
+    // The local address ties this connection to the interface it is routed
+    // through, so the pool can drop it the instant that interface goes away.
+    let local_addr = tcp.local_addr().ok();
+
     // Best-effort: a socket without keepalive still works, just with slower
     // dead-connection detection, so a config failure is logged, not fatal.
     let keepalive = TcpKeepalive::new()
@@ -212,7 +225,7 @@ async fn connect_stream(request: Request) -> Result<WebSocketStream<MaybeTlsStre
     let (stream, _resp) = client_async_tls(request, tcp)
         .await
         .map_err(|e| Error::Generic(e.to_string()))?;
-    Ok(stream)
+    Ok((stream, local_addr))
 }
 
 /// Map an inbound tungstenite frame to a transport event.

@@ -136,6 +136,10 @@ pub struct WebsocketRelay {
     pub retry_connect_after: Duration,
     /// Number of consecutive failed reconnect attempts. Reset to 0 on successful connection.
     pub reconnect_attempt: u32,
+    /// Local socket address of the live connection, learned on open. Ties the
+    /// connection to its network interface so the pool can drop it the instant
+    /// that interface's route disappears. `None` until the leg opens.
+    pub local_addr: Option<std::net::SocketAddr>,
 }
 
 impl WebsocketRelay {
@@ -148,6 +152,7 @@ impl WebsocketRelay {
             last_connect_attempt: now,
             retry_connect_after: Self::initial_reconnect_duration(),
             reconnect_attempt: 0,
+            local_addr: None,
         }
     }
 
