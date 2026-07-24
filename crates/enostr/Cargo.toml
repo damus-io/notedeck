@@ -11,6 +11,7 @@ edition = "2021"
 # rustls-tls-webpki-roots provides wss:// TLS with bundled roots.
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 futures-util = { workspace = true }
+socket2 = { workspace = true }
 serde_derive = { workspace = true }
 serde = { workspace = true, features = ["derive"] } # You only need this if you want app persistence
 serde_json = { workspace = true }

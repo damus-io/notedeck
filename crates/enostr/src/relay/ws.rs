@@ -14,10 +14,25 @@
 
 use crate::{Error, Result};
 use futures_util::{SinkExt, StreamExt};
+use socket2::{SockRef, TcpKeepalive};
+use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::Message as TMessage;
+use tokio_tungstenite::{client_async_tls, MaybeTlsStream, WebSocketStream};
+
+/// Idle time before the OS starts sending TCP keepalive probes on a relay
+/// socket. Kept short so a silently-dropped connection (dead peer, NAT
+/// timeout, laptop sleep) is noticed at the socket level rather than waiting
+/// on the far slower application-level ping/pong timeout.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(10);
+/// Gap between individual keepalive probes once idle.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(3);
+/// Number of unanswered probes before the OS declares the socket dead
+/// (~KEEPALIVE_IDLE + KEEPALIVE_INTERVAL * KEEPALIVE_RETRIES ≈ 19s to detect).
+const KEEPALIVE_RETRIES: u32 = 3;
 
 /// A websocket data frame exchanged with a relay.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,8 +129,8 @@ async fn run<W>(
         true
     };
 
-    let stream = match tokio_tungstenite::connect_async(request).await {
-        Ok((stream, _resp)) => stream,
+    let stream = match connect_stream(request).await {
+        Ok(stream) => stream,
         Err(err) => {
             emit(WsEvent::Error(err.to_string()));
             return;
@@ -163,6 +178,41 @@ async fn run<W>(
             }
         }
     }
+}
+
+/// Establish the underlying TCP connection ourselves so we can enable
+/// aggressive TCP keepalive, then complete the websocket (and, for `wss://`,
+/// TLS) handshake over it. Owning the socket is what lets the relay stack
+/// observe connection liveness at the socket level.
+async fn connect_stream(request: Request) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+    let uri = request.uri();
+    let host = uri
+        .host()
+        .ok_or_else(|| Error::Generic(format!("relay url has no host: {uri}")))?
+        .to_string();
+    let port = uri.port_u16().unwrap_or_else(|| match uri.scheme_str() {
+        Some("wss") | Some("https") => 443,
+        _ => 80,
+    });
+
+    let tcp = TcpStream::connect((host.as_str(), port))
+        .await
+        .map_err(|e| Error::Generic(format!("tcp connect to {host}:{port} failed: {e}")))?;
+
+    // Best-effort: a socket without keepalive still works, just with slower
+    // dead-connection detection, so a config failure is logged, not fatal.
+    let keepalive = TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL)
+        .with_retries(KEEPALIVE_RETRIES);
+    if let Err(err) = SockRef::from(&tcp).set_tcp_keepalive(&keepalive) {
+        tracing::warn!("failed to enable tcp keepalive on {host}:{port}: {err}");
+    }
+
+    let (stream, _resp) = client_async_tls(request, tcp)
+        .await
+        .map_err(|e| Error::Generic(e.to_string()))?;
+    Ok(stream)
 }
 
 /// Map an inbound tungstenite frame to a transport event.
