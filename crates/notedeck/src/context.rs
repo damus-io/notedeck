@@ -89,11 +89,12 @@ impl<'a> AppContext<'a> {
     /// [`ToolCall`](crate::ToolCall). Like [`note_context`](Self::note_context),
     /// this reborrows the relevant fields, so the returned context holds a
     /// mutable borrow of `self` for its lifetime.
-    pub fn tool_context(&mut self) -> crate::ToolContext<'_> {
+    pub fn tool_context(&mut self) -> crate::ToolContext<'_, 'a> {
         crate::ToolContext {
             ndb: self.ndb,
             note_cache: self.note_cache,
             accounts: self.accounts,
+            publish: Some(self.remote.publisher_explicit()),
         }
     }
 
