@@ -27,13 +27,17 @@ use tokio_tungstenite::{client_async_tls, MaybeTlsStream, WebSocketStream};
 /// Idle time before the OS starts sending TCP keepalive probes on a relay
 /// socket. Kept short so a silently-dropped connection (dead peer, NAT
 /// timeout, laptop sleep) is noticed at the socket level rather than waiting
-/// on the far slower application-level ping/pong timeout.
-const KEEPALIVE_IDLE: Duration = Duration::from_secs(10);
-/// Gap between individual keepalive probes once idle.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(3);
+/// on the far slower application-level ping/pong timeout. A healthy idle
+/// connection only sends one small probe per this interval (the first probe is
+/// answered immediately and resets the timer), so this is cheap.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(5);
+/// Gap between individual keepalive probes once a probe goes unanswered.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 /// Number of unanswered probes before the OS declares the socket dead
-/// (~KEEPALIVE_IDLE + KEEPALIVE_INTERVAL * KEEPALIVE_RETRIES ≈ 19s to detect).
-const KEEPALIVE_RETRIES: u32 = 3;
+/// (~KEEPALIVE_IDLE + KEEPALIVE_INTERVAL * KEEPALIVE_RETRIES ≈ 9s to detect).
+/// A vanished *route* is caught instantly by the interface watcher instead;
+/// this backstops the rarer "peer silently dead, route still up" case.
+const KEEPALIVE_RETRIES: u32 = 2;
 
 /// A websocket data frame exchanged with a relay.
 #[derive(Clone, Debug, Eq, PartialEq)]
