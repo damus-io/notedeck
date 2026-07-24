@@ -10,7 +10,7 @@ use notedeck_notebook::event::{
     self, EdgeEnds, Geometry, NodeContent, NodeKind, build_canvas, build_edge, build_node,
     build_transform, canvas_address,
 };
-use notedeck_notebook::store::{CANVAS_ID, NoPublish, ingest};
+use notedeck_notebook::store::{CANVAS_ID, LongformNote, NoPublish, ingest, load_longform};
 
 struct NotebookTestState {
     notedeck: Notedeck,
@@ -442,6 +442,118 @@ fn delete_edge_via_handle() {
         assert!(Instant::now() < deadline, "edge was never deleted");
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Poll frames until `load_longform` reads a note with `d` matching `pred`
+/// (ingest is async and PNS-wrapped, so nostrdb has to unwrap it first). Reads
+/// through the app's own ndb via a fresh `app_context`, which unwraps the
+/// kind-1080 envelope transparently — proving the private note round-trips.
+fn wait_for_longform(
+    harness: &mut Harness<'static, NotebookTestState>,
+    d: &str,
+    pred: impl Fn(&LongformNote) -> bool,
+) -> LongformNote {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        let pubkey = harness.state().account.pubkey;
+        let ctx = harness.ctx.clone();
+        let found = {
+            let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            load_longform(app_ctx.ndb, &txn, &pubkey, d).filter(&pred)
+        };
+        if let Some(note) = found {
+            return note;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "longform note {d:?} never matched"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// End-to-end longform editor flow: open the editor from the toolbar, type a
+/// note, Save (which signs a kind-30023, PNS-wraps it in a kind-1080, and ingests
+/// the wrapper), confirm it round-trips back through nostrdb's unwrap, then edit +
+/// Save again and confirm the supersede, then Close back to the canvas.
+#[test]
+fn create_and_edit_longform_via_editor() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, false);
+
+    // "+ Note" lives in the canvas-mode toolbar (shown even while the canvas is
+    // still seeding). Opening the editor takes over the whole view.
+    wait_for_label(&mut harness, "+ Note");
+    assert!(!harness.state().notebook.editor_is_open());
+    harness.get_by_label("+ Note").simulate_click();
+    wait_for_label(&mut harness, "← Canvas");
+    assert!(harness.state().notebook.editor_is_open());
+    assert_eq!(harness.state().notebook.editor_saved(), None);
+
+    // Type a title (the sole singleline field) and a markdown body (the sole
+    // multiline field).
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("My first note");
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .type_text("# Hello\n\nthis is **markdown**");
+    harness.run();
+
+    // Save. create_longform runs synchronously, so the editor records its
+    // (d, created_at) within a frame or two.
+    harness.get_by_label("Save").simulate_click();
+    let (d, created_at) = {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            harness.run();
+            if let Some((d, ca)) = harness.state().notebook.editor_saved() {
+                break (d.to_string(), ca);
+            }
+            assert!(Instant::now() < deadline, "the note was never saved");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    assert!(!d.is_empty(), "a d was minted");
+    assert!(created_at > 0);
+
+    // It really persisted: wait until nostrdb has unwrapped the envelope and the
+    // inner note reads back with the typed content.
+    let note = wait_for_longform(&mut harness, &d, |n| n.title == "My first note");
+    assert!(note.content.contains("**markdown**"));
+    assert_eq!(note.created_at, created_at);
+
+    // Edit: append text and Save again — the edit supersedes with a strictly
+    // later created_at (the store stamps past the prior version, so a same-second
+    // edit still wins).
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .type_text("\n\nmore");
+    harness.run();
+    harness.get_by_label("Save").simulate_click();
+    {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            harness.run();
+            if let Some((d2, ca2)) = harness.state().notebook.editor_saved()
+                && d2 == d
+                && ca2 > created_at
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the edit never superseded");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    let edited = wait_for_longform(&mut harness, &d, |n| n.content.contains("more"));
+    assert!(edited.created_at > created_at, "the edit superseded");
+
+    // Close returns to the canvas.
+    harness.get_by_label("← Canvas").simulate_click();
+    harness.run();
+    assert!(!harness.state().notebook.editor_is_open());
 }
 
 /// A click delivered as press+release within a single frame, so it registers

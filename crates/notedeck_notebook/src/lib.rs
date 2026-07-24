@@ -1,10 +1,12 @@
 pub mod convert;
+mod editor;
 pub mod event;
 pub mod store;
 mod ui;
 pub mod wordid;
 
 use crate::convert::view_to_canvas;
+use crate::editor::{EditorAction, LongformEditor, SavedLongform, editor_ui};
 use crate::event::{CanvasReducer, CanvasView};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
@@ -93,6 +95,10 @@ pub struct Notebook {
     /// Countdown of follow-up repaints after an async ingest, so we keep waking
     /// to poll the subscription until the writer thread goes quiet.
     repaint_frames: u8,
+    /// The full-screen longform (NIP-23) editor, when open. `None` shows the
+    /// canvas; `Some` replaces it with [`editor_ui`]. Opened from the toolbar's
+    /// "＋ Note" button and dismissed by the editor's Close.
+    editor: Option<LongformEditor>,
 }
 
 /// Inline text-editing state for the notebook canvas. Nodes are tracked by their
@@ -241,6 +247,23 @@ impl Notebook {
         &self.canvas
     }
 
+    /// Whether the full-screen longform editor is open (the canvas is hidden
+    /// while it is). Exposed for tests/introspection.
+    pub fn editor_is_open(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// The `(d, created_at)` of the note the open editor has persisted, or `None`
+    /// if the editor is closed or its note is unsaved. Exposed for
+    /// tests/introspection.
+    pub fn editor_saved(&self) -> Option<(&str, u64)> {
+        self.editor
+            .as_ref()?
+            .saved
+            .as_ref()
+            .map(|s| (s.d.as_str(), s.created_at))
+    }
+
     /// Translate a UI intent (keyed by the rendered `jsoncanvas` id) into a nostr
     /// [`CanvasAction`]. Reads the current canvas for a moved node's size (a
     /// transform is a full geometry snapshot). `None` if the node id isn't a
@@ -374,6 +397,81 @@ impl Notebook {
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
     }
+
+    /// Render the full-screen longform editor and act on the frame's
+    /// [`EditorAction`]: Save persists the buffers; Close persists any pending
+    /// changes (save-on-close) and returns to the canvas.
+    fn editor_mode(
+        &mut self,
+        ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+        author: &Pubkey,
+        signer: &Option<[u8; 32]>,
+    ) {
+        match editor_ui(self.editor.as_mut().expect("editor present"), ctx, ui) {
+            None => {}
+            Some(EditorAction::Save) => self.save_editor(ctx, author, signer),
+            Some(EditorAction::Close) => {
+                self.save_editor(ctx, author, signer);
+                self.editor = None;
+            }
+        }
+    }
+
+    /// Persist the open editor's buffers as a signed kind-30023 event: a fresh
+    /// note the first time (minting a `d`), a superseding edit thereafter. A
+    /// watch-only account can't sign, so this is a no-op there; a blank new note
+    /// is skipped (mirrors the canvas's blank-node discard). On success the
+    /// editor's clean baseline advances and a repaint burst is scheduled so the
+    /// async ingest is polled promptly.
+    ///
+    /// Longform is ingested **local-only** ([`store::NoPublish`]): the note is
+    /// PNS-wrapped, and the canvas fan-out path ([`fan_out_unseen_notes`]) fans
+    /// *unwrapped* notes, so routing longform through it would leak the plaintext
+    /// article. Cross-device longform sync (fanning the kind-1080 wrapper, plus an
+    /// inbound 1080 subscription) is tracked as `notebook#merry-patch-boost`.
+    fn save_editor(&mut self, ctx: &mut AppContext, author: &Pubkey, signer: &Option<[u8; 32]>) {
+        let Some(secret) = signer else { return };
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        // Nothing to write: unchanged since the last save, or an empty new note.
+        if !editor.dirty() || (editor.saved.is_none() && editor.is_blank()) {
+            return;
+        }
+        let input = event::LongformInput {
+            title: editor.title.clone(),
+            content: editor.content.clone(),
+            ..Default::default()
+        };
+        // Copy out the supersede baseline so the `editor` borrow ends before we
+        // touch `ctx`/re-borrow `self.editor` below.
+        let prev = editor.saved.as_ref().map(|s| (s.d.clone(), s.created_at));
+
+        let saved = match prev {
+            None => {
+                store::create_longform(ctx.ndb, author, secret, &input, None, &mut store::NoPublish)
+            }
+            Some((d, created_at)) => store::edit_longform(
+                ctx.ndb,
+                author,
+                secret,
+                &d,
+                created_at,
+                &input,
+                &mut store::NoPublish,
+            ),
+        };
+
+        let Some(saved) = saved else { return };
+        if let Some(editor) = self.editor.as_mut() {
+            editor.mark_saved(SavedLongform {
+                d: saved.d,
+                created_at: saved.created_at,
+            });
+        }
+        self.wake();
+    }
 }
 
 impl Default for Notebook {
@@ -394,6 +492,7 @@ impl Default for Notebook {
             confirm_delete: None,
             seeded: false,
             repaint_frames: 0,
+            editor: None,
         }
     }
 }
@@ -476,6 +575,30 @@ impl notedeck::App for Notebook {
             .accounts
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
+
+        // Full-screen editor mode takes over the whole area; the canvas is hidden.
+        // Background sync still runs in `update`, which also pumps the post-save
+        // repaint burst.
+        if self.editor.is_some() {
+            self.editor_mode(ctx, ui, &author, &signer);
+            return AppResponse::default();
+        }
+
+        // Canvas mode. A thin toolbar offers "+ Note"; opening the editor takes
+        // over from the next frame (request a repaint so there's no canvas flash).
+        let mut open_editor = false;
+        egui::TopBottomPanel::top("notebook-toolbar").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("+ Note").clicked() {
+                    open_editor = true;
+                }
+            });
+        });
+        if open_editor {
+            self.editor = Some(LongformEditor::new());
+            ui.ctx().request_repaint();
+            return AppResponse::default();
+        }
 
         // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
         // in `update` this frame; here we just render the cached canvas.
