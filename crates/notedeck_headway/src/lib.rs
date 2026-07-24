@@ -11,6 +11,7 @@ use notedeck::{
 
 pub use headway::{event, store};
 
+mod tools;
 mod ui;
 
 use ui::{BoardNav, CardBoardOp, board_ui, empty_state};
@@ -277,6 +278,10 @@ impl App for Headway {
             }),
             Box::new(HeadwayBoardRenderer { cache }),
         ]
+    }
+
+    fn tools(&self) -> Vec<notedeck::RegisteredTool> {
+        tools::tools()
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
