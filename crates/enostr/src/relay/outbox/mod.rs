@@ -43,6 +43,15 @@ use full_history::{
 pub use handler::OutboxSessionHandler;
 pub use session::OutboxSession;
 
+// Application-level WS ping/pong. This is a *secondary*, backstop liveness
+// signal: socket-level detection is primary now — TCP keepalive
+// ([`crate::relay::ws`]) catches a silently-dropped connection in ~9s, and the
+// interface watcher ([`crate::relay::netwatch`]) drops a leg instantly when its
+// route disappears. The WS ping/pong stays because it is the only thing that
+// catches an application-layer death behind a still-open socket (e.g. the relay
+// process wedged behind a live proxy), which the socket layer cannot see; the
+// ping also doubles as app-level keepalive through proxies that only reset
+// their idle timers on WS traffic.
 const DEFAULT_KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
 const PONG_TIMEOUT: Duration = Duration::from_secs(90);
 const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(5);
