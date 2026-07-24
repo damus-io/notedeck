@@ -58,7 +58,8 @@ mod tests {
     /// and the expected filters are staged in outbox.
     ///
     /// Dropping `outbox` can build `WebsocketConn` through relay coordination;
-    /// this needs a Tokio runtime when the ewebsock Tokio backend is used.
+    /// the native websocket transport spawns onto Tokio, so this needs a
+    /// running Tokio runtime.
     #[tokio::test]
     async fn oneshot_uses_selected_account_read_relays() {
         let (_tmp, accounts) = test_accounts_with_forced_relay("wss://relay-read.example.com");

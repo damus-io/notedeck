@@ -1,4 +1,4 @@
-use ewebsock::{WsEvent, WsMessage};
+use crate::relay::ws::{WsEvent, WsMessage};
 use hashbrown::{HashMap, HashSet};
 use ingest::{IngestExecutor, IngestPlanner};
 use negentropy::NegentropyStorageVector;

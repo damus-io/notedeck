@@ -972,7 +972,8 @@ mod tests {
     }
 
     // Dropping this handler can build `WebsocketConn` through relay coordination;
-    // keep callers under `#[tokio::test]` when the ewebsock Tokio backend is used.
+    // the native websocket transport spawns onto Tokio, so keep callers under
+    // `#[tokio::test]`.
     fn outbox<'a>(pool: &'a mut OutboxPool) -> Outbox<'a> {
         OutboxSessionHandler::new(pool, EguiWakeup::new(egui::Context::default()))
     }

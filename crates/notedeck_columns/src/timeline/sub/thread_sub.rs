@@ -406,8 +406,8 @@ mod tests {
     }
 
     // Opening a thread stages remote work through `OutboxSessionHandler`; drop
-    // can build `WebsocketConn`, so this needs a Tokio runtime with the ewebsock
-    // Tokio backend.
+    // can build `WebsocketConn`, whose native transport spawns onto Tokio, so
+    // this needs a running Tokio runtime.
     #[tokio::test]
     async fn open_thread_remote_sub_restores_after_account_switch() {
         let mut h = ThreadHostHarness::new();

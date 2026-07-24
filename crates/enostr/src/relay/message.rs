@@ -1,5 +1,5 @@
+use crate::relay::ws::{WsEvent, WsMessage};
 use crate::{Error, Result};
-use ewebsock::{WsEvent, WsMessage};
 use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use std::borrow::Cow;
 use std::fmt;

@@ -5,16 +5,12 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-default = ["tokio-websocket"]
-# ewebsock/tls only enables TLS for ewebsock's blocking tungstenite backend.
-# The tokio backend connects via tokio-tungstenite, which needs its own TLS
-# feature, otherwise wss:// fails with "TLS support not compiled in".
-tokio-websocket = ["ewebsock/tokio", "tokio-tungstenite/rustls-tls-webpki-roots"]
-
 [dependencies]
-ewebsock = { version = "0.8.0", features = ["tls"] }
-tokio-tungstenite = { workspace = true, optional = true }
+# Native websocket transport (crate::relay::ws). We own the socket via
+# tokio-tungstenite so relay liveness can be observed at the socket level;
+# rustls-tls-webpki-roots provides wss:// TLS with bundled roots.
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+futures-util = { workspace = true }
 serde_derive = { workspace = true }
 serde = { workspace = true, features = ["derive"] } # You only need this if you want app persistence
 serde_json = { workspace = true }
@@ -26,7 +22,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 mio = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt", "net", "macros", "time"] }
 tokenator = { workspace = true }
 hashbrown = { workspace = true }
 slab = { workspace = true }
@@ -41,7 +37,5 @@ profiling = { workspace = true }
 nostr-database = "0.37"
 nostr-relay-builder = "0.37"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-tokio-tungstenite = "0.24"
-futures-util = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = { workspace = true }

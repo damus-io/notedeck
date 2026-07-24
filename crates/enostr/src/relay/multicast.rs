@@ -1,4 +1,4 @@
-use ewebsock::{WsEvent, WsMessage};
+use crate::relay::ws::{WsEvent, WsMessage};
 use mio::net::UdpSocket;
 use std::io;
 use std::net::IpAddr;

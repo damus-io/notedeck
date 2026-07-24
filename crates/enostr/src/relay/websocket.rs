@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ewebsock::{Options, WsMessage, WsReceiver, WsSender};
+use crate::relay::ws::{self, WsMessage, WsReceiver, WsSender};
 use tracing::{debug, error};
 
 const MAX_BOOTSTRAP_RETRY_AFTER: Duration = Duration::from_secs(30 * 60);
@@ -71,8 +71,7 @@ impl WebsocketConn {
     {
         let status = RelayStatus::Connecting;
         let wake = wakeup;
-        let (sender, receiver) =
-            ewebsock::connect_with_wakeup(url.as_str(), Options::default(), move || wake.wake())?;
+        let (sender, receiver) = ws::connect(url.as_str(), move || wake.wake())?;
 
         Ok(Self {
             url,
@@ -105,8 +104,7 @@ impl WebsocketConn {
             .send_generation
             .checked_add(1)
             .expect("websocket leg generation overflow");
-        let (sender, receiver) =
-            ewebsock::connect_with_wakeup(self.url.as_str(), Options::default(), wakeup)?;
+        let (sender, receiver) = ws::connect(self.url.as_str(), wakeup)?;
         self.status = RelayStatus::Connecting;
         self.sender = sender;
         self.receiver = receiver;

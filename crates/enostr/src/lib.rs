@@ -11,7 +11,6 @@ mod replaceable;
 
 pub use client::{ClientMessage, EventClientMessage};
 pub use error::Error;
-pub use ewebsock;
 pub use filter::Filter;
 pub use keypair::{FilledKeypair, FullKeypair, Keypair, KeypairUnowned, SerializableKeypair};
 pub use nostr::SecretKey;
@@ -26,7 +25,7 @@ pub use relay::{
     OutboxRecvResult, OutboxSession, OutboxSessionHandler, OutboxSubId, RelayCoordinatorLimits,
     RelayId, RelayImplType, RelayLimitations, RelayReqId, RelayReqStatus, RelayRoutingPreference,
     RelayStatus, RelayType, RelayUrlPkgs, SubPass, SubPassGuardian, SubPassRevocation,
-    WebsocketConn,
+    WebsocketConn, WsEvent, WsMessage,
 };
 pub use replaceable::{query_replaceable, query_replaceable_filtered};
 

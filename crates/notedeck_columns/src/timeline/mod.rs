@@ -1051,8 +1051,8 @@ mod remote_tests {
     /// unsubscribing it.
     ///
     /// Dropping sessions here can build `WebsocketConn` through relay
-    /// coordination; tests using this helper need a Tokio runtime when the
-    /// ewebsock Tokio backend is used.
+    /// coordination; the native websocket transport spawns onto Tokio, so tests
+    /// using this helper need a running Tokio runtime.
     fn install_active_compaction_lane(
         pool: &mut OutboxPool,
         relay: &NormRelayUrl,

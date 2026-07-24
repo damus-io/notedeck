@@ -14,6 +14,7 @@ mod queue;
 mod subscription;
 mod transparent;
 mod websocket;
+mod ws;
 
 pub use broadcast::{BroadcastCache, BroadcastRelay};
 pub use identity::{
@@ -36,6 +37,7 @@ pub use subscription::{
     OutboxSubscriptions, OutboxTask, SubscribeTask,
 };
 pub use websocket::{WebsocketConn, WebsocketRelay, WebsocketSlot};
+pub use ws::{WsEvent, WsMessage};
 
 #[cfg(test)]
 pub mod test_utils;
