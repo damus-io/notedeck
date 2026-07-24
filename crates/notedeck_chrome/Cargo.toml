@@ -28,6 +28,7 @@ notedeck_horizon = { workspace = true, optional = true }
 notedeck_wasm = { workspace = true, optional = true }
 notedeck = { workspace = true, features = ["sound"] }
 nostrdb = { workspace = true }
+oot_bitset = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }
 serde_json = { workspace = true }

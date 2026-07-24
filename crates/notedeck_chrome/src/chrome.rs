@@ -25,6 +25,7 @@ use notedeck::{
     TabNotifications, UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
+use oot_bitset::{bitset_clear, bitset_get, bitset_set};
 
 #[cfg(feature = "dave")]
 use notedeck_dave::{Dave, DaveAvatar};
@@ -44,14 +45,18 @@ use notedeck_ui::expanding_button;
 use notedeck_ui::{app_images, galley_centered_pos, ProfilePic};
 use std::collections::HashMap;
 
+/// Upper bound on the number of apps the running-app bitset can track. One bit
+/// per app index; see [`Chrome::tools_snapshot`].
+const MAX_APPS: usize = 256;
+
 pub struct Chrome {
     active: i32,
     options: ChromeOptions,
     apps: Vec<NotedeckApp>,
 
-    /// Track which apps have been opened (activated) at least once.
-    /// Only opened apps receive `update()` calls each frame.
-    opened: Vec<bool>,
+    /// Which apps have been opened (activated), one bit per app index. Only
+    /// opened apps receive `update()` calls each frame.
+    opened: [u16; MAX_APPS / 16],
 
     /// The last-focused egui widget id for each app (keyed by app index).
     /// egui drops keyboard focus when a widget isn't rendered for a frame, so
@@ -62,6 +67,11 @@ pub struct Chrome {
 
     /// The active app index from the previous frame, used to detect switches.
     prev_active: i32,
+
+    /// Running-app mask (`all_active || opened[i]`, one bit per app index) the
+    /// agent-tool registry was last built from. When it changes we re-aggregate
+    /// the running apps' tools; see the `App::take_tool_update` impl.
+    tools_snapshot: [u16; MAX_APPS / 16],
 
     /// The state of the soft keyboard animation
     soft_kb_anim_state: AnimState,
@@ -214,9 +224,10 @@ impl Chrome {
             active: 0,
             options: ChromeOptions::default(),
             apps: Vec::new(),
-            opened: Vec::new(),
+            opened: [0u16; MAX_APPS / 16],
             app_focus: HashMap::new(),
             prev_active: 0,
+            tools_snapshot: [0u16; MAX_APPS / 16],
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
@@ -335,9 +346,10 @@ impl Chrome {
             active: 0,
             options: ChromeOptions::default(),
             apps: Vec::new(),
-            opened: Vec::new(),
+            opened: [0u16; MAX_APPS / 16],
             app_focus: HashMap::new(),
             prev_active: 0,
+            tools_snapshot: [0u16; MAX_APPS / 16],
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
@@ -398,7 +410,31 @@ impl Chrome {
 
     pub fn add_app(&mut self, app: NotedeckApp) {
         self.apps.push(app);
-        self.opened.push(false);
+        // `opened` is a fixed bitset — the new app's bit is already clear.
+    }
+
+    /// Whether the app at index `i` has been opened.
+    fn is_opened(&self, i: usize) -> bool {
+        i < MAX_APPS && bitset_get(&self.opened, i as u16)
+    }
+
+    /// Mark the app at index `i` as opened.
+    fn set_opened(&mut self, i: usize) {
+        if i < MAX_APPS {
+            bitset_set(&mut self.opened, i as u16);
+        }
+    }
+
+    /// Mark the app at index `i` as closed.
+    fn clear_opened(&mut self, i: usize) {
+        if i < MAX_APPS {
+            bitset_clear(&mut self.opened, i as u16);
+        }
+    }
+
+    /// The number of currently-opened apps.
+    fn opened_count(&self) -> usize {
+        (0..self.apps.len()).filter(|&i| self.is_opened(i)).count()
     }
 
     fn get_columns_app(&mut self) -> Option<&mut Damus> {
@@ -415,9 +451,7 @@ impl Chrome {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Columns(_) = app {
                 self.active = i as i32;
-                if let Some(opened) = self.opened.get_mut(i) {
-                    *opened = true;
-                }
+                bitset_set(&mut self.opened, i as u16);
             }
         }
     }
@@ -437,9 +471,7 @@ impl Chrome {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Dave(_) = app {
                 self.active = i as i32;
-                if let Some(opened) = self.opened.get_mut(i) {
-                    *opened = true;
-                }
+                bitset_set(&mut self.opened, i as u16);
             }
         }
     }
@@ -449,9 +481,7 @@ impl Chrome {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Messages(_) = app {
                 self.active = i as i32;
-                if let Some(opened) = self.opened.get_mut(i) {
-                    *opened = true;
-                }
+                bitset_set(&mut self.opened, i as u16);
             }
         }
     }
@@ -502,29 +532,27 @@ impl Chrome {
 
     pub fn set_active(&mut self, app: i32) {
         self.active = app;
-        if let Some(opened) = self.opened.get_mut(app as usize) {
-            *opened = true;
-        }
+        self.set_opened(app as usize);
     }
 
     /// Close the active app's tab and switch to the nearest opened app.
     /// No-op if it's the only opened app — at least one app must stay open.
     /// Used by Ctrl+W.
     fn close_active_app(&mut self) {
-        let n = self.opened.len();
+        let n = self.apps.len();
         if n == 0 {
             return;
         }
         // at least one app must remain open
-        if self.opened.iter().filter(|o| **o).count() <= 1 {
+        if self.opened_count() <= 1 {
             return;
         }
         let active = self.active.clamp(0, n as i32 - 1) as usize;
-        self.opened[active] = false;
+        self.clear_opened(active);
         // switch to the nearest opened app after `active`, wrapping
         for offset in 1..=n {
             let idx = (active + offset) % n;
-            if self.opened[idx] {
+            if self.is_opened(idx) {
                 self.set_active(idx as i32);
                 return;
             }
@@ -534,7 +562,7 @@ impl Chrome {
     /// Cycle the active app to the next (`forward`) or previous opened app,
     /// wrapping around. Used by Ctrl+Tab / Ctrl+Shift+Tab.
     fn cycle_app(&mut self, forward: bool) {
-        let n = self.opened.len();
+        let n = self.apps.len();
         if n == 0 {
             return;
         }
@@ -543,7 +571,7 @@ impl Chrome {
         // walk opened slots starting from the one after active, wrapping
         for offset in 1..=n {
             let idx = (active + step * offset) % n;
-            if self.opened[idx] {
+            if self.is_opened(idx) {
                 self.set_active(idx as i32);
                 return;
             }
@@ -874,6 +902,35 @@ fn update_sidebar_item_ui(
 }
 
 impl notedeck::App for Chrome {
+    /// Re-derive the host's agent-tool registry from the currently-running apps
+    /// whenever that set changes, so a backend (dave, `notedeck --mcp`) only
+    /// sees tools whose app is live and syncing its data. Called by the host on
+    /// the top app each frame (see `App::take_tool_update`); returns `None` when
+    /// the running set is unchanged so no per-frame allocation happens.
+    fn take_tool_update(&mut self) -> Option<Vec<notedeck::RegisteredTool>> {
+        let all_active = self.options.contains(ChromeOptions::AllAppsActive);
+        let mut running = [0u16; MAX_APPS / 16];
+        for i in 0..self.apps.len().min(MAX_APPS) {
+            if all_active || bitset_get(&self.opened, i as u16) {
+                bitset_set(&mut running, i as u16);
+            }
+        }
+
+        if running == self.tools_snapshot {
+            return None;
+        }
+        self.tools_snapshot = running;
+
+        Some(
+            self.apps
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| bitset_get(&running, *i as u16))
+                .flat_map(|(_, app)| app.tools())
+                .collect(),
+        )
+    }
+
     fn update(&mut self, ctx: &mut notedeck::AppContext, _egui_ctx: &egui::Context) {
         ctx.sound.update();
 
@@ -886,7 +943,7 @@ impl notedeck::App for Chrome {
         // --all-apps-active is set.
         let all_active = self.options.contains(ChromeOptions::AllAppsActive);
         for (i, app) in self.apps.iter_mut().enumerate() {
-            if all_active || self.opened.get(i).copied().unwrap_or(false) {
+            if all_active || bitset_get(&self.opened, i as u16) {
                 app.update(ctx, _egui_ctx);
             }
         }
@@ -1213,13 +1270,10 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
 }
 
 /// The app index of the `n`th opened app (the app backing the `n`th tab).
-fn nth_opened(opened: &[bool], n: usize) -> Option<usize> {
-    opened
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| **o)
+fn nth_opened(opened: &[u16], app_count: usize, n: usize) -> Option<usize> {
+    (0..app_count)
+        .filter(|&i| bitset_get(opened, i as u16))
         .nth(n)
-        .map(|(i, _)| i)
 }
 
 /// A subtle separator beneath the tab strip: a faint line that softens into a
@@ -1323,16 +1377,21 @@ fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui)
     // mutably rendering app icons (e.g. Dave's avatar)
     let opened = &chrome.opened;
     let apps = &mut chrome.apps;
+    let n_apps = apps.len();
 
     // the active app is always opened, so there is always at least one tab
-    let n_tabs = opened.iter().filter(|o| **o).count();
+    let n_tabs = (0..n_apps)
+        .filter(|&i| bitset_get(opened, i as u16))
+        .count();
     if n_tabs == 0 {
         return;
     }
 
     // the selected tab is the number of opened apps before the active app
     let active = chrome.active.max(0) as usize;
-    let sel = opened.iter().take(active).filter(|o| **o).count();
+    let sel = (0..active.min(n_apps))
+        .filter(|&i| bitset_get(opened, i as u16))
+        .count();
 
     ui.spacing_mut().item_spacing.y = 0.0;
 
@@ -1351,7 +1410,7 @@ fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui)
             .height(30.0)
             .layout(Layout::centered_and_justified(egui::Direction::TopDown))
             .show(ui, |ui, state| {
-                let Some(app_idx) = nth_opened(opened, state.index() as usize) else {
+                let Some(app_idx) = nth_opened(opened, n_apps, state.index() as usize) else {
                     return;
                 };
 
@@ -1382,7 +1441,7 @@ fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui)
 
     // switch active app if a different tab was selected
     let new_sel = tab_res.selected().unwrap_or(sel as i32) as usize;
-    if let Some(app_idx) = nth_opened(&chrome.opened, new_sel) {
+    if let Some(app_idx) = nth_opened(&chrome.opened, chrome.apps.len(), new_sel) {
         if app_idx as i32 != chrome.active {
             chrome.set_active(app_idx as i32);
         }
@@ -1827,9 +1886,7 @@ fn topdown_sidebar(
 
                             if resp.clicked() {
                                 chrome.active = i as i32;
-                                if let Some(opened) = chrome.opened.get_mut(i) {
-                                    *opened = true;
-                                }
+                                bitset_set(&mut chrome.opened, i as u16);
                                 chrome.nav.close();
                             }
                         })
