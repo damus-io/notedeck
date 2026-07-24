@@ -413,7 +413,7 @@ pub fn format_simple_notes_json(notes: &[SimpleNote]) -> String {
 fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponses) -> String {
     match resp {
         ToolResponses::PresentNotes(n) => format!("{n} notes presented to the user"),
-        ToolResponses::Error(s) => format!("error: {}", &s),
+        ToolResponses::Error(s) => format!("error: {}", s),
 
         ToolResponses::Query(search_r) => {
             let simple_notes: Vec<SimpleNote> = search_r

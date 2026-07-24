@@ -106,7 +106,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                 rect,
                 0,
                 colors::ALMOST_WHITE,
-                egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+                egui::Stroke::new(0.0_f32, egui::Color32::TRANSPARENT),
                 egui::StrokeKind::Inside,
             );
         }

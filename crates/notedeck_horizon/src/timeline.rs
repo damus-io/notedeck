@@ -15,7 +15,7 @@ const ALLDAY_ROW_H: f32 = 22.0;
 const WEEK_HEADER_H: f32 = 28.0;
 
 fn grid_stroke() -> Stroke {
-    Stroke::new(1.0, theme::GRID)
+    Stroke::new(1.0_f32, theme::GRID)
 }
 
 /// Format a span length the way viscal's `format_time_duration` does:
@@ -216,7 +216,7 @@ pub(crate) fn center_day(
                 painter.rect_stroke(
                     gap,
                     4.0,
-                    Stroke::new(1.0, theme::ephemeral_stroke()),
+                    Stroke::new(1.0_f32, theme::ephemeral_stroke()),
                     StrokeKind::Inside,
                 );
                 painter.with_clip_rect(gap).text(
@@ -249,7 +249,7 @@ pub(crate) fn center_day(
                     painter.rect_stroke(
                         sel,
                         4.0,
-                        Stroke::new(1.0, theme::cursor_stroke()),
+                        Stroke::new(1.0_f32, theme::cursor_stroke()),
                         StrokeKind::Inside,
                     );
                     // Start time at the top edge, end time at the bottom — the
@@ -552,7 +552,7 @@ fn draw_blocks(
             painter.rect_stroke(
                 rect,
                 5.0,
-                Stroke::new(1.5, theme::ACCENT_BLUE),
+                Stroke::new(1.5_f32, theme::ACCENT_BLUE),
                 StrokeKind::Inside,
             );
         }
@@ -619,7 +619,7 @@ fn now_line(
     let y = top + crate::day_fraction(now) * height;
     painter.line_segment(
         [pos2(left, y), pos2(right, y)],
-        Stroke::new(2.0, theme::NOW),
+        Stroke::new(2.0_f32, theme::NOW),
     );
     painter.circle_filled(pos2(left, y), 4.0, theme::NOW);
     let label = now.format("%-I:%M %p").to_string();

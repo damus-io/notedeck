@@ -126,7 +126,7 @@ impl TaskListPanel {
             ui.painter().rect_stroke(
                 checkbox_rect,
                 2.0,
-                egui::Stroke::new(1.5, checkbox_color),
+                egui::Stroke::new(1.5_f32, checkbox_color),
                 egui::StrokeKind::Inside,
             );
 
@@ -141,11 +141,11 @@ impl TaskListPanel {
                     ];
                     ui.painter().line_segment(
                         [check_points[0], check_points[1]],
-                        egui::Stroke::new(2.0, checkbox_color),
+                        egui::Stroke::new(2.0_f32, checkbox_color),
                     );
                     ui.painter().line_segment(
                         [check_points[1], check_points[2]],
-                        egui::Stroke::new(2.0, checkbox_color),
+                        egui::Stroke::new(2.0_f32, checkbox_color),
                     );
                 }
                 "in_progress" => {

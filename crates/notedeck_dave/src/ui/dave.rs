@@ -672,7 +672,7 @@ impl<'a> DaveUi<'a> {
             .fill(ui.visuals().widgets.noninteractive.bg_fill)
             .inner_margin(inner_margin)
             .corner_radius(corner_radius)
-            .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+            .stroke(egui::Stroke::new(1.0_f32, ui.visuals().warn_fg_color))
             .show(ui, |ui| {
                 ui.label(egui::RichText::new(&request.tool_name).strong());
                 ui.add_space(6.0);
@@ -1874,7 +1874,7 @@ fn responded_permission_header_ui(
             notedeck_ui::header::disclosure_chevron(
                 ui,
                 expanded,
-                egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
+                egui::Stroke::new(1.5_f32, ui.visuals().weak_text_color()),
             );
         }
         ui.label(egui::RichText::new(label).color(label_color).strong());

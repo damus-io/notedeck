@@ -1760,7 +1760,7 @@ fn apply_theme(ui: &mut egui::Ui) {
     v.window_fill = theme::BG;
     v.extreme_bg_color = theme::SURFACE;
     v.override_text_color = Some(theme::TEXT);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme::GRID);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, theme::GRID);
     v.widgets.inactive.bg_fill = theme::SURFACE;
     v.widgets.hovered.bg_fill = theme::GRID;
 }

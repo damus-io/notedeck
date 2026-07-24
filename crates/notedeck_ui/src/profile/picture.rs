@@ -66,7 +66,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
     }
 
     pub fn border_stroke(ui: &egui::Ui) -> Stroke {
-        Stroke::new(4.0, ui.visuals().panel_fill)
+        Stroke::new(4.0_f32, ui.visuals().panel_fill)
     }
 
     pub fn from_profile(

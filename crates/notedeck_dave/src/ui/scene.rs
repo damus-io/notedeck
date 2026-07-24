@@ -357,13 +357,17 @@ impl AgentScene {
             painter.circle_stroke(
                 center,
                 agent_radius + 4.0,
-                egui::Stroke::new(3.0, Color32::from_rgb(255, 255, 100)),
+                egui::Stroke::new(3.0_f32, Color32::from_rgb(255, 255, 100)),
             );
         }
 
         // Status ring
         let status_color = status.color();
-        painter.circle_stroke(center, agent_radius, egui::Stroke::new(3.0, status_color));
+        painter.circle_stroke(
+            center,
+            agent_radius,
+            egui::Stroke::new(3.0_f32, status_color),
+        );
 
         // Fill
         let fill_color = if response.hovered() {

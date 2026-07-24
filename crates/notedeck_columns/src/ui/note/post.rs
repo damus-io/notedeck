@@ -811,7 +811,7 @@ fn show_remove_upload_button(ui: &mut egui::Ui, desired_rect: egui::Rect) -> egu
             Pos2::new(center.x - 4.0, center.y - 4.0),
             Pos2::new(center.x + 4.0, center.y + 4.0),
         ],
-        egui::Stroke::new(1.33, ui.visuals().text_color()),
+        egui::Stroke::new(1.33_f32, ui.visuals().text_color()),
     );
 
     painter.line_segment(
@@ -819,7 +819,7 @@ fn show_remove_upload_button(ui: &mut egui::Ui, desired_rect: egui::Rect) -> egu
             Pos2::new(center.x + 4.0, center.y - 4.0),
             Pos2::new(center.x - 4.0, center.y + 4.0),
         ],
-        egui::Stroke::new(1.33, ui.visuals().text_color()),
+        egui::Stroke::new(1.33_f32, ui.visuals().text_color()),
     );
     resp
 }

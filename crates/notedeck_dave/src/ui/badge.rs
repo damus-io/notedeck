@@ -226,7 +226,7 @@ impl<'a> StatusBadge<'a> {
                         icon_rect,
                         1.5,
                         notedeck_ui::header::ChevronDir::Right,
-                        egui::Stroke::new(1.5, text_color),
+                        egui::Stroke::new(1.5_f32, text_color),
                     );
                 }
                 None => {

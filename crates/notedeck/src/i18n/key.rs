@@ -18,7 +18,7 @@ impl fmt::Display for IntlKey<'_> {
 impl fmt::Display for IntlKeyBuf {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Use `self.number` to refer to each positional data point.
-        write!(f, "{}", &self.0)
+        write!(f, "{}", self.0)
     }
 }
 

@@ -235,7 +235,7 @@ impl ClnDash {
                                         .insert(invoice.label.clone(), zap_req_id.id);
                                     let _ = ndb.process_event(&format!(
                                         "[\"EVENT\",\"a\",{}]",
-                                        &invoice.description
+                                        invoice.description
                                     ));
                                 }
                             }

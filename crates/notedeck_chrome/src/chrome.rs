@@ -2202,7 +2202,7 @@ fn repaint_causes_window(ui: &mut egui::Ui, causes: &HashMap<egui::RepaintCause,
                             ui.label(format!("{hits}"));
                         });
                         row.col(|ui| {
-                            ui.label(format!("{}", &cause.reason));
+                            ui.label(format!("{}", cause.reason));
                         });
                     });
                 }

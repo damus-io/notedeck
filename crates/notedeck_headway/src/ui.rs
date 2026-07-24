@@ -452,8 +452,11 @@ fn sync_indicator(ui: &mut egui::Ui, theme: &ColorTheme, status: SyncStatus) {
             if filled {
                 ui.painter().circle_filled(rect.center(), radius, color);
             } else {
-                ui.painter()
-                    .circle_stroke(rect.center(), radius, egui::Stroke::new(1.5, color));
+                ui.painter().circle_stroke(
+                    rect.center(),
+                    radius,
+                    egui::Stroke::new(1.5_f32, color),
+                );
             }
             ui.label(egui::RichText::new(label).color(color));
         })
@@ -3234,7 +3237,7 @@ fn status_icon_ui(
     let painter = ui.painter();
     let center = rect.center();
     let r = size * 0.5 - 1.0;
-    let stroke = egui::Stroke::new(1.5, icon.color(theme));
+    let stroke = egui::Stroke::new(1.5_f32, icon.color(theme));
 
     // Sample an arc of the ring into line points. Twelve o'clock start,
     // clockwise, matching Linear's pies.
@@ -3279,7 +3282,7 @@ fn status_icon_ui(
             painter.circle_filled(center, r + 0.5, stroke.color);
             // The check, drawn as two strokes on the disc.
             let p = |dx: f32, dy: f32| center + r * egui::vec2(dx, dy);
-            let check = egui::Stroke::new(1.5, egui::Color32::WHITE);
+            let check = egui::Stroke::new(1.5_f32, egui::Color32::WHITE);
             painter.line_segment([p(-0.45, 0.05), p(-0.1, 0.4)], check);
             painter.line_segment([p(-0.1, 0.4), p(0.5, -0.3)], check);
         }

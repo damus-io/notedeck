@@ -80,7 +80,7 @@ pub(crate) fn show(
             painter.rect_stroke(
                 cell,
                 0.0,
-                egui::Stroke::new(1.0, theme::GRID),
+                egui::Stroke::new(1.0_f32, theme::GRID),
                 StrokeKind::Inside,
             );
 

@@ -137,7 +137,11 @@ fn mini_month(
             if is_today {
                 painter.circle_filled(num_center, 12.0, theme::ACCENT_BLUE);
             } else if is_focused {
-                painter.circle_stroke(num_center, 12.0, egui::Stroke::new(1.0, theme::TEXT_WEAK));
+                painter.circle_stroke(
+                    num_center,
+                    12.0,
+                    egui::Stroke::new(1.0_f32, theme::TEXT_WEAK),
+                );
             }
 
             let color = if is_today {

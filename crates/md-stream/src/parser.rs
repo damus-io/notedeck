@@ -308,42 +308,36 @@ impl StreamParser {
 
             if fence_len >= 3 {
                 let after_fence = &trimmed[fence_len..];
-                if let Some(nl_pos) = after_fence.find('\n') {
-                    let lang = after_fence[..nl_pos].trim();
-                    let lang_span = if lang.is_empty() {
-                        None
-                    } else {
-                        // Compute absolute span for the language
-                        let lang_start_in_after = after_fence[..nl_pos].as_ptr() as usize
-                            - after_fence.as_ptr() as usize
-                            + (after_fence[..nl_pos].len()
-                                - after_fence[..nl_pos].trim_start().len());
-                        let abs_start =
-                            self.process_pos + leading_space + fence_len + lang_start_in_after;
-                        Some(Span::new(abs_start, abs_start + lang.len()))
-                    };
-                    let consumed_lang = nl_pos + 1;
-
-                    let consumed = leading_space + fence_len + consumed_lang;
-                    let content_start = self.process_pos + consumed;
-                    let mut partial = Partial::new(
-                        PartialKind::CodeFence {
-                            fence_char,
-                            fence_len,
-                            language: lang_span,
-                        },
-                        self.process_pos,
-                    );
-                    partial.content_start = content_start;
-                    partial.content_end = content_start;
-                    self.partial = Some(partial);
-                    self.at_line_start = false;
-                    return Some(consumed);
+                let nl_pos = after_fence.find('\n')?;
+                let lang = after_fence[..nl_pos].trim();
+                let lang_span = if lang.is_empty() {
+                    None
                 } else {
-                    // No newline yet — the language tag may be incomplete.
-                    // Wait for more input so we don't commit a truncated span.
-                    return None;
-                }
+                    // Compute absolute span for the language
+                    let lang_start_in_after = after_fence[..nl_pos].as_ptr() as usize
+                        - after_fence.as_ptr() as usize
+                        + (after_fence[..nl_pos].len() - after_fence[..nl_pos].trim_start().len());
+                    let abs_start =
+                        self.process_pos + leading_space + fence_len + lang_start_in_after;
+                    Some(Span::new(abs_start, abs_start + lang.len()))
+                };
+                let consumed_lang = nl_pos + 1;
+
+                let consumed = leading_space + fence_len + consumed_lang;
+                let content_start = self.process_pos + consumed;
+                let mut partial = Partial::new(
+                    PartialKind::CodeFence {
+                        fence_char,
+                        fence_len,
+                        language: lang_span,
+                    },
+                    self.process_pos,
+                );
+                partial.content_start = content_start;
+                partial.content_end = content_start;
+                self.partial = Some(partial);
+                self.at_line_start = false;
+                return Some(consumed);
             }
         }
 

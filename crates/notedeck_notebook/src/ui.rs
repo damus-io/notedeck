@@ -264,7 +264,7 @@ pub fn notebook_ui(
 
         // Edges next, then nodes on top so node drag handles win interaction.
         // Clicking an edge's midpoint delete handle removes it.
-        for (_edge_id, edge) in canvas.get_edges().iter() {
+        for edge in canvas.get_edges().values() {
             if let Some(removed) = edge_ui(ui, &rects, edge) {
                 out.gesture = Some(Gesture::Disconnect(removed));
             }
@@ -392,7 +392,7 @@ pub fn notebook_ui(
                 );
                 if resp.hovered() || resp.dragged() {
                     ui.ctx().set_cursor_icon(resize_cursor(hx, hy));
-                    let stroke = egui::Stroke::new(2.0, ui.visuals().selection.stroke.color);
+                    let stroke = egui::Stroke::new(2.0_f32, ui.visuals().selection.stroke.color);
                     if hx != 0 {
                         let x = if hx < 0 { rect.left() } else { rect.right() };
                         ui.painter().vline(x, rect.y_range(), stroke);
@@ -898,7 +898,7 @@ fn connection_handle_ui(ui: &egui::Ui, center: Pos2, state: HandleState) {
     painter.circle_stroke(
         center,
         radius,
-        Stroke::new(1.0, ui.visuals().extreme_bg_color),
+        Stroke::new(1.0_f32, ui.visuals().extreme_bg_color),
     );
 }
 
@@ -1039,12 +1039,16 @@ fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
         let radius = 8.0;
         painter.circle_filled(center, radius, Color32::from_rgb(0xE0, 0x31, 0x31));
         let d = radius * 0.45;
-        let cross = Stroke::new(2.0, Color32::WHITE);
+        let cross = Stroke::new(2.0_f32, Color32::WHITE);
         painter.line_segment([center + vec2(-d, -d), center + vec2(d, d)], cross);
         painter.line_segment([center + vec2(-d, d), center + vec2(d, -d)], cross);
     } else {
         painter.circle_filled(center, 3.0, ui.visuals().widgets.inactive.fg_stroke.color);
-        painter.circle_stroke(center, 3.0, Stroke::new(1.0, ui.visuals().extreme_bg_color));
+        painter.circle_stroke(
+            center,
+            3.0,
+            Stroke::new(1.0_f32, ui.visuals().extreme_bg_color),
+        );
     }
 }
 
@@ -1059,7 +1063,7 @@ pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32
     ui.painter().add(egui::Shape::convex_polygon(
         verts.to_vec(),
         fill,
-        Stroke::new(1.0, fill), // outline; matches the fill so it reads as solid
+        Stroke::new(1.0_f32, fill), // outline; matches the fill so it reads as solid
     ));
 }
 
