@@ -300,7 +300,7 @@ fn toolcalls_to_function(calls: &ToolCalls) -> FunctionCall {
 
 /// Map a dave `Tool` definition to an async_openai tool (function) definition.
 /// The JSON-Schema `parameters` come from the engine's backend-agnostic
-/// [`Tool::parameters_schema`]; this wraps them in async_openai's envelope.
+/// [`ToolSpec::json_schema`]; this wraps them in async_openai's envelope.
 fn tool_to_api(tool: &Tool) -> ChatCompletionTool {
     ChatCompletionTool {
         r#type: ChatCompletionToolType::Function,
@@ -308,7 +308,7 @@ fn tool_to_api(tool: &Tool) -> ChatCompletionTool {
             name: tool.name().to_owned(),
             description: Some(tool.description().to_owned()),
             strict: Some(false),
-            parameters: Some(tool.parameters_schema()),
+            parameters: Some(tool.spec().json_schema()),
         },
     }
 }

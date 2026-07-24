@@ -5290,6 +5290,7 @@ dependencies = [
 name = "notedeck"
 version = "0.10.0-beta.4"
 dependencies = [
+ "agentium-core",
  "android-activity",
  "base32",
  "bech32",

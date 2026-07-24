@@ -1,4 +1,5 @@
 use crate::messages::ExecutedTool;
+use crate::tool::{ToolArg, ToolArgType, ToolSpec};
 use chrono::DateTime;
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
@@ -192,110 +193,33 @@ impl fmt::Display for ToolCallError {
     }
 }
 
-#[derive(Debug, Clone)]
-enum ArgType {
-    String,
-    Number,
-
-    #[allow(dead_code)]
-    Enum(Vec<&'static str>),
-}
-
-impl ArgType {
-    pub fn type_string(&self) -> &'static str {
-        match self {
-            Self::String => "string",
-            Self::Number => "number",
-            Self::Enum(_) => "string",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ToolArg {
-    typ: ArgType,
-    name: &'static str,
-    required: bool,
-    description: &'static str,
-    default: Option<Value>,
-}
-
+/// A dave tool: the portable [`ToolSpec`] advertised to the model plus dave's
+/// parser that turns the model's raw arguments into a typed [`ToolCalls`] for
+/// dave's streaming, persistence, and UI layers.
 #[derive(Debug, Clone)]
 pub struct Tool {
     parse_call: fn(&str) -> Result<ToolCalls, ToolCallError>,
-    name: &'static str,
-    description: &'static str,
-    arguments: Vec<ToolArg>,
+    spec: ToolSpec,
 }
 
 impl Tool {
     pub fn name(&self) -> &'static str {
-        self.name
+        self.spec.name()
     }
 
     pub fn description(&self) -> &'static str {
-        self.description
+        self.spec.description()
     }
 
     pub fn parse_call(&self) -> fn(&str) -> Result<ToolCalls, ToolCallError> {
         self.parse_call
     }
 
-    /// Build the JSON-Schema `parameters` object describing this tool's
-    /// arguments. Backend-agnostic: backends wrap this in whatever
-    /// function/tool envelope their API expects (e.g. OpenAI `FunctionObject`).
-    pub fn parameters_schema(&self) -> Value {
-        let required_args = self
-            .arguments
-            .iter()
-            .filter_map(|arg| {
-                if arg.required {
-                    Some(Value::String(arg.name.to_owned()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let mut parameters: serde_json::Map<String, Value> = serde_json::Map::new();
-        parameters.insert("type".to_string(), Value::String("object".to_string()));
-        parameters.insert("required".to_string(), Value::Array(required_args));
-        parameters.insert("additionalProperties".to_string(), Value::Bool(false));
-
-        let mut properties: serde_json::Map<String, Value> = serde_json::Map::new();
-
-        for arg in &self.arguments {
-            let mut props: serde_json::Map<String, Value> = serde_json::Map::new();
-            props.insert(
-                "type".to_string(),
-                Value::String(arg.typ.type_string().to_string()),
-            );
-
-            let description = if let Some(default) = &arg.default {
-                format!("{} (Default: {default})", arg.description)
-            } else {
-                arg.description.to_owned()
-            };
-
-            props.insert("description".to_string(), Value::String(description));
-            if let ArgType::Enum(enums) = &arg.typ {
-                props.insert(
-                    "enum".to_string(),
-                    Value::Array(
-                        enums
-                            .iter()
-                            .map(|s| Value::String((*s).to_owned()))
-                            .collect(),
-                    ),
-                );
-            }
-
-            properties.insert(arg.name.to_owned(), Value::Object(props));
-        }
-
-        parameters.insert("properties".to_string(), Value::Object(properties));
-
-        Value::Object(parameters)
+    /// The portable spec advertised to backends. Backends build whatever
+    /// function/tool envelope their API expects from [`ToolSpec::json_schema`]
+    /// (e.g. an OpenAI `FunctionObject`).
+    pub fn spec(&self) -> &ToolSpec {
+        &self.spec
     }
 }
 
@@ -566,83 +490,65 @@ fn _note_kind_desc(kind: u64) -> String {
 
 fn present_tool() -> Tool {
     Tool {
-        name: "present_notes",
         parse_call: PresentNotesCall::parse,
-        description: "A tool for presenting notes to the user for display. Should be called at the end of a response so that the UI can present the notes referred to in the previous message.",
-        arguments: vec![ToolArg {
-            name: "note_ids",
-            description: "A comma-separated list of hex note ids",
-            typ: ArgType::String,
-            required: true,
-            default: None,
-        }],
+        spec: ToolSpec::new(
+            "present_notes",
+            "A tool for presenting notes to the user for display. Should be called at the end of a response so that the UI can present the notes referred to in the previous message.",
+            vec![ToolArg::new(
+                "note_ids",
+                ToolArgType::String,
+                "A comma-separated list of hex note ids",
+            )
+            .required(true)],
+        ),
     }
 }
 
 fn query_tool() -> Tool {
     Tool {
-        name: "query",
         parse_call: QueryCall::parse,
-        description: "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
-        arguments: vec![
-            ToolArg {
-                name: "search",
-                typ: ArgType::String,
-                required: false,
-                default: None,
-                description: "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
-            },
-
-            ToolArg {
-                name: "limit",
-                typ: ArgType::Number,
-                required: true,
-                default: Some(Value::Number(serde_json::Number::from_i128(50).unwrap())),
-                description: "The number of results to return.",
-            },
-
-            ToolArg {
-                name: "since",
-                typ: ArgType::Number,
-                required: false,
-                default: None,
-                description: "Only pull notes after this unix timestamp",
-            },
-
-            ToolArg {
-                name: "until",
-                typ: ArgType::Number,
-                required: false,
-                default: None,
-                description: "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
-            },
-
-            ToolArg {
-                name: "author",
-                typ: ArgType::String,
-                required: false,
-                default: None,
-                description: "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to u
-se, you can query for kind 0 profiles with the search argument.",
-            },
-
-            ToolArg {
-                name: "kind",
-                typ: ArgType::Number,
-                required: false,
-                default: Some(Value::Number(serde_json::Number::from_i128(1).unwrap())),
-                description: r#"The kind of note. Kind list:
+        spec: ToolSpec::new(
+            "query",
+            "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
+            vec![
+                ToolArg::new(
+                    "search",
+                    ToolArgType::String,
+                    "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
+                ),
+                ToolArg::new("limit", ToolArgType::Number, "The number of results to return.")
+                    .required(true)
+                    .default(Value::from(50)),
+                ToolArg::new(
+                    "since",
+                    ToolArgType::Number,
+                    "Only pull notes after this unix timestamp",
+                ),
+                ToolArg::new(
+                    "until",
+                    ToolArgType::Number,
+                    "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
+                ),
+                ToolArg::new(
+                    "author",
+                    ToolArgType::String,
+                    "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to use, you can query for kind 0 profiles with the search argument.",
+                ),
+                ToolArg::new(
+                    "kind",
+                    ToolArgType::Number,
+                    r#"The kind of note. Kind list:
                 - 0: profiles
                 - 1: microblogs/\"tweets\"/posts
                 - 6: reposts of kind 1 notes
                 - 7: emoji reactions/likes
                 - 9735: zaps (bitcoin micropayment receipts)
                 - 30023: longform articles, blog posts, etc
-
                 "#,
-            },
-
-        ]
+                )
+                .default(Value::from(1)),
+            ],
+        ),
     }
 }
 
@@ -659,7 +565,7 @@ mod tests {
     #[test]
     fn tool_description_default_no_double_paren() {
         for tool in dave_tools() {
-            let params = tool.parameters_schema();
+            let params = tool.spec().json_schema();
             let props = params.get("properties").unwrap().as_object().unwrap();
             for (arg_name, arg_schema) in props {
                 let desc = arg_schema

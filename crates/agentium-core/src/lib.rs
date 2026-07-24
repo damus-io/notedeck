@@ -20,5 +20,8 @@ pub mod session_events;
 pub mod session_jsonl;
 pub mod session_loader;
 pub mod session_reconstructor;
+pub mod tool;
 pub mod tools;
 mod util;
+
+pub use tool::{ToolArg, ToolArgType, ToolSpec};
