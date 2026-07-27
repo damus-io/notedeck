@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use enostr::{Pubkey, RelayId, RelayStatus};
-use nostrdb::{Ndb, Subscription, Transaction};
+use nostrdb::{Ndb, NoteKey, Subscription, Transaction};
 use notedeck::{
-    App, AppContext, AppResponse, ColorTheme, DataPath, DataPathType, ExplicitPublishApi,
-    PrivateRelaySync, fan_out_event_frame,
+    App, AppContext, AppResponse, ColorTheme, DataPath, DataPathType, PrivateRelaySync,
+    fan_out_unseen_notes,
 };
 
 pub use headway::{event, store};
@@ -19,38 +19,18 @@ pub use ui::{BoardUiState, board_inline_ui, card_inline_ui, issue_inline_ui};
 
 use event::{BoardReducer, BoardView};
 
-/// A [`store::Publisher`] that fans every locally-ingested board event out to
-/// the account's private-sync relays (kind-10013 NIP-37 list) so the board syncs
-/// across the user's own devices. With no private relay configured the relay set
-/// is empty and this behaves exactly like [`store::NoPublish`] (local-only).
-///
-/// This is only the *outbound* half; the inbound catch-up + realtime pull is a
-/// scoped subscription kept by [`PrivateRelaySync`] (see [`Headway::sync`]).
-///
-/// We publish plaintext board events, so they can only safely reach a private
-/// (AUTH/wireguard) relay. TODO: PNS-encrypt these events (as dave does for its
-/// session state via `wrap_pns`) and then we could also fan them out to the
-/// user's *public* write relays without leaking board contents.
-struct PrivateRelayPublisher<'o, 'a> {
-    api: ExplicitPublishApi<'o, 'a>,
-    relays: Vec<RelayId>,
-}
-
-impl store::Publisher for PrivateRelayPublisher<'_, '_> {
-    fn publish(&mut self, event_frame: &str) {
-        fan_out_event_frame(&mut self.api, event_frame, &self.relays);
-    }
-}
-
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
 /// The board is backed by nostr events in the local nostrdb: [`BoardSync`] keeps
 /// a long-lived reducer over the account's events and the [`BoardView`] folded
 /// from them, folding only freshly-arrived notes in as an ndb subscription
 /// reports them — not re-walking the history every frame. Every edit is turned
-/// into a signed event that is ingested locally (see [`store`]) and fanned out
-/// to the account's private relays, which also feed remote edits back in via
-/// [`PrivateRelaySync`].
+/// into a signed event that is ingested locally (see [`store`]); the sync
+/// coordination — polling that subscription and fanning each freshly-ingested
+/// event out to the account's private relays — runs in [`update`](App::update)
+/// so it stays live even when Headway isn't the foreground app, which is what
+/// lets edits ingested by the `headway` CLI reach the user's other devices.
+/// [`PrivateRelaySync`] feeds remote edits back in.
 pub struct Headway {
     /// The active board's slug. Switched via the header switcher and restored
     /// per-account from disk; defaults to [`store::BOARD_ID`].
@@ -101,11 +81,12 @@ impl Headway {
     }
 
     /// Burn down the repaint countdown, requesting a delayed repaint each step.
-    fn pump_repaint(&mut self, ui: &egui::Ui) {
+    /// Driven from [`update`](App::update) (which runs every frame for all opened
+    /// apps), so the poll/fan-out loop keeps ticking even off-foreground.
+    fn pump_repaint(&mut self, ctx: &egui::Context) {
         if self.repaint_frames > 0 {
             self.repaint_frames -= 1;
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(60));
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
     }
 }
@@ -154,19 +135,34 @@ struct BoardSync {
     full_reloads: u32,
 }
 
+/// The result of a [`BoardSync::poll`].
+#[derive(Default)]
+struct PollResponse {
+    /// The cached board was (re)reduced this call — a first load, an account
+    /// switch, or new notes folding in — so the caller schedules follow-up
+    /// repaints.
+    changed: bool,
+    /// Note keys folded in *incrementally* this call. Empty on a full reload
+    /// (those are historical notes, not new ingests) and on a no-op; the caller
+    /// fans these out to the account's private relays (see
+    /// [`notedeck::fan_out_unseen_notes`]).
+    fresh: Vec<NoteKey>,
+}
+
 impl BoardSync {
     /// Ensure a live subscription to `author`, drain it, and update the cached
-    /// board. Returns `true` if the board was (re)reduced this call — a first
-    /// load, an account switch, or new notes folded in — so the caller can
-    /// schedule follow-up repaints. The cached board is read via
-    /// [`view`](Self::view).
-    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, board_id: &str) -> bool {
+    /// board. The cached board is read via [`view`](Self::view); see
+    /// [`PollResponse`] for the returned change flag and freshly-arrived keys.
+    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, board_id: &str) -> PollResponse {
         self.sync_subscription(ndb, author);
 
         let Some(sub) = self.sub else {
             // Subscribe failed: degrade to a full reload each frame so edits show.
             self.reload(ndb, author, board_id);
-            return true;
+            return PollResponse {
+                changed: true,
+                fresh: Vec::new(),
+            };
         };
 
         let keys = ndb.poll_for_notes(sub, 64);
@@ -175,7 +171,10 @@ impl BoardSync {
         // the long-lived reducer.
         if self.reducer.is_none() {
             self.reload(ndb, author, board_id);
-            return true;
+            return PollResponse {
+                changed: true,
+                fresh: Vec::new(),
+            };
         }
 
         // Nothing new *and* still on the same board: the cached view stands, no
@@ -183,7 +182,7 @@ impl BoardSync {
         // with no new notes, since the target board is already in the reducer.
         let board_changed = self.view_board.as_deref() != Some(board_id);
         if keys.is_empty() && !board_changed {
-            return false;
+            return PollResponse::default();
         }
 
         // Incremental: fold only the freshly-arrived notes into the live reducer
@@ -196,7 +195,10 @@ impl BoardSync {
             self.view = event::pick_board(reducer, author, board_id);
             self.view_board = Some(board_id.to_owned());
         }
-        true
+        PollResponse {
+            changed: true,
+            fresh: keys,
+        }
     }
 
     /// Every board folded for the current account, sorted by slug — what the
@@ -284,18 +286,21 @@ impl App for Headway {
         tools::tools()
     }
 
-    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        let theme = ColorTheme::current(ui.ctx());
-
+    /// Background sync, run every frame for all *opened* apps (not just the
+    /// foreground one) — which is what lets edits ingested by the `headway` CLI
+    /// while the user is on another tab still sync out. Polls the account's board
+    /// subscription, fans freshly-ingested events out to its private relays, and
+    /// auto-seeds a default board. Rendering happens separately in [`render`].
+    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         let author = *ctx.accounts.selected_account_pubkey();
         // Copy the secret out so we don't hold a borrow on `accounts` while we
-        // also touch `ndb`. `None` for a pubkey-only (watch) account.
+        // also touch `ndb`/`remote`. `None` for a pubkey-only (watch) account.
         let signer: Option<[u8; 32]> = ctx
             .accounts
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
-        // On first render and after an account switch, restore that account's
+        // On first update and after an account switch, restore that account's
         // last-selected board from disk (falling back to the default). Re-arm the
         // auto-seed so a fresh account still gets its default board seeded.
         if self.board_account != Some(author) {
@@ -314,39 +319,68 @@ impl App for Headway {
 
         // Keep a live subscription to this account's events and re-fold the
         // cached board only when something changed (first load, account switch,
-        // or our own async ingests landing); keep waking while it streams in.
-        if self.sync.poll(ctx.ndb, &author, &self.board_id) {
+        // or an async ingest landing — including CLI ingests into the embedded
+        // relay); keep waking while it streams in.
+        let poll = self.sync.poll(ctx.ndb, &author, &self.board_id);
+        if poll.changed {
             self.wake();
         }
 
+        // Fan every freshly-ingested board event out to the private relays it
+        // hasn't reached yet. This is the outbound half of cross-device sync: it
+        // covers our own edits *and* events written straight into nostrdb by the
+        // `headway` CLI, which never pass through the app's edit path.
+        if !poll.fresh.is_empty()
+            && !private_relays.is_empty()
+            && let Ok(txn) = Transaction::new(ctx.ndb)
+        {
+            let mut api = ctx.remote.publisher_explicit();
+            fan_out_unseen_notes(&mut api, ctx.ndb, &txn, &poll.fresh, &private_relays);
+        }
+
+        // No board yet: auto-seed one for an account that can sign. The seeded
+        // events fan out via the same poll path on a following frame. (The UI
+        // feedback for this state is drawn in `render`.)
+        if self.sync.view().is_none()
+            && let Some(secret) = &signer
+            && !self.seeded
+        {
+            store::seed_default_board(
+                ctx.ndb,
+                &author,
+                secret,
+                &self.board_id,
+                &mut store::NoPublish,
+            );
+            self.seeded = true;
+            self.wake();
+        }
+
+        self.pump_repaint(egui_ctx);
+    }
+
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        let theme = ColorTheme::current(ui.ctx());
+
+        let author = *ctx.accounts.selected_account_pubkey();
+        // Copy the secret out so we don't hold a borrow on `accounts` while we
+        // also touch `ndb`. `None` for a pubkey-only (watch) account.
+        let signer: Option<[u8; 32]> = ctx
+            .accounts
+            .selected_filled()
+            .map(|f| f.secret_key.secret_bytes());
+
+        // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
+        // in `update` this frame; here we just render the cached view.
         if self.sync.view().is_none() {
-            // No board yet: auto-seed one for an account that can sign.
-            match &signer {
-                Some(secret) => {
-                    if !self.seeded {
-                        let mut publisher = PrivateRelayPublisher {
-                            api: ctx.remote.publisher_explicit(),
-                            relays: private_relays.clone(),
-                        };
-                        store::seed_default_board(
-                            ctx.ndb,
-                            &author,
-                            secret,
-                            &self.board_id,
-                            &mut publisher,
-                        );
-                        self.seeded = true;
-                        self.wake();
-                    }
-                    empty_state(ui, &theme, "Setting up your board…");
-                }
-                None => empty_state(
-                    ui,
-                    &theme,
-                    "Sign in with a key to create your Headway board.",
-                ),
-            }
-            self.pump_repaint(ui);
+            // No board yet. `update` auto-seeds one for a signing account; a
+            // watch-only account can't create one.
+            let msg = if signer.is_some() {
+                "Setting up your board…"
+            } else {
+                "Sign in with a key to create your Headway board."
+            };
+            empty_state(ui, &theme, msg);
             return AppResponse::default();
         }
 
@@ -356,7 +390,7 @@ impl App for Headway {
         // again to ingest the action below.
         let boards = self.sync.boards();
         // Header sync indicator: are we reaching a private relay right now?
-        let sync = sync_status(ctx, &private_relays);
+        let sync = sync_status(ctx);
         let action = {
             let mut note_context = ctx.note_context();
             board_ui(
@@ -382,11 +416,16 @@ impl App for Headway {
                 BoardNav::Create(title) => {
                     if let Some(secret) = &signer {
                         let slug = store::board_slug(&title, |s| boards.iter().any(|b| b.id == s));
-                        let mut publisher = PrivateRelayPublisher {
-                            api: ctx.remote.publisher_explicit(),
-                            relays: private_relays.clone(),
-                        };
-                        store::seed_board(ctx.ndb, &author, secret, &slug, &title, &mut publisher);
+                        // Ingest locally only; `update`'s poll fans the new events
+                        // out to the private relays next frame (see `wake`).
+                        store::seed_board(
+                            ctx.ndb,
+                            &author,
+                            secret,
+                            &slug,
+                            &title,
+                            &mut store::NoPublish,
+                        );
                         self.board_id = slug;
                         save_board_pref(ctx.path, &author, &self.board_id);
                         self.wake();
@@ -411,10 +450,8 @@ impl App for Headway {
                 id: &mv.to_board,
                 view: &target_view,
             };
-            let mut publisher = PrivateRelayPublisher {
-                api: ctx.remote.publisher_explicit(),
-                relays: private_relays.clone(),
-            };
+            // Ingest locally only; `update`'s poll fans the new events out to the
+            // private relays next frame (see `wake`).
             match mv.op {
                 CardBoardOp::Move => {
                     store::move_card_between_boards(
@@ -424,7 +461,7 @@ impl App for Headway {
                         &author,
                         secret,
                         mv.card,
-                        &mut publisher,
+                        &mut store::NoPublish,
                     );
                 }
                 CardBoardOp::Link => {
@@ -435,7 +472,7 @@ impl App for Headway {
                         &author,
                         secret,
                         mv.card,
-                        &mut publisher,
+                        &mut store::NoPublish,
                     );
                 }
             }
@@ -443,13 +480,10 @@ impl App for Headway {
         }
 
         // Apply the collected action by ingesting events locally. Mutations need
-        // a signing key; a watch-only account simply can't edit.
+        // a signing key; a watch-only account simply can't edit. `update`'s poll
+        // fans the ingested events out to the private relays next frame.
         if let (Some(action), Some(secret)) = (action, &signer) {
             let view = self.sync.view().expect("view present");
-            let mut publisher = PrivateRelayPublisher {
-                api: ctx.remote.publisher_explicit(),
-                relays: private_relays,
-            };
             store::apply(
                 ctx.ndb,
                 &self.board_id,
@@ -457,22 +491,23 @@ impl App for Headway {
                 &author,
                 secret,
                 action,
-                &mut publisher,
+                &mut store::NoPublish,
             );
             self.wake();
         }
 
-        self.pump_repaint(ui);
         AppResponse::default()
     }
 }
 
-/// Derive the header sync indicator from the resolved private relay set and the
-/// relay pool's live connection status. Mirrors the diagnostic in
-/// [`notedeck::PrivateRelaySync`]'s change logging: an empty set (or one with no
-/// websocket relay) is local-only; a set with at least one *connected* relay is
-/// syncing; otherwise a relay is configured but we're not reaching it yet.
-fn sync_status(ctx: &AppContext, private_relays: &[RelayId]) -> ui::SyncStatus {
+/// Derive the header sync indicator from the account's private relay set (owned
+/// by [`notedeck::Accounts`]) and the relay pool's live connection status.
+/// Mirrors the diagnostic in [`notedeck::PrivateRelaySync`]'s change logging: an
+/// empty set (or one with no websocket relay) is local-only; a set with at least
+/// one *connected* relay is syncing; otherwise a relay is configured but we're
+/// not reaching it yet.
+fn sync_status(ctx: &AppContext) -> ui::SyncStatus {
+    let private_relays = ctx.accounts.selected_account_private_relays();
     let has_private = private_relays
         .iter()
         .any(|relay| matches!(relay, RelayId::Websocket(_)));
@@ -746,7 +781,9 @@ mod tests {
         /// One poll cycle against a specific board id — used to exercise switching
         /// the active board within a single account/reducer.
         fn poll_board(&mut self, board_id: &str) -> bool {
-            self.sync.poll(&mut self.ndb, &self.kp.pubkey, board_id)
+            self.sync
+                .poll(&mut self.ndb, &self.kp.pubkey, board_id)
+                .changed
         }
 
         fn seed(&mut self) {

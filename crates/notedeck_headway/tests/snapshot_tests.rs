@@ -47,6 +47,9 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
     }
 
     let mut app_ctx = state.notedeck.app_context(ctx);
+    // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
+    // every opened app each frame, then `render` for the foreground one.
+    state.headway.update(&mut app_ctx, ctx);
     egui::CentralPanel::default().show(ctx, |ui| {
         state.headway.render(&mut app_ctx, ui);
     });
