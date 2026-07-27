@@ -26,9 +26,8 @@
 
 use std::collections::HashMap;
 
-use enostr::Pubkey;
-use nostrdb::{Filter, Ndb, Note, Transaction};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use nostrdb::{Ndb, Transaction};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
 use crate::{Accounts, AppAction, ExplicitPublishApi, NoteCache};
@@ -39,6 +38,13 @@ use crate::{Accounts, AppAction, ExplicitPublishApi, NoteCache};
 /// crate-root `notedeck::ToolSpec`) keep resolving for the browser-level tool
 /// machinery below, which builds specs from these types.
 pub use agentium_core::tool::{ToolArg, ToolArgType, ToolSpec};
+
+/// The canonical [`QueryCall`] — the single nostrdb query tool — is likewise
+/// owned by the engine and re-exported here, so `notedeck::tool::QueryCall`
+/// keeps resolving for the browser [`ToolCall`] below. The browser and the
+/// engine's own dave tools share one struct, `to_filter`, `spec`, and
+/// note-key execution rather than each maintaining a copy.
+pub use agentium_core::tools::QueryCall;
 
 /// The browser state a tool executes against, reborrowed from an
 /// [`AppContext`](crate::AppContext) via
@@ -117,7 +123,9 @@ impl ToolCall {
                     Ok(txn) => txn,
                     Err(err) => return ToolOutcome::Error(format!("failed to open db: {err}")),
                 };
-                ToolOutcome::Data(json!({ "note_ids": query.execute(&txn, cx.ndb) }))
+                // Local nostrdb note keys (not portable hex ids) — the engine's
+                // single [`QueryCall`] executes to keys.
+                ToolOutcome::Data(json!({ "note_keys": query.execute(&txn, cx.ndb).notes }))
             }
         }
     }
@@ -275,138 +283,11 @@ impl ToolRegistry {
     }
 }
 
-/// Whether a note is a reply (used to exclude replies from query results, so
-/// searches surface root notes rather than conversation fragments).
-fn is_reply(note: Note) -> bool {
-    for tag in note.tags() {
-        if tag.count() < 4 {
-            continue;
-        }
-
-        let Some("e") = tag.get_str(0) else {
-            continue;
-        };
-
-        let Some(s) = tag.get_str(3) else {
-            continue;
-        };
-
-        if s == "root" || s == "reply" {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// A parsed nostrdb query the backend wants to run: an optional full-text
-/// `search`, constrained by author, kind, time range, and a result limit.
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
-pub struct QueryCall {
-    pub author: Option<Pubkey>,
-    pub limit: Option<u64>,
-    pub since: Option<u64>,
-    pub kind: Option<u64>,
-    pub until: Option<u64>,
-    pub search: Option<String>,
-}
-
-impl QueryCall {
-    /// The tool name advertised to backends.
-    pub const NAME: &'static str = "query";
-
-    /// The portable spec advertised for this tool.
-    pub fn spec() -> ToolSpec {
-        ToolSpec::new(
-            Self::NAME,
-            "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
-            vec![
-                ToolArg::new(
-                    "search",
-                    ToolArgType::String,
-                    "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
-                ),
-                ToolArg::new("limit", ToolArgType::Number, "The number of results to return.")
-                    .required(true)
-                    .default(Value::from(50)),
-                ToolArg::new(
-                    "since",
-                    ToolArgType::Number,
-                    "Only pull notes after this unix timestamp",
-                ),
-                ToolArg::new(
-                    "until",
-                    ToolArgType::Number,
-                    "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
-                ),
-                ToolArg::new(
-                    "author",
-                    ToolArgType::String,
-                    "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to use, you can query for kind 0 profiles with the search argument.",
-                ),
-                ToolArg::new("kind", ToolArgType::Number, r#"The kind of note. Kind list:
-                - 0: profiles
-                - 1: microblogs/\"tweets\"/posts
-                - 6: reposts of kind 1 notes
-                - 7: emoji reactions/likes
-                - 9735: zaps (bitcoin micropayment receipts)
-                - 30023: longform articles, blog posts, etc
-                "#)
-                    .default(Value::from(1)),
-            ],
-        )
-    }
-
-    /// Build the nostrdb [`Filter`] this query describes. Replies are excluded so
-    /// results are root notes rather than conversation fragments.
-    pub fn to_filter(&self) -> Filter {
-        let mut filter = Filter::new()
-            .limit(self.limit())
-            .custom(|n| !is_reply(n))
-            .kinds([self.kind.unwrap_or(1)]);
-
-        if let Some(author) = &self.author {
-            filter = filter.authors([author.bytes()]);
-        }
-
-        if let Some(search) = &self.search {
-            filter = filter.search(search);
-        }
-
-        if let Some(until) = self.until {
-            filter = filter.until(until);
-        }
-
-        if let Some(since) = self.since {
-            filter = filter.since(since);
-        }
-
-        filter.build()
-    }
-
-    /// The result limit, defaulting to 10 when the backend omits it.
-    pub fn limit(&self) -> u64 {
-        self.limit.unwrap_or(10)
-    }
-
-    /// Run the query, returning the hex note ids of the matches (stable nostr
-    /// ids, so the result is portable to any backend).
-    pub fn execute(&self, txn: &Transaction, ndb: &Ndb) -> Vec<String> {
-        ndb.query(txn, &[self.to_filter()], self.limit() as i32)
-            .map(|results| {
-                results
-                    .into_iter()
-                    .map(|r| hex::encode(r.note.id()))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{test_util::test_config, UnknownIds, FALLBACK_PUBKEY};
+    use serde::Deserialize;
     use tempfile::TempDir;
 
     /// An app tool whose typed `Args`/`Output` exercise the serde boundary. It

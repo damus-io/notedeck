@@ -307,8 +307,10 @@ impl PresentNotesCall {
     }
 }
 
-/// The parsed nostrdb query that dave wants to use to satisfy a request
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// The parsed nostrdb query a backend wants to run to satisfy a request: an
+/// optional full-text `search`, constrained by author, kind, time range, and a
+/// result limit. Executes to local nostrdb note keys ([`QueryResponse`]).
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct QueryCall {
     pub author: Option<Pubkey>,
     pub limit: Option<u64>,
@@ -341,6 +343,55 @@ fn is_reply(note: Note) -> bool {
 }
 
 impl QueryCall {
+    /// The tool name advertised to backends.
+    pub const NAME: &'static str = "query";
+
+    /// The portable spec advertised for this tool.
+    pub fn spec() -> ToolSpec {
+        ToolSpec::new(
+            Self::NAME,
+            "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
+            vec![
+                ToolArg::new(
+                    "search",
+                    ToolArgType::String,
+                    "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
+                ),
+                ToolArg::new("limit", ToolArgType::Number, "The number of results to return.")
+                    .required(true)
+                    .default(Value::from(50)),
+                ToolArg::new(
+                    "since",
+                    ToolArgType::Number,
+                    "Only pull notes after this unix timestamp",
+                ),
+                ToolArg::new(
+                    "until",
+                    ToolArgType::Number,
+                    "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
+                ),
+                ToolArg::new(
+                    "author",
+                    ToolArgType::String,
+                    "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to use, you can query for kind 0 profiles with the search argument.",
+                ),
+                ToolArg::new(
+                    "kind",
+                    ToolArgType::Number,
+                    r#"The kind of note. Kind list:
+                - 0: profiles
+                - 1: microblogs/\"tweets\"/posts
+                - 6: reposts of kind 1 notes
+                - 7: emoji reactions/likes
+                - 9735: zaps (bitcoin micropayment receipts)
+                - 30023: longform articles, blog posts, etc
+                "#,
+                )
+                .default(Value::from(1)),
+            ],
+        )
+    }
+
     pub fn to_filter(&self) -> nostrdb::Filter {
         let mut filter = nostrdb::Filter::new()
             .limit(self.limit())
@@ -366,7 +417,8 @@ impl QueryCall {
         filter.build()
     }
 
-    fn limit(&self) -> u64 {
+    /// The result limit, defaulting to 10 when the backend omits it.
+    pub fn limit(&self) -> u64 {
         self.limit.unwrap_or(10)
     }
 
@@ -507,48 +559,7 @@ fn present_tool() -> Tool {
 fn query_tool() -> Tool {
     Tool {
         parse_call: QueryCall::parse,
-        spec: ToolSpec::new(
-            "query",
-            "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
-            vec![
-                ToolArg::new(
-                    "search",
-                    ToolArgType::String,
-                    "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
-                ),
-                ToolArg::new("limit", ToolArgType::Number, "The number of results to return.")
-                    .required(true)
-                    .default(Value::from(50)),
-                ToolArg::new(
-                    "since",
-                    ToolArgType::Number,
-                    "Only pull notes after this unix timestamp",
-                ),
-                ToolArg::new(
-                    "until",
-                    ToolArgType::Number,
-                    "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
-                ),
-                ToolArg::new(
-                    "author",
-                    ToolArgType::String,
-                    "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to use, you can query for kind 0 profiles with the search argument.",
-                ),
-                ToolArg::new(
-                    "kind",
-                    ToolArgType::Number,
-                    r#"The kind of note. Kind list:
-                - 0: profiles
-                - 1: microblogs/\"tweets\"/posts
-                - 6: reposts of kind 1 notes
-                - 7: emoji reactions/likes
-                - 9735: zaps (bitcoin micropayment receipts)
-                - 30023: longform articles, blog posts, etc
-                "#,
-                )
-                .default(Value::from(1)),
-            ],
-        ),
+        spec: QueryCall::spec(),
     }
 }
 
