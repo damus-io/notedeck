@@ -22,8 +22,10 @@ pub mod session_loader;
 pub mod session_reconstructor;
 pub mod tool;
 pub mod tools;
+pub mod transport;
 mod util;
 pub mod waker;
 
 pub use tool::{ToolArg, ToolArgType, ToolSpec};
+pub use transport::{SubscriptionId, SubscriptionSpec, Transport};
 pub use waker::Waker;
