@@ -23,5 +23,7 @@ pub mod session_reconstructor;
 pub mod tool;
 pub mod tools;
 mod util;
+pub mod waker;
 
 pub use tool::{ToolArg, ToolArgType, ToolSpec};
+pub use waker::Waker;

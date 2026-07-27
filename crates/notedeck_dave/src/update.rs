@@ -48,7 +48,7 @@ pub fn handle_interrupt_request(
             // Second Escape within timeout - confirm interrupt
             if let Some(session) = session_manager.get_active() {
                 let session_id = format!("dave-session-{}", session.id);
-                backend.interrupt_session(session_id, ctx.clone());
+                backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
             }
             None
         } else {
@@ -69,7 +69,7 @@ pub fn execute_interrupt(
 ) {
     if let Some(session) = session_manager.get_active_mut() {
         let session_id = format!("dave-session-{}", session.id);
-        backend.interrupt_session(session_id, ctx.clone());
+        backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
         session.incoming_tokens = None;
         if let Some(agentic) = &mut session.agentic {
             agentic.permissions.pending.clear();
@@ -218,7 +218,7 @@ pub fn set_permission_mode(
     } else {
         // Local session: apply directly and mark dirty for state event publish
         let backend_sid = format!("dave-session-{}", session_id);
-        backend.set_permission_mode(backend_sid, new_mode, ctx.clone());
+        backend.set_permission_mode(backend_sid, new_mode, crate::backend::egui_waker(ctx));
         session.state_dirty = true;
         None
     };
@@ -243,7 +243,11 @@ pub fn exit_plan_mode(
         if let Some(agentic) = &mut session.agentic {
             agentic.permission_mode = PermissionMode::Default;
             let session_id = format!("dave-session-{}", session.id);
-            backend.set_permission_mode(session_id, PermissionMode::Default, ctx.clone());
+            backend.set_permission_mode(
+                session_id,
+                PermissionMode::Default,
+                crate::backend::egui_waker(ctx),
+            );
             tracing::debug!("Exited plan mode for session {}", session.id);
         }
     }

@@ -2,6 +2,7 @@ use crate::backend::traits::AiBackend;
 use crate::messages::DaveApiResponse;
 use crate::tools::{PartialToolCall, Tool, ToolCall, ToolCalls, ToolResponses};
 use crate::Message;
+use agentium_core::Waker;
 use async_openai::{config::OpenAIConfig, types::*, Client};
 use claude_agent_sdk_rs::PermissionMode;
 use futures::StreamExt;
@@ -32,7 +33,7 @@ impl AiBackend for OpenAiBackend {
         _session_id: String,
         _cwd: Option<PathBuf>,
         _resume_session_id: Option<String>,
-        ctx: egui::Context,
+        waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
@@ -144,7 +145,7 @@ impl AiBackend for OpenAiBackend {
                         if let Err(err) = tx.send(DaveApiResponse::Token(content.to_owned())) {
                             tracing::error!("failed to send dave response token to ui: {err}");
                         }
-                        ctx.request_repaint();
+                        waker.wake();
                     }
                 }
             }
@@ -184,7 +185,7 @@ impl AiBackend for OpenAiBackend {
                     .send(DaveApiResponse::ToolCalls(parsed_tool_calls))
                     .is_ok()
             {
-                ctx.request_repaint();
+                waker.wake();
             }
 
             tracing::debug!("stream closed");
@@ -198,12 +199,12 @@ impl AiBackend for OpenAiBackend {
         // No cleanup needed
     }
 
-    fn interrupt_session(&self, _session_id: String, _ctx: egui::Context) {
+    fn interrupt_session(&self, _session_id: String, _waker: Waker) {
         // OpenAI backend doesn't support interrupts - requests complete atomically
         // The JoinHandle can be aborted from the session side if needed
     }
 
-    fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _ctx: egui::Context) {
+    fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _waker: Waker) {
         // OpenAI backend doesn't support permission modes / plan mode
         tracing::warn!("Plan mode is not supported with the OpenAI backend");
     }

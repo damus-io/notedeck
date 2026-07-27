@@ -1,5 +1,6 @@
 use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
+use agentium_core::Waker;
 use claude_agent_sdk_rs::PermissionMode;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,7 +25,7 @@ impl AiBackend for RemoteOnlyBackend {
         _session_id: String,
         _cwd: Option<PathBuf>,
         _resume_session_id: Option<String>,
-        _ctx: egui::Context,
+        _waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
@@ -36,8 +37,7 @@ impl AiBackend for RemoteOnlyBackend {
 
     fn cleanup_session(&self, _session_id: String) {}
 
-    fn interrupt_session(&self, _session_id: String, _ctx: egui::Context) {}
+    fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
 
-    fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _ctx: egui::Context) {
-    }
+    fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _waker: Waker) {}
 }

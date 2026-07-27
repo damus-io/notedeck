@@ -8,6 +8,7 @@ use crate::messages::{
     PermissionView, UserMessage,
 };
 use crate::Message;
+use agentium_core::Waker;
 use claude_agent_sdk_rs::PermissionMode;
 use std::sync::mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -28,21 +29,21 @@ pub(crate) enum SessionCommand {
         /// for the session's whole lifetime (Claude) — the actor already holds
         /// the sender, so the command doesn't carry one.
         response_tx: Option<mpsc::Sender<DaveApiResponse>>,
-        ctx: egui::Context,
+        waker: Waker,
     },
     /// Interrupt the current query - stops the stream but preserves session
     Interrupt {
-        ctx: egui::Context,
+        waker: Waker,
     },
     /// Set the permission mode (Default or Plan)
     SetPermissionMode {
         mode: PermissionMode,
-        ctx: egui::Context,
+        waker: Waker,
     },
     /// Trigger manual context compaction
     Compact {
         response_tx: mpsc::Sender<DaveApiResponse>,
-        ctx: egui::Context,
+        waker: Waker,
     },
     Shutdown,
 }
@@ -147,14 +148,14 @@ pub fn complete_subagent(
     result_text: &str,
     subagent_stack: &mut Vec<String>,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) {
     subagent_stack.retain(|id| id != task_id);
     let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
         task_id: task_id.to_string(),
         result: truncate_output(result_text, 2000),
     });
-    ctx.request_repaint();
+    waker.wake();
 }
 
 /// Build an [`ExecutedTool`] from a completed tool call and send it
@@ -168,7 +169,7 @@ pub fn send_tool_result(
     parent_override: Option<&str>,
     subagent_stack: &[String],
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) {
     let summary = format_tool_summary(tool_name, tool_input, result_value);
     // An explicit `parent_tool_use_id` (a subagent-internal result) wins over
@@ -183,7 +184,7 @@ pub fn send_tool_result(
         file_update,
     };
     let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
-    ctx.request_repaint();
+    waker.wake();
 }
 
 /// Check auto-accept rules for a tool invocation.
@@ -209,9 +210,9 @@ pub fn forward_permission_to_ui(
     tool_name: &str,
     tool_input: serde_json::Value,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
-    forward_permission_to_ui_with_view(tool_name, tool_input, None, response_tx, ctx)
+    forward_permission_to_ui_with_view(tool_name, tool_input, None, response_tx, waker)
 }
 
 /// Variant of [`forward_permission_to_ui`] that allows a backend to provide an
@@ -221,7 +222,7 @@ pub fn forward_permission_to_ui_with_view(
     tool_input: serde_json::Value,
     view: Option<PermissionView>,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
     let request_id = Uuid::new_v4();
     let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
@@ -248,7 +249,7 @@ pub fn forward_permission_to_ui_with_view(
         return None;
     }
 
-    ctx.request_repaint();
+    waker.wake();
     Some(ui_resp_rx)
 }
 
@@ -441,9 +442,9 @@ mod tests {
     #[test]
     fn forward_permission_delivers() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let input = serde_json::json!({"command": "ls"});
-        let result = forward_permission_to_ui("Bash", input.clone(), &tx, &ctx);
+        let result = forward_permission_to_ui("Bash", input.clone(), &tx, &waker);
         assert!(result.is_some());
 
         let resp = rx.try_recv().unwrap();
@@ -462,9 +463,9 @@ mod tests {
     #[test]
     fn forward_permission_exit_plan_caches() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let input = serde_json::json!({"plan": "# My Plan\n\nDo stuff"});
-        let result = forward_permission_to_ui("ExitPlanMode", input, &tx, &ctx);
+        let result = forward_permission_to_ui("ExitPlanMode", input, &tx, &waker);
         assert!(result.is_some());
 
         let resp = rx.try_recv().unwrap();
@@ -490,8 +491,8 @@ mod tests {
     fn forward_permission_closed_channel_returns_none() {
         let (tx, rx) = mpsc::channel::<DaveApiResponse>();
         drop(rx);
-        let ctx = egui::Context::default();
-        let result = forward_permission_to_ui("Bash", serde_json::json!({}), &tx, &ctx);
+        let waker = Waker::noop();
+        let result = forward_permission_to_ui("Bash", serde_json::json!({}), &tx, &waker);
         assert!(result.is_none());
     }
 
@@ -500,7 +501,7 @@ mod tests {
     #[test]
     fn send_tool_result_with_parent() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let stack = vec!["task-1".to_string()];
         send_tool_result(
             "Read",
@@ -510,7 +511,7 @@ mod tests {
             None,
             &stack,
             &tx,
-            &ctx,
+            &waker,
         );
 
         let resp = rx.try_recv().unwrap();
@@ -526,7 +527,7 @@ mod tests {
     #[test]
     fn send_tool_result_without_parent() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         send_tool_result(
             "Bash",
             &serde_json::json!({"command": "ls"}),
@@ -535,7 +536,7 @@ mod tests {
             None,
             &[],
             &tx,
-            &ctx,
+            &waker,
         );
 
         let resp = rx.try_recv().unwrap();
@@ -578,10 +579,10 @@ mod tests {
     #[test]
     fn forward_permission_exit_plan_non_string_plan_gives_none() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         // "plan" key is a number, not a string
         let input = serde_json::json!({"plan": 123});
-        let result = forward_permission_to_ui("ExitPlanMode", input, &tx, &ctx);
+        let result = forward_permission_to_ui("ExitPlanMode", input, &tx, &waker);
         assert!(result.is_some());
 
         let resp = rx.try_recv().unwrap();
@@ -599,9 +600,9 @@ mod tests {
     #[test]
     fn complete_subagent_removes_from_stack() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut stack = vec!["task-a".to_string(), "task-b".to_string()];
-        complete_subagent("task-a", "done", &mut stack, &tx, &ctx);
+        complete_subagent("task-a", "done", &mut stack, &tx, &waker);
 
         assert_eq!(stack, vec!["task-b".to_string()]);
         let resp = rx.try_recv().unwrap();

@@ -1,5 +1,6 @@
 use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
+use agentium_core::Waker;
 use claude_agent_sdk_rs::PermissionMode;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -160,7 +161,7 @@ pub trait AiBackend: Send + Sync {
         session_id: String,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
-        ctx: egui::Context,
+        waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
@@ -183,11 +184,11 @@ pub trait AiBackend: Send + Sync {
 
     /// Interrupt the current query for a session.
     /// This stops any in-progress work but preserves the session history.
-    fn interrupt_session(&self, session_id: String, ctx: egui::Context);
+    fn interrupt_session(&self, session_id: String, waker: Waker);
 
     /// Set the permission mode for a session.
     /// Plan mode makes Claude plan actions without executing them.
-    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, ctx: egui::Context);
+    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, waker: Waker);
 
     /// Trigger manual context compaction for a session.
     /// Returns a receiver for CompactionStarted/CompactionComplete events.
@@ -195,7 +196,7 @@ pub trait AiBackend: Send + Sync {
     fn compact_session(
         &self,
         _session_id: String,
-        _ctx: egui::Context,
+        _waker: Waker,
     ) -> Option<mpsc::Receiver<DaveApiResponse>> {
         None
     }

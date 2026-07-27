@@ -3368,7 +3368,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_id,
             cwd,
             resume_session_id,
-            ctx,
+            crate::backend::egui_waker(&ctx),
         );
         if let Some(rx) = rx {
             session.incoming_tokens = Some(rx);
@@ -3904,7 +3904,7 @@ impl notedeck::App for Dave {
             get_backend(&self.backends, bt).set_permission_mode(
                 backend_sid,
                 mode,
-                egui_ctx.clone(),
+                crate::backend::egui_waker(egui_ctx),
             );
         }
 
@@ -4801,7 +4801,7 @@ fn dispatch_compact_for_active(
     tracing::info!("Compact requested for session {}", session_id);
     let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
-    if let Some(rx) = backend.compact_session(session_id.clone(), ctx.clone()) {
+    if let Some(rx) = backend.compact_session(session_id.clone(), crate::backend::egui_waker(ctx)) {
         tracing::info!("Compact dispatched for session {}", session_id);
         if let Some(session) = session_manager.get_active_mut() {
             session.incoming_tokens = Some(rx);
@@ -4836,7 +4836,7 @@ fn dispatch_compact_for_session(
     );
     let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
-    let compact_rx = backend.compact_session(backend_session_id, ctx.clone());
+    let compact_rx = backend.compact_session(backend_session_id, crate::backend::egui_waker(ctx));
     // A non-persistent backend that returned no receiver has no live session to
     // compact — nothing to do. A persistent backend reuses its existing channel
     // (None) and must still record the compact-and-proceed intent.
