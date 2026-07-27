@@ -20,7 +20,7 @@
 
 use enostr::{NormRelayUrl, Pubkey, RelayId};
 use hashbrown::HashSet;
-use nostrdb::Filter;
+use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 
 use crate::{
     AppContext, ExplicitPublishApi, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey,
@@ -42,6 +42,70 @@ pub fn fan_out_event_frame(api: &mut ExplicitPublishApi, event_frame: &str, rela
         .and_then(|frame| frame.get(1).cloned())
     {
         api.publish_event_json(event.to_string(), relays.to_vec());
+    }
+}
+
+/// Fan freshly-ingested local notes out to any private relays they have not yet
+/// been seen on.
+///
+/// [`fan_out_event_frame`] only covers events the app *itself* authors through
+/// its `store::Publisher` seam. Events written into the local nostrdb by any
+/// *other* path never reach that seam — most importantly the `headway`/`notebook`
+/// CLIs, which publish into notedeck's embedded relay, landing the event in the
+/// board's nostrdb but never propagating it to the user's private-sync relays.
+/// This is the catch-all for those: it runs off the app's ndb subscription poll,
+/// so it forwards a locally-ingested note regardless of how it arrived.
+///
+/// `keys` are the note keys a subscription poll just reported (see
+/// [`PrivateRelaySync`]). Each note is published only to the private relays it
+/// has **not** already been seen on (per nostrdb's `note.relays()`), so a note
+/// pulled *in* by the inbound sync is not echoed straight back out. Even if the
+/// seen-on check misses (e.g. a relay-url normalization mismatch), nostrdb never
+/// re-reports an event id it already holds, so a redundant publish can't spiral
+/// into a loop.
+pub fn fan_out_unseen_notes(
+    api: &mut ExplicitPublishApi,
+    ndb: &Ndb,
+    txn: &Transaction,
+    keys: &[NoteKey],
+    relays: &[RelayId],
+) {
+    if relays.is_empty() || keys.is_empty() {
+        return;
+    }
+    for &key in keys {
+        let Ok(note) = ndb.get_note_by_key(txn, key) else {
+            continue;
+        };
+        // Target each private relay the note hasn't been seen on yet. Both the
+        // private set and a note's seen-on set are tiny (1-2 relays each), so a
+        // nested linear scan beats allocating a lookup set per note. The seen-on
+        // url is canonicalized before comparison so a trailing-slash difference
+        // doesn't defeat the check. `targets` is the one small allocation the
+        // publish API forces (`broadcast_event` takes an owned `Vec`), bounded by
+        // the private relay count and only paid when a note actually needs sending.
+        let targets: Vec<RelayId> = relays
+            .iter()
+            .filter(|relay| {
+                // The private-sync set only ever holds websocket relays (it's
+                // built from the kind-10013 url list), so this arm is just match
+                // exhaustiveness.
+                let RelayId::Websocket(url) = relay else {
+                    return false;
+                };
+                !note
+                    .relays(txn)
+                    .any(|seen| NormRelayUrl::new(seen).is_ok_and(|seen| &seen == url))
+            })
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            continue;
+        }
+        let Ok(json) = note.json() else {
+            continue;
+        };
+        api.publish_event_json(json, targets);
     }
 }
 
@@ -162,7 +226,8 @@ mod tests {
     use super::*;
     use crate::{EguiWakeup, ExplicitPublishApi};
     use enostr::{FullKeypair, NormRelayUrl, OutboxPool, OutboxSessionHandler};
-    use nostrdb::NoteBuilder;
+    use nostrdb::{Config, IngestMetadata, NoteBuilder};
+    use tempfile::TempDir;
 
     /// Frame a signed note as the `["EVENT", {…}]` envelope `ingest` hands the
     /// publisher.
@@ -215,5 +280,99 @@ mod tests {
         let relay = RelayId::Websocket(NormRelayUrl::new("wss://private.example.com").expect("r"));
         assert!(relays_opened_for("not json", vec![relay.clone()]).is_empty());
         assert!(relays_opened_for("[\"EVENT\"]", vec![relay]).is_empty());
+    }
+
+    // ===== fan_out_unseen_notes =====
+
+    /// A temporary nostrdb for the seen-on fan-out tests.
+    fn test_ndb() -> (TempDir, Ndb) {
+        let tmp = TempDir::new().expect("tmp dir");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        (tmp, ndb)
+    }
+
+    /// Ingest one signed kind-1 note, recording it as seen on `seen_on` — mirroring
+    /// how a note reaches nostrdb from a relay (the embedded relay for CLI ingests,
+    /// or a private relay for inbound-synced notes).
+    fn ingest_seen_on(ndb: &Ndb, seen_on: &str) {
+        let kp = FullKeypair::generate();
+        let note = NoteBuilder::new()
+            .kind(1)
+            .content("fan-out-unseen-test")
+            .sign(&kp.secret_key.to_secret_bytes())
+            .build()
+            .expect("note");
+        let json = note.json().expect("note json");
+        ndb.process_event_with(&json, IngestMetadata::new().relay(seen_on))
+            .expect("ingest");
+    }
+
+    /// Drive `fan_out_unseen_notes` over `keys` and return the relay set the outbox
+    /// opened (i.e. the relays each note was actually published to).
+    fn relays_fanned_for(
+        ndb: &Ndb,
+        keys: &[NoteKey],
+        relays: Vec<RelayId>,
+    ) -> HashSet<NormRelayUrl> {
+        let mut pool = OutboxPool::default();
+        {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
+            let mut api = ExplicitPublishApi::new(&mut outbox);
+            let txn = Transaction::new(ndb).expect("txn");
+            fan_out_unseen_notes(&mut api, ndb, &txn, keys, &relays);
+        }
+        pool.websocket_statuses()
+            .keys()
+            .map(|url| (*url).clone())
+            .collect()
+    }
+
+    /// A note ingested from the embedded relay (as a CLI publish arrives) has not
+    /// been seen on the private relay, so it's fanned out there — the bug fix.
+    #[tokio::test]
+    async fn unseen_note_is_fanned_out_to_private_relay() {
+        let (_tmp, ndb) = test_ndb();
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([1]).build()])
+            .expect("sub");
+        let waiter = ndb.wait_for_notes(sub, 1);
+        ingest_seen_on(&ndb, "ws://127.0.0.1:6677");
+        let keys = waiter.await.expect("await");
+
+        let private = NormRelayUrl::new("wss://private.example.com").expect("relay");
+        let opened = relays_fanned_for(&ndb, &keys, vec![RelayId::Websocket(private.clone())]);
+        assert_eq!(opened, HashSet::from_iter([private]));
+    }
+
+    /// A note already seen on the private relay (e.g. pulled in by the inbound
+    /// sync) is not echoed straight back out to it.
+    #[tokio::test]
+    async fn note_already_seen_on_private_relay_is_not_refanned() {
+        let (_tmp, ndb) = test_ndb();
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([1]).build()])
+            .expect("sub");
+        let waiter = ndb.wait_for_notes(sub, 1);
+        ingest_seen_on(&ndb, "wss://private.example.com");
+        let keys = waiter.await.expect("await");
+
+        let private = NormRelayUrl::new("wss://private.example.com").expect("relay");
+        let opened = relays_fanned_for(&ndb, &keys, vec![RelayId::Websocket(private)]);
+        assert!(opened.is_empty());
+    }
+
+    /// An empty private relay set is a no-op even with fresh notes to consider.
+    #[tokio::test]
+    async fn fan_out_unseen_empty_relays_is_noop() {
+        let (_tmp, ndb) = test_ndb();
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([1]).build()])
+            .expect("sub");
+        let waiter = ndb.wait_for_notes(sub, 1);
+        ingest_seen_on(&ndb, "ws://127.0.0.1:6677");
+        let keys = waiter.await.expect("await");
+
+        assert!(relays_fanned_for(&ndb, &keys, vec![]).is_empty());
     }
 }

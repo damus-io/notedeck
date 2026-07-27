@@ -111,7 +111,7 @@ pub use notecache::{CachedNote, NoteCache};
 pub use oneshot_api::OneshotApi;
 pub use options::NotedeckOptions;
 pub use persist::*;
-pub use private_sync::{fan_out_event_frame, PrivateRelaySync};
+pub use private_sync::{fan_out_event_frame, fan_out_unseen_notes, PrivateRelaySync};
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};
 pub use relayspec::RelaySpec;
