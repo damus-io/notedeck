@@ -9,36 +9,11 @@ use crate::event::{CanvasReducer, CanvasView};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
 use egui::{Pos2, Rect};
-use enostr::{NoteId, Pubkey, RelayId};
+use enostr::{NoteId, Pubkey};
 use jsoncanvas::{JsonCanvas, NodeId, edge::Side};
-use nostrdb::{Ndb, Subscription, Transaction};
-use notedeck::{
-    AppContext, AppResponse, ExplicitPublishApi, PrivateRelaySync, fan_out_event_frame,
-};
+use nostrdb::{Ndb, NoteKey, Subscription, Transaction};
+use notedeck::{AppContext, AppResponse, PrivateRelaySync, fan_out_unseen_notes};
 use std::collections::HashMap;
-
-/// A [`store::Publisher`] that fans every locally-ingested canvas event out to
-/// the account's private-sync relays (kind-10013 NIP-37 list) so the canvas syncs
-/// across the user's own devices. With no private relay configured the relay set
-/// is empty and this behaves exactly like [`store::NoPublish`] (local-only).
-///
-/// This is only the *outbound* half; the inbound catch-up + realtime pull is a
-/// scoped subscription kept by [`PrivateRelaySync`] (see [`Notebook::private_sync`]).
-///
-/// We publish plaintext canvas events, so they can only safely reach a private
-/// (AUTH/wireguard) relay. TODO: PNS-encrypt these events (as dave does for its
-/// session state via `wrap_pns`) and then we could also fan them out to the
-/// user's *public* write relays without leaking canvas contents.
-struct PrivateRelayPublisher<'o, 'a> {
-    api: ExplicitPublishApi<'o, 'a>,
-    relays: Vec<RelayId>,
-}
-
-impl store::Publisher for PrivateRelayPublisher<'_, '_> {
-    fn publish(&mut self, event_frame: &str) {
-        fan_out_event_frame(&mut self.api, event_frame, &self.relays);
-    }
-}
 
 /// A node's in-progress geometry override during a live drag or resize. Each
 /// axis is independently optional: a plain body drag sets only [`pos`]; a resize
@@ -390,11 +365,13 @@ impl Notebook {
     }
 
     /// Burn down the repaint countdown, requesting a delayed repaint each step.
-    fn pump_repaint(&mut self, ui: &egui::Ui) {
+    /// Driven from [`update`](notedeck::App::update) (which runs every frame for
+    /// all opened apps), so the poll/fan-out loop keeps ticking even
+    /// off-foreground.
+    fn pump_repaint(&mut self, ctx: &egui::Context) {
         if self.repaint_frames > 0 {
             self.repaint_frames -= 1;
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(60));
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
     }
 }
@@ -422,10 +399,15 @@ impl Default for Notebook {
 }
 
 impl notedeck::App for Notebook {
-    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+    /// Background sync, run every frame for all *opened* apps (not just the
+    /// foreground one) — which is what lets edits ingested by the `notebook` CLI
+    /// while the user is on another tab still sync out. Polls the account's canvas
+    /// subscription, fans freshly-ingested events out to its private relays, and
+    /// auto-seeds a default canvas. Rendering happens separately in [`render`].
+    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         let author = *ctx.accounts.selected_account_pubkey();
         // Copy the secret out so we don't hold a borrow on `accounts` while we
-        // also touch `ndb`. `None` for a pubkey-only (watch) account.
+        // also touch `ndb`/`remote`. `None` for a pubkey-only (watch) account.
         let signer: Option<[u8; 32]> = ctx
             .accounts
             .selected_filled()
@@ -438,10 +420,13 @@ impl notedeck::App for Notebook {
             .private_sync
             .update(ctx, event::notebook_filter(&author));
 
-        // Keep a live subscription and re-fold only when something changed. On a
-        // fresh fold, rebuild the renderable canvas and drop now-stale drag
-        // overrides (the new fold carries the committed positions).
-        if self.sync.poll(ctx.ndb, &author, &self.canvas_id) {
+        // Keep a live subscription and re-fold only when something changed (first
+        // load, account switch, or an async ingest landing — including CLI
+        // ingests into the embedded relay). On a fresh fold, rebuild the
+        // renderable canvas and drop now-stale drag overrides (the new fold
+        // carries the committed positions).
+        let poll = self.sync.poll(ctx.ndb, &author, &self.canvas_id);
+        if poll.changed {
             if let Some(view) = self.sync.view() {
                 self.canvas = view_to_canvas(view);
             }
@@ -449,31 +434,60 @@ impl notedeck::App for Notebook {
             self.wake();
         }
 
+        // Fan every freshly-ingested canvas event out to the private relays it
+        // hasn't reached yet. This is the outbound half of cross-device sync: it
+        // covers our own edits *and* events written straight into nostrdb by the
+        // `notebook` CLI, which never pass through the app's edit path.
+        if !poll.fresh.is_empty()
+            && !private_relays.is_empty()
+            && let Ok(txn) = Transaction::new(ctx.ndb)
+        {
+            let mut api = ctx.remote.publisher_explicit();
+            fan_out_unseen_notes(&mut api, ctx.ndb, &txn, &poll.fresh, &private_relays);
+        }
+
+        // No canvas yet: auto-seed one for an account that can sign. The seeded
+        // events fan out via the same poll path on a following frame. (The UI
+        // feedback for this state is drawn in `render`.)
+        if self.sync.view().is_none()
+            && let Some(secret) = &signer
+            && !self.seeded
+        {
+            store::seed_canvas(
+                ctx.ndb,
+                &author,
+                secret,
+                &self.canvas_id,
+                "Notebook",
+                &mut store::NoPublish,
+            );
+            self.seeded = true;
+            self.wake();
+        }
+
+        self.pump_repaint(egui_ctx);
+    }
+
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        let author = *ctx.accounts.selected_account_pubkey();
+        // Copy the secret out so we don't hold a borrow on `accounts` while we
+        // also touch `ndb`. `None` for a pubkey-only (watch) account.
+        let signer: Option<[u8; 32]> = ctx
+            .accounts
+            .selected_filled()
+            .map(|f| f.secret_key.secret_bytes());
+
+        // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
+        // in `update` this frame; here we just render the cached canvas.
         if self.sync.view().is_none() {
-            // No canvas yet: auto-seed one for an account that can sign.
-            match &signer {
-                Some(secret) => {
-                    if !self.seeded {
-                        let mut publisher = PrivateRelayPublisher {
-                            api: ctx.remote.publisher_explicit(),
-                            relays: private_relays.clone(),
-                        };
-                        store::seed_canvas(
-                            ctx.ndb,
-                            &author,
-                            secret,
-                            &self.canvas_id,
-                            "Notebook",
-                            &mut publisher,
-                        );
-                        self.seeded = true;
-                        self.wake();
-                    }
-                    empty_state(ui, "Setting up your canvas…");
-                }
-                None => empty_state(ui, "Sign in with a key to create your notebook canvas."),
-            }
-            self.pump_repaint(ui);
+            // No canvas yet. `update` auto-seeds one for a signing account; a
+            // watch-only account can't create one.
+            let msg = if signer.is_some() {
+                "Setting up your canvas…"
+            } else {
+                "Sign in with a key to create your notebook canvas."
+            };
+            empty_state(ui, msg);
             return AppResponse::default();
         }
 
@@ -486,15 +500,12 @@ impl notedeck::App for Notebook {
         let intent = notebook_ui(self, ctx, ui);
 
         // Apply it by ingesting events into the local nostrdb. Mutations need a
-        // signing key; a watch-only account simply can't edit.
+        // signing key; a watch-only account simply can't edit. `update`'s poll
+        // fans the ingested events out to the private relays next frame.
         if let (Some(intent), Some(secret)) = (intent, &signer)
             && let Some(action) = self.intent_to_action(intent)
         {
             let view = self.sync.view().expect("view present");
-            let mut publisher = PrivateRelayPublisher {
-                api: ctx.remote.publisher_explicit(),
-                relays: private_relays,
-            };
             store::apply(
                 ctx.ndb,
                 &self.canvas_id,
@@ -502,12 +513,11 @@ impl notedeck::App for Notebook {
                 &author,
                 secret,
                 action,
-                &mut publisher,
+                &mut store::NoPublish,
             );
             self.wake();
         }
 
-        self.pump_repaint(ui);
         AppResponse::default()
     }
 }
@@ -551,17 +561,34 @@ struct CanvasSync {
     full_reloads: u32,
 }
 
+/// The result of a [`CanvasSync::poll`].
+#[derive(Default)]
+struct PollResponse {
+    /// The cached canvas was (re)reduced this call — a first load, an account
+    /// switch, or new notes folding in — so the caller rebuilds the renderable
+    /// canvas and schedules follow-up repaints.
+    changed: bool,
+    /// Note keys folded in *incrementally* this call. Empty on a full reload
+    /// (those are historical notes, not new ingests) and on a no-op; the caller
+    /// fans these out to the account's private relays (see
+    /// [`notedeck::fan_out_unseen_notes`]).
+    fresh: Vec<NoteKey>,
+}
+
 impl CanvasSync {
     /// Ensure a live subscription to `author`, drain it, and update the cached
-    /// canvas. Returns `true` if the canvas was (re)reduced this call — a first
-    /// load, an account switch, or new notes folded in.
-    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, canvas_id: &str) -> bool {
+    /// canvas. See [`PollResponse`] for the returned change flag and
+    /// freshly-arrived keys.
+    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, canvas_id: &str) -> PollResponse {
         self.sync_subscription(ndb, author);
 
         let Some(sub) = self.sub else {
             // Subscribe failed: degrade to a full reload each frame so edits show.
             self.reload(ndb, author, canvas_id);
-            return true;
+            return PollResponse {
+                changed: true,
+                fresh: Vec::new(),
+            };
         };
 
         let keys = ndb.poll_for_notes(sub, 64);
@@ -570,12 +597,15 @@ impl CanvasSync {
         // the long-lived reducer.
         if self.reducer.is_none() {
             self.reload(ndb, author, canvas_id);
-            return true;
+            return PollResponse {
+                changed: true,
+                fresh: Vec::new(),
+            };
         }
 
         // Nothing new since the last poll: the cached view stands, no re-fold.
         if keys.is_empty() {
-            return false;
+            return PollResponse::default();
         }
 
         // Incremental: fold only the freshly-arrived notes into the live reducer
@@ -586,7 +616,10 @@ impl CanvasSync {
             event::reduce_delta(reducer, ndb, &txn, &keys);
             self.view = event::pick_canvas(reducer, author, canvas_id);
         }
-        true
+        PollResponse {
+            changed: true,
+            fresh: keys,
+        }
     }
 
     /// The cached canvas, if one has been folded.
@@ -683,7 +716,9 @@ mod tests {
         }
 
         fn poll(&mut self) -> bool {
-            self.sync.poll(&mut self.ndb, &self.kp.pubkey, CANVAS_ID)
+            self.sync
+                .poll(&mut self.ndb, &self.kp.pubkey, CANVAS_ID)
+                .changed
         }
 
         fn apply(&mut self, action: CanvasAction) {
