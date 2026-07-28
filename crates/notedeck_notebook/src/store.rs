@@ -513,9 +513,9 @@ fn rank_for_restack(nodes: &[NodeView], node: NoteId, to_index: usize) -> String
 /// event module directly.
 pub use event::load_canvas;
 
-/// Convenience re-exports so the app layer can author/load a longform note
+/// Convenience re-exports so the app layer can author/load/list a longform note
 /// without naming the event module directly.
-pub use event::{LongformInput, LongformNote, load_longform};
+pub use event::{LongformInput, LongformNote, list_longform, load_longform};
 
 #[cfg(test)]
 mod tests {

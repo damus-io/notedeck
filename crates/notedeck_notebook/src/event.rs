@@ -1109,9 +1109,9 @@ pub fn load_canvas(
 /// A filter for all of `author`'s longform notes (kind 30023).
 ///
 /// Separate from [`notebook_filter`] on purpose: longform notes stand alone and
-/// must not be pulled into the canvas fold. A per-`d` `#d` filter would be
-/// tighter, but [`load_longform`] is the only reader for now and it selects the
-/// `d` in memory; a `list_longform` for the vault is a later card.
+/// must not be pulled into the canvas fold. Shared by [`load_longform`] (one note
+/// by `d`), [`list_longform`] (the vault list), and the vault's live
+/// subscription.
 pub fn longform_filter(author: &Pubkey) -> Filter {
     Filter::new()
         .authors([author.bytes()])
@@ -1135,6 +1135,27 @@ pub fn load_longform(
         .filter_map(|r| parse_longform(&r.note))
         .filter(|n| n.d == d)
         .max_by_key(|n| n.created_at)
+}
+
+/// List all of `author`'s longform notes — one per `d`, the current (latest-wins)
+/// revision of each — sorted newest-edited first. Backs the vault sidebar's
+/// browse list.
+///
+/// Kind 30023 is replaceable, and nostrdb keeps *every* revision rather than
+/// collapsing them, so this resolves the effective set via
+/// [`enostr::query_replaceable`] (the shared d-tag fold) rather than deduping by
+/// hand. It reads the inner notes, which nostrdb has transparently unwrapped from
+/// their PNS envelopes — so it only ever sees the notes, never the encrypted
+/// wrappers.
+pub fn list_longform(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<LongformNote> {
+    let mut notes: Vec<LongformNote> =
+        enostr::query_replaceable(ndb, txn, &[longform_filter(author)])
+            .into_iter()
+            .filter_map(|key| ndb.get_note_by_key(txn, key).ok())
+            .filter_map(|note| parse_longform(&note))
+            .collect();
+    notes.sort_by_key(|n| std::cmp::Reverse(n.created_at));
+    notes
 }
 
 /// Whether `kind` is one of the notebook's addressable (latest-wins, keyed per

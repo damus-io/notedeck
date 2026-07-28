@@ -474,10 +474,11 @@ fn wait_for_longform(
     }
 }
 
-/// End-to-end longform editor flow: open the editor from the toolbar, type a
-/// note, Save (which signs a kind-30023, PNS-wraps it in a kind-1080, and ingests
-/// the wrapper), confirm it round-trips back through nostrdb's unwrap, then edit +
-/// Save again and confirm the supersede, then Close back to the canvas.
+/// End-to-end longform flow: open the editor from the toolbar, type a note, Save
+/// (which signs a kind-30023, PNS-wraps it in a kind-1080, and ingests the
+/// wrapper), confirm it round-trips back through nostrdb's unwrap, edit + Save
+/// again and confirm the supersede, Close back to the canvas, then confirm the
+/// note appears in the vault sidebar and clicking it reopens the same note.
 #[test]
 fn create_and_edit_longform_via_editor() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, false);
@@ -554,6 +555,30 @@ fn create_and_edit_longform_via_editor() {
     harness.get_by_label("← Canvas").simulate_click();
     harness.run();
     assert!(!harness.state().notebook.editor_is_open());
+
+    // Back on the canvas, the saved note now shows in the vault sidebar; clicking
+    // it reopens the editor bound to that same note.
+    wait_for_label(&mut harness, "My first note");
+    harness.get_by_label("My first note").simulate_click();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        if harness.state().notebook.editor_is_open()
+            && harness
+                .state()
+                .notebook
+                .editor_saved()
+                .map(|(d2, _)| d2 == d.as_str())
+                == Some(true)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the note never reopened from the vault"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// A click delivered as press+release within a single frame, so it registers

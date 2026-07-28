@@ -6,7 +6,7 @@ mod ui;
 pub mod wordid;
 
 use crate::convert::view_to_canvas;
-use crate::editor::{EditorAction, LongformEditor, SavedLongform, editor_ui};
+use crate::editor::{EditorAction, LongformEditor, SavedLongform, editor_ui, vault_ui};
 use crate::event::{CanvasReducer, CanvasView};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
@@ -39,7 +39,7 @@ pub(crate) struct LiveGeometry {
 }
 
 /// An Obsidian-style infinite canvas, backed by nostr events in the local
-/// nostrdb. [`CanvasSync`] keeps a long-lived reducer over the account's events
+/// nostrdb. [`NotebookSync`] keeps a long-lived reducer over the account's events
 /// and the [`CanvasView`] folded from them, folding only freshly-arrived notes
 /// in as an ndb subscription reports them. Every edit is turned into a signed
 /// event ingested locally (see [`store`]); there is deliberately no relay
@@ -47,8 +47,9 @@ pub(crate) struct LiveGeometry {
 pub struct Notebook {
     /// Which canvas this instance manages (single canvas for now).
     canvas_id: String,
-    /// Subscription-backed cache of the reduced canvas (egui-free).
-    sync: CanvasSync,
+    /// Subscription-backed cache of the reduced canvas and the vault note list
+    /// (egui-free), driven by one [`NotebookSync`].
+    sync: NotebookSync,
     /// Inbound cross-device sync: declares a live + full-history subscription to
     /// the account's private relays each frame, and resolves the outbound
     /// publish targets.
@@ -478,7 +479,7 @@ impl Default for Notebook {
     fn default() -> Self {
         Notebook {
             canvas_id: store::CANVAS_ID.to_string(),
-            sync: CanvasSync::default(),
+            sync: NotebookSync::default(),
             private_sync: PrivateRelaySync::new("notebook"),
             canvas: JsonCanvas::default(),
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
@@ -601,7 +602,29 @@ impl notedeck::App for Notebook {
         }
 
         // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
-        // in `update` this frame; here we just render the cached canvas.
+        // in `update` this frame; here we just render the cached canvas and vault.
+
+        // Vault sidebar: the account's notes down the left, shown once there's at
+        // least one — an empty vault stays out of the way and lets the canvas use
+        // the full width. Clicking a note opens it in the editor, which takes over
+        // from the next frame.
+        let mut open_note = None;
+        if !self.sync.notes().is_empty() {
+            egui::SidePanel::left("notebook-vault")
+                .resizable(true)
+                .default_width(220.0)
+                .show_inside(ui, |ui| {
+                    open_note = vault_ui(self.sync.notes(), ui);
+                });
+        }
+        if let Some(i) = open_note
+            && let Some(editor) = self.sync.notes().get(i).map(LongformEditor::open)
+        {
+            self.editor = Some(editor);
+            ui.ctx().request_repaint();
+            return AppResponse::default();
+        }
+
         if self.sync.view().is_none() {
             // No canvas yet. `update` auto-seeds one for a signing account; a
             // watch-only account can't create one.
@@ -652,31 +675,42 @@ fn empty_state(ui: &mut egui::Ui, message: &str) {
     });
 }
 
-/// Subscription-backed, *online* reducer for one account's canvas.
+/// Subscription-backed, *online* view of one account's notebook state — both the
+/// reduced canvas and the vault note list — behind a single nostrdb subscription.
 ///
-/// Holds a live nostrdb subscription to the account's notebook events **and a
-/// long-lived [`CanvasReducer`]** that persists across frames. The first poll
-/// folds the whole history once to seed the reducer; every later poll feeds it
-/// only the freshly-arrived notes ([`event::reduce_delta`]) — an incremental
-/// step, not a re-walk of the history. The reducer is rebuilt from scratch only
-/// on a first load or an account switch.
+/// Holds a live subscription to all the account's notebook notes (canvas events
+/// **and** longform, [`event::notebook_filter`] + [`event::longform_filter`]) and
+/// a long-lived [`CanvasReducer`] across frames. The first poll folds the whole
+/// history once to seed the reducer; every later poll feeds it only the
+/// freshly-arrived notes ([`event::reduce_delta`]) — an incremental step, not a
+/// re-walk. The reducer is rebuilt from scratch only on a first load or an
+/// account switch. The vault list is re-derived ([`event::list_longform`])
+/// alongside, only when the subscription reports a change.
 ///
-/// Correct because the fold is commutative and idempotent: applying a delta to
-/// an up-to-date reducer lands in the same state as a full re-fold. Deliberately
-/// free of any egui dependency so it can be unit-tested against a bare `Ndb`.
+/// The canvas fold is commutative and idempotent, so applying a delta to an
+/// up-to-date reducer matches a full re-fold. Deliberately free of any egui
+/// dependency so it can be unit-tested against a bare `Ndb`.
 #[derive(Default)]
-struct CanvasSync {
+struct NotebookSync {
     /// The last reduced canvas. `None` means "no such canvas" (or not loaded).
     view: Option<CanvasView>,
+    /// The account's browsable notes, newest-edited first (the vault list).
+    notes: Vec<event::LongformNote>,
     /// The accumulator, kept alive across polls so new notes fold in
     /// incrementally. `None` until the first full fold (and again after an
     /// account switch), which is the signal to re-fold from scratch.
     reducer: Option<CanvasReducer>,
-    /// Live subscription to `sub_author`'s notebook events; polling it is how we
-    /// learn the canvas changed (including our own async ingests landing).
+    /// Live subscription to `sub_author`'s **canvas** notes. Its freshly-polled
+    /// keys drive the incremental fold *and* are the fan-out set — all canvas
+    /// kinds, safe to publish in the clear.
     sub: Option<Subscription>,
-    /// The account `sub`/`reducer`/`view` belong to, so we resubscribe and
-    /// re-fold on an account switch.
+    /// Live subscription to `sub_author`'s **longform** notes, kept apart from
+    /// [`Self::sub`] so its keys never enter the fan-out set (longform is
+    /// PNS-wrapped). Its only job is to signal that the vault list may have
+    /// changed, prompting a re-list.
+    vault_sub: Option<Subscription>,
+    /// The account the subscriptions/caches belong to, so we resubscribe and
+    /// re-derive on an account switch.
     sub_author: Option<Pubkey>,
     /// Test-only count of full-history re-folds, to assert an ordinary change
     /// folds in as a delta rather than re-walking the whole log.
@@ -684,28 +718,30 @@ struct CanvasSync {
     full_reloads: u32,
 }
 
-/// The result of a [`CanvasSync::poll`].
+/// The result of a [`NotebookSync::poll`].
 #[derive(Default)]
 struct PollResponse {
-    /// The cached canvas was (re)reduced this call — a first load, an account
-    /// switch, or new notes folding in — so the caller rebuilds the renderable
-    /// canvas and schedules follow-up repaints.
+    /// The cached canvas or vault list was (re)derived this call — a first load,
+    /// an account switch, or new notes folding in — so the caller rebuilds the
+    /// renderable canvas and schedules follow-up repaints.
     changed: bool,
-    /// Note keys folded in *incrementally* this call. Empty on a full reload
-    /// (those are historical notes, not new ingests) and on a no-op; the caller
-    /// fans these out to the account's private relays (see
-    /// [`notedeck::fan_out_unseen_notes`]).
+    /// **Canvas** note keys folded in *incrementally* this call, for the caller
+    /// to fan out to the account's private relays (see
+    /// [`notedeck::fan_out_unseen_notes`]). Empty on a full reload (historical
+    /// notes, not new ingests) and on a no-op. Deliberately excludes longform
+    /// keys: those are PNS-wrapped and must never be published in the clear (see
+    /// [`Notebook::save_editor`] / `notebook#merry-patch-boost`).
     fresh: Vec<NoteKey>,
 }
 
-impl CanvasSync {
-    /// Ensure a live subscription to `author`, drain it, and update the cached
-    /// canvas. See [`PollResponse`] for the returned change flag and
-    /// freshly-arrived keys.
+impl NotebookSync {
+    /// Ensure a live subscription to `author`, drain it, and update both the
+    /// cached canvas and the vault list. See [`PollResponse`] for the returned
+    /// change flag and freshly-arrived (canvas-only) keys.
     fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, canvas_id: &str) -> PollResponse {
         self.sync_subscription(ndb, author);
 
-        let Some(sub) = self.sub else {
+        let Some(canvas_sub) = self.sub else {
             // Subscribe failed: degrade to a full reload each frame so edits show.
             self.reload(ndb, author, canvas_id);
             return PollResponse {
@@ -714,10 +750,18 @@ impl CanvasSync {
             };
         };
 
-        let keys = ndb.poll_for_notes(sub, 64);
+        // Drain both subscriptions each poll. The canvas keys are the fold delta
+        // and the fan-out set; the longform sub only tells us whether the vault
+        // list needs re-listing (its keys never fan out — see the field docs).
+        let canvas_keys = ndb.poll_for_notes(canvas_sub, 64);
+        let vault_changed = self
+            .vault_sub
+            .map(|s| !ndb.poll_for_notes(s, 64).is_empty())
+            .unwrap_or(false);
 
         // First load (or just resubscribed): fold the whole history once to seed
-        // the long-lived reducer.
+        // the reducer and list the vault. The keys drained above are historical,
+        // so they're deliberately dropped rather than fanned out.
         if self.reducer.is_none() {
             self.reload(ndb, author, canvas_id);
             return PollResponse {
@@ -726,22 +770,27 @@ impl CanvasSync {
             };
         }
 
-        // Nothing new since the last poll: the cached view stands, no re-fold.
-        if keys.is_empty() {
+        // Nothing new since the last poll: the caches stand, no re-derive.
+        if canvas_keys.is_empty() && !vault_changed {
             return PollResponse::default();
         }
 
-        // Incremental: fold only the freshly-arrived notes into the live reducer
-        // and re-finalize. Commutative/idempotent, so this matches a full
-        // re-fold without walking the whole history.
+        // Incremental: fold the freshly-arrived canvas notes into the live reducer
+        // (commutative/idempotent, so this matches a full re-fold without walking
+        // the whole history), and re-list the vault only when longform changed.
         if let Ok(txn) = Transaction::new(ndb) {
-            let reducer = self.reducer.as_mut().expect("reducer present");
-            event::reduce_delta(reducer, ndb, &txn, &keys);
-            self.view = event::pick_canvas(reducer, author, canvas_id);
+            if !canvas_keys.is_empty() {
+                let reducer = self.reducer.as_mut().expect("reducer present");
+                event::reduce_delta(reducer, ndb, &txn, &canvas_keys);
+                self.view = event::pick_canvas(reducer, author, canvas_id);
+            }
+            if vault_changed {
+                self.notes = event::list_longform(ndb, &txn, author);
+            }
         }
         PollResponse {
             changed: true,
-            fresh: keys,
+            fresh: canvas_keys,
         }
     }
 
@@ -750,38 +799,50 @@ impl CanvasSync {
         self.view.as_ref()
     }
 
-    /// Re-fold the whole event history into a fresh reducer (seeding or after an
-    /// account switch) and pick out our canvas.
+    /// The cached vault note list (newest-edited first).
+    fn notes(&self) -> &[event::LongformNote] {
+        &self.notes
+    }
+
+    /// Re-derive everything from the whole event history into a fresh reducer
+    /// (seeding or after an account switch): the canvas view and the vault list.
     fn reload(&mut self, ndb: &Ndb, author: &Pubkey, canvas_id: &str) {
-        let reducer = Transaction::new(ndb)
-            .ok()
-            .and_then(|txn| event::fold_canvas(ndb, &txn, author));
+        let Ok(txn) = Transaction::new(ndb) else {
+            return;
+        };
+        let reducer = event::fold_canvas(ndb, &txn, author);
         self.view = reducer
             .as_ref()
             .and_then(|r| event::pick_canvas(r, author, canvas_id));
         self.reducer = reducer;
+        self.notes = event::list_longform(ndb, &txn, author);
         #[cfg(test)]
         {
             self.full_reloads += 1;
         }
     }
 
-    /// Ensure we hold a live subscription to `author`'s notebook events,
-    /// resubscribing (and dropping the cached reducer) on an account switch. A
-    /// fresh subscription only reports *future* ingests, so the next poll does a
-    /// one-off full fold to pick up what's already there.
+    /// Ensure live subscriptions to `author`'s canvas and longform notes,
+    /// resubscribing (and dropping the caches) on an account switch. A fresh
+    /// subscription only reports *future* ingests, so the next poll does a
+    /// one-off full re-derive to pick up what's already there.
     fn sync_subscription(&mut self, ndb: &mut Ndb, author: &Pubkey) {
         if self.sub.is_some() && self.sub_author.as_ref() == Some(author) {
             return;
         }
-        if let Some(old) = self.sub.take() {
+        for old in [self.sub.take(), self.vault_sub.take()]
+            .into_iter()
+            .flatten()
+        {
             let _ = ndb.unsubscribe(old);
         }
         self.sub = ndb.subscribe(&[event::notebook_filter(author)]).ok();
+        self.vault_sub = ndb.subscribe(&[event::longform_filter(author)]).ok();
         self.sub_author = Some(*author);
-        // New account (or first run): drop the cache so the next poll re-folds.
+        // New account (or first run): drop the caches so the next poll re-derives.
         self.view = None;
         self.reducer = None;
+        self.notes.clear();
     }
 }
 
@@ -793,14 +854,14 @@ mod tests {
     use futures_util::StreamExt;
     use nostrdb::{Config, SubscriptionStream};
 
-    /// A headless harness driving a [`CanvasSync`] against a bare `Ndb` — the
+    /// A headless harness driving a [`NotebookSync`] against a bare `Ndb` — the
     /// subscription / poll / refold logic with no egui in sight. Mirrors
     /// headway's `TestSync`.
     struct TestSync {
         ndb: Ndb,
         _dir: tempfile::TempDir,
         kp: FullKeypair,
-        sync: CanvasSync,
+        sync: NotebookSync,
         stream: SubscriptionStream,
     }
 
@@ -819,7 +880,7 @@ mod tests {
                 ndb,
                 _dir: dir,
                 kp,
-                sync: CanvasSync::default(),
+                sync: NotebookSync::default(),
                 stream,
             }
         }

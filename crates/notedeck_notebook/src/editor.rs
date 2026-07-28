@@ -9,6 +9,7 @@
 //! how the canvas returns a single [`crate::UiIntent`] for the caller to apply, and
 //! lets the editor be driven headlessly in tests.
 
+use crate::event::LongformNote;
 use egui::{Layout, RichText, ScrollArea, TextEdit};
 use notedeck::AppContext;
 
@@ -56,6 +57,22 @@ impl LongformEditor {
             saved: None,
             saved_title: String::new(),
             saved_content: String::new(),
+        }
+    }
+
+    /// An editor bound to an existing note (opened from the vault), its buffers
+    /// seeded from `note` and clean: `saved` carries the note's `d` +
+    /// `created_at`, so the next save supersedes it rather than minting a new one.
+    pub(crate) fn open(note: &LongformNote) -> Self {
+        LongformEditor {
+            title: note.title.clone(),
+            content: note.content.clone(),
+            saved: Some(SavedLongform {
+                d: note.d.clone(),
+                created_at: note.created_at,
+            }),
+            saved_title: note.title.clone(),
+            saved_content: note.content.clone(),
         }
     }
 
@@ -204,6 +221,36 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
         return;
     }
     notedeck_ui::markdown::render_markdown_with_refs(ui, ctx, content);
+}
+
+/// Render the vault list — one selectable row per note (newest-edited first) —
+/// and return the index of a note clicked this frame, for the caller to open.
+/// Reads a borrowed slice and builds no owned collections, so it's safe to call
+/// every frame from the canvas-mode sidebar (the list itself is cached upstream).
+pub(crate) fn vault_ui(notes: &[LongformNote], ui: &mut egui::Ui) -> Option<usize> {
+    ui.add_space(notedeck::tokens::SPACING_SM);
+    ui.strong("Notes");
+    ui.separator();
+
+    if notes.is_empty() {
+        ui.weak("No notes yet.");
+        return None;
+    }
+
+    let mut open = None;
+    ScrollArea::vertical()
+        .id_salt("notebook-vault-list")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for (i, note) in notes.iter().enumerate() {
+                let title = note.title.trim();
+                let label = if title.is_empty() { "Untitled" } else { title };
+                if ui.selectable_label(false, label).clicked() {
+                    open = Some(i);
+                }
+            }
+        });
+    open
 }
 
 #[cfg(test)]
