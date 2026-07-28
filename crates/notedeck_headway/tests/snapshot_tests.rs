@@ -284,6 +284,8 @@ fn snapshot_inline_card() {
         activity: vec![],
         parent: None,
         subissues: vec![],
+        due: None,
+        estimate: None,
     };
 
     let mut installed = false;
