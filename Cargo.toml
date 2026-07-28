@@ -8,10 +8,18 @@ members = [
     "crates/notedeck_dave",
     "crates/notedeck_messages",
     "crates/notedeck_notebook",
+    "crates/headway",
+    "crates/headway_cli",
+    "crates/relay_sync",
+    "crates/notebook_cli",
+    "crates/notedeck_headway",
+    "crates/nostrdb_relay",
     "crates/notedeck_nostrverse",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
     "crates/notedeck_dashboard",
+    "crates/notedeck_horizon",
+    "crates/nostr_calsync",
     "crates/md-stream",
     "crates/tokenator",
     "crates/enostr",
@@ -31,6 +39,7 @@ base64 = "0.22.1"
 rmpv = "1.3.0"
 rand = "0.9.2"
 bech32 = { version = "0.11", default-features = false }
+bip39 = { version = "2.2", default-features = false }
 bitflags = "2.5.0"
 dirs = "5.0.1"
 eframe = { version = "0.31.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
@@ -76,10 +85,16 @@ notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
 notedeck_dashboard = { path = "crates/notedeck_dashboard" }
+notedeck_horizon = { path = "crates/notedeck_horizon" }
+nostr_calsync = { path = "crates/nostr_calsync" }
 notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
+headway = { path = "crates/headway" }
+relay_sync = { path = "crates/relay_sync" }
+notedeck_headway = { path = "crates/notedeck_headway" }
+nostrdb_relay = { path = "crates/nostrdb_relay" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
@@ -100,6 +115,7 @@ strum = "0.26"
 strum_macros = "0.26"
 thiserror = "2.0.7"
 tokio = { version = "1.16", features = ["macros", "rt-multi-thread", "fs"] }
+tokio-tungstenite = "0.24"
 tracing = { version = "0.1.40", features = ["log"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -129,6 +145,7 @@ android-keyring = "0.2.0"
 rfd = "0.15"
 egui_kittest = "0.31.1"
 pollster = "0.4"
+futures-util = "0.3"
 arboard = { git = "https://github.com/jb55/arboard", rev = "05755435fc8cf910449a8388bb8926a92b2db51e" }
 flate2 = "1"
 self-replace = "1"
@@ -154,13 +171,13 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui_kittest = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
+egui = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui_kittest = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 winit = { git = "https://github.com/damus-io/winit", rev = "a07ea4c4d76cdc5306da8e8aabb05cab1a7d8e4d" }

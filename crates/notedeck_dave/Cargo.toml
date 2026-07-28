@@ -50,6 +50,9 @@ rfd = { workspace = true }
 objc2 = "0.6.1"
 objc2-app-kit = { version = "0.3.1", features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSWindow"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }

@@ -1,13 +1,818 @@
-use egui::{Align, Label, Pos2, Rect, Shape, Stroke, TextWrapMode, epaint::CubicBezierShape, vec2};
+use crate::{LiveGeometry, NEW_NODE_SIZE, NodeEdit, Notebook, UiIntent};
+use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
 use jsoncanvas::{
-    FileNode, GroupNode, LinkNode, Node, NodeId, TextNode,
+    FileNode, GroupNode, JsonCanvas, LinkNode, Node, NodeId, TextNode,
+    color::{Color, PresetColor},
     edge::{Edge, Side},
     node::GenericNode,
 };
+use notedeck::AppContext;
 use std::collections::HashMap;
 use std::ops::Neg;
 
-fn node_rect(node: &GenericNode) -> Rect {
+/// An in-progress edge-drawing gesture, dragged from a node's side handle. The
+/// payload is the same for both phases — only whether the drag is still live or
+/// has just been released differs — so they share one enum.
+enum Connect {
+    /// Dragging from `node`'s `side` handle; the preview line runs to `pos`.
+    Dragging { node: NodeId, side: Side, pos: Pos2 },
+    /// The drag was released at `pos`; if it lands on another node, an edge from
+    /// `node`'s `side` to that node is created.
+    Released { node: NodeId, side: Side, pos: Pos2 },
+}
+
+/// The four node sides an edge can attach to. A fresh array each call since
+/// `Side` is neither `Copy` nor `Clone`; the values are moved out as we iterate.
+fn sides() -> [Side; 4] {
+    [Side::Top, Side::Right, Side::Bottom, Side::Left]
+}
+
+/// JSON Canvas side string for `side`, used as a stable handle id and as the
+/// `from`/`to` side when building an edge.
+pub(crate) fn side_str(side: &Side) -> &'static str {
+    match side {
+        Side::Top => "top",
+        Side::Right => "right",
+        Side::Bottom => "bottom",
+        Side::Left => "left",
+    }
+}
+
+/// Visible radius of a node's connection handle, in canvas pixels.
+const HANDLE_RADIUS: f32 = 3.5;
+/// Click/drag target size of a connection handle (larger than it looks, so it's
+/// easy to grab).
+const HANDLE_HIT: f32 = 18.0;
+/// Width of the grab strip along a node's left/right edge that resizes it, in
+/// canvas pixels. A thin band so it sits on the border without eating drags on
+/// the node body (which move the node).
+const RESIZE_GRAB: f32 = 8.0;
+/// Smallest width a node can be resized to, in canvas pixels, so it never
+/// collapses to an ungrabbable sliver.
+const MIN_NODE_WIDTH: f32 = 80.0;
+/// Smallest declared height a node can be resized to, in canvas pixels, so it
+/// never collapses to an ungrabbable sliver. The box can still render taller when
+/// its content needs more room (see [`Notebook::node_rect`]).
+const MIN_NODE_HEIGHT: f32 = 40.0;
+/// How close (canvas pixels) the pointer must be to an edge's curve to count as
+/// hovering it — the threshold that reveals the edge's midpoint delete handle.
+const EDGE_HOVER_DIST: f32 = 8.0;
+/// Stroke width of an edge's curve, in canvas pixels.
+const EDGE_STROKE: f32 = 2.0;
+/// Length of an edge's arrowhead, tip to base. Shared so the curve can end flush
+/// against the arrow's base rather than poking through its tip.
+const ARROW_LEN: f32 = 11.0;
+/// Width of an edge's arrowhead base.
+const ARROW_WIDTH: f32 = 9.0;
+/// How hard an edge's curve bows out from its anchors — the tangent handles are
+/// pulled this fraction of the anchor-to-anchor distance. ¼-ish feels "Obsidian".
+const EDGE_BEND: f32 = 0.28;
+
+/// The single pointer gesture a frame's [`egui::Scene`] closure resolves to.
+/// One pointer does one thing per frame, so these are mutually exclusive and
+/// collapse into a single value rather than a pile of parallel `Option`s. (The
+/// node body's drag/select handle sits *under* interactive content like a
+/// checkbox — see [`node_box_ui`] — so e.g. a checkbox toggle and a body click
+/// can't both fire.) Outcomes that genuinely co-occur with a gesture — an editor
+/// losing focus, a handle held pre-drag, per-node height measurement — live
+/// beside this in [`FrameOutcome`], not in here.
+enum Gesture {
+    /// A node dragged to a new top-left (canvas coords).
+    Drag(NodeId, Pos2),
+    /// A node's drag ended — commits the move.
+    DragStopped(NodeId),
+    /// A node clicked (selects it).
+    Click(NodeId),
+    /// Empty canvas clicked (clears the selection).
+    BgClick,
+    /// Empty canvas double-clicked here (drops a fresh node to compose).
+    CreateAt(Pos2),
+    /// A node double-clicked to edit its text.
+    StartEdit(NodeId),
+    /// A task-list checkbox toggled in a rendered text node, with rewritten text.
+    CheckboxEdit(NodeId, String),
+    /// A node resized via a handle — the live geometry override for the axes the
+    /// dragged handle controls (canvas coords).
+    Resize(NodeId, LiveGeometry),
+    /// A node's resize ended — commits the new geometry.
+    ResizeStopped(NodeId),
+    /// An in-progress or just-released edge-connection gesture.
+    Connect(Connect),
+    /// An edge's midpoint delete handle was clicked (its removal intent).
+    Disconnect(UiIntent),
+    /// A node's context-menu "Delete" was chosen (arms the confirm modal).
+    RequestDelete(NodeId),
+}
+
+/// Whether an inline editor that lost focus this frame should keep its buffer or
+/// drop it.
+enum EditEnd {
+    /// A plain blur — persist the buffer (or delete the node if blanked).
+    Commit,
+    /// Esc — discard the edit.
+    Cancel,
+}
+
+/// Outcomes collected during one frame's [`egui::Scene`] closure, applied after
+/// it returns. The closure needs `&mut scene_rect` and borrows the canvas
+/// immutably, so it can't touch `Notebook` mutably; it stashes what it observes
+/// here and the caller drains it once the borrows release. The pointer gesture
+/// folds into one [`Gesture`]; the rest are independent channels that can fire in
+/// the same frame as the gesture.
+#[derive(Default)]
+struct FrameOutcome {
+    /// The pointer gesture this frame, if any.
+    gesture: Option<Gesture>,
+    /// An open inline editor that lost focus this frame. Cross-cutting: any press
+    /// elsewhere blurs the editor in the same frame as the new gesture, so it
+    /// can't fold into [`Gesture`].
+    edit_end: Option<EditEnd>,
+    /// The node whose connection handle has the pointer held on it, even before
+    /// the drag threshold is crossed — keeps the gesture alive pre-drag, and
+    /// coexists with a [`Gesture::Connect`] drag in the same frame.
+    pressing_handle: Option<NodeId>,
+    /// Each node's actual rendered height this frame; content can overflow the
+    /// declared height, so this feeds next frame's edge/handle anchoring (see
+    /// [`Notebook::rendered_heights`]). Always collected, for every node.
+    rendered_heights: HashMap<NodeId, f32>,
+}
+
+/// The eight resize handles around a selected node, each an `(x, y)` edge
+/// selector in `{-1, 0, 1}`: −1 the left/top edge, 1 the right/bottom edge, 0 the
+/// axis this handle leaves alone. The four corners drive both axes, the four edges
+/// one. `(0, 0)` — no edge — is deliberately absent.
+const RESIZE_HANDLES: [(i8, i8); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+
+/// The grab rect for resize handle `(hx, hy)` on `rect`. Corner handles are small
+/// squares centered on the corner; edge handles are thin strips along the edge,
+/// inset by `RESIZE_GRAB / 2` at each end so they meet — but don't overlap — the
+/// adjacent corner squares (which then win the corners).
+fn resize_grab_rect(rect: Rect, hx: i8, hy: i8) -> Rect {
+    let h = RESIZE_GRAB / 2.0;
+    let (x0, x1) = match hx {
+        -1 => (rect.left() - h, rect.left() + h),
+        1 => (rect.right() - h, rect.right() + h),
+        _ => (rect.left() + h, rect.right() - h),
+    };
+    let (y0, y1) = match hy {
+        -1 => (rect.top() - h, rect.top() + h),
+        1 => (rect.bottom() - h, rect.bottom() + h),
+        _ => (rect.top() + h, rect.bottom() - h),
+    };
+    Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+}
+
+/// The pointer cursor for resize handle `(hx, hy)`: axis-aligned for edges,
+/// diagonal for corners (top-left/bottom-right share one diagonal, the other two
+/// the other).
+fn resize_cursor(hx: i8, hy: i8) -> egui::CursorIcon {
+    match (hx, hy) {
+        (0, _) => egui::CursorIcon::ResizeVertical,
+        (_, 0) => egui::CursorIcon::ResizeHorizontal,
+        (a, b) if a == b => egui::CursorIcon::ResizeNwSe,
+        _ => egui::CursorIcon::ResizeNeSw,
+    }
+}
+
+/// Apply pointer `delta` to `rect` for handle `(hx, hy)`, yielding the live
+/// override for just the axes it controls. A left/top edge shifts the top-left and
+/// changes the size inversely; a right/bottom edge holds the top-left and grows
+/// the size. Sizes clamp to the node minimums. `pos` is always set so the box
+/// stays pinned under the pointer (no animation) for the duration of the drag.
+fn resize_drag(rect: Rect, hx: i8, hy: i8, delta: egui::Vec2) -> LiveGeometry {
+    let mut min = rect.min;
+    let mut geo = LiveGeometry::default();
+    match hx {
+        -1 => {
+            let left = (rect.left() + delta.x).min(rect.right() - MIN_NODE_WIDTH);
+            min.x = left;
+            geo.width = Some(rect.right() - left);
+        }
+        1 => geo.width = Some((rect.width() + delta.x).max(MIN_NODE_WIDTH)),
+        _ => {}
+    }
+    match hy {
+        -1 => {
+            let top = (rect.top() + delta.y).min(rect.bottom() - MIN_NODE_HEIGHT);
+            min.y = top;
+            geo.height = Some(rect.bottom() - top);
+        }
+        1 => geo.height = Some((rect.height() + delta.y).max(MIN_NODE_HEIGHT)),
+        _ => {}
+    }
+    geo.pos = Some(min);
+    geo
+}
+
+/// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
+/// with draggable, selectable, editable nodes. Selection and live-drag state are
+/// written back into `notebook`; committed edits (move, text edit, create,
+/// delete, connect) are returned as a single [`UiIntent`] for the caller to
+/// ingest. Dragging from a node's side handle onto another node draws an edge.
+pub fn notebook_ui(
+    notebook: &mut Notebook,
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+) -> Option<UiIntent> {
+    if !notebook.loaded {
+        notebook.scene_rect = ui.available_rect_before_wrap();
+        notebook.loaded = true;
+    }
+
+    // Effective rects for every node, accounting for drag overrides. Edges and
+    // nodes both read from this so a dragged node's edges follow it.
+    let rects: HashMap<NodeId, Rect> = notebook
+        .canvas
+        .get_nodes()
+        .iter()
+        .map(|(id, node)| (id.clone(), notebook.node_rect(id, node)))
+        .collect();
+
+    // Collect interactions inside the scene closure and apply them after, so the
+    // closure only borrows the canvas immutably (Scene needs &mut scene_rect).
+    // The edit state is moved out so the editor can mutate its buffer in place.
+    let mut scene_rect = notebook.scene_rect;
+    let view = notebook.scene_rect;
+    let mut out = FrameOutcome::default();
+    let mut edit = std::mem::replace(&mut notebook.edit, NodeEdit::Idle);
+    let canvas = &notebook.canvas;
+    let selected = notebook.selected.as_ref();
+    let connecting = notebook.connecting.clone();
+
+    egui::Scene::new().show(ui, &mut scene_rect, |ui| {
+        // Background handle first (underneath the nodes) covering the visible
+        // region, so a click on empty canvas clears the selection.
+        let bg = ui.interact(view, ui.id().with("notebook_bg"), egui::Sense::click());
+        if bg.clicked() {
+            out.gesture = Some(Gesture::BgClick);
+        }
+        // Double-clicking empty canvas drops a fresh text node there to edit.
+        if bg.double_clicked()
+            && let Some(pos) = bg.interact_pointer_pos()
+        {
+            out.gesture = Some(Gesture::CreateAt(pos));
+        }
+
+        // Edges next, then nodes on top so node drag handles win interaction.
+        // Clicking an edge's midpoint delete handle removes it.
+        for (_edge_id, edge) in canvas.get_edges().iter() {
+            if let Some(removed) = edge_ui(ui, &rects, edge) {
+                out.gesture = Some(Gesture::Disconnect(removed));
+            }
+        }
+
+        // The id of the node being edited (existing-node editor), if any.
+        let editing_id = match &edit {
+            NodeEdit::Editing { node, .. } => Some(node.clone()),
+            _ => None,
+        };
+
+        for (id, node) in canvas.get_nodes().iter() {
+            let rect = rects[id];
+
+            // The node being edited renders an inline text field instead of its
+            // usual contents; everything else renders normally and can enter
+            // edit mode on a double-click.
+            if editing_id.as_ref() == Some(id) {
+                let NodeEdit::Editing {
+                    buffer,
+                    request_focus,
+                    ..
+                } = &mut edit
+                else {
+                    unreachable!()
+                };
+                let resp =
+                    text_edit_node_ui(ui, node.node().color.as_ref(), rect, buffer, *request_focus);
+                *request_focus = false;
+                // Anchor edges/handles to the editor's real box, not the declared
+                // height — the raw text being edited can be a different size than
+                // the rendered markdown it replaced. Without this the node falls
+                // back to its canvas geometry and the anchors float (see
+                // `Notebook::rendered_heights`).
+                out.rendered_heights.insert(id.clone(), resp.rect.height());
+                if resp.lost_focus() {
+                    // Esc abandons the edit; any other blur commits it.
+                    out.edit_end = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        EditEnd::Cancel
+                    } else {
+                        EditEnd::Commit
+                    });
+                }
+                continue;
+            }
+
+            let NodeRender {
+                resp:
+                    egui::InnerResponse {
+                        response: resp,
+                        inner: toggled_text,
+                    },
+                content_height,
+            } = node_ui(ui, ctx, node, rect, selected == Some(id));
+            // Remember the node's *intrinsic* content height (what the content
+            // needs, not the padded box) so `node_rect` can use it as the
+            // grow/shrink floor and let the box be resized shorter than it is now.
+            out.rendered_heights.insert(id.clone(), content_height);
+            // A node's body senses click and drag; a checkbox in its content sits
+            // on top and wins clicks (see `node_box_ui`), so at most one of these
+            // fires per frame — hence a single `out.gesture`.
+            if let Some(text) = toggled_text {
+                out.gesture = Some(Gesture::CheckboxEdit(id.clone(), text));
+            }
+            if resp.dragged() {
+                out.gesture = Some(Gesture::Drag(id.clone(), rect.min + resp.drag_delta()));
+            }
+            // On release, commit the move (its final position is the override
+            // recorded by the last drag frame, read after the closure).
+            if resp.drag_stopped() {
+                out.gesture = Some(Gesture::DragStopped(id.clone()));
+            }
+            if resp.clicked() {
+                out.gesture = Some(Gesture::Click(id.clone()));
+            }
+            if resp.double_clicked() && matches!(node, Node::Text(_)) {
+                out.gesture = Some(Gesture::StartEdit(id.clone()));
+            }
+            // Right-click (or long-press on touch) opens a context menu whose
+            // Delete entry asks to remove the node, behind a confirmation prompt.
+            notedeck_ui::context_menu::context_menu(&resp, |ui| {
+                if ui.button("Delete").clicked() {
+                    out.gesture = Some(Gesture::RequestDelete(id.clone()));
+                    ui.close_menu();
+                }
+            });
+        }
+
+        // A brand-new node being composed renders its editor at its position; it
+        // isn't in the canvas yet (it's created only when the edit commits).
+        if let NodeEdit::Creating {
+            pos,
+            buffer,
+            request_focus,
+        } = &mut edit
+        {
+            let rect = Rect::from_min_size(*pos, NEW_NODE_SIZE);
+            let resp = text_edit_node_ui(ui, None, rect, buffer, *request_focus);
+            *request_focus = false;
+            if resp.lost_focus() {
+                out.edit_end = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    EditEnd::Cancel
+                } else {
+                    EditEnd::Commit
+                });
+            }
+        }
+
+        // Resize affordance: grab handles on the selected node's edges and
+        // corners. Edge handles resize one axis, corner handles both. Width is
+        // exact (narrowing reflows the content); height is the declared box height
+        // clamped up to the content (see `Notebook::node_rect`), so it can shrink
+        // down to the content. Registered after the node bodies (so a
+        // handle drag resizes instead of moving) and before the connection handles
+        // (so the side-midpoint connection dots still win the center of each edge).
+        if let Some(sel) = selected
+            && editing_id.as_ref() != Some(sel)
+            && let Some(rect) = rects.get(sel).copied()
+        {
+            for (hx, hy) in RESIZE_HANDLES {
+                let resp = ui.interact(
+                    resize_grab_rect(rect, hx, hy),
+                    ui.id().with(("notebook_resize", sel.as_str(), hx, hy)),
+                    egui::Sense::drag(),
+                );
+                if resp.hovered() || resp.dragged() {
+                    ui.ctx().set_cursor_icon(resize_cursor(hx, hy));
+                    let stroke = egui::Stroke::new(2.0, ui.visuals().selection.stroke.color);
+                    if hx != 0 {
+                        let x = if hx < 0 { rect.left() } else { rect.right() };
+                        ui.painter().vline(x, rect.y_range(), stroke);
+                    }
+                    if hy != 0 {
+                        let y = if hy < 0 { rect.top() } else { rect.bottom() };
+                        ui.painter().hline(rect.x_range(), y, stroke);
+                    }
+                }
+                if resp.dragged() {
+                    let geo = resize_drag(rect, hx, hy, resp.drag_delta());
+                    out.gesture = Some(Gesture::Resize(sel.clone(), geo));
+                }
+                if resp.drag_stopped() {
+                    out.gesture = Some(Gesture::ResizeStopped(sel.clone()));
+                }
+            }
+        }
+
+        // Connection handles: small dots on the sides of the active node(s) that
+        // start an edge when dragged. Shown for the selected node, the node under
+        // the pointer (including the handle band just outside its edges), and the
+        // node currently being connected from, so they don't clutter the whole
+        // canvas. The gesture is collected into `connect` and resolved (into an
+        // edge) after the closure.
+        //
+        // "Under the pointer" is a geometric test, not egui hover: hover is
+        // suppressed while a pointer button is held, yet a connection drag begins
+        // with exactly such a press — on a handle that sits on the node's border,
+        // just off the body. Project the pointer into scene space and test it
+        // against each node's rect grown by the handle reach, so the handle stays
+        // a live target through the press that starts the drag.
+        let ptr = ui.ctx().pointer_latest_pos().map(|p| {
+            ui.ctx()
+                .layer_transform_from_global(ui.layer_id())
+                .map_or(p, |t| t * p)
+        });
+        let handle_target = ptr.and_then(|p| {
+            rects
+                .iter()
+                .find(|(_, r)| r.expand(HANDLE_HIT / 2.0).contains(p))
+                .map(|(id, _)| id.clone())
+        });
+        let candidates = [selected, handle_target.as_ref(), connecting.as_ref()];
+        for i in 0..candidates.len() {
+            let Some(nid) = candidates[i] else { continue };
+            // Skip nodes off-canvas or already handled (selected == handle_target, etc).
+            if !rects.contains_key(nid) || candidates[..i].iter().flatten().any(|c| *c == nid) {
+                continue;
+            }
+            let rect = rects[nid];
+            for side in sides() {
+                let center = side_point(&side, rect);
+                let hit = Rect::from_center_size(center, vec2(HANDLE_HIT, HANDLE_HIT));
+                let resp = ui.interact(
+                    hit,
+                    ui.id()
+                        .with(("notebook_handle", nid.as_str(), side_str(&side))),
+                    egui::Sense::click_and_drag(),
+                );
+                let state = if resp.hovered() || resp.dragged() {
+                    HandleState::Active
+                } else {
+                    HandleState::Idle
+                };
+                connection_handle_ui(ui, center, state);
+                // Hold the node in the candidate set for as long as its handle is
+                // pressed — egui only reports `dragged()` once the pointer crosses
+                // the drag threshold, by which point it has usually left the node,
+                // so without this the gesture would be dropped before it starts.
+                if resp.is_pointer_button_down_on() {
+                    out.pressing_handle = Some(nid.clone());
+                }
+                let pos = resp.interact_pointer_pos();
+                if resp.drag_stopped() {
+                    out.gesture = Some(Gesture::Connect(Connect::Released {
+                        node: nid.clone(),
+                        side,
+                        pos: pos.unwrap_or(center),
+                    }));
+                } else if resp.dragged()
+                    && let Some(pos) = pos
+                {
+                    out.gesture = Some(Gesture::Connect(Connect::Dragging {
+                        node: nid.clone(),
+                        side,
+                        pos,
+                    }));
+                }
+            }
+        }
+
+        // Preview an in-progress connection: a line from the source handle to the
+        // pointer, and a highlight on the node it would land on.
+        if let Some(Gesture::Connect(Connect::Dragging { node, side, pos })) = &out.gesture
+            && let Some(from_rect) = rects.get(node)
+        {
+            connection_preview_ui(ui, side_point(side, *from_rect), *pos);
+            if let Some(target) = node_at(&rects, *pos, node) {
+                let target_rect = rects[target];
+                ui.painter().rect_stroke(
+                    target_rect,
+                    egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8),
+                    egui::Stroke::new(
+                        notedeck::tokens::STROKE_THICK * 2.0,
+                        ui.visuals().strong_text_color(),
+                    ),
+                    egui::StrokeKind::Inside,
+                );
+                // Enlarge the anchor the edge would attach to, so it's clear
+                // which side the connection lands on before releasing.
+                let to_side = nearest_side(target_rect, *pos);
+                connection_handle_ui(ui, side_point(&to_side, target_rect), HandleState::Target);
+            }
+        }
+    });
+
+    notebook.scene_rect = scene_rect;
+    notebook.rendered_heights = std::mem::take(&mut out.rendered_heights);
+    // Keep the connecting node's handles alive while a drag is live, or while its
+    // handle is merely held (pre-threshold), so the gesture isn't dropped before
+    // egui promotes it to a drag. Cleared once the button is released.
+    let dragging = match &out.gesture {
+        Some(Gesture::Connect(Connect::Dragging { node, .. })) => Some(node.clone()),
+        _ => None,
+    };
+    notebook.connecting = dragging.or_else(|| out.pressing_handle.take());
+
+    // Drain the frame's pointer gesture. Selection and live-drag/resize overrides
+    // apply straight to `notebook`; the gestures that commit a change set
+    // `intent`. Edit-state transitions and the checkbox edit are deferred to the
+    // locals below so they run *after* the editor-commit logic (preserving the
+    // original ordering: a commit closes the old editor before a double-click
+    // opens the next, and a checkbox toggled mid-edit wins over that commit).
+    let mut start_edit: Option<NodeId> = None;
+    let mut create_at: Option<Pos2> = None;
+    let mut request_delete: Option<NodeId> = None;
+    let mut checkbox_intent: Option<UiIntent> = None;
+    let mut intent: Option<UiIntent> = None;
+    match out.gesture {
+        None | Some(Gesture::Connect(Connect::Dragging { .. })) => {}
+        Some(Gesture::Click(id)) => notebook.selected = Some(id),
+        Some(Gesture::BgClick) => notebook.selected = None,
+        Some(Gesture::Drag(id, pos)) => {
+            notebook.live.entry(id).or_default().pos = Some(pos);
+        }
+        // A finished drag commits a move to the node's last recorded override.
+        Some(Gesture::DragStopped(id)) => {
+            intent = notebook
+                .live
+                .get(&id)
+                .and_then(|l| l.pos)
+                .map(|pos| UiIntent::Move { node: id, pos });
+        }
+        // Merge the handle's per-axis override into the node's live geometry; it
+        // reflows the box (and shifts the top-left for a left/top-edge drag).
+        Some(Gesture::Resize(id, geo)) => {
+            let live = notebook.live.entry(id).or_default();
+            if let Some(pos) = geo.pos {
+                live.pos = Some(pos);
+            }
+            if let Some(width) = geo.width {
+                live.width = Some(width);
+            }
+            if let Some(height) = geo.height {
+                live.height = Some(height);
+            }
+        }
+        // A finished resize commits the new geometry. An axis the handle didn't
+        // touch falls back to the committed value (see `Notebook::resize_size`), so
+        // e.g. a width-only drag can't clobber a height floor.
+        Some(Gesture::ResizeStopped(id)) => {
+            if let (Some((width, height)), Some(pos)) =
+                (notebook.resize_size(&id), notebook.node_position(&id))
+            {
+                intent = Some(UiIntent::Resize {
+                    node: id,
+                    pos,
+                    width,
+                    height,
+                });
+            }
+        }
+        Some(Gesture::Disconnect(removed)) => intent = Some(removed),
+        // A released connection that landed on another node becomes a new edge,
+        // anchored from the dragged side to whichever side of the target it faces.
+        Some(Gesture::Connect(Connect::Released { node, side, pos })) => {
+            if let Some(target) = node_at(&rects, pos, &node) {
+                let to_side = nearest_side(rects[target], pos);
+                intent = Some(UiIntent::Connect {
+                    from: node,
+                    from_side: side,
+                    to: target.clone(),
+                    to_side,
+                });
+            }
+        }
+        Some(Gesture::CheckboxEdit(node, text)) => {
+            checkbox_intent = Some(UiIntent::EditText { node, text })
+        }
+        Some(Gesture::StartEdit(id)) => start_edit = Some(id),
+        Some(Gesture::CreateAt(pos)) => create_at = Some(pos),
+        Some(Gesture::RequestDelete(id)) => request_delete = Some(id),
+    }
+
+    // Resolve the edit transition. Commit/cancel close the current editor; the
+    // deferred `start_edit` below then opens the next one. A commit turns into an
+    // edit (or a delete if blanked) for an existing node, or a create for a new
+    // one; blank creates and Esc are discarded so stray double-clicks leave no
+    // trace.
+    match out.edit_end {
+        Some(EditEnd::Cancel) => edit = NodeEdit::Idle,
+        Some(EditEnd::Commit) => {
+            match &edit {
+                NodeEdit::Editing { node, buffer, .. } => {
+                    intent = Some(if buffer.trim().is_empty() {
+                        UiIntent::Delete { node: node.clone() }
+                    } else {
+                        UiIntent::EditText {
+                            node: node.clone(),
+                            text: buffer.clone(),
+                        }
+                    });
+                }
+                NodeEdit::Creating { pos, buffer, .. } => {
+                    if !buffer.trim().is_empty() {
+                        intent = Some(UiIntent::Create {
+                            pos: *pos,
+                            text: buffer.clone(),
+                        });
+                    }
+                }
+                NodeEdit::Idle => {}
+            }
+            edit = NodeEdit::Idle;
+        }
+        None => {}
+    }
+
+    // A task-list checkbox clicked in a rendered text node persists its flipped
+    // text like any other edit, taking precedence over an editor commit it may
+    // have coincided with (clicking the checkbox blurs an editor on another node).
+    if let Some(checkbox) = checkbox_intent {
+        intent = Some(checkbox);
+    }
+
+    if let Some(id) = start_edit {
+        let buffer = text_node_text(&notebook.canvas, &id);
+        edit = NodeEdit::Editing {
+            node: id,
+            buffer,
+            request_focus: true,
+        };
+    } else if let Some(pos) = create_at {
+        edit = NodeEdit::Creating {
+            pos,
+            buffer: String::new(),
+            request_focus: true,
+        };
+    }
+    notebook.edit = edit;
+
+    // Delete-confirmation flow. A delete is requested either from a node's
+    // context menu or by pressing Delete/Backspace with a node selected (and no
+    // inline editor open, which would consume the key itself). The request only
+    // arms a confirmation modal; the node is removed once the user confirms.
+    if request_delete.is_some() {
+        notebook.confirm_delete = request_delete;
+    } else if notebook.confirm_delete.is_none()
+        && matches!(notebook.edit, NodeEdit::Idle)
+        && let Some(selected) = notebook.selected.clone()
+        && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+    {
+        notebook.confirm_delete = Some(selected);
+    }
+
+    if let Some(node) = notebook.confirm_delete.clone() {
+        match delete_confirm_ui(ui) {
+            DeleteConfirm::Confirmed => {
+                notebook.confirm_delete = None;
+                notebook.selected = None;
+                intent = Some(UiIntent::Delete { node });
+            }
+            DeleteConfirm::Cancelled => {
+                notebook.confirm_delete = None;
+            }
+            DeleteConfirm::Pending => {}
+        }
+    }
+
+    intent
+}
+
+/// Outcome of the delete-confirmation modal for the current frame.
+enum DeleteConfirm {
+    /// Still open; the user hasn't chosen yet.
+    Pending,
+    /// The user confirmed the deletion.
+    Confirmed,
+    /// The user dismissed the prompt (Cancel button, backdrop click, or Esc).
+    Cancelled,
+}
+
+/// Show a centered confirmation modal for deleting a node, returning the user's
+/// choice this frame. Clicking the backdrop or pressing Esc counts as cancelling.
+fn delete_confirm_ui(ui: &egui::Ui) -> DeleteConfirm {
+    let modal = egui::Modal::new(egui::Id::new("notebook_delete_confirm")).show(ui.ctx(), |ui| {
+        ui.set_max_width(300.0);
+        ui.heading("Delete note?");
+        ui.add_space(notedeck::tokens::SPACING_SM);
+        ui.label("This removes the note from your canvas.");
+        ui.add_space(notedeck::tokens::SPACING_LG);
+        ui.horizontal(|ui| {
+            let delete = egui::Button::new(
+                egui::RichText::new("Delete").color(Color32::from_rgb(0xE0, 0x31, 0x31)),
+            );
+            if ui.add(delete).clicked() {
+                return DeleteConfirm::Confirmed;
+            }
+            if ui.button("Cancel").clicked() {
+                return DeleteConfirm::Cancelled;
+            }
+            DeleteConfirm::Pending
+        })
+        .inner
+    });
+
+    // The buttons take precedence; a backdrop/Esc dismissal otherwise cancels.
+    match modal.inner {
+        DeleteConfirm::Confirmed => DeleteConfirm::Confirmed,
+        DeleteConfirm::Cancelled => DeleteConfirm::Cancelled,
+        DeleteConfirm::Pending if modal.should_close() => DeleteConfirm::Cancelled,
+        DeleteConfirm::Pending => DeleteConfirm::Pending,
+    }
+}
+
+/// Render the inline editor for a text node: a multiline field filling the
+/// node's rect, with a selection-colored border. Returns the text field's
+/// response so the caller can detect blur. Grabs keyboard focus once when
+/// `request_focus`. `accent` tints the fill (the node's color, if any).
+fn text_edit_node_ui(
+    ui: &mut egui::Ui,
+    accent: Option<&Color>,
+    rect: Rect,
+    buffer: &mut String,
+    request_focus: bool,
+) -> egui::Response {
+    let base_fill = ui.visuals().extreme_bg_color;
+    let accent = accent
+        .map(canvas_color)
+        .unwrap_or_else(|| ui.visuals().selection.stroke.color);
+    let fill = blend(base_fill, accent, 0.12);
+
+    let mut text_resp = None;
+    let frame_resp = ui.put(rect, |ui: &mut egui::Ui| {
+        egui::Frame::default()
+            .fill(fill)
+            .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
+            .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
+            .stroke(egui::Stroke::new(
+                notedeck::tokens::STROKE_THICK * 2.0,
+                ui.visuals().selection.stroke.color,
+            ))
+            .show(ui, |ui| {
+                let resp = ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(buffer).frame(false),
+                );
+                if request_focus {
+                    resp.request_focus();
+                }
+                text_resp = Some(resp);
+            })
+            .response
+    });
+    // The editor box can grow past `rect` when the raw text is taller than the
+    // declared height (just as rendered markdown can). Union the frame's drawn
+    // rect into the returned response so the caller can anchor edges/handles to
+    // the editor's real height, keeping `text_resp`'s id for focus semantics.
+    text_resp.expect("frame body always runs").union(frame_resp)
+}
+
+/// The text of a text node, or empty if it isn't one / doesn't exist.
+fn text_node_text(canvas: &JsonCanvas, id: &NodeId) -> String {
+    match canvas.get_nodes().get(id) {
+        Some(Node::Text(node)) => node.text().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Resolve a JSONCanvas color (preset palette index or hex) to an egui color.
+///
+/// Preset values follow Obsidian's canvas palette ordering.
+fn canvas_color(color: &Color) -> Color32 {
+    match color {
+        Color::Preset(preset) => match preset {
+            PresetColor::Red => Color32::from_rgb(0xE0, 0x31, 0x31),
+            PresetColor::Orange => Color32::from_rgb(0xE6, 0x77, 0x00),
+            PresetColor::Yellow => Color32::from_rgb(0xE0, 0xAC, 0x00),
+            PresetColor::Green => Color32::from_rgb(0x2C, 0xA0, 0x2C),
+            PresetColor::Cyan => Color32::from_rgb(0x00, 0xA0, 0xBE),
+            PresetColor::Purple => Color32::from_rgb(0x96, 0x50, 0xC8),
+        },
+        Color::Color(hex) => Color32::from_rgb(hex.r, hex.g, hex.b),
+    }
+}
+
+/// Linear blend from `base` toward `accent` by `t` (0..=1).
+fn blend(base: Color32, accent: Color32, t: f32) -> Color32 {
+    let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color32::from_rgb(
+        lerp(base.r(), accent.r()),
+        lerp(base.g(), accent.g()),
+        lerp(base.b(), accent.b()),
+    )
+}
+
+/// The node's rect at its canvas-declared position. Callers that move nodes
+/// around (dragging) substitute their own position for `rect.min`.
+pub fn node_rect(node: &GenericNode) -> Rect {
     let x = node.x as f32;
     let y = node.y as f32;
     let width = node.width as f32;
@@ -19,9 +824,7 @@ fn node_rect(node: &GenericNode) -> Rect {
     Rect::from_min_max(min, max)
 }
 
-fn side_point(side: &Side, node: &GenericNode) -> Pos2 {
-    let rect = node_rect(node);
-
+fn side_point(side: &Side, rect: Rect) -> Pos2 {
     match side {
         Side::Top => rect.center_top(),
         Side::Left => rect.left_center(),
@@ -40,47 +843,209 @@ fn side_tangent(side: &Side) -> egui::Vec2 {
     }
 }
 
-pub fn edge_ui(
-    ui: &mut egui::Ui,
-    nodes: &HashMap<NodeId, Node>,
-    edge: &Edge,
-) -> Option<egui::Response> {
-    let from_node = nodes.get(edge.from_node())?;
-    let to_node = nodes.get(edge.to_node())?;
+/// The topmost node whose rect contains `pos`, other than `exclude` — the node a
+/// connection drag would attach to on release. Iteration order is arbitrary, so
+/// overlapping nodes resolve to an unspecified one; good enough for picking a
+/// drop target.
+fn node_at<'a>(
+    rects: &'a HashMap<NodeId, Rect>,
+    pos: Pos2,
+    exclude: &NodeId,
+) -> Option<&'a NodeId> {
+    rects
+        .iter()
+        .find(|(id, rect)| *id != exclude && rect.contains(pos))
+        .map(|(id, _)| id)
+}
+
+/// The side of `rect` that `pos` most faces, so an incoming edge anchors on the
+/// edge nearest the source. Compares horizontal vs. vertical offset scaled by the
+/// opposite dimension, so a wide box still prefers top/bottom when approached
+/// from above or below.
+fn nearest_side(rect: Rect, pos: Pos2) -> Side {
+    let d = pos - rect.center();
+    if d.x.abs() * rect.height() >= d.y.abs() * rect.width() {
+        if d.x >= 0.0 { Side::Right } else { Side::Left }
+    } else if d.y >= 0.0 {
+        Side::Bottom
+    } else {
+        Side::Top
+    }
+}
+
+/// Visual state of a connection handle, driving its colour and size.
+enum HandleState {
+    /// At rest: a muted dot hinting the side is connectable.
+    Idle,
+    /// Hovered or being dragged from: brighter and a touch larger.
+    Active,
+    /// The anchor an in-progress connection would land on: largest and
+    /// brightest, an affordance for where the edge is about to attach.
+    Target,
+}
+
+/// Draw a node's connection handle: a small dot that brightens and grows as it
+/// becomes grabbable or the drop target. Neutral-toned (the text palette) rather
+/// than the selection accent, which read as stray purple dots on the canvas.
+fn connection_handle_ui(ui: &egui::Ui, center: Pos2, state: HandleState) {
+    let (color, radius) = match state {
+        HandleState::Idle => (ui.visuals().weak_text_color(), HANDLE_RADIUS),
+        HandleState::Active => (ui.visuals().strong_text_color(), HANDLE_RADIUS + 1.5),
+        HandleState::Target => (ui.visuals().strong_text_color(), HANDLE_RADIUS + 3.0),
+    };
+    let painter = ui.painter();
+    painter.circle_filled(center, radius, color);
+    painter.circle_stroke(
+        center,
+        radius,
+        Stroke::new(1.0, ui.visuals().extreme_bg_color),
+    );
+}
+
+/// Draw the in-progress connection: a line from the source handle to the pointer
+/// with a dot marking where the edge would land.
+fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
+    let color = ui.visuals().weak_text_color();
+    let painter = ui.painter();
+    painter.line_segment([from, to], Stroke::new(EDGE_STROKE, color));
+    painter.circle_filled(to, 3.5, color);
+}
+
+/// The cubic-bezier control points of an edge plus where its arrowhead tip
+/// touches the target node. Pulled out of [`edge_ui`] so the geometry — in
+/// particular that the curve ends on the arrow's base centre, aligned with the
+/// arrow axis — can be unit-tested without a live frame.
+struct EdgeCurve {
+    /// Bezier control points: start, two tangent handles, end.
+    points: [Pos2; 4],
+    /// Where the arrowhead's tip sits, on the target node's side.
+    to_anchor: Pos2,
+}
+
+/// Compute an edge's curve from the two node rects and the sides it anchors to.
+///
+/// The curve ends on the arrow's *base centre* (a hair inside it so no seam
+/// shows), not at the box edge: the arrow's tip touches the box at `to_anchor`
+/// and its base sits [`ARROW_LEN`] out along the side's outward normal, so ending
+/// the curve there makes the line flow straight into the arrow instead of poking
+/// out through its tip. The end tangent runs along that same axis for the same
+/// reason.
+fn edge_curve(from_rect: Rect, from_side: &Side, to_rect: Rect, to_side: &Side) -> EdgeCurve {
+    let p0 = side_point(from_side, from_rect);
+    let to_anchor = side_point(to_side, to_rect);
+    let p3 = to_anchor + side_tangent(to_side) * (ARROW_LEN - 0.5);
+
+    // How far to pull the tangent handles out from each anchor.
+    let d = (p3 - p0).length() * EDGE_BEND;
+    let c1 = p0 + side_tangent(from_side) * d;
+    let c2 = p3 - side_tangent(to_side).neg() * d;
+
+    EdgeCurve {
+        points: [p0, c1, c2, p3],
+        to_anchor,
+    }
+}
+
+/// Render one edge as a bezier with an arrow, plus a small midpoint handle that
+/// deletes the edge when clicked. Returns a [`UiIntent::DisconnectEdge`] on the
+/// frame the handle is clicked.
+pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) -> Option<UiIntent> {
+    let from_rect = *rects.get(edge.from_node())?;
+    let to_rect = *rects.get(edge.to_node())?;
     let to_side = edge.to_side()?;
     let from_side = edge.from_side()?;
 
-    // anchor from-side
-    let p0 = side_point(from_side, from_node.node());
+    let EdgeCurve { points, to_anchor } = edge_curve(from_rect, from_side, to_rect, to_side);
 
-    // anchor b
-    let to_anchor = side_point(to_side, to_node.node());
+    let color = edge
+        .color()
+        .map(canvas_color)
+        .unwrap_or_else(|| ui.visuals().noninteractive().bg_stroke.color);
+    let stroke = egui::Stroke::new(EDGE_STROKE, color);
+    let bezier = CubicBezierShape::from_points_stroke(points, false, color, stroke);
 
-    // to-point is slightly offset to accomidate arrow
-    let p3 = to_anchor + side_tangent(to_side) * 2.0;
-
-    // bend debug
-    //let bend = debug_slider(ui, ui.id().with("bend"), p3, 0.25, 0.0..=1.0);
-    let bend = 0.28;
-
-    // How far to pull the tangents.
-    // ¼ of the distance between anchors feels very “Obsidian”.
-    let d = (p3 - p0).length() * bend;
-
-    // c1 = anchor A + (outward tangent) * d
-    let c1 = p0 + side_tangent(from_side) * d;
-
-    // c2 = anchor B + (inward tangent)  * d
-    let c2 = p3 - side_tangent(to_side).neg() * d;
-
-    let color = ui.visuals().noninteractive().bg_stroke.color;
-    let stroke = egui::Stroke::new(4.0, color);
-    let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
-
+    // The curve midpoint and flattened polyline, captured before the shape is
+    // moved into the painter (used for the midpoint handle and edge-hover test).
+    let mid = bezier.sample(0.5);
+    // Explicit tolerance: the default derives from the curve's horizontal span,
+    // which is zero for a vertical edge and trips a "tolerance must be positive"
+    // assert. Half a pixel is plenty fine for a hover-distance polyline.
+    let polyline = bezier.flatten(Some(0.5));
     ui.painter().add(Shape::CubicBezier(bezier));
     arrow_ui(ui, to_side, to_anchor, color);
 
+    // The edge is "hovered" when the pointer is close to the curve itself, not
+    // just inside its (often large) bounding box. A hover-only interaction over
+    // that box yields the pointer position; nodes drawn on top occlude it, so
+    // hovering a node never counts as hovering the edge beneath it.
+    let bounds = Rect::from_points(&polyline).expand(EDGE_HOVER_DIST);
+    let hover = ui.interact(
+        bounds,
+        ui.id().with(("notebook_edge", edge.id().as_str())),
+        egui::Sense::hover(),
+    );
+    let over_edge = hover
+        .hover_pos()
+        .is_some_and(|p| dist_to_polyline(&polyline, p) <= EDGE_HOVER_DIST);
+
+    // Midpoint delete handle: only shown while the edge is hovered. It reads as a
+    // subtle dot, turning into a red ✕ when the pointer is over the handle
+    // itself, and removes the edge when clicked.
+    let hit = Rect::from_center_size(mid, vec2(HANDLE_HIT, HANDLE_HIT));
+    let resp = ui.interact(
+        hit,
+        ui.id().with(("notebook_edge_del", edge.id().as_str())),
+        egui::Sense::click(),
+    );
+    if over_edge || resp.hovered() {
+        edge_delete_handle_ui(ui, mid, resp.hovered());
+    }
+    if resp.clicked() {
+        return Some(UiIntent::DisconnectEdge {
+            edge_id: edge.id().to_string(),
+            from: edge.from_node().clone(),
+            to: edge.to_node().clone(),
+        });
+    }
+
     None
+}
+
+/// Shortest distance from `p` to a polyline (a flattened curve).
+fn dist_to_polyline(points: &[Pos2], p: Pos2) -> f32 {
+    points
+        .windows(2)
+        .map(|w| dist_to_segment(p, w[0], w[1]))
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// Shortest distance from `p` to the line segment `a`–`b`.
+fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len_sq = ab.length_sq();
+    let t = if len_sq <= f32::EPSILON {
+        0.0
+    } else {
+        ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+    };
+    (p - (a + ab * t)).length()
+}
+
+/// Draw an edge's midpoint delete handle: a faint dot at rest, a filled red
+/// circle with a white ✕ when hovered (signalling a click removes the edge).
+fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
+    let painter = ui.painter();
+    if active {
+        let radius = 8.0;
+        painter.circle_filled(center, radius, Color32::from_rgb(0xE0, 0x31, 0x31));
+        let d = radius * 0.45;
+        let cross = Stroke::new(2.0, Color32::WHITE);
+        painter.line_segment([center + vec2(-d, -d), center + vec2(d, d)], cross);
+        painter.line_segment([center + vec2(-d, d), center + vec2(d, -d)], cross);
+    } else {
+        painter.circle_filled(center, 3.0, ui.visuals().widgets.inactive.fg_stroke.color);
+        painter.circle_stroke(center, 3.0, Stroke::new(1.0, ui.visuals().extreme_bg_color));
+    }
 }
 
 /// Paint a tiny triangular “arrow”.
@@ -90,95 +1055,407 @@ pub fn edge_ui(
 /// * `point` – the exact spot on that edge the arrow’s tip should touch
 /// * `fill`  – colour to fill the arrow with (usually your popup’s background)
 pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32) {
-    let len: f32 = 12.0; // distance from tip to base
-    let width: f32 = 16.0; // length of the base
-    let stroke: f32 = 1.0; // length of the base
-
-    let verts = match side {
-        Side::Top => [
-            point,                                           // tip
-            Pos2::new(point.x - width * 0.5, point.y - len), // base‑left (above)
-            Pos2::new(point.x + width * 0.5, point.y - len), // base‑right (above)
-        ],
-        Side::Bottom => [
-            point,
-            Pos2::new(point.x + width * 0.5, point.y + len), // below
-            Pos2::new(point.x - width * 0.5, point.y + len),
-        ],
-        Side::Left => [
-            point,
-            Pos2::new(point.x - len, point.y + width * 0.5), // left
-            Pos2::new(point.x - len, point.y - width * 0.5),
-        ],
-        Side::Right => [
-            point,
-            Pos2::new(point.x + len, point.y - width * 0.5), // right
-            Pos2::new(point.x + len, point.y + width * 0.5),
-        ],
-    };
-
+    let verts = arrow_verts(side, point);
     ui.painter().add(egui::Shape::convex_polygon(
         verts.to_vec(),
         fill,
-        Stroke::new(stroke, fill), // add a stroke here if you want an outline
+        Stroke::new(1.0, fill), // outline; matches the fill so it reads as solid
     ));
 }
 
-pub fn node_ui(ui: &mut egui::Ui, node: &Node) -> egui::Response {
-    match node {
-        Node::Text(text_node) => text_node_ui(ui, text_node),
-        Node::File(file_node) => file_node_ui(ui, file_node),
-        Node::Link(link_node) => link_node_ui(ui, link_node),
-        Node::Group(group_node) => group_node_ui(ui, group_node),
+/// The three vertices of an edge's arrowhead: `verts[0]` is the tip (at `point`,
+/// on the node's side), `verts[1]`/`verts[2]` are the base corners — [`ARROW_LEN`]
+/// out from the tip along the side's outward normal and [`ARROW_WIDTH`] apart.
+/// Their midpoint is the base centre, where the edge's curve should terminate.
+fn arrow_verts(side: &Side, point: Pos2) -> [Pos2; 3] {
+    let len = ARROW_LEN; // distance from tip to base
+    let half = ARROW_WIDTH * 0.5; // half the base width
+    match side {
+        Side::Top => [
+            point,                                    // tip
+            Pos2::new(point.x - half, point.y - len), // base‑left (above)
+            Pos2::new(point.x + half, point.y - len), // base‑right (above)
+        ],
+        Side::Bottom => [
+            point,
+            Pos2::new(point.x + half, point.y + len), // below
+            Pos2::new(point.x - half, point.y + len),
+        ],
+        Side::Left => [
+            point,
+            Pos2::new(point.x - len, point.y + half), // left
+            Pos2::new(point.x - len, point.y - half),
+        ],
+        Side::Right => [
+            point,
+            Pos2::new(point.x + len, point.y - half), // right
+            Pos2::new(point.x + len, point.y + half),
+        ],
     }
 }
 
-fn text_node_ui(ui: &mut egui::Ui, node: &TextNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| {
-        egui::ScrollArea::vertical()
-            .show(ui, |ui| {
-                ui.with_layout(egui::Layout::left_to_right(Align::Min), |ui| {
-                    ui.add(Label::new(node.text()).wrap_mode(TextWrapMode::Wrap))
-                })
-            })
-            .inner
-            .response
+/// Render `node` at `rect`, returning a [`NodeRender`] whose `resp.response` is
+/// the whole-node drag/select handle and whose `resp.inner` is `None` for most
+/// node kinds; for a text node whose GFM task-list checkbox was clicked this frame
+/// it carries the node text with that box flipped, for the caller to persist.
+pub(crate) fn node_ui(
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext,
+    node: &Node,
+    rect: Rect,
+    selected: bool,
+) -> NodeRender<Option<String>> {
+    match node {
+        Node::Text(text_node) => text_node_ui(ui, ctx, text_node, rect, selected),
+        Node::File(file_node) => file_node_ui(ui, file_node, rect, selected).map(|()| None),
+        Node::Link(link_node) => link_node_ui(ui, link_node, rect, selected).map(|()| None),
+        Node::Group(group_node) => group_node_ui(ui, group_node, rect, selected).map(|()| None),
+    }
+}
+
+fn text_node_ui(
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext,
+    node: &TextNode,
+    rect: Rect,
+    selected: bool,
+) -> NodeRender<Option<String>> {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        node_text_ui(ui, ctx, node.text())
     })
 }
 
-fn file_node_ui(ui: &mut egui::Ui, node: &FileNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| ui.label("file node"))
+/// Render a text node's body: markdown, with any inline `nostr:` references
+/// resolved to their kind renderer and GFM task-list checkboxes made clickable
+/// (see [`notedeck_ui::markdown::render_markdown_with_refs_editable`]). Returns
+/// the node's text with the checkbox flipped if one was toggled this frame.
+fn node_text_ui(ui: &mut egui::Ui, ctx: &mut AppContext, text: &str) -> Option<String> {
+    let mut source = text.to_string();
+    notedeck_ui::markdown::render_markdown_with_refs_editable(ui, ctx, &mut source)
+        .then_some(source)
 }
 
-fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| ui.label("link node"))
+fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) -> NodeRender<()> {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        ui.label("file node");
+    })
 }
 
-fn group_node_ui(ui: &mut egui::Ui, node: &GroupNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| ui.label("group node"))
+fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode, rect: Rect, selected: bool) -> NodeRender<()> {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        ui.label("link node");
+    })
 }
 
-fn node_box_ui(
+fn group_node_ui(
+    ui: &mut egui::Ui,
+    node: &GroupNode,
+    rect: Rect,
+    selected: bool,
+) -> NodeRender<()> {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        ui.label("group node");
+    })
+}
+
+/// A rendered node's outcome: the interaction [`egui::InnerResponse`] plus the
+/// node's *intrinsic* content height (the box height its content actually needs,
+/// margins included). The two travel together because a node's edge/handle
+/// anchoring reads the response while [`Notebook::node_rect`] uses the intrinsic
+/// height as the box's grow/shrink floor.
+pub(crate) struct NodeRender<R> {
+    /// The whole-node click-and-drag handle response, with the `contents`
+    /// closure's result as its `inner`.
+    resp: egui::InnerResponse<R>,
+    /// The height (canvas pixels) the content needs, margins included — the floor
+    /// a resize may shrink the box down to before content would clip.
+    content_height: f32,
+}
+
+impl<R> NodeRender<R> {
+    /// Map the inner result, keeping the response and measured content height —
+    /// lets node kinds without toggle output collapse their `inner` to `None`.
+    fn map<T>(self, f: impl FnOnce(R) -> T) -> NodeRender<T> {
+        NodeRender {
+            resp: egui::InnerResponse::new(f(self.resp.inner), self.resp.response),
+            content_height: self.content_height,
+        }
+    }
+}
+
+/// Render a node's frame and contents at `rect`. The [`egui::InnerResponse`]'s
+/// `response` is a click-and-drag handle covering the whole node (so the caller
+/// can move/select it) and its `inner` is whatever the `contents` closure
+/// produced.
+///
+/// The drag/select handle is registered *before* the content so that any
+/// interactive content — e.g. a task-list checkbox — sits on top and wins
+/// clicks, while non-interactive content (labels, which only sense hover) lets
+/// clicks fall through to the handle so dragging the body still moves the node.
+///
+/// Returns the interaction response/inner result alongside the node's
+/// *intrinsic* content height — the box height its content actually needs,
+/// margins included. That height (not the padded box) is what
+/// [`Notebook::node_rect`] uses as the grow/shrink floor, so a node can be
+/// resized shorter than its current box right down to its content.
+fn node_box_ui<R>(
     ui: &mut egui::Ui,
     node: &GenericNode,
-    contents: impl FnOnce(&mut egui::Ui) -> egui::Response,
-) -> egui::Response {
-    let pos = node_rect(node);
+    rect: Rect,
+    selected: bool,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> NodeRender<R> {
+    // Colored nodes get an accent border and a faint accent-tinted fill; plain
+    // nodes fall back to the neutral theme colors. Selected nodes get a
+    // brighter, thicker border.
+    let base_fill = ui.visuals().noninteractive().weak_bg_fill;
+    let base_stroke = ui.visuals().noninteractive().bg_stroke.color;
+    let (fill, accent) = match node.color.as_ref().map(canvas_color) {
+        Some(accent) => (blend(base_fill, accent, 0.12), accent),
+        None => (base_fill, base_stroke),
+    };
+    let (stroke_width, stroke_color) = if selected {
+        (
+            notedeck::tokens::STROKE_THICK * 2.0,
+            ui.visuals().selection.stroke.color,
+        )
+    } else {
+        (notedeck::tokens::STROKE_THICK, accent)
+    };
 
-    ui.put(pos, |ui: &mut egui::Ui| {
+    // Handle first (underneath); see the doc comment for why ordering matters.
+    let resp = ui.interact(
+        rect,
+        ui.id().with(("notebook_node", node.id.as_str())),
+        egui::Sense::click_and_drag(),
+    );
+
+    let margin = notedeck::tokens::SPACING_LG;
+    let mut out = None;
+    let mut content_height = rect.height();
+    let frame_resp = ui.put(rect, |ui: &mut egui::Ui| {
         egui::Frame::default()
-            .fill(ui.visuals().noninteractive().weak_bg_fill)
-            .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
+            .fill(fill)
+            .inner_margin(egui::Margin::same(margin as i8))
             .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
-            .stroke(egui::Stroke::new(
-                notedeck::tokens::STROKE_THICK,
-                ui.visuals().noninteractive().bg_stroke.color,
-            ))
+            .stroke(egui::Stroke::new(stroke_width, stroke_color))
             .show(ui, |ui| {
-                let rect = ui.available_rect_before_wrap();
-                ui.allocate_at_least(ui.available_size(), egui::Sense::click());
-                ui.put(rect, contents);
+                let inner = ui.available_rect_before_wrap();
+                // Lay the content out in its own child so `min_rect` reports the
+                // height it *intrinsically* needs rather than the declared box
+                // height. A non-justified vertical child hugs content shorter than
+                // `inner` and grows past it for taller content, so this is the
+                // floor a resize may shrink down to (see `Notebook::node_rect`);
+                // measuring the padded box instead would ratchet the height and
+                // forbid shrinking. (`inner` bounds the wrap width; an infinite
+                // max_rect would feed NaNs into egui's layout.)
+                let content =
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| contents(ui));
+                out = Some(content.inner);
+                content_height = content.response.rect.height() + margin * 2.0;
+                // Pad the frame down to the declared box height so the fill and
+                // border still cover the user's chosen size when the content is
+                // shorter; when it's taller the frame grows past `rect` instead.
+                ui.allocate_at_least(ui.available_size(), egui::Sense::hover());
             })
             .response
-    })
+    });
+
+    // Content can overflow the declared rect (markdown, embedded notes), so the
+    // visible box is whatever the frame actually drew. Union it into the returned
+    // response so callers see the real rendered rect — used to anchor edges and
+    // handles to the visible edge next frame.
+    NodeRender {
+        resp: egui::InnerResponse::new(
+            out.expect("frame body always runs"),
+            resp.union(frame_resp),
+        ),
+        content_height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    use jsoncanvas::TextNode;
+    use std::cell::RefCell;
+
+    /// A node's body lays a full-rect `click_and_drag` handle over its contents
+    /// (so dragging the body moves the node). A task-list checkbox rendered in
+    /// that body must still receive a real pointer click rather than have the
+    /// handle swallow it — the bug behind "checkboxes aren't clickable in the
+    /// notebook". [`node_box_ui`] registers the handle *under* the content to
+    /// guarantee this; with the old ordering (handle last/on top) the source
+    /// below would stay `- [ ]`.
+    ///
+    /// `simulate_click()` is essential: it sends a geometric pointer press at the
+    /// box, exercising egui's hit-testing. `.click()` (an accesskit action aimed
+    /// straight at the node) would bypass the z-order entirely and pass even when
+    /// the real app is broken.
+    #[test]
+    fn task_checkbox_in_text_node_toggles_despite_drag_handle() {
+        let node = TextNode::new("node1".parse().unwrap(), 0, 0, 220, 90, None, String::new());
+        let source = RefCell::new(String::from("- [ ] task\n"));
+
+        let mut harness = Harness::new_ui(|ui| {
+            let rect = Rect::from_min_size(ui.max_rect().min, vec2(220.0, 90.0));
+            let mut s = source.borrow_mut();
+            // Mirrors node_text_ui's editable render, minus the nostr-ref pass
+            // (which would need an AppContext); the z-order under test is the same.
+            node_box_ui(ui, node.node(), rect, false, |ui| {
+                notedeck_ui::markdown::render_markdown_editable(&mut s, ui)
+            });
+        });
+        harness.run();
+
+        harness.get_by_role(Role::CheckBox).simulate_click();
+        harness.run();
+
+        assert_eq!(
+            *source.borrow(),
+            "- [x] task\n",
+            "the node drag handle swallowed the checkbox click"
+        );
+    }
+
+    /// Regression for "you can't make a node smaller vertically": a node's
+    /// reported content height must reflect what the content *intrinsically*
+    /// needs, not the (possibly much taller) box it was drawn in. Before the fix
+    /// [`node_box_ui`] measured the padded frame, so a tall box's height ratcheted
+    /// — [`Notebook::node_rect`] fed the previous box height back as the floor and
+    /// the node could never be resized shorter. Draw a one-line label in a
+    /// deliberately tall box and assert the measured content height stays well
+    /// below the box, so a resize can shrink down to it.
+    #[test]
+    fn node_content_height_hugs_content_not_box() {
+        let node = TextNode::new(
+            "node1".parse().unwrap(),
+            0,
+            0,
+            250,
+            400,
+            None,
+            String::new(),
+        );
+        let measured = RefCell::new(0.0_f32);
+
+        let mut harness = Harness::new_ui(|ui| {
+            let rect = Rect::from_min_size(ui.max_rect().min, vec2(250.0, 400.0));
+            let render = node_box_ui(ui, node.node(), rect, false, |ui| {
+                ui.label("hello");
+            });
+            *measured.borrow_mut() = render.content_height;
+        });
+        harness.run();
+
+        let h = *measured.borrow();
+        assert!(h > 0.0, "content height should be measured");
+        assert!(
+            h < 400.0,
+            "content height {h} should hug the one-line label, not the 400px box"
+        );
+    }
+
+    /// The arrowhead bug that "looked broken": the curve's end didn't meet the
+    /// centre of the arrow's base, so the line poked out past the tip and the
+    /// head sat crooked on the line. Guard the geometry the renderer actually
+    /// uses — [`edge_curve`] (the line) and [`arrow_verts`] (the triangle) — for
+    /// every side an arrow can attach to: the line must terminate on the base
+    /// centre and approach it straight along the arrow's axis.
+    #[test]
+    fn arrowhead_base_centre_lines_up_with_curve() {
+        // Source box fixed; target box placed so the arrow side genuinely faces
+        // it, mirroring how edges are actually drawn.
+        let from_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(120.0, 80.0));
+        let cases = [
+            (Side::Right, Pos2::new(400.0, 20.0)),
+            (Side::Left, Pos2::new(-400.0, 20.0)),
+            (Side::Bottom, Pos2::new(20.0, 400.0)),
+            (Side::Top, Pos2::new(20.0, -400.0)),
+        ];
+
+        for (to_side, to_min) in cases {
+            let to_rect = Rect::from_min_size(to_min, vec2(120.0, 80.0));
+            let curve = edge_curve(from_rect, &Side::Right, to_rect, &to_side);
+            let verts = arrow_verts(&to_side, curve.to_anchor);
+
+            let base_centre = verts[1] + (verts[2] - verts[1]) * 0.5;
+            let line_end = curve.points[3];
+
+            // The line ends on the base centre (within the half-pixel inset that
+            // hides the seam) — not short of it and not poking through the tip.
+            let gap = (base_centre - line_end).length();
+            assert!(
+                gap <= 0.75,
+                "{to_side:?}: line end {line_end:?} not on arrow base centre \
+                 {base_centre:?} (gap {gap})"
+            );
+
+            // The line flows straight into the arrow: its incoming direction at
+            // the end runs along the arrow's axis (base centre -> tip), so the
+            // head reads as a continuation of the line rather than crooked.
+            let tip = verts[0];
+            let axis = (tip - base_centre).normalized();
+            let end_dir = (line_end - curve.points[2]).normalized();
+            let dot = axis.dot(end_dir);
+            assert!(
+                dot > 0.99,
+                "{to_side:?}: arrow axis {axis:?} not aligned with curve end \
+                 direction {end_dir:?} (dot {dot})"
+            );
+        }
+    }
+
+    /// Render a real edge (its actual bezier line plus arrowhead) through
+    /// [`edge_ui`] in a live frame, exercising the full paint/interaction path the
+    /// geometry test stops short of. Each case places the target on the facing
+    /// side; the vertical cases (same x-centre) are deliberate — a vertical edge
+    /// has zero horizontal span, which trips the curve-flattening tolerance unless
+    /// it's set explicitly. A clean run with no click means the edge draws without
+    /// panicking and reports no spurious disconnect.
+    #[test]
+    fn edge_ui_renders_line_and_arrow() {
+        // (from_side, to_side, target offset from the source). Bottom/Top share
+        // the source's x-centre, so those edges are exactly vertical.
+        let cases = [
+            (Side::Right, Side::Left, vec2(400.0, 0.0)),
+            (Side::Left, Side::Right, vec2(-400.0, 0.0)),
+            (Side::Bottom, Side::Top, vec2(0.0, 400.0)),
+            (Side::Top, Side::Bottom, vec2(0.0, -400.0)),
+        ];
+
+        for (from_side, to_side, offset) in cases {
+            let edge = Edge::new(
+                "edge1".parse().unwrap(),
+                "a".parse().unwrap(),
+                Some(from_side),
+                None,
+                "b".parse().unwrap(),
+                Some(to_side),
+                None,
+                None,
+                None,
+            );
+
+            let mut rects = HashMap::new();
+            rects.insert(
+                "a".parse().unwrap(),
+                Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(120.0, 80.0)),
+            );
+            rects.insert(
+                "b".parse().unwrap(),
+                Rect::from_min_size(Pos2::new(0.0, 0.0) + offset, vec2(120.0, 80.0)),
+            );
+
+            let mut harness = Harness::new_ui(|ui| {
+                assert!(
+                    edge_ui(ui, &rects, &edge).is_none(),
+                    "edge reported a disconnect without its handle being clicked"
+                );
+            });
+            harness.run();
+        }
+    }
 }

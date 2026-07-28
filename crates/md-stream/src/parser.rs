@@ -1,6 +1,6 @@
 //! Core streaming parser implementation.
 
-use crate::element::{CodeBlock, MdElement, Span};
+use crate::element::{CodeBlock, ListItem, MdElement, Span, TaskMarker};
 use crate::inline::parse_inline;
 use crate::partial::{Partial, PartialKind};
 
@@ -32,6 +32,7 @@ enum PartialDispatch {
     CodeFence { fence_char: char, fence_len: usize },
     Heading { level: u8 },
     Table,
+    List,
     Paragraph,
     Other,
 }
@@ -126,6 +127,7 @@ impl StreamParser {
             },
             PartialKind::Heading { level } => PartialDispatch::Heading { level: *level },
             PartialKind::Table { .. } => PartialDispatch::Table,
+            PartialKind::List { .. } => PartialDispatch::List,
             PartialKind::Paragraph => PartialDispatch::Paragraph,
             _ => PartialDispatch::Other,
         })
@@ -154,6 +156,12 @@ impl StreamParser {
                     }
                     PartialDispatch::Table => {
                         if self.process_table() {
+                            continue;
+                        }
+                        return;
+                    }
+                    PartialDispatch::List => {
+                        if self.process_list() {
                             continue;
                         }
                         return;
@@ -378,6 +386,24 @@ impl StreamParser {
                     return Some(leading_space + nl_pos + 1);
                 }
             }
+        }
+
+        // List item: "- ", "* ", "+ " (unordered) or "1. ", "1) " (ordered).
+        // Create an empty List partial and let process_list accumulate the
+        // item lines; it consumes nothing here so the marker line is parsed
+        // uniformly with every following item.
+        if let Some(marker) = detect_list_marker(trimmed) {
+            let partial = Partial::new(
+                PartialKind::List {
+                    ordered: marker.ordered,
+                    start: marker.number.unwrap_or(1),
+                    items: Vec::new(),
+                },
+                self.process_pos,
+            );
+            self.partial = Some(partial);
+            self.at_line_start = true;
+            return Some(0);
         }
 
         None
@@ -615,6 +641,115 @@ impl StreamParser {
         true
     }
 
+    /// Process list content line by line, accumulating items into the partial
+    /// until a blank or non-list line ends it. Mirrors [`Self::process_table`].
+    /// Returns true if we should continue processing, false if we need more input.
+    fn process_list(&mut self) -> bool {
+        let remaining = self.remaining();
+        if let Some(nl_pos) = remaining.find('\n') {
+            let line = &remaining[..nl_pos];
+            let line_abs = self.process_pos;
+            // Capture what we need before any `&mut self` releases this borrow.
+            let is_blank = line.trim().is_empty();
+            let parsed = self.parse_list_item_line(line, line_abs);
+
+            if let Some((ordered, item)) = parsed {
+                if self.list_accepts(ordered) {
+                    if let Some(PartialKind::List { items, .. }) =
+                        self.partial.as_mut().map(|p| &mut p.kind)
+                    {
+                        items.push(item);
+                    }
+                    self.advance(nl_pos + 1);
+                    self.at_line_start = true;
+                    return true;
+                }
+            }
+
+            // Blank or non-matching line — the list is complete.
+            self.finish_list();
+            self.at_line_start = true;
+            if is_blank {
+                // Swallow a single blank separator line; other content is left
+                // for the block parser to re-process.
+                self.advance(nl_pos + 1);
+            }
+            return true;
+        }
+
+        // No newline yet — the trailing line is incomplete.
+        let line = remaining;
+        if line.trim().is_empty() {
+            // Only trailing whitespace so far; wait for more (finalize flushes).
+            return false;
+        }
+        let rest = &line[line.len() - line.trim_start().len()..];
+        if detect_list_marker(rest).is_some() || could_be_list_marker(rest) {
+            // Either a complete item still missing its newline, or a marker the
+            // user is mid-way through typing (e.g. a lone "-" before its space).
+            // Wait for more input rather than splitting the list prematurely.
+            return false;
+        }
+        // Non-list trailing content ends the list; re-process it as a new block.
+        self.finish_list();
+        self.at_line_start = true;
+        true
+    }
+
+    /// Does the in-progress list accept an item with this `ordered`-ness?
+    /// A marker-kind change starts a new list, so it doesn't.
+    fn list_accepts(&self, ordered: bool) -> bool {
+        matches!(
+            self.partial.as_ref().map(|p| &p.kind),
+            Some(PartialKind::List { ordered: o, .. }) if *o == ordered
+        )
+    }
+
+    /// Emit the in-progress list partial as an `Unordered`/`OrderedList` element.
+    fn finish_list(&mut self) {
+        if let Some(partial) = self.partial.take() {
+            if let PartialKind::List {
+                ordered,
+                start,
+                items,
+            } = partial.kind
+            {
+                if !items.is_empty() {
+                    self.parsed.push(if ordered {
+                        MdElement::OrderedList { start, items }
+                    } else {
+                        MdElement::UnorderedList(items)
+                    });
+                }
+            }
+        }
+    }
+
+    /// Parse a single line as a list item, returning its `ordered`-ness and the
+    /// item. `line` has no trailing newline; `line_abs` is its buffer offset.
+    /// Content stays span-based (zero-copy) via [`parse_inline`].
+    fn parse_list_item_line(&self, line: &str, line_abs: usize) -> Option<(bool, ListItem)> {
+        let indent = line.len() - line.trim_start().len();
+        let marker = detect_list_marker(&line[indent..])?;
+
+        // Skip the marker and the run of spaces between it and the content.
+        let after_marker = &line[indent + marker.marker_len..];
+        let space = after_marker.len() - after_marker.trim_start().len();
+        let content = after_marker.trim_start();
+        let content_abs = line_abs + indent + marker.marker_len + space;
+
+        let (checkbox, body, body_abs) = strip_checkbox(content, content_abs);
+        let inlines = parse_inline(body, body_abs);
+        Some((
+            marker.ordered,
+            ListItem {
+                content: inlines,
+                nested: None,
+                checkbox,
+            },
+        ))
+    }
+
     /// Process inline content.
     fn process_inline(&mut self) -> bool {
         let remaining = self.remaining();
@@ -802,6 +937,30 @@ impl StreamParser {
                         self.parsed.push(MdElement::Paragraph(inlines));
                     }
                 }
+                PartialKind::List {
+                    ordered,
+                    start,
+                    mut items,
+                } => {
+                    // Flush a trailing item line that never got its newline.
+                    let line_abs = self.process_pos;
+                    let trailing = {
+                        let line = self.buffer[self.process_pos..].trim_end_matches('\n');
+                        self.parse_list_item_line(line, line_abs)
+                    };
+                    if let Some((o, item)) = trailing {
+                        if o == ordered {
+                            items.push(item);
+                        }
+                    }
+                    if !items.is_empty() {
+                        self.parsed.push(if ordered {
+                            MdElement::OrderedList { start, items }
+                        } else {
+                            MdElement::UnorderedList(items)
+                        });
+                    }
+                }
                 PartialKind::Paragraph => {
                     let trimmed = self.trim_span(partial.content_span());
                     if !trimmed.is_empty() {
@@ -864,6 +1023,100 @@ fn parse_table_row(line: &str, line_offset: usize) -> Vec<Span> {
         pos += cell.len() + 1; // +1 for the | delimiter
     }
     result
+}
+
+/// A recognized list-item marker at the start of a line.
+struct ListMarker {
+    ordered: bool,
+    /// Starting number for an ordered marker (`None` for unordered).
+    number: Option<u32>,
+    /// Bytes the marker occupies, excluding the space(s) before the content
+    /// (e.g. 1 for `-`, 2 for `12` + `.`).
+    marker_len: usize,
+}
+
+/// Detect a list marker at the very start of `s` (leading whitespace already
+/// stripped). Recognizes `-`/`*`/`+ ` bullets and `N.`/`N)` ordered markers.
+/// The marker must be followed by a space, tab, or end-of-line so that text
+/// like `-foo` or a bare streaming `-` (which may still grow into `---`) is not
+/// mistaken for a list.
+fn detect_list_marker(s: &str) -> Option<ListMarker> {
+    let bytes = s.as_bytes();
+    let first = *bytes.first()?;
+
+    let followed_by_space_or_eol =
+        |rest: &str| rest.starts_with([' ', '\t', '\n']) || rest.is_empty();
+
+    if first == b'-' || first == b'*' || first == b'+' {
+        let rest = &s[1..];
+        // An empty trailing item (no following space yet) is ambiguous while
+        // streaming, so require an explicit space/tab/newline after the marker.
+        if rest.starts_with([' ', '\t', '\n']) {
+            return Some(ListMarker {
+                ordered: false,
+                number: None,
+                marker_len: 1,
+            });
+        }
+        return None;
+    }
+
+    // Ordered: a run of digits followed by `.` or `)`.
+    let digits = s.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if (1..=9).contains(&digits) {
+        let after = &s[digits..];
+        if after.starts_with(['.', ')']) && followed_by_space_or_eol(&after[1..]) {
+            return Some(ListMarker {
+                ordered: true,
+                number: s[..digits].parse().ok(),
+                marker_len: digits + 1,
+            });
+        }
+    }
+
+    None
+}
+
+/// Is `s` a partial list marker still being streamed — i.e. it isn't a complete
+/// marker yet (no trailing space), but could become one once more chars arrive?
+/// Used to avoid splitting a streaming list when a lone `-` or `12.` lands in
+/// its own chunk before the following space.
+fn could_be_list_marker(s: &str) -> bool {
+    // A single bullet char, ambiguous until its following space (or `---`) lands.
+    if matches!(s, "-" | "*" | "+") {
+        return true;
+    }
+    // An ordered marker mid-type: digits, optionally one `.`/`)`, no space yet.
+    let digits = s.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits >= 1 {
+        let after = &s[digits..];
+        return after.is_empty() || after == "." || after == ")";
+    }
+    false
+}
+
+/// Strip a leading GFM task-list checkbox (`[ ]`, `[x]`, `[X]`) from `content`,
+/// returning a [`TaskMarker`] (with its source span) plus the remaining body and
+/// its buffer offset. Returns `(None, content, abs)` unchanged when there's no
+/// checkbox. `abs` is the buffer offset of `content`, so the `[` sits at `abs`.
+fn strip_checkbox(content: &str, abs: usize) -> (Option<TaskMarker>, &str, usize) {
+    let checked = match content.as_bytes() {
+        [b'[', b' ', b']', ..] => false,
+        [b'[', b'x' | b'X', b']', ..] => true,
+        _ => return (None, content, abs),
+    };
+    let rest = &content[3..];
+    // Require the checkbox to be its own token: end-of-line or a space.
+    if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+        return (None, content, abs);
+    }
+    let body = rest.trim_start();
+    let skipped = content.len() - body.len();
+    let marker = TaskMarker {
+        checked,
+        marker: Span::new(abs, abs + 3),
+    };
+    (Some(marker), body, abs + skipped)
 }
 
 /// Check if a line is a table separator row (e.g. `|---|---|`).

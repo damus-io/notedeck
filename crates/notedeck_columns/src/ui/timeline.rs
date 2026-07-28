@@ -7,14 +7,14 @@ use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
 use notedeck::ui::is_narrow;
 use notedeck::{tr_plural, Muted, NotedeckTextStyle};
-use notedeck_ui::app_images::{like_image_filled, repost_image};
+use notedeck_ui::app_images::{filled_zap_image, like_image_filled, repost_image};
 use notedeck_ui::{ProfilePic, ProfilePreview};
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
 use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
-    TimelineTab,
+    TimelineTab, ZapUnit,
 };
 use notedeck::DragResponse;
 use notedeck::{
@@ -435,6 +435,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 NoteUnit::Composite(composite_unit) => match composite_unit {
                     CompositeUnit::Reaction(reaction_unit) => reaction_unit.note_reacted_to.key,
                     CompositeUnit::Repost(repost_unit) => repost_unit.note_reposted.key,
+                    CompositeUnit::Zap(zap_unit) => zap_unit.note_zapped.key,
                 },
             };
 
@@ -485,6 +486,15 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                     &underlying_note,
                     repost_unit,
                 ),
+                CompositeUnit::Zap(zap_unit) => render_zap_cluster(
+                    ui,
+                    self.note_context,
+                    self.note_options,
+                    mute,
+                    self.txn,
+                    &underlying_note,
+                    zap_unit,
+                ),
             },
         }
     }
@@ -502,6 +512,7 @@ impl CompositeType {
             CompositeType::Repost => {
                 repost_image(darkmode).tint(Color32::from_rgb(0x68, 0xC3, 0x51))
             }
+            CompositeType::Zap => filled_zap_image(),
         }
     }
 
@@ -530,6 +541,7 @@ impl CompositeType {
                     DescriptionType::Other
                 },
             ),
+            CompositeType::Zap => zap_description(loc, first_name, count, referenced_type),
         }
     }
 }
@@ -660,6 +672,75 @@ fn repost_description(
     }
 }
 
+fn zap_description(
+    loc: &mut Localization,
+    first_name: &str,
+    count: usize,
+    referenced_type: ReferencedNoteType,
+) -> String {
+    match referenced_type {
+        ReferencedNoteType::Tagged => {
+            if count == 0 {
+                tr!(
+                    loc,
+                    "{name} zapped a note you were tagged in",
+                    "zap from user to a note you were tagged in",
+                    name = first_name
+                )
+            } else {
+                tr_plural!(
+                    loc,
+                    "{name} and {count} other zapped a note you were tagged in",
+                    "{name} and {count} others zapped a note you were tagged in",
+                    "amount of zaps a note you were tagged in received",
+                    count,
+                    name = first_name
+                )
+            }
+        }
+        ReferencedNoteType::Yours => {
+            if count == 0 {
+                tr!(
+                    loc,
+                    "{name} zapped your note",
+                    "zap from user to your note",
+                    name = first_name
+                )
+            } else {
+                tr_plural!(
+                    loc,
+                    "{name} and {count} other zapped your note",
+                    "{name} and {count} others zapped your note",
+                    "describing the amount of zaps your note received",
+                    count,
+                    name = first_name
+                )
+            }
+        }
+    }
+}
+
+fn format_sats_abbreviated(msats: u64) -> String {
+    let sats = msats / 1000;
+    if sats >= 1_000_000 {
+        let m = sats as f64 / 1_000_000.0;
+        if m >= 10.0 {
+            format!("{}M", m as u64)
+        } else {
+            format!("{:.1}M", m)
+        }
+    } else if sats >= 1_000 {
+        let k = sats as f64 / 1_000.0;
+        if k >= 10.0 {
+            format!("{}K", k as u64)
+        } else {
+            format!("{:.1}K", k)
+        }
+    } else {
+        sats.to_string()
+    }
+}
+
 #[profiling::function]
 fn render_note(
     ui: &mut egui::Ui,
@@ -719,6 +800,7 @@ fn render_reaction_cluster(
         underlying_note,
         profiles_to_show,
         CompositeType::Reaction,
+        None,
     )
 }
 
@@ -731,6 +813,7 @@ fn render_composite_entry(
     underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
     composite_type: CompositeType,
+    total_msats: Option<u64>,
 ) -> RenderEntryResponse {
     let first_name = get_display_name(profiles_to_show.iter().find_map(|opt| opt.record.as_ref()))
         .name()
@@ -780,6 +863,7 @@ fn render_composite_entry(
                                     note_context.img_cache,
                                     note_context.jobs,
                                     note_options.contains(NoteOptions::Notification),
+                                    total_msats,
                                 )
                             },
                         )
@@ -875,6 +959,7 @@ fn render_profiles(
     img_cache: &mut notedeck::Images,
     jobs: &notedeck::MediaJobSender,
     notification: bool,
+    total_msats: Option<u64>,
 ) -> PfpsResponse {
     let mut action = None;
     if notification {
@@ -887,6 +972,14 @@ fn render_profiles(
             vec2(20.0, 20.0),
             composite_type.image(ui.visuals().dark_mode),
         );
+        if let Some(msats) = total_msats {
+            let sats_text = format_sats_abbreviated(msats);
+            ui.add(egui::Label::new(
+                RichText::new(sats_text)
+                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Tiny))
+                    .color(Color32::from_rgb(0xFF, 0xB7, 0x57)),
+            ));
+        }
     });
 
     if notification {
@@ -987,6 +1080,51 @@ fn render_repost_cluster(
         underlying_note,
         profiles_to_show,
         CompositeType::Repost,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[profiling::function]
+fn render_zap_cluster(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    note_options: NoteOptions,
+    mute: &std::sync::Arc<Muted>,
+    txn: &Transaction,
+    underlying_note: &Note,
+    zap: &ZapUnit,
+) -> RenderEntryResponse {
+    let profiles_to_show: Vec<ProfileEntry> = zap
+        .zaps
+        .values()
+        .filter(|z| !mute.is_pk_muted(z.sender.bytes()))
+        .map(|z| {
+            let record = if let Some(key) = z.sender_profilekey {
+                note_context.ndb.get_profile_by_key(txn, key).ok()
+            } else {
+                note_context
+                    .ndb
+                    .get_profile_by_pubkey(txn, z.sender.bytes())
+                    .ok()
+            };
+            ProfileEntry {
+                record,
+                pk: &z.sender,
+            }
+        })
+        .collect();
+
+    let total_msats = zap.total_msats();
+
+    render_composite_entry(
+        ui,
+        note_context,
+        note_options | NoteOptions::Notification,
+        underlying_note,
+        profiles_to_show,
+        CompositeType::Zap,
+        Some(total_msats),
     )
 }
 

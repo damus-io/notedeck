@@ -138,39 +138,37 @@ pub fn parse_inline(text: &str, base_offset: usize) -> Vec<InlineElement> {
             }
 
             // Tilde - potential strikethrough
-            '~' => {
-                if chars.peek().map(|(_, c)| *c == '~').unwrap_or(false) {
-                    chars.next(); // consume second ~
+            '~' if chars.peek().map(|(_, c)| *c == '~').unwrap_or(false) => {
+                chars.next(); // consume second ~
 
-                    // Flush pending text
-                    if i > plain_start {
-                        result.push(InlineElement::Text(Span::new(
-                            base_offset + plain_start,
-                            base_offset + i,
-                        )));
+                // Flush pending text
+                if i > plain_start {
+                    result.push(InlineElement::Text(Span::new(
+                        base_offset + plain_start,
+                        base_offset + i,
+                    )));
+                }
+
+                let content_start = i + 2;
+
+                // Find closing ~~
+                if let Some(end_pos) = text[content_start..].find("~~") {
+                    result.push(InlineElement::Styled {
+                        style: InlineStyle::Strikethrough,
+                        content: Span::new(
+                            base_offset + content_start,
+                            base_offset + content_start + end_pos,
+                        ),
+                    });
+
+                    let skip_to = content_start + end_pos + 2;
+                    while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
+                        chars.next();
                     }
-
-                    let content_start = i + 2;
-
-                    // Find closing ~~
-                    if let Some(end_pos) = text[content_start..].find("~~") {
-                        result.push(InlineElement::Styled {
-                            style: InlineStyle::Strikethrough,
-                            content: Span::new(
-                                base_offset + content_start,
-                                base_offset + content_start + end_pos,
-                            ),
-                        });
-
-                        let skip_to = content_start + end_pos + 2;
-                        while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
-                            chars.next();
-                        }
-                        plain_start = skip_to;
-                    } else {
-                        // No closing, revert
-                        plain_start = i;
-                    }
+                    plain_start = skip_to;
+                } else {
+                    // No closing, revert
+                    plain_start = i;
                 }
             }
 
@@ -204,53 +202,53 @@ pub fn parse_inline(text: &str, base_offset: usize) -> Vec<InlineElement> {
             }
 
             // Exclamation - potential image
-            '!' => {
-                if chars.peek().map(|(_, c)| *c == '[').unwrap_or(false) {
-                    // Flush pending text
-                    if i > plain_start {
-                        result.push(InlineElement::Text(Span::new(
-                            base_offset + plain_start,
-                            base_offset + i,
-                        )));
+            '!' if chars.peek().map(|(_, c)| *c == '[').unwrap_or(false) => {
+                // Flush pending text
+                if i > plain_start {
+                    result.push(InlineElement::Text(Span::new(
+                        base_offset + plain_start,
+                        base_offset + i,
+                    )));
+                }
+
+                chars.next(); // consume [
+
+                if let Some((alt_span, url_span, link_len)) =
+                    parse_link(&text[i + 1..], base_offset + i + 1)
+                {
+                    result.push(InlineElement::Image {
+                        alt: alt_span,
+                        url: url_span,
+                    });
+
+                    let skip_to = i + 1 + link_len;
+                    while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
+                        chars.next();
                     }
-
-                    chars.next(); // consume [
-
-                    if let Some((alt_span, url_span, link_len)) =
-                        parse_link(&text[i + 1..], base_offset + i + 1)
-                    {
-                        result.push(InlineElement::Image {
-                            alt: alt_span,
-                            url: url_span,
-                        });
-
-                        let skip_to = i + 1 + link_len;
-                        while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
-                            chars.next();
-                        }
-                        plain_start = skip_to;
-                    } else {
-                        // Not a valid image
-                        plain_start = i;
-                    }
+                    plain_start = skip_to;
+                } else {
+                    // Not a valid image
+                    plain_start = i;
                 }
             }
 
             // Newline - could be hard break
-            '\n' => {
+            '\n' if i >= 2 && text[..i].ends_with("  ") => {
                 // Check for hard line break (two spaces before newline)
-                if i >= 2 && text[..i].ends_with("  ") {
-                    // Flush text without trailing spaces
-                    let text_end = i - 2;
-                    if text_end > plain_start {
-                        result.push(InlineElement::Text(Span::new(
-                            base_offset + plain_start,
-                            base_offset + text_end,
-                        )));
-                    }
-                    result.push(InlineElement::LineBreak);
-                    plain_start = i + 1;
+                // Flush text without trailing spaces
+                let text_end = i - 2;
+                if text_end > plain_start {
+                    result.push(InlineElement::Text(Span::new(
+                        base_offset + plain_start,
+                        base_offset + text_end,
+                    )));
                 }
+                result.push(InlineElement::LineBreak);
+                plain_start = i + 1;
+            }
+
+            // Newline - soft line break, keep in text
+            '\n' => {
                 // Otherwise soft line break, keep in text
             }
 

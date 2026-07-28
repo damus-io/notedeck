@@ -26,12 +26,12 @@ impl AiBackend for RemoteOnlyBackend {
         _resume_session_id: Option<String>,
         _ctx: egui::Context,
     ) -> (
-        mpsc::Receiver<DaveApiResponse>,
+        Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
     ) {
         // Return a closed channel — no local AI processing
         let (_tx, rx) = mpsc::channel();
-        (rx, None)
+        (Some(rx), None)
     }
 
     fn cleanup_session(&self, _session_id: String) {}

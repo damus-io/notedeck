@@ -5,6 +5,7 @@ mod openai;
 mod remote;
 mod session_info;
 pub(crate) mod shared;
+mod task_tracker;
 mod tool_summary;
 pub mod traits;
 

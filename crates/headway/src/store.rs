@@ -1,0 +1,1462 @@
+//! Persistence for headway boards.
+//!
+//! This is the app-layer bridge between the pure schema in [`crate::event`] and
+//! nostrdb. It seeds the default board and translates UI intents
+//! ([`BoardAction`]) into signed nostr events that are ingested into a local
+//! nostrdb. Every ingested event is also handed to a [`Publisher`], the single
+//! seam for fanning changes outward to a relay: the egui app ingests straight
+//! into the nostrdb its embedded relay serves and so uses [`NoPublish`], while
+//! the CLI keeps its own nostrdb and publishes each event to the running app's
+//! relay over its websocket.
+
+use enostr::{NoteId, Pubkey};
+use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
+
+use crate::event::{
+    self, BoardView, COL_DELETED, CardView, ColumnDef, board_address, build_archive_placement,
+    build_board, build_comment, build_cover_note, build_issue, build_labels, build_placement,
+    build_relation, build_subject_edit, rank_between,
+};
+
+/// The single board headway manages for now. Multi-board support will turn this
+/// into a per-board identifier carried on [`crate::Headway`].
+pub const BOARD_ID: &str = "headway";
+
+/// A UI intent to mutate the board. Collected during rendering and applied
+/// afterwards by [`apply`], which turns each variant into one or more ingested
+/// events.
+pub enum BoardAction {
+    /// Move `card` into `to_col` so it lands at display row `to_row`.
+    MoveCard {
+        card: NoteId,
+        to_col: usize,
+        to_row: usize,
+    },
+    /// Create a new card titled `title` at the end of column `col`, optionally
+    /// tagging it with `labels` and/or parenting it under `parent` (a subissue
+    /// created in one step).
+    AddCard {
+        col: usize,
+        title: String,
+        labels: Vec<String>,
+        parent: Option<NoteId>,
+    },
+    /// Replace a card's title (subject edit).
+    EditTitle { card: NoteId, title: String },
+    /// Replace a card's description (cover note).
+    EditDescription { card: NoteId, description: String },
+    /// Set a card's labels (additive union with any existing labels).
+    SetLabels { card: NoteId, labels: Vec<String> },
+    /// Make `card` a subissue of `parent`, or detach it when `parent` is `None`.
+    /// Refused (no events) when it would create a parent cycle.
+    SetParent {
+        card: NoteId,
+        parent: Option<NoteId>,
+    },
+    /// Post a NIP-22 comment on `card`. `reply_to`, when set, is another comment
+    /// on the same card that this one threads under.
+    AddComment {
+        card: NoteId,
+        body: String,
+        reply_to: Option<NoteId>,
+    },
+    /// Remove a card from the board (tombstone placement).
+    DeleteCard { card: NoteId },
+    /// Archive a card: take it off the board but keep it recoverable, recording
+    /// the column it came from so a restore can put it back.
+    ArchiveCard { card: NoteId },
+    /// Restore an archived card to the column it was archived from (or the first
+    /// column if that column no longer exists).
+    RestoreCard { card: NoteId },
+    /// Append a new column named `name`.
+    AddColumn { name: String },
+    /// Rename the column at `col`.
+    RenameColumn { col: usize, name: String },
+    /// Remove the column at `col`. Its cards become unplaced and fall back to
+    /// the first column on the next reduce.
+    RemoveColumn { col: usize },
+    /// Move the column at `from` to index `to`.
+    MoveColumn { from: usize, to: usize },
+}
+
+/// A sink for events that have been ingested locally and should also be fanned
+/// out — typically published to a relay. [`ingest`] hands every event it stores
+/// to the publisher as a ready-to-send NIP-01 `["EVENT", {...}]` frame, in the
+/// order they were ingested.
+pub trait Publisher {
+    /// Called once per successfully ingested event with its `["EVENT", {...}]`
+    /// JSON frame, ready to write to a relay websocket.
+    fn publish(&mut self, event_frame: &str);
+}
+
+/// A [`Publisher`] that drops everything: local ingest only, no fan-out. Used by
+/// the egui app, whose embedded relay already serves the same nostrdb it ingests
+/// into, so there is nothing to publish.
+pub struct NoPublish;
+
+impl Publisher for NoPublish {
+    fn publish(&mut self, _event_frame: &str) {}
+}
+
+/// Sign `builder` with `secret` and ingest the resulting note into the local
+/// nostrdb, then hand its `["EVENT", {...}]` frame to `publisher`. Returns the
+/// note id, or `None` if building/ingesting failed (in which case nothing is
+/// published).
+pub fn ingest(
+    ndb: &Ndb,
+    builder: NoteBuilder,
+    secret: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let note = builder.sign(secret).build()?;
+    let id = NoteId::new(*note.id());
+    let json = enostr::ClientMessage::event(&note).ok()?.to_json().ok()?;
+    ndb.process_event_with(&json, IngestMetadata::new().client(true))
+        .ok()?;
+    publisher.publish(&json);
+    Some(id)
+}
+
+/// The default columns a fresh board is seeded with.
+fn default_columns() -> Vec<ColumnDef> {
+    vec![
+        ColumnDef::new("backlog", "Backlog"),
+        ColumnDef::new("todo", "Todo"),
+        ColumnDef::new("in-progress", "In Progress"),
+        ColumnDef::new("in-review", "In Review"),
+        ColumnDef::new("done", "Done"),
+    ]
+}
+
+/// Seed a fresh default board for `author` into the local nostrdb: just the
+/// board event with its columns, no cards. Cards are added later via
+/// [`BoardAction::AddCard`]. Titled "Headway"; use [`seed_board`] to name it.
+pub fn seed_default_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    publisher: &mut dyn Publisher,
+) {
+    seed_board(ndb, author, secret, board_id, "Headway", publisher);
+}
+
+/// Derive a board slug (its stable `d`-tag id) from a human `title`, avoiding any
+/// slug the `taken` predicate rejects. Lowercase ASCII alphanumerics are kept;
+/// every other run collapses to a single `-`. Empty/all-punctuation input falls
+/// back to `board`, and a clash gets a `-2`, `-3`, … suffix. Shared so any
+/// surface that turns a typed name into a board (e.g. the GUI's "New board") gets
+/// the same rule; the CLI takes a slug verbatim and doesn't need it.
+pub fn board_slug(title: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut base = String::new();
+    let mut prev_dash = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            base.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !base.is_empty() && !prev_dash {
+            base.push('-');
+            prev_dash = true;
+        }
+    }
+    let base = base.trim_end_matches('-');
+    let base = if base.is_empty() { "board" } else { base };
+
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|slug| !taken(slug))
+        .expect("an unused slug exists")
+}
+
+/// Seed a fresh board with a display `title` (the `board_id` is its stable slug).
+/// Like [`seed_default_board`] but lets a caller create a *named* board — e.g. a
+/// separate "Work" board alongside the default one, all under one identity.
+pub fn seed_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    title: &str,
+    publisher: &mut dyn Publisher,
+) {
+    let _ = author;
+    let columns = default_columns();
+    ingest(
+        ndb,
+        build_board(board_id, title, "", &columns),
+        secret,
+        publisher,
+    );
+}
+
+/// Seed a default board *and* a fixed set of demo cards. The product seed
+/// ([`seed_default_board`]) is deliberately card-less; this is the populated
+/// board used by tests and demos. Cards land 3 / 2 / 1 / 0 / 1 across the
+/// columns, in seeded order (increasing ranks per column).
+///
+/// Every card event is stamped `at` rather than the wall clock, so a seeded
+/// board is identical from one run to the next: event ids (and the word-ids
+/// derived from them) and the created/updated times the UI renders only stay
+/// stable across runs if the seed's timestamps do. Snapshot tests pin `at`
+/// (together with [`crate::fmt::freeze_now`]) for reproducible frames.
+pub fn seed_demo_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    at: u64,
+    publisher: &mut dyn Publisher,
+) {
+    seed_default_board(ndb, author, secret, board_id, publisher);
+
+    let addr = board_address(author, board_id);
+    // The cards are created a fortnight before `at` and amended at instants in
+    // between (below), so the demo board's activity timelines — and the
+    // relative times next to them — have real depth instead of a wall of
+    // "just now". The drag card starts in Todo and the event-model card with
+    // an earlier title/description/label set; the post-creation amendments
+    // resolve every card to the exact state listed here-adjacent, so tests
+    // addressing cards by their final title/column are unaffected.
+    let created = at - 14 * 86_400;
+    let cards: [(&str, &str, &str, &[&str]); 7] = [
+        (
+            "backlog",
+            "Nostr event model",
+            "Decide how boards, columns and cards map to nostr events.",
+            &["protocol"],
+        ),
+        ("backlog", "Sync cards across relays", "", &["nostr"]),
+        ("backlog", "Card detail / comments view", "", &["ui"]),
+        ("todo", "Inline card creation", "", &["ui"]),
+        ("todo", "Column reordering", "", &[]),
+        (
+            "todo",
+            "Drag-and-drop between columns",
+            "Reorder within a lane and move across lanes with a live insertion line.",
+            &["ux"],
+        ),
+        ("done", "Scaffold the Headway app crate", "", &["chore"]),
+    ];
+
+    // Hand out increasing ranks per column so cards keep their seeded order.
+    // Stamp each card's creation events with the one shared timestamp: a label
+    // event that landed a second after its issue would count as an "update"
+    // (and an activity row) rather than part of creation.
+    let mut last_rank: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let mut ids: std::collections::HashMap<&str, NoteId> = std::collections::HashMap::new();
+    for (col_id, title, body, labels) in cards {
+        let Some(id) = ingest(
+            ndb,
+            build_issue(&addr, title, body).created_at(created),
+            secret,
+            publisher,
+        ) else {
+            continue;
+        };
+        ids.insert(title, id);
+        let rank = rank_between(last_rank.get(col_id).map(|s| s.as_str()), None);
+        ingest(
+            ndb,
+            build_placement(board_id, &addr, &id, col_id, &rank).created_at(created),
+            secret,
+            publisher,
+        );
+        if !labels.is_empty() {
+            ingest(
+                ndb,
+                build_labels(&id, labels).created_at(created),
+                secret,
+                publisher,
+            );
+        }
+        last_rank.insert(col_id, rank);
+    }
+
+    // Parent the sync and scaffold cards under the event-model card so the demo
+    // board exercises subissue rendering: a 1/2 rollup on the parent (the
+    // scaffold child sits in Done, the sync child in Backlog) and a parent
+    // breadcrumb on each child.
+    if let Some(parent) = ids.get("Nostr event model") {
+        for child in ["Sync cards across relays", "Scaffold the Headway app crate"] {
+            if let Some(child) = ids.get(child) {
+                ingest(
+                    ndb,
+                    build_relation(child, Some(parent)).created_at(created),
+                    secret,
+                    publisher,
+                );
+            }
+        }
+    }
+
+    // Post-creation history: amend the event-model card (rename → label swap →
+    // description edit) and move the drag card into In Progress, each at its
+    // own instant, so the detail views showcase a populated activity timeline.
+    // These land the cards on their final, test-visible state.
+    if let Some(card) = ids.get("Nostr event model") {
+        ingest(
+            ndb,
+            build_subject_edit(card, "Define nostr event model for boards")
+                .created_at(at - 10 * 86_400),
+            secret,
+            publisher,
+        );
+        ingest(
+            ndb,
+            build_labels(card, &["nostr"]).created_at(at - 6 * 86_400),
+            secret,
+            publisher,
+        );
+        ingest(
+            ndb,
+            build_cover_note(
+                card,
+                author,
+                "Decide how boards, columns and cards map to nostr events. \
+                 Likely an addressable (NIP-33) board event plus per-card events.",
+            )
+            .created_at(at - 3 * 86_400),
+            secret,
+            publisher,
+        );
+    }
+    if let Some(card) = ids.get("Drag-and-drop between columns") {
+        let rank = rank_between(None, None);
+        ingest(
+            ndb,
+            build_placement(board_id, &addr, card, "in-progress", &rank).created_at(at - 86_400),
+            secret,
+            publisher,
+        );
+    }
+}
+
+/// Apply one [`BoardAction`] against the current `view`, ingesting the events it
+/// implies. `view` is the pre-action snapshot, used to compute insertion ranks
+/// and to reconstruct the column list for board-level edits.
+pub fn apply(
+    ndb: &Ndb,
+    board_id: &str,
+    view: &BoardView,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    action: BoardAction,
+    publisher: &mut dyn Publisher,
+) {
+    let addr = board_address(author, board_id);
+
+    match action {
+        BoardAction::MoveCard {
+            card,
+            to_col,
+            to_row,
+        } => {
+            let Some(col) = view.columns.get(to_col) else {
+                return;
+            };
+            let rank = rank_for_insert(&col.cards, Some(card), to_row);
+            let after = find_card(view, card).map_or(0, |c| c.placed_at);
+            ingest(
+                ndb,
+                build_placement(board_id, &addr, &card, &col.id, &rank)
+                    .created_at(next_after(after)),
+                secret,
+                publisher,
+            );
+        }
+        BoardAction::AddCard {
+            col,
+            title,
+            labels,
+            parent,
+        } => {
+            let Some(c) = view.columns.get(col) else {
+                return;
+            };
+            // A brand-new card can't be anyone's ancestor, so parenting it needs
+            // no cycle check — just that the parent actually exists.
+            let parent = parent.filter(|p| find_card_any(view, *p).is_some());
+            let Some(id) = ingest(ndb, build_issue(&addr, &title, ""), secret, publisher) else {
+                return;
+            };
+            let rank = rank_for_insert(&c.cards, None, c.cards.len());
+            ingest(
+                ndb,
+                build_placement(board_id, &addr, &id, &c.id, &rank),
+                secret,
+                publisher,
+            );
+            if !labels.is_empty() {
+                ingest(ndb, build_labels(&id, &labels), secret, publisher);
+            }
+            if let Some(parent) = parent {
+                ingest(ndb, build_relation(&id, Some(&parent)), secret, publisher);
+            }
+        }
+        BoardAction::EditTitle { card, title } => {
+            ingest(ndb, build_subject_edit(&card, &title), secret, publisher);
+        }
+        BoardAction::EditDescription { card, description } => {
+            ingest(
+                ndb,
+                build_cover_note(&card, author, &description),
+                secret,
+                publisher,
+            );
+        }
+        BoardAction::SetLabels { card, labels } => {
+            ingest(ndb, build_labels(&card, &labels), secret, publisher);
+        }
+        BoardAction::SetParent { card, parent } => {
+            if let Some(parent) = parent {
+                if would_cycle(view, card, parent) {
+                    return;
+                }
+                ingest(ndb, build_relation(&card, Some(&parent)), secret, publisher);
+            } else {
+                ingest(ndb, build_relation(&card, None), secret, publisher);
+            }
+        }
+        BoardAction::AddComment {
+            card,
+            body,
+            reply_to,
+        } => {
+            // The comment is rooted on the issue, so we need the issue author
+            // (the card's author) for the NIP-22 root `P`. Unknown card -> no-op.
+            let Some(c) = find_card_any(view, card) else {
+                return;
+            };
+            let issue_author = Pubkey::new(c.author);
+
+            // A reply additionally names the parent comment's author. If the
+            // parent isn't on the card we know about, drop the reply rather than
+            // mis-attribute it.
+            let parent_author;
+            let reply = match &reply_to {
+                Some(parent) => {
+                    let Some(pc) = c.comments.iter().find(|c| c.id == *parent) else {
+                        return;
+                    };
+                    parent_author = Pubkey::new(pc.author);
+                    Some((parent, &parent_author))
+                }
+                None => None,
+            };
+
+            // Comments fold in `created_at` order (id as tiebreaker). Nostr
+            // timestamps are whole seconds, so two comments posted in the same
+            // second would tie and the id tiebreaker would order them at random —
+            // a reply could sort ahead of the comment it answers. Stamp strictly
+            // past the newest comment already on the card so order stays causal
+            // (mirrors [`next_after`]).
+            let latest = c.comments.iter().map(|c| c.created_at).max().unwrap_or(0);
+            ingest(
+                ndb,
+                build_comment(&card, &issue_author, reply, &body).created_at(next_after(latest)),
+                secret,
+                publisher,
+            );
+        }
+        BoardAction::DeleteCard { card } => {
+            // build_placement needs a rank; reuse the card's current one (or a
+            // midpoint) — the column is the tombstone sentinel either way.
+            let c = find_card(view, card);
+            let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
+            let after = c.map_or(0, |c| c.placed_at);
+            ingest(
+                ndb,
+                build_placement(board_id, &addr, &card, COL_DELETED, &rank)
+                    .created_at(next_after(after)),
+                secret,
+                publisher,
+            );
+        }
+        BoardAction::ArchiveCard { card } => {
+            // Capture the card's current column so a restore can return it there.
+            let Some((from_col, c)) = find_card_col(view, card) else {
+                return;
+            };
+            let rank = non_empty_rank(&c.rank);
+            ingest(
+                ndb,
+                build_archive_placement(board_id, &addr, &card, from_col, &rank)
+                    .created_at(next_after(c.placed_at)),
+                secret,
+                publisher,
+            );
+        }
+        BoardAction::RestoreCard { card } => {
+            let Some(entry) = view.archived.iter().find(|a| a.card.id == card) else {
+                return;
+            };
+            // Restore to the origin column, falling back to the first column if
+            // that column is gone (the reducer would reflow it there anyway).
+            let to_col = entry
+                .from
+                .as_deref()
+                .filter(|id| view.columns.iter().any(|c| c.id == *id))
+                .or_else(|| view.columns.first().map(|c| c.id.as_str()));
+            let Some(to_col) = to_col else {
+                return;
+            };
+            let rank = non_empty_rank(&entry.card.rank);
+            ingest(
+                ndb,
+                build_placement(board_id, &addr, &card, to_col, &rank)
+                    .created_at(next_after(entry.card.placed_at)),
+                secret,
+                publisher,
+            );
+        }
+        BoardAction::AddColumn { name } => {
+            let mut cols = column_defs(view);
+            cols.push(ColumnDef::new(unique_col_id(&cols, &name), name));
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
+        }
+        BoardAction::RenameColumn { col, name } => {
+            let mut cols = column_defs(view);
+            let Some(def) = cols.get_mut(col) else {
+                return;
+            };
+            def.name = name;
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
+        }
+        BoardAction::RemoveColumn { col } => {
+            let mut cols = column_defs(view);
+            if col >= cols.len() {
+                return;
+            }
+            cols.remove(col);
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
+        }
+        BoardAction::MoveColumn { from, to } => {
+            let mut cols = column_defs(view);
+            if from >= cols.len() || to >= cols.len() || from == to {
+                return;
+            }
+            let def = cols.remove(from);
+            cols.insert(to, def);
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
+        }
+    }
+}
+
+/// A board to operate on across a cross-board action: its `id` (slug) paired with
+/// its current folded `view`. Bundled so [`link_card`]/[`move_card_between_boards`]
+/// take one argument per board rather than an id/view pair each.
+#[derive(Clone, Copy)]
+pub struct BoardRef<'a> {
+    pub id: &'a str,
+    pub view: &'a BoardView,
+}
+
+/// Place `card` onto `target`, in the column whose id matches `prefer_col` when
+/// the board has one, else the target's first column, at the end. Returns the
+/// placement's note id.
+fn place_card(
+    ndb: &Ndb,
+    target: BoardRef,
+    prefer_col: Option<&str>,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    card: NoteId,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let addr = board_address(author, target.id);
+    let col = prefer_col
+        .and_then(|id| target.view.columns.iter().find(|c| c.id == id))
+        .or_else(|| target.view.columns.first())?;
+    let rank = rank_for_insert(&col.cards, Some(card), col.cards.len());
+    let after = find_card(target.view, card).map_or(0, |c| c.placed_at);
+    ingest(
+        ndb,
+        build_placement(target.id, &addr, &card, &col.id, &rank).created_at(next_after(after)),
+        secret,
+        publisher,
+    )
+}
+
+/// Link `card` from `source` onto `target`, preserving its column. This is a
+/// *link*: membership is placement-driven, so the card keeps any other boards it
+/// is already on, and the same issue (with all its overlays — title, labels,
+/// comments) now shows on `target` too. It lands in the target column whose id
+/// matches the card's column on `source`, falling back to the target's first
+/// column when that column doesn't exist there. Returns the placement's note id.
+///
+/// Re-linking simply re-ranks (latest wins).
+pub fn link_card(
+    ndb: &Ndb,
+    source: BoardRef,
+    target: BoardRef,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    card: NoteId,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let from_col = find_card_col(source.view, card).map(|(col, _)| col);
+    place_card(ndb, target, from_col, author, secret, card, publisher)
+}
+
+/// Move `card` from the `source` board to the `target` board: link it onto
+/// `target` (preserving its column, see [`link_card`]), then tombstone its
+/// placement on `source`. The issue id and all its overlays are preserved — it's
+/// the same card, just re-homed. Returns the new placement's note id.
+pub fn move_card_between_boards(
+    ndb: &Ndb,
+    source: BoardRef,
+    target: BoardRef,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    card: NoteId,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let placed = link_card(ndb, source, target, author, secret, card, publisher)?;
+    // Placement-driven membership: a tombstone on the source removes it from
+    // `source` only, leaving the freshly-linked placement on `target`.
+    let src_addr = board_address(author, source.id);
+    let c = find_card(source.view, card);
+    let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
+    let after = c.map_or(0, |c| c.placed_at);
+    ingest(
+        ndb,
+        build_placement(source.id, &src_addr, &card, COL_DELETED, &rank)
+            .created_at(next_after(after)),
+        secret,
+        publisher,
+    );
+    Some(placed)
+}
+
+/// Republish the board event with a new column list, preserving title/description.
+///
+/// The board is an addressable event, so a republish supersedes the prior one by
+/// `created_at`. Nostr timestamps are whole seconds, so a quick succession of
+/// edits (or our own seed-then-edit in tests) would tie and the reducer would
+/// keep the *old* board — dropping the edit. Stamp a timestamp strictly greater
+/// than the version we're editing so the new board always wins.
+fn republish_board(
+    ndb: &Ndb,
+    board_id: &str,
+    view: &BoardView,
+    secret: &[u8; 32],
+    columns: &[ColumnDef],
+    publisher: &mut dyn Publisher,
+) {
+    let created_at = now_secs().max(view.created_at + 1);
+    ingest(
+        ndb,
+        build_board(board_id, &view.title, &view.description, columns).created_at(created_at),
+        secret,
+        publisher,
+    );
+}
+
+/// The `created_at` to stamp on a re-placement that must supersede a prior
+/// placement made at `prev`. Nostr timestamps are whole seconds, so a card
+/// moved/deleted/archived in the same second it was last placed would *tie* the
+/// reducer's latest-wins and silently no-op; stamp strictly past `prev` so the
+/// new placement always wins (mirrors [`republish_board`]).
+fn next_after(prev: u64) -> u64 {
+    now_secs().max(prev + 1)
+}
+
+/// Current wall-clock time in whole seconds since the Unix epoch (nostr's
+/// `created_at` unit). Falls back to 0 if the clock is before the epoch.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The current column definitions carried by `view`, ready to be edited and
+/// republished.
+fn column_defs(view: &BoardView) -> Vec<ColumnDef> {
+    view.columns
+        .iter()
+        .map(|c| ColumnDef::new(c.id.clone(), c.name.clone()))
+        .collect()
+}
+
+/// Find a card anywhere on the board by id.
+fn find_card(view: &BoardView, card: NoteId) -> Option<&CardView> {
+    view.columns
+        .iter()
+        .flat_map(|c| c.cards.iter())
+        .find(|c| c.id == card)
+}
+
+/// Find a card by id across the live columns *and* the archived set — commenting
+/// on an archived card is still valid, so it needs the wider search.
+fn find_card_any(view: &BoardView, card: NoteId) -> Option<&CardView> {
+    find_card(view, card).or_else(|| view.archived.iter().map(|a| &a.card).find(|c| c.id == card))
+}
+
+/// Would parenting `card` under `parent` create a cycle? Walks the ancestor
+/// chain upward from `parent` looking for `card`. The walk sees this board's
+/// view only, so an ancestor placed solely on another board isn't followed —
+/// good enough for the write-path guard (the reducer renders a slipped-through
+/// cycle harmlessly, one level at a time). Also refuses an unknown parent, and
+/// caps the walk so a pre-existing cycle can't spin it forever. Public so the
+/// GUI's parent picker can filter its candidates with the same rule the write
+/// path enforces.
+pub fn would_cycle(view: &BoardView, card: NoteId, parent: NoteId) -> bool {
+    let mut cur = Some(parent);
+    for _ in 0..64 {
+        let Some(id) = cur else {
+            return false;
+        };
+        if id == card {
+            return true;
+        }
+        let Some(c) = find_card_any(view, id) else {
+            // Unknown ancestor: can't prove it's safe, refuse.
+            return true;
+        };
+        cur = c.parent;
+    }
+    true
+}
+
+/// Find a card and the id of the column it currently sits in.
+fn find_card_col(view: &BoardView, card: NoteId) -> Option<(&str, &CardView)> {
+    view.columns.iter().find_map(|col| {
+        col.cards
+            .iter()
+            .find(|c| c.id == card)
+            .map(|c| (col.id.as_str(), c))
+    })
+}
+
+/// A placement needs a rank; fall back to a midpoint when the card has none
+/// (e.g. it was sitting unplaced in the fallback column).
+fn non_empty_rank(rank: &str) -> String {
+    if rank.is_empty() {
+        "m".to_string()
+    } else {
+        rank.to_string()
+    }
+}
+
+/// Compute a fractional rank that lands a card at display index `to_row` in a
+/// column whose current cards are `cards` (sorted by rank). `moving` excludes
+/// the dragged card from the neighbour search so an in-column move doesn't
+/// fence itself.
+fn rank_for_insert(cards: &[CardView], moving: Option<NoteId>, to_row: usize) -> String {
+    let others: Vec<&CardView> = cards.iter().filter(|c| Some(c.id) != moving).collect();
+
+    // `to_row` indexes the displayed list (which still includes the moved card);
+    // translate it into an index among `others`.
+    let pos = match moving.and_then(|m| cards.iter().position(|c| c.id == m)) {
+        Some(cur) if cur < to_row => to_row - 1,
+        _ => to_row,
+    };
+    let pos = pos.min(others.len());
+
+    let left = pos
+        .checked_sub(1)
+        .and_then(|i| others.get(i))
+        .map(|c| c.rank.as_str());
+    let right = others.get(pos).map(|c| c.rank.as_str());
+    rank_between(left, right)
+}
+
+/// Slugify `name` into a column id not already present in `existing`.
+fn unique_col_id(existing: &[ColumnDef], name: &str) -> String {
+    let mut base: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    // Collapse runs of '-' and trim them from the ends.
+    while base.contains("--") {
+        base = base.replace("--", "-");
+    }
+    let base = base.trim_matches('-').to_string();
+    let base = if base.is_empty() {
+        "col".to_string()
+    } else {
+        base
+    };
+
+    let taken = |id: &str| existing.iter().any(|c| c.id == id);
+    if !taken(&base) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Convenience re-export so the app layer can load a board without naming the
+/// event module directly.
+pub use event::load_board;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enostr::FullKeypair;
+    use nostrdb::{Config, Ndb, Transaction};
+    use std::time::{Duration, Instant};
+
+    struct TestNdb {
+        ndb: Ndb,
+        _dir: tempfile::TempDir,
+        kp: FullKeypair,
+    }
+
+    impl TestNdb {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            Self {
+                ndb,
+                _dir: dir,
+                kp: FullKeypair::generate(),
+            }
+        }
+
+        fn secret(&self) -> [u8; 32] {
+            self.kp.secret_key.secret_bytes()
+        }
+
+        /// Poll the board out of ndb until `pred` holds (ingest is async).
+        fn wait<F>(&self, pred: F) -> BoardView
+        where
+            F: Fn(&BoardView) -> bool,
+        {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let txn = Transaction::new(&self.ndb).unwrap();
+                if let Some(view) = load_board(&self.ndb, &txn, &self.kp.pubkey, BOARD_ID)
+                    && pred(&view)
+                {
+                    return view;
+                }
+                assert!(Instant::now() < deadline, "board predicate never held");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        fn apply(&self, view: &BoardView, action: BoardAction) {
+            super::apply(
+                &self.ndb,
+                BOARD_ID,
+                view,
+                &self.kp.pubkey,
+                &self.secret(),
+                action,
+                &mut NoPublish,
+            );
+        }
+    }
+
+    fn col_titles(view: &BoardView) -> Vec<String> {
+        view.columns.iter().map(|c| c.name.clone()).collect()
+    }
+
+    fn card_titles(view: &BoardView, col: usize) -> Vec<String> {
+        view.columns[col]
+            .cards
+            .iter()
+            .map(|c| c.title.clone())
+            .collect()
+    }
+
+    /// Seed the populated demo board for the card-operation tests to act on.
+    /// Columns: Backlog, Todo, In Progress, In Review, Done; cards 3 / 2 / 1 / 0 / 1.
+    /// Seeded in the past so follow-up edits (stamped with the wall clock)
+    /// always sort after it.
+    fn seed_demo(t: &TestNdb) {
+        seed_demo_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            BOARD_ID,
+            1_700_000_000,
+            &mut NoPublish,
+        );
+    }
+
+    #[test]
+    fn seed_materialises_default_board() {
+        let t = TestNdb::new();
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+
+        // The default board is card-less: just the five columns.
+        let view = t.wait(|v| v.columns.len() == 5);
+        assert_eq!(
+            col_titles(&view),
+            ["Backlog", "Todo", "In Progress", "In Review", "Done"]
+        );
+        assert!(view.columns.iter().all(|c| c.cards.is_empty()));
+    }
+
+    #[test]
+    fn seed_demo_materialises_cards() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+
+        let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
+        assert_eq!(view.columns[0].cards.len(), 3);
+        // Done is the last column; the seeded "done" card lands there.
+        assert_eq!(view.columns.last().unwrap().cards.len(), 1);
+        // Seeded order is preserved by increasing ranks.
+        assert_eq!(
+            view.columns[0].cards[0].title,
+            "Define nostr event model for boards"
+        );
+        assert!(!view.columns[0].cards[0].description.is_empty());
+    }
+
+    #[test]
+    fn add_card_appends_to_column() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+
+        t.apply(
+            &view,
+            BoardAction::AddCard {
+                col: 1,
+                title: "New idea".to_string(),
+                labels: vec![],
+                parent: None,
+            },
+        );
+
+        let view = t.wait(|v| v.columns[1].cards.len() == 3);
+        assert_eq!(card_titles(&view, 1).last().unwrap(), "New idea");
+    }
+
+    #[test]
+    fn add_card_with_labels_tags_the_new_card() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+
+        t.apply(
+            &view,
+            BoardAction::AddCard {
+                col: 1,
+                title: "Tagged idea".to_string(),
+                labels: vec!["bug".to_string(), "ux".to_string()],
+                parent: None,
+            },
+        );
+
+        let view = t.wait(|v| {
+            v.columns[1]
+                .cards
+                .iter()
+                .any(|c| c.title == "Tagged idea" && c.labels.len() == 2)
+        });
+        let card = view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.title == "Tagged idea")
+            .unwrap();
+        assert_eq!(card.labels, vec!["bug".to_string(), "ux".to_string()]);
+    }
+
+    #[test]
+    fn publisher_receives_a_frame_per_ingested_event() {
+        #[derive(Default)]
+        struct Collect(Vec<String>);
+        impl Publisher for Collect {
+            fn publish(&mut self, frame: &str) {
+                self.0.push(frame.to_string());
+            }
+        }
+
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+
+        // AddCard ingests two events — the issue and its placement — so the
+        // publisher should see exactly two ready-to-send EVENT frames.
+        let mut sink = Collect::default();
+        super::apply(
+            &t.ndb,
+            BOARD_ID,
+            &view,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::AddCard {
+                col: 1,
+                title: "Tracked".to_string(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut sink,
+        );
+
+        assert_eq!(sink.0.len(), 2, "issue + placement each publish a frame");
+        for frame in &sink.0 {
+            assert!(
+                frame.starts_with("[\"EVENT\","),
+                "frame is a NIP-01 EVENT message: {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn move_card_changes_column() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[0].cards.len() == 3);
+
+        // Move a Backlog card into Done (the last column, which seeds one card).
+        let done = view.columns.len() - 1;
+        let card = view.columns[0].cards[0].id;
+        t.apply(
+            &view,
+            BoardAction::MoveCard {
+                card,
+                to_col: done,
+                to_row: view.columns[done].cards.len(),
+            },
+        );
+
+        let view = t.wait(|v| v.columns[done].cards.len() == 2);
+        assert_eq!(view.columns[0].cards.len(), 2);
+        assert!(view.columns[done].cards.iter().any(|c| c.id == card));
+    }
+
+    #[test]
+    fn edit_title_description_and_labels() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        // The second Todo card ("Column reordering") is seeded without labels,
+        // so the SetLabels union below is exactly the two we add.
+        let card = view.columns[1].cards[1].id;
+
+        t.apply(
+            &view,
+            BoardAction::EditTitle {
+                card,
+                title: "Renamed".to_string(),
+            },
+        );
+        t.apply(
+            &view,
+            BoardAction::EditDescription {
+                card,
+                description: "the details".to_string(),
+            },
+        );
+        t.apply(
+            &view,
+            BoardAction::SetLabels {
+                card,
+                labels: vec!["bug".to_string(), "ux".to_string()],
+            },
+        );
+
+        let view = t.wait(|v| {
+            v.columns[1].cards.iter().any(|c| {
+                c.id == card
+                    && c.title == "Renamed"
+                    && c.description == "the details"
+                    && c.labels.len() == 2
+            })
+        });
+        let edited = view.columns[1].cards.iter().find(|c| c.id == card).unwrap();
+        assert_eq!(edited.title, "Renamed");
+        assert_eq!(edited.description, "the details");
+        assert_eq!(edited.labels, vec!["bug".to_string(), "ux".to_string()]);
+    }
+
+    #[test]
+    fn add_comment_and_reply_fold_onto_the_card() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let card = view.columns[1].cards[0].id;
+
+        // Top-level comment.
+        t.apply(
+            &view,
+            BoardAction::AddComment {
+                card,
+                body: "first comment".to_string(),
+                reply_to: None,
+            },
+        );
+        let view = t.wait(|v| {
+            v.columns[1]
+                .cards
+                .iter()
+                .any(|c| c.id == card && c.comments.len() == 1)
+        });
+        let parent = view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .unwrap()
+            .comments[0]
+            .id;
+
+        // A reply threaded under that comment.
+        t.apply(
+            &view,
+            BoardAction::AddComment {
+                card,
+                body: "a reply".to_string(),
+                reply_to: Some(parent),
+            },
+        );
+        let view = t.wait(|v| {
+            v.columns[1]
+                .cards
+                .iter()
+                .any(|c| c.id == card && c.comments.len() == 2)
+        });
+
+        let comments = &view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .unwrap()
+            .comments;
+        assert_eq!(comments[0].body, "first comment");
+        assert_eq!(comments[0].parent, None);
+        assert_eq!(comments[1].body, "a reply");
+        assert_eq!(comments[1].parent, Some(parent));
+    }
+
+    #[test]
+    fn delete_card_removes_it() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[0].cards.len() == 3);
+        let card = view.columns[0].cards[0].id;
+
+        t.apply(&view, BoardAction::DeleteCard { card });
+
+        let view = t.wait(|v| v.columns[0].cards.len() == 2);
+        assert!(!view.columns[0].cards.iter().any(|c| c.id == card));
+    }
+
+    #[test]
+    fn archive_then_restore_round_trips_to_origin() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        // Pick a card out of "In Progress" (column 2), not the first column, so a
+        // restore that ignored the origin would land it somewhere else.
+        let view = t.wait(|v| v.columns[2].cards.len() == 1);
+        let card = view.columns[2].cards[0].id;
+
+        t.apply(&view, BoardAction::ArchiveCard { card });
+
+        // It leaves the columns and shows up in the archived list, with origin.
+        let view = t.wait(|v| !v.archived.is_empty());
+        assert!(
+            view.columns
+                .iter()
+                .all(|c| c.cards.iter().all(|c| c.id != card))
+        );
+        assert_eq!(view.archived.len(), 1);
+        assert_eq!(view.archived[0].card.id, card);
+        assert_eq!(view.archived[0].from.as_deref(), Some("in-progress"));
+
+        t.apply(&view, BoardAction::RestoreCard { card });
+
+        // Restored back into the exact column it came from, and unarchived.
+        let view = t.wait(|v| v.archived.is_empty() && v.columns[2].cards.len() == 1);
+        assert_eq!(view.columns[2].cards[0].id, card);
+    }
+
+    #[test]
+    fn column_ops_round_trip() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns.len() == 5);
+
+        t.apply(
+            &view,
+            BoardAction::AddColumn {
+                name: "Review".to_string(),
+            },
+        );
+        let view = t.wait(|v| v.columns.len() == 6);
+        assert_eq!(view.columns[5].name, "Review");
+
+        t.apply(
+            &view,
+            BoardAction::RenameColumn {
+                col: 0,
+                name: "Inbox".to_string(),
+            },
+        );
+        let view = t.wait(|v| v.columns[0].name == "Inbox");
+
+        t.apply(&view, BoardAction::MoveColumn { from: 0, to: 1 });
+        let view = t.wait(|v| v.columns[1].name == "Inbox");
+
+        t.apply(&view, BoardAction::RemoveColumn { col: 1 });
+        let view = t.wait(|v| !v.columns.iter().any(|c| c.name == "Inbox"));
+        // The removed column's cards aren't lost; they fall back to column 0.
+        assert!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>() >= 7);
+    }
+
+    #[test]
+    fn board_slug_normalizes_titles() {
+        let free = |_: &str| false;
+        assert_eq!(board_slug("Work", free), "work");
+        assert_eq!(board_slug("My Work Board", free), "my-work-board");
+        assert_eq!(board_slug("  Spaced  Out  ", free), "spaced-out");
+        assert_eq!(board_slug("C++ & Rust!", free), "c-rust");
+        assert_eq!(board_slug("2024 Goals", free), "2024-goals");
+    }
+
+    #[test]
+    fn board_slug_falls_back_when_empty() {
+        let free = |_: &str| false;
+        assert_eq!(board_slug("", free), "board");
+        assert_eq!(board_slug("   ", free), "board");
+        assert_eq!(board_slug("!@#$", free), "board");
+    }
+
+    #[test]
+    fn board_slug_disambiguates_collisions() {
+        // "work" and "work-2" are taken; the next free slug is "work-3".
+        let taken = |s: &str| matches!(s, "work" | "work-2");
+        assert_eq!(board_slug("Work", taken), "work-3");
+        // The fallback also disambiguates.
+        let taken_board = |s: &str| s == "board";
+        assert_eq!(board_slug("", taken_board), "board-2");
+    }
+
+    /// Load an arbitrary board (the [`TestNdb`] helpers are pinned to `BOARD_ID`).
+    fn poll_board(t: &TestNdb, board_id: &str, pred: impl Fn(&BoardView) -> bool) -> BoardView {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            if let Some(view) = load_board(&t.ndb, &txn, &t.kp.pubkey, board_id)
+                && pred(&view)
+            {
+                return view;
+            }
+            drop(txn);
+            assert!(
+                Instant::now() < deadline,
+                "board '{board_id}' predicate never held"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Seed two boards, add a card to one, and add a card we can relocate.
+    fn two_boards_with_a_card(t: &TestNdb) -> NoteId {
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "src", &mut NoPublish);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "dst", &mut NoPublish);
+        poll_board(t, "src", |v| v.columns.len() == 5);
+        poll_board(t, "dst", |v| v.columns.len() == 5);
+
+        let src = poll_board(t, "src", |v| v.columns.len() == 5);
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::AddCard {
+                col: 0,
+                title: "Roamer".to_string(),
+                labels: vec!["wandering".to_string()],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+        poll_board(t, "src", |v| v.columns[0].cards.len() == 1).columns[0].cards[0].id
+    }
+
+    #[test]
+    fn link_card_places_on_both_boards() {
+        let t = TestNdb::new();
+        let card = two_boards_with_a_card(&t);
+
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        link_card(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // Same card on both boards, with its labels intact (it's shared, not copied).
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        assert_eq!(src.columns[0].cards[0].id, card);
+        assert_eq!(dst.columns[0].cards[0].id, card);
+        assert_eq!(
+            dst.columns[0].cards[0].labels,
+            vec!["wandering".to_string()]
+        );
+    }
+
+    #[test]
+    fn move_card_between_boards_relocates_it() {
+        let t = TestNdb::new();
+        let card = two_boards_with_a_card(&t);
+
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        move_card_between_boards(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // Leaves src, lands on dst — same id, same overlays.
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        poll_board(&t, "src", |v| v.columns[0].cards.is_empty());
+        assert_eq!(dst.columns[0].cards[0].id, card);
+        assert_eq!(dst.columns[0].cards[0].title, "Roamer");
+    }
+
+    #[test]
+    fn move_card_preserves_column_when_target_has_it() {
+        let t = TestNdb::new();
+        let card = two_boards_with_a_card(&t);
+
+        // Push the card into In Progress on src (both default boards share this column).
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::MoveCard {
+                card,
+                to_col: 2, // in-progress
+                to_row: 0,
+            },
+            &mut NoPublish,
+        );
+
+        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        move_card_between_boards(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // Lands in the same-id column (In Progress), not the first column.
+        let dst = poll_board(&t, "dst", |v| v.columns[2].cards.len() == 1);
+        assert_eq!(dst.columns[2].cards[0].id, card);
+        assert!(dst.columns[0].cards.is_empty());
+    }
+
+    #[test]
+    fn move_card_falls_back_to_first_column_when_target_lacks_it() {
+        let t = TestNdb::new();
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "src", &mut NoPublish);
+        // A target board whose columns don't include "in-progress".
+        ingest(
+            &t.ndb,
+            build_board(
+                "dst",
+                "Slim",
+                "",
+                &[
+                    ColumnDef::new("inbox", "Inbox"),
+                    ColumnDef::new("done", "Done"),
+                ],
+            ),
+            &t.secret(),
+            &mut NoPublish,
+        );
+        poll_board(&t, "src", |v| v.columns.len() == 5);
+        poll_board(&t, "dst", |v| v.columns.len() == 2);
+
+        // Add a card and move it into In Progress on src.
+        let src = poll_board(&t, "src", |v| v.columns.len() == 5);
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::AddCard {
+                col: 2, // in-progress
+                title: "Homeless".to_string(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+
+        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1);
+        let card = src.columns[2].cards[0].id;
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 2);
+        move_card_between_boards(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // No "in-progress" on dst, so it falls back to the first column (Inbox).
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        assert_eq!(dst.columns[0].id, "inbox");
+        assert_eq!(dst.columns[0].cards[0].id, card);
+    }
+}

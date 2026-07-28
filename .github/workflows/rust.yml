@@ -155,11 +155,11 @@ jobs:
 
       - name: Build Cross (${{ matrix.arch }})
         if: matrix.arch != runner.arch
-        run: cargo build --release --workspace --exclude notedeck_release --target=${{ matrix.arch }}-unknown-linux-gnu
+        run: cargo build --release --workspace --exclude notedeck_release --features dave --target=${{ matrix.arch }}-unknown-linux-gnu
 
       - name: Build Native (${{ matrix.arch }})
         if: matrix.arch == runner.arch
-        run: cargo build --release --workspace --exclude notedeck_release
+        run: cargo build --release --workspace --exclude notedeck_release --features dave
 
       - name: Create release tarball (Cross)
         if: matrix.arch != runner.arch
@@ -320,7 +320,7 @@ jobs:
         run: |
           $target = "${{ matrix.arch }}-pc-windows-msvc"
           Write-Output "Building for target: $target"
-          cargo build --release --target=$target
+          cargo build --release --workspace --features dave --target=$target
 
       # Build Installer
       - name: Run Inno Setup Script

@@ -14,7 +14,8 @@ bitflags! {
         /// Are we running as tests?
         const Tests = 1 << 3;
 
-        /// Use keystore?
+        /// Use the OS secure store (keychain) for secrets instead of the
+        /// default plaintext file-based storage. Opt-in via `--use-keystore`.
         const UseKeystore = 1 << 4;
 
         /// Simulate is_compiled_as_mobile ?
@@ -22,11 +23,14 @@ bitflags! {
 
         /// Show the native window titlebar?
         const ShowTitle = 1 << 7;
+
+        /// Update all apps every frame, even if they haven't been opened yet
+        const AllAppsActive = 1 << 8;
     }
 }
 
 impl Default for NotedeckOptions {
     fn default() -> Self {
-        NotedeckOptions::UseKeystore
+        NotedeckOptions::empty()
     }
 }

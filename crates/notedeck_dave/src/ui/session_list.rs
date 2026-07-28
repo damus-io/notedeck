@@ -28,6 +28,48 @@ pub enum SessionListAction {
     NewSessionInCwd(String, PathBuf),
 }
 
+/// The sessions Ctrl+J / Ctrl+K would cycle to, relative to the active one.
+/// `None` everywhere unless ctrl is held and there's more than one session.
+#[derive(Clone, Copy, Default)]
+struct CycleHints {
+    next: Option<SessionId>,
+    prev: Option<SessionId>,
+}
+
+impl CycleHints {
+    fn compute(
+        session_manager: &mut SessionManager,
+        collapse: &CollapseState,
+        active_id: Option<SessionId>,
+    ) -> Self {
+        let order = session_manager.visual_order(collapse);
+        // Cycling to self is meaningless with a single session.
+        if order.len() < 2 {
+            return Self::default();
+        }
+        let Some(pos) = active_id.and_then(|a| order.iter().position(|&id| id == a)) else {
+            return Self::default();
+        };
+        let len = order.len();
+        Self {
+            next: Some(order[(pos + 1) % len]),
+            prev: Some(order[if pos == 0 { len - 1 } else { pos - 1 }]),
+        }
+    }
+
+    /// The hint label ("J"/"K") to paint on `id`'s row, if it's adjacent to the
+    /// active session.
+    fn hint_for(&self, id: SessionId) -> Option<&'static str> {
+        if self.next == Some(id) {
+            Some("J")
+        } else if self.prev == Some(id) {
+            Some("K")
+        } else {
+            None
+        }
+    }
+}
+
 /// UI component for displaying the session list sidebar
 pub struct SessionListUi<'a> {
     session_manager: &'a mut SessionManager,
@@ -103,12 +145,22 @@ impl<'a> SessionListUi<'a> {
     fn sessions_list_ui(&mut self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
+        // Sessions Ctrl+J / Ctrl+K (cycle next/previous) would jump to, used to
+        // paint a J/K hint on the rows adjacent to the active one while ctrl is
+        // held. Mirrors the wrap-around order in update::cycle_agent.
+        let cycle = if self.ctrl_held {
+            CycleHints::compute(self.session_manager, self.collapse_state, active_id)
+        } else {
+            CycleHints::default()
+        };
         let mut visual_index: usize = 0;
         let host_groups = self.session_manager.host_cwd_groups().to_vec();
 
         // Agents grouped by host → cwd (pre-computed, deterministically ordered)
         for host_group in &host_groups {
-            if let Some(a) = host_section_ui(ui, self, host_group, &mut visual_index, active_id) {
+            if let Some(a) =
+                host_section_ui(ui, self, host_group, &mut visual_index, active_id, cycle)
+            {
                 action = Some(a);
             }
         }
@@ -125,7 +177,7 @@ impl<'a> SessionListUi<'a> {
             for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
                     if let Some(a) =
-                        self.render_session_item(ui, session, visual_index, active_id, None)
+                        self.render_session_item(ui, session, visual_index, active_id, None, cycle)
                     {
                         action = Some(a);
                     }
@@ -144,8 +196,10 @@ impl<'a> SessionListUi<'a> {
         index: usize,
         active_id: Option<SessionId>,
         cwd_display: Option<&str>,
+        cycle: CycleHints,
     ) -> Option<SessionListAction> {
         let is_active = Some(session.id) == active_id;
+        let cycle_hint = cycle.hint_for(session.id);
         let shortcut_hint = if self.ctrl_held && index < 9 {
             Some(index + 1)
         } else {
@@ -166,6 +220,16 @@ impl<'a> SessionListUi<'a> {
         } else {
             session.details.display_title()
         };
+        // Total +/- lines vs HEAD, shown bottom-right on standalone (cwd) rows
+        // so a dirty worktree is obvious at a glance. None unless the repo has
+        // tracked changes.
+        let git_lines = session
+            .agentic
+            .as_ref()
+            .and_then(|a| a.git_status.current())
+            .and_then(|r| r.as_ref().ok())
+            .map(|d| (d.added_lines, d.deleted_lines))
+            .filter(|(added, deleted)| *added > 0 || *deleted > 0);
         let (response, dot_action) = if session.ai_mode == AiMode::Agentic {
             self.agent_row_ui(
                 ui,
@@ -174,9 +238,11 @@ impl<'a> SessionListUi<'a> {
                 cwd_display,
                 is_active,
                 shortcut_hint,
+                cycle_hint,
                 session.status(),
                 queue_priority,
                 session.backend_type,
+                git_lines,
             )
         } else {
             self.chat_row_ui(
@@ -185,6 +251,7 @@ impl<'a> SessionListUi<'a> {
                 display_title,
                 is_active,
                 shortcut_hint,
+                cycle_hint,
                 queue_priority,
             )
         };
@@ -323,9 +390,11 @@ impl<'a> SessionListUi<'a> {
         cwd_display: Option<&str>,
         is_active: bool,
         shortcut_hint: Option<usize>,
+        cycle_hint: Option<&str>,
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
         backend_type: BackendType,
+        git_lines: Option<(usize, usize)>,
     ) -> (egui::Response, Option<SessionListAction>) {
         let row_height = if cwd_display.is_some() { 48.0 } else { 32.0 };
         let desired_size = egui::vec2(ui.available_width(), row_height);
@@ -356,18 +425,39 @@ impl<'a> SessionListUi<'a> {
         }
 
         let hints: &[(&str, &str)] = &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")];
-        let (right_used, dot_action) = render_row_right_side(
-            ui,
-            rect,
-            session_id,
-            is_active,
-            self.ctrl_held,
-            shortcut_hint,
-            queue_priority,
-            hints,
-        );
+        // Standalone (cwd) rows get the worktree treatment: status dot moves to
+        // the top-right and the git +/- line stats sit on the bottom-right next
+        // to the cwd path. Grouped rows keep the original centered layout.
+        let (title_right, cwd_right, dot_action) = if cwd_display.is_some() {
+            render_agent_row_right_side(
+                ui,
+                rect,
+                session_id,
+                is_active,
+                self.ctrl_held,
+                shortcut_hint,
+                cycle_hint,
+                queue_priority,
+                git_lines,
+                hints,
+            )
+        } else {
+            let (used, action) = render_row_right_side(
+                ui,
+                rect,
+                session_id,
+                is_active,
+                self.ctrl_held,
+                shortcut_hint,
+                cycle_hint,
+                queue_priority,
+                hints,
+            );
+            (used, used, action)
+        };
 
-        let max_text_width = rect.width() - text_start_x - right_used;
+        let title_max_width = rect.width() - text_start_x - title_right;
+        let cwd_max_width = rect.width() - text_start_x - cwd_right;
         let font_id = egui::FontId::proportional(14.0);
         let title_height = ui
             .painter()
@@ -384,18 +474,19 @@ impl<'a> SessionListUi<'a> {
             title,
             rect.left() + text_start_x,
             title_top,
-            max_text_width,
+            title_max_width,
         );
 
         if let Some(cwd) = cwd_display {
             let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
-            cwd_inline_ui(ui, cwd, cwd_pos, max_text_width);
+            cwd_inline_ui(ui, cwd, cwd_pos, cwd_max_width);
         }
 
         (response, dot_action)
     }
 
     /// Render a chat session row (no status bar, no cwd).
+    #[allow(clippy::too_many_arguments)]
     fn chat_row_ui(
         &self,
         ui: &mut egui::Ui,
@@ -403,6 +494,7 @@ impl<'a> SessionListUi<'a> {
         title: &str,
         is_active: bool,
         shortcut_hint: Option<usize>,
+        cycle_hint: Option<&str>,
         queue_priority: Option<FocusPriority>,
     ) -> (egui::Response, Option<SessionListAction>) {
         let desired_size = egui::vec2(ui.available_width(), 32.0);
@@ -420,6 +512,7 @@ impl<'a> SessionListUi<'a> {
             is_active,
             self.ctrl_held,
             shortcut_hint,
+            cycle_hint,
             queue_priority,
             hints,
         );
@@ -601,6 +694,7 @@ fn render_row_right_side(
     is_active: bool,
     ctrl_held: bool,
     shortcut_hint: Option<usize>,
+    cycle_hint: Option<&str>,
     queue_priority: Option<FocusPriority>,
     hints: &[(&str, &str)],
 ) -> (f32, Option<SessionListAction>) {
@@ -613,6 +707,14 @@ fn render_row_right_side(
         let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
         paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
         right_offset = 8.0 + hint_size + 6.0;
+    }
+
+    // Ctrl+J / Ctrl+K hint on the rows adjacent to the active session.
+    if let Some(cycle) = cycle_hint {
+        let hint_size = 18.0;
+        let hint_center = rect.right_center() - egui::vec2(right_offset + hint_size / 2.0, 0.0);
+        paint_keybind_hint(ui, hint_center, cycle, hint_size);
+        right_offset += hint_size + 6.0;
     }
 
     if is_active && ctrl_held {
@@ -667,6 +769,136 @@ fn render_row_right_side(
     (right_offset, dot_action)
 }
 
+const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
+const GIT_DELETED_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 60, 60);
+
+/// Right side of a standalone (cwd) agent row: keybind hints stay vertically
+/// centered, the focus/status dot moves to the top-right, and the git +/- line
+/// stats render on the bottom-right. Returns the horizontal space to reserve on
+/// the title (top) line and the cwd (bottom) line respectively, plus any dot
+/// action.
+#[allow(clippy::too_many_arguments)]
+fn render_agent_row_right_side(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    session_id: SessionId,
+    is_active: bool,
+    ctrl_held: bool,
+    shortcut_hint: Option<usize>,
+    cycle_hint: Option<&str>,
+    queue_priority: Option<FocusPriority>,
+    git_lines: Option<(usize, usize)>,
+    hints: &[(&str, &str)],
+) -> (f32, f32, Option<SessionListAction>) {
+    let mut center_offset = 8.0;
+    let mut dot_action = None;
+
+    if let Some(num) = shortcut_hint {
+        let hint_size = 18.0;
+        let hint_text = format!("{}", num);
+        let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
+        paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
+        center_offset = 8.0 + hint_size + 6.0;
+    }
+
+    // Ctrl+J / Ctrl+K hint on the rows adjacent to the active session.
+    if let Some(cycle) = cycle_hint {
+        let hint_size = 18.0;
+        let hint_center = rect.right_center() - egui::vec2(center_offset + hint_size / 2.0, 0.0);
+        paint_keybind_hint(ui, hint_center, cycle, hint_size);
+        center_offset += hint_size + 6.0;
+    }
+
+    if is_active && ctrl_held {
+        let hint_size = 16.0;
+        let hint_width = 26.0;
+        let gap = 3.0;
+
+        for (hint_text, tooltip) in hints {
+            let center = rect.right_center() - egui::vec2(center_offset + hint_width / 2.0, 0.0);
+            KeybindHint::new(hint_text)
+                .size(hint_size)
+                .width(hint_width)
+                .paint_at(ui, center);
+            let hint_rect = egui::Rect::from_center_size(center, egui::vec2(hint_width, hint_size));
+            ui.interact(
+                hint_rect,
+                ui.id().with(("keybind_tip", *hint_text)),
+                Sense::hover(),
+            )
+            .on_hover_text(*tooltip);
+            center_offset += hint_width + gap;
+        }
+    }
+
+    // Status dot, top-right corner.
+    let mut dot_width = 0.0;
+    if let Some(priority) = queue_priority {
+        let dot_radius = 5.0;
+        let dot_center = egui::pos2(rect.right() - 4.0 - dot_radius, rect.top() + 9.0);
+        ui.painter()
+            .circle_filled(dot_center, dot_radius, priority.color());
+
+        if priority == FocusPriority::Done {
+            let dot_rect = egui::Rect::from_center_size(
+                dot_center,
+                egui::vec2(dot_radius * 4.0, dot_radius * 4.0),
+            );
+            let dot_response = ui.interact(
+                dot_rect,
+                ui.id().with(("dismiss_dot", session_id)),
+                egui::Sense::click(),
+            );
+            if dot_response.clicked() {
+                dot_action = Some(SessionListAction::DismissDone(session_id));
+            }
+            if dot_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+
+        dot_width = dot_radius * 2.0 + 8.0;
+    }
+
+    // Git +/- line stats, bottom-right corner.
+    let mut git_width = 0.0;
+    if let Some((added, deleted)) = git_lines {
+        let font = egui::FontId::monospace(10.0);
+        let gap = 5.0;
+        let mut galleys = Vec::new();
+        if added > 0 {
+            galleys.push(ui.painter().layout_no_wrap(
+                format!("+{added}"),
+                font.clone(),
+                GIT_ADDED_COLOR,
+            ));
+        }
+        if deleted > 0 {
+            galleys.push(ui.painter().layout_no_wrap(
+                format!("-{deleted}"),
+                font.clone(),
+                GIT_DELETED_COLOR,
+            ));
+        }
+
+        let total_w: f32 = galleys.iter().map(|g| g.size().x).sum::<f32>()
+            + gap * galleys.len().saturating_sub(1) as f32;
+        let y_center = rect.bottom() - 9.0;
+        let mut x = rect.right() - 6.0 - total_w;
+        for galley in &galleys {
+            let pos = egui::pos2(x, y_center - galley.size().y / 2.0);
+            x += galley.size().x + gap;
+            ui.painter()
+                .galley(pos, galley.clone(), egui::Color32::WHITE);
+        }
+        git_width = total_w + 10.0;
+    }
+
+    let title_right = center_offset.max(dot_width);
+    let cwd_right = center_offset.max(git_width);
+    (title_right, cwd_right, dot_action)
+}
+
 /// Render a title string at the given position, clipping if it exceeds max_width.
 fn render_title(ui: &mut egui::Ui, title: &str, x: f32, y: f32, max_width: f32) {
     let font_id = egui::FontId::proportional(14.0);
@@ -704,6 +936,7 @@ fn host_section_ui(
     host_group: &crate::session::HostGroup,
     visual_index: &mut usize,
     active_id: Option<SessionId>,
+    cycle: CycleHints,
 ) -> Option<SessionListAction> {
     let mut action = None;
     let host_label = if host_group.hostname.is_empty() {
@@ -736,6 +969,7 @@ fn host_section_ui(
                 cwd_group,
                 visual_index,
                 active_id,
+                cycle,
             ) {
                 action = Some(a);
             }
@@ -764,6 +998,7 @@ fn cwd_section_ui(
     cwd_group: &crate::session::CwdGroup,
     visual_index: &mut usize,
     active_id: Option<SessionId>,
+    cycle: CycleHints,
 ) -> Option<SessionListAction> {
     let mut action = None;
 
@@ -777,6 +1012,7 @@ fn cwd_section_ui(
                 *visual_index,
                 active_id,
                 Some(cwd_group.display_cwd.as_str()),
+                cycle,
             ) {
                 action = Some(a);
             }
@@ -794,9 +1030,15 @@ fn cwd_section_ui(
             ..Default::default()
         })
         .show(ui, |ui| {
-            if let Some(a) =
-                cwd_folder_ui(ui, list_ui, hostname, cwd_group, visual_index, active_id)
-            {
+            if let Some(a) = cwd_folder_ui(
+                ui,
+                list_ui,
+                hostname,
+                cwd_group,
+                visual_index,
+                active_id,
+                cycle,
+            ) {
                 action = Some(a);
             }
         });
@@ -815,6 +1057,7 @@ fn cwd_folder_ui(
     cwd_group: &crate::session::CwdGroup,
     visual_index: &mut usize,
     active_id: Option<SessionId>,
+    cycle: CycleHints,
 ) -> Option<SessionListAction> {
     let mut action = None;
     let cwd_collapsed = list_ui
@@ -832,7 +1075,7 @@ fn cwd_folder_ui(
         for &id in &cwd_group.session_ids {
             if let Some(session) = list_ui.session_manager.get(id) {
                 if let Some(a) =
-                    list_ui.render_session_item(ui, session, *visual_index, active_id, None)
+                    list_ui.render_session_item(ui, session, *visual_index, active_id, None, cycle)
                 {
                     action = Some(a);
                 }
@@ -923,10 +1166,11 @@ fn delete_worktree_menu_item(
 #[cfg(test)]
 mod tests {
     use super::{SessionListAction, SessionListUi};
+    use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
-    use crate::focus_queue::FocusQueue;
+    use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::SessionManager;
     use egui::Event;
     use egui_kittest::{kittest::Queryable, Harness};
@@ -1037,5 +1281,66 @@ mod tests {
             }
             other => panic!("expected NewSessionInCwd action, got {:?}", other),
         }
+    }
+
+    /// Render a single standalone (cwd) agentic row in isolation so the
+    /// worktree layout — status dot top-right, git +/- bottom-right — can be
+    /// verified visually via snapshot.
+    fn agent_row_harness(
+        priority: Option<FocusPriority>,
+        git_lines: Option<(usize, usize)>,
+    ) -> Harness<'static> {
+        Harness::builder()
+            .with_size(egui::Vec2::new(260.0, 56.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut session_manager = SessionManager::new();
+                let id = session_manager.new_session(
+                    PathBuf::from("/tmp/project"),
+                    AiMode::Agentic,
+                    BackendType::Claude,
+                );
+                let focus_queue = FocusQueue::new();
+                let collapse_state = CollapseState::new();
+                let list =
+                    SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
+                list.agent_row_ui(
+                    ui,
+                    id,
+                    "refactor auth module",
+                    Some("~/src/notedeck-wt"),
+                    false,
+                    None,
+                    None,
+                    AgentStatus::NeedsInput,
+                    priority,
+                    BackendType::Claude,
+                    git_lines,
+                );
+            })
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agent_row_git_status_and_dot() {
+        let mut harness = agent_row_harness(Some(FocusPriority::NeedsInput), Some((142, 37)));
+        harness.run();
+        harness.snapshot("agent_row_git_status_and_dot");
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agent_row_git_status_additions_only() {
+        let mut harness = agent_row_harness(None, Some((88, 0)));
+        harness.run();
+        harness.snapshot("agent_row_git_status_additions_only");
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agent_row_clean() {
+        let mut harness = agent_row_harness(None, None);
+        harness.run();
+        harness.snapshot("agent_row_clean");
     }
 }

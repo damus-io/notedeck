@@ -591,7 +591,7 @@ fn truncate_tool_input(tool_input: &serde_json::Value, max_bytes: usize) -> serd
         .iter()
         .filter_map(|(k, v)| v.as_str().map(|s| (k.as_str(), s.len())))
         .collect();
-    string_fields.sort_by(|a, b| b.1.cmp(&a.1));
+    string_fields.sort_by_key(|field| std::cmp::Reverse(field.1));
 
     if string_fields.is_empty() {
         return tool_input.clone();
@@ -1705,7 +1705,7 @@ mod tests {
             let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();
         }
 
-        // Query and sort the same way session_loader does: (created_at, seq)
+        // Query and sort the same way session_loader does: (seq, created_at)
         let txn = Transaction::new(&ndb).unwrap();
         let results = ndb.query(&txn, &[filter], 100).unwrap();
         let mut notes: Vec<_> = results
@@ -1716,8 +1716,8 @@ mod tests {
         notes.sort_by_key(|note| {
             let seq = get_tag_value(note, "seq")
                 .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
-            (note.created_at(), seq)
+                .unwrap_or(u32::MAX);
+            (seq, note.created_at())
         });
 
         // Extract roles in sorted order

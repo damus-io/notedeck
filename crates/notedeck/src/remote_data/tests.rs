@@ -37,6 +37,7 @@ fn test_accounts(ndb: &mut Ndb, txn: &Transaction) -> Accounts {
     Accounts::new(
         None,
         Vec::new(),
+        Vec::new(),
         FALLBACK_PUBKEY(),
         ndb,
         txn,

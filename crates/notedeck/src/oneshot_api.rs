@@ -44,6 +44,7 @@ mod tests {
         let accounts = crate::Accounts::new(
             None,
             vec![relay.to_owned()],
+            Vec::new(),
             FALLBACK_PUBKEY(),
             &mut ndb,
             &txn,

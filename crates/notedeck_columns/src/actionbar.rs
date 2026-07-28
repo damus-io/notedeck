@@ -240,6 +240,9 @@ fn execute_note_action(
 
             media_action.process_default_media_actions(images, jobs, ui.ctx())
         }
+        NoteAction::Detail(detail) => {
+            router_action = Some(RouterAction::route_to(Route::NoteDetails(detail)));
+        }
     }
 
     NoteActionResponse {

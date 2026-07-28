@@ -162,16 +162,14 @@ fn reply_line_ui(
             + NoteView::expand_size() as f32 * 2.0)
         + 1.0;
 
-    // For some reason we need to nudge the reply line's height a
-    // few more pixels?
+    // Pull the line up so it stops at the post box's top border instead
+    // of overdrawing a few pixels into the box. The focused border is a
+    // touch thicker, so trim one extra pixel to avoid kissing its colored
+    // stroke.
     let nudge = if edit_response.has_focus() {
-        // we nudge by one less pixel if focused, otherwise it
-        // overlaps the focused PostView purple border color
-        2.0
+        -4.0
     } else {
-        // we have to nudge by one more pixel when not focused
-        // otherwise it looks like there's a gap(?)
-        3.0
+        -3.0
     };
 
     rect.max.y = rect_before_post.max.y + ui::PostView::outer_margin() as f32 + nudge;

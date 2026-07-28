@@ -244,13 +244,10 @@ impl<'a> Parser<'a> {
         };
 
         match result {
-            Some(attr) => {
-                if self.eat_close() {
-                    Some(attr)
-                } else {
-                    self.restore(cp);
-                    None
-                }
+            Some(attr) if self.eat_close() => Some(attr),
+            Some(_) => {
+                self.restore(cp);
+                None
             }
             None => {
                 self.restore(cp);
@@ -418,13 +415,10 @@ impl<'a> Parser<'a> {
             .or_else(|| self.try_parse_object());
 
         match id {
-            Some(id) => {
-                if self.eat_close() {
-                    Some(id)
-                } else {
-                    self.restore(cp);
-                    None
-                }
+            Some(id) if self.eat_close() => Some(id),
+            Some(_) => {
+                self.restore(cp);
+                None
             }
             None => {
                 self.restore(cp);

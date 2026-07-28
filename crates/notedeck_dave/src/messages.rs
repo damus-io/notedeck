@@ -404,6 +404,14 @@ pub struct SubagentInfo {
     pub max_output_size: usize,
     /// Tool results produced by this subagent
     pub tool_results: Vec<ExecutedTool>,
+    /// Whether this subagent runs in the background (`run_in_background`).
+    ///
+    /// A background subagent's lifecycle is driven by the CLI's
+    /// `task_started` / `task_notification` system messages: it keeps running
+    /// after the launching turn's `Result` and completes on a spontaneous
+    /// wake-up turn, not on its launch tool result. The UI renders it as
+    /// "running in background" until the wake-up lands.
+    pub background: bool,
 }
 
 /// An assistant message with incremental markdown parsing support.
@@ -551,6 +559,8 @@ pub enum Message {
     CompactionComplete(CompactionInfo),
     /// A subagent spawned by Task tool
     Subagent(SubagentInfo),
+    /// TodoWrite tool input for task list display
+    TodoUpdate(serde_json::Value),
 }
 
 /// Compaction info from compact_boundary system message
@@ -610,6 +620,13 @@ pub enum DaveApiResponse {
         task_id: String,
         result: String,
     },
+    /// Subagent failed (e.g. a background subagent whose `task_notification`
+    /// reported a non-completed status). `task_id` is the originating tool_use
+    /// id, matching the entry created on spawn.
+    SubagentFailed {
+        task_id: String,
+        error: String,
+    },
     /// Conversation compaction started
     CompactionStarted,
     /// Conversation compaction completed with token info
@@ -618,6 +635,8 @@ pub enum DaveApiResponse {
     UsageUpdate(UsageInfo),
     /// Query completed with usage metrics (cumulative totals, cost, and turn count)
     QueryComplete(UsageInfo),
+    /// TodoWrite tool was called with these todos
+    TodoUpdate(serde_json::Value),
 }
 
 impl Message {
@@ -683,6 +702,9 @@ impl Message {
 
             // Subagent info is UI-only, not sent to the API
             Message::Subagent(_) => None,
+
+            // Todo updates are UI-only, not sent to the API
+            Message::TodoUpdate(_) => None,
         }
     }
 }

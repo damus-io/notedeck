@@ -21,7 +21,13 @@ pub(crate) enum SessionCommand {
     Query {
         prompt: String,
         images: Vec<crate::messages::ImageAttachment>,
-        response_tx: mpsc::Sender<DaveApiResponse>,
+        /// UI response channel for this turn.
+        ///
+        /// `Some` for backends that mint a fresh channel per query (Codex).
+        /// `None` for backends whose session actor owns one long-lived channel
+        /// for the session's whole lifetime (Claude) — the actor already holds
+        /// the sender, so the command doesn't carry one.
+        response_tx: Option<mpsc::Sender<DaveApiResponse>>,
         ctx: egui::Context,
     },
     /// Interrupt the current query - stops the stream but preserves session
@@ -82,7 +88,8 @@ pub fn messages_to_prompt(messages: &[Message]) -> String {
             | Message::Error(_)
             | Message::PermissionRequest(_)
             | Message::CompactionComplete(_)
-            | Message::Subagent(_) => {}
+            | Message::Subagent(_)
+            | Message::TodoUpdate(_) => {}
         }
     }
 
@@ -152,17 +159,23 @@ pub fn complete_subagent(
 
 /// Build an [`ExecutedTool`] from a completed tool call and send it
 /// to the UI along with a repaint request.
+#[allow(clippy::too_many_arguments)]
 pub fn send_tool_result(
     tool_name: &str,
     tool_input: &serde_json::Value,
     result_value: &serde_json::Value,
     file_update: Option<FileUpdate>,
+    parent_override: Option<&str>,
     subagent_stack: &[String],
     response_tx: &mpsc::Sender<DaveApiResponse>,
     ctx: &egui::Context,
 ) {
     let summary = format_tool_summary(tool_name, tool_input, result_value);
-    let parent_task_id = subagent_stack.last().cloned();
+    // An explicit `parent_tool_use_id` (a subagent-internal result) wins over
+    // the foreground nesting stack.
+    let parent_task_id = parent_override
+        .map(str::to_string)
+        .or_else(|| subagent_stack.last().cloned());
     let tool_result = ExecutedTool {
         tool_name: tool_name.to_string(),
         summary,
@@ -494,6 +507,7 @@ mod tests {
             &serde_json::json!({"file_path": "/tmp/test"}),
             &serde_json::json!({"content": "hello"}),
             None,
+            None,
             &stack,
             &tx,
             &ctx,
@@ -517,6 +531,7 @@ mod tests {
             "Bash",
             &serde_json::json!({"command": "ls"}),
             &serde_json::json!({"output": "file.txt"}),
+            None,
             None,
             &[],
             &tx,

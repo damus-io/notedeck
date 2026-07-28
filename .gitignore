@@ -1,6 +1,8 @@
 .DS_Store
 .buildcmd
-.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/skills/
 TODO.bak
 android-config.json
 logcat.txt
@@ -27,3 +29,10 @@ local.properties
 keystore.properties
 .beads
 *.keystore
+# scratch dir for local nostrdb instances, e.g. --dbpath tmp/headway2
+/tmp
+
+# egui_kittest snapshot scratch artifacts (only the .png baseline is committed)
+**/snapshots/*.diff.png
+**/snapshots/*.new.png
+**/snapshots/*.old.png

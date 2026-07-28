@@ -4,6 +4,7 @@ use super::git_status_ui;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::run_ui;
+use super::square_loading_spinner::SquareLoadingSpinner;
 use super::top_buttons::top_buttons_ui;
 use crate::{
     backend::BackendType,
@@ -592,6 +593,9 @@ impl<'a> DaveUi<'a> {
                         Self::subagent_ui(info, ui);
                     }
                 }
+                Message::TodoUpdate(_) => {
+                    // TodoUpdate is displayed in the task list sidebar, not in chat
+                }
             };
         }
 
@@ -606,7 +610,7 @@ impl<'a> DaveUi<'a> {
 
         if let Some(status) = status_text {
             ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(14.0));
+                ui.add(SquareLoadingSpinner::new().size(14.0));
                 ui.label(
                     egui::RichText::new(status)
                         .color(ui.visuals().weak_text_color())
@@ -628,10 +632,8 @@ impl<'a> DaveUi<'a> {
 
     fn tool_response_ui(tool_response: &ToolResponse, is_agentic: bool, ui: &mut egui::Ui) {
         match tool_response.responses() {
-            ToolResponses::ExecutedTool(result) => {
-                if is_agentic {
-                    Self::executed_tool_ui(result, ui);
-                }
+            ToolResponses::ExecutedTool(result) if is_agentic => {
+                Self::executed_tool_ui(result, ui);
             }
             _ => {
                 //ui.label(format!("tool_response: {:?}", tool_response));
@@ -1216,9 +1218,20 @@ impl<'a> DaveUi<'a> {
                     .color(ui.visuals().text_color().gamma_multiply(0.7)),
             );
 
+            // A background subagent keeps running after the launching turn ends;
+            // flag it as such until its wake-up completion lands.
+            if info.background && info.status == SubagentStatus::Running {
+                ui.label(
+                    egui::RichText::new("· in background")
+                        .size(10.0)
+                        .italics()
+                        .color(ui.visuals().text_color().gamma_multiply(0.5)),
+                );
+            }
+
             // Show spinner for running subagents
             if info.status == SubagentStatus::Running {
-                ui.add(egui::Spinner::new().size(11.0));
+                ui.add(SquareLoadingSpinner::new().size(11.0));
             }
 
             // Tool count indicator (clickable to expand)
@@ -1402,6 +1415,10 @@ impl<'a> DaveUi<'a> {
                 }
                 *self.focus_requested = false;
             }
+
+            // Browser-style autofocus: grab focus when the chrome switches to
+            // Dave for the first time and nothing was previously focused.
+            notedeck_ui::autofocus(r, ui.ctx());
 
             // Unfocus text input when there's a pending permission request
             // UNLESS we're in tentative state (user needs to type message)

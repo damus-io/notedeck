@@ -73,6 +73,7 @@ impl NewPostAction {
         txn: &Transaction,
         publisher: &mut PublishApi<'_, '_>,
         drafts: &mut Drafts,
+        col: usize,
     ) -> Result<()> {
         let seckey = self.post.account.secret_key.to_secret_bytes();
 
@@ -98,7 +99,7 @@ impl NewPostAction {
         }
 
         publisher.publish_note(&note, RelayType::AccountsWrite);
-        drafts.get_from_post_type(&self.post_type).clear();
+        drafts.get_from_post_type(&self.post_type, col).clear();
 
         Ok(())
     }
@@ -135,12 +136,17 @@ impl<'a, 'd> PostView<'a, 'd> {
         }
     }
 
-    fn id() -> egui::Id {
-        egui::Id::new("post")
+    /// Id for this post view's per-column state.
+    ///
+    /// Derived from `ui.id()` (which is unique per column) rather than a global
+    /// constant, so the focus state stored for one column's composer doesn't
+    /// collide with another column's.
+    fn id(ui: &egui::Ui) -> egui::Id {
+        ui.id().with("post")
     }
 
-    pub fn scroll_id() -> egui::Id {
-        PostView::id().with("scroll")
+    pub fn scroll_id(ui: &egui::Ui) -> egui::Id {
+        PostView::id(ui).with("scroll")
     }
 
     pub fn animation_mode(mut self, animation_mode: AnimationMode) -> Self {
@@ -248,7 +254,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         let focused = out.response.has_focus();
 
         ui.ctx()
-            .data_mut(|d| d.insert_temp(PostView::id(), focused));
+            .data_mut(|d| d.insert_temp(PostView::id(ui), focused));
 
         EditBoxResponse {
             resp: out.response,
@@ -372,7 +378,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         }
 
         if let Some(selection) = selection_made {
-            selection.process(ui.ctx(), textedit_output);
+            selection.process(ui.ctx(), textedit_output, self.draft.buffer.as_str());
         }
 
         resp.drag_id
@@ -380,7 +386,7 @@ impl<'a, 'd> PostView<'a, 'd> {
 
     fn focused(&self, ui: &egui::Ui) -> bool {
         ui.ctx()
-            .data(|d| d.get_temp::<bool>(PostView::id()).unwrap_or(false))
+            .data(|d| d.get_temp::<bool>(PostView::id(ui)).unwrap_or(false))
     }
 
     pub fn outer_margin() -> i8 {
@@ -393,7 +399,7 @@ impl<'a, 'd> PostView<'a, 'd> {
 
     pub fn ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> DragResponse<PostResponse> {
         let scroll_out = ScrollArea::vertical()
-            .id_salt(PostView::scroll_id())
+            .id_salt(PostView::scroll_id(ui))
             .show(ui, |ui| Some(self.ui_no_scroll(txn, ui)));
 
         let scroll_id = scroll_out.id;

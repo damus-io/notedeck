@@ -22,7 +22,7 @@ pub struct FetchedInvoiceResponse {
 
 pub type FetchingInvoice = Promise<Result<FetchedInvoiceResponse, JoinError>>;
 
-async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayResponseRaw, ZapError> {
+pub(crate) async fn fetch_pay_req_async(url: &Url) -> Result<LNUrlPayResponseRaw, ZapError> {
     let (sender, promise) = Promise::new();
 
     let on_done = move |response: Result<ehttp::Response, String>| {
@@ -232,7 +232,7 @@ pub fn fetch_invoice_promise(
     }
 }
 
-fn convert_lnurl_to_endpoint_url(lnurl: &str) -> Result<Url, ZapError> {
+pub(crate) fn convert_lnurl_to_endpoint_url(lnurl: &str) -> Result<Url, ZapError> {
     let (_, data) = bech32::decode(lnurl).map_err(|e| ZapError::Bech(e.to_string()))?;
 
     let url_str =
@@ -345,7 +345,7 @@ async fn fetch_ln_invoice(req: &Url) -> Result<LNInvoice, ZapError> {
     tokio::task::block_in_place(|| promise.block_and_take())
 }
 
-fn generate_endpoint_url(lud16: &str) -> Result<Url, ZapError> {
+pub(crate) fn generate_endpoint_url(lud16: &str) -> Result<Url, ZapError> {
     let (user, domain, use_http) = {
         let mut split = lud16.split('@');
         let user = split

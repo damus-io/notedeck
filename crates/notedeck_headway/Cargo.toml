@@ -1,0 +1,24 @@
+[package]
+name = "notedeck_headway"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+headway = { workspace = true }
+notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
+egui = { workspace = true }
+nostrdb = { workspace = true }
+enostr = { workspace = true }
+nostr = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
+notedeck = { workspace = true, features = ["snapshot-testing"] }
+notedeck_testing = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default = []
+snapshot-testing = ["notedeck/snapshot-testing"]

@@ -1,7 +1,7 @@
 use crate::{
     account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
-    nip05::Nip05Cache, sound::SoundManager, wallet::GlobalWallet, zaps::Zaps, Args, DataPath,
-    Images, JobPool, MediaJobs, NoteCache, RemoteApi, SettingsHandler, UnknownIds,
+    nip05::Nip05Cache, sound::SoundManager, wallet::GlobalWallet, zaps::ZapVerifier, zaps::Zaps,
+    Args, DataPath, Images, JobPool, MediaJobs, NoteCache, RemoteApi, SettingsHandler, UnknownIds,
 };
 use egui_winit::clipboard::Clipboard;
 use enostr::Pubkey;
@@ -27,12 +27,15 @@ pub struct AppContext<'a> {
     pub settings: &'a mut SettingsHandler,
     pub clipboard: &'a mut Clipboard,
     pub zaps: &'a mut Zaps,
+    pub zap_verifier: &'a mut ZapVerifier,
     pub frame_history: &'a mut FrameHistory,
     pub job_pool: &'a mut JobPool,
     pub media_jobs: &'a mut MediaJobs,
     pub nip05_cache: &'a mut Nip05Cache,
     pub i18n: &'a mut Localization,
     pub sound: &'a SoundManager,
+    /// Renderers for nostr events embedded inline, keyed by kind.
+    pub kind_renderers: &'a crate::kind_renderer::KindRendererRegistry,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,
@@ -53,6 +56,30 @@ impl SoftKeyboardContext {
 }
 
 impl<'a> AppContext<'a> {
+    /// Borrow the note-rendering dependencies as a [`NoteContext`], for code
+    /// that wants to draw notes with notedeck_ui widgets (e.g. `NoteView`).
+    ///
+    /// This reborrows the relevant fields of the context, so the returned
+    /// `NoteContext` holds a mutable borrow of `self` for its lifetime — drop it
+    /// before touching other `AppContext` fields. Fields not part of
+    /// `NoteContext` (e.g. `kind_renderers`) should be copied/read out first.
+    pub fn note_context(&mut self) -> crate::NoteContext<'_> {
+        crate::NoteContext {
+            ndb: self.ndb,
+            accounts: self.accounts,
+            global_wallet: self.global_wallet,
+            img_cache: self.img_cache,
+            note_cache: self.note_cache,
+            zaps: self.zaps,
+            jobs: self.media_jobs.sender(),
+            unknown_ids: self.unknown_ids,
+            nip05_cache: self.nip05_cache,
+            clipboard: self.clipboard,
+            i18n: self.i18n,
+            sound: self.sound,
+        }
+    }
+
     pub fn select_account(&mut self, pubkey: &Pubkey) {
         let txn = Transaction::new(self.ndb).expect("txn");
         self.accounts

@@ -179,6 +179,18 @@ pub fn participant_dm_relay_list_filter(participant: &Pubkey) -> Filter {
         .build()
 }
 
+/// Builds one no-limit filter for fetching participants' kind `10050` DM relay lists.
+pub(crate) fn participant_dm_relay_list_prefetch_filter(participants: &[Pubkey]) -> Filter {
+    let mut participants = participants.to_vec();
+    participants.sort_unstable_by(|a, b| a.bytes().cmp(b.bytes()));
+    participants.dedup();
+
+    FilterBuilder::new()
+        .kinds([10050])
+        .authors(participants.iter().map(|participant| participant.bytes()))
+        .build()
+}
+
 /// Returns `true` when `note` is a kind `10050` DM relay-list authored by `participant`.
 pub fn is_participant_dm_relay_list(note: &Note<'_>, participant: &Pubkey) -> bool {
     note.kind() == 10050 && note.pubkey() == participant.bytes()
@@ -416,6 +428,24 @@ mod tests {
             .kinds([10050])
             .authors([participant.bytes()])
             .limit(1)
+            .build();
+
+        assert_eq!(
+            actual.json().expect("actual filter json"),
+            expected.json().expect("expected filter json")
+        );
+    }
+
+    /// Verifies participant relay-list prefetch uses one combined no-limit author filter.
+    #[test]
+    fn participant_dm_relay_list_prefetch_filter_combines_authors_without_limit() {
+        let participant_a = Pubkey::new([0x22; 32]);
+        let participant_b = Pubkey::new([0x33; 32]);
+        let participants = [participant_b, participant_a, participant_b];
+        let actual = participant_dm_relay_list_prefetch_filter(&participants);
+        let expected = FilterBuilder::new()
+            .kinds([10050])
+            .authors([participant_a.bytes(), participant_b.bytes()])
             .build();
 
         assert_eq!(

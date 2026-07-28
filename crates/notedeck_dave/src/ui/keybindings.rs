@@ -83,20 +83,17 @@ pub fn check_keybindings(
     let ctrl = egui::Modifiers::CTRL;
     let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
 
-    // Ctrl+Tab / Ctrl+Shift+Tab for cycling through agents/chats
-    // Works even with text input focus since Ctrl modifier makes it unambiguous
-    // IMPORTANT: Check Ctrl+Shift+Tab first because consume_key uses matches_logically
-    // which ignores extra Shift, so Ctrl+Tab would consume Ctrl+Shift+Tab otherwise
-    if let Some(action) = ctx.input_mut(|i| {
-        if i.consume_key(ctrl_shift, Key::Tab) {
-            Some(KeyAction::PreviousAgent)
-        } else if i.consume_key(ctrl, Key::Tab) {
-            Some(KeyAction::NextAgent)
-        } else {
-            None
-        }
-    }) {
-        return Some(action);
+    // Ctrl+J / Ctrl+K for cycling through agents/chats.
+    // Previously Ctrl+Tab / Ctrl+Shift+Tab, but the chrome now consumes those
+    // for app-level tab switching (see notedeck_chrome::chrome::cycle_app), so
+    // they never reach dave. Works even with text input focus since the Ctrl
+    // modifier makes them unambiguous.
+    // Use matches_exact so Ctrl+Shift+K (ClearAgent) isn't swallowed here.
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::J)) {
+        return Some(KeyAction::NextAgent);
+    }
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::K)) {
+        return Some(KeyAction::PreviousAgent);
     }
 
     // Focus queue navigation - agentic only

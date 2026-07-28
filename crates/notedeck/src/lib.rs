@@ -17,6 +17,7 @@ mod frame_history;
 pub mod i18n;
 mod imgcache;
 pub mod jobs;
+pub mod kind_renderer;
 pub mod media;
 mod muted;
 pub mod name;
@@ -29,6 +30,7 @@ mod oneshot_api;
 mod options;
 mod persist;
 pub mod platform;
+mod private_sync;
 pub mod profile;
 mod publish;
 mod relay_limits;
@@ -66,9 +68,11 @@ mod test_utils;
 
 pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
-pub use account::relay::{construct_nip65_relays_note, RelayAction};
+pub use account::relay::{
+    construct_nip65_relays_note, construct_private_relay_list_note, RelayAction,
+};
 pub use account::FALLBACK_PUBKEY;
-pub use app::{App, AppAction, AppResponse, Notedeck};
+pub use app::{App, AppAction, AppResponse, Notedeck, TabNotifications};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use bookmarks::{bookmarks_from_note, Bookmarks};
@@ -88,6 +92,7 @@ pub use jobs::{
     deliver_completed_media_job, run_media_job_pre_action, JobCache, JobPool, MediaJobSender,
     MediaJobs,
 };
+pub use kind_renderer::{resolve_ref, KindRenderer, KindRendererRegistry};
 pub use media::{
     update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction, ObfuscationType,
     PixelDimensions, PointDimensions, RenderableMedia,
@@ -98,16 +103,16 @@ pub use nav::DragResponse;
 pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
-    builder_from_note, construct_people_list_note, get_p_tags, send_bookmark_event,
-    send_mute_event, send_people_list_event, send_report_event, send_unbookmark_event,
-    send_unmute_event, BroadcastContext, ContextSelection, NoteAction, NoteContext,
-    NoteContextSelection, NoteRef, ReportTarget, ReportType, RootIdError, RootNoteId,
-    RootNoteIdBuf, ScrollInfo, ZapAction,
+    builder_from_note, construct_people_list_note, get_p_tags, send_mute_event,
+    send_people_list_event, send_report_event, send_unmute_event, BroadcastContext,
+    ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteDetail, NoteRef,
+    ReportTarget, ReportType, RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use oneshot_api::OneshotApi;
 pub use options::NotedeckOptions;
 pub use persist::*;
+pub use private_sync::{fan_out_event_frame, PrivateRelaySync};
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};
 pub use relayspec::RelaySpec;

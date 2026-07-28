@@ -124,9 +124,6 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
             avatar_size + bottom_padding + read_only_label_height + connectivity_indicator_height;
 
         ui.vertical(|ui| {
-            #[cfg(target_os = "macos")]
-            ui.add_space(32.0);
-
             let available_for_scroll = ui.available_height() - avatar_section_height;
 
             let scroll_out = ScrollArea::vertical()

@@ -1,0 +1,20 @@
+[package]
+name = "notedeck_horizon"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+egui = { workspace = true }
+chrono = { workspace = true }
+nostrdb = { workspace = true }
+notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
+enostr = { workspace = true }
+nostr_calsync = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
+notedeck = { workspace = true, features = ["snapshot-testing"] }
+tempfile = { workspace = true }

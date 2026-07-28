@@ -304,6 +304,7 @@ impl<'a> ThreadNote<'a> {
                 cur_options.set(NoteOptions::Wide, true);
                 cur_options.set(NoteOptions::SelectableText, true);
                 cur_options.set(NoteOptions::FullCreatedDate, true);
+                cur_options.set(NoteOptions::DetailedCounts, true);
                 cur_options
             }
             ThreadNoteType::Reply => cur_options,

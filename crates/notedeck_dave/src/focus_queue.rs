@@ -249,6 +249,14 @@ impl FocusQueue {
             .any(|e| e.priority == FocusPriority::NeedsInput)
     }
 
+    /// Count the entries with NeedsInput priority
+    pub fn needs_input_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.priority == FocusPriority::NeedsInput)
+            .count()
+    }
+
     /// Find the first entry with Done priority and return its index
     pub fn first_done_index(&self) -> Option<usize> {
         self.entries

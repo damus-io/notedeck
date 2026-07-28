@@ -42,8 +42,24 @@ if ! command -v create-dmg &> /dev/null; then
 fi
 
 # Build the .app bundle
-echo "Building .app bundle..."
-cargo bundle -p notedeck_chrome --release --target $TARGET
+FEATURES=${FEATURES:-dave,messages}
+echo "Building .app bundle (features: $FEATURES)..."
+cargo bundle -p notedeck_chrome --release --features "$FEATURES" --target $TARGET
+
+# Add the EventKit calendar usage descriptions, but only when Horizon — which
+# owns the calendar mirror — is compiled in. macOS TCC requires these strings in
+# Info.plist before the app may request calendar access; cargo bundle doesn't
+# carry arbitrary keys, so inject them here before signing. Both the legacy and
+# the macOS 14+ full-access keys are set so either EventKit path is covered.
+if [[ "$FEATURES" == *horizon* ]]; then
+    APP_PLIST="target/${TARGET}/release/bundle/osx/$NAME.app/Contents/Info.plist"
+    CAL_USAGE="Notedeck mirrors your calendar events into your local nostr database so Horizon can show them."
+    echo "Adding calendar usage descriptions to Info.plist..."
+    for KEY in NSCalendarsUsageDescription NSCalendarsFullAccessUsageDescription; do
+        /usr/libexec/PlistBuddy -c "Add :$KEY string $CAL_USAGE" "$APP_PLIST" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :$KEY $CAL_USAGE" "$APP_PLIST"
+    done
+fi
 
 # Sign the app
 echo "Codesigning the app..."

@@ -38,7 +38,7 @@ impl AiBackend for OpenAiBackend {
         _resume_session_id: Option<String>,
         ctx: egui::Context,
     ) -> (
-        mpsc::Receiver<DaveApiResponse>,
+        Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
     ) {
         let (tx, rx) = mpsc::channel();
@@ -194,7 +194,7 @@ impl AiBackend for OpenAiBackend {
             tracing::debug!("stream closed");
         });
 
-        (rx, Some(handle))
+        (Some(rx), Some(handle))
     }
 
     fn cleanup_session(&self, _session_id: String) {

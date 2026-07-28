@@ -3,49 +3,108 @@
 # Run snapshot tests with lavapipe (software Vulkan) for deterministic output.
 #
 # Usage:
-#   scripts/snapshot-test              # run all snapshot tests
-#   scripts/snapshot-test --update     # update snapshot images
-#   scripts/snapshot-test <test_name>  # run a specific snapshot test
+#   scripts/snapshot-test                       # run all snapshot tests
+#   scripts/snapshot-test --update              # update snapshot images
+#   scripts/snapshot-test <test_name>           # run a specific snapshot test
+#   scripts/snapshot-test -p=notedeck_headway   # run only one crate's suite
 #
 # On NixOS, LAVAPIPE_ICD is set by shell.nix. On standard Linux distros,
-# lavapipe is found at /usr/share/vulkan/icd.d/lvp_icd.x86_64.json.
+# lavapipe is found at /usr/share/vulkan/icd.d/lvp_icd.<arch>.json.
+#
+# On macOS there is no lavapipe, so `--update` runs delegate to a per-checkout
+# docker container built from scripts/lavapipe.Dockerfile (which mirrors the
+# CI snapshot job, so the pngs it generates match CI pixel-exactly).
 
 set -euo pipefail
+
+# macOS can't render snapshots natively; when *updating* them, re-exec this
+# script inside a lavapipe container bound to this checkout.
+if [[ "$(uname -s)" == "Darwin" && " $* " == *" --update "* ]]; then
+    if ! command -v docker >/dev/null; then
+        echo "error: updating snapshots on macOS runs lavapipe in docker, but docker was not found." >&2
+        exit 1
+    fi
+    repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    # One container per checkout so parallel checkouts never share a mount.
+    suffix="$(printf %s "$repo" | shasum | cut -c1-8)"
+    name="notedeck-snap-$suffix"
+    image="notedeck-lavapipe"
+
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        echo "building $image image (one-time)..." >&2
+        docker build -t "$image" -f "$repo/scripts/lavapipe.Dockerfile" "$repo/scripts"
+    fi
+    if ! docker container inspect "$name" >/dev/null 2>&1; then
+        docker create --name "$name" \
+            -v "$repo:/repo" \
+            -v notedeck-snap-cargo:/cargo \
+            -v "notedeck-snap-target-$suffix:/target" \
+            "$image" >/dev/null
+    fi
+    # restart, not just start: the macOS bind mount can serve stale file
+    # content to a long-running container, and a restart flushes it
+    docker restart "$name" >/dev/null
+    exec docker exec "$name" /repo/scripts/snapshot-test "$@"
+fi
 
 # Resolve lavapipe ICD path
 if [[ -n "${LAVAPIPE_ICD:-}" ]]; then
     icd="$LAVAPIPE_ICD"
-elif [[ -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json ]]; then
-    icd="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+elif [[ -f "/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json" ]]; then
+    icd="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
 else
     echo "error: lavapipe ICD not found." >&2
     echo "  NixOS: enter the nix shell (LAVAPIPE_ICD is set by shell.nix)" >&2
     echo "  Debian/Ubuntu: sudo apt install mesa-vulkan-drivers" >&2
     echo "  Fedora: sudo dnf install mesa-vulkan-drivers" >&2
+    echo "  macOS: pass --update to run inside the lavapipe docker container" >&2
     exit 1
 fi
 
 update=""
-filter="snapshot"
+# Empty filter runs every #[ignore]d test in the targeted binaries (all of
+# which are lavapipe tests). Pass a name to narrow to specific tests.
+filter=""
+only=""
 
 for arg in "$@"; do
     case "$arg" in
         --update) update="1" ;;
+        -p=*|--package=*) only="${arg#*=}" ;;
         *) filter="$arg" ;;
     esac
 done
 
 export VK_ICD_FILENAMES="$icd"
 ${update:+export UPDATE_SNAPSHOTS=1}
+# Release builds default to non-incremental; force it on so iterating on a
+# single crate only re-codegens what changed instead of the whole crate.
+export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
+
+# Each crate's snapshot suite: "<crate>|<extra cargo args>". Running only the
+# crate you're working on (scripts/snapshot-test -p=notedeck_headway) skips the
+# four unrelated release builds, which dominate wall-clock time.
+suites=(
+    "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests"
+    "notedeck_ui|--test widget_tests"
+    "notedeck_dave|--lib --test dave_button_tests"
+    "notedeck_nostrverse|--test snapshot_tests"
+    "notedeck_headway|--features snapshot-testing --test snapshot_tests"
+    "notedeck_notebook|--test snapshot_tests"
+    "notedeck_horizon|--test snapshot_tests"
+    # dashboard disabled for now: can't seem to regenerate its snapshots
+    # "notedeck_dashboard|--features snapshot-testing --test snapshot_tests"
+)
 
 # Snapshot tests are #[ignore]d by default so they don't run during
 # normal `cargo test`. The --ignored flag runs only those tests.
 # Run in release mode to avoid egui debug_assert panics when widget
 # layer_ids change between frames (tooltips: Background → Foreground).
-cargo test --release -p notedeck_chrome --features auto-update,snapshot-testing --test ui_tests -- --ignored "$filter"
-cargo test --release -p notedeck_ui --test widget_tests -- --ignored "$filter"
-cargo test --release -p notedeck_dave --test dave_button_tests -- --ignored "$filter"
-cargo test --release -p notedeck_nostrverse --test snapshot_tests -- --ignored "$filter"
-
-# disable dashboard tests for now since i can't seem to regenerate them
-#cargo test --release -p notedeck_dashboard --features snapshot-testing --test snapshot_tests -- --ignored "$filter"
+for suite in "${suites[@]}"; do
+    crate="${suite%%|*}"
+    cargo_args="${suite#*|}"
+    if [[ -n "$only" && "$only" != "$crate" ]]; then
+        continue
+    fi
+    cargo test --release -p "$crate" $cargo_args -- --ignored ${filter:+"$filter"}
+done

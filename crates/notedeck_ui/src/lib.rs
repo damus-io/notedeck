@@ -5,9 +5,11 @@ pub mod constants;
 pub mod contacts_list;
 pub mod context_menu;
 pub mod debug;
+pub mod focus;
 pub mod header;
 pub mod icons;
 pub mod images;
+pub mod markdown;
 pub mod media;
 pub mod mention;
 pub mod nip51_set;
@@ -22,6 +24,7 @@ pub use contacts_list::{
     ContactsListView, ProfileRowOptions, ProfileSearchResult,
 };
 pub use debug::debug_slider;
+pub use focus::{autofocus, request_autofocus};
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
 pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};

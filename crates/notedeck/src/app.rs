@@ -4,7 +4,7 @@ use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::remote_data::RemoteState;
 use crate::wallet::GlobalWallet;
-use crate::zaps::Zaps;
+use crate::zaps::{ZapVerifier, Zaps};
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
@@ -32,12 +32,47 @@ pub enum AppAction {
     ToggleChrome,
 }
 
+/// Notification badge state for an app's chrome tab.
+///
+/// Apps report this via [`App::tab_notifications`] so the chrome tab strip can
+/// render a badge (e.g. unread DMs on Messages, items needing input on Dave).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabNotifications {
+    /// A count to display in the badge. Zero means no badge.
+    pub count: u32,
+}
+
+impl TabNotifications {
+    /// A badge showing `count`. A count of zero renders no badge.
+    pub fn count(count: u32) -> Self {
+        Self { count }
+    }
+
+    /// Whether there's anything to show.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
 pub trait App {
     /// Background processing — called every frame for ALL apps.
     fn update(&mut self, _ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {}
 
     /// UI rendering — called only for the active/visible app.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
+
+    /// Notification badge state for this app's chrome tab. Defaults to none.
+    fn tab_notifications(&self, _ctx: &AppContext<'_>) -> TabNotifications {
+        TabNotifications::default()
+    }
+
+    /// Renderers this app contributes for nostr events embedded inline (by
+    /// kind), e.g. a notebook note referencing one of the app's entities. These
+    /// are registered once at startup so references resolve even for apps the
+    /// user never opens. Defaults to none.
+    fn kind_renderers(&self) -> Vec<Box<dyn crate::KindRenderer>> {
+        Vec::new()
+    }
 }
 
 #[derive(Default)]
@@ -81,12 +116,23 @@ pub struct Notedeck {
     unrecognized_args: BTreeSet<String>,
     clipboard: Clipboard,
     zaps: Zaps,
+    zap_verifier: ZapVerifier,
     frame_history: FrameHistory,
     job_pool: JobPool,
     media_jobs: MediaJobs,
     nip05_cache: Nip05Cache,
     i18n: Localization,
     sound: crate::SoundManager,
+    /// Renderers for nostr events embedded inline (by kind), e.g. headway issues
+    /// referenced from a notebook note. Populated at app startup.
+    kind_renderers: crate::kind_renderer::KindRendererRegistry,
+
+    /// Embedded localhost nostr relay, when enabled. Held so it shuts down with
+    /// the app (its `Drop` stops the accept loop). Gated behind the `local-relay`
+    /// feature, which is disabled for Android builds.
+    #[cfg(feature = "local-relay")]
+    #[allow(dead_code)]
+    local_relay: Option<nostrdb_relay::RelayHandle>,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -159,6 +205,7 @@ impl Notedeck {
             self.remote.process_events(ctx, &self.ndb);
         }
         self.nip05_cache.poll();
+        self.zap_verifier.poll(&self.ndb, self.zaps.pay_cache());
         let Some(app) = &self.app else {
             self.remote
                 .request_repaint_for_next_full_history_deadline(ctx);
@@ -259,15 +306,21 @@ impl Notedeck {
                 move |_| ctx.request_repaint()
             });
 
-        let keystore = if parsed_args.options.contains(NotedeckOptions::UseKeystore) {
-            let keys_path = path.path(DataPathType::Keys);
-            let selected_key_path = path.path(DataPathType::SelectedKey);
-            Some(AccountStorage::new(
-                Directory::new(keys_path),
-                Directory::new(selected_key_path),
-            ))
-        } else {
+        let keystore = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            // tests never persist secrets
             None
+        } else {
+            let accounts = Directory::new(path.path(DataPathType::Keys));
+            let selected = Directory::new(path.path(DataPathType::SelectedKey));
+            Some(
+                if parsed_args.options.contains(NotedeckOptions::UseKeystore) {
+                    // opt-in: OS secure store (keychain)
+                    AccountStorage::with_keystore(accounts, selected)
+                } else {
+                    // default: file-based storage (secret kept in the account file)
+                    AccountStorage::new(accounts, selected)
+                },
+            )
         };
 
         let mut unknown_ids = UnknownIds::default();
@@ -277,9 +330,19 @@ impl Notedeck {
         let job_pool = JobPool::default();
         let remote = RemoteState::new(&ndb, job_pool.spawner());
 
+        // Tests must not reach the network: hand a fresh account an empty
+        // bootstrap set so it connects to nothing (the outbox then has nothing
+        // to flush on `AppContext` drop, so no Tokio runtime is required).
+        let bootstrap_relays = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            Vec::new()
+        } else {
+            crate::account::relay::default_bootstrap_relays()
+        };
+
         let mut accounts = Accounts::new(
             keystore,
             parsed_args.relays.clone(),
+            bootstrap_relays,
             FALLBACK_PUBKEY(),
             &mut ndb,
             &txn,
@@ -344,6 +407,26 @@ impl Notedeck {
             crate::SoundManager::new(s.sounds_enabled, s.sound_volume)
         };
 
+        // Embedded localhost relay for dogfooding tooling. On by default; tests
+        // never start it (no Tokio runtime, and it must not open a port).
+        #[cfg(feature = "local-relay")]
+        let local_relay = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            None
+        } else {
+            parsed_args
+                .local_relay
+                .as_ref()
+                .and_then(|addr| match addr.parse() {
+                    Ok(socket_addr) => nostrdb_relay::spawn(ndb.clone(), socket_addr)
+                        .map_err(|err| error!("failed to start local relay on {addr}: {err}"))
+                        .ok(),
+                    Err(err) => {
+                        error!("invalid relay bind address '{addr}': {err}");
+                        None
+                    }
+                })
+        };
+
         Self {
             ndb,
             img_cache,
@@ -361,11 +444,15 @@ impl Notedeck {
             frame_history: FrameHistory::default(),
             clipboard: Clipboard::new(None),
             zaps,
+            zap_verifier: ZapVerifier::new(),
             job_pool,
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
             i18n,
             sound,
+            kind_renderers: crate::kind_renderer::KindRendererRegistry::default(),
+            #[cfg(feature = "local-relay")]
+            local_relay,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -412,12 +499,14 @@ impl Notedeck {
                 settings: &mut self.settings,
                 clipboard: &mut self.clipboard,
                 zaps: &mut self.zaps,
+                zap_verifier: &mut self.zap_verifier,
                 frame_history: &mut self.frame_history,
                 job_pool: &mut self.job_pool,
                 media_jobs: &mut self.media_jobs,
                 nip05_cache: &mut self.nip05_cache,
                 i18n: &mut self.i18n,
                 sound: &self.sound,
+                kind_renderers: &self.kind_renderers,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
@@ -429,6 +518,12 @@ impl Notedeck {
 
     pub fn set_app<T: App + 'static>(&mut self, app: T) {
         self.app = Some(Rc::new(RefCell::new(app)));
+    }
+
+    /// Register a renderer for nostr events of one or more kinds, so surfaces
+    /// like the notebook can draw referenced entities inline. Call at startup.
+    pub fn register_kind_renderer(&mut self, renderer: Box<dyn crate::KindRenderer>) {
+        self.kind_renderers.register(renderer);
     }
 
     pub fn args(&self) -> &Args {

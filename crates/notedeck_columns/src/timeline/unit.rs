@@ -27,6 +27,7 @@ impl NoteUnit {
             NoteUnit::Composite(clustered) => match clustered {
                 CompositeUnit::Reaction(reaction_entry) => &reaction_entry.note_reacted_to,
                 CompositeUnit::Repost(repost_unit) => &repost_unit.note_reposted,
+                CompositeUnit::Zap(zap_unit) => &zap_unit.note_zapped,
             },
         }
     }
@@ -64,6 +65,7 @@ impl PartialOrd for NoteUnit {
 pub enum CompositeUnit {
     Reaction(ReactionUnit),
     Repost(RepostUnit),
+    Zap(ZapUnit),
 }
 
 impl CompositeUnit {
@@ -71,6 +73,7 @@ impl CompositeUnit {
         match self {
             CompositeUnit::Reaction(reaction_unit) => reaction_unit.get_latest_ref(),
             CompositeUnit::Repost(repost_unit) => repost_unit.get_latest_ref(),
+            CompositeUnit::Zap(zap_unit) => zap_unit.get_latest_ref(),
         }
     }
 }
@@ -80,6 +83,7 @@ impl PartialEq for CompositeUnit {
         match (self, other) {
             (Self::Reaction(l0), Self::Reaction(r0)) => l0 == r0,
             (Self::Repost(l0), Self::Repost(r0)) => l0 == r0,
+            (Self::Zap(l0), Self::Zap(r0)) => l0 == r0,
             _ => false,
         }
     }
@@ -96,6 +100,10 @@ impl CompositeUnit {
                 key: repost_unit.note_reposted.key,
                 composite_type: CompositeType::Repost,
             },
+            CompositeUnit::Zap(zap_unit) => CompositeKey {
+                key: zap_unit.note_zapped.key,
+                composite_type: CompositeType::Zap,
+            },
         }
     }
 }
@@ -109,6 +117,7 @@ impl From<CompositeFragment> for CompositeUnit {
             CompositeFragment::Repost(repost_fragment) => {
                 CompositeUnit::Repost(repost_fragment.into())
             }
+            CompositeFragment::Zap(zap_fragment) => CompositeUnit::Zap(zap_fragment.into()),
         }
     }
 }
@@ -178,6 +187,49 @@ impl From<RepostFragment> for RepostUnit {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ZapUnit {
+    pub note_zapped: NoteRef,
+    pub zaps: BTreeMap<NoteRef, ZapInfo>,
+    pub senders: HashSet<Pubkey>,
+}
+
+impl ZapUnit {
+    pub fn get_latest_ref(&self) -> &NoteRef {
+        self.zaps
+            .first_key_value()
+            .map(|(r, _)| r)
+            .unwrap_or(&self.note_zapped)
+    }
+
+    pub fn total_msats(&self) -> u64 {
+        self.zaps.values().map(|z| z.amount_msats).sum()
+    }
+}
+
+impl From<ZapFragment> for ZapUnit {
+    fn from(frag: ZapFragment) -> Self {
+        let mut senders = HashSet::new();
+        senders.insert(frag.zap_info.sender);
+
+        let mut zaps = BTreeMap::new();
+        zaps.insert(frag.zap_note_ref, frag.zap_info);
+
+        Self {
+            note_zapped: frag.noteref_zapped,
+            zaps,
+            senders,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ZapInfo {
+    pub sender: Pubkey,
+    pub sender_profilekey: Option<ProfileKey>,
+    pub amount_msats: u64,
+}
+
 #[derive(Clone)]
 pub enum NoteUnitFragment {
     Single(NoteRef),
@@ -188,6 +240,7 @@ pub enum NoteUnitFragment {
 pub enum CompositeFragment {
     Reaction(ReactionFragment),
     Repost(RepostFragment),
+    Zap(ZapFragment),
 }
 
 impl CompositeFragment {
@@ -209,6 +262,14 @@ impl CompositeFragment {
 
                 repost_fragment.fold_into(repost_unit);
             }
+            CompositeFragment::Zap(zap_fragment) => {
+                let CompositeUnit::Zap(zap_unit) = unit else {
+                    tracing::error!("Attempting to fold a zap fragment into a unit which isn't ZapUnit. Doing nothing, this should never occur");
+                    return;
+                };
+
+                zap_fragment.fold_into(zap_unit);
+            }
         }
     }
 
@@ -222,6 +283,10 @@ impl CompositeFragment {
                 key: repost.reposted_noteref.key,
                 composite_type: CompositeType::Repost,
             },
+            CompositeFragment::Zap(zap) => CompositeKey {
+                key: zap.noteref_zapped.key,
+                composite_type: CompositeType::Zap,
+            },
         }
     }
 
@@ -229,6 +294,7 @@ impl CompositeFragment {
         match self {
             CompositeFragment::Reaction(reaction_fragment) => &reaction_fragment.noteref_reacted_to,
             CompositeFragment::Repost(repost_fragment) => &repost_fragment.reposted_noteref,
+            CompositeFragment::Zap(zap_fragment) => &zap_fragment.noteref_zapped,
         }
     }
 
@@ -236,6 +302,7 @@ impl CompositeFragment {
         match self {
             CompositeFragment::Reaction(reaction_fragment) => &reaction_fragment.reaction_note_ref,
             CompositeFragment::Repost(repost_fragment) => &repost_fragment.repost_noteref,
+            CompositeFragment::Zap(zap_fragment) => &zap_fragment.zap_note_ref,
         }
     }
 
@@ -243,6 +310,7 @@ impl CompositeFragment {
         match self {
             CompositeFragment::Reaction(_) => CompositeType::Reaction,
             CompositeFragment::Repost(_) => CompositeType::Repost,
+            CompositeFragment::Zap(_) => CompositeType::Zap,
         }
     }
 }
@@ -300,5 +368,29 @@ impl RepostFragment {
 
         unit.senders.insert(self.reposter);
         unit.reposts.insert(self.repost_noteref, self.reposter);
+    }
+}
+
+/// Represents a singular zap receipt for a note
+#[derive(Debug, Clone)]
+pub struct ZapFragment {
+    pub noteref_zapped: NoteRef,
+    pub zap_note_ref: NoteRef,
+    pub zap_info: ZapInfo,
+}
+
+impl ZapFragment {
+    pub fn fold_into(self, unit: &mut ZapUnit) {
+        if self.noteref_zapped != unit.note_zapped {
+            tracing::error!("Attempting to fold a zap fragment into a ZapUnit which has a different note zapped: {:?} != {:?}. This should never occur", self.noteref_zapped, unit.note_zapped);
+            return;
+        }
+
+        if unit.senders.contains(&self.zap_info.sender) {
+            return;
+        }
+
+        unit.senders.insert(self.zap_info.sender);
+        unit.zaps.insert(self.zap_note_ref, self.zap_info);
     }
 }

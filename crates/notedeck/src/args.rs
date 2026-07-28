@@ -6,6 +6,9 @@ use enostr::{Keypair, Pubkey, SecretKey};
 use tracing::error;
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
+/// Default bind address for the embedded localhost nostr relay.
+pub const DEFAULT_LOCAL_RELAY_ADDR: &str = "127.0.0.1:6677";
+
 pub struct Args {
     pub relays: Vec<String>,
     pub locale: Option<LanguageIdentifier>,
@@ -14,6 +17,10 @@ pub struct Args {
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
     pub title: Option<String>,
+    /// Bind address for the embedded localhost nostr relay. Defaults to
+    /// `127.0.0.1:6677`; `--relay-bind <addr>` overrides it and
+    /// `--no-local-relay` disables the relay (`None`).
+    pub local_relay: Option<String>,
 }
 
 impl Args {
@@ -41,6 +48,7 @@ impl Args {
             datapath: None,
             locale: None,
             title: None,
+            local_relay: Some(DEFAULT_LOCAL_RELAY_ADDR.to_owned()),
         };
 
         let mut i = 0;
@@ -75,7 +83,6 @@ impl Args {
                 res.options.set(NotedeckOptions::Debug, true);
             } else if arg == "--testrunner" {
                 res.options.set(NotedeckOptions::Tests, true);
-                res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--pub" || arg == "--npub" {
                 i += 1;
                 let pubstr = if let Some(next_arg) = args.get(i) {
@@ -137,8 +144,19 @@ impl Args {
                     continue;
                 };
                 res.relays.push(relay.clone());
-            } else if arg == "--no-keystore" {
-                res.options.set(NotedeckOptions::UseKeystore, false);
+            } else if arg == "--no-local-relay" {
+                res.local_relay = None;
+            } else if arg == "--relay-bind" {
+                i += 1;
+                let Some(addr) = args.get(i) else {
+                    error!("relay-bind argument missing?");
+                    continue;
+                };
+                res.local_relay = Some(addr.clone());
+            } else if arg == "--use-keystore" {
+                res.options.set(NotedeckOptions::UseKeystore, true);
+            } else if arg == "--all-apps-active" {
+                res.options.set(NotedeckOptions::AllAppsActive, true);
             } else if arg == "--title" {
                 i += 1;
                 let title = if let Some(next_arg) = args.get(i) {
@@ -200,13 +218,22 @@ mod tests {
         }
     }
 
-    /// Verifies `--no-keystore` disables OS-backed secure storage.
+    /// The OS keychain is off by default; secrets go to file-based storage.
     #[test]
-    fn parse_no_keystore_disables_keystore() {
-        let (args, unrecognized) = Args::parse(&["--no-keystore".to_owned()]);
+    fn parse_keystore_off_by_default() {
+        let (args, unrecognized) = Args::parse(&[]);
 
         assert!(unrecognized.is_empty());
         assert!(!args.options.contains(NotedeckOptions::UseKeystore));
+    }
+
+    /// Verifies `--use-keystore` opts into OS-backed secure storage.
+    #[test]
+    fn parse_use_keystore_enables_keystore() {
+        let (args, unrecognized) = Args::parse(&["--use-keystore".to_owned()]);
+
+        assert!(unrecognized.is_empty());
+        assert!(args.options.contains(NotedeckOptions::UseKeystore));
     }
 
     /// Verifies the test runner path never touches the host keyring.

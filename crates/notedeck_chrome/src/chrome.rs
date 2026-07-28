@@ -22,9 +22,11 @@ use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
     tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
-    UserAccount, WalletType,
+    TabNotifications, UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
+
+#[cfg(feature = "dave")]
 use notedeck_dave::{Dave, DaveAvatar};
 
 #[cfg(feature = "messages")]
@@ -32,6 +34,9 @@ use notedeck_messages::MessagesApp;
 
 #[cfg(feature = "dashboard")]
 use notedeck_dashboard::Dashboard;
+
+#[cfg(feature = "horizon")]
+use notedeck_horizon::Horizon;
 
 #[cfg(feature = "clndash")]
 use notedeck_ui::expanding_button;
@@ -47,6 +52,16 @@ pub struct Chrome {
     /// Track which apps have been opened (activated) at least once.
     /// Only opened apps receive `update()` calls each frame.
     opened: Vec<bool>,
+
+    /// The last-focused egui widget id for each app (keyed by app index).
+    /// egui drops keyboard focus when a widget isn't rendered for a frame, so
+    /// switching apps (Ctrl+Tab / tab click) would otherwise lose focus until
+    /// the user clicks back in. We remember each app's focus and re-request it
+    /// on switch-back. Generic — no per-app code needed.
+    app_focus: HashMap<usize, egui::Id>,
+
+    /// The active app index from the previous frame, used to detect switches.
+    prev_active: i32,
 
     /// The state of the soft keyboard animation
     soft_kb_anim_state: AnimState,
@@ -174,9 +189,14 @@ impl Chrome {
         app_args: &[String],
         notedeck: &mut Notedeck,
     ) -> Result<Self, Error> {
-        stop_debug_mode(notedeck.options());
+        let notedeck_options = notedeck.options();
+        stop_debug_mode(notedeck_options);
 
-        let app_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx);
+        // Named (not a borrowed temporary) so we can drop it below to release
+        // the `&mut notedeck` borrow and register kind-renderers afterwards.
+        let mut notedeck_ref = notedeck.notedeck_ref(&cc.egui_ctx);
+        let app_ref = &mut notedeck_ref;
+        #[cfg(feature = "dave")]
         let dave = Dave::new(
             cc.wgpu_render_state.as_ref(),
             app_ref.app_ctx.ndb.clone(),
@@ -195,6 +215,8 @@ impl Chrome {
             options: ChromeOptions::default(),
             apps: Vec::new(),
             opened: Vec::new(),
+            app_focus: HashMap::new(),
+            prev_active: 0,
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
@@ -216,6 +238,7 @@ impl Chrome {
             chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         }
 
+        #[cfg(feature = "dave")]
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
         #[cfg(feature = "messages")]
@@ -224,8 +247,14 @@ impl Chrome {
         #[cfg(feature = "dashboard")]
         chrome.add_app(NotedeckApp::Dashboard(Box::new(Dashboard::default())));
 
+        #[cfg(feature = "horizon")]
+        chrome.add_app(NotedeckApp::Horizon(Box::new(Horizon::default())));
+
         #[cfg(feature = "notebook")]
         chrome.add_app(NotedeckApp::Notebook(Box::default()));
+
+        #[cfg(feature = "headway")]
+        chrome.add_app(NotedeckApp::Headway(Box::default()));
 
         #[cfg(feature = "clndash")]
         chrome.add_app(NotedeckApp::ClnDash(Box::default()));
@@ -268,9 +297,28 @@ impl Chrome {
             }
         }
 
+        if notedeck_options.contains(NotedeckOptions::AllAppsActive) {
+            chrome.options.set(ChromeOptions::AllAppsActive, true);
+        }
+
         chrome.set_active(0);
 
         app_ref.app_ctx.sound.play(notedeck::SoundEffect::Startup);
+
+        // Release the `&mut notedeck` borrow so we can register renderers below.
+        drop(notedeck_ref);
+
+        // Register every app's inline kind-renderers up front, so a `nostr:`
+        // reference (e.g. in a notebook note) resolves even for apps the user
+        // hasn't opened yet.
+        let renderers: Vec<_> = chrome
+            .apps
+            .iter()
+            .flat_map(|app| app.kind_renderers())
+            .collect();
+        for renderer in renderers {
+            notedeck.register_kind_renderer(renderer);
+        }
 
         Ok(chrome)
     }
@@ -288,6 +336,8 @@ impl Chrome {
             options: ChromeOptions::default(),
             apps: Vec::new(),
             opened: Vec::new(),
+            app_focus: HashMap::new(),
+            prev_active: 0,
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
@@ -332,6 +382,11 @@ impl Chrome {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F11)) {
             self.toggle();
         }
+
+        // Ctrl+W (Cmd+W on macOS) closes the active app's tab.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+            self.close_active_app();
+        }
     }
 
     /// Fallback keybindings — only fire if no app consumed the key.
@@ -367,6 +422,7 @@ impl Chrome {
         }
     }
 
+    #[cfg(feature = "dave")]
     fn get_dave_app(&mut self) -> Option<&mut Dave> {
         for app in &mut self.apps {
             if let NotedeckApp::Dave(dave) = app {
@@ -376,6 +432,7 @@ impl Chrome {
         None
     }
 
+    #[cfg(feature = "dave")]
     fn switch_to_dave(&mut self) {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Dave(_) = app {
@@ -447,6 +504,49 @@ impl Chrome {
         self.active = app;
         if let Some(opened) = self.opened.get_mut(app as usize) {
             *opened = true;
+        }
+    }
+
+    /// Close the active app's tab and switch to the nearest opened app.
+    /// No-op if it's the only opened app — at least one app must stay open.
+    /// Used by Ctrl+W.
+    fn close_active_app(&mut self) {
+        let n = self.opened.len();
+        if n == 0 {
+            return;
+        }
+        // at least one app must remain open
+        if self.opened.iter().filter(|o| **o).count() <= 1 {
+            return;
+        }
+        let active = self.active.clamp(0, n as i32 - 1) as usize;
+        self.opened[active] = false;
+        // switch to the nearest opened app after `active`, wrapping
+        for offset in 1..=n {
+            let idx = (active + offset) % n;
+            if self.opened[idx] {
+                self.set_active(idx as i32);
+                return;
+            }
+        }
+    }
+
+    /// Cycle the active app to the next (`forward`) or previous opened app,
+    /// wrapping around. Used by Ctrl+Tab / Ctrl+Shift+Tab.
+    fn cycle_app(&mut self, forward: bool) {
+        let n = self.opened.len();
+        if n == 0 {
+            return;
+        }
+        let active = self.active.clamp(0, n as i32 - 1) as usize;
+        let step = if forward { 1 } else { n - 1 };
+        // walk opened slots starting from the one after active, wrapping
+        for offset in 1..=n {
+            let idx = (active + step * offset) % n;
+            if self.opened[idx] {
+                self.set_active(idx as i32);
+                return;
+            }
         }
     }
 
@@ -555,6 +655,44 @@ impl Chrome {
             0.0
         };
 
+        // chrome-style app tab strip, desktop/wide only
+        let show_app_tabs = !is_narrow && ctx.settings.welcome_completed();
+
+        // Ctrl+Tab / Ctrl+Shift+Tab cycle through opened app tabs
+        if show_app_tabs {
+            let (mut next, mut prev) = (false, false);
+            ui.input_mut(|i| {
+                prev = i.consume_key(
+                    egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                    egui::Key::Tab,
+                );
+                next = i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab);
+
+                // macOS swallows Ctrl+Tab via AppKit's keyboard-interface
+                // control before it reaches us, so also accept the native
+                // Cmd+Shift+[ / Cmd+Shift+] tab-cycling shortcuts there. The
+                // MAC_CMD modifier only matches when the Cmd key is set, which
+                // only happens on macOS, so this is inert on other platforms.
+                //
+                // Because Shift is held, the logical key egui reports is the
+                // shifted glyph: `{` (OpenCurlyBracket) and `}`
+                // (CloseCurlyBracket), not the bare `[` / `]`.
+                prev |= i.consume_key(
+                    egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
+                    egui::Key::OpenCurlyBracket,
+                );
+                next |= i.consume_key(
+                    egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
+                    egui::Key::CloseCurlyBracket,
+                );
+            });
+            if prev {
+                self.cycle_app(false);
+            } else if next {
+                self.cycle_app(true);
+            }
+        }
+
         let (unseen_notifications, active_toolbar_tab) = if is_narrow {
             let unseen = self
                 .get_columns_app()
@@ -580,6 +718,27 @@ impl Chrome {
                 // the actual content, shifted up because of the soft keyboard
                 strip.cell(|ui| {
                     ui.spacing_mut().item_spacing = prev_spacing;
+                    if show_app_tabs {
+                        chrome_app_tabs(self, ctx, ui);
+                    }
+                    // If the active app changed this frame (Ctrl+Tab above or a
+                    // tab click in chrome_app_tabs), restore that app's last
+                    // keyboard focus before rendering it, so the user can type
+                    // immediately instead of having to click back in. Skipped on
+                    // mobile to avoid popping the virtual keyboard on every switch.
+                    if self.active != self.prev_active {
+                        if !is_compiled_as_mobile() {
+                            if let Some(id) = self.app_focus.get(&(self.active as usize)) {
+                                ui.ctx().memory_mut(|m| m.request_focus(*id));
+                            } else {
+                                // First activation, nothing remembered: ask the
+                                // app's autofocus widget (if any) to grab focus,
+                                // like browser autofocus.
+                                notedeck_ui::request_autofocus(ui.ctx());
+                            }
+                        }
+                        self.prev_active = self.active;
+                    }
                     action = self.panel(ctx, ui, keyboard_height);
                 });
 
@@ -616,6 +775,13 @@ impl Chrome {
 
         if let Some(tb_action) = toolbar_action {
             self.process_toolbar_action(tb_action, ctx);
+        }
+
+        // Remember the active app's currently-focused widget so we can restore
+        // it when the user switches away and back. Only overwrite on Some so the
+        // last real focus is retained even after focus is transiently dropped.
+        if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
+            self.app_focus.insert(self.active as usize, focused);
         }
 
         action
@@ -716,9 +882,11 @@ impl notedeck::App for Chrome {
 
         // Update opened apps every frame so background processing
         // (relay pools, subscriptions, etc.) stays alive.
-        // Apps that haven't been opened yet are skipped.
+        // Apps that haven't been opened yet are skipped unless
+        // --all-apps-active is set.
+        let all_active = self.options.contains(ChromeOptions::AllAppsActive);
         for (i, app) in self.apps.iter_mut().enumerate() {
-            if self.opened.get(i).copied().unwrap_or(false) {
+            if all_active || self.opened.get(i).copied().unwrap_or(false) {
                 app.update(ctx, _egui_ctx);
             }
         }
@@ -943,24 +1111,281 @@ fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
-#[cfg(feature = "notebook")]
-fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
-    notedeck_ui::expanding_button(
-        "notebook-button",
-        40.0,
-        app_images::algo_image(),
-        app_images::algo_image(),
-        ui,
-        false,
-    )
-}
-
+#[cfg(feature = "dave")]
 fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -> egui::Response {
     if let Some(avatar) = avatar {
         avatar.render(rect, ui)
     } else {
         // plain icon if wgpu device not available??
         ui.label("fixme")
+    }
+}
+
+/// The localized display name for a notedeck app, used in the sidebar and the
+/// chrome tab strip.
+fn app_label(loc: &mut Localization, app: &NotedeckApp) -> String {
+    match app {
+        #[cfg(feature = "dave")]
+        NotedeckApp::Dave(_) => tr!(loc, "Dave", "Button to go to the Dave app"),
+        NotedeckApp::Columns(_) => tr!(loc, "Columns", "Button to go to the Columns app"),
+
+        #[cfg(feature = "messages")]
+        NotedeckApp::Messages(_) => tr!(loc, "Messaging", "Button to go to the messaging app"),
+
+        #[cfg(feature = "dashboard")]
+        NotedeckApp::Dashboard(_) => tr!(loc, "Dashboard", "Button to go to the dashboard app"),
+
+        #[cfg(feature = "horizon")]
+        NotedeckApp::Horizon(_) => tr!(loc, "Horizon", "Button to go to the Horizon app"),
+
+        #[cfg(feature = "notebook")]
+        NotedeckApp::Notebook(_) => tr!(loc, "Notebook", "Button to go to the Notebook app"),
+
+        #[cfg(feature = "headway")]
+        NotedeckApp::Headway(_) => tr!(loc, "Headway", "Button to go to the Headway app"),
+
+        #[cfg(feature = "clndash")]
+        NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
+
+        #[cfg(feature = "nostrverse")]
+        NotedeckApp::Nostrverse(_) => tr!(loc, "Nostrverse", "Button to go to the Nostrverse app"),
+
+        NotedeckApp::Other(name, _) => tr!(loc, name.as_str(), "Button to go to a WASM app"),
+    }
+}
+
+/// Render a small (`size` square) app icon for the chrome tab strip.
+fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
+    match app {
+        NotedeckApp::Columns(_) => {
+            ui.add(app_images::columns_image().max_width(size).max_height(size));
+        }
+
+        #[cfg(feature = "dave")]
+        NotedeckApp::Dave(dave) => {
+            let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+            dave_button(dave.avatar_mut(), ui, rect);
+        }
+
+        #[cfg(feature = "dashboard")]
+        NotedeckApp::Dashboard(_) => {
+            notedeck_ui::icons::dashboard_icon(ui, size);
+        }
+
+        #[cfg(feature = "horizon")]
+        NotedeckApp::Horizon(_) => {
+            notedeck_ui::icons::horizon_icon(ui, size);
+        }
+
+        #[cfg(feature = "messages")]
+        NotedeckApp::Messages(_) => {
+            notedeck_ui::icons::messages_icon(ui, size);
+        }
+
+        #[cfg(feature = "clndash")]
+        NotedeckApp::ClnDash(_) => {
+            ui.add(app_images::cln_image().max_width(size).max_height(size));
+        }
+
+        #[cfg(feature = "notebook")]
+        NotedeckApp::Notebook(_) => {
+            notedeck_ui::icons::notebook_icon(ui, size);
+        }
+
+        #[cfg(feature = "headway")]
+        NotedeckApp::Headway(_) => {
+            notedeck_ui::icons::headway_icon(ui, size);
+        }
+
+        #[cfg(feature = "nostrverse")]
+        NotedeckApp::Nostrverse(_) => {
+            ui.add(
+                app_images::universe_image()
+                    .max_width(size)
+                    .max_height(size),
+            );
+        }
+
+        NotedeckApp::Other(_name, _) => {
+            ui.label("W");
+        }
+    }
+}
+
+/// The app index of the `n`th opened app (the app backing the `n`th tab).
+fn nth_opened(opened: &[bool], n: usize) -> Option<usize> {
+    opened
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| **o)
+        .nth(n)
+        .map(|(i, _)| i)
+}
+
+/// A subtle separator beneath the tab strip: a faint line that softens into a
+/// short gradient fading up into the tab strip, instead of a hard hairline.
+fn tab_strip_fade(ui: &egui::Ui) {
+    let rect = ui.available_rect_before_wrap();
+    let top = rect.top();
+    let fade_height = 6.0;
+    let (left, right) = (rect.left(), rect.right());
+
+    let base = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let line = base.gamma_multiply(0.6);
+    let transparent = Color32::TRANSPARENT;
+
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(egui::pos2(left, top), line);
+    mesh.colored_vertex(egui::pos2(right, top), line);
+    mesh.colored_vertex(egui::pos2(right, top - fade_height), transparent);
+    mesh.colored_vertex(egui::pos2(left, top - fade_height), transparent);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(egui::Shape::mesh(mesh));
+}
+
+/// A single tab in the chrome app tab strip: the app it represents, whether
+/// it's the active tab, and any notification badge it wants to show.
+struct ChromeTab<'a> {
+    app: &'a mut NotedeckApp,
+    selected: bool,
+    notifications: TabNotifications,
+}
+
+impl ChromeTab<'_> {
+    fn show(&mut self, loc: &mut Localization, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            tab_app_icon(ui, self.app, 18.0);
+
+            let txt = RichText::new(app_label(loc, self.app));
+            let txt = if self.selected {
+                txt
+            } else {
+                txt.color(ui.visuals().weak_text_color())
+            };
+            ui.add(Label::new(txt).selectable(false));
+
+            tab_notification_badge(ui, self.notifications);
+        });
+    }
+}
+
+/// Render a small pill badge with the notification count, if any.
+fn tab_notification_badge(ui: &mut egui::Ui, notifs: TabNotifications) {
+    if notifs.is_empty() {
+        return;
+    }
+
+    let label = if notifs.count > 99 {
+        "99+".to_owned()
+    } else {
+        notifs.count.to_string()
+    };
+
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label, egui::FontId::proportional(11.0), Color32::WHITE);
+
+    let padding = vec2(5.0, 1.0);
+    let size = galley.size() + padding * 2.0;
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter()
+        .rect_filled(rect, rect.height() / 2.0, notedeck_ui::colors::PINK);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+}
+
+/// Chrome-browser-style tab strip across the top of the chrome frame. Shows one
+/// tab per *opened* app (`Chrome::opened`); clicking a tab switches the active
+/// app. New apps are opened from the left sidebar.
+/// Horizontal space (logical points) to reserve at the left of the tab strip so
+/// it isn't obscured by the macOS traffic-light window controls. These are only
+/// drawn when we hide the native titlebar (the default, fullsize-content-view
+/// mode); with `--title` the native titlebar owns the controls and no reserve is
+/// needed. Returns 0 on other platforms, when the titlebar is shown, or in
+/// fullscreen (where the controls are hidden).
+fn macos_traffic_light_inset(ctx: &AppContext, ui: &egui::Ui) -> f32 {
+    if cfg!(target_os = "macos")
+        && !ctx.args.options.contains(NotedeckOptions::ShowTitle)
+        && ui.input(|i| i.viewport().fullscreen) != Some(true)
+    {
+        72.0
+    } else {
+        0.0
+    }
+}
+
+fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    let inset = macos_traffic_light_inset(ctx, ui);
+
+    // disjoint field borrows so the tab closure can read opened flags while
+    // mutably rendering app icons (e.g. Dave's avatar)
+    let opened = &chrome.opened;
+    let apps = &mut chrome.apps;
+
+    // the active app is always opened, so there is always at least one tab
+    let n_tabs = opened.iter().filter(|o| **o).count();
+    if n_tabs == 0 {
+        return;
+    }
+
+    // the selected tab is the number of opened apps before the active app
+    let active = chrome.active.max(0) as usize;
+    let sel = opened.iter().take(active).filter(|o| **o).count();
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    // egui_tabs keys its selection on `ui.id().with("tabs")` and prefers temp
+    // data over `.selected()`, so overwrite it each frame to stay in sync with
+    // app switches that happen elsewhere (e.g. the sidebar).
+    let tabs_id = ui.id().with("tabs");
+    ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
+
+    let mut render_tabs = |ui: &mut egui::Ui| {
+        egui_tabs::Tabs::new(n_tabs as i32)
+            .selected(sel as i32)
+            .hover_bg(egui_tabs::TabColor::none())
+            .selected_fg(egui_tabs::TabColor::none())
+            .selected_bg(egui_tabs::TabColor::none())
+            .height(30.0)
+            .layout(Layout::centered_and_justified(egui::Direction::TopDown))
+            .show(ui, |ui, state| {
+                let Some(app_idx) = nth_opened(opened, state.index() as usize) else {
+                    return;
+                };
+
+                let notifications = apps[app_idx].tab_notifications(ctx);
+                ChromeTab {
+                    app: &mut apps[app_idx],
+                    selected: state.is_selected(),
+                    notifications,
+                }
+                .show(ctx.i18n, ui);
+            })
+    };
+
+    // On macOS with the native titlebar hidden, indent the tab strip so the
+    // traffic-light window controls don't sit on top of the first tab.
+    let tab_res = if inset > 0.0 {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(inset);
+            render_tabs(ui)
+        })
+        .inner
+    } else {
+        render_tabs(ui)
+    };
+
+    tab_strip_fade(ui);
+
+    // switch active app if a different tab was selected
+    let new_sel = tab_res.selected().unwrap_or(sel as i32) as usize;
+    if let Some(app_idx) = nth_opened(&chrome.opened, new_sel) {
+        if app_idx as i32 != chrome.active {
+            chrome.set_active(app_idx as i32);
+        }
     }
 }
 
@@ -997,6 +1422,7 @@ fn chrome_handle_app_action(
 
         AppAction::Note(note_action) => {
             // Intercept SummarizeThread — route to Dave instead of Columns
+            #[cfg(feature = "dave")]
             if let notedeck::NoteAction::Context(ref context) = note_action {
                 if let notedeck::NoteContextSelection::SummarizeThread(note_id) = context.action {
                     chrome.switch_to_dave();
@@ -1318,109 +1744,98 @@ fn topdown_sidebar(
             });
         });
 
-    for (i, app) in chrome.apps.iter_mut().enumerate() {
-        if chrome.active == i as i32 {
-            continue;
-        }
+    // Scroll the app list so it doesn't overflow the sidebar as more apps
+    // are added. Reserve a bit of space at the bottom for the milestone label.
+    let apps_scroll_height = (ui.available_height() - 32.0).max(0.0);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, true])
+        .max_height(apps_scroll_height)
+        .show(ui, |ui| {
+            for (i, app) in chrome.apps.iter_mut().enumerate() {
+                if chrome.active == i as i32 {
+                    continue;
+                }
 
-        let text = match &app {
-            NotedeckApp::Dave(_) => tr!(loc, "Dave", "Button to go to the Dave app"),
-            NotedeckApp::Columns(_) => tr!(loc, "Columns", "Button to go to the Columns app"),
+                let text = app_label(loc, app);
 
-            #[cfg(feature = "messages")]
-            NotedeckApp::Messages(_) => {
-                tr!(loc, "Messaging", "Button to go to the messaging app")
+                StripBuilder::new(ui)
+                    .size(Size::exact(40.0))
+                    .clip(true)
+                    .vertical(|mut strip| {
+                        strip.strip(|b| {
+                            let resp = drawer_item(
+                                b,
+                                |ui| match app {
+                                    NotedeckApp::Columns(_columns_app) => {
+                                        ui.add(app_images::columns_image());
+                                    }
+
+                                    #[cfg(feature = "dave")]
+                                    NotedeckApp::Dave(dave) => {
+                                        dave_button(
+                                            dave.avatar_mut(),
+                                            ui,
+                                            Rect::from_center_size(
+                                                ui.available_rect_before_wrap().center(),
+                                                vec2(30.0, 30.0),
+                                            ),
+                                        );
+                                    }
+
+                                    #[cfg(feature = "dashboard")]
+                                    NotedeckApp::Dashboard(_columns_app) => {
+                                        notedeck_ui::icons::dashboard_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "horizon")]
+                                    NotedeckApp::Horizon(_horizon) => {
+                                        notedeck_ui::icons::horizon_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "messages")]
+                                    NotedeckApp::Messages(_dms) => {
+                                        notedeck_ui::icons::messages_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "clndash")]
+                                    NotedeckApp::ClnDash(_clndash) => {
+                                        clndash_button(ui);
+                                    }
+
+                                    #[cfg(feature = "notebook")]
+                                    NotedeckApp::Notebook(_notebook) => {
+                                        notedeck_ui::icons::notebook_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "headway")]
+                                    NotedeckApp::Headway(_headway) => {
+                                        notedeck_ui::icons::headway_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "nostrverse")]
+                                    NotedeckApp::Nostrverse(_nostrverse) => {
+                                        ui.add(app_images::universe_image());
+                                    }
+
+                                    NotedeckApp::Other(_name, _other) => {
+                                        ui.label("W");
+                                    }
+                                },
+                                text,
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                            if resp.clicked() {
+                                chrome.active = i as i32;
+                                if let Some(opened) = chrome.opened.get_mut(i) {
+                                    *opened = true;
+                                }
+                                chrome.nav.close();
+                            }
+                        })
+                    });
             }
-
-            #[cfg(feature = "dashboard")]
-            NotedeckApp::Dashboard(_) => {
-                tr!(loc, "Dashboard", "Button to go to the dashboard app")
-            }
-
-            #[cfg(feature = "notebook")]
-            NotedeckApp::Notebook(_) => {
-                tr!(loc, "Notebook", "Button to go to the Notebook app")
-            }
-
-            #[cfg(feature = "clndash")]
-            NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
-
-            #[cfg(feature = "nostrverse")]
-            NotedeckApp::Nostrverse(_) => {
-                tr!(loc, "Nostrverse", "Button to go to the Nostrverse app")
-            }
-
-            NotedeckApp::Other(name, _) => {
-                tr!(loc, name.as_str(), "Button to go to a WASM app")
-            }
-        };
-
-        StripBuilder::new(ui)
-            .size(Size::exact(40.0))
-            .clip(true)
-            .vertical(|mut strip| {
-                strip.strip(|b| {
-                    let resp = drawer_item(
-                        b,
-                        |ui| match app {
-                            NotedeckApp::Columns(_columns_app) => {
-                                ui.add(app_images::columns_image());
-                            }
-
-                            NotedeckApp::Dave(dave) => {
-                                dave_button(
-                                    dave.avatar_mut(),
-                                    ui,
-                                    Rect::from_center_size(
-                                        ui.available_rect_before_wrap().center(),
-                                        vec2(30.0, 30.0),
-                                    ),
-                                );
-                            }
-
-                            #[cfg(feature = "dashboard")]
-                            NotedeckApp::Dashboard(_columns_app) => {
-                                ui.add(app_images::algo_image());
-                            }
-
-                            #[cfg(feature = "messages")]
-                            NotedeckApp::Messages(_dms) => {
-                                ui.add(app_images::new_message_image());
-                            }
-
-                            #[cfg(feature = "clndash")]
-                            NotedeckApp::ClnDash(_clndash) => {
-                                clndash_button(ui);
-                            }
-
-                            #[cfg(feature = "notebook")]
-                            NotedeckApp::Notebook(_notebook) => {
-                                notebook_button(ui);
-                            }
-
-                            #[cfg(feature = "nostrverse")]
-                            NotedeckApp::Nostrverse(_nostrverse) => {
-                                ui.add(app_images::universe_image());
-                            }
-
-                            NotedeckApp::Other(_name, _other) => {
-                                ui.label("W");
-                            }
-                        },
-                        text,
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-                    if resp.clicked() {
-                        chrome.active = i as i32;
-                        if let Some(opened) = chrome.opened.get_mut(i) {
-                            *opened = true;
-                        }
-                        chrome.nav.close();
-                    }
-                })
-            });
-    }
+        });
 
     if ctx.args.options.contains(NotedeckOptions::Debug) {
         let r = ui

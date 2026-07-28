@@ -17,6 +17,7 @@ pub mod login_manager;
 mod media_upload;
 mod nav;
 pub mod nfilter;
+mod note_renderer;
 mod onboarding;
 pub mod options;
 mod post;

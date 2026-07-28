@@ -13,6 +13,7 @@ use nav::{process_messages_ui_response, Route};
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{
     ui::is_narrow, Accounts, App, AppContext, AppResponse, RemoteApi, Router, SubKey, SubOwnerKey,
+    TabNotifications,
 };
 
 use crate::{
@@ -165,6 +166,25 @@ impl App for MessagesApp {
 
         AppResponse::action(processed.app_action)
     }
+
+    fn tab_notifications(&self, ctx: &AppContext<'_>) -> TabNotifications {
+        let Some(cache) = self.messages.get_current(ctx.accounts) else {
+            return TabNotifications::default();
+        };
+        let states = self
+            .states
+            .for_account(ctx.accounts.selected_account_pubkey());
+        let unread = cache
+            .iter()
+            .filter(|(id, convo)| {
+                let last_read = states
+                    .and_then(|s| s.cache.get(id))
+                    .and_then(|s| s.last_read);
+                crate::ui::ConversationSummary::new(convo, last_read).unread
+            })
+            .count();
+        TabNotifications::count(unread as u32)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -190,6 +210,10 @@ struct ConversationStatesByAccount {
 impl ConversationStatesByAccount {
     fn for_account_mut(&mut self, account: &Pubkey) -> &mut ConversationStates {
         self.states.entry(*account).or_default()
+    }
+
+    fn for_account(&self, account: &Pubkey) -> Option<&ConversationStates> {
+        self.states.get(account)
     }
 }
 
@@ -395,7 +419,12 @@ fn ensure_selected_startup(
 
     let account_pubkey = *ctx.accounts.selected_account_pubkey();
     let known_participants = startup_prefetch_participants(ctx.ndb, cache, &account_pubkey);
-    relay_prefetch::ensure_participant_prefetch(&mut ctx.remote, ctx.accounts, &known_participants);
+    relay_prefetch::ensure_participant_prefetch(
+        &mut ctx.remote,
+        ctx.accounts,
+        cache,
+        &known_participants,
+    );
 
     if cache.active.is_none() && !is_narrow {
         if let Some(first) = cache.first_convo_id() {
@@ -493,6 +522,13 @@ fn list_ensure_owner_key(account_pk: Pubkey) -> SubOwnerKey {
         .finish()
 }
 
+/// Stable account-level key for the participant DM relay-list prefetch stream.
+pub(crate) fn list_prefetch_sub_key() -> SubKey {
+    SubKey::builder(RELAY_LIST_KEY)
+        .with("participant_prefetch")
+        .finish()
+}
+
 /// Stable key for one participant's DM relay-list remote stream.
 pub fn list_fetch_sub_key(participant: &Pubkey) -> SubKey {
     SubKey::builder(RELAY_LIST_KEY)
@@ -546,6 +582,12 @@ impl ConversationsCtx {
     /// Get an existing conversation cache for an account-addressed async result.
     pub fn get_mut(&mut self, account: &Pubkey) -> Option<&mut ConversationCache> {
         self.convos_per_acc.get_mut(account)
+    }
+
+    /// Read-only conversation cache for the selected account, if one exists.
+    pub fn get_current(&self, accounts: &Accounts) -> Option<&ConversationCache> {
+        accounts.get_selected_account().keypair().secret_key?;
+        self.convos_per_acc.get(accounts.selected_account_pubkey())
     }
 }
 

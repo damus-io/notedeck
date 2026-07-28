@@ -408,6 +408,7 @@ mod tests {
             Accounts::new(
                 None,
                 Vec::new(),
+                Vec::new(),
                 kp.pubkey,
                 &mut ndb,
                 &txn,

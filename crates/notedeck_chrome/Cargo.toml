@@ -17,12 +17,14 @@ egui_nav = { workspace = true }
 egui = { workspace = true }
 notedeck_columns = { workspace = true }
 notedeck_ui = { workspace = true }
-notedeck_dave = { workspace = true }
+notedeck_dave = { workspace = true, optional = true }
 notedeck_messages = { workspace = true, optional = true }
 notedeck_notebook = { workspace = true, optional = true }
+notedeck_headway = { workspace = true, optional = true }
 notedeck_nostrverse = { workspace = true, optional = true }
 notedeck_clndash = { workspace = true, optional = true }
 notedeck_dashboard = { workspace = true, optional = true }
+notedeck_horizon = { workspace = true, optional = true }
 notedeck_wasm = { workspace = true, optional = true }
 notedeck = { workspace = true, features = ["sound"] }
 nostrdb = { workspace = true }
@@ -61,11 +63,14 @@ snapshot-testing = ["notedeck/snapshot-testing"]
 memory = ["re_memory"]
 puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 tracy = ["profiling/profile-with-tracy"]
+dave = ["notedeck_dave"]
 messages = ["notedeck_messages"]
 notebook = ["notedeck_notebook"]
+headway = ["notedeck_headway"]
 nostrverse = ["notedeck_nostrverse"]
 clndash = ["notedeck_clndash"]
 dashboard = ["notedeck_dashboard"]
+horizon = ["notedeck_horizon"]
 wasm = ["notedeck_wasm"]
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -74,6 +79,10 @@ tracing-logcat = "0.1.0"
 #android-activity = { version = "0.6", features = [ "game-activity" ] }
 egui-winit.workspace = true
 android-keyring = { workspace = true }
+
+# Run the embedded localhost relay on desktop only; never on Android.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+notedeck = { workspace = true, features = ["local-relay"] }
 
 # Fix debug mode crash on macOS: objc2-foundation 0.2.2 has incorrect type
 # encoding for NSFastEnumeration. The relax-sign-encoding feature allows

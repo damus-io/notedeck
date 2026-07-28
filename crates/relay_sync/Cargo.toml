@@ -1,0 +1,16 @@
+[package]
+name = "relay_sync"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+enostr = { workspace = true }
+nostrdb = { workspace = true }
+bech32 = { workspace = true }
+dirs = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "sync", "time"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+negentropy = { workspace = true }
+hex = { workspace = true }

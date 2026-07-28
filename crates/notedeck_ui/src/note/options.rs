@@ -47,6 +47,9 @@ bitflags! {
 
         /// There is enough trust to show media in this note
         const TrustMedia = 1 << 20;
+
+        /// Show detailed counts (reposts, reactions, zaps) above the action bar
+        const DetailedCounts = 1 << 21;
     }
 }
 

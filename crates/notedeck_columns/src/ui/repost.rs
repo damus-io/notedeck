@@ -117,7 +117,7 @@ fn repost_item_text(text: &str) -> impl egui::Widget + use<'_> {
 
 pub fn quote_icon() -> impl egui::Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let h = 32.0; // scaling constant
+        let h = 32.0_f32; // scaling constant
         let color = ui.visuals().strong_text_color();
         let r = h * 0.12; // dot radius
         let arc_r = r * 2.0; // larger so it protrudes above

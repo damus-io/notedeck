@@ -275,7 +275,7 @@ pub struct MentionSelectedResponse {
 }
 
 impl MentionSelectedResponse {
-    pub fn process(&self, ctx: &egui::Context, text_edit_output: &TextEditOutput) {
+    pub fn process(&self, ctx: &egui::Context, text_edit_output: &TextEditOutput, text: &str) {
         let text_edit_id = text_edit_output.response.id;
         let Some(mut before_state) = TextEdit::load_state(ctx, text_edit_id) else {
             return;
@@ -290,7 +290,25 @@ impl MentionSelectedResponse {
         ctx.memory_mut(|mem| mem.request_focus(text_edit_id));
 
         TextEdit::store_state(ctx, text_edit_id, before_state);
+
+        sync_text_input_state_after_external_edit(ctx, text, self.next_cursor_index);
     }
+}
+
+/// Synchronizes the platform text input state after text changes outside [`TextEdit`].
+fn sync_text_input_state_after_external_edit(ctx: &egui::Context, text: &str, cursor_index: usize) {
+    let cursor = egui::TextSpan {
+        start: cursor_index,
+        end: cursor_index,
+    };
+
+    ctx.output_mut(|output| {
+        output.text_input_state = Some(egui::TextInputState {
+            text: text.to_owned(),
+            selection: cursor,
+            compose_region: None,
+        });
+    });
 }
 
 impl PostBuffer {
@@ -722,6 +740,7 @@ impl TextBuffer for PostBuffer {
     }
 }
 
+/// Returns true when inserted text begins with `desired` at a text boundary.
 fn first_is_desired_char(
     full_text: &str,
     new_text: &str,
@@ -730,7 +749,11 @@ fn first_is_desired_char(
 ) -> bool {
     new_text.chars().next().is_some_and(|c| {
         c == desired
-            && (new_text_index == 0 || full_text.chars().nth(new_text_index - 1) == Some(' '))
+            && (new_text_index == 0
+                || full_text
+                    .chars()
+                    .nth(new_text_index - 1)
+                    .is_some_and(|c| c.is_whitespace()))
     })
 }
 
@@ -958,6 +981,42 @@ mod tests {
     }
 
     #[test]
+    fn mention_selection_updates_text_input_state() {
+        let mut buffer = PostBuffer::default();
+        buffer.insert_text("@jb", 0);
+
+        let full_output = egui::Context::default().run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let text_edit_output = egui::TextEdit::multiline(&mut buffer)
+                    .id_salt("post-buffer-android-ime-regression")
+                    .show(ui);
+
+                let selection = buffer
+                    .select_mention_and_replace_name(0, "jb55", JB55())
+                    .unwrap();
+                selection.process(ui.ctx(), &text_edit_output, buffer.as_str());
+            });
+        });
+
+        assert_eq!(buffer.as_str(), "@jb55 ");
+
+        let mention = buffer.mentions.get(&0).unwrap();
+        assert_eq!(mention.bounds(), 0..5);
+        assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
+
+        let text_input_state = full_output
+            .platform_output
+            .text_input_state
+            .expect("mention selection should update platform text input state");
+        assert_eq!(text_input_state.text, "@jb55 ");
+        assert_eq!(
+            text_input_state.selection,
+            egui::TextSpan { start: 6, end: 6 }
+        );
+        assert_eq!(text_input_state.compose_region, None);
+    }
+
+    #[test]
     fn test_insert_mention_after_text() {
         let mut buf = PostBuffer::default();
         buf.insert_text("test text here", 0);
@@ -983,6 +1042,22 @@ mod tests {
             buf.mentions.get(&0).unwrap().mention_type,
             MentionType::Finalized(JB55())
         );
+    }
+
+    #[test]
+    fn test_insert_mention_after_newlines() {
+        let mut buf = PostBuffer::default();
+        buf.insert_text("\n\n", 0);
+        buf.insert_text("@jb", 2);
+
+        assert_eq!("\n\n@jb", buf.as_str());
+        assert_eq!(buf.mentions.len(), 1);
+        assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 2..5);
+        assert_eq!(
+            buf.mentions.get(&0).unwrap().mention_type,
+            MentionType::Pending
+        );
+        assert!(buf.get_mention(2).is_some());
     }
 
     #[test]

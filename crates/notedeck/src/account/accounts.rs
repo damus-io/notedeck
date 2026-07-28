@@ -36,6 +36,7 @@ impl Accounts {
     pub fn new(
         key_store: Option<AccountStorage>,
         forced_relays: Vec<String>,
+        bootstrap_relays: Vec<String>,
         fallback: Pubkey,
         ndb: &mut Ndb,
         txn: &Transaction,
@@ -72,12 +73,13 @@ impl Accounts {
             storage_writer = Some(writer);
         };
 
-        let relay_defaults = RelayDefaults::new(forced_relays);
+        let relay_defaults = RelayDefaults::new(forced_relays, bootstrap_relays);
 
         let selected = cache.selected_mut();
+        let selected_key = selected.key.clone();
         let selected_data = &mut selected.data;
 
-        selected_data.query(ndb, txn);
+        selected_data.query(ndb, txn, &selected_key);
 
         let ndb_subs = AccountNdbSubs::new(ndb, selected_data);
 
@@ -301,7 +303,9 @@ impl Accounts {
             }
         }
 
-        self.get_selected_account_mut().data.query(ndb, txn);
+        let selected = self.get_selected_account_mut();
+        let selected_key = selected.key.clone();
+        selected.data.query(ndb, txn, &selected_key);
         self.ndb_subs.swap_to(ndb, &self.cache.selected().data);
     }
 
@@ -342,17 +346,18 @@ impl Accounts {
 
     #[profiling::function]
     pub fn update(&mut self, ndb: &mut Ndb, remote: &mut RemoteApi<'_>) {
-        // IMPORTANT - This function is called in the UI update loop,
-        // make sure it is fast when idle
-        let old_read_relays = self
-            .scoped_remote_initialized
-            .then(|| self.selected_account_read_relays());
-
-        let relay_updated = self
-            .cache
-            .selected_mut()
+        // IMPORTANT - This function is called in the UI update loop, so it must
+        // be fast (and quiet) when idle. poll_for_updates is allocation-free on
+        // idle frames and only reports a change when the selected account's
+        // advertised relay set actually changed, so we resolve read relays (a
+        // non-trivial, log-emitting path via calculate_relays) only on a real
+        // change rather than every frame.
+        let selected = self.cache.selected_mut();
+        // Disjoint field borrows: `&selected.key` and `&mut selected.data` so we
+        // don't clone the secret key every frame on this hot path.
+        let relays_changed = selected
             .data
-            .poll_for_updates(ndb, &self.ndb_subs);
+            .poll_for_updates(ndb, &selected.key, &self.ndb_subs);
 
         if !self.scoped_remote_initialized {
             selected_account_request_subs(
@@ -363,15 +368,9 @@ impl Accounts {
             return;
         }
 
-        if !relay_updated {
-            return;
+        if relays_changed {
+            self.retarget_selected_account_read_relays(remote);
         }
-
-        if old_read_relays.is_some_and(|old| old == self.selected_account_read_relays()) {
-            return;
-        }
-
-        self.retarget_selected_account_read_relays(remote);
     }
 
     pub fn get_full<'a>(&'a self, pubkey: &Pubkey) -> Option<FilledKeypair<'a>> {
@@ -411,11 +410,28 @@ impl Accounts {
         &self.get_selected_account_data().relay.advertised
     }
 
+    /// Return the selected account's kind-10013 NIP-37 private-sync relay set.
+    pub fn selected_account_private_relay_set(&self) -> &std::collections::BTreeSet<NormRelayUrl> {
+        &self.get_selected_account_data().relay.private
+    }
+
     pub fn selected_account_write_relays(&self) -> Vec<RelayId> {
         write_relays(
             &self.relay_defaults,
             &self.get_selected_account_data().relay,
         )
+    }
+
+    /// Return the selected account's private-sync relays from its decrypted
+    /// kind-10013 NIP-37 list, as `RelayId`s. Used by dave/headway/notebook to
+    /// sync private state across the user's own devices.
+    pub fn selected_account_private_relays(&self) -> Vec<RelayId> {
+        self.get_selected_account_data()
+            .relay
+            .private
+            .iter()
+            .map(|url| RelayId::Websocket(url.clone()))
+            .collect()
     }
 
     fn retarget_selected_account_read_relays(&mut self, remote: &mut RemoteApi<'_>) {
@@ -492,9 +508,16 @@ impl AccountData {
     }
 
     #[profiling::function]
-    pub(super) fn poll_for_updates(&mut self, ndb: &Ndb, ndb_subs: &AccountNdbSubs) -> bool {
+    pub(super) fn poll_for_updates(
+        &mut self,
+        ndb: &Ndb,
+        keypair: &Keypair,
+        ndb_subs: &AccountNdbSubs,
+    ) -> bool {
         let txn = Transaction::new(ndb).expect("txn");
         let relay_updated = self.relay.poll_for_updates(ndb, &txn, ndb_subs.relay_ndb);
+        self.relay
+            .poll_private_for_updates(ndb, &txn, ndb_subs.private_relay_ndb, keypair);
 
         self.muted.poll_for_updates(ndb, &txn, ndb_subs.mute_ndb);
         self.bookmarks
@@ -506,8 +529,8 @@ impl AccountData {
     }
 
     /// Note: query should be called as close to the subscription as possible
-    pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
-        self.relay.query(ndb, txn);
+    pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction, keypair: &Keypair) {
+        self.relay.query(ndb, txn, keypair);
         self.muted.query(ndb, txn);
         self.bookmarks.query(ndb, txn);
         self.contacts.query(ndb, txn);
@@ -553,6 +576,15 @@ fn selected_account_request_subs(
                     identity,
                     make_account_remote_config(
                         vec![data.relay.filter.clone()],
+                        RelayRoutingPreference::default(),
+                    ),
+                );
+            }
+            AccountRemoteSubKind::PrivateRelayList => {
+                let _ = scoped_subs.ensure_sub(
+                    identity,
+                    make_account_remote_config(
+                        vec![data.relay.private_filter.clone()],
                         RelayRoutingPreference::default(),
                     ),
                 );
@@ -607,6 +639,7 @@ fn clear_account_remote_subs_for_account(
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum AccountRemoteSubKind {
     RelayList,
+    PrivateRelayList,
     MuteList,
     BookmarksList,
     ContactsList,
@@ -616,6 +649,7 @@ enum AccountRemoteSubKind {
 fn account_remote_sub_kinds() -> [AccountRemoteSubKind; 5] {
     [
         AccountRemoteSubKind::RelayList,
+        AccountRemoteSubKind::PrivateRelayList,
         AccountRemoteSubKind::MuteList,
         AccountRemoteSubKind::BookmarksList,
         AccountRemoteSubKind::ContactsList,
@@ -654,6 +688,7 @@ fn make_giftwrap_remote_config(pk: &Pubkey) -> SubConfig {
 }
 struct AccountNdbSubs {
     relay_ndb: Subscription,
+    private_relay_ndb: Subscription,
     mute_ndb: Subscription,
     bookmarks_ndb: Subscription,
     contacts_ndb: Subscription,
@@ -664,6 +699,9 @@ impl AccountNdbSubs {
         let relay_ndb = ndb
             .subscribe(from_ref(&data.relay.filter))
             .expect("ndb relay list subscription");
+        let private_relay_ndb = ndb
+            .subscribe(from_ref(&data.relay.private_filter))
+            .expect("ndb private relay list subscription");
         let mute_ndb = ndb
             .subscribe(from_ref(&data.muted.filter))
             .expect("ndb sub");
@@ -675,6 +713,7 @@ impl AccountNdbSubs {
             .expect("ndb sub");
         Self {
             relay_ndb,
+            private_relay_ndb,
             mute_ndb,
             bookmarks_ndb,
             contacts_ndb,
@@ -683,6 +722,7 @@ impl AccountNdbSubs {
 
     pub fn swap_to(&mut self, ndb: &mut Ndb, new_selection_data: &AccountData) {
         let _ = ndb.unsubscribe(self.relay_ndb);
+        let _ = ndb.unsubscribe(self.private_relay_ndb);
         let _ = ndb.unsubscribe(self.mute_ndb);
         let _ = ndb.unsubscribe(self.bookmarks_ndb);
         let _ = ndb.unsubscribe(self.contacts_ndb);
@@ -728,6 +768,7 @@ mod tests {
             let accounts = Accounts::new(
                 None,
                 forced_relays,
+                crate::account::relay::default_bootstrap_relays(),
                 FALLBACK_PUBKEY(),
                 &mut ndb,
                 &txn,

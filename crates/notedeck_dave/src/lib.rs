@@ -10,6 +10,7 @@ pub(crate) mod git_status;
 pub mod ipc;
 pub(crate) mod mesh;
 mod messages;
+mod notifications;
 mod path_normalize;
 pub(crate) mod path_utils;
 mod quaternion;
@@ -68,8 +69,6 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
-/// Default relay URL used for PNS event publishing and subscription.
-const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
 /// Dave PNS history window retained from the previous negentropy sync path.
 const PNS_HISTORY_WINDOW_SECS: u64 = 7 * 86400;
 
@@ -325,6 +324,8 @@ pub struct Dave {
     active_overlay: DaveOverlay,
     /// IPC listener for external spawn-agent commands
     ipc_listener: Option<ipc::IpcListener>,
+    /// Notification state for desktop notifications when unfocused
+    notification_state: notifications::NotificationState,
     /// Pending archive conversion: (jsonl_path, dave_session_id, claude_session_id).
     /// Set when resuming a session; processed in update() where AppContext is available.
     pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
@@ -355,8 +356,10 @@ pub struct Dave {
     pending_summaries: Vec<enostr::NoteId>,
     /// Local machine hostname, included in session state events.
     hostname: String,
-    /// PNS relay URL (configurable via DAVE_RELAY env or settings UI).
-    pns_relay_url: String,
+    /// PNS sync relay. Sourced from the selected account's first "private"
+    /// NIP-65 relay each frame. `None` means local-only (no cross-device sync);
+    /// dave still ingests its events into nostrdb either way.
+    pns_relay_url: Option<String>,
     /// Last selected account/relay/PNS-author tuple declared through scoped subscriptions.
     pns_remote_sub_state: Option<PnsRemoteSubState>,
     /// Last selected account used to populate Dave's local PNS-backed state.
@@ -672,12 +675,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
-        let pns_relay_url = normalize_relay_url(
-            model_config
-                .pns_relay
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string()),
-        );
+        // The PNS sync relay is derived from the selected account's "private"
+        // NIP-65 relay each frame (see `update`). None means local-only: dave
+        // still ingests its events into nostrdb, just without cross-device sync.
+        let pns_relay_url = None;
 
         let directory_picker = DirectoryPicker::new();
 
@@ -729,6 +730,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_picker: SessionPicker::new(),
             active_overlay,
             ipc_listener,
+            notification_state: notifications::NotificationState::new(),
             pending_archive_convert: None,
             pending_message_load: None,
             pending_relay_events: Vec::new(),
@@ -763,21 +765,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Apply new settings and persist to disk.
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
-        let previous_pns_relay_url = self.pns_relay_url.clone();
         self.model_config = ModelConfig::from_settings(&settings);
-        self.pns_relay_url = normalize_relay_url(
-            settings
-                .pns_relay
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string()),
-        );
-        if previous_pns_relay_url != self.pns_relay_url {
-            tracing::info!(
-                previous_relay = %previous_pns_relay_url,
-                next_relay = %self.pns_relay_url,
-                "Dave PNS relay changed"
-            );
-        }
+        // pns_relay_url is sourced from the account's kind-10013 NIP-37 private
+        // relay list in `update`, not from settings.
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
@@ -898,16 +888,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         for session_id in session_ids {
             // Take the receiver out to avoid borrow conflicts
-            let recvr = {
+            let (recvr, backend_type) = {
                 let Some(session) = self.session_manager.get_mut(session_id) else {
                     continue;
                 };
-                session.incoming_tokens.take()
+                (session.incoming_tokens.take(), session.backend_type)
             };
 
             let Some(recvr) = recvr else {
                 continue;
             };
+
+            // Persistent-stream backends (Claude) keep one channel for the whole
+            // session, so a turn ends via an explicit `QueryComplete` rather than
+            // the channel disconnecting. Non-persistent backends end a turn by
+            // dropping the sender (see the disconnect branch below).
+            let persistent_stream = self
+                .backends
+                .get(&backend_type)
+                .map(|b| b.persistent_stream())
+                .unwrap_or(false);
+            let mut turn_ended = false;
 
             while let Ok(res) = recvr.try_recv() {
                 // Nudge avatar only for active session
@@ -920,9 +921,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let Some(session) = self.session_manager.get_mut(session_id) else {
                     break;
                 };
-
-                // Track when we last received any backend message (for stall detection)
-                session.last_backend_msg = Some(std::time::Instant::now());
 
                 // Determine the live event to publish for this response.
                 // Centralised here so every response type that needs relay
@@ -1014,6 +1012,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::SubagentCompleted { task_id, result } => {
                         session.complete_subagent(&task_id, &result);
                     }
+                    DaveApiResponse::SubagentFailed { task_id, error } => {
+                        session.fail_subagent(&task_id, &error);
+                    }
                     DaveApiResponse::CompactionStarted => {
                         if let Some(agentic) = &mut session.agentic {
                             if agentic.compact_intent.is_none() {
@@ -1029,11 +1030,25 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                     DaveApiResponse::QueryComplete(info) => {
                         handle_query_complete(session, info);
+                        // For a persistent-stream backend this is the turn
+                        // boundary — the channel stays open, so run stream-end
+                        // handling after the drain instead of on disconnect.
+                        if persistent_stream {
+                            turn_ended = true;
+                        }
+                    }
+
+                    DaveApiResponse::TodoUpdate(todos) => {
+                        tracing::debug!("Todo update for session {}", session_id);
+                        session.chat.push(Message::TodoUpdate(todos));
                     }
                 }
             }
 
-            // Check if channel is disconnected (stream ended)
+            // Decide the turn boundary. A disconnected channel means the backend
+            // dropped its sender (per-query turn end, or the persistent actor
+            // died); an explicit `QueryComplete` (`turn_ended`) ends a turn on a
+            // persistent channel that stays open for the next turn / wake-up.
             match recvr.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     if let Some(session) = self.session_manager.get_mut(session_id) {
@@ -1047,57 +1062,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             &mut needs_compact,
                         );
                     }
+                    // Receiver intentionally dropped — the stream is over.
                 }
                 _ => {
-                    // Channel still open — defense-in-depth stall detection.
-                    // The backends themselves have proper timeouts on their
-                    // async operations, so this should rarely fire. It exists
-                    // as a safety net in case a backend hangs in an unforeseen
-                    // way (e.g. a new code path without a timeout).
-                    if let Some(session) = self.session_manager.get_mut(session_id) {
-                        const STALL_TIMEOUT: std::time::Duration =
-                            std::time::Duration::from_secs(300);
-
-                        // Skip stall detection during compaction — the backend
-                        // can be legitimately silent for a long time while the
-                        // LLM provider compacts the context window.
-                        let is_compacting =
-                            session.agentic.as_ref().is_some_and(|a| a.is_compacting());
-
-                        // Skip stall detection when a permission request is
-                        // pending — the backend is legitimately blocked waiting
-                        // for the user to accept/deny. The user may be composing
-                        // a message in an external editor (Ctrl+G), which can
-                        // easily exceed the stall timeout.
-                        let has_pending_perm = session.has_pending_permissions();
-
-                        let stalled = !is_compacting
-                            && !has_pending_perm
-                            && session
-                                .last_backend_msg
-                                .is_some_and(|t| t.elapsed() > STALL_TIMEOUT);
-
-                        if stalled {
-                            let elapsed = session
-                                .last_backend_msg
-                                .map(|t| t.elapsed().as_secs())
-                                .unwrap_or(0);
-                            tracing::error!(
-                                "Session {}: backend stalled for {}s (safety net), aborting",
-                                session_id,
-                                elapsed
-                            );
-                            if let Some(handle) = session.task_handle.take() {
-                                handle.abort();
-                            }
-                            // Clean up the backend's session actor so the next
-                            // send_user_message_for() creates a fresh connection
-                            // instead of sending commands to a dead actor.
-                            let backend_type = session.backend_type;
-                            let backend_session_id = format!("dave-session-{}", session_id);
-                            get_backend(&self.backends, backend_type)
-                                .cleanup_session(backend_session_id);
-                            drop(recvr);
+                    // Persistent channel: run stream-end handling for the turn
+                    // that just completed, but keep the receiver installed so the
+                    // next turn (including a spontaneous wake-up) still flows.
+                    if turn_ended {
+                        if let Some(session) = self.session_manager.get_mut(session_id) {
                             handle_stream_end(
                                 session,
                                 session_id,
@@ -1107,14 +1079,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 &mut needs_send,
                                 &mut needs_compact,
                             );
-                            if !matches!(session.chat.last(), Some(Message::Error(_))) {
-                                session.chat.push(Message::Error(
-                                    "Backend timed out (no response for 5 minutes)".into(),
-                                ));
-                            }
-                        } else {
-                            session.incoming_tokens = Some(recvr);
                         }
+                    }
+
+                    // Channel still open, put receiver back. Waiting on the
+                    // backend is intentionally stateless — a session blocked on
+                    // user input (a pending permission / NeedsInput) or a slow
+                    // provider must never be timed out from here. The backends
+                    // themselves carry per-operation timeouts for genuine
+                    // network/RPC hangs.
+                    if let Some(session) = self.session_manager.get_mut(session_id) {
+                        session.incoming_tokens = Some(recvr);
                     }
                 }
             }
@@ -2503,6 +2478,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ) -> (Vec<(SessionId, String)>, Vec<session_events::BuiltEvent>) {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
+        let mut reorder_ids: Vec<SessionId> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return (remote_user_messages, events_to_publish);
         };
@@ -2543,7 +2519,45 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
             remote_user_messages.extend(result.remote_user_messages);
             events_to_publish.extend(result.events_to_publish);
+            if result.needs_reorder {
+                reorder_ids.push(session_id);
+            }
         }
+
+        // Out-of-order relay delivery was detected for these remote sessions:
+        // rebuild each chat from ndb in `seq` order. Done after the poll loop
+        // so each rebuild uses a fresh transaction (no nested txns).
+        for session_id in reorder_ids {
+            let Ok(txn) = Transaction::new(ndb) else {
+                continue;
+            };
+            let Some(session) = self.session_manager.get_mut(session_id) else {
+                continue;
+            };
+            let Some(claude_sid) = session
+                .agentic
+                .as_ref()
+                .map(|a| a.event_session_id().to_string())
+            else {
+                continue;
+            };
+            let loaded =
+                session_loader::load_session_messages_for_author(ndb, &txn, &account, &claude_sid);
+            session.chat = loaded.messages;
+            if let Some(agentic) = &mut session.agentic {
+                agentic.seen_note_ids.extend(loaded.note_ids);
+                agentic.permissions.merge_loaded(
+                    loaded.permissions.responded,
+                    loaded.permissions.request_note_ids,
+                );
+            }
+            tracing::debug!(
+                "rebuilt remote session {} chat in seq order ({} messages)",
+                session_id,
+                session.chat.len(),
+            );
+        }
+
         (remote_user_messages, events_to_publish)
     }
 
@@ -3341,7 +3355,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let model_name = session.details.resolve_model();
         let ctx = ctx.clone();
 
-        // Use backend to stream request
+        // Use backend to stream request. `rx` is `None` for persistent-stream
+        // backends on subsequent turns — the session already owns a long-lived
+        // channel we must keep, so only replace `incoming_tokens` when a new
+        // receiver was minted.
         let (rx, task_handle) = get_backend(&self.backends, backend_type).stream_request(
             messages,
             tools,
@@ -3352,8 +3369,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             resume_session_id,
             ctx,
         );
-        session.incoming_tokens = Some(rx);
-        session.last_backend_msg = Some(std::time::Instant::now());
+        if let Some(rx) = rx {
+            session.incoming_tokens = Some(rx);
+        }
         session.task_handle = task_handle;
     }
 
@@ -3488,6 +3506,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pending_message_load = None;
     }
 
+    /// Point the PNS sync relay at the selected account's first "private"
+    /// NIP-65 relay. `None` (no private relay marked) keeps dave local-only.
+    ///
+    /// Multiple private relays are out of scope here: dave uses the first.
+    fn refresh_pns_relay_url(&mut self, ctx: &mut AppContext<'_>) {
+        let next = ctx
+            .accounts
+            .selected_account_private_relays()
+            .into_iter()
+            .find_map(|relay| match relay {
+                RelayId::Websocket(url) => Some(normalize_relay_url(url.to_string())),
+                _ => None,
+            });
+
+        if self.pns_relay_url != next {
+            tracing::info!(
+                previous_relay = ?self.pns_relay_url,
+                next_relay = ?next,
+                "Dave PNS relay changed"
+            );
+            self.pns_relay_url = next;
+        }
+    }
+
     /// Declare the selected account's PNS discovery subscription through RemoteApi.
     fn ensure_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
         let account = *ctx.accounts.selected_account_pubkey();
@@ -3496,10 +3538,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.clear_pns_remote_subscription(ctx);
             return;
         };
+        // No private relay marked -> local-only, no remote PNS subscription.
+        let Some(relay_url) = self.pns_relay_url.clone() else {
+            self.clear_pns_remote_subscription(ctx);
+            return;
+        };
         let pns_author = pns_remote_sub_author(&secret_key);
         let next_state = PnsRemoteSubState {
             account,
-            relay_url: self.pns_relay_url.clone(),
+            relay_url: relay_url.clone(),
             pns_author,
         };
         if self.pns_remote_sub_state.as_ref() == Some(&next_state) {
@@ -3507,7 +3554,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         let Ok((identity, config)) =
-            pns_remote_sub_config(&self.pns_relay_url, pns_author, notedeck::unix_time_secs())
+            pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
         else {
             self.clear_pns_remote_subscription(ctx);
             return;
@@ -3729,6 +3776,7 @@ impl Drop for Dave {
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        self.refresh_pns_relay_url(ctx);
         self.ensure_pns_local_state(ctx);
         self.ensure_pns_remote_subscription(ctx);
 
@@ -3815,28 +3863,37 @@ impl notedeck::App for Dave {
         self.publish_pending_mode_commands(ctx);
 
         self.pending_relay_events.extend(events_to_publish);
+        // Only publish to a remote relay when one is configured in the private
+        // relay list (and its PNS subscription is live). With no private relay
+        // dave is local-only:
+        // these events are already ingested into nostrdb at build time, and we
+        // retain the remote-publish queue so a later-configured private relay
+        // can sync the backlog.
         if !self.pending_relay_events.is_empty() && self.pns_remote_sub_state.is_some() {
-            if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-                match NormRelayUrl::new(&self.pns_relay_url) {
-                    Ok(relay) => {
-                        let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                        let pns_relay = RelayId::Websocket(relay);
-                        let mut publisher = ctx.remote.publisher_explicit();
-                        for event in std::mem::take(&mut self.pending_relay_events) {
-                            match session_events::wrap_pns(&event.note_json, &pns_keys) {
-                                Ok(pns_json) => {
-                                    publisher.publish_event_json(pns_json, vec![pns_relay.clone()]);
+            if let Some(pns_relay_url) = self.pns_relay_url.clone() {
+                if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
+                    match NormRelayUrl::new(&pns_relay_url) {
+                        Ok(relay) => {
+                            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
+                            let pns_relay = RelayId::Websocket(relay);
+                            let mut publisher = ctx.remote.publisher_explicit();
+                            for event in std::mem::take(&mut self.pending_relay_events) {
+                                match session_events::wrap_pns(&event.note_json, &pns_keys) {
+                                    Ok(pns_json) => {
+                                        publisher
+                                            .publish_event_json(pns_json, vec![pns_relay.clone()]);
+                                    }
+                                    Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                                 }
-                                Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                             }
                         }
+                        Err(e) => {
+                            tracing::warn!("failed to parse PNS relay {}: {:?}", pns_relay_url, e);
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("failed to parse PNS relay {}: {:?}", self.pns_relay_url, e);
-                    }
+                } else {
+                    tracing::warn!("no secret key for publishing pending Dave PNS events");
                 }
-            } else {
-                tracing::warn!("no secret key for publishing pending Dave PNS events");
             }
         }
 
@@ -3916,14 +3973,20 @@ impl notedeck::App for Dave {
 
         // Run auto-steal when pending.  Transitions back to Idle once
         // the steal logic executes (even if no switch was needed).
-        // Stays Pending while the user is typing so it retries next frame.
+        // Stays Pending while the user is typing or holding modifier keys
+        // so it retries next frame.
         if self.auto_steal == focus_queue::AutoStealState::Pending {
             let user_is_typing = self
                 .session_manager
                 .get_active()
                 .is_some_and(|s| !s.input.is_empty());
 
-            if !user_is_typing {
+            // Suppress while modifier keys are held so a chord like
+            // ctrl-shift-k (reset session) can't be hijacked by a
+            // last-second auto-switch onto the wrong session.
+            let holding_modifiers = egui_ctx.input(|i| i.modifiers.any());
+
+            if !user_is_typing && !holding_modifiers {
                 let stole_focus = update::process_auto_steal_focus(
                     &mut self.session_manager,
                     &mut self.focus_queue,
@@ -3967,6 +4030,10 @@ impl notedeck::App for Dave {
 
         let mut app_action: Option<AppAction> = None;
 
+        // Check if we should send a desktop notification (when unfocused and NeedsInput)
+        self.notification_state
+            .maybe_notify(ui.ctx(), &self.focus_queue, &self.session_manager);
+
         if let Some(action) = self.ui(ctx, ui).action {
             if let Some(returned_action) = self.handle_ui_action(action, ctx, ui) {
                 app_action = Some(returned_action);
@@ -3974,6 +4041,10 @@ impl notedeck::App for Dave {
         }
 
         AppResponse::action(app_action)
+    }
+
+    fn tab_notifications(&self, _ctx: &AppContext<'_>) -> notedeck::TabNotifications {
+        notedeck::TabNotifications::count(self.focus_queue.needs_input_count() as u32)
     }
 }
 
@@ -4180,13 +4251,23 @@ pub(crate) struct ProcessedNotes {
     pub remote_user_messages: Vec<(SessionId, String)>,
     /// Events that should be published to relays.
     pub events_to_publish: Vec<session_events::BuiltEvent>,
+    /// True if an out-of-order (lower `seq`) conversation note was appended,
+    /// so the caller should rebuild this remote session's chat from ndb in
+    /// `seq` order. Only set for remote sessions.
+    pub needs_reorder: bool,
 }
 
 /// Process a batch of kind-1988 notes for a single session.
 ///
-/// Sorts by `(created_at, seq)`, deduplicates via `seen_note_ids`, and
-/// appends messages to `session.chat`. Returns any remote user messages
-/// (for local sessions) and events to publish.
+/// Sorts the batch by `seq`, deduplicates via `seen_note_ids`, and appends
+/// messages to `session.chat`. Returns any remote user messages (for local
+/// sessions) and events to publish.
+///
+/// Appending only preserves order within this batch; events arriving in a
+/// later poll are appended after earlier ones. To recover from out-of-order
+/// relay delivery across polls, this tracks the highest conversation `seq`
+/// appended and sets `needs_reorder` when a lower-`seq` note arrives, so the
+/// caller rebuilds the remote session's chat from ndb in `seq` order.
 pub(crate) fn process_conversation_notes<'a>(
     mut notes: Vec<nostrdb::Note<'a>>,
     session: &mut session::ChatSession,
@@ -4197,15 +4278,20 @@ pub(crate) fn process_conversation_notes<'a>(
 ) -> ProcessedNotes {
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
+    let mut needs_reorder = false;
 
-    // Sort by (created_at, seq) to process in order.
-    // The seq tag is a per-session tiebreaker for events within the
-    // same second (e.g. tool_call before permission_request).
+    // Sort this batch by `seq` (the per-session monotonic counter), falling
+    // back to `created_at` only for events with no `seq` tag. Live events are
+    // all stamped with the same second-resolution `created_at` within a turn,
+    // so `seq` is the authoritative order — see `session_loader`. NOTE: this
+    // only orders within a single poll batch; events that arrive in a later
+    // batch are still appended after earlier ones (see process_conversation_notes
+    // docs), so out-of-order delivery across polls can still misorder the chat.
     notes.sort_by_key(|n| {
         let seq = session_events::get_tag_value(n, "seq")
             .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        (n.created_at(), seq)
+            .unwrap_or(u32::MAX);
+        (seq, n.created_at())
     });
 
     for note in &notes {
@@ -4237,6 +4323,30 @@ pub(crate) fn process_conversation_notes<'a>(
         let Some(agentic) = &mut session.agentic else {
             continue;
         };
+
+        // Track conversation ordering. Live events are appended in arrival
+        // order, so a displayable note whose `seq` is below the highest seen
+        // means relay delivery was out of order; flag a rebuild from ndb in
+        // `seq` order. Only newly-seen notes reach here (deduped above).
+        let displayable = matches!(
+            role,
+            Some("user")
+                | Some("assistant")
+                | Some("tool_call")
+                | Some("tool_result")
+                | Some("permission_request")
+                | Some("compaction_complete")
+        );
+        if displayable {
+            if let Some(seq) =
+                session_events::get_tag_value(note, "seq").and_then(|s| s.parse::<u32>().ok())
+            {
+                if matches!(agentic.max_seen_seq, Some(prev) if seq < prev) {
+                    needs_reorder = true;
+                }
+                agentic.max_seen_seq = Some(agentic.max_seen_seq.map_or(seq, |p| p.max(seq)));
+            }
+        }
 
         match role {
             Some("user") => {
@@ -4301,10 +4411,8 @@ pub(crate) fn process_conversation_notes<'a>(
                     }
                 }
             }
-            Some("compaction_started") => {
-                if agentic.compact_intent.is_none() {
-                    agentic.compact_intent = Some(session::CompactIntent::Manual);
-                }
+            Some("compaction_started") if agentic.compact_intent.is_none() => {
+                agentic.compact_intent = Some(session::CompactIntent::Manual);
             }
             Some("compaction_complete") => {
                 let pre_tokens = content.parse::<u64>().unwrap_or(0);
@@ -4351,6 +4459,7 @@ pub(crate) fn process_conversation_notes<'a>(
     ProcessedNotes {
         remote_user_messages,
         events_to_publish,
+        needs_reorder,
     }
 }
 
@@ -4635,7 +4744,6 @@ fn handle_stream_end(
     }
 
     session.task_handle = None;
-    session.last_backend_msg = None;
 
     // If the backend returned nothing (dispatch_state never left
     // AwaitingResponse), show an error so the user isn't left staring
@@ -4690,12 +4798,20 @@ fn dispatch_compact_for_active(
     };
     let session_id = format!("dave-session-{}", session.id);
     tracing::info!("Compact requested for session {}", session_id);
-    if let Some(rx) = get_backend(backends, bt).compact_session(session_id.clone(), ctx.clone()) {
+    let backend = get_backend(backends, bt);
+    let persistent = backend.persistent_stream();
+    if let Some(rx) = backend.compact_session(session_id.clone(), ctx.clone()) {
         tracing::info!("Compact dispatched for session {}", session_id);
         if let Some(session) = session_manager.get_active_mut() {
             session.incoming_tokens = Some(rx);
-            session.last_backend_msg = Some(std::time::Instant::now());
         }
+    } else if persistent {
+        // Persistent-stream backend: compaction responses flow on the session's
+        // existing channel, so there's no new receiver to install.
+        tracing::info!(
+            "Compact dispatched on persistent channel for session {}",
+            session_id
+        );
     } else {
         tracing::warn!("Compact failed: no backend session for {}", session_id);
     }
@@ -4717,13 +4833,21 @@ fn dispatch_compact_for_session(
         "Session {}: dispatching compact for compact-and-proceed",
         session_id
     );
-    if let Some(rx) = get_backend(backends, bt).compact_session(backend_session_id, ctx.clone()) {
-        if let Some(session) = session_manager.get_mut(session_id) {
+    let backend = get_backend(backends, bt);
+    let persistent = backend.persistent_stream();
+    let compact_rx = backend.compact_session(backend_session_id, ctx.clone());
+    // A non-persistent backend that returned no receiver has no live session to
+    // compact — nothing to do. A persistent backend reuses its existing channel
+    // (None) and must still record the compact-and-proceed intent.
+    if compact_rx.is_none() && !persistent {
+        return;
+    }
+    if let Some(session) = session_manager.get_mut(session_id) {
+        if let Some(rx) = compact_rx {
             session.incoming_tokens = Some(rx);
-            session.last_backend_msg = Some(std::time::Instant::now());
-            if let Some(agentic) = &mut session.agentic {
-                agentic.compact_intent = Some(session::CompactIntent::ProceedAfterCompaction);
-            }
+        }
+        if let Some(agentic) = &mut session.agentic {
+            agentic.compact_intent = Some(session::CompactIntent::ProceedAfterCompaction);
         }
     }
 }
@@ -4889,7 +5013,7 @@ mod tests {
     }
 
     /// Integration test: events ingested out of order into ndb are sorted
-    /// by `(created_at, seq)` and produce correctly ordered chat messages.
+    /// by `seq` and produce correctly ordered chat messages.
     /// This exercises the actual `process_conversation_notes` code path
     /// used by `poll_remote_conversation_events`.
     #[tokio::test]
@@ -5022,6 +5146,134 @@ mod tests {
             session.chat.len(),
             3,
             "dedup should prevent duplicate messages"
+        );
+    }
+
+    /// A conversation note arriving in a later poll batch with a lower `seq`
+    /// than already-appended notes (out-of-order relay delivery across polls)
+    /// must set `needs_reorder` so the caller rebuilds the chat from ndb in
+    /// seq order. In-order delivery must not.
+    #[tokio::test]
+    async fn process_conversation_notes_flags_cross_batch_out_of_order() {
+        fn notes_with_seq<'a>(
+            ndb: &'a Ndb,
+            txn: &'a Transaction,
+            filter: &nostrdb::Filter,
+            seq: u32,
+        ) -> Vec<nostrdb::Note<'a>> {
+            let results = ndb.query(txn, std::slice::from_ref(filter), 128).unwrap();
+            results
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
+                .filter(|n| {
+                    session_events::get_tag_value(n, "seq").and_then(|s| s.parse::<u32>().ok())
+                        == Some(seq)
+                })
+                .collect()
+        }
+
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id_str = "cross-batch-test";
+
+        // Two live events: seq 0 then seq 1.
+        let first = build_live_event(
+            "first",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let second = build_live_event(
+            "second",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        for event in [&first, &second] {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        let new_remote_session = || {
+            let mut s = session::ChatSession::new(
+                1,
+                PathBuf::from("/tmp"),
+                AiMode::Agentic,
+                BackendType::Claude,
+            );
+            s.source = SessionSource::Remote;
+            s
+        };
+
+        let txn = Transaction::new(&ndb).unwrap();
+
+        // In order (seq 0 then seq 1): never flags reorder.
+        let mut in_order = new_remote_session();
+        assert!(
+            !process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 0),
+                &mut in_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder
+        );
+        assert!(
+            !process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 1),
+                &mut in_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder
+        );
+
+        // Out of order (seq 1 then seq 0): the later, lower-seq batch flags it.
+        let mut out_of_order = new_remote_session();
+        assert!(
+            !process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 1),
+                &mut out_of_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder
+        );
+        assert!(
+            process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 0),
+                &mut out_of_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder,
+            "a lower-seq note arriving in a later batch must flag a rebuild"
         );
     }
 

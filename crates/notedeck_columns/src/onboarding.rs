@@ -200,6 +200,7 @@ mod tests {
         let accounts = Accounts::new(
             None,
             vec!["wss://relay-onboarding.example.com".to_owned()],
+            Vec::new(),
             FALLBACK_PUBKEY(),
             &mut ndb,
             &txn,

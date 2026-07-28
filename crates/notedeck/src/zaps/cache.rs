@@ -229,6 +229,10 @@ impl Zaps {
         });
     }
 
+    pub fn pay_cache(&mut self) -> &mut PayCache {
+        &mut self.pay_cache
+    }
+
     pub fn send_error(&mut self, sender_pubkey: &[u8; 32], target: ZapTarget, error: ZappingError) {
         let id = self.get_next_id();
         let key = ZapKey {
