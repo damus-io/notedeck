@@ -14,6 +14,7 @@ pub(crate) mod path_utils;
 mod quaternion;
 pub mod session;
 pub mod session_discovery;
+mod transport;
 
 // The pure, egui-free engine modules live in the platform-neutral
 // `agentium-core` crate. Re-export them under their historical `crate::` paths
@@ -29,6 +30,7 @@ mod vec3;
 pub mod worktree;
 
 use agent_status::AgentStatus;
+use agentium_core::transport::{SubscriptionId, SubscriptionSpec, Transport};
 use backend::{
     AiBackend, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend, RemoteOnlyBackend,
 };
@@ -39,13 +41,14 @@ use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
+    DataPathType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
+use transport::RemoteApiTransport;
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
@@ -199,26 +202,22 @@ impl PnsLocalRuntime {
     }
 }
 
-/// Stable owner key for Dave-owned scoped subscriptions.
-fn pns_remote_sub_owner_key() -> SubOwnerKey {
-    SubOwnerKey::new("dave/pns")
-}
-
-/// Stable identity for the selected account's PNS discovery subscription.
-fn pns_remote_sub_identity() -> ScopedSubIdentity {
-    ScopedSubIdentity::account(pns_remote_sub_owner_key(), SubKey::new("pns"))
+/// Stable transport identity for the selected account's PNS discovery
+/// subscription.
+fn pns_remote_sub_id() -> SubscriptionId {
+    SubscriptionId::new("dave/pns", "pns")
 }
 
 fn pns_remote_sub_author(secret_key: &[u8; 32]) -> enostr::Pubkey {
     enostr::pns::derive_pns_keys(secret_key).keypair.pubkey
 }
 
-/// Build the PNS discovery subscription for the shared outbox path.
+/// Build the PNS discovery subscription spec for the engine's [`Transport`].
 fn pns_remote_sub_config(
     pns_relay_url: &str,
     pns_author: enostr::Pubkey,
     now: u64,
-) -> Result<(ScopedSubIdentity, SubConfig), enostr::Error> {
+) -> Result<SubscriptionSpec, enostr::Error> {
     let relay = NormRelayUrl::new(pns_relay_url)?;
     let since = now.saturating_sub(PNS_HISTORY_WINDOW_SECS);
     let pns_filter = nostrdb::Filter::new()
@@ -231,13 +230,12 @@ fn pns_remote_sub_config(
         .authors([pns_author.bytes()])
         .since(since)
         .build();
-    Ok((
-        pns_remote_sub_identity(),
-        SubConfig::live(vec![pns_filter])
-            .explicit_relay(relay)
-            .full_history(FullHistoryConfig::new(vec![pns_history_filter]))
-            .build(),
-    ))
+    Ok(SubscriptionSpec {
+        id: pns_remote_sub_id(),
+        relay,
+        live_filters: vec![pns_filter],
+        history_filters: vec![pns_history_filter],
+    })
 }
 
 /// A pending spawn command waiting to be built and published.
@@ -3554,26 +3552,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        let Ok((identity, config)) =
-            pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
+        let Ok(spec) = pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
         else {
             self.clear_pns_remote_subscription(ctx);
             return;
         };
 
-        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
-        let _ = scoped_subs.set_sub(identity, config);
+        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts).set_subscription(spec);
         self.pns_remote_sub_state = Some(next_state);
     }
 
-    /// Remove Dave's PNS discovery subscription from RemoteApi.
+    /// Remove Dave's PNS discovery subscription via the engine [`Transport`].
     fn clear_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
         if self.pns_remote_sub_state.is_none() {
             return;
         }
 
-        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
-        let _ = scoped_subs.drop_owner(pns_remote_sub_owner_key());
+        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts)
+            .drop_subscription(&pns_remote_sub_id());
         self.pns_remote_sub_state = None;
     }
 
@@ -3876,13 +3872,12 @@ impl notedeck::App for Dave {
                     match NormRelayUrl::new(&pns_relay_url) {
                         Ok(relay) => {
                             let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                            let pns_relay = RelayId::Websocket(relay);
-                            let mut publisher = ctx.remote.publisher_explicit();
+                            let mut transport =
+                                RemoteApiTransport::new(&mut ctx.remote, ctx.accounts);
                             for event in std::mem::take(&mut self.pending_relay_events) {
                                 match session_events::wrap_pns(&event.note_json, &pns_keys) {
                                     Ok(pns_json) => {
-                                        publisher
-                                            .publish_event_json(pns_json, vec![pns_relay.clone()]);
+                                        transport.publish_event_json(pns_json, vec![relay.clone()]);
                                     }
                                     Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                                 }
