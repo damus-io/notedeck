@@ -12,6 +12,7 @@
 //! modules moved over.
 
 pub mod config;
+pub mod engine;
 pub mod file_update;
 pub mod messages;
 pub mod session;
@@ -26,6 +27,7 @@ pub mod transport;
 mod util;
 pub mod waker;
 
+pub use engine::Engine;
 pub use tool::{ToolArg, ToolArgType, ToolSpec};
 pub use transport::{SubscriptionId, SubscriptionSpec, Transport};
 pub use waker::Waker;
