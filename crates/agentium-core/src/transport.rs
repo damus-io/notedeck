@@ -2,11 +2,10 @@
 //!
 //! The engine never touches a concrete relay stack directly. Instead it speaks
 //! to a [`Transport`]: publish a pre-serialized event to relays, and declare or
-//! drop a durable subscription. Desktop `notedeck_dave` implements this over
-//! notedeck's `RemoteApi`; the standalone/iOS engine implements it over its own
-//! relay-sync loop (see the `grape-cause-early` card). Keeping the boundary in
-//! terms of plain nostr types (`NormRelayUrl`, `Filter`) means notedeck's
-//! `AppContext` never crosses it.
+//! drop a durable subscription. A host that already owns a relay stack
+//! implements this by delegating to it; a standalone host implements it over its
+//! own relay-sync loop. Keeping the boundary in terms of plain nostr types
+//! ([`NormRelayUrl`], [`Filter`]) means no host application state crosses it.
 
 use enostr::NormRelayUrl;
 use nostrdb::Filter;
@@ -15,13 +14,13 @@ use nostrdb::Filter;
 ///
 /// `owner` is a lifecycle token — dropping it (see [`Transport::drop_subscription`])
 /// releases every subscription it declared. `key` distinguishes multiple
-/// subscriptions declared under the same owner. Desktop dave maps this onto
-/// notedeck's account-scoped `ScopedSubIdentity`.
+/// subscriptions declared under the same owner. A host maps this onto whatever
+/// identity its relay stack uses to track durable subscriptions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SubscriptionId {
-    /// Owner lifecycle token (for example `"dave/pns"`).
+    /// Owner lifecycle token (for example `"discovery"`).
     pub owner: &'static str,
-    /// Sub key within the owner (for example `"pns"`).
+    /// Sub key within the owner (for example `"inbox"`).
     pub key: &'static str,
 }
 
@@ -53,9 +52,8 @@ pub struct SubscriptionSpec {
 ///
 /// This is the only relay-facing surface the engine depends on. It is
 /// deliberately small: one publish path and a declare/drop pair for durable
-/// subscriptions. It carries no notedeck `AppContext` and no egui types, so the
-/// same engine logic runs against desktop dave's `RemoteApi` and against the
-/// standalone owned relay loop.
+/// subscriptions. It carries no host application state and no UI types, so the
+/// same engine logic runs against any host's relay stack.
 pub trait Transport {
     /// Publish a pre-serialized event JSON to each of `relays`.
     fn publish_event_json(&mut self, note_json: String, relays: Vec<NormRelayUrl>);
