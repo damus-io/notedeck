@@ -637,6 +637,13 @@ impl Chrome {
                     chrome_handle_app_action(self, app_ctx, action, ui);
                 }
 
+                // Actions raised imperatively mid-render (e.g. a clicked inline
+                // widget drawn by another app's KindRenderer) arrive here rather
+                // than via `resp.action`; route them the same way.
+                for action in app_ctx.app_actions.take() {
+                    chrome_handle_app_action(self, app_ctx, action, ui);
+                }
+
                 RouteResponse {
                     response: None,
                     can_take_drag_from: resp.can_take_drag_from,

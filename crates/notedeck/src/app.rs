@@ -32,6 +32,32 @@ pub enum AppAction {
     ToggleChrome,
 }
 
+/// A frame-local queue of [`AppAction`]s raised imperatively *during* rendering
+/// rather than returned up the stack via [`AppResponse`].
+///
+/// Inline [`KindRenderer`](crate::KindRenderer) widgets are drawn deep inside a
+/// host app's UI (a notebook node, a chat message) with no clean return path back
+/// to that app's [`AppResponse::action`], so a clicked widget pushes its action
+/// here instead. The shell drains it after each app's `render` (see
+/// [`take`](Self::take)) and routes every action exactly like `AppResponse::action`.
+#[derive(Default)]
+pub struct AppActionQueue {
+    actions: Vec<AppAction>,
+}
+
+impl AppActionQueue {
+    /// Queue an action to be routed by the shell after this frame's render.
+    pub fn push(&mut self, action: AppAction) {
+        self.actions.push(action);
+    }
+
+    /// Take the queued actions, leaving the queue empty. Called by the shell once
+    /// per frame; the moved-out `Vec` hands off this frame's allocation.
+    pub fn take(&mut self) -> Vec<AppAction> {
+        std::mem::take(&mut self.actions)
+    }
+}
+
 /// Notification badge state for an app's chrome tab.
 ///
 /// Apps report this via [`App::tab_notifications`] so the chrome tab strip can
@@ -149,6 +175,10 @@ pub struct Notedeck {
     kind_renderers: crate::kind_renderer::KindRendererRegistry,
     /// App-contributed agent tools for AI backends. Populated at app startup.
     tool_registry: crate::tool::ToolRegistry,
+    /// Actions raised imperatively during a frame (e.g. a clicked inline
+    /// [`KindRenderer`](crate::KindRenderer) widget), drained and routed by the
+    /// shell after each app's `render`.
+    app_actions: AppActionQueue,
 
     /// Embedded localhost nostr relay, when enabled. Held so it shuts down with
     /// the app (its `Drop` stops the accept loop). Gated behind the `local-relay`
@@ -481,6 +511,7 @@ impl Notedeck {
             sound,
             kind_renderers: crate::kind_renderer::KindRendererRegistry::default(),
             tool_registry: crate::tool::ToolRegistry::default(),
+            app_actions: AppActionQueue::default(),
             #[cfg(feature = "local-relay")]
             local_relay,
             #[cfg(target_os = "android")]
@@ -538,6 +569,7 @@ impl Notedeck {
                 sound: &self.sound,
                 kind_renderers: &self.kind_renderers,
                 tools: &self.tool_registry,
+                app_actions: &mut self.app_actions,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },

@@ -227,8 +227,16 @@ fn nostr_ref_ui(ui: &mut Ui, ctx: &mut AppContext, bech: &str) {
         nostr_ref_fallback_ui(ui, bech);
         return;
     };
-    let mut note_context = ctx.note_context();
-    renderer.render(ui, &mut note_context, &txn, &note);
+    // Draw the widget and collect any action it raised (e.g. a click asking to
+    // open the entity in its host app). `note_context` mut-borrows `ctx`, so scope
+    // it and pull the owned action out before pushing onto `ctx.app_actions`.
+    let action = {
+        let mut note_context = ctx.note_context();
+        renderer.render(ui, &mut note_context, &txn, &note).action
+    };
+    if let Some(action) = action {
+        ctx.app_actions.push(action);
+    }
 }
 
 /// Plain, unobtrusive representation of a `nostr:` reference we couldn't render.

@@ -72,7 +72,7 @@ pub use account::relay::{
     construct_nip65_relays_note, construct_private_relay_list_note, RelayAction,
 };
 pub use account::FALLBACK_PUBKEY;
-pub use app::{App, AppAction, AppResponse, Notedeck, TabNotifications};
+pub use app::{App, AppAction, AppActionQueue, AppResponse, Notedeck, TabNotifications};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
@@ -91,7 +91,7 @@ pub use jobs::{
     deliver_completed_media_job, run_media_job_pre_action, JobCache, JobPool, MediaJobSender,
     MediaJobs,
 };
-pub use kind_renderer::{resolve_ref, KindRenderer, KindRendererRegistry};
+pub use kind_renderer::{resolve_ref, KindRenderResponse, KindRenderer, KindRendererRegistry};
 pub use media::{
     update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction, ObfuscationType,
     PixelDimensions, PointDimensions, RenderableMedia,

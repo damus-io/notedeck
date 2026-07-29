@@ -40,6 +40,10 @@ pub struct AppContext<'a> {
     /// coexists with a disjoint [`tool_context`](AppContext::tool_context)
     /// mut-borrow via the same `&'a` trick as `kind_renderers`.
     pub tools: &'a crate::tool::ToolRegistry,
+    /// Actions raised imperatively this frame (e.g. by a clicked inline
+    /// [`KindRenderer`](crate::KindRenderer) widget) for the shell to route after
+    /// `render`. Push via [`AppActionQueue::push`](crate::AppActionQueue::push).
+    pub app_actions: &'a mut crate::AppActionQueue,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

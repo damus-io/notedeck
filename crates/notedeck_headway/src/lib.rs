@@ -678,10 +678,10 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         note_context: &mut notedeck::NoteContext,
         txn: &Transaction,
         note: &nostrdb::Note,
-    ) -> egui::Response {
+    ) -> notedeck::KindRenderResponse {
         let theme = ColorTheme::current(ui.ctx());
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
-            return ui.weak("invalid headway issue");
+            return notedeck::KindRenderResponse::new(ui.weak("invalid headway issue"));
         };
         let author = Pubkey::new(issue.board_author);
         // Resolve the card's current state off the (cached) folded board.
@@ -690,11 +690,12 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             .borrow_mut()
             .reducer(note_context.ndb, txn, &author, &issue.board_id)
             .and_then(|reducer| event::pick_card(reducer, &author, &issue.board_id, &issue.id));
-        match card {
+        let response = match card {
             Some(card) => card_inline_ui(ui, &theme, &card),
             // Board not local to fold: show the creation-time snapshot.
             None => issue_inline_ui(ui, &theme, &issue),
-        }
+        };
+        notedeck::KindRenderResponse::new(response)
     }
 }
 
@@ -721,10 +722,10 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         note_context: &mut notedeck::NoteContext,
         txn: &Transaction,
         note: &nostrdb::Note,
-    ) -> egui::Response {
+    ) -> notedeck::KindRenderResponse {
         let theme = ColorTheme::current(ui.ctx());
         let Some(event::HeadwayEvent::Board(board)) = event::parse(note) else {
-            return ui.weak("invalid headway board");
+            return notedeck::KindRenderResponse::new(ui.weak("invalid headway board"));
         };
         let author = Pubkey::new(board.author);
         let view = self
@@ -732,10 +733,11 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
             .borrow_mut()
             .reducer(note_context.ndb, txn, &author, &board.id)
             .and_then(|reducer| event::pick_board(reducer, &author, &board.id));
-        match view {
+        let response = match view {
             Some(view) => board_inline_ui(ui, &theme, &view),
             None => ui.weak("headway board not found"),
-        }
+        };
+        notedeck::KindRenderResponse::new(response)
     }
 }
 

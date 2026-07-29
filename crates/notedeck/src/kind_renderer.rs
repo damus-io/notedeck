@@ -56,6 +56,35 @@ pub fn resolve_ref<'a>(ndb: &Ndb, txn: &'a Transaction, bech: &str) -> Option<No
     }
 }
 
+/// What a [`KindRenderer`] produced this frame: the drawn [`egui::Response`] and
+/// an optional [`AppAction`](crate::AppAction) for the shell to route.
+///
+/// A renderer draws a *clickable* inline widget, so beyond the response it can
+/// signal intent — most commonly "open this entity in the app that owns it" when
+/// clicked (see [`with_action`](Self::with_action)). The caller pushes any action
+/// onto [`AppContext::app_actions`](crate::AppContext::app_actions).
+pub struct KindRenderResponse {
+    /// The egui response covering what the renderer drew.
+    pub response: egui::Response,
+    /// An action raised this frame (e.g. the widget was clicked), or `None`.
+    pub action: Option<crate::AppAction>,
+}
+
+impl KindRenderResponse {
+    /// A response that only drew, raising no action.
+    pub fn new(response: egui::Response) -> Self {
+        Self {
+            response,
+            action: None,
+        }
+    }
+
+    /// A response carrying an action to route (e.g. raised on click).
+    pub fn with_action(response: egui::Response, action: Option<crate::AppAction>) -> Self {
+        Self { response, action }
+    }
+}
+
 /// Renders a nostr entity of one or more kinds inline.
 ///
 /// The note is already resolved from the db by the caller; addressable
@@ -73,7 +102,8 @@ pub trait KindRenderer {
     /// The event kinds this renderer can draw.
     fn kinds(&self) -> &'static [u32];
 
-    /// Draw the resolved note, returning the response covering what was drawn.
+    /// Draw the resolved note, returning the [`KindRenderResponse`] covering what
+    /// was drawn plus any action raised (e.g. "open me in my host app" on click).
     ///
     /// The [`NoteContext`] carries the dependencies a full renderer needs (ndb,
     /// caches, accounts, i18n, …) so a renderer can reuse rich widgets like
@@ -85,7 +115,7 @@ pub trait KindRenderer {
         note_context: &mut NoteContext,
         txn: &Transaction,
         note: &Note,
-    ) -> egui::Response;
+    ) -> KindRenderResponse;
 }
 
 /// A set of [`KindRenderer`]s indexed by the kinds they handle.
@@ -162,8 +192,8 @@ mod tests {
             _note_context: &mut NoteContext,
             _txn: &Transaction,
             _note: &Note,
-        ) -> egui::Response {
-            ui.label("stub")
+        ) -> KindRenderResponse {
+            KindRenderResponse::new(ui.label("stub"))
         }
     }
 

@@ -3,7 +3,7 @@
 //! draw a referenced note using the same `NoteView` widget the timeline uses.
 
 use nostrdb::{Note, Transaction};
-use notedeck::{KindRenderer, NoteContext};
+use notedeck::{KindRenderResponse, KindRenderer, NoteContext};
 use notedeck_ui::{NoteOptions, NoteView};
 
 /// Renders a kind-1 nostr note inline via notedeck_ui's [`NoteView`], in a
@@ -30,10 +30,11 @@ impl KindRenderer for NoteKindRenderer {
         note_context: &mut NoteContext,
         _txn: &Transaction,
         note: &Note,
-    ) -> egui::Response {
-        NoteView::new(note_context, note, NoteOptions::default())
+    ) -> KindRenderResponse {
+        let response = NoteView::new(note_context, note, NoteOptions::default())
             .preview_style()
             .show(ui)
-            .response
+            .response;
+        KindRenderResponse::new(response)
     }
 }
