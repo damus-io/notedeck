@@ -5,7 +5,12 @@ version.workspace = true
 
 [dependencies]
 nostrdb = { workspace = true }
+# nostrdb_net backs the standalone Engine's relay layer: RelayPool for the live
+# subscription stream and relay::sync for NIP-77 negentropy backfill.
+nostrdb_net = { workspace = true }
 enostr = { workspace = true }
+# negentropy set construction for the engine's NIP-77 history reconcile.
+negentropy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -15,9 +20,11 @@ uuid = { version = "1.10.0", features = ["v4"] }
 # it backs AssistantMessage's incremental parse and stays platform-neutral.
 md-stream = { workspace = true }
 similar = "2"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }
+# StreamExt::next for awaiting nostrdb SubscriptionStream in the engine relay test.
+futures-util = { workspace = true }
