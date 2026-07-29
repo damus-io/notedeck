@@ -135,6 +135,14 @@ impl BoardUiState {
     pub fn take_card_move(&mut self) -> Option<CardBoardMove> {
         self.card_move.take()
     }
+
+    /// Open a card's full-pane detail view, e.g. when navigating in from a click
+    /// on the card's inline widget elsewhere in the app (see [`crate::Headway::open`]).
+    /// The detail edit buffers reseed from the board on the next render because
+    /// `detail_for` now differs from `selected`.
+    pub fn open_card(&mut self, card: NoteId) {
+        self.selected = Some(card);
+    }
 }
 
 /// A card's on-screen placement last frame: its screen rect and which column it

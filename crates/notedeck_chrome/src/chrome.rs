@@ -486,6 +486,26 @@ impl Chrome {
         }
     }
 
+    #[cfg(feature = "headway")]
+    fn get_headway_app(&mut self) -> Option<&mut notedeck_headway::Headway> {
+        for app in &mut self.apps {
+            if let NotedeckApp::Headway(headway) = app {
+                return Some(headway);
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "headway")]
+    fn switch_to_headway(&mut self) {
+        for (i, app) in self.apps.iter().enumerate() {
+            if let NotedeckApp::Headway(_) = app {
+                self.active = i as i32;
+                bitset_set(&mut self.opened, i as u16);
+            }
+        }
+    }
+
     fn process_toolbar_action(&mut self, action: ChromeToolbarAction, ctx: &mut AppContext) {
         match action {
             ChromeToolbarAction::Home => {
@@ -1475,6 +1495,19 @@ pub fn get_account_url<'a>(
     }
 }
 
+/// Whether `note_id` refers to a headway board/issue event, so a click on its
+/// inline widget routes to the Headway app instead of the timeline.
+#[cfg(feature = "headway")]
+fn is_headway_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> bool {
+    let Ok(txn) = Transaction::new(ctx.ndb) else {
+        return false;
+    };
+    ctx.ndb
+        .get_note_by_id(&txn, note_id.bytes())
+        .map(|note| notedeck_headway::is_headway_kind(note.kind()))
+        .unwrap_or(false)
+}
+
 fn chrome_handle_app_action(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
@@ -1494,6 +1527,19 @@ fn chrome_handle_app_action(
                     chrome.switch_to_dave();
                     if let Some(dave) = chrome.get_dave_app() {
                         dave.summarize_thread(note_id);
+                    }
+                    return;
+                }
+            }
+
+            // Intercept a click on an inline headway board/issue widget — open it
+            // in the Headway app rather than the timeline (see `is_headway_kind`).
+            #[cfg(feature = "headway")]
+            if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
+                if is_headway_note(ctx, *note_id) {
+                    chrome.switch_to_headway();
+                    if let Some(headway) = chrome.get_headway_app() {
+                        headway.open(*note_id);
                     }
                     return;
                 }

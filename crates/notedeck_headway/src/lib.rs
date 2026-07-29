@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use enostr::{Pubkey, RelayId, RelayStatus};
+use enostr::{NoteId, Pubkey, RelayId, RelayStatus};
 use nostrdb::{Ndb, NoteKey, Subscription, Transaction};
 use notedeck::{
     App, AppContext, AppResponse, ColorTheme, DataPath, DataPathType, PrivateRelaySync,
@@ -53,6 +53,11 @@ pub struct Headway {
     /// Countdown of follow-up repaints after an async ingest, so we keep waking
     /// up to poll the subscription until the writer thread goes quiet.
     repaint_frames: u8,
+    /// A headway entity to navigate to, set by [`open`](Headway::open) when an
+    /// inline widget is clicked elsewhere in the app. Resolved by
+    /// [`process_pending_open`](Headway::process_pending_open) on the next render:
+    /// switch to the owning board and, for a card, open its detail.
+    pending_open: Option<NoteId>,
 }
 
 impl Default for Headway {
@@ -65,6 +70,7 @@ impl Default for Headway {
             private_sync: PrivateRelaySync::new("headway"),
             seeded: false,
             repaint_frames: 0,
+            pending_open: None,
         }
     }
 }
@@ -89,6 +95,90 @@ impl Headway {
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
     }
+
+    /// Navigate to a headway entity referenced from elsewhere in the app — raised
+    /// when an inline board/issue widget (drawn by our [`KindRenderer`]) is clicked
+    /// in another app like the notebook. `note` is the board or issue event; the
+    /// switch happens on the next render (see [`process_pending_open`](Self::process_pending_open)).
+    pub fn open(&mut self, note: NoteId) {
+        self.pending_open = Some(note);
+        // Wake so the switch is processed even if nothing else is repainting.
+        self.wake();
+    }
+
+    /// Act on a pending [`open`](Self::open): resolve which board the entity lives
+    /// on and switch there, then — for a card — open its detail once that board's
+    /// view has folded in. A board just needs the switch. Runs early each render.
+    ///
+    /// Switching boards is one frame ahead of the fold, so a cross-board card jump
+    /// lands on the board first and pops the detail on the following frame once the
+    /// view catches up; `open`'s repaint burst keeps us ticking until it does.
+    fn process_pending_open(&mut self, ctx: &mut AppContext, author: &Pubkey) {
+        let Some(note_id) = self.pending_open else {
+            return;
+        };
+        let Some(target) = resolve_open_target(ctx.ndb, note_id) else {
+            // Not a headway entity we can route to (unresolved / unexpected kind).
+            self.pending_open = None;
+            return;
+        };
+
+        // Switch to the owning board first; the fold lands on a later frame.
+        if self.board_id != target.board_id {
+            self.board_id = target.board_id;
+            save_board_pref(ctx.path, author, &self.board_id);
+            self.wake();
+            return;
+        }
+
+        let Some(card) = target.card else {
+            // A board: switching to it was the whole job.
+            self.pending_open = None;
+            return;
+        };
+
+        // On the right board: open the card's detail once its view has folded in.
+        // Until then keep the request pending and retry on the next repaint.
+        if self.sync.view().is_some_and(|v| v.id == self.board_id) {
+            self.state.open_card(card);
+            self.pending_open = None;
+        }
+    }
+}
+
+/// Where an inline headway widget click should land, resolved from the clicked
+/// entity by [`resolve_open_target`].
+struct OpenTarget {
+    /// The board to switch to.
+    board_id: String,
+    /// The card whose detail to open once the board has folded in, or `None` when
+    /// the target is a board itself.
+    card: Option<NoteId>,
+}
+
+/// Resolve a headway board/issue note into the [`OpenTarget`] for
+/// [`Headway::open`]. An issue opens its board *and* its own detail; a board just
+/// opens itself. `None` for anything that isn't one of those.
+fn resolve_open_target(ndb: &Ndb, note_id: NoteId) -> Option<OpenTarget> {
+    let txn = Transaction::new(ndb).ok()?;
+    let note = ndb.get_note_by_id(&txn, note_id.bytes()).ok()?;
+    match event::parse(&note)? {
+        event::HeadwayEvent::Issue(issue) => Some(OpenTarget {
+            board_id: issue.board_id,
+            card: Some(NoteId::new(issue.id)),
+        }),
+        event::HeadwayEvent::Board(board) => Some(OpenTarget {
+            board_id: board.id,
+            card: None,
+        }),
+        _ => None,
+    }
+}
+
+/// Whether `kind` is a headway entity the [`Headway`] app can open inline — a
+/// board or an issue. Used by the shell to route a clicked inline widget here.
+pub fn is_headway_kind(kind: u32) -> bool {
+    matches!(kind, event::KIND_BOARD | event::KIND_ISSUE)
 }
 
 /// One entry in the board switcher: a board's stable `id` (slug) and its display
@@ -369,6 +459,9 @@ impl App for Headway {
             .accounts
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
+
+        // Navigate to an entity a click elsewhere asked us to open (see `open`).
+        self.process_pending_open(ctx, &author);
 
         // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
         // in `update` this frame; here we just render the cached view.
@@ -651,6 +744,25 @@ impl InlineBoardCache {
     }
 }
 
+/// Wrap an inline widget's response so clicking it opens the entity in the
+/// Headway app: sense clicks over the drawn area, show a pointer cursor on hover,
+/// and on click emit a `NoteAction::Note` for `note`. The shell routes headway
+/// kinds to [`Headway::open`] (see [`is_headway_kind`]) rather than the timeline.
+fn open_on_click(
+    ui: &egui::Ui,
+    response: egui::Response,
+    note: &nostrdb::Note,
+) -> notedeck::KindRenderResponse {
+    let response = response.interact(egui::Sense::click());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let action = response
+        .clicked()
+        .then(|| notedeck::AppAction::Note(notedeck::NoteAction::note(NoteId::new(*note.id()))));
+    notedeck::KindRenderResponse::with_action(response, action)
+}
+
 /// Renders a headway issue (kind 1621) referenced inline, e.g. from a notebook
 /// note. Registered into [`notedeck::KindRendererRegistry`] at app startup.
 ///
@@ -695,7 +807,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             // Board not local to fold: show the creation-time snapshot.
             None => issue_inline_ui(ui, &theme, &issue),
         };
-        notedeck::KindRenderResponse::new(response)
+        open_on_click(ui, response, note)
     }
 }
 
@@ -737,7 +849,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
             Some(view) => board_inline_ui(ui, &theme, &view),
             None => ui.weak("headway board not found"),
         };
-        notedeck::KindRenderResponse::new(response)
+        open_on_click(ui, response, note)
     }
 }
 
@@ -745,7 +857,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
 mod tests {
     use super::*;
     use enostr::FullKeypair;
-    use nostrdb::{Config, Ndb};
+    use nostrdb::{Config, Filter, Ndb};
     use std::time::{Duration, Instant};
 
     /// A headless harness driving a [`BoardSync`] against a bare `Ndb` — the
@@ -855,6 +967,65 @@ mod tests {
             ["Backlog", "Todo", "In Progress", "In Review", "Done"]
         );
         assert_eq!(view.columns[0].cards.len(), 3);
+    }
+
+    /// A click on an inline widget resolves to the app's navigation target
+    /// (see [`resolve_open_target`]): a board opens itself with no card detail,
+    /// while an issue opens its owning board *and* its own card detail.
+    #[test]
+    fn resolve_open_target_board_and_issue() {
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed();
+        t.wait(|v| total_cards(v) == 7);
+
+        // Pull a board (kind 30619) and an issue (kind 1621) note id out of the db.
+        let (board_id, issue_id, issue_board) = {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            let board = t
+                .ndb
+                .query(
+                    &txn,
+                    &[Filter::new().kinds([event::KIND_BOARD as u64]).build()],
+                    1,
+                )
+                .unwrap()
+                .into_iter()
+                .next()
+                .expect("seeded board")
+                .note;
+            let issue = t
+                .ndb
+                .query(
+                    &txn,
+                    &[Filter::new().kinds([event::KIND_ISSUE as u64]).build()],
+                    1,
+                )
+                .unwrap()
+                .into_iter()
+                .next()
+                .expect("seeded issue")
+                .note;
+            let issue_board = match event::parse(&issue).expect("issue parses") {
+                event::HeadwayEvent::Issue(i) => i.board_id,
+                _ => unreachable!("queried kind 1621"),
+            };
+            (
+                NoteId::new(*board.id()),
+                NoteId::new(*issue.id()),
+                issue_board,
+            )
+        };
+
+        // A board opens itself, with no card detail to pop.
+        let board_target = resolve_open_target(&t.ndb, board_id).expect("board resolves");
+        assert_eq!(board_target.board_id, store::BOARD_ID);
+        assert_eq!(board_target.card, None);
+
+        // An issue opens its board and its own card detail.
+        let issue_target = resolve_open_target(&t.ndb, issue_id).expect("issue resolves");
+        assert_eq!(issue_target.board_id, issue_board);
+        assert_eq!(issue_target.card, Some(issue_id));
     }
 
     /// An edit ingested after the initial load is picked up on a later poll —
