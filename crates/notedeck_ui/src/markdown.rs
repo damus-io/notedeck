@@ -218,10 +218,10 @@ fn nostr_ref_ui(ui: &mut Ui, ctx: &mut AppContext, bech: &str) {
         nostr_ref_fallback_ui(ui, bech);
         return;
     };
-    // The registry is a `&'a` reference held in AppContext; copy it out so the
-    // borrowed renderer doesn't alias the mutable borrow `note_context()` takes
-    // of ctx's other fields below.
-    let registry = ctx.kind_renderers;
+    // The registries are a `&'a` reference held in AppContext; copy the handle
+    // out so the borrowed renderer doesn't alias the mutable borrow
+    // `note_context()` takes of ctx's other fields below.
+    let registry = &ctx.registries.kind_renderers;
     // TODO: per-kind default renderer id from settings (see "Settings UI" card).
     let Some(renderer) = registry.default_for(note.kind(), None) else {
         nostr_ref_fallback_ui(ui, bech);

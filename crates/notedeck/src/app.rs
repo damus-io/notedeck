@@ -170,11 +170,10 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
     sound: crate::SoundManager,
-    /// Renderers for nostr events embedded inline (by kind), e.g. headway issues
-    /// referenced from a notebook note. Populated at app startup.
-    kind_renderers: crate::kind_renderer::KindRendererRegistry,
-    /// App-contributed agent tools for AI backends. Populated at app startup.
-    tool_registry: crate::tool::ToolRegistry,
+    /// Read-only, app-contributed registries handed to each frame's
+    /// [`AppContext`](crate::AppContext): inline kind renderers (populated at
+    /// startup) and agent tools (reset per-frame from the running apps).
+    registries: crate::AppRegistries,
     /// Actions raised imperatively during a frame (e.g. a clicked inline
     /// [`KindRenderer`](crate::KindRenderer) widget), drained and routed by the
     /// shell after each app's `render`.
@@ -269,7 +268,7 @@ impl Notedeck {
         // Let the shell refresh the agent-tool registry from its running apps
         // before we hand a borrow of it to this frame's AppContext.
         if let Some(tools) = app.borrow_mut().take_tool_update() {
-            self.tool_registry.reset(tools);
+            self.registries.tools.reset(tools);
         }
 
         let mut app_ref = self.notedeck_ref(ctx);
@@ -509,8 +508,7 @@ impl Notedeck {
             nip05_cache: Nip05Cache::new(),
             i18n,
             sound,
-            kind_renderers: crate::kind_renderer::KindRendererRegistry::default(),
-            tool_registry: crate::tool::ToolRegistry::default(),
+            registries: crate::AppRegistries::default(),
             app_actions: AppActionQueue::default(),
             #[cfg(feature = "local-relay")]
             local_relay,
@@ -567,8 +565,7 @@ impl Notedeck {
                 nip05_cache: &mut self.nip05_cache,
                 i18n: &mut self.i18n,
                 sound: &self.sound,
-                kind_renderers: &self.kind_renderers,
-                tools: &self.tool_registry,
+                registries: &self.registries,
                 app_actions: &mut self.app_actions,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
@@ -586,13 +583,13 @@ impl Notedeck {
     /// Register a renderer for nostr events of one or more kinds, so surfaces
     /// like the notebook can draw referenced entities inline. Call at startup.
     pub fn register_kind_renderer(&mut self, renderer: Box<dyn crate::KindRenderer>) {
-        self.kind_renderers.register(renderer);
+        self.registries.kind_renderers.register(renderer);
     }
 
     /// Register an app-contributed agent tool, so AI backends can advertise and
     /// dispatch it. Call at startup (see [`App::tools`]).
     pub fn register_tool(&mut self, tool: crate::RegisteredTool) {
-        self.tool_registry.register(tool);
+        self.registries.tools.register(tool);
     }
 
     pub fn args(&self) -> &Args {

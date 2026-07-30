@@ -34,12 +34,12 @@ pub struct AppContext<'a> {
     pub nip05_cache: &'a mut Nip05Cache,
     pub i18n: &'a mut Localization,
     pub sound: &'a SoundManager,
-    /// Renderers for nostr events embedded inline, keyed by kind.
-    pub kind_renderers: &'a crate::kind_renderer::KindRendererRegistry,
-    /// App-contributed agent tools, for AI backends. Read-only enumeration
-    /// coexists with a disjoint [`tool_context`](AppContext::tool_context)
-    /// mut-borrow via the same `&'a` trick as `kind_renderers`.
-    pub tools: &'a crate::tool::ToolRegistry,
+    /// Read-only, app-contributed registries for this frame (inline kind
+    /// renderers, agent tools). One shared `&'a` handle so a caller can copy it
+    /// out before taking a disjoint `&mut self` reborrow such as
+    /// [`note_context`](AppContext::note_context) or
+    /// [`tool_context`](AppContext::tool_context).
+    pub registries: &'a crate::AppRegistries,
     /// Actions raised imperatively this frame (e.g. by a clicked inline
     /// [`KindRenderer`](crate::KindRenderer) widget) for the shell to route after
     /// `render`. Push via [`AppActionQueue::push`](crate::AppActionQueue::push).
@@ -70,7 +70,7 @@ impl<'a> AppContext<'a> {
     /// This reborrows the relevant fields of the context, so the returned
     /// `NoteContext` holds a mutable borrow of `self` for its lifetime — drop it
     /// before touching other `AppContext` fields. Fields not part of
-    /// `NoteContext` (e.g. `kind_renderers`) should be copied/read out first.
+    /// `NoteContext` (e.g. `registries`) should be copied/read out first.
     pub fn note_context(&mut self) -> crate::NoteContext<'_> {
         crate::NoteContext {
             ndb: self.ndb,
@@ -108,7 +108,7 @@ impl<'a> AppContext<'a> {
     /// `tools/list`); [`call_tool`](Self::call_tool) is the matching dispatch.
     pub fn tool_specs(&self) -> Vec<crate::ToolSpec> {
         let mut specs = crate::ToolCall::specs();
-        specs.extend(self.tools.specs().cloned());
+        specs.extend(self.registries.tools.specs().cloned());
         specs
     }
 
@@ -128,10 +128,9 @@ impl<'a> AppContext<'a> {
             };
         }
 
-        // `tools` is a shared `&'a` borrow, so copying the reference out frees
-        // `self` to be mut-borrowed by `tool_context()` (same trick as
-        // `kind_renderers`).
-        let tools = self.tools;
+        // `registries` is a shared `&'a` borrow, so copying the reference out
+        // frees `self` to be mut-borrowed by `tool_context()`.
+        let tools = &self.registries.tools;
         tools.call(&mut self.tool_context(), name, args)
     }
 
