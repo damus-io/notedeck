@@ -74,6 +74,7 @@ mod tests {
     use egui::vec2;
     use std::fs;
 
+    /// Keeps valid restored dimensions unchanged.
     #[test]
     fn sane_size_is_kept() {
         assert_eq!(
@@ -82,6 +83,7 @@ mod tests {
         );
     }
 
+    /// Clamps only dimensions that exceed the supported GPU-safe size.
     #[test]
     fn oversized_size_is_clamped_per_axis() {
         assert_eq!(
@@ -90,6 +92,7 @@ mod tests {
         );
     }
 
+    /// Keeps restored dimensions GPU-safe at the maximum supported scale.
     #[test]
     fn restored_size_is_gpu_safe_at_supported_scale() {
         let size = sanitize_size(vec2(f32::MAX, f32::MAX)).unwrap();
@@ -97,6 +100,7 @@ mod tests {
         assert!(size.y * MAX_SUPPORTED_NATIVE_SCALE_FACTOR <= MAX_SIZE_WGPU as f32);
     }
 
+    /// Rejects dimensions that are invalid or can quantize to zero.
     #[test]
     fn degenerate_sizes_are_rejected() {
         assert_eq!(sanitize_size(vec2(0.0, 1080.0)), None);
@@ -105,6 +109,7 @@ mod tests {
         assert_eq!(sanitize_size(vec2(f32::NAN, 1080.0)), None);
     }
 
+    /// Persists native logical dimensions when egui zoom is non-default.
     #[test]
     fn save_restores_native_logical_size_at_non_default_zoom() {
         let tempdir = tempfile::tempdir().unwrap();
@@ -125,6 +130,7 @@ mod tests {
         assert_eq!(handler.get_app_size(), Some(vec2(1200.0, 900.0)));
     }
 
+    /// Rejects invalid dimensions loaded through the persistence path.
     #[test]
     fn invalid_persisted_size_is_rejected() {
         let tempdir = tempfile::tempdir().unwrap();
