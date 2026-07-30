@@ -97,6 +97,26 @@ fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
     })
 }
 
+/// Build a loop-less [`agentium_core::Engine`] over dave's shared db, bound to
+/// the selected account's secret.
+///
+/// Dave drives its own relay stack, so it takes the *embedded* engine (no relay
+/// loop, no Tokio requirement) and uses the engine's `prepare_*` methods to
+/// build + locally-ingest its remote-session write events, then publishes them
+/// from its own batched [`Dave::pending_relay_events`] queue. Constructed on
+/// demand at each drain from the current account, so it always signs and
+/// author-scopes with whichever account is selected. `None` if the secret is
+/// rejected (logged).
+fn embedded_engine(ndb: &nostrdb::Ndb, secret_key: &[u8; 32]) -> Option<agentium_core::Engine> {
+    match agentium_core::Engine::embedded(ndb.clone(), *secret_key) {
+        Ok(engine) => Some(engine),
+        Err(e) => {
+            tracing::error!("failed to build embedded engine: {:?}", e);
+            None
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PnsRemoteSubState {
     account: enostr::Pubkey,
@@ -1886,8 +1906,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Build and queue permission response events.
+    /// Build and queue permission response events through the engine.
     /// Called in the update loop where AppContext is available.
+    ///
+    /// The engine builds + locally-ingests each response (resolving the request's
+    /// note id from ndb); we publish it from [`Dave::pending_relay_events`].
     fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
         if self.pending_perm_responses.is_empty() {
             return;
@@ -1898,29 +1921,33 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.pending_perm_responses.clear();
             return;
         };
+        let Some(engine) = embedded_engine(ctx.ndb, &sk) else {
+            self.pending_perm_responses.clear();
+            return;
+        };
 
-        let pending = std::mem::take(&mut self.pending_perm_responses);
-
-        for resp in pending {
-            queue_built_event(
-                session_events::build_permission_response_event(
-                    &resp.perm_id,
-                    &resp.request_note_id,
-                    resp.allowed,
-                    resp.message.as_deref(),
-                    resp.cancel_turn,
-                    &resp.event_session_id,
-                    &sk,
-                ),
-                &format!(
-                    "queued permission response for {} ({})",
+        for resp in std::mem::take(&mut self.pending_perm_responses) {
+            match engine.prepare_permission_response(
+                &resp.event_session_id,
+                &resp.perm_id.to_string(),
+                resp.allowed,
+                resp.message.as_deref(),
+                resp.cancel_turn,
+            ) {
+                Ok(evt) => {
+                    tracing::info!(
+                        "queued permission response for {} ({})",
+                        resp.perm_id,
+                        if resp.allowed { "allow" } else { "deny" }
+                    );
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => tracing::error!(
+                    "failed to build permission response for {}: {:?}",
                     resp.perm_id,
-                    if resp.allowed { "allow" } else { "deny" }
+                    e
                 ),
-                ctx.ndb,
-                &sk,
-                &mut self.pending_relay_events,
-            );
+            }
         }
     }
 
@@ -1936,18 +1963,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.pending_mode_commands.clear();
             return;
         };
+        let Some(engine) = embedded_engine(ctx.ndb, &sk) else {
+            self.pending_mode_commands.clear();
+            return;
+        };
 
         for cmd in std::mem::take(&mut self.pending_mode_commands) {
-            queue_built_event(
-                session_events::build_set_permission_mode_event(cmd.mode, &cmd.session_id, &sk),
-                &format!(
-                    "publishing permission mode command: {} -> {}",
-                    cmd.session_id, cmd.mode
+            match engine.prepare_set_permission_mode(&cmd.session_id, cmd.mode) {
+                Ok(evt) => {
+                    tracing::info!(
+                        "publishing permission mode command: {} -> {}",
+                        cmd.session_id,
+                        cmd.mode
+                    );
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => tracing::error!(
+                    "failed to build mode command for {}: {:?}",
+                    cmd.session_id,
+                    e
                 ),
-                ctx.ndb,
-                &sk,
-                &mut self.pending_relay_events,
-            );
+            }
         }
     }
 
@@ -3838,16 +3874,18 @@ impl notedeck::App for Dave {
         // Build permission response events from remote sessions
         self.publish_pending_perm_responses(ctx);
 
-        // Build spawn command events (need secret key from AppContext)
+        // Build spawn command events through the engine (needs the selected
+        // account's secret from AppContext); publish them from our own queue.
         if !self.pending_spawn_commands.is_empty() {
-            if let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) {
+            if let Some(engine) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
+                .and_then(|sk| embedded_engine(ctx.ndb, &sk))
+            {
                 for cmd in std::mem::take(&mut self.pending_spawn_commands) {
-                    match session_events::build_spawn_command_event(
+                    match engine.prepare_spawn_command(
                         &cmd.target_host,
                         &cmd.cwd.to_string_lossy(),
                         cmd.backend.as_str(),
                         &cmd.spawn_id,
-                        &sk,
                     ) {
                         Ok(evt) => self.pending_relay_events.push(evt),
                         Err(e) => tracing::warn!("failed to build spawn command: {:?}", e),
