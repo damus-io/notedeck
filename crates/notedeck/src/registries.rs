@@ -13,7 +13,9 @@
 //! [`tool_context`](crate::AppContext::tool_context)) — the same borrow trick
 //! each individual registry relied on before they shared a home.
 
-use crate::{kind_renderer::KindRendererRegistry, tool::ToolRegistry};
+use crate::{
+    kind_renderer::KindRendererRegistry, reference::ReferenceParserRegistry, tool::ToolRegistry,
+};
 
 /// The read-only registries an [`AppContext`](crate::AppContext) exposes to a
 /// frame, gathered into one shared handle. See the [module docs](self).
@@ -22,6 +24,10 @@ pub struct AppRegistries {
     /// Renderers for nostr events embedded inline, keyed by kind (e.g. a headway
     /// issue referenced from a notebook note). Populated at app startup.
     pub kind_renderers: KindRendererRegistry,
+    /// Parsers that turn a `scheme:token` text reference into a resolvable nostr
+    /// entity (the front half of an inline reference). Seeded with the built-in
+    /// `nostr:` parser; apps add their own at startup. See [`reference`](crate::reference).
+    pub reference_parsers: ReferenceParserRegistry,
     /// App-contributed agent tools for AI backends. Reset per-frame from the
     /// running apps.
     pub tools: ToolRegistry,

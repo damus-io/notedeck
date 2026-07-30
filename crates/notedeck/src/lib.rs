@@ -32,6 +32,7 @@ pub mod platform;
 mod private_sync;
 pub mod profile;
 mod publish;
+pub mod reference;
 pub mod registries;
 mod relay_limits;
 pub mod relayspec;
@@ -115,6 +116,9 @@ pub use persist::*;
 pub use private_sync::{fan_out_event_frame, fan_out_unseen_notes, PrivateRelaySync};
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};
+pub use reference::{
+    NostrRefParser, ReferenceParser, ReferenceParserRegistry, ReferenceResolveCtx, ResolvedRef,
+};
 pub use registries::AppRegistries;
 pub use relayspec::RelaySpec;
 pub use remote_api::{RelayInspectApi, RelayInspectEntry, RemoteApi};

@@ -100,6 +100,16 @@ pub trait App {
         Vec::new()
     }
 
+    /// Reference parsers this app contributes, one per `scheme:` it owns (e.g.
+    /// `headway:`), turning a text token into a resolvable nostr entity. Like
+    /// [`kind_renderers`](Self::kind_renderers) — and unlike [`tools`](Self::tools)
+    /// — these are registered once at startup for all apps, so a reference
+    /// resolves even for an app the user never opened. Defaults to none. See
+    /// [`ReferenceParser`](crate::ReferenceParser).
+    fn reference_parsers(&self) -> Vec<Box<dyn crate::ReferenceParser>> {
+        Vec::new()
+    }
+
     /// Agent tools this app contributes over its nostr-backed data, for AI
     /// backends (Dave's OpenAI loop, a future `notedeck --mcp`). The shell
     /// collects these from its *running* apps (see [`take_tool_update`](Self::take_tool_update)),
@@ -584,6 +594,13 @@ impl Notedeck {
     /// like the notebook can draw referenced entities inline. Call at startup.
     pub fn register_kind_renderer(&mut self, renderer: Box<dyn crate::KindRenderer>) {
         self.registries.kind_renderers.register(renderer);
+    }
+
+    /// Register a parser for a reference scheme, so text surfaces can resolve
+    /// `scheme:token` references the app owns. Call at startup (see
+    /// [`App::reference_parsers`]).
+    pub fn register_reference_parser(&mut self, parser: Box<dyn crate::ReferenceParser>) {
+        self.registries.reference_parsers.register(parser);
     }
 
     /// Register an app-contributed agent tool, so AI backends can advertise and

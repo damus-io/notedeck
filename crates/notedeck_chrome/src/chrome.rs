@@ -192,6 +192,20 @@ fn stop_debug_mode(options: NotedeckOptions) {
     }
 }
 
+/// Register every app's startup-scoped registry contributions with the host: the
+/// inline [`KindRenderer`](notedeck::KindRenderer)s (back half) and the
+/// [`ReferenceParser`](notedeck::ReferenceParser)s (front half) of inline
+/// references. Both are registered up front for *all* apps so a reference
+/// resolves and renders even for apps the user never opened.
+fn setup_app_registries(notedeck: &mut Notedeck, apps: &[NotedeckApp]) {
+    for renderer in apps.iter().flat_map(|app| app.kind_renderers()) {
+        notedeck.register_kind_renderer(renderer);
+    }
+    for parser in apps.iter().flat_map(|app| app.reference_parsers()) {
+        notedeck.register_reference_parser(parser);
+    }
+}
+
 impl Chrome {
     /// Create a new chrome with the default app setup
     pub fn new_with_apps(
@@ -316,20 +330,10 @@ impl Chrome {
 
         app_ref.app_ctx.sound.play(notedeck::SoundEffect::Startup);
 
-        // Release the `&mut notedeck` borrow so we can register renderers below.
+        // Release the `&mut notedeck` borrow so we can register registries below.
         drop(notedeck_ref);
 
-        // Register every app's inline kind-renderers up front, so a `nostr:`
-        // reference (e.g. in a notebook note) resolves even for apps the user
-        // hasn't opened yet.
-        let renderers: Vec<_> = chrome
-            .apps
-            .iter()
-            .flat_map(|app| app.kind_renderers())
-            .collect();
-        for renderer in renderers {
-            notedeck.register_kind_renderer(renderer);
-        }
+        setup_app_registries(notedeck, &chrome.apps);
 
         Ok(chrome)
     }

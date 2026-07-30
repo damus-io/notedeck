@@ -151,6 +151,37 @@ impl notedeck::App for NotedeckApp {
         }
     }
 
+    fn reference_parsers(&self) -> Vec<Box<dyn notedeck::ReferenceParser>> {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => dave.reference_parsers(),
+            NotedeckApp::Columns(columns) => columns.reference_parsers(),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.reference_parsers(),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.reference_parsers(),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.reference_parsers(),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.reference_parsers(),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.reference_parsers(),
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.reference_parsers(),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.reference_parsers(),
+
+            NotedeckApp::Other(_name, other) => other.reference_parsers(),
+        }
+    }
+
     fn tab_notifications(&self, ctx: &AppContext<'_>) -> notedeck::TabNotifications {
         match self {
             #[cfg(feature = "dave")]
