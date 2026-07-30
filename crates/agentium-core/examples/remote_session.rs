@@ -41,19 +41,23 @@ async fn main() {
     println!("relay listening at {url}\n");
 
     // --- two engines on the same identity ------------------------------------
+    // Each standalone engine self-drives its relay loop; `transport_handle()`
+    // hands out an owned Transport onto that loop to pass into the write methods.
     let desk_dir = TempDir::new().unwrap();
     let mut desktop = Engine::open(desk_dir.path().to_str().unwrap(), DEVICE_KEY).unwrap();
-    desktop.connect(&url).unwrap();
+    let mut desk_tx = desktop.transport_handle().unwrap();
+    desktop.connect(&mut desk_tx, &url).unwrap();
 
     let phone_dir = TempDir::new().unwrap();
     let mut phone = Engine::open(phone_dir.path().to_str().unwrap(), DEVICE_KEY).unwrap();
-    phone.connect(&url).unwrap();
+    let mut phone_tx = phone.transport_handle().unwrap();
+    phone.connect(&mut phone_tx, &url).unwrap();
     println!("desktop + phone connected as {}\n", phone.account_pubkey());
 
     // --- desktop (host) opens a session and asks for permission --------------
     let relay_url = NormRelayUrl::new(&url).unwrap();
-    desktop_open_session(&mut desktop, &relay_url);
-    let perm_id = desktop_request_permission(&mut desktop, &relay_url);
+    desktop_open_session(&mut desk_tx, &relay_url);
+    let perm_id = desktop_request_permission(&mut desk_tx, &relay_url);
     println!("desktop published a session + a `Bash` permission request\n");
 
     // === from here on, everything is the PHONE using the public API ==========
@@ -83,6 +87,7 @@ async fn main() {
     // 3. approve it, then send a follow-up
     phone
         .respond_permission(
+            &mut phone_tx,
             SESSION_ID,
             &perm_id.to_string(),
             true,
@@ -92,7 +97,11 @@ async fn main() {
         .unwrap();
     println!("phone.respond_permission(allow) — approved {perm_id}");
     phone
-        .send_message(SESSION_ID, "also add a test while you're in there")
+        .send_message(
+            &mut phone_tx,
+            SESSION_ID,
+            "also add a test while you're in there",
+        )
         .unwrap();
     println!("phone.send_message(\"also add a test…\")\n");
 
@@ -109,7 +118,7 @@ async fn main() {
 
     // 5. spawn a brand-new session on another host
     let spawn_id = phone
-        .spawn_session("build-server", "/home/dev/project", "claude")
+        .spawn_session(&mut phone_tx, "build-server", "/home/dev/project", "claude")
         .unwrap();
     println!("phone.spawn_session(\"build-server\") -> spawn_id {spawn_id}");
 
@@ -156,7 +165,7 @@ fn print_messages(messages: &[Message]) {
 // --- desktop/host stand-ins (not part of the public API) --------------------
 
 /// Publish a kind-31988 session state so the phone can list it.
-fn desktop_open_session(desktop: &mut Engine, relay: &NormRelayUrl) {
+fn desktop_open_session(transport: &mut impl Transport, relay: &NormRelayUrl) {
     let state = build_session_state_event(
         SESSION_ID,
         "Refactor the engine",
@@ -173,11 +182,11 @@ fn desktop_open_session(desktop: &mut Engine, relay: &NormRelayUrl) {
         &DEVICE_KEY,
     )
     .unwrap();
-    desktop_publish(desktop, &state.note_json, relay);
+    desktop_publish(transport, &state.note_json, relay);
 }
 
 /// Publish a kind-1988 permission request; returns its id for the phone to answer.
-fn desktop_request_permission(desktop: &mut Engine, relay: &NormRelayUrl) -> uuid::Uuid {
+fn desktop_request_permission(transport: &mut impl Transport, relay: &NormRelayUrl) -> uuid::Uuid {
     let perm_id = uuid::Uuid::new_v4();
     let mut threading = ThreadingState::new();
     let req = build_permission_request_event(
@@ -189,14 +198,14 @@ fn desktop_request_permission(desktop: &mut Engine, relay: &NormRelayUrl) -> uui
         &DEVICE_KEY,
     )
     .unwrap();
-    desktop_publish(desktop, &req.note_json, relay);
+    desktop_publish(transport, &req.note_json, relay);
     perm_id
 }
 
 /// PNS-wrap a freshly-built inner event and publish it through the engine's
 /// transport — the same envelope the engine's own write methods produce.
-fn desktop_publish(desktop: &mut Engine, inner_json: &str, relay: &NormRelayUrl) {
+fn desktop_publish(transport: &mut impl Transport, inner_json: &str, relay: &NormRelayUrl) {
     let pns = enostr::pns::derive_pns_keys(&DEVICE_KEY);
     let wrapped = wrap_pns(inner_json, &pns).unwrap();
-    desktop.publish_event_json(wrapped, vec![relay.clone()]);
+    transport.publish_event_json(wrapped, vec![relay.clone()]);
 }

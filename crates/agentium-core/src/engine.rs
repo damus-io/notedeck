@@ -1,7 +1,7 @@
-//! The standalone agentium engine: an owned [`Ndb`] plus a background relay-sync
-//! loop that implements the [`Transport`] boundary, so the same engine drops
-//! into a desktop host or a standalone/iOS process with no host application
-//! context.
+//! The agentium engine: an owned [`Ndb`] plus session-protocol orchestration
+//! that speaks only to a [`Transport`], so the same engine drops into a desktop
+//! host (which brings its own relay stack) or a standalone/iOS process (which
+//! uses the engine's own relay-sync loop) with no host application context.
 //!
 //! # Database ownership
 //!
@@ -9,19 +9,22 @@
 //! [`Ndb`] is `#[derive(Clone)]` over an `Arc`-backed handle: a clone is a cheap
 //! reference to the *same* database, and the database is torn down only when the
 //! last clone drops. So the engine holds an `Ndb` **by value** — no lifetime
-//! parameter, no borrowed/owned split — and the two constructors converge on
-//! that one stored type:
+//! parameter, no borrowed/owned split — and every constructor converges on that
+//! one stored type:
 //!
 //! - [`Engine::open`] — standalone/iOS: the engine creates its own database and
-//!   holds it.
-//! - [`Engine::with_ndb`] — an embedding host passes a *clone* of its own
-//!   database; both point at the same db, and the engine dropping won't tear
-//!   down the host's db because the host still holds a clone.
+//!   holds it, and spawns its own relay loop.
+//! - [`Engine::with_ndb`] — a standalone engine over a database the caller
+//!   already opened; also spawns the relay loop.
+//! - [`Engine::embedded`] — an embedding host passes a *clone* of its own
+//!   database and drives the relay itself; no loop is spawned. Both point at the
+//!   same db, and the engine dropping won't tear down the host's db because the
+//!   host still holds a clone.
 //!
-//! Holding by value is also *required*, not merely convenient: the reconcile
-//! loop runs in a `tokio::spawn`ed task and needs a `'static` handle, so a
-//! borrowed `&Ndb` couldn't move into the task — a cloned `Ndb` is exactly
-//! right.
+//! Holding by value is also *required* for the standalone loop, not merely
+//! convenient: the reconcile loop runs in a `tokio::spawn`ed task and needs a
+//! `'static` handle, so a borrowed `&Ndb` couldn't move into the task — a cloned
+//! `Ndb` is exactly right.
 //!
 //! # Identity
 //!
@@ -36,13 +39,24 @@
 //!
 //! # Relay loop
 //!
-//! Construction `tokio::spawn`s a background task ([`engine_loop`]) that owns a
-//! [`RelayPool`] for the live subscription stream and, per subscription, a
-//! NIP-77 negentropy [`backfill`] task for bounded history. The [`Transport`]
-//! implementation is a thin front end: its methods enqueue commands the loop
-//! drains, so the public surface stays synchronous and non-blocking while all
-//! I/O happens on the tasks. Because both tasks are spawned,
-//! `Engine::open`/`with_ndb` must be called from within a Tokio runtime.
+//! A *standalone* engine ([`Engine::open`] / [`Engine::with_ndb`]) `tokio::spawn`s
+//! a background task ([`engine_loop`]) that owns a [`RelayPool`] for the live
+//! subscription stream and, per subscription, a NIP-77 negentropy [`backfill`]
+//! task for bounded history. [`Engine::transport_handle`] hands out an
+//! [`EngineTransport`] onto that loop — a thin [`Transport`] front end whose
+//! methods enqueue commands the loop drains — which the caller passes into the
+//! write/connect methods. Because the loop is spawned, `open`/`with_ndb` must be
+//! called from within a Tokio runtime.
+//!
+//! An *embedded* engine ([`Engine::embedded`]) spawns no loop and needs no
+//! runtime: the host already owns a relay stack and passes its own [`Transport`]
+//! into the same write/connect methods. Either way the engine only ever speaks
+//! to a [`Transport`], so its logic is identical in both settings.
+//!
+//! The write/connect methods take the [`Transport`] as a `&mut` parameter rather
+//! than the engine owning one, so a standalone caller can borrow its own
+//! [`EngineTransport`] handle mutably *and* the engine for the same call without
+//! aliasing.
 //!
 //! ## Keeping the futures `Send`
 //!
@@ -142,11 +156,12 @@ enum EngineCmd {
     },
 }
 
-/// The standalone agentium engine.
+/// The agentium engine.
 ///
-/// See the module docs for db ownership, identity, and the relay loop. The
-/// [`Transport`] impl enqueues onto the loop; drop the engine to stop the loop
-/// (the command channel closes and the task returns).
+/// See the module docs for db ownership, identity, and the relay loop. Its
+/// write/connect methods take a [`Transport`]; a standalone engine hands out one
+/// onto its own loop via [`Engine::transport_handle`], and dropping the engine
+/// stops that loop (the command channel closes and the task returns).
 pub struct Engine {
     ndb: Ndb,
     /// The single device identity. Its secret key signs the inner session
@@ -154,11 +169,18 @@ pub struct Engine {
     /// are derived; both devices sharing a session share this key. See the
     /// module docs.
     account: enostr::FullKeypair,
-    /// The relay the engine is connected to for remote sync, set by
-    /// [`Engine::connect`]. It is both the PNS discovery subscription's target
-    /// and the publish destination for outbound session events.
+    /// The relay outbound session events publish to, and the target of the PNS
+    /// discovery subscription when the engine installs its own (via
+    /// [`Engine::connect`]). An embedding host that manages its own subscription
+    /// sets just this via [`Engine::set_relay`]. `None` means "ingest locally,
+    /// don't publish".
     pns_relay: Option<NormRelayUrl>,
-    cmd_tx: mpsc::UnboundedSender<EngineCmd>,
+    /// The command channel to the self-driving relay loop, present only for a
+    /// standalone engine ([`Engine::open`] / [`Engine::with_ndb`]). An embedded
+    /// engine ([`Engine::embedded`]) has no loop — its host drives the relay and
+    /// passes its own [`Transport`] into the write/connect methods — so this is
+    /// `None`. [`Engine::transport_handle`] exposes an owned handle onto it.
+    cmd_tx: Option<mpsc::UnboundedSender<EngineCmd>>,
 }
 
 impl Engine {
@@ -185,6 +207,27 @@ impl Engine {
     /// [`EngineError::InvalidDeviceKey`] if the bytes are not a valid secp256k1
     /// secret.
     pub fn with_ndb(ndb: Ndb, device_key: [u8; 32]) -> Result<Self, EngineError> {
+        let mut engine = Self::embedded(ndb.clone(), device_key)?;
+        // Spawn the self-driving relay loop and keep its command channel so
+        // `transport_handle` can hand out owned handles onto it.
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        tokio::spawn(engine_loop(ndb, cmd_rx));
+        engine.cmd_tx = Some(cmd_tx);
+        Ok(engine)
+    }
+
+    /// Build an engine over an existing database *without* a relay loop, for an
+    /// embedding host that already owns a relay stack. Reads work immediately;
+    /// the host drives sync itself and passes its own [`Transport`] into the
+    /// write/connect methods (and calls [`Engine::set_relay`] to point publishes
+    /// at its chosen relay). Unlike [`Engine::with_ndb`] this needs no Tokio
+    /// runtime and spawns no thread.
+    ///
+    /// `device_key` is the 32-byte account secret, registered with the database
+    /// via [`Ndb::add_key`] and used as the signing/derivation identity — see
+    /// [`Engine::with_ndb`]. Fails with [`EngineError::InvalidDeviceKey`] if the
+    /// bytes are not a valid secp256k1 secret.
+    pub fn embedded(ndb: Ndb, device_key: [u8; 32]) -> Result<Self, EngineError> {
         let account = enostr::FullKeypair::from_secret_bytes(&device_key)
             .ok_or(EngineError::InvalidDeviceKey)?;
         // Register the key so ndb can decrypt inbound PNS envelopes in-thread.
@@ -192,14 +235,21 @@ impl Engine {
         if !ndb.add_key(&device_key) {
             tracing::debug!("engine: device key already registered with ndb");
         }
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        tokio::spawn(engine_loop(ndb.clone(), cmd_rx));
         Ok(Self {
             ndb,
             account,
             pns_relay: None,
-            cmd_tx,
+            cmd_tx: None,
         })
+    }
+
+    /// An owned [`Transport`] handle onto this engine's self-driving relay loop,
+    /// or `None` for an [`embedded`](Engine::embedded) engine (which has no
+    /// loop). Standalone callers pass `&mut` this handle into the write/connect
+    /// methods; taking an owned handle (a clone of the loop's command channel)
+    /// avoids aliasing the `&mut self` those methods also need.
+    pub fn transport_handle(&self) -> Option<EngineTransport> {
+        self.cmd_tx.clone().map(|cmd_tx| EngineTransport { cmd_tx })
     }
 
     /// The engine's database handle.
@@ -228,7 +278,17 @@ impl Engine {
     /// database, where ndb's ingest threads decrypt it into queryable inner
     /// events. The same relay becomes the publish target for outbound events.
     /// Reconnecting to a different relay just re-points the subscription.
-    pub fn connect(&mut self, relay_url: &str) -> Result<(), EngineError> {
+    ///
+    /// `transport` is where the subscription is declared: a standalone engine
+    /// passes its own [`transport_handle`](Engine::transport_handle); an
+    /// embedding host that wants the engine to own the discovery subscription
+    /// passes its host transport. A host that manages that subscription itself
+    /// should skip `connect` and call [`Engine::set_relay`] instead.
+    pub fn connect(
+        &mut self,
+        transport: &mut impl Transport,
+        relay_url: &str,
+    ) -> Result<(), EngineError> {
         let relay = NormRelayUrl::new(relay_url)?;
         let pns_author = self.pns_keys().keypair.pubkey;
         let since = now_secs().saturating_sub(PNS_HISTORY_WINDOW_SECS);
@@ -244,7 +304,7 @@ impl Engine {
             .since(since)
             .build();
 
-        self.set_subscription(SubscriptionSpec {
+        transport.set_subscription(SubscriptionSpec {
             id: pns_discovery_sub_id(),
             relay: relay.clone(),
             live_filters: vec![live],
@@ -254,11 +314,20 @@ impl Engine {
         Ok(())
     }
 
-    /// Tear down the discovery subscription and forget the relay. Outbound
-    /// events built after this are ingested locally but not published until the
-    /// next [`Engine::connect`].
-    pub fn disconnect(&mut self) {
-        self.drop_subscription(&pns_discovery_sub_id());
+    /// Point outbound publishes at `relay` without installing a subscription.
+    ///
+    /// For an embedding host that runs its own PNS discovery subscription: the
+    /// engine still needs to know where to publish the events its write methods
+    /// produce. `None` reverts to "ingest locally, don't publish".
+    pub fn set_relay(&mut self, relay: Option<NormRelayUrl>) {
+        self.pns_relay = relay;
+    }
+
+    /// Tear down the discovery subscription (via `transport`) and forget the
+    /// relay. Outbound events built after this are ingested locally but not
+    /// published until the next [`Engine::connect`].
+    pub fn disconnect(&mut self, transport: &mut impl Transport) {
+        transport.drop_subscription(&pns_discovery_sub_id());
         self.pns_relay = None;
     }
 
@@ -337,8 +406,14 @@ impl Engine {
     ///
     /// Builds a kind-1988 `user` event threaded onto the session's existing
     /// conversation and publishes it. Works whether or not the session is known
-    /// locally (a brand-new session simply starts a fresh thread).
-    pub fn send_message(&mut self, session_id: &str, text: &str) -> Result<(), EngineError> {
+    /// locally (a brand-new session simply starts a fresh thread). `transport`
+    /// carries the PNS envelope to the relay — see [`Engine::transport_handle`].
+    pub fn send_message(
+        &self,
+        transport: &mut impl Transport,
+        session_id: &str,
+        text: &str,
+    ) -> Result<(), EngineError> {
         let mut threading = self.session_threading(session_id);
         let cwd = self.session_cwd(session_id);
         let built = crate::session_events::build_live_event(
@@ -352,7 +427,7 @@ impl Engine {
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(built)
+        self.publish_session_event(transport, built)
     }
 
     /// Spawn a new session on a remote host.
@@ -362,7 +437,8 @@ impl Engine {
     /// event that later shows up in [`Engine::list_sessions`]. Returns the
     /// `spawn_id` that links this request to that eventual state.
     pub fn spawn_session(
-        &mut self,
+        &self,
+        transport: &mut impl Transport,
         target_host: &str,
         cwd: &str,
         backend: &str,
@@ -376,7 +452,7 @@ impl Engine {
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(built)?;
+        self.publish_session_event(transport, built)?;
         Ok(spawn_id)
     }
 
@@ -387,7 +463,8 @@ impl Engine {
     /// interrupts the current turn. Errors with [`EngineError::UnknownPermission`]
     /// if no request with `perm_id` is present in the session.
     pub fn respond_permission(
-        &mut self,
+        &self,
+        transport: &mut impl Transport,
         session_id: &str,
         perm_id: &str,
         allow: bool,
@@ -423,7 +500,7 @@ impl Engine {
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(built)
+        self.publish_session_event(transport, built)
     }
 
     /// Respond to a pending question-set permission request.
@@ -440,7 +517,8 @@ impl Engine {
     /// Errors with [`EngineError::UnknownPermission`] if no request with
     /// `request_id` is present in the session.
     pub fn respond_question(
-        &mut self,
+        &self,
+        transport: &mut impl Transport,
         session_id: &str,
         request_id: &str,
         answers: Vec<crate::messages::QuestionAnswer>,
@@ -483,20 +561,25 @@ impl Engine {
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(built)
+        self.publish_session_event(transport, built)
     }
 
     /// Request a permission-mode change on a session's host (e.g. `"default"`,
     /// `"acceptEdits"`, `"plan"`). Publishes a kind-1988 command the host applies
     /// to its local backend.
-    pub fn set_permission_mode(&mut self, session_id: &str, mode: &str) -> Result<(), EngineError> {
+    pub fn set_permission_mode(
+        &self,
+        transport: &mut impl Transport,
+        session_id: &str,
+        mode: &str,
+    ) -> Result<(), EngineError> {
         let built = crate::session_events::build_set_permission_mode_event(
             mode,
             session_id,
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(built)
+        self.publish_session_event(transport, built)
     }
 
     /// The 32-byte account secret that signs inner session events.
@@ -541,7 +624,8 @@ impl Engine {
     /// envelope to the connected relay. Local ingest always happens; publishing
     /// is deferred if the engine is not connected.
     fn publish_session_event(
-        &mut self,
+        &self,
+        transport: &mut impl Transport,
         built: crate::session_events::BuiltEvent,
     ) -> Result<(), EngineError> {
         let pns = self.pns_keys();
@@ -558,8 +642,8 @@ impl Engine {
         }
 
         match self.pns_relay.clone() {
-            Some(relay) => self.publish_event_json(wrapped, vec![relay]),
-            None => tracing::debug!("engine: not connected; event ingested locally only"),
+            Some(relay) => transport.publish_event_json(wrapped, vec![relay]),
+            None => tracing::debug!("engine: no publish relay set; event ingested locally only"),
         }
         Ok(())
     }
@@ -658,7 +742,19 @@ fn to_send_filters(filters: Vec<Filter>) -> Vec<SendFilter> {
         .collect()
 }
 
-impl Transport for Engine {
+/// An owned [`Transport`] onto a standalone [`Engine`]'s self-driving relay
+/// loop, produced by [`Engine::transport_handle`].
+///
+/// It holds a clone of the loop's command channel, so it is `Send`, cheap to
+/// create, and — being a value distinct from the engine — can be borrowed
+/// `&mut` while the engine is borrowed for the same write call (the aliasing an
+/// `impl Transport for Engine` would otherwise cause). Every method just
+/// enqueues a command the loop drains, so nothing blocks.
+pub struct EngineTransport {
+    cmd_tx: mpsc::UnboundedSender<EngineCmd>,
+}
+
+impl Transport for EngineTransport {
     fn publish_event_json(&mut self, note_json: String, relays: Vec<enostr::NormRelayUrl>) {
         let relays = relays.iter().map(|r| r.to_string()).collect();
         let _ = self.cmd_tx.send(EngineCmd::Publish { note_json, relays });
@@ -1108,13 +1204,16 @@ mod tests {
         let a_dir = TempDir::new().expect("tmp dir");
         let mut a =
             Engine::open(a_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine a");
-        a.connect(&url).expect("a connect");
-        a.send_message(session_id, "hi from A").expect("send");
+        let mut a_tx = a.transport_handle().expect("a transport");
+        a.connect(&mut a_tx, &url).expect("a connect");
+        a.send_message(&mut a_tx, session_id, "hi from A")
+            .expect("send");
 
         let b_dir = TempDir::new().expect("tmp dir");
         let mut b =
             Engine::open(b_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine b");
-        b.connect(&url).expect("b connect");
+        let mut b_tx = b.transport_handle().expect("b transport");
+        b.connect(&mut b_tx, &url).expect("b connect");
 
         // Check-then-wait so we catch the event whether it lands before or after
         // the watch is installed.
@@ -1143,16 +1242,16 @@ mod tests {
     #[tokio::test]
     async fn respond_permission_requires_a_known_request() {
         let dir = TempDir::new().expect("tmp dir");
-        let mut engine =
-            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut tx = engine.transport_handle().expect("transport");
 
         let unknown = uuid::Uuid::new_v4().to_string();
         assert!(matches!(
-            engine.respond_permission("s", &unknown, true, None, false),
+            engine.respond_permission(&mut tx, "s", &unknown, true, None, false),
             Err(EngineError::UnknownPermission)
         ));
         assert!(matches!(
-            engine.respond_permission("s", "not-a-uuid", true, None, false),
+            engine.respond_permission(&mut tx, "s", "not-a-uuid", true, None, false),
             Err(EngineError::InvalidPermId)
         ));
     }
@@ -1164,8 +1263,8 @@ mod tests {
         use crate::session_events::{build_permission_request_event, ThreadingState};
 
         let dir = TempDir::new().expect("tmp dir");
-        let mut engine =
-            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut tx = engine.transport_handle().expect("transport");
         let session_id = "perm-session";
         let perm_id = uuid::Uuid::new_v4();
 
@@ -1193,6 +1292,7 @@ mod tests {
 
         engine
             .respond_permission(
+                &mut tx,
                 session_id,
                 &perm_id.to_string(),
                 true,
@@ -1206,16 +1306,16 @@ mod tests {
     #[tokio::test]
     async fn respond_question_requires_a_known_request() {
         let dir = TempDir::new().expect("tmp dir");
-        let mut engine =
-            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut tx = engine.transport_handle().expect("transport");
 
         let unknown = uuid::Uuid::new_v4().to_string();
         assert!(matches!(
-            engine.respond_question("s", &unknown, vec![]),
+            engine.respond_question(&mut tx, "s", &unknown, vec![]),
             Err(EngineError::UnknownPermission)
         ));
         assert!(matches!(
-            engine.respond_question("s", "not-a-uuid", vec![]),
+            engine.respond_question(&mut tx, "s", "not-a-uuid", vec![]),
             Err(EngineError::InvalidPermId)
         ));
     }
@@ -1229,8 +1329,8 @@ mod tests {
         use crate::session_events::{build_permission_request_event, ThreadingState};
 
         let dir = TempDir::new().expect("tmp dir");
-        let mut engine =
-            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut tx = engine.transport_handle().expect("transport");
         let session_id = "question-session";
         let perm_id = uuid::Uuid::new_v4();
 
@@ -1287,6 +1387,7 @@ mod tests {
         let mut watch = engine.watch_session(session_id).expect("watch");
         engine
             .respond_question(
+                &mut tx,
                 session_id,
                 &perm_id.to_string(),
                 vec![QuestionAnswer {
@@ -1325,10 +1426,10 @@ mod tests {
     #[tokio::test]
     async fn spawn_session_returns_a_uuid_spawn_id() {
         let dir = TempDir::new().expect("tmp dir");
-        let mut engine =
-            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut tx = engine.transport_handle().expect("transport");
         let spawn_id = engine
-            .spawn_session("laptop", "/tmp/project", "claude")
+            .spawn_session(&mut tx, "laptop", "/tmp/project", "claude")
             .expect("spawn");
         assert!(
             uuid::Uuid::parse_str(&spawn_id).is_ok(),
@@ -1339,10 +1440,10 @@ mod tests {
     #[tokio::test]
     async fn set_permission_mode_builds_and_ingests() {
         let dir = TempDir::new().expect("tmp dir");
-        let mut engine =
-            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut tx = engine.transport_handle().expect("transport");
         engine
-            .set_permission_mode("some-session", "plan")
+            .set_permission_mode(&mut tx, "some-session", "plan")
             .expect("set mode");
     }
 
@@ -1385,9 +1486,10 @@ mod tests {
         let url = relay.url();
 
         let eng_dir = TempDir::new().expect("tmp dir");
-        let mut engine =
+        let engine =
             Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        engine.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
+        let mut tx = engine.transport_handle().expect("transport");
+        tx.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
 
         assert!(
             await_note(engine.ndb(), id, 1, Duration::from_secs(10)).await,
@@ -1406,10 +1508,11 @@ mod tests {
 
         // Engine A publishes a kind-1 event to the relay.
         let a_dir = TempDir::new().expect("tmp dir");
-        let mut engine_a =
+        let engine_a =
             Engine::open(a_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine a");
+        let mut tx_a = engine_a.transport_handle().expect("transport");
         let (note_json, id) = signed_note(1, "round trip");
-        engine_a.publish_event_json(
+        tx_a.publish_event_json(
             note_json,
             vec![enostr::NormRelayUrl::new(&url).expect("url")],
         );
@@ -1422,9 +1525,10 @@ mod tests {
 
         // Engine B subscribes and receives it via `REQ` replay.
         let b_dir = TempDir::new().expect("tmp dir");
-        let mut engine_b =
+        let engine_b =
             Engine::open(b_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine b");
-        engine_b.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
+        let mut tx_b = engine_b.transport_handle().expect("transport");
+        tx_b.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
 
         assert!(
             await_note(engine_b.ndb(), id, 1, Duration::from_secs(10)).await,
@@ -1451,9 +1555,10 @@ mod tests {
         assert!(await_note(&relay_ndb, id, 1, Duration::from_secs(5)).await);
 
         let eng_dir = TempDir::new().expect("tmp dir");
-        let mut engine =
+        let engine =
             Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        engine.set_subscription(spec(
+        let mut tx = engine.transport_handle().expect("transport");
+        tx.set_subscription(spec(
             &url,
             vec![Filter::new().kinds([9999]).build()],
             vec![Filter::new().kinds([1]).build()],
