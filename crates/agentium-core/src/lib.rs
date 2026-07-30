@@ -29,7 +29,7 @@ pub mod transport;
 mod util;
 pub mod waker;
 
-pub use engine::Engine;
+pub use engine::{Engine, EngineError, SessionWatch};
 pub use tool::{ToolArg, ToolArgType, ToolSpec};
 pub use transport::{SubscriptionId, SubscriptionSpec, Transport};
 pub use waker::Waker;

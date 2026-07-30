@@ -81,7 +81,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio::time::interval;
 
 use crate::messages::Message;
-use crate::session_events::AI_CONVERSATION_KIND;
+use crate::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
 use crate::session_loader::SessionState;
 use crate::transport::{SubscriptionId, SubscriptionSpec, Transport};
 
@@ -316,6 +316,23 @@ impl Engine {
         })
     }
 
+    /// Watch the session list for changes.
+    ///
+    /// Returns a [`SessionWatch`] whose [`SessionWatch::changed`] resolves each
+    /// time a kind-31988 session-state event arrives or is replaced — i.e. a new
+    /// session appears or an existing one's status changes. Re-read the list with
+    /// [`Engine::list_sessions`] on each wake.
+    pub fn watch_sessions(&self) -> Result<SessionWatch, EngineError> {
+        let filter = Filter::new()
+            .kinds([AI_SESSION_STATE_KIND as u64])
+            .authors([self.account.pubkey.bytes()])
+            .build();
+        let sub = self.ndb.subscribe(std::slice::from_ref(&filter))?;
+        Ok(SessionWatch {
+            stream: SubscriptionStream::new(self.ndb.clone(), sub),
+        })
+    }
+
     /// Send a user message into a session.
     ///
     /// Builds a kind-1988 `user` event threaded onto the session's existing
@@ -488,20 +505,22 @@ impl Engine {
     }
 }
 
-/// An event-driven waiter over one session's live kind-1988 events.
+/// An event-driven waiter over an ndb subscription — a session's live kind-1988
+/// events ([`Engine::watch_session`]) or the kind-31988 session list
+/// ([`Engine::watch_sessions`]).
 ///
 /// Backed by an ndb subscription stream, so [`SessionWatch::changed`] only wakes
 /// on a real new event (no polling). The subscription is released when the watch
-/// is dropped. Pair it with [`Engine::session_messages`] to re-read the snapshot
-/// on each change.
+/// is dropped. Pair it with a snapshot read ([`Engine::session_messages`] /
+/// [`Engine::list_sessions`]) to re-read on each change.
 pub struct SessionWatch {
     stream: SubscriptionStream,
 }
 
 impl SessionWatch {
-    /// Wait for the session to change. Resolves `true` when new events arrived
-    /// (re-read via [`Engine::session_messages`]); `false` if the subscription
-    /// ended (e.g. the database was torn down).
+    /// Wait for the next change. Resolves `true` when new events arrived (re-read
+    /// the snapshot); `false` if the subscription ended (e.g. the database was
+    /// torn down).
     pub async fn changed(&mut self) -> bool {
         self.stream.next().await.is_some()
     }
@@ -902,6 +921,42 @@ mod tests {
             .expect("watch should wake before timeout");
         assert!(woke, "watch should report a change");
         assert_eq!(engine.session_messages(session_id).len(), 1);
+    }
+
+    /// [`Engine::watch_sessions`] wakes when a new kind-31988 session state is
+    /// decrypted into the db, so the list can be re-read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watch_sessions_wakes_on_new_session() {
+        use crate::session_events::build_session_state_event;
+
+        let eng_dir = TempDir::new().expect("tmp dir");
+        let engine =
+            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+
+        let mut watch = engine.watch_sessions().expect("watch");
+        let state = build_session_state_event(
+            "new-session",
+            "A Session",
+            None,
+            "/tmp",
+            "idle",
+            None,
+            "host",
+            "/home",
+            "claude",
+            "default",
+            None,
+            None,
+            &TEST_SECKEY,
+        )
+        .expect("state event");
+        pns_seed(engine.ndb(), &state.note_json);
+
+        let woke = tokio::time::timeout(Duration::from_secs(5), watch.changed())
+            .await
+            .expect("watch should wake before timeout");
+        assert!(woke, "watch should report a change");
+        assert_eq!(engine.list_sessions().len(), 1);
     }
 
     /// The flagship remote flow: a message sent by one engine reaches a second
