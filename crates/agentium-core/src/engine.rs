@@ -444,16 +444,44 @@ impl Engine {
         backend: &str,
     ) -> Result<String, EngineError> {
         let spawn_id = uuid::Uuid::new_v4().to_string();
-        let built = crate::session_events::build_spawn_command_event(
+        let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id)?;
+        self.publish_session_event(transport, built)?;
+        Ok(spawn_id)
+    }
+
+    /// Build a kind-31989 spawn command, ingest it locally, and return it for
+    /// the caller to publish through its own transport — for a host that batches
+    /// its own relay writes. Unlike [`spawn_session`](Engine::spawn_session), the
+    /// caller supplies `spawn_id` (so it can correlate the eventual kind-31988
+    /// state) and publishes the returned event itself; nothing is sent here.
+    pub fn prepare_spawn_command(
+        &self,
+        target_host: &str,
+        cwd: &str,
+        backend: &str,
+        spawn_id: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let built = self.make_spawn_command(target_host, cwd, backend, spawn_id)?;
+        self.wrap_and_ingest(&built)?;
+        Ok(built)
+    }
+
+    /// Build the inner kind-31989 spawn-command event (no ingest, no publish).
+    fn make_spawn_command(
+        &self,
+        target_host: &str,
+        cwd: &str,
+        backend: &str,
+        spawn_id: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        crate::session_events::build_spawn_command_event(
             target_host,
             cwd,
             backend,
-            &spawn_id,
+            spawn_id,
             &self.seckey(),
         )
-        .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(transport, built)?;
-        Ok(spawn_id)
+        .map_err(|e| EngineError::Build(e.to_string()))
     }
 
     /// Respond to a pending permission request.
@@ -471,6 +499,48 @@ impl Engine {
         message: Option<String>,
         cancel_turn: bool,
     ) -> Result<(), EngineError> {
+        let built = self.make_permission_response(
+            session_id,
+            perm_id,
+            allow,
+            message.as_deref(),
+            cancel_turn,
+        )?;
+        self.publish_session_event(transport, built)
+    }
+
+    /// Build a kind-1988 permission response, ingest it locally, and return it
+    /// for the caller to publish through its own transport — for a host that
+    /// batches its own relay writes. Unlike
+    /// [`respond_permission`](Engine::respond_permission), this does not publish.
+    /// Question-set answers ride in `message` as a pre-formatted payload (see
+    /// [`respond_question`](Engine::respond_question) for that payload's shape).
+    pub fn prepare_permission_response(
+        &self,
+        session_id: &str,
+        perm_id: &str,
+        allow: bool,
+        message: Option<&str>,
+        cancel_turn: bool,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let built =
+            self.make_permission_response(session_id, perm_id, allow, message, cancel_turn)?;
+        self.wrap_and_ingest(&built)?;
+        Ok(built)
+    }
+
+    /// Resolve the request's note id from the session's events and build the
+    /// inner kind-1988 permission-response event (no ingest, no publish). Errors
+    /// with [`EngineError::UnknownPermission`] if no request with `perm_id` is
+    /// present in the session.
+    fn make_permission_response(
+        &self,
+        session_id: &str,
+        perm_id: &str,
+        allow: bool,
+        message: Option<&str>,
+        cancel_turn: bool,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
         let perm_uuid = uuid::Uuid::parse_str(perm_id).map_err(|_| EngineError::InvalidPermId)?;
 
         let request_note_id = {
@@ -490,17 +560,16 @@ impl Engine {
             return Err(EngineError::UnknownPermission);
         };
 
-        let built = crate::session_events::build_permission_response_event(
+        crate::session_events::build_permission_response_event(
             &perm_uuid,
             &request_note_id,
             allow,
-            message.as_deref(),
+            message,
             cancel_turn,
             session_id,
             &self.seckey(),
         )
-        .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(transport, built)
+        .map_err(|e| EngineError::Build(e.to_string()))
     }
 
     /// Respond to a pending question-set permission request.
@@ -573,13 +642,32 @@ impl Engine {
         session_id: &str,
         mode: &str,
     ) -> Result<(), EngineError> {
-        let built = crate::session_events::build_set_permission_mode_event(
-            mode,
-            session_id,
-            &self.seckey(),
-        )
-        .map_err(|e| EngineError::Build(e.to_string()))?;
+        let built = self.make_set_permission_mode(session_id, mode)?;
         self.publish_session_event(transport, built)
+    }
+
+    /// Build a kind-1988 set-permission-mode command, ingest it locally, and
+    /// return it for the caller to publish through its own transport — for a host
+    /// that batches its own relay writes. Unlike
+    /// [`set_permission_mode`](Engine::set_permission_mode), this does not publish.
+    pub fn prepare_set_permission_mode(
+        &self,
+        session_id: &str,
+        mode: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let built = self.make_set_permission_mode(session_id, mode)?;
+        self.wrap_and_ingest(&built)?;
+        Ok(built)
+    }
+
+    /// Build the inner kind-1988 set-permission-mode event (no ingest, no publish).
+    fn make_set_permission_mode(
+        &self,
+        session_id: &str,
+        mode: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        crate::session_events::build_set_permission_mode_event(mode, session_id, &self.seckey())
+            .map_err(|e| EngineError::Build(e.to_string()))
     }
 
     /// The 32-byte account secret that signs inner session events.
@@ -619,28 +707,35 @@ impl Engine {
         (!state.cwd.is_empty()).then_some(state.cwd)
     }
 
-    /// Wrap a freshly-built inner event in its PNS envelope, ingest it locally
-    /// (ndb decrypts it back into the queryable inner event), and publish the
-    /// envelope to the connected relay. Local ingest always happens; publishing
-    /// is deferred if the engine is not connected.
-    fn publish_session_event(
+    /// Wrap a freshly-built inner event in its PNS envelope and ingest it locally
+    /// (ndb decrypts it back into the queryable inner event), returning the
+    /// envelope JSON so a caller can also publish it. Ingesting our own event
+    /// makes local reads reflect it immediately, exactly as an inbound relay
+    /// envelope would.
+    fn wrap_and_ingest(
         &self,
-        transport: &mut impl Transport,
-        built: crate::session_events::BuiltEvent,
-    ) -> Result<(), EngineError> {
+        built: &crate::session_events::BuiltEvent,
+    ) -> Result<String, EngineError> {
         let pns = self.pns_keys();
         let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns)
             .map_err(|e| EngineError::Build(e.to_string()))?;
-
-        // Ingest our own event so local reads reflect it immediately, exactly as
-        // an inbound relay envelope would be ingested.
         if let Err(e) = self
             .ndb
             .process_event(&format!(r#"["EVENT","_pns",{wrapped}]"#))
         {
             tracing::warn!("engine: failed to ingest own event: {e}");
         }
+        Ok(wrapped)
+    }
 
+    /// Wrap, ingest locally, and publish a freshly-built inner event. Local
+    /// ingest always happens; publishing is deferred if no publish relay is set.
+    fn publish_session_event(
+        &self,
+        transport: &mut impl Transport,
+        built: crate::session_events::BuiltEvent,
+    ) -> Result<(), EngineError> {
+        let wrapped = self.wrap_and_ingest(&built)?;
         match self.pns_relay.clone() {
             Some(relay) => transport.publish_event_json(wrapped, vec![relay]),
             None => tracing::debug!("engine: no publish relay set; event ingested locally only"),
@@ -1445,6 +1540,60 @@ mod tests {
         engine
             .set_permission_mode(&mut tx, "some-session", "plan")
             .expect("set mode");
+    }
+
+    /// An embedded engine drives no relay loop, so it hands out no transport
+    /// handle — its host publishes the events the `prepare_*` methods return.
+    #[test]
+    fn embedded_engine_has_no_transport_handle() {
+        let (_dir, ndb) = temp_ndb();
+        let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
+        assert!(
+            engine.transport_handle().is_none(),
+            "embedded engine has no loop to hand a transport onto"
+        );
+    }
+
+    /// `prepare_set_permission_mode` ingests the event locally (so local reads
+    /// see it immediately) and returns it, without needing a transport.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepare_set_permission_mode_ingests_without_publish() {
+        let (_dir, ndb) = temp_ndb();
+        let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
+
+        let built = engine
+            .prepare_set_permission_mode("some-session", "plan")
+            .expect("prepare mode");
+
+        assert!(
+            await_note(
+                engine.ndb(),
+                built.note_id,
+                AI_CONVERSATION_KIND as u64,
+                Duration::from_secs(5)
+            )
+            .await,
+            "the prepared event should be ingested and queryable locally"
+        );
+    }
+
+    /// The build-only permission response resolves its request from the db just
+    /// like [`Engine::respond_permission`], so unknown / malformed ids are
+    /// rejected before anything is ingested.
+    #[test]
+    fn prepare_permission_response_rejects_unknown_request() {
+        let (_dir, ndb) = temp_ndb();
+        let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
+
+        let unknown = uuid::Uuid::new_v4().to_string();
+        assert!(matches!(
+            engine.prepare_permission_response("s", &unknown, true, None, false),
+            Err(EngineError::UnknownPermission)
+        ));
+        assert!(matches!(
+            engine.prepare_permission_response("s", "not-a-uuid", true, None, false),
+            Err(EngineError::InvalidPermId)
+        ));
     }
 
     #[tokio::test]
