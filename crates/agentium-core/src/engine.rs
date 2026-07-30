@@ -375,12 +375,17 @@ fn local_negentropy_set(ndb: &Ndb, filter: &Filter) -> Result<NegentropyStorageV
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::StreamExt;
-    use nostrdb::{Config, NoteBuilder, SubscriptionStream};
+    use crate::test_support::{await_note, event_frame, signed_note, spawn_relay, temp_ndb};
     use tempfile::TempDir;
 
-    fn open_ndb(dir: &TempDir) -> Ndb {
-        Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb")
+    /// A test [`SubscriptionSpec`] targeting `url`.
+    fn spec(url: &str, live: Vec<Filter>, history: Vec<Filter>) -> SubscriptionSpec {
+        SubscriptionSpec {
+            id: SubscriptionId::new("test", "sub"),
+            relay: enostr::NormRelayUrl::new(url).expect("relay url"),
+            live_filters: live,
+            history_filters: history,
+        }
     }
 
     #[tokio::test]
@@ -393,8 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_ndb_shares_one_database() {
-        let tmp = TempDir::new().expect("tmp dir");
-        let host = open_ndb(&tmp);
+        let (_dir, host) = temp_ndb();
 
         // The host hands the engine a clone; dropping the engine (which stops the
         // loop) must not tear down the shared db.
@@ -410,69 +414,93 @@ mod tests {
     }
 
     /// End-to-end: an [`Engine`] pointed at a real (in-process) relay via
-    /// [`Transport::set_subscription`] streams a matching event from that relay
-    /// into its own db. Exercises the live pool: connect → `REQ` → ingest.
+    /// [`Transport::set_subscription`] streams a matching stored event from that
+    /// relay into its own db. Exercises the live pool: connect → `REQ` → ingest.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_subscription_streams_events_from_relay() {
-        // Seed a signed kind-1 event into the relay's db.
-        let srv_tmp = TempDir::new().expect("tmp dir");
-        let srv_ndb = open_ndb(&srv_tmp);
-        let seckey = [7u8; 32];
-        let note = NoteBuilder::new()
-            .kind(1)
-            .content("hello from the relay")
-            .sign(&seckey)
-            .build()
-            .expect("build note");
-        let note_id = *note.id();
-        srv_ndb
-            .process_client_event(&format!(r#"["EVENT",{}]"#, note.json().expect("note json")))
-            .expect("seed relay db");
-
-        let relay = nostrdb_net::relay::server::spawn(srv_ndb, "127.0.0.1:0".parse().unwrap())
-            .expect("spawn relay");
+        let (_relay_dir, relay_ndb) = temp_ndb();
+        let (note_json, id) = signed_note(1, "hello from the relay");
+        relay_ndb
+            .process_client_event(&event_frame(&note_json))
+            .expect("seed relay");
+        let relay = spawn_relay(relay_ndb.clone());
         let url = relay.url();
 
-        // Engine over its own db. Subscribe to a note-arrival stream *before*
-        // pointing the engine at the relay, so the engine's ingest wakes it.
-        let eng_tmp = TempDir::new().expect("tmp dir");
-        let mut engine = Engine::open(eng_tmp.path().to_str().expect("path")).expect("engine");
-        let filter = Filter::new().kinds([1]).build();
-        let sub = engine
-            .ndb()
-            .subscribe(std::slice::from_ref(&filter))
-            .expect("subscribe");
-        let mut stream = SubscriptionStream::new(engine.ndb().clone(), sub);
+        let eng_dir = TempDir::new().expect("tmp dir");
+        let mut engine = Engine::open(eng_dir.path().to_str().expect("path")).expect("engine");
+        engine.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
 
-        engine.set_subscription(SubscriptionSpec {
-            id: SubscriptionId::new("test", "live"),
-            relay: enostr::NormRelayUrl::new(&url).expect("relay url"),
-            live_filters: vec![Filter::new().kinds([1]).build()],
-            history_filters: vec![],
-        });
-
-        // Await the event landing in the engine db via the subscription stream
-        // (event-driven, with a backstop timeout so a stuck relay can't hang).
-        let arrived = tokio::time::timeout(Duration::from_secs(10), async {
-            while let Some(keys) = stream.next().await {
-                let txn = Transaction::new(engine.ndb()).expect("txn");
-                for key in keys {
-                    if let Ok(note) = engine.ndb().get_note_by_key(&txn, key) {
-                        if note.id() == &note_id {
-                            return true;
-                        }
-                    }
-                }
-            }
-            false
-        })
-        .await;
-
-        relay.shutdown();
-        assert_eq!(
-            arrived,
-            Ok(true),
+        assert!(
+            await_note(engine.ndb(), id, 1, Duration::from_secs(10)).await,
             "the relay's event should stream into the engine db"
         );
+        relay.shutdown();
+    }
+
+    /// End-to-end publish path: one engine `publish_event_json`s an event to a
+    /// relay, and a second engine `set_subscription`d to that relay receives it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publish_then_subscribe_round_trip() {
+        let (_relay_dir, relay_ndb) = temp_ndb();
+        let relay = spawn_relay(relay_ndb.clone());
+        let url = relay.url();
+
+        // Engine A publishes a kind-1 event to the relay.
+        let a_dir = TempDir::new().expect("tmp dir");
+        let mut engine_a = Engine::open(a_dir.path().to_str().expect("path")).expect("engine a");
+        let (note_json, id) = signed_note(1, "round trip");
+        engine_a.publish_event_json(
+            note_json,
+            vec![enostr::NormRelayUrl::new(&url).expect("url")],
+        );
+
+        // The relay ingests the published event.
+        assert!(
+            await_note(&relay_ndb, id, 1, Duration::from_secs(10)).await,
+            "relay should store the published event"
+        );
+
+        // Engine B subscribes and receives it via `REQ` replay.
+        let b_dir = TempDir::new().expect("tmp dir");
+        let mut engine_b = Engine::open(b_dir.path().to_str().expect("path")).expect("engine b");
+        engine_b.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
+
+        assert!(
+            await_note(engine_b.ndb(), id, 1, Duration::from_secs(10)).await,
+            "engine B should receive the published event from the relay"
+        );
+        relay.shutdown();
+    }
+
+    /// End-to-end NIP-77 negentropy backfill: the live filter deliberately does
+    /// not match (kind 9999) while the history filter does (kind 1), so the
+    /// seeded event can only reach the engine through the negentropy [`backfill`]
+    /// reconcile — the relay speaks `NEG-OPEN`, so this hits the real reconcile
+    /// path, not the plain-`REQ` fallback.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn negentropy_backfill_pulls_history() {
+        let (_relay_dir, relay_ndb) = temp_ndb();
+        let (note_json, id) = signed_note(1, "historical");
+        relay_ndb
+            .process_client_event(&event_frame(&note_json))
+            .expect("seed relay");
+        let relay = spawn_relay(relay_ndb.clone());
+        let url = relay.url();
+        // Make sure the seed is queryable before the engine reconciles against it.
+        assert!(await_note(&relay_ndb, id, 1, Duration::from_secs(5)).await);
+
+        let eng_dir = TempDir::new().expect("tmp dir");
+        let mut engine = Engine::open(eng_dir.path().to_str().expect("path")).expect("engine");
+        engine.set_subscription(spec(
+            &url,
+            vec![Filter::new().kinds([9999]).build()],
+            vec![Filter::new().kinds([1]).build()],
+        ));
+
+        assert!(
+            await_note(engine.ndb(), id, 1, Duration::from_secs(10)).await,
+            "the historical event should arrive via the negentropy backfill"
+        );
+        relay.shutdown();
     }
 }

@@ -21,6 +21,8 @@ pub mod session_events;
 pub mod session_jsonl;
 pub mod session_loader;
 pub mod session_reconstructor;
+#[cfg(test)]
+mod test_support;
 pub mod tool;
 pub mod tools;
 pub mod transport;
