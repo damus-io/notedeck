@@ -14,6 +14,7 @@
 //! | description edit  | `1624`  | gitworkshop cover note                     |
 //! | placement         | `30620` | addressable; `col` + fractional `rank`     |
 //! | relation          | `30621` | addressable; `d` = child, `parent` tag     |
+//! | sequence          | `30622` | addressable; `d` = `<container>:<issue>`   |
 //!
 //! Effective state is resolved as **latest-authorised-wins** for every overlay
 //! (placement, subject, cover note, and labels — each label event carries the
@@ -51,6 +52,12 @@ pub const KIND_COMMENT: u32 = 1111;
 /// re-parenting republishes the slot and a relation with no `parent` tag
 /// detaches. See `crates/notedeck_headway/docs/subissues-design.md`.
 pub const KIND_RELATION: u32 = 30621;
+/// Headway card sequence: addressable, `d` = `<container>:<issue-id>`, records a
+/// fractional `rank` positioning the card within a [`Container`] (board root or
+/// parent card). The cross-cutting work-order axis — orthogonal to the column
+/// `rank` on [`KIND_PLACEMENT`] — resolved latest-authorised-wins. See the
+/// `birth-plate-alien` card design.
+pub const KIND_SEQUENCE: u32 = 30622;
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
@@ -408,6 +415,23 @@ pub fn build_relation<'a>(child: &NoteId, parent: Option<&NoteId>) -> NoteBuilde
     b
 }
 
+/// Build a sequence event (kind 30622) positioning `issue` at fractional `rank`
+/// within `container`. Addressable by `d = <container>:<issue-id>` so republishing
+/// supersedes the previous position latest-authorised-wins. `rank` comes from
+/// [`rank_between`], the same kernel that ranks cards within a column.
+pub fn build_sequence<'a>(container: &Container, issue: &NoteId, rank: &str) -> NoteBuilder<'a> {
+    base(KIND_SEQUENCE, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(&format!("{}:{}", container.wire(), issue.hex()))
+        .start_tag()
+        .tag_str("e")
+        .tag_id(issue.bytes())
+        .start_tag()
+        .tag_str("rank")
+        .tag_str(rank)
+}
+
 /// Build a cover note (kind 1624) — the editable card description for `issue`.
 pub fn build_cover_note<'a>(issue: &NoteId, author: &Pubkey, body: &'a str) -> NoteBuilder<'a> {
     base(KIND_COVER_NOTE, body)
@@ -552,6 +576,59 @@ pub struct CoverNote {
     pub created_at: u64,
 }
 
+/// The scope a [`SequenceEvent`] ranks a card within: a card is sequenced among
+/// the siblings of one container. The container is the *only* varying part of the
+/// ordering — the same fractional-rank kernel ([`rank_between`]) positions a card
+/// within a column (today's [`PlacementEvent::rank`]), within a board's top level,
+/// or within a parent card. v1 carries the latter two; the `<type>:` wire prefix
+/// leaves room for future grouping containers (milestone/cycle/project) with no
+/// wire change. See the `birth-plate-alien` card design.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Container {
+    /// A board's top level: orders the board's cards across columns. Carries the
+    /// board id (its slug).
+    BoardRoot(String),
+    /// A parent card: orders that card's subissues. Carries the parent issue id.
+    Card([u8; 32]),
+}
+
+impl Container {
+    /// The wire form used as the leading segments of a sequence event's `d` tag:
+    /// `board:<board-id>` or `card:<parent-hex>`. Neither a board slug nor a hex
+    /// id contains `:`, so it round-trips through [`Container::parse`].
+    pub fn wire(&self) -> String {
+        match self {
+            Container::BoardRoot(id) => format!("board:{id}"),
+            Container::Card(id) => format!("card:{}", NoteId::new(*id).hex()),
+        }
+    }
+
+    /// Parse the container portion of a `d` tag (everything before the trailing
+    /// `:<issue-hex>`). `None` for an unknown type or a malformed id.
+    pub fn parse(s: &str) -> Option<Container> {
+        let (kind, id) = s.split_once(':')?;
+        match kind {
+            "board" => Some(Container::BoardRoot(id.to_string())),
+            "card" => Some(Container::Card(*NoteId::from_hex(id).ok()?.bytes())),
+            _ => None,
+        }
+    }
+}
+
+/// A card's fractional position within a [`Container`] — the cross-cutting
+/// work-order rank. Addressable overlay (kind 30622), latest-authorised-wins.
+/// `rank` is a [`rank_between`] string, compared lexicographically; absent
+/// (never published) means the card is unsequenced and falls back to creation
+/// order.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SequenceEvent {
+    pub author: [u8; 32],
+    pub container: Container,
+    pub issue_id: [u8; 32],
+    pub rank: String,
+    pub created_at: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RelationEvent {
     pub author: [u8; 32],
@@ -588,6 +665,7 @@ pub enum HeadwayEvent {
     Cover(CoverNote),
     Comment(CommentEvent),
     Relation(RelationEvent),
+    Sequence(SequenceEvent),
 }
 
 /// Parse a note into a [`HeadwayEvent`], or `None` if it isn't a recognised /
@@ -601,6 +679,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_COVER_NOTE => parse_cover(note).map(HeadwayEvent::Cover),
         KIND_COMMENT => parse_comment(note).map(HeadwayEvent::Comment),
         KIND_RELATION => parse_relation(note).map(HeadwayEvent::Relation),
+        KIND_SEQUENCE => parse_sequence(note).map(HeadwayEvent::Sequence),
         _ => None,
     }
 }
@@ -830,6 +909,38 @@ fn parse_relation(note: &Note) -> Option<RelationEvent> {
     })
 }
 
+fn parse_sequence(note: &Note) -> Option<SequenceEvent> {
+    let mut issue_id = None;
+    let mut container = None;
+    let mut rank = None;
+
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            Some("e") => issue_id = tag.get_id(1).copied(),
+            Some("d") => container = tag.get_str(1).and_then(container_from_d),
+            Some("rank") => rank = tag.get_str(1).map(|s| s.to_owned()),
+            _ => {}
+        }
+    }
+
+    Some(SequenceEvent {
+        author: *note.pubkey(),
+        container: container?,
+        issue_id: issue_id?,
+        rank: rank?,
+        created_at: note.created_at(),
+    })
+}
+
+/// Split a sequence `d` tag (`<container>:<issue-hex>`) into its [`Container`],
+/// peeling the trailing issue hex off the end. A container's own id (a board slug
+/// or a parent hex) never contains `:`, so `rsplit_once` cleanly separates the
+/// issue suffix from the container prefix.
+fn container_from_d(d: &str) -> Option<Container> {
+    let (container, _issue_hex) = d.rsplit_once(':')?;
+    Container::parse(container)
+}
+
 /// Parse a `30619:<author-hex>:<board-id>` address into `(author, board_id)`.
 fn parse_board_address(addr: &str) -> Option<([u8; 32], String)> {
     let mut parts = addr.splitn(3, ':');
@@ -928,6 +1039,10 @@ pub struct SubissueView {
     pub done: bool,
     /// The child has no live placement but at least one archived one.
     pub archived: bool,
+    /// Work-order rank of this child within its parent (fractional), `None` when
+    /// unsequenced — sequenced children sort ahead of unsequenced ones, which
+    /// keep their creation order. See the `birth-plate-alien` design.
+    pub seq: Option<String>,
 }
 
 /// A card as rendered: a stable id plus its resolved fields.
@@ -950,6 +1065,11 @@ pub struct CardView {
     pub estimate: Option<u32>,
     /// Fractional rank within its column; cards are sorted ascending.
     pub rank: String,
+    /// Cross-cutting work-order rank within the board root (fractional, sorted
+    /// ascending), `None` when the card was never sequenced. Independent of
+    /// [`CardView::rank`] — that is the within-column spatial order, this is the
+    /// board-wide "what to work on next" order. See the `birth-plate-alien` design.
+    pub seq: Option<String>,
     /// `created_at` of the winning placement (0 if the card is unplaced). A
     /// re-placement (move/delete/archive) must stamp a strictly-greater
     /// timestamp so it wins latest-wins even within the same wall-clock second.
@@ -971,7 +1091,8 @@ pub struct CardView {
     pub activity: Vec<ActivityView>,
     /// The parent card when this one is a subissue (authorised relation slot).
     pub parent: Option<NoteId>,
-    /// Direct subissues, ordered by child `(created_at, id)`.
+    /// Direct subissues in work-order: sequenced children first (by `seq` rank),
+    /// then unsequenced ones by `(created_at, id)`. See [`SubissueView::seq`].
     pub subissues: Vec<SubissueView>,
 }
 
@@ -1043,6 +1164,7 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
         "due": card.due.map(|d| d.to_string()),
         "estimate": card.estimate,
         "rank": card.rank,
+        "seq": card.seq,
         "created_at": card.created_at,
         "updated_at": card.updated_at,
         "parent": card.parent.map(|p| p.hex()),
@@ -1054,6 +1176,7 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
             "column": s.column,
             "done": s.done,
             "archived": s.archived,
+            "seq": s.seq,
         })).collect::<Vec<_>>(),
         "comments": card.comments.iter().map(comment_json).collect::<Vec<_>>(),
         "activity": card.activity.iter().map(activity_json).collect::<Vec<_>>(),
@@ -1177,6 +1300,11 @@ pub struct BoardReducer {
     /// Latest-authorised-wins like every other overlay; authority needs the
     /// issue maps so it's checked at resolve time, not here.
     relations: HashMap<[u8; 32], RelationEvent>,
+    /// Latest sequence overlay per `(container, issue)` — the card's fractional
+    /// work-order rank within that container (board root or parent card).
+    /// Latest-authorised-wins; authority needs the issue maps so it's checked at
+    /// resolve time, not here (like placements). Absent = the card is unsequenced.
+    seqs: HashMap<(Container, [u8; 32]), SequenceEvent>,
     /// Full mutation history per issue, feeding the derived activity timeline
     /// ([`CardView::activity`]). The overlays above keep only the winner;
     /// nostrdb keeps every superseded event, so the fold sees them all and this
@@ -1269,6 +1397,19 @@ impl BoardReducer {
                     .is_none_or(|cur| newer(r.created_at, &r.author, cur.created_at, &cur.author))
                 {
                     self.relations.insert(r.child_id, r);
+                }
+            }
+            HeadwayEvent::Sequence(s) => {
+                // Deliberately not remembered into activity history: reseqs are
+                // high-churn work-order shuffles and would bury meaningful events
+                // (moves, renames) in noise. See the `birth-plate-alien` design.
+                let key = (s.container.clone(), s.issue_id);
+                if self
+                    .seqs
+                    .get(&key)
+                    .is_none_or(|cur| newer(s.created_at, &s.author, cur.created_at, &cur.author))
+                {
+                    self.seqs.insert(key, s);
                 }
             }
         }
@@ -1515,6 +1656,7 @@ impl BoardReducer {
         child_id: &[u8; 32],
         board_author: &[u8; 32],
         board_id: &str,
+        seq: Option<String>,
     ) -> Option<SubissueView> {
         let child = self.issues.get(child_id)?;
         let authorised = |who: &[u8; 32]| who == &child.author || who == board_author;
@@ -1595,6 +1737,7 @@ impl BoardReducer {
             column,
             done,
             archived,
+            seq,
         })
     }
 
@@ -1697,20 +1840,57 @@ impl BoardReducer {
         // This card as a parent: every issue whose authorised relation names it.
         // One level only — a cycle renders as two cards pointing at each other,
         // never a loop (the write path refuses to create one; see store::apply).
-        let mut children: Vec<&RelationEvent> = self
+        let children: Vec<&RelationEvent> = self
             .relations
             .values()
             .filter(|r| r.parent_id.as_ref() == Some(&issue.id))
             .filter(|r| self.relation_authorised(r, board_author))
             .collect();
-        children.sort_by_key(|r| {
-            let child = self.issues.get(&r.child_id);
-            (child.map_or(u64::MAX, |c| c.created_at), r.child_id)
+        // Each child's work-order rank is scoped to THIS card as its container,
+        // authorised like the relation edge: the child's author, this parent's
+        // author, or the board author may sequence it.
+        let child_seq = |child_id: &[u8; 32]| -> Option<String> {
+            let entry = self.seqs.get(&(Container::Card(issue.id), *child_id))?;
+            let child_author = self.issues.get(child_id).map(|c| c.author);
+            let ok = &entry.author == board_author
+                || child_author == Some(entry.author)
+                || entry.author == issue.author;
+            ok.then(|| entry.rank.clone())
+        };
+        let mut children: Vec<(&RelationEvent, Option<String>)> = children
+            .into_iter()
+            .map(|r| {
+                let seq = child_seq(&r.child_id);
+                (r, seq)
+            })
+            .collect();
+        // Sequenced children lead in rank order; unsequenced fall back to creation
+        // order (`created_at`, then id). `is_none()` sorts false < true, so a
+        // sequenced (`Some`) child always precedes an unsequenced (`None`) one.
+        children.sort_by_cached_key(|(r, seq)| {
+            let created = self
+                .issues
+                .get(&r.child_id)
+                .map_or(u64::MAX, |c| c.created_at);
+            (
+                seq.is_none(),
+                seq.clone().unwrap_or_default(),
+                created,
+                r.child_id,
+            )
         });
         let subissues = children
             .into_iter()
-            .filter_map(|r| self.subissue_view(&r.child_id, board_author, board_id))
+            .filter_map(|(r, seq)| self.subissue_view(&r.child_id, board_author, board_id, seq))
             .collect();
+
+        // Board-root work-order rank for this card, authorised like its own
+        // overlays (the card author or the board author may sequence it).
+        let seq = self
+            .seqs
+            .get(&(Container::BoardRoot(board_id.to_string()), issue.id))
+            .filter(|e| authorised(&e.author))
+            .map(|e| e.rank.clone());
 
         CardView {
             id: NoteId::new(issue.id),
@@ -1722,6 +1902,7 @@ impl BoardReducer {
             due,
             estimate,
             rank,
+            seq,
             placed_at,
             created_at: issue.created_at,
             updated_at,
@@ -2961,6 +3142,185 @@ mod tests {
         let child = todo.cards.iter().find(|c| c.id == c2).unwrap();
         assert_eq!(child.parent, Some(epic));
         assert!(child.subissues.is_empty());
+    }
+
+    /// A sequence event round-trips through build/parse for both container kinds,
+    /// preserving the container, issue, and rank.
+    #[test]
+    fn sequence_event_roundtrips() {
+        let kp = FullKeypair::generate();
+        let addr = board_address(&kp.pubkey, "b1");
+        let issue = note_id(&kp, build_issue(&addr, "Card", ""));
+        let parent = note_id(&kp, build_issue(&addr, "Parent", ""));
+
+        for container in [
+            Container::BoardRoot("b1".into()),
+            Container::Card(*parent.bytes()),
+        ] {
+            let ev = roundtrip(build_sequence(&container, &issue, "an"), &kp);
+            let HeadwayEvent::Sequence(s) = ev else {
+                panic!("expected sequence");
+            };
+            assert_eq!(s.container, container);
+            assert_eq!(s.issue_id, *issue.bytes());
+            assert_eq!(s.rank, "an");
+        }
+    }
+
+    /// The container wire form round-trips through parse for both kinds, and an
+    /// unknown type is rejected.
+    #[test]
+    fn container_wire_roundtrips() {
+        let card = Container::Card([7u8; 32]);
+        let root = Container::BoardRoot("my-board".into());
+        assert_eq!(Container::parse(&card.wire()), Some(card));
+        assert_eq!(Container::parse(&root.wire()), Some(root));
+        assert_eq!(Container::parse("bogus:xyz"), None);
+    }
+
+    /// Subissues sort by sequence: sequenced children lead in rank order, then
+    /// unsequenced ones fall back to creation order.
+    #[test]
+    fn reduce_orders_subissues_by_sequence() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+        let epic = note_id(&owner, build_issue(&addr, "Epic", "").created_at(1_000));
+        let c1 = note_id(
+            &owner,
+            build_issue(&addr, "Child one", "").created_at(1_001),
+        );
+        let c2 = note_id(
+            &owner,
+            build_issue(&addr, "Child two", "").created_at(1_002),
+        );
+        let c3 = note_id(
+            &owner,
+            build_issue(&addr, "Child three", "").created_at(1_003),
+        );
+
+        let epic_container = Container::Card(*epic.bytes());
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Epic", "").created_at(1_000), &owner),
+            parse_owned(
+                build_issue(&addr, "Child one", "").created_at(1_001),
+                &owner,
+            ),
+            parse_owned(
+                build_issue(&addr, "Child two", "").created_at(1_002),
+                &owner,
+            ),
+            parse_owned(
+                build_issue(&addr, "Child three", "").created_at(1_003),
+                &owner,
+            ),
+            parse_owned(build_placement("b1", &addr, &epic, "todo", "g"), &owner),
+            parse_owned(build_placement("b1", &addr, &c1, "todo", "h"), &owner),
+            parse_owned(build_placement("b1", &addr, &c2, "todo", "i"), &owner),
+            parse_owned(build_placement("b1", &addr, &c3, "todo", "j"), &owner),
+            parse_owned(build_relation(&c1, Some(&epic)), &owner),
+            parse_owned(build_relation(&c2, Some(&epic)), &owner),
+            parse_owned(build_relation(&c3, Some(&epic)), &owner),
+            // Sequence c3 before c2 within the epic; leave c1 unsequenced.
+            parse_owned(build_sequence(&epic_container, &c3, "g"), &owner),
+            parse_owned(build_sequence(&epic_container, &c2, "m"), &owner),
+        ];
+
+        let views = reduce(&events);
+        let epic_card = views[0].columns[0]
+            .cards
+            .iter()
+            .find(|c| c.id == epic)
+            .unwrap();
+        let order: Vec<&str> = epic_card
+            .subissues
+            .iter()
+            .map(|s| s.title.as_str())
+            .collect();
+        assert_eq!(order, ["Child three", "Child two", "Child one"]);
+        assert_eq!(epic_card.subissues[0].seq.as_deref(), Some("g"));
+        assert_eq!(epic_card.subissues[1].seq.as_deref(), Some("m"));
+        assert_eq!(epic_card.subissues[2].seq, None);
+    }
+
+    /// A board-root sequence overlay resolves onto a top-level card's `seq`,
+    /// leaving its column `rank` untouched (independent axes).
+    #[test]
+    fn reduce_resolves_board_root_sequence() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+        let card = note_id(&owner, build_issue(&addr, "Card", "").created_at(1_000));
+        let root = Container::BoardRoot("b1".into());
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Card", "").created_at(1_000), &owner),
+            parse_owned(build_placement("b1", &addr, &card, "todo", "m"), &owner),
+            parse_owned(build_sequence(&root, &card, "an"), &owner),
+        ];
+        let views = reduce(&events);
+        let cv = views[0].columns[0]
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .unwrap();
+        assert_eq!(cv.seq.as_deref(), Some("an"));
+        assert_eq!(cv.rank, "m");
+    }
+
+    /// A newer authorised sequence supersedes an older one; a stranger's newer
+    /// sequence shadows the slot but is ignored at resolve (like other overlays).
+    #[test]
+    fn sequence_latest_authorised_wins_and_ignores_strangers() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+        let card = note_id(&owner, build_issue(&addr, "Card", "").created_at(1_000));
+        let root = Container::BoardRoot("b1".into());
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Card", "").created_at(1_000), &owner),
+            parse_owned(build_placement("b1", &addr, &card, "todo", "m"), &owner),
+            parse_owned(build_sequence(&root, &card, "g").created_at(2_000), &owner),
+        ];
+        let find_seq = |evs: &[HeadwayEvent]| -> Option<String> {
+            reduce(evs)[0].columns[0]
+                .cards
+                .iter()
+                .find(|c| c.id == card)
+                .unwrap()
+                .seq
+                .clone()
+        };
+        assert_eq!(find_seq(&events).as_deref(), Some("g"));
+
+        // Newer authorised reseq wins.
+        events.push(parse_owned(
+            build_sequence(&root, &card, "t").created_at(3_000),
+            &owner,
+        ));
+        assert_eq!(find_seq(&events).as_deref(), Some("t"));
+
+        // A stranger's even-newer seq shadows the slot but isn't honoured.
+        events.push(parse_owned(
+            build_sequence(&root, &card, "z").created_at(4_000),
+            &stranger,
+        ));
+        assert_eq!(find_seq(&events), None, "stranger ignored");
     }
 
     /// The relation slot is latest-authorised-wins: a newer relation re-parents,

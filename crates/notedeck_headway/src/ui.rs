@@ -3205,6 +3205,7 @@ mod tests {
             due: None,
             estimate: None,
             rank: String::new(),
+            seq: None,
             placed_at: 0,
             created_at: 0,
             updated_at: 0,

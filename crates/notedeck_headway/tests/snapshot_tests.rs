@@ -286,6 +286,7 @@ fn snapshot_inline_card() {
         subissues: vec![],
         due: None,
         estimate: None,
+        seq: None,
     };
 
     let mut installed = false;
