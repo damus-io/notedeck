@@ -14,8 +14,9 @@ use nostrdb::{Config, Filter, Ndb, NoteBuilder, SubscriptionStream, Transaction}
 use nostrdb_net::relay::server::{self, RelayHandle};
 use tempfile::TempDir;
 
-/// A fixed, deterministic secret key for signing test events.
-const TEST_SECKEY: [u8; 32] = [7u8; 32];
+/// A fixed, deterministic secret key for signing test events. Doubles as the
+/// engine device key in tests, so signed events author-match the engine.
+pub(crate) const TEST_SECKEY: [u8; 32] = [7u8; 32];
 
 /// Open a fresh nostrdb under a throwaway directory. The returned [`TempDir`]
 /// must be kept alive for as long as the db is used.

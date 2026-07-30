@@ -23,6 +23,17 @@
 //! borrowed `&Ndb` couldn't move into the task — a cloned `Ndb` is exactly
 //! right.
 //!
+//! # Identity
+//!
+//! The engine is constructed with a single 32-byte `device_key`. From it the
+//! account keypair is derived (it signs the inner session events — kinds 1988 /
+//! 31988 / 31989) and, via HKDF, the PNS keys (which wrap those events in
+//! kind-1080 envelopes for the wire). Two devices sharing a session share this
+//! one key, so each can sign as the same author and decrypt the other's
+//! envelopes. The key is also registered with the database ([`Ndb::add_key`]) so
+//! nostrdb's ingest threads unwrap inbound PNS envelopes into queryable inner
+//! events without any per-event work by the engine.
+//!
 //! # Relay loop
 //!
 //! Construction `tokio::spawn`s a background task ([`engine_loop`]) that owns a
@@ -72,6 +83,18 @@ use crate::transport::{SubscriptionId, SubscriptionSpec, Transport};
 /// under the relay's single-`REQ` replay cap (mirrors nostrdb_net's sync).
 const ID_FETCH_CHUNK: usize = 300;
 
+/// An error from constructing or driving the [`Engine`].
+#[derive(Debug, thiserror::Error)]
+pub enum EngineError {
+    /// Opening the underlying nostrdb failed.
+    #[error("nostrdb error: {0}")]
+    Ndb(#[from] nostrdb::Error),
+    /// The 32-byte device key is not a valid secp256k1 secret (zero or ≥ the
+    /// curve order), so no signing identity can be derived from it.
+    #[error("invalid device key: not a valid secp256k1 secret")]
+    InvalidDeviceKey,
+}
+
 /// How often the loop pings/reconnects relays to keep the pool alive.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -95,11 +118,16 @@ enum EngineCmd {
 
 /// The standalone agentium engine.
 ///
-/// See the module docs for db ownership and the relay loop. The [`Transport`]
-/// impl enqueues onto the loop; drop the engine to stop the loop (the command
-/// channel closes and the task returns).
+/// See the module docs for db ownership, identity, and the relay loop. The
+/// [`Transport`] impl enqueues onto the loop; drop the engine to stop the loop
+/// (the command channel closes and the task returns).
 pub struct Engine {
     ndb: Ndb,
+    /// The single device identity. Its secret key signs the inner session
+    /// events (kind 1988/31988/31989) and is the root from which the PNS keys
+    /// are derived; both devices sharing a session share this key. See the
+    /// module docs.
+    account: enostr::FullKeypair,
     cmd_tx: mpsc::UnboundedSender<EngineCmd>,
 }
 
@@ -107,9 +135,11 @@ impl Engine {
     /// Open a standalone engine over its own nostrdb at `path` (created if
     /// absent). Use this on a host that has no existing database of its own.
     /// Must be called from within a Tokio runtime (spawns the relay loop).
-    pub fn open(path: &str) -> Result<Self, nostrdb::Error> {
+    ///
+    /// `device_key` is the 32-byte account secret — see [`Engine::with_ndb`].
+    pub fn open(path: &str, device_key: [u8; 32]) -> Result<Self, EngineError> {
         let ndb = Ndb::new(path, &nostrdb::Config::new())?;
-        Ok(Self::with_ndb(ndb))
+        Self::with_ndb(ndb, device_key)
     }
 
     /// Build an engine over an existing database, taking a cheap [`Ndb`] clone.
@@ -117,15 +147,39 @@ impl Engine {
     /// host share one database and neither's drop tears it down while the other
     /// still holds a handle. Must be called from within a Tokio runtime (spawns
     /// the relay loop).
-    pub fn with_ndb(ndb: Ndb) -> Self {
+    ///
+    /// `device_key` is the 32-byte account secret. It is registered with the
+    /// database via [`Ndb::add_key`] so nostrdb's ingest threads decrypt inbound
+    /// kind-1080 PNS envelopes into their queryable inner events, and it is the
+    /// engine's signing/derivation identity. Fails with
+    /// [`EngineError::InvalidDeviceKey`] if the bytes are not a valid secp256k1
+    /// secret.
+    pub fn with_ndb(ndb: Ndb, device_key: [u8; 32]) -> Result<Self, EngineError> {
+        let account = enostr::FullKeypair::from_secret_bytes(&device_key)
+            .ok_or(EngineError::InvalidDeviceKey)?;
+        // Register the key so ndb can decrypt inbound PNS envelopes in-thread.
+        // A `false` return means the key was already present, which is benign.
+        if !ndb.add_key(&device_key) {
+            tracing::debug!("engine: device key already registered with ndb");
+        }
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         tokio::spawn(engine_loop(ndb.clone(), cmd_rx));
-        Self { ndb, cmd_tx }
+        Ok(Self {
+            ndb,
+            account,
+            cmd_tx,
+        })
     }
 
     /// The engine's database handle.
     pub fn ndb(&self) -> &Ndb {
         &self.ndb
+    }
+
+    /// The account public key that signs this engine's session events (and that
+    /// its author-scoped reads filter on).
+    pub fn account_pubkey(&self) -> enostr::Pubkey {
+        self.account.pubkey
     }
 }
 
@@ -375,7 +429,9 @@ fn local_negentropy_set(ndb: &Ndb, filter: &Filter) -> Result<NegentropyStorageV
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{await_note, event_frame, signed_note, spawn_relay, temp_ndb};
+    use crate::test_support::{
+        await_note, event_frame, signed_note, spawn_relay, temp_ndb, TEST_SECKEY,
+    };
     use tempfile::TempDir;
 
     /// A test [`SubscriptionSpec`] targeting `url`.
@@ -391,7 +447,7 @@ mod tests {
     #[tokio::test]
     async fn open_creates_a_usable_db() {
         let tmp = TempDir::new().expect("tmp dir");
-        let engine = Engine::open(tmp.path().to_str().expect("path")).expect("open");
+        let engine = Engine::open(tmp.path().to_str().expect("path"), TEST_SECKEY).expect("open");
         // A fresh db opens a transaction without error.
         Transaction::new(engine.ndb()).expect("txn");
     }
@@ -402,7 +458,7 @@ mod tests {
 
         // The host hands the engine a clone; dropping the engine (which stops the
         // loop) must not tear down the shared db.
-        let engine = Engine::with_ndb(host.clone());
+        let engine = Engine::with_ndb(host.clone(), TEST_SECKEY).expect("engine");
         drop(engine);
         Transaction::new(&host).expect("host db still usable after engine drop");
     }
@@ -427,7 +483,8 @@ mod tests {
         let url = relay.url();
 
         let eng_dir = TempDir::new().expect("tmp dir");
-        let mut engine = Engine::open(eng_dir.path().to_str().expect("path")).expect("engine");
+        let mut engine =
+            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
         engine.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
 
         assert!(
@@ -447,7 +504,8 @@ mod tests {
 
         // Engine A publishes a kind-1 event to the relay.
         let a_dir = TempDir::new().expect("tmp dir");
-        let mut engine_a = Engine::open(a_dir.path().to_str().expect("path")).expect("engine a");
+        let mut engine_a =
+            Engine::open(a_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine a");
         let (note_json, id) = signed_note(1, "round trip");
         engine_a.publish_event_json(
             note_json,
@@ -462,7 +520,8 @@ mod tests {
 
         // Engine B subscribes and receives it via `REQ` replay.
         let b_dir = TempDir::new().expect("tmp dir");
-        let mut engine_b = Engine::open(b_dir.path().to_str().expect("path")).expect("engine b");
+        let mut engine_b =
+            Engine::open(b_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine b");
         engine_b.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
 
         assert!(
@@ -490,7 +549,8 @@ mod tests {
         assert!(await_note(&relay_ndb, id, 1, Duration::from_secs(5)).await);
 
         let eng_dir = TempDir::new().expect("tmp dir");
-        let mut engine = Engine::open(eng_dir.path().to_str().expect("path")).expect("engine");
+        let mut engine =
+            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
         engine.set_subscription(spec(
             &url,
             vec![Filter::new().kinds([9999]).build()],
