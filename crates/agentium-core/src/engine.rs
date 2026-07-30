@@ -426,6 +426,66 @@ impl Engine {
         self.publish_session_event(built)
     }
 
+    /// Respond to a pending question-set permission request.
+    ///
+    /// Some permission requests aren't a plain allow/deny but a structured
+    /// [`AskUserQuestion`](crate::messages::PermissionView::QuestionSet) prompt —
+    /// one or more questions, each with selectable options. This resolves the
+    /// request's note id, maps each answer's selected option *indices* back to
+    /// their option *labels*, and publishes an approving kind-1988 response whose
+    /// message carries the `{"answers": {header: {selected:[…], other:…}}}`
+    /// payload the host decodes as the tool result.
+    ///
+    /// `answers` is positional: `answers[i]` answers the request's `i`th question.
+    /// Errors with [`EngineError::UnknownPermission`] if no request with
+    /// `request_id` is present in the session.
+    pub fn respond_question(
+        &mut self,
+        session_id: &str,
+        request_id: &str,
+        answers: Vec<crate::messages::QuestionAnswer>,
+    ) -> Result<(), EngineError> {
+        let perm_uuid =
+            uuid::Uuid::parse_str(request_id).map_err(|_| EngineError::InvalidPermId)?;
+
+        let (request_note_id, payload) = {
+            let txn = Transaction::new(&self.ndb)?;
+            let loaded = crate::session_loader::load_session_messages_for_author(
+                &self.ndb,
+                &txn,
+                &self.account.pubkey,
+                session_id,
+            );
+            let Some(request_note_id) =
+                loaded.permissions.request_note_ids.get(&perm_uuid).copied()
+            else {
+                return Err(EngineError::UnknownPermission);
+            };
+            // Pull the option labels off the original request so selected indices
+            // can be resolved to human-readable answers.
+            let questions = loaded.messages.iter().find_map(|msg| match msg {
+                Message::PermissionRequest(req) if req.id == perm_uuid => req.view.question_set(),
+                _ => None,
+            });
+            (
+                request_note_id,
+                format_question_answers(questions, &answers),
+            )
+        };
+
+        let built = crate::session_events::build_permission_response_event(
+            &perm_uuid,
+            &request_note_id,
+            true,
+            Some(&payload),
+            false,
+            session_id,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))?;
+        self.publish_session_event(built)
+    }
+
     /// Request a permission-mode change on a session's host (e.g. `"default"`,
     /// `"acceptEdits"`, `"plan"`). Publishes a kind-1988 command the host applies
     /// to its local backend.
@@ -529,6 +589,55 @@ impl SessionWatch {
 /// The stable transport subscription id for the PNS discovery subscription.
 fn pns_discovery_sub_id() -> SubscriptionId {
     SubscriptionId::new("agentium/pns", "discovery")
+}
+
+/// Format question-set answers into the `{"answers": {header: {selected:[…],
+/// other:…}}}` payload the host decodes as the tool result.
+///
+/// Each answer's selected option *indices* are mapped back to their option
+/// *labels* using `questions`, keyed by the question's header (falling back to
+/// `question_{i}` when a header is empty). When the request's option labels
+/// aren't available (`questions` is `None`), the raw answers are serialized
+/// directly as a best-effort fallback.
+fn format_question_answers(
+    questions: Option<&crate::messages::QuestionSetInput>,
+    answers: &[crate::messages::QuestionAnswer],
+) -> String {
+    let Some(questions) = questions else {
+        return serde_json::to_string(answers).unwrap_or_else(|_| "{}".to_string());
+    };
+
+    let mut answers_obj = serde_json::Map::new();
+    for (q_idx, (question, answer)) in questions.questions.iter().zip(answers.iter()).enumerate() {
+        let mut answer_obj = serde_json::Map::new();
+
+        let selected_labels: Vec<serde_json::Value> = answer
+            .selected
+            .iter()
+            .filter_map(|&idx| question.options.get(idx))
+            .map(|opt| serde_json::Value::String(opt.label.clone()))
+            .collect();
+        answer_obj.insert(
+            "selected".to_string(),
+            serde_json::Value::Array(selected_labels),
+        );
+
+        if let Some(other) = answer.other_text.as_ref().filter(|other| !other.is_empty()) {
+            answer_obj.insert(
+                "other".to_string(),
+                serde_json::Value::String(other.clone()),
+            );
+        }
+
+        let key = if question.header.is_empty() {
+            format!("question_{q_idx}")
+        } else {
+            question.header.clone()
+        };
+        answers_obj.insert(key, serde_json::Value::Object(answer_obj));
+    }
+
+    serde_json::json!({ "answers": answers_obj }).to_string()
 }
 
 /// The current Unix time in seconds.
@@ -811,6 +920,32 @@ mod tests {
             .expect("ingest pns envelope");
     }
 
+    /// The `message` field from the newest `permission_response` event on
+    /// `session_id` in `ndb`, i.e. the answer payload `respond_question` /
+    /// `respond_permission` publishes. `None` if no response is present.
+    fn latest_permission_response_message(ndb: &Ndb, session_id: &str) -> Option<String> {
+        let txn = Transaction::new(ndb).expect("txn");
+        let filter = Filter::new()
+            .kinds([AI_CONVERSATION_KIND as u64])
+            .tags([session_id], 'd')
+            .build();
+        let results = ndb.query(&txn, &[filter], 100).expect("query");
+        // Newest first: query returns created_at-descending, so take the first
+        // note tagged as a permission_response.
+        for result in results {
+            let note = &result.note;
+            if crate::session_events::get_tag_value(note, "role") != Some("permission_response") {
+                continue;
+            }
+            let content: serde_json::Value = serde_json::from_str(note.content()).ok()?;
+            return content
+                .get("message")
+                .and_then(|m| m.as_str())
+                .map(ToOwned::to_owned);
+        }
+        None
+    }
+
     /// The read API surfaces a session and its conversation once the PNS
     /// envelopes carrying them have been decrypted into the engine's db.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1065,6 +1200,126 @@ mod tests {
                 false,
             )
             .expect("respond");
+    }
+
+    /// A question-set response, like a plain one, needs its request known first.
+    #[tokio::test]
+    async fn respond_question_requires_a_known_request() {
+        let dir = TempDir::new().expect("tmp dir");
+        let mut engine =
+            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+
+        let unknown = uuid::Uuid::new_v4().to_string();
+        assert!(matches!(
+            engine.respond_question("s", &unknown, vec![]),
+            Err(EngineError::UnknownPermission)
+        ));
+        assert!(matches!(
+            engine.respond_question("s", "not-a-uuid", vec![]),
+            Err(EngineError::InvalidPermId)
+        ));
+    }
+
+    /// Seeding an `AskUserQuestion` request and answering it publishes an
+    /// approving response whose message carries the answers keyed by question
+    /// header, with selected *indices* resolved to option *labels*.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn respond_question_formats_selected_labels_by_header() {
+        use crate::messages::QuestionAnswer;
+        use crate::session_events::{build_permission_request_event, ThreadingState};
+
+        let dir = TempDir::new().expect("tmp dir");
+        let mut engine =
+            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let session_id = "question-session";
+        let perm_id = uuid::Uuid::new_v4();
+
+        // An AskUserQuestion request with one multi-select question. The view is
+        // inferred as PermissionView::QuestionSet from the tool name + shape.
+        let tool_input = serde_json::json!({
+            "questions": [{
+                "question": "Which languages?",
+                "header": "Languages",
+                "multiSelect": true,
+                "options": [
+                    { "label": "Rust", "description": "systems" },
+                    { "label": "Swift", "description": "apple" },
+                    { "label": "Zig", "description": "small" },
+                ],
+            }],
+        });
+        let mut threading = ThreadingState::new();
+        let req = build_permission_request_event(
+            &perm_id,
+            "AskUserQuestion",
+            &tool_input,
+            session_id,
+            &mut threading,
+            &TEST_SECKEY,
+        )
+        .expect("request event");
+        pns_seed(engine.ndb(), &req.note_json);
+        assert!(
+            await_note(
+                engine.ndb(),
+                req.note_id,
+                AI_CONVERSATION_KIND as u64,
+                Duration::from_secs(5)
+            )
+            .await,
+            "the question request must be queryable before answering"
+        );
+
+        // The request must round-trip into a QuestionSet view for the answer
+        // formatting to resolve labels (rather than fall back to raw answers).
+        let messages = engine.session_messages(session_id);
+        assert!(
+            messages.iter().any(|m| matches!(
+                m,
+                Message::PermissionRequest(p) if p.view.question_set().is_some()
+            )),
+            "seeded request should surface as a QuestionSet"
+        );
+
+        // Answer by selecting options 0 and 2 (Rust, Zig) plus an "Other". Watch
+        // for the response before answering, so the subscription can't miss an
+        // ingest that races ahead of us.
+        let mut watch = engine.watch_session(session_id).expect("watch");
+        engine
+            .respond_question(
+                session_id,
+                &perm_id.to_string(),
+                vec![QuestionAnswer {
+                    selected: vec![0, 2],
+                    other_text: Some("Haskell".into()),
+                }],
+            )
+            .expect("respond_question");
+
+        // The response is a kind-1988 permission_response for this session, but it
+        // reaches the db via async PNS decryption, so wait for it to land; its
+        // content.message is the formatted answers payload.
+        let payload = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(msg) = latest_permission_response_message(engine.ndb(), session_id) {
+                    return msg;
+                }
+                if !watch.changed().await {
+                    panic!("session watch ended before the response arrived");
+                }
+            }
+        })
+        .await
+        .expect("a permission_response should have been published");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("message is answers json");
+        let answer = &parsed["answers"]["Languages"];
+        assert_eq!(
+            answer["selected"],
+            serde_json::json!(["Rust", "Zig"]),
+            "selected indices resolve to their option labels"
+        );
+        assert_eq!(answer["other"], serde_json::json!("Haskell"));
     }
 
     #[tokio::test]
