@@ -15,7 +15,7 @@ use hkdf::Hkdf;
 use nostr::nips::nip44::v2::{self, ConversationKey};
 use sha2::Sha256;
 
-use crate::{FullKeypair, Pubkey};
+use crate::FullKeypair;
 
 /// Kind number for PNS events.
 pub const PNS_KIND: u32 = 1080;
@@ -81,13 +81,7 @@ fn hkdf_extract(ikm: &[u8; 32], salt: &[u8]) -> [u8; 32] {
 
 /// Derive a secp256k1 keypair from 32 bytes of key material.
 fn keypair_from_bytes(key: &[u8; 32]) -> FullKeypair {
-    let secret_key =
-        nostr::SecretKey::from_slice(key).expect("32 bytes of HKDF output is a valid secret key");
-    let (xopk, _) = secret_key.x_only_public_key(&nostr::SECP256K1);
-    FullKeypair {
-        pubkey: Pubkey::new(xopk.serialize()),
-        secret_key,
-    }
+    FullKeypair::from_secret_bytes(key).expect("32 bytes of HKDF output is a valid secret key")
 }
 
 #[derive(Debug)]
@@ -114,6 +108,7 @@ impl std::error::Error for PnsError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Pubkey;
 
     fn test_device_key() -> [u8; 32] {
         // Deterministic test key

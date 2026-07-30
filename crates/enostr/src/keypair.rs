@@ -98,6 +98,18 @@ impl FullKeypair {
         FullKeypair { pubkey, secret_key }
     }
 
+    /// Build a keypair from 32 raw secret-key bytes, deriving the x-only public
+    /// key. Returns `None` if the bytes are not a valid secp256k1 secret key
+    /// (zero or ≥ the curve order).
+    pub fn from_secret_bytes(bytes: &[u8; 32]) -> Option<Self> {
+        let secret_key = SecretKey::from_slice(bytes).ok()?;
+        let (xopk, _) = secret_key.x_only_public_key(&nostr::SECP256K1);
+        Some(FullKeypair {
+            pubkey: Pubkey::new(xopk.serialize()),
+            secret_key,
+        })
+    }
+
     pub fn to_filled(&self) -> FilledKeypair<'_> {
         FilledKeypair::new(&self.pubkey, &self.secret_key)
     }
@@ -248,6 +260,19 @@ mod tests {
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
     use super::{FullKeypair, Keypair};
+
+    #[test]
+    fn from_secret_bytes_derives_matching_pubkey() {
+        // A round-trip: generating a keypair then rebuilding it from its own
+        // secret bytes must recover the same public key.
+        let kp = FullKeypair::generate();
+        let bytes = kp.secret_key.secret_bytes();
+        let rebuilt = FullKeypair::from_secret_bytes(&bytes).expect("valid secret");
+        assert_eq!(kp, rebuilt);
+
+        // An all-zero secret key is invalid on secp256k1 and must be rejected.
+        assert!(FullKeypair::from_secret_bytes(&[0u8; 32]).is_none());
+    }
 
     #[test]
     fn test_token_eseckey_serialize_deserialize() {
