@@ -23,9 +23,9 @@ similar = "2"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# StreamExt::next drives the session-watch subscription stream.
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }
-# StreamExt::next for awaiting nostrdb SubscriptionStream in the engine relay test.
-futures-util = { workspace = true }

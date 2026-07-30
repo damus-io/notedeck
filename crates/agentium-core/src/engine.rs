@@ -70,13 +70,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use enostr::pns::PNS_KIND;
+use enostr::NormRelayUrl;
+use futures_util::StreamExt;
 use negentropy::{Id, NegentropyStorageVector};
-use nostrdb::{Filter, Ndb, SendFilter, Transaction};
+use nostrdb::{Filter, Ndb, SendFilter, SubscriptionStream, Transaction};
 use nostrdb_net::relay::sync;
 use nostrdb_net::{ClientMessage, RelayPool, RelayStatus, WsEvent, WsMessage};
 use tokio::sync::{mpsc, Notify};
 use tokio::time::interval;
 
+use crate::messages::Message;
+use crate::session_events::AI_CONVERSATION_KIND;
+use crate::session_loader::SessionState;
 use crate::transport::{SubscriptionId, SubscriptionSpec, Transport};
 
 /// How many event ids to pull per `REQ` when fetching reconciled events, kept
@@ -93,7 +99,17 @@ pub enum EngineError {
     /// curve order), so no signing identity can be derived from it.
     #[error("invalid device key: not a valid secp256k1 secret")]
     InvalidDeviceKey,
+    /// A relay URL was malformed.
+    #[error("relay url: {0}")]
+    Relay(#[from] enostr::Error),
 }
+
+/// How far back the PNS discovery subscription reconciles history when the
+/// engine connects to a relay (one week).
+const PNS_HISTORY_WINDOW_SECS: u64 = 7 * 86400;
+
+/// Cap on the number of live PNS events the discovery subscription replays.
+const PNS_LIVE_LIMIT: u64 = 500;
 
 /// How often the loop pings/reconnects relays to keep the pool alive.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
@@ -128,6 +144,10 @@ pub struct Engine {
     /// are derived; both devices sharing a session share this key. See the
     /// module docs.
     account: enostr::FullKeypair,
+    /// The relay the engine is connected to for remote sync, set by
+    /// [`Engine::connect`]. It is both the PNS discovery subscription's target
+    /// and the publish destination for outbound session events.
+    pns_relay: Option<NormRelayUrl>,
     cmd_tx: mpsc::UnboundedSender<EngineCmd>,
 }
 
@@ -167,6 +187,7 @@ impl Engine {
         Ok(Self {
             ndb,
             account,
+            pns_relay: None,
             cmd_tx,
         })
     }
@@ -181,6 +202,141 @@ impl Engine {
     pub fn account_pubkey(&self) -> enostr::Pubkey {
         self.account.pubkey
     }
+
+    /// The PNS keys (kind-1080 signing keypair + NIP-44 conversation key)
+    /// derived from the device key. Used to author the discovery subscription
+    /// and to wrap/unwrap session events on the wire.
+    fn pns_keys(&self) -> enostr::pns::PnsKeys {
+        enostr::pns::derive_pns_keys(&self.account.secret_key.secret_bytes())
+    }
+
+    /// Connect to a relay for remote sync.
+    ///
+    /// Installs the single PNS discovery subscription — kind-1080 events authored
+    /// by this identity's PNS pubkey — which streams the whole identity's
+    /// encrypted corpus (every session's state and conversation) into the
+    /// database, where ndb's ingest threads decrypt it into queryable inner
+    /// events. The same relay becomes the publish target for outbound events.
+    /// Reconnecting to a different relay just re-points the subscription.
+    pub fn connect(&mut self, relay_url: &str) -> Result<(), EngineError> {
+        let relay = NormRelayUrl::new(relay_url)?;
+        let pns_author = self.pns_keys().keypair.pubkey;
+        let since = now_secs().saturating_sub(PNS_HISTORY_WINDOW_SECS);
+
+        let live = Filter::new()
+            .kinds([PNS_KIND as u64])
+            .authors([pns_author.bytes()])
+            .limit(PNS_LIVE_LIMIT)
+            .build();
+        let history = Filter::new()
+            .kinds([PNS_KIND as u64])
+            .authors([pns_author.bytes()])
+            .since(since)
+            .build();
+
+        self.set_subscription(SubscriptionSpec {
+            id: pns_discovery_sub_id(),
+            relay: relay.clone(),
+            live_filters: vec![live],
+            history_filters: vec![history],
+        });
+        self.pns_relay = Some(relay);
+        Ok(())
+    }
+
+    /// Tear down the discovery subscription and forget the relay. Outbound
+    /// events built after this are ingested locally but not published until the
+    /// next [`Engine::connect`].
+    pub fn disconnect(&mut self) {
+        self.drop_subscription(&pns_discovery_sub_id());
+        self.pns_relay = None;
+    }
+
+    /// The relay the engine is currently connected to, if any.
+    pub fn connected_relay(&self) -> Option<String> {
+        self.pns_relay.as_ref().map(|r| r.to_string())
+    }
+
+    /// List the remote sessions known to this identity, newest revision of each
+    /// kind-31988 state event (deleted and legacy-format events excluded).
+    pub fn list_sessions(&self) -> Vec<SessionState> {
+        let Ok(txn) = Transaction::new(&self.ndb) else {
+            return Vec::new();
+        };
+        crate::session_loader::load_session_states_for_author(&self.ndb, &txn, &self.account.pubkey)
+    }
+
+    /// The conversation for one session as an ordered list of messages,
+    /// reconstructed from its kind-1988 events (seq-ordered, permission state
+    /// merged). Returns empty if the session is unknown.
+    pub fn session_messages(&self, session_id: &str) -> Vec<Message> {
+        let Ok(txn) = Transaction::new(&self.ndb) else {
+            return Vec::new();
+        };
+        crate::session_loader::load_session_messages_for_author(
+            &self.ndb,
+            &txn,
+            &self.account.pubkey,
+            session_id,
+        )
+        .messages
+    }
+
+    /// Watch a session for live changes.
+    ///
+    /// Returns a [`SessionWatch`] whose [`SessionWatch::changed`] resolves each
+    /// time a new kind-1988 event for the session lands in the database. The
+    /// intended loop is *wait, then re-read the snapshot*:
+    ///
+    /// ```ignore
+    /// let mut watch = engine.watch_session(id)?;
+    /// while watch.changed().await {
+    ///     render(engine.session_messages(id));
+    /// }
+    /// ```
+    pub fn watch_session(&self, session_id: &str) -> Result<SessionWatch, EngineError> {
+        let filter = Filter::new()
+            .kinds([AI_CONVERSATION_KIND as u64])
+            .authors([self.account.pubkey.bytes()])
+            .tags([session_id], 'd')
+            .build();
+        let sub = self.ndb.subscribe(std::slice::from_ref(&filter))?;
+        Ok(SessionWatch {
+            stream: SubscriptionStream::new(self.ndb.clone(), sub),
+        })
+    }
+}
+
+/// An event-driven waiter over one session's live kind-1988 events.
+///
+/// Backed by an ndb subscription stream, so [`SessionWatch::changed`] only wakes
+/// on a real new event (no polling). The subscription is released when the watch
+/// is dropped. Pair it with [`Engine::session_messages`] to re-read the snapshot
+/// on each change.
+pub struct SessionWatch {
+    stream: SubscriptionStream,
+}
+
+impl SessionWatch {
+    /// Wait for the session to change. Resolves `true` when new events arrived
+    /// (re-read via [`Engine::session_messages`]); `false` if the subscription
+    /// ended (e.g. the database was torn down).
+    pub async fn changed(&mut self) -> bool {
+        self.stream.next().await.is_some()
+    }
+}
+
+/// The stable transport subscription id for the PNS discovery subscription.
+fn pns_discovery_sub_id() -> SubscriptionId {
+    SubscriptionId::new("agentium/pns", "discovery")
+}
+
+/// The current Unix time in seconds.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Wrap caller filters as [`SendFilter`] so they can cross to the loop thread,
@@ -442,6 +598,129 @@ mod tests {
             live_filters: live,
             history_filters: history,
         }
+    }
+
+    /// PNS-wrap `inner_json` under the [`TEST_SECKEY`] identity and ingest the
+    /// kind-1080 envelope, mirroring how an inbound relay event reaches ndb: the
+    /// engine's registered device key lets ndb decrypt it into the queryable
+    /// inner event.
+    fn pns_seed(ndb: &Ndb, inner_json: &str) {
+        let pns = enostr::pns::derive_pns_keys(&TEST_SECKEY);
+        let wrapped = crate::session_events::wrap_pns(inner_json, &pns).expect("wrap pns");
+        ndb.process_event(&format!(r#"["EVENT","_seed",{wrapped}]"#))
+            .expect("ingest pns envelope");
+    }
+
+    /// The read API surfaces a session and its conversation once the PNS
+    /// envelopes carrying them have been decrypted into the engine's db.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_api_lists_and_reads_a_session() {
+        use crate::session_events::{
+            build_live_event, build_session_state_event, ThreadingState, AI_SESSION_STATE_KIND,
+        };
+
+        let eng_dir = TempDir::new().expect("tmp dir");
+        let engine =
+            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+
+        let session_id = "read-test-session";
+        let state = build_session_state_event(
+            session_id,
+            "My Session",
+            None,
+            "/tmp",
+            "idle",
+            None,
+            "host",
+            "/home",
+            "claude",
+            "default",
+            None,
+            None,
+            &TEST_SECKEY,
+        )
+        .expect("state event");
+        pns_seed(engine.ndb(), &state.note_json);
+
+        let mut threading = ThreadingState::new();
+        let msg = build_live_event(
+            "hello there",
+            "user",
+            session_id,
+            Some("/tmp"),
+            None,
+            None,
+            &mut threading,
+            &TEST_SECKEY,
+        )
+        .expect("live event");
+        pns_seed(engine.ndb(), &msg.note_json);
+
+        // Both inner events must decrypt and index before we read them.
+        assert!(
+            await_note(
+                engine.ndb(),
+                state.note_id,
+                AI_SESSION_STATE_KIND as u64,
+                Duration::from_secs(5)
+            )
+            .await,
+            "session-state event should decrypt into the db"
+        );
+        assert!(
+            await_note(
+                engine.ndb(),
+                msg.note_id,
+                AI_CONVERSATION_KIND as u64,
+                Duration::from_secs(5)
+            )
+            .await,
+            "conversation event should decrypt into the db"
+        );
+
+        let sessions = engine.list_sessions();
+        assert_eq!(sessions.len(), 1, "one session should be listed");
+        assert_eq!(sessions[0].claude_session_id, session_id);
+        assert_eq!(sessions[0].title, "My Session");
+
+        let messages = engine.session_messages(session_id);
+        assert_eq!(messages.len(), 1, "one conversation message");
+        assert!(matches!(&messages[0], Message::User(_)));
+    }
+
+    /// [`SessionWatch::changed`] wakes when a new event for the watched session
+    /// is decrypted into the db.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watch_session_wakes_on_new_event() {
+        use crate::session_events::{build_live_event, ThreadingState};
+
+        let eng_dir = TempDir::new().expect("tmp dir");
+        let engine =
+            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+
+        let session_id = "watch-test-session";
+        // Subscribe before seeding so the stream catches the arrival.
+        let mut watch = engine.watch_session(session_id).expect("watch");
+
+        let mut threading = ThreadingState::new();
+        let msg = build_live_event(
+            "ping",
+            "user",
+            session_id,
+            None,
+            None,
+            None,
+            &mut threading,
+            &TEST_SECKEY,
+        )
+        .expect("live event");
+        pns_seed(engine.ndb(), &msg.note_json);
+
+        let woke = tokio::time::timeout(Duration::from_secs(5), watch.changed())
+            .await
+            .expect("watch should wake before timeout");
+        assert!(woke, "watch should report a change");
+        assert_eq!(engine.session_messages(session_id).len(), 1);
     }
 
     #[tokio::test]
