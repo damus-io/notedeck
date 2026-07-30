@@ -2054,7 +2054,7 @@ fn newer(a_at: u64, a_who: &[u8; 32], b_at: u64, b_who: &[u8; 32]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 7] = [
+pub const HEADWAY_KINDS: [u32; 8] = [
     KIND_BOARD,
     KIND_ISSUE,
     KIND_PLACEMENT,
@@ -2062,6 +2062,7 @@ pub const HEADWAY_KINDS: [u32; 7] = [
     KIND_COVER_NOTE,
     KIND_COMMENT,
     KIND_RELATION,
+    KIND_SEQUENCE,
 ];
 
 /// A filter for every headway event authored by `author`.

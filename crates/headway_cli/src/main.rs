@@ -14,7 +14,7 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView, CommentView, Date, Priority};
+use headway::event::{self, BoardView, CardView, CommentView, Container, Date, Priority};
 use headway::store::{self, BoardAction, Publisher};
 use headway::wordid;
 
@@ -84,6 +84,13 @@ enum Command {
         card: String,
         points: String,
     },
+    /// Position a card in a container's work-order (see [`SeqSpec`]). `container`
+    /// is a card ref (its subissues) or omitted/board-slug (the board root).
+    Seq {
+        card: String,
+        spec: SeqSpec,
+        container: Option<String>,
+    },
     /// Make a card a subissue of another card, or detach it (no parent given).
     Parent {
         card: String,
@@ -132,6 +139,49 @@ enum Command {
     Logout,
 }
 
+/// Where `seq` should place the card, parsed from `--after/--before/--first/--last`
+/// (any card refs are resolved later, in [`build_action`]).
+enum SeqSpec {
+    First,
+    Last,
+    After(String),
+    Before(String),
+}
+
+/// The `seq` position flags, collected during arg parsing and validated into a
+/// [`SeqSpec`] by [`seq_spec`].
+#[derive(Default)]
+struct SeqFlags {
+    after: Option<String>,
+    before: Option<String>,
+    first: bool,
+    last: bool,
+    /// `--in`: the container selector (card ref or board slug).
+    container: Option<String>,
+}
+
+/// Validate that exactly one position flag was given and turn it into a [`SeqSpec`].
+fn seq_spec(flags: &SeqFlags) -> Result<SeqSpec> {
+    let count = flags.after.is_some() as u8
+        + flags.before.is_some() as u8
+        + flags.first as u8
+        + flags.last as u8;
+    if count != 1 {
+        return Err(
+            "seq needs exactly one of --after <card> / --before <card> / --first / --last".into(),
+        );
+    }
+    Ok(if let Some(a) = &flags.after {
+        SeqSpec::After(a.clone())
+    } else if let Some(b) = &flags.before {
+        SeqSpec::Before(b.clone())
+    } else if flags.first {
+        SeqSpec::First
+    } else {
+        SeqSpec::Last
+    })
+}
+
 impl Command {
     /// The board named by this command's card selectors, when any of them
     /// carries a `<board>#<word-id>` prefix (see [`ref_board`]). Used to
@@ -145,6 +195,17 @@ impl Command {
             Command::Parent { card, parent } => {
                 selectors.push(card);
                 selectors.extend(parent.as_deref());
+            }
+            Command::Seq {
+                card,
+                spec,
+                container,
+            } => {
+                selectors.push(card);
+                if let SeqSpec::After(a) | SeqSpec::Before(a) = spec {
+                    selectors.push(a);
+                }
+                selectors.extend(container.as_deref());
             }
             Command::Move { card, .. }
             | Command::Title { card, .. }
@@ -451,6 +512,29 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
                 .map(|sel| resolve_card(view, sel))
                 .transpose()?,
         },
+        Command::Seq {
+            card,
+            spec,
+            container,
+        } => {
+            let card = resolve_card(view, &card)?;
+            let container = match container.as_deref() {
+                Some(sel) => resolve_container(view, sel)?,
+                None => Container::BoardRoot(view.id.clone()),
+            };
+            let position = match spec {
+                SeqSpec::First => store::SeqPosition::First,
+                SeqSpec::Last => store::SeqPosition::Last,
+                SeqSpec::After(a) => store::SeqPosition::After(resolve_card(view, &a)?),
+                SeqSpec::Before(a) => store::SeqPosition::Before(resolve_card(view, &a)?),
+            };
+            let rank = store::seq_rank(view, &container, card, &position)?;
+            BoardAction::SetSequence {
+                card,
+                container,
+                rank,
+            }
+        }
         Command::Comment {
             card,
             body,
@@ -599,6 +683,17 @@ fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId> {
         (Some(c), None) => Ok(c.id),
         (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'").into()),
         _ => Err(format!("no card matching '{sel}'").into()),
+    }
+}
+
+/// Resolve an `--in` container selector: a card ref names that card's container
+/// (its subissues); anything else must be the board's own slug, naming the
+/// board-root work-order.
+fn resolve_container(view: &BoardView, sel: &str) -> Result<Container> {
+    match resolve_card(view, sel) {
+        Ok(id) => Ok(Container::Card(*id.bytes())),
+        Err(_) if sel.eq_ignore_ascii_case(&view.id) => Ok(Container::BoardRoot(view.id.clone())),
+        Err(e) => Err(e),
     }
 }
 
@@ -944,6 +1039,7 @@ impl Cli {
         let mut reply_to = None;
         let mut parent = None;
         let mut labels: Vec<String> = Vec::new();
+        let mut seq = SeqFlags::default();
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -964,6 +1060,11 @@ impl Cli {
                 "--to" => to = Some(value("--to")?),
                 "--reply-to" => reply_to = Some(value("--reply-to")?),
                 "--parent" => parent = Some(value("--parent")?),
+                "--after" => seq.after = Some(value("--after")?),
+                "--before" => seq.before = Some(value("--before")?),
+                "--first" => seq.first = true,
+                "--last" => seq.last = true,
+                "--in" => seq.container = Some(value("--in")?),
                 "-l" | "--label" | "--labels" => {
                     // Repeatable, and each value may be a comma-separated list,
                     // so `-l a,b --label c` and `-l a -l b -l c` are equivalent.
@@ -995,7 +1096,7 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
-        let command = parse_command(name, rest, col, row, to, reply_to, parent, labels)?;
+        let command = parse_command(name, rest, col, row, to, reply_to, parent, labels, seq)?;
 
         // A card selector like `commerce#purse-metal-toilet` already names its
         // board, so the command self-routes there — the display id `show`
@@ -1051,6 +1152,7 @@ fn parse_command(
     reply_to: Option<String>,
     parent: Option<String>,
     labels: Vec<String>,
+    seq: SeqFlags,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
     Ok(match name {
@@ -1092,6 +1194,11 @@ fn parse_command(
         "estimate" => Command::Estimate {
             card: card()?,
             points: arg(rest, 1, name)?,
+        },
+        "seq" => Command::Seq {
+            card: card()?,
+            spec: seq_spec(&seq)?,
+            container: seq.container,
         },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
@@ -1167,6 +1274,10 @@ COMMANDS:
     priority <card> <level>    Set priority (none/low/medium/high/urgent)
     due <card> <date>          Set a due date (YYYY-MM-DD, or none to clear)
     estimate <card> <n>        Set an estimate (a number, or none to clear)
+    seq <card> <pos> [--in <c>] Position a card in a container's work-order:
+                               <pos> = --first | --last | --after <card> |
+                               --before <card>; --in is a card ref (its
+                               subissues) or the board slug (board root)
     parent <card> [parent]     Make a card a subissue of [parent] (omit to
                                detach)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under

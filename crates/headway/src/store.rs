@@ -13,9 +13,10 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 
 use crate::event::{
-    self, BoardView, COL_DELETED, CardView, ColumnDef, Date, Field, Priority, board_address,
-    build_archive_placement, build_board, build_comment, build_cover_note, build_field,
-    build_issue, build_labels, build_placement, build_relation, build_subject_edit, rank_between,
+    self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
+    board_address, build_archive_placement, build_board, build_comment, build_cover_note,
+    build_field, build_issue, build_labels, build_placement, build_relation, build_sequence,
+    build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -53,6 +54,14 @@ pub enum BoardAction {
     SetDue { card: NoteId, due: Option<Date> },
     /// Set a card's estimate, or clear it with `None`.
     SetEstimate { card: NoteId, estimate: Option<u32> },
+    /// Position `card` within `container`'s work-order at `rank` (a fractional
+    /// [`rank_between`] string, computed by [`seq_rank`]). Writes one sequence
+    /// overlay; does not touch column placement.
+    SetSequence {
+        card: NoteId,
+        container: Container,
+        rank: String,
+    },
     /// Make `card` a subissue of `parent`, or detach it when `parent` is `None`.
     /// Refused (no events) when it would create a parent cycle.
     SetParent {
@@ -444,6 +453,21 @@ pub fn apply(
             let f = build_field(&card, Field::Estimate, &value);
             ingest(ndb, f, secret, publisher);
         }
+        BoardAction::SetSequence {
+            card,
+            container,
+            rank,
+        } => {
+            // Board-agnostic overlay: keyed by (container, card), no board `a`
+            // tag, so it needs no board context here. The caller precomputes
+            // `rank` via `seq_rank` against the container's current members.
+            ingest(
+                ndb,
+                build_sequence(&container, &card, &rank),
+                secret,
+                publisher,
+            );
+        }
         BoardAction::SetParent { card, parent } => {
             if let Some(parent) = parent {
                 if would_cycle(view, card, parent) {
@@ -824,6 +848,94 @@ fn rank_for_insert<T>(
         .map(&rank_of);
     let right = others.get(pos).copied().map(&rank_of);
     rank_between(left, right)
+}
+
+/// Where to insert a card within a container's sequenced work-order, resolved by
+/// [`seq_rank`]. `After`/`Before` name an anchor that must itself already be
+/// sequenced.
+pub enum SeqPosition {
+    /// Before every currently-sequenced member.
+    First,
+    /// After every currently-sequenced member.
+    Last,
+    /// Immediately after the given (already-sequenced) card.
+    After(NoteId),
+    /// Immediately before the given (already-sequenced) card.
+    Before(NoteId),
+}
+
+/// A container member with its resolved seq rank, for [`seq_rank`]'s insert math.
+struct SeqMember {
+    id: NoteId,
+    rank: String,
+}
+
+/// The container's currently-sequenced members, in work-order (ascending seq
+/// rank). A board root's members are its top-level (non-subissue) cards; a card
+/// container's are that card's subissues. Unsequenced members are excluded —
+/// they have no rank to anchor an insert against.
+fn sequenced_members(view: &BoardView, container: &Container) -> Vec<SeqMember> {
+    match container {
+        Container::Card(parent) => find_card(view, NoteId::new(*parent))
+            .map(|c| {
+                c.subissues
+                    .iter()
+                    .filter_map(|s| s.seq.clone().map(|rank| SeqMember { id: s.id, rank }))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Container::BoardRoot(_) => {
+            let mut members: Vec<SeqMember> = view
+                .columns
+                .iter()
+                .flat_map(|col| col.cards.iter())
+                .filter(|c| c.parent.is_none())
+                .filter_map(|c| c.seq.clone().map(|rank| SeqMember { id: c.id, rank }))
+                .collect();
+            members.sort_by(|a, b| a.rank.cmp(&b.rank));
+            members
+        }
+    }
+}
+
+/// Compute the fractional rank that lands `card` at `position` within
+/// `container`, using the container's currently-sequenced members and the shared
+/// [`rank_for_insert`] kernel (the same one that ranks cards within a column).
+/// Errors when an `After`/`Before` anchor isn't itself sequenced yet — with the
+/// lazy default most members aren't, so the caller should sequence the anchor
+/// first or use `First`/`Last`.
+pub fn seq_rank(
+    view: &BoardView,
+    container: &Container,
+    card: NoteId,
+    position: &SeqPosition,
+) -> std::result::Result<String, String> {
+    let members = sequenced_members(view, container);
+    let anchor_row = |anchor: &NoteId, offset: usize| {
+        members
+            .iter()
+            .position(|m| &m.id == anchor)
+            .map(|i| i + offset)
+            .ok_or_else(|| {
+                format!(
+                    "{} isn't sequenced yet — sequence it first, or use --first/--last",
+                    anchor.hex()
+                )
+            })
+    };
+    let to_row = match position {
+        SeqPosition::First => 0,
+        SeqPosition::Last => members.len(),
+        SeqPosition::After(a) => anchor_row(a, 1)?,
+        SeqPosition::Before(a) => anchor_row(a, 0)?,
+    };
+    Ok(rank_for_insert(
+        &members,
+        |m| m.id,
+        |m| m.rank.as_str(),
+        Some(card),
+        to_row,
+    ))
 }
 
 /// Slugify `name` into a column id not already present in `existing`.
