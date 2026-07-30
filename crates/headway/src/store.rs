@@ -366,7 +366,13 @@ pub fn apply(
             let Some(col) = view.columns.get(to_col) else {
                 return;
             };
-            let rank = rank_for_insert(&col.cards, Some(card), to_row);
+            let rank = rank_for_insert(
+                &col.cards,
+                |c| c.id,
+                |c| c.rank.as_str(),
+                Some(card),
+                to_row,
+            );
             let after = find_card(view, card).map_or(0, |c| c.placed_at);
             ingest(
                 ndb,
@@ -391,7 +397,8 @@ pub fn apply(
             let Some(id) = ingest(ndb, build_issue(&addr, &title, ""), secret, publisher) else {
                 return;
             };
-            let rank = rank_for_insert(&c.cards, None, c.cards.len());
+            let rank =
+                rank_for_insert(&c.cards, |c| c.id, |c| c.rank.as_str(), None, c.cards.len());
             ingest(
                 ndb,
                 build_placement(board_id, &addr, &id, &c.id, &rank),
@@ -610,7 +617,13 @@ fn place_card(
     let col = prefer_col
         .and_then(|id| target.view.columns.iter().find(|c| c.id == id))
         .or_else(|| target.view.columns.first())?;
-    let rank = rank_for_insert(&col.cards, Some(card), col.cards.len());
+    let rank = rank_for_insert(
+        &col.cards,
+        |c| c.id,
+        |c| c.rank.as_str(),
+        Some(card),
+        col.cards.len(),
+    );
     let after = find_card(target.view, card).map_or(0, |c| c.placed_at);
     ingest(
         ndb,
@@ -782,16 +795,24 @@ fn non_empty_rank(rank: &str) -> String {
     }
 }
 
-/// Compute a fractional rank that lands a card at display index `to_row` in a
-/// column whose current cards are `cards` (sorted by rank). `moving` excludes
-/// the dragged card from the neighbour search so an in-column move doesn't
-/// fence itself.
-fn rank_for_insert(cards: &[CardView], moving: Option<NoteId>, to_row: usize) -> String {
-    let others: Vec<&CardView> = cards.iter().filter(|c| Some(c.id) != moving).collect();
+/// Compute a fractional rank that lands an item at display index `to_row` among
+/// `items` (sorted by rank). `id_of`/`rank_of` read each item's stable id and its
+/// current rank string, so this one function serves every ordering axis — a
+/// column's cards (keyed on [`CardView::rank`]) today, and any container-scoped
+/// sequence tomorrow — rather than a copy per axis. `moving` excludes the item
+/// being moved from the neighbour search so an in-place move doesn't fence itself.
+fn rank_for_insert<T>(
+    items: &[T],
+    id_of: impl Fn(&T) -> NoteId,
+    rank_of: impl Fn(&T) -> &str,
+    moving: Option<NoteId>,
+    to_row: usize,
+) -> String {
+    let others: Vec<&T> = items.iter().filter(|&c| Some(id_of(c)) != moving).collect();
 
-    // `to_row` indexes the displayed list (which still includes the moved card);
+    // `to_row` indexes the displayed list (which still includes the moved item);
     // translate it into an index among `others`.
-    let pos = match moving.and_then(|m| cards.iter().position(|c| c.id == m)) {
+    let pos = match moving.and_then(|m| items.iter().position(|c| id_of(c) == m)) {
         Some(cur) if cur < to_row => to_row - 1,
         _ => to_row,
     };
@@ -799,9 +820,9 @@ fn rank_for_insert(cards: &[CardView], moving: Option<NoteId>, to_row: usize) ->
 
     let left = pos
         .checked_sub(1)
-        .and_then(|i| others.get(i))
-        .map(|c| c.rank.as_str());
-    let right = others.get(pos).map(|c| c.rank.as_str());
+        .and_then(|i| others.get(i).copied())
+        .map(&rank_of);
+    let right = others.get(pos).copied().map(&rank_of);
     rank_between(left, right)
 }
 
