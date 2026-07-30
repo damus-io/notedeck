@@ -788,9 +788,9 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         &self,
         ui: &mut egui::Ui,
         note_context: &mut notedeck::NoteContext,
-        txn: &Transaction,
-        note: &nostrdb::Note,
+        req: &notedeck::KindRenderRequest,
     ) -> notedeck::KindRenderResponse {
+        let note = req.note;
         let theme = ColorTheme::current(ui.ctx());
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
             return notedeck::KindRenderResponse::new(ui.weak("invalid headway issue"));
@@ -800,7 +800,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let card = self
             .cache
             .borrow_mut()
-            .reducer(note_context.ndb, txn, &author, &issue.board_id)
+            .reducer(note_context.ndb, req.txn, &author, &issue.board_id)
             .and_then(|reducer| event::pick_card(reducer, &author, &issue.board_id, &issue.id));
         let response = match card {
             Some(card) => card_inline_ui(ui, &theme, &card),
@@ -832,9 +832,9 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         &self,
         ui: &mut egui::Ui,
         note_context: &mut notedeck::NoteContext,
-        txn: &Transaction,
-        note: &nostrdb::Note,
+        req: &notedeck::KindRenderRequest,
     ) -> notedeck::KindRenderResponse {
+        let note = req.note;
         let theme = ColorTheme::current(ui.ctx());
         let Some(event::HeadwayEvent::Board(board)) = event::parse(note) else {
             return notedeck::KindRenderResponse::new(ui.weak("invalid headway board"));
@@ -843,7 +843,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         let view = self
             .cache
             .borrow_mut()
-            .reducer(note_context.ndb, txn, &author, &board.id)
+            .reducer(note_context.ndb, req.txn, &author, &board.id)
             .and_then(|reducer| event::pick_board(reducer, &author, &board.id));
         let response = match view {
             Some(view) => board_inline_ui(ui, &theme, &view),

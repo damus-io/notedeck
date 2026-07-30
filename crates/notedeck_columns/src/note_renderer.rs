@@ -2,8 +2,7 @@
 //! app to notedeck's [`KindRenderer`] registry so surfaces like the notebook can
 //! draw a referenced note using the same `NoteView` widget the timeline uses.
 
-use nostrdb::{Note, Transaction};
-use notedeck::{KindRenderResponse, KindRenderer, NoteContext};
+use notedeck::{KindRenderRequest, KindRenderResponse, KindRenderer, NoteContext};
 use notedeck_ui::{NoteOptions, NoteView};
 
 /// Renders a kind-1 nostr note inline via notedeck_ui's [`NoteView`], in a
@@ -28,10 +27,9 @@ impl KindRenderer for NoteKindRenderer {
         &self,
         ui: &mut egui::Ui,
         note_context: &mut NoteContext,
-        _txn: &Transaction,
-        note: &Note,
+        req: &KindRenderRequest,
     ) -> KindRenderResponse {
-        let response = NoteView::new(note_context, note, NoteOptions::default())
+        let response = NoteView::new(note_context, req.note, NoteOptions::default())
             .preview_style()
             .show(ui)
             .response;

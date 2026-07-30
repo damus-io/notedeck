@@ -230,9 +230,14 @@ fn nostr_ref_ui(ui: &mut Ui, ctx: &mut AppContext, bech: &str) {
     // Draw the widget and collect any action it raised (e.g. a click asking to
     // open the entity in its host app). `note_context` mut-borrows `ctx`, so scope
     // it and pull the owned action out before pushing onto `ctx.app_actions`.
+    let req = notedeck::KindRenderRequest {
+        txn: &txn,
+        note: &note,
+        context: notedeck::RenderContext::default(),
+    };
     let action = {
         let mut note_context = ctx.note_context();
-        renderer.render(ui, &mut note_context, &txn, &note).action
+        renderer.render(ui, &mut note_context, &req).action
     };
     if let Some(action) = action {
         ctx.app_actions.push(action);

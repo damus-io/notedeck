@@ -85,12 +85,45 @@ impl KindRenderResponse {
     }
 }
 
-/// Renders a nostr entity of one or more kinds inline.
+/// Where an inline reference is being drawn, so a [`KindRenderer`] can pick a
+/// shape for the *same* entity — a compact chip in flowing prose versus a full
+/// card as a block embed.
 ///
-/// The note is already resolved from the db by the caller; addressable
-/// references (`naddr`) arrive here as the canonical replaceable event for their
-/// coordinate, so a renderer can recover author/`d`-tag from the note itself
-/// (and fold further events off it if it needs to, e.g. a board).
+/// Advisory: a renderer that doesn't specialize a given context just draws its
+/// default shape. `#[non_exhaustive]` so new contexts (a dense list row, a
+/// hover tooltip, …) can be added without breaking existing impls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum RenderContext {
+    /// Inline within a run of flowing text: draw a compact, single-line
+    /// representation that doesn't break the paragraph. The **default**, so a
+    /// reference is unobtrusive unless a surface asks for more.
+    #[default]
+    Inline,
+    /// A block embed that owns its own line/box: draw the richest useful preview
+    /// (e.g. a full card).
+    Embed,
+}
+
+/// The inputs for one [`KindRenderer::render`] call: the resolved note, a
+/// transaction to read it (and any events folded off it) within, and the
+/// [`RenderContext`] hinting which shape to draw.
+///
+/// Bundled into a struct so the render signature stays stable as inputs grow
+/// (rather than churning every impl each time one is added).
+pub struct KindRenderRequest<'a, 'txn> {
+    /// A live read transaction the note was resolved from.
+    pub txn: &'a Transaction,
+    /// The resolved note to draw. Addressable references (`naddr`) arrive as the
+    /// canonical replaceable event for their coordinate, so a renderer can
+    /// recover author/`d`-tag from the note itself (and fold further events off
+    /// it if it needs to, e.g. a board).
+    pub note: &'a Note<'txn>,
+    /// The surrounding context, hinting which shape to draw. Advisory.
+    pub context: RenderContext,
+}
+
+/// Renders a nostr entity of one or more kinds inline.
 pub trait KindRenderer {
     /// Stable identifier used to persist the per-kind default choice in settings.
     /// Must be unique across registered renderers (e.g. `"headway.issue"`).
@@ -102,19 +135,20 @@ pub trait KindRenderer {
     /// The event kinds this renderer can draw.
     fn kinds(&self) -> &'static [u32];
 
-    /// Draw the resolved note, returning the [`KindRenderResponse`] covering what
-    /// was drawn plus any action raised (e.g. "open me in my host app" on click).
+    /// Draw the resolved note described by `req`, returning the
+    /// [`KindRenderResponse`] covering what was drawn plus any action raised
+    /// (e.g. "open me in my host app" on click).
     ///
     /// The [`NoteContext`] carries the dependencies a full renderer needs (ndb,
     /// caches, accounts, i18n, …) so a renderer can reuse rich widgets like
     /// notedeck_ui's `NoteView`; `note_context.ndb` is the db the note was
-    /// resolved from.
+    /// resolved from. Honor [`req.context`](KindRenderRequest::context) to pick a
+    /// shape, or ignore it to always draw the same one.
     fn render(
         &self,
         ui: &mut egui::Ui,
         note_context: &mut NoteContext,
-        txn: &Transaction,
-        note: &Note,
+        req: &KindRenderRequest,
     ) -> KindRenderResponse;
 }
 
@@ -190,8 +224,7 @@ mod tests {
             &self,
             ui: &mut egui::Ui,
             _note_context: &mut NoteContext,
-            _txn: &Transaction,
-            _note: &Note,
+            _req: &KindRenderRequest,
         ) -> KindRenderResponse {
             KindRenderResponse::new(ui.label("stub"))
         }
