@@ -585,16 +585,33 @@ impl notedeck::App for Notebook {
             return AppResponse::default();
         }
 
-        // Canvas mode. A thin toolbar offers "+ Note"; opening the editor takes
-        // over from the next frame (request a repaint so there's no canvas flash).
+        let theme = notedeck::ColorTheme::current(ui.ctx());
+
+        // Canvas mode. A top toolbar with the canvas name and a New-note button;
+        // opening the editor takes over from the next frame (request a repaint so
+        // there's no canvas flash).
         let mut open_editor = false;
-        egui::TopBottomPanel::top("notebook-toolbar").show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("+ Note").clicked() {
-                    open_editor = true;
-                }
+        egui::TopBottomPanel::top("notebook-toolbar")
+            .frame(egui::Frame::new().fill(theme.surface_primary).inner_margin(
+                egui::Margin::symmetric(
+                    notedeck::tokens::SPACING_MD as i8,
+                    notedeck::tokens::SPACING_SM as i8,
+                ),
+            ))
+            .show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Notebook")
+                            .strong()
+                            .color(theme.text_primary),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("+ New note").clicked() {
+                            open_editor = true;
+                        }
+                    });
+                });
             });
-        });
         if open_editor {
             self.editor = Some(LongformEditor::new());
             ui.ctx().request_repaint();
@@ -612,7 +629,15 @@ impl notedeck::App for Notebook {
         if !self.sync.notes().is_empty() {
             egui::SidePanel::left("notebook-vault")
                 .resizable(true)
-                .default_width(220.0)
+                .default_width(230.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme.surface_secondary)
+                        .inner_margin(egui::Margin::symmetric(
+                            notedeck::tokens::SPACING_XS as i8,
+                            0,
+                        )),
+                )
                 .show_inside(ui, |ui| {
                     open_note = vault_ui(self.sync.notes(), ui);
                 });

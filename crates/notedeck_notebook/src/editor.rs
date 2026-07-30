@@ -223,17 +223,33 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
     notedeck_ui::markdown::render_markdown_with_refs(ui, ctx, content);
 }
 
-/// Render the vault list — one selectable row per note (newest-edited first) —
-/// and return the index of a note clicked this frame, for the caller to open.
-/// Reads a borrowed slice and builds no owned collections, so it's safe to call
-/// every frame from the canvas-mode sidebar (the list itself is cached upstream).
+/// Render the vault list — one styled, clickable row per note (newest-edited
+/// first) — and return the index of a note clicked this frame, for the caller to
+/// open. Reads a borrowed slice and builds no owned collections, so it's safe to
+/// call every frame from the canvas-mode sidebar (the list itself is cached
+/// upstream).
 pub(crate) fn vault_ui(notes: &[LongformNote], ui: &mut egui::Ui) -> Option<usize> {
-    ui.add_space(notedeck::tokens::SPACING_SM);
-    ui.strong("Notes");
-    ui.separator();
+    use notedeck::tokens::{SPACING_SM, SPACING_XS};
+    let theme = notedeck::ColorTheme::current(ui.ctx());
+
+    // A muted, small-caps section header, left-aligned with the row titles below.
+    ui.add_space(SPACING_SM);
+    ui.horizontal(|ui| {
+        ui.add_space(SPACING_SM);
+        ui.label(
+            egui::RichText::new("NOTES")
+                .small()
+                .strong()
+                .color(theme.text_muted),
+        );
+    });
+    ui.add_space(SPACING_XS);
 
     if notes.is_empty() {
-        ui.weak("No notes yet.");
+        ui.add_space(SPACING_SM);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new("No notes yet").color(theme.text_muted));
+        });
         return None;
     }
 
@@ -242,15 +258,53 @@ pub(crate) fn vault_ui(notes: &[LongformNote], ui: &mut egui::Ui) -> Option<usiz
         .id_salt("notebook-vault-list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             for (i, note) in notes.iter().enumerate() {
                 let title = note.title.trim();
                 let label = if title.is_empty() { "Untitled" } else { title };
-                if ui.selectable_label(false, label).clicked() {
+                if note_row_ui(ui, &theme, label).clicked() {
                     open = Some(i);
                 }
             }
         });
     open
+}
+
+/// One vault row: a full-width, left-aligned, rounded surface that highlights on
+/// hover and elides a long title to a single line. Painted with the semantic
+/// theme so it reads as part of the app rather than a bare label.
+fn note_row_ui(ui: &mut egui::Ui, theme: &notedeck::ColorTheme, title: &str) -> egui::Response {
+    use notedeck::tokens::{RADIUS_MD, SPACING_SM};
+    let pad = egui::vec2(SPACING_SM, 6.0);
+    let line_h = ui.text_style_height(&egui::TextStyle::Body);
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), line_h + pad.y * 2.0),
+        egui::Sense::click(),
+    );
+
+    if resp.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(RADIUS_MD as u8),
+            theme.interactive_hover,
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    ui.allocate_new_ui(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(pad))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(title).color(theme.text_primary))
+                    .truncate()
+                    .selectable(false),
+            );
+        },
+    );
+
+    resp
 }
 
 #[cfg(test)]
