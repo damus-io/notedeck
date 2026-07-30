@@ -1129,6 +1129,18 @@ pub struct BoardView {
     pub archived: Vec<ArchivedCard>,
 }
 
+impl BoardView {
+    /// Find a live (non-archived) card on the board by id. A shared read helper
+    /// so lookups over the folded view — e.g. [`crate::traversal`]'s DFS — don't
+    /// each re-open the columns-then-cards scan.
+    pub fn card(&self, id: NoteId) -> Option<&CardView> {
+        self.columns
+            .iter()
+            .flat_map(|c| c.cards.iter())
+            .find(|c| c.id == id)
+    }
+}
+
 /// Render `view` as a stable, machine-readable JSON value: a curated schema for
 /// external tooling (e.g. the CLI's `--json`) with hex ids plus the `words`
 /// word-id used to address cards/comments, independent of the internal view

@@ -13,4 +13,5 @@
 pub mod event;
 pub mod fmt;
 pub mod store;
+pub mod traversal;
 pub mod wordid;
