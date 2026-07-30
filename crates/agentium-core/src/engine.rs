@@ -102,6 +102,16 @@ pub enum EngineError {
     /// A relay URL was malformed.
     #[error("relay url: {0}")]
     Relay(#[from] enostr::Error),
+    /// Building or signing an outbound session event failed.
+    #[error("event build: {0}")]
+    Build(String),
+    /// A permission id was not a valid UUID.
+    #[error("invalid permission id")]
+    InvalidPermId,
+    /// No permission request with the given id is known in the session, so no
+    /// response can be linked to it.
+    #[error("no known permission request for that id in this session")]
+    UnknownPermission,
 }
 
 /// How far back the PNS discovery subscription reconciles history when the
@@ -304,6 +314,177 @@ impl Engine {
         Ok(SessionWatch {
             stream: SubscriptionStream::new(self.ndb.clone(), sub),
         })
+    }
+
+    /// Send a user message into a session.
+    ///
+    /// Builds a kind-1988 `user` event threaded onto the session's existing
+    /// conversation and publishes it. Works whether or not the session is known
+    /// locally (a brand-new session simply starts a fresh thread).
+    pub fn send_message(&mut self, session_id: &str, text: &str) -> Result<(), EngineError> {
+        let mut threading = self.session_threading(session_id);
+        let cwd = self.session_cwd(session_id);
+        let built = crate::session_events::build_live_event(
+            text,
+            "user",
+            session_id,
+            cwd.as_deref(),
+            None,
+            None,
+            &mut threading,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))?;
+        self.publish_session_event(built)
+    }
+
+    /// Spawn a new session on a remote host.
+    ///
+    /// Publishes a fire-and-forget kind-31989 spawn command; the target host
+    /// discovers it, creates the session, and publishes back a kind-31988 state
+    /// event that later shows up in [`Engine::list_sessions`]. Returns the
+    /// `spawn_id` that links this request to that eventual state.
+    pub fn spawn_session(
+        &mut self,
+        target_host: &str,
+        cwd: &str,
+        backend: &str,
+    ) -> Result<String, EngineError> {
+        let spawn_id = uuid::Uuid::new_v4().to_string();
+        let built = crate::session_events::build_spawn_command_event(
+            target_host,
+            cwd,
+            backend,
+            &spawn_id,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))?;
+        self.publish_session_event(built)?;
+        Ok(spawn_id)
+    }
+
+    /// Respond to a pending permission request.
+    ///
+    /// Resolves the request's note id from the session's events, then publishes a
+    /// kind-1988 permission response linked to it. `cancel_turn` denies *and*
+    /// interrupts the current turn. Errors with [`EngineError::UnknownPermission`]
+    /// if no request with `perm_id` is present in the session.
+    pub fn respond_permission(
+        &mut self,
+        session_id: &str,
+        perm_id: &str,
+        allow: bool,
+        message: Option<String>,
+        cancel_turn: bool,
+    ) -> Result<(), EngineError> {
+        let perm_uuid = uuid::Uuid::parse_str(perm_id).map_err(|_| EngineError::InvalidPermId)?;
+
+        let request_note_id = {
+            let txn = Transaction::new(&self.ndb)?;
+            crate::session_loader::load_session_messages_for_author(
+                &self.ndb,
+                &txn,
+                &self.account.pubkey,
+                session_id,
+            )
+            .permissions
+            .request_note_ids
+            .get(&perm_uuid)
+            .copied()
+        };
+        let Some(request_note_id) = request_note_id else {
+            return Err(EngineError::UnknownPermission);
+        };
+
+        let built = crate::session_events::build_permission_response_event(
+            &perm_uuid,
+            &request_note_id,
+            allow,
+            message.as_deref(),
+            cancel_turn,
+            session_id,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))?;
+        self.publish_session_event(built)
+    }
+
+    /// Request a permission-mode change on a session's host (e.g. `"default"`,
+    /// `"acceptEdits"`, `"plan"`). Publishes a kind-1988 command the host applies
+    /// to its local backend.
+    pub fn set_permission_mode(&mut self, session_id: &str, mode: &str) -> Result<(), EngineError> {
+        let built = crate::session_events::build_set_permission_mode_event(
+            mode,
+            session_id,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))?;
+        self.publish_session_event(built)
+    }
+
+    /// The 32-byte account secret that signs inner session events.
+    fn seckey(&self) -> [u8; 32] {
+        self.account.secret_key.secret_bytes()
+    }
+
+    /// Seed a [`ThreadingState`](crate::session_events::ThreadingState) from a
+    /// session's existing events so a new live event threads onto the chain.
+    /// Returns a fresh state for an unknown/empty session.
+    fn session_threading(&self, session_id: &str) -> crate::session_events::ThreadingState {
+        let mut threading = crate::session_events::ThreadingState::new();
+        let Ok(txn) = Transaction::new(&self.ndb) else {
+            return threading;
+        };
+        let loaded = crate::session_loader::load_session_messages_for_author(
+            &self.ndb,
+            &txn,
+            &self.account.pubkey,
+            session_id,
+        );
+        if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
+            threading.seed(root, last, loaded.event_count);
+        }
+        threading
+    }
+
+    /// The session's working directory from its latest state event, if any.
+    fn session_cwd(&self, session_id: &str) -> Option<String> {
+        let txn = Transaction::new(&self.ndb).ok()?;
+        let state = crate::session_loader::latest_valid_session_for_author(
+            &self.ndb,
+            &txn,
+            &self.account.pubkey,
+            session_id,
+        )?;
+        (!state.cwd.is_empty()).then_some(state.cwd)
+    }
+
+    /// Wrap a freshly-built inner event in its PNS envelope, ingest it locally
+    /// (ndb decrypts it back into the queryable inner event), and publish the
+    /// envelope to the connected relay. Local ingest always happens; publishing
+    /// is deferred if the engine is not connected.
+    fn publish_session_event(
+        &mut self,
+        built: crate::session_events::BuiltEvent,
+    ) -> Result<(), EngineError> {
+        let pns = self.pns_keys();
+        let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns)
+            .map_err(|e| EngineError::Build(e.to_string()))?;
+
+        // Ingest our own event so local reads reflect it immediately, exactly as
+        // an inbound relay envelope would be ingested.
+        if let Err(e) = self
+            .ndb
+            .process_event(&format!(r#"["EVENT","_pns",{wrapped}]"#))
+        {
+            tracing::warn!("engine: failed to ingest own event: {e}");
+        }
+
+        match self.pns_relay.clone() {
+            Some(relay) => self.publish_event_json(wrapped, vec![relay]),
+            None => tracing::debug!("engine: not connected; event ingested locally only"),
+        }
+        Ok(())
     }
 }
 
@@ -721,6 +902,138 @@ mod tests {
             .expect("watch should wake before timeout");
         assert!(woke, "watch should report a change");
         assert_eq!(engine.session_messages(session_id).len(), 1);
+    }
+
+    /// The flagship remote flow: a message sent by one engine reaches a second
+    /// engine that shares the identity and relay. Exercises the whole write path
+    /// (build → PNS-wrap → publish) against the read path (discovery sub →
+    /// decrypt → session_messages).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_round_trips_between_engines() {
+        let (_relay_dir, relay_ndb) = temp_ndb();
+        let relay = spawn_relay(relay_ndb.clone());
+        let url = relay.url();
+        let session_id = "round-trip-session";
+
+        let a_dir = TempDir::new().expect("tmp dir");
+        let mut a =
+            Engine::open(a_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine a");
+        a.connect(&url).expect("a connect");
+        a.send_message(session_id, "hi from A").expect("send");
+
+        let b_dir = TempDir::new().expect("tmp dir");
+        let mut b =
+            Engine::open(b_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine b");
+        b.connect(&url).expect("b connect");
+
+        // Check-then-wait so we catch the event whether it lands before or after
+        // the watch is installed.
+        let mut watch = b.watch_session(session_id).expect("watch");
+        let received = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if !b.session_messages(session_id).is_empty() {
+                    return true;
+                }
+                if !watch.changed().await {
+                    return false;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(received, "engine B should receive A's message");
+        let messages = b.session_messages(session_id);
+        assert!(matches!(&messages[0], Message::User(_)));
+        relay.shutdown();
+    }
+
+    /// A permission response can only be built once its request is known, so
+    /// unknown ids and malformed ids are rejected distinctly.
+    #[tokio::test]
+    async fn respond_permission_requires_a_known_request() {
+        let dir = TempDir::new().expect("tmp dir");
+        let mut engine =
+            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+
+        let unknown = uuid::Uuid::new_v4().to_string();
+        assert!(matches!(
+            engine.respond_permission("s", &unknown, true, None, false),
+            Err(EngineError::UnknownPermission)
+        ));
+        assert!(matches!(
+            engine.respond_permission("s", "not-a-uuid", true, None, false),
+            Err(EngineError::InvalidPermId)
+        ));
+    }
+
+    /// With the request seeded into the db, a response resolves its note id and
+    /// publishes without error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn respond_permission_links_to_a_seeded_request() {
+        use crate::session_events::{build_permission_request_event, ThreadingState};
+
+        let dir = TempDir::new().expect("tmp dir");
+        let mut engine =
+            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let session_id = "perm-session";
+        let perm_id = uuid::Uuid::new_v4();
+
+        let mut threading = ThreadingState::new();
+        let req = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({ "command": "ls" }),
+            session_id,
+            &mut threading,
+            &TEST_SECKEY,
+        )
+        .expect("request event");
+        pns_seed(engine.ndb(), &req.note_json);
+        assert!(
+            await_note(
+                engine.ndb(),
+                req.note_id,
+                AI_CONVERSATION_KIND as u64,
+                Duration::from_secs(5)
+            )
+            .await,
+            "the permission request must be queryable before responding"
+        );
+
+        engine
+            .respond_permission(
+                session_id,
+                &perm_id.to_string(),
+                true,
+                Some("ok".into()),
+                false,
+            )
+            .expect("respond");
+    }
+
+    #[tokio::test]
+    async fn spawn_session_returns_a_uuid_spawn_id() {
+        let dir = TempDir::new().expect("tmp dir");
+        let mut engine =
+            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let spawn_id = engine
+            .spawn_session("laptop", "/tmp/project", "claude")
+            .expect("spawn");
+        assert!(
+            uuid::Uuid::parse_str(&spawn_id).is_ok(),
+            "spawn_id should be a uuid"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_permission_mode_builds_and_ingests() {
+        let dir = TempDir::new().expect("tmp dir");
+        let mut engine =
+            Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        engine
+            .set_permission_mode("some-session", "plan")
+            .expect("set mode");
     }
 
     #[tokio::test]
