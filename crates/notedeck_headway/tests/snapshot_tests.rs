@@ -267,7 +267,7 @@ fn snapshot_inline_card() {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
     let card = CardView {
         id: enostr::NoteId::new([1u8; 32]),
@@ -307,6 +307,67 @@ fn snapshot_inline_card() {
 
     harness.run();
     harness.snapshot("inline_card");
+}
+
+/// The compact chip shape ([`notedeck::RenderContext::Inline`]) previewed within
+/// a run of flowing text — the Linear/GitHub target look, with the different
+/// column-derived status icons.
+///
+/// NOTE: this lays the chips into a `horizontal_wrapped` paragraph directly to
+/// show the *intended* within-line flow. The current `render_markdown_with_refs`
+/// splice path still places a reference on its own row *between* markdown blocks
+/// (md-stream wraps elements in `ui.vertical`), so wiring the chip to flow truly
+/// inline — as a ref inline-element inside a paragraph — is separate scanner /
+/// md-stream work (the epic's whisper-crop-merge + Dave demo steps).
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_inline_chip() {
+    use headway::event::ColumnPos;
+    use notedeck_headway::card_chip_ui;
+
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let ctx = egui::Context::default();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+
+    let mut installed = false;
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(560.0, 200.0))
+        .renderer(notedeck::software_renderer())
+        .build_ui(move |ui| {
+            if !installed {
+                notedeck.setup(ui.ctx());
+                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                installed = true;
+            }
+            let theme = notedeck::ColorTheme::current(ui.ctx());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label("Landed the fix in");
+                // A board of 5 columns: index 2 → a "started" icon.
+                card_chip_ui(
+                    ui,
+                    &theme,
+                    "Render inline references as chips",
+                    Some(ColumnPos { index: 2, count: 5 }),
+                );
+                ui.label("which unblocks");
+                // index 0 → the backlog icon.
+                card_chip_ui(
+                    ui,
+                    &theme,
+                    "Thread AppContext through Dave",
+                    Some(ColumnPos { index: 0, count: 5 }),
+                );
+                ui.label("and closes out the epic — superseding");
+                // Archived (no live column) → muted fallback icon.
+                card_chip_ui(ui, &theme, "The earlier sketch", None);
+                ui.label("entirely.");
+            });
+        });
+
+    harness.run();
+    harness.snapshot("inline_chip");
 }
 
 /// Open the first column's "⋯" overflow menu (there's one per column, so query
