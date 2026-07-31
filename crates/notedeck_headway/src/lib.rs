@@ -58,6 +58,12 @@ pub struct Headway {
     /// [`process_pending_open`](Headway::process_pending_open) on the next render:
     /// switch to the owning board and, for a card, open its detail.
     pending_open: Option<NoteId>,
+    /// The board fold-cache shared by everything this app registers for *inline*
+    /// display: the [`KindRenderer`](notedeck::KindRenderer)s (a referenced card
+    /// or board) and the [`ReferenceParser`](notedeck::ReferenceParser) (a
+    /// `slug#word-word-word` card ref). Handed to each at registration by cloning
+    /// the `Rc`, so a given board folds once no matter how it's referenced.
+    inline_cache: Rc<RefCell<InlineBoardCache>>,
 }
 
 impl Default for Headway {
@@ -71,6 +77,7 @@ impl Default for Headway {
             seeded: false,
             repaint_frames: 0,
             pending_open: None,
+            inline_cache: Rc::new(RefCell::new(InlineBoardCache::default())),
         }
     }
 }
@@ -361,15 +368,24 @@ impl BoardSync {
 
 impl App for Headway {
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
-        // One cache shared by both renderers so an issue and its board, when both
-        // are referenced, fold off a single subscription + reducer per board.
-        let cache = Rc::new(RefCell::new(InlineBoardCache::default()));
+        // Share the app's one inline cache (see `inline_cache`) so an issue and
+        // its board — and a card referenced by word id — all fold off a single
+        // subscription + reducer per board.
+        let cache = self.inline_cache.clone();
         vec![
             Box::new(HeadwayIssueRenderer {
                 cache: cache.clone(),
             }),
             Box::new(HeadwayBoardRenderer { cache }),
         ]
+    }
+
+    fn reference_parsers(&self) -> Vec<Box<dyn notedeck::ReferenceParser>> {
+        // Same inline cache as the kind renderers: a card referenced by word id
+        // folds the same board the renderers do, once.
+        vec![Box::new(HeadwayRefParser {
+            cache: self.inline_cache.clone(),
+        })]
     }
 
     fn tools(&self) -> Vec<notedeck::RegisteredTool> {
@@ -878,6 +894,123 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
     }
 }
 
+/// The inline reference parser for a bare headway card id —
+/// `<board-slug>#<word>-<word>-<word>` (e.g. `commerce#purse-metal-toilet`) — the
+/// same canonical form a human or the CLI writes. Registered via
+/// [`App::reference_parsers`]; the browser's markdown scanner recognises the ref
+/// in a run of text ([`find`](notedeck::ReferenceParser::find)),
+/// [`resolve`](notedeck::ReferenceParser::resolve)s it to the card's kind-1621
+/// issue note, and draws it with the already-registered [`HeadwayIssueRenderer`].
+///
+/// There is no `scheme:` prefix — a headway ref is bare — so [`find`] recognises
+/// the shape directly and cheaply (slug, `#`, three dash-joined words) while
+/// [`resolve`] is the authority: a candidate that doesn't fold to a real card is
+/// re-rendered as plain text, so a loose match is invisible, not a broken chip.
+///
+/// **Author gap.** A headway ref carries no pubkey, but folding a board needs
+/// one. We resolve against [`ReferenceResolveCtx::selected_account`], so a ref
+/// only resolves to a board the *current* account owns. A later grammar
+/// extension can carry an explicit author (e.g. an `naddr`-style coordinate).
+pub struct HeadwayRefParser {
+    /// Shared with the app's kind renderers (see [`Headway::inline_cache`]), so a
+    /// card referenced by word id folds the same cached board a directly-embedded
+    /// card/board does — the fold happens once per board, not once per surface.
+    cache: Rc<RefCell<InlineBoardCache>>,
+}
+
+impl HeadwayRefParser {
+    /// A byte is part of a board slug: lowercase ascii, a digit, or `-` (see
+    /// `store::board_slug`). Uppercase is intentionally excluded — slugs are
+    /// lowercase — but `resolve` lowercases anyway, so a stray capital only costs
+    /// a slug boundary, never a wrong resolution.
+    fn is_slug_byte(b: u8) -> bool {
+        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
+    }
+
+    /// End index of a `word-word-word` run of *exactly three* lowercase-letter
+    /// (BIP-39) words starting at `i`, or `None`. Words are `[a-z]+` joined by a
+    /// single `-`; a fourth dash-joined word is rejected so a longer hyphenated
+    /// run isn't mistaken for a word id.
+    fn three_words_end(bytes: &[u8], i: usize) -> Option<usize> {
+        let mut pos = i;
+        for word in 0..3 {
+            let start = pos;
+            while pos < bytes.len() && bytes[pos].is_ascii_lowercase() {
+                pos += 1;
+            }
+            if pos == start {
+                return None; // empty word (leading/double/trailing dash)
+            }
+            if word < 2 {
+                // Require a single `-` before each of the next two words.
+                if pos < bytes.len() && bytes[pos] == b'-' {
+                    pos += 1;
+                } else {
+                    return None; // fewer than three words
+                }
+            }
+        }
+        // A `-` right after the third word means a fourth is coming: not a bare
+        // three-word id.
+        if pos < bytes.len() && bytes[pos] == b'-' {
+            return None;
+        }
+        Some(pos)
+    }
+}
+
+impl notedeck::ReferenceParser for HeadwayRefParser {
+    fn id(&self) -> &'static str {
+        "headway"
+    }
+
+    fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
+        let bytes = text.as_bytes();
+        let mut search = 0;
+        while let Some(rel) = text[search..].find('#') {
+            let hash = search + rel;
+            // Continue past this `#` on the next iteration regardless of outcome.
+            search = hash + 1;
+
+            // Slug: the run of slug bytes ending immediately before the `#`.
+            let mut slug_start = hash;
+            while slug_start > 0 && Self::is_slug_byte(bytes[slug_start - 1]) {
+                slug_start -= 1;
+            }
+            if slug_start == hash {
+                continue; // no slug (e.g. a markdown heading `# ...`)
+            }
+
+            // Three dash-joined words right after the `#`.
+            if let Some(end) = Self::three_words_end(bytes, hash + 1) {
+                return Some(slug_start..end);
+            }
+        }
+        None
+    }
+
+    fn resolve(
+        &self,
+        matched: &str,
+        ctx: &notedeck::ReferenceResolveCtx,
+    ) -> Option<notedeck::ResolvedRef> {
+        let (slug, words) = matched.split_once('#')?;
+        // Author gap: no pubkey in the ref, so fold the current account's boards.
+        let author = ctx.selected_account?;
+        let board_id = slug.to_lowercase();
+
+        // Fold (cached) the board, then re-encode its cards to match the word id.
+        // `.and_then` yields the owned `NoteId` so the cache borrow drops here.
+        let note_id = self
+            .cache
+            .borrow_mut()
+            .reducer(ctx.ndb, ctx.txn, &author, &board_id)
+            .and_then(|reducer| event::pick_board(reducer, &author, &board_id))
+            .and_then(|board| event::resolve_card_by_wordid(&board, words))?;
+        Some(notedeck::ResolvedRef::note(note_id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1232,5 +1365,101 @@ mod tests {
             cache.full_reloads, 1,
             "inline cache re-walked the history instead of folding deltas"
         );
+    }
+
+    fn ref_parser() -> HeadwayRefParser {
+        HeadwayRefParser {
+            cache: Rc::new(RefCell::new(InlineBoardCache::default())),
+        }
+    }
+
+    /// [`HeadwayRefParser::find`] is a purely syntactic filter: it recognises the
+    /// bare `slug#word-word-word` shape (no scheme prefix) and rejects near-misses
+    /// — markdown headings, non-three-word runs — leaving the rest to `resolve`.
+    #[test]
+    fn ref_parser_find_recognises_bare_word_ids() {
+        use notedeck::ReferenceParser;
+        let p = ref_parser();
+        let hit = |s: &str| p.find(s).map(|r| s[r].to_string());
+
+        // A bare canonical ref, standalone and embedded in prose.
+        assert_eq!(
+            hit("commerce#purse-metal-toilet").as_deref(),
+            Some("commerce#purse-metal-toilet")
+        );
+        assert_eq!(
+            hit("see commerce#purse-metal-toilet here").as_deref(),
+            Some("commerce#purse-metal-toilet")
+        );
+        // Slugs may carry digits and dashes (see `store::board_slug`).
+        assert_eq!(
+            hit("2024-goals#maple-river-canyon").as_deref(),
+            Some("2024-goals#maple-river-canyon")
+        );
+        // A trailing period (or any non-letter) ends the third word.
+        assert_eq!(
+            hit("done: commerce#purse-metal-toilet.").as_deref(),
+            Some("commerce#purse-metal-toilet")
+        );
+
+        // Markdown headings have no slug before the `#`.
+        assert!(hit("# Heading here").is_none());
+        assert!(hit("## purse-metal-toilet").is_none());
+        // Fewer or more than three words is not a word id.
+        assert!(hit("board#one-two").is_none());
+        assert!(hit("board#one-two-three-four").is_none());
+        // Uppercase words aren't BIP-39 words.
+        assert!(hit("board#One-Two-Three").is_none());
+        // Plain prose yields nothing.
+        assert!(hit("just a sentence, nothing here").is_none());
+
+        // A rejected candidate doesn't swallow a later valid ref.
+        assert_eq!(
+            hit("board#one-two then b#red-green-blue").as_deref(),
+            Some("b#red-green-blue")
+        );
+    }
+
+    /// [`HeadwayRefParser::resolve`] folds the referenced board (via the shared
+    /// [`InlineBoardCache`]) and re-encodes its cards to match the word id,
+    /// yielding the card's kind-1621 issue note. It resolves relative to the
+    /// selected account (the author gap), so no account means no resolution.
+    #[test]
+    fn ref_parser_resolves_word_id_to_card() {
+        use notedeck::{ReferenceParser, ReferenceResolveCtx};
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed();
+        t.wait(|v| total_cards(v) == 7);
+        t.drain();
+
+        // Take a real card and its word id off the folded board.
+        let (card_id, words) = {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            let board = event::load_board(&t.ndb, &txn, &t.kp.pubkey, store::BOARD_ID).unwrap();
+            let card = board.columns.iter().flat_map(|c| &c.cards).next().unwrap();
+            (card.id, headway::wordid::encode(card.id.bytes()))
+        };
+        let matched = format!("{}#{}", store::BOARD_ID, words);
+
+        let p = ref_parser();
+        let txn = Transaction::new(&t.ndb).unwrap();
+        let ctx = ReferenceResolveCtx {
+            ndb: &t.ndb,
+            txn: &txn,
+            selected_account: Some(t.kp.pubkey),
+        };
+        // The canonical ref resolves to that card's issue note.
+        assert_eq!(p.resolve(&matched, &ctx).unwrap().note_id, card_id);
+        // A well-formed word id that encodes no card doesn't resolve.
+        let bogus = format!("{}#zoo-zoo-zoo", store::BOARD_ID);
+        assert!(p.resolve(&bogus, &ctx).is_none());
+        // Without a selected account the author gap can't be filled.
+        let ctx_no_acct = ReferenceResolveCtx {
+            ndb: &t.ndb,
+            txn: &txn,
+            selected_account: None,
+        };
+        assert!(p.resolve(&matched, &ctx_no_acct).is_none());
     }
 }
