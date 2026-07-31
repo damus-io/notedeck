@@ -570,7 +570,7 @@ impl<'a> DaveUi<'a> {
                     self.user_chat(msg, is_queued, ui);
                 }
                 Message::Assistant(msg) => {
-                    self.assistant_chat(msg, ui);
+                    self.assistant_chat(msg, ctx, ui);
                 }
                 Message::ToolResponse(msg) => {
                     Self::tool_response_ui(msg, is_agentic, ui);
@@ -1008,10 +1008,14 @@ impl<'a> DaveUi<'a> {
 
                     // Render plan content as markdown (pre-parsed at construction)
                     if let Some(plan) = request.view.plan_markdown() {
+                        // No AppContext here (exit_plan_mode_ui fans out through
+                        // permission_request_ui's many call sites); plan text
+                        // renders without inline reference resolution.
                         markdown_ui::render_assistant_message(
                             &plan.elements,
                             None,
                             &plan.source,
+                            None,
                             ui,
                         );
                     } else if let Some(plan_text) =
@@ -1493,13 +1497,13 @@ impl<'a> DaveUi<'a> {
         });
     }
 
-    fn assistant_chat(&self, msg: &AssistantMessage, ui: &mut egui::Ui) {
+    fn assistant_chat(&self, msg: &AssistantMessage, ctx: &mut AppContext, ui: &mut egui::Ui) {
         let elements = msg.parsed_elements();
         let partial = msg.partial();
         let buffer = msg.buffer();
         let text = msg.text().to_owned();
         let r = ui.scope(|ui| {
-            markdown_ui::render_assistant_message(elements, partial, buffer, ui);
+            markdown_ui::render_assistant_message(elements, partial, buffer, Some(ctx), ui);
         });
         notedeck_ui::context_menu::context_menu(&r.response, |ui| {
             if ui.button("Copy").clicked() {

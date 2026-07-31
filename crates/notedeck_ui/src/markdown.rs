@@ -51,7 +51,7 @@ pub fn render_markdown(text: &str, ui: &mut Ui) {
     parser.push(text);
     parser.finalize();
     let (elements, source) = parser.into_parts();
-    render_assistant_message(&elements, None, &source, ui);
+    render_assistant_message(&elements, None, &source, None, ui);
 }
 
 /// Render `source` as markdown with **interactive** GFM task-list checkboxes.
@@ -78,7 +78,7 @@ fn collect_checkbox_toggles(text: &str, ui: &mut Ui) -> Vec<usize> {
     let (elements, buffer) = parser.into_parts();
 
     let mut edits = CheckboxEdits::default();
-    render_md_elements(&elements, None, &buffer, Some(&mut edits), ui);
+    render_md_elements(&elements, None, &buffer, Some(&mut edits), None, ui);
     edits.toggled
 }
 
@@ -254,9 +254,10 @@ pub fn render_assistant_message(
     elements: &[MdElement],
     partial: Option<&Partial>,
     buffer: &str,
+    ctx: Option<&mut AppContext>,
     ui: &mut Ui,
 ) {
-    render_md_elements(elements, partial, buffer, None, ui);
+    render_md_elements(elements, partial, buffer, None, ctx, ui);
 }
 
 /// Shared rendering core. `edits` is `None` for read-only renders and `Some`
@@ -266,19 +267,27 @@ fn render_md_elements(
     partial: Option<&Partial>,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
+    mut ctx: Option<&mut AppContext>,
     ui: &mut Ui,
 ) {
     let theme = MdTheme::from_visuals(ui.visuals());
 
     ui.vertical(|ui| {
         for element in elements {
-            render_element(element, &theme, buffer, edits.as_deref_mut(), ui);
+            render_element(
+                element,
+                &theme,
+                buffer,
+                edits.as_deref_mut(),
+                ctx.as_deref_mut(),
+                ui,
+            );
         }
 
         // Render partial (speculative) content for immediate feedback. Partials
         // only arise while streaming, which is always a read-only render.
         if let Some(partial) = partial {
-            render_partial(partial, &theme, buffer, ui);
+            render_partial(partial, &theme, buffer, ctx, ui);
         }
     });
 }
@@ -288,6 +297,7 @@ fn render_element(
     theme: &MdTheme,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
+    mut ctx: Option<&mut AppContext>,
     ui: &mut Ui,
 ) {
     match element {
@@ -301,7 +311,7 @@ fn render_element(
 
         MdElement::Paragraph(inlines) => {
             ui.horizontal_wrapped(|ui| {
-                render_inlines(inlines, theme, buffer, ui);
+                render_inlines(inlines, theme, buffer, ctx.as_deref_mut(), ui);
             });
             ui.add_space(notedeck::tokens::SPACING_SM);
         }
@@ -328,18 +338,25 @@ fn render_element(
                 ))
                 .show(ui, |ui| {
                     for elem in nested {
-                        render_element(elem, theme, buffer, edits.as_deref_mut(), ui);
+                        render_element(
+                            elem,
+                            theme,
+                            buffer,
+                            edits.as_deref_mut(),
+                            ctx.as_deref_mut(),
+                            ui,
+                        );
                     }
                 });
             ui.add_space(notedeck::tokens::SPACING_SM);
         }
 
         MdElement::UnorderedList(items) => {
-            render_list_items(false, 1, items, theme, buffer, edits, ui);
+            render_list_items(false, 1, items, theme, buffer, edits, ctx, ui);
         }
 
         MdElement::OrderedList { start, items } => {
-            render_list_items(true, *start, items, theme, buffer, edits, ui);
+            render_list_items(true, *start, items, theme, buffer, edits, ctx, ui);
         }
 
         MdElement::Table { headers, rows } => {
@@ -365,7 +382,17 @@ fn flush_job(job: &mut LayoutJob, ui: &mut Ui) {
     }
 }
 
-fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+/// `ctx` is the seam through which inline reference resolution will draw live
+/// widgets (a Headway card's title, a nostr entity) in place of a bare token.
+/// It is threaded down the whole render path here but not consumed yet — the
+/// registry-driven scan lands in a follow-up (notedeck#whisper-crop-merge).
+fn render_inlines(
+    inlines: &[InlineElement],
+    theme: &MdTheme,
+    buffer: &str,
+    _ctx: Option<&mut AppContext>,
+    ui: &mut Ui,
+) {
     // Inline runs carry their own spaces in the span text, and bold/link/image
     // runs are flushed as separate widgets mid-line. The default horizontal gap
     // would then show as a stray space on each side of every such run (e.g.
@@ -711,6 +738,7 @@ fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui:
 /// Render a list's items with bullets (unordered) or incrementing numbers
 /// (ordered, counting up from `start`). Shared by the completed-element and
 /// streaming-partial paths.
+#[allow(clippy::too_many_arguments)]
 fn render_list_items(
     ordered: bool,
     start: u32,
@@ -718,14 +746,31 @@ fn render_list_items(
     theme: &MdTheme,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
+    mut ctx: Option<&mut AppContext>,
     ui: &mut Ui,
 ) {
     for (i, item) in items.iter().enumerate() {
         if ordered {
             let marker = format!("{}.", start + i as u32);
-            render_list_item(item, &marker, theme, buffer, edits.as_deref_mut(), ui);
+            render_list_item(
+                item,
+                &marker,
+                theme,
+                buffer,
+                edits.as_deref_mut(),
+                ctx.as_deref_mut(),
+                ui,
+            );
         } else {
-            render_list_item(item, "\u{2022}", theme, buffer, edits.as_deref_mut(), ui);
+            render_list_item(
+                item,
+                "\u{2022}",
+                theme,
+                buffer,
+                edits.as_deref_mut(),
+                ctx.as_deref_mut(),
+                ui,
+            );
         }
     }
     ui.add_space(notedeck::tokens::SPACING_SM);
@@ -737,6 +782,7 @@ fn render_list_item(
     theme: &MdTheme,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
+    mut ctx: Option<&mut AppContext>,
     ui: &mut Ui,
 ) {
     ui.horizontal(|ui| {
@@ -760,12 +806,12 @@ fn render_list_item(
         }
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
-                render_inlines(&item.content, theme, buffer, ui);
+                render_inlines(&item.content, theme, buffer, ctx.as_deref_mut(), ui);
             });
             // Render nested list if present
             if let Some(nested) = &item.nested {
                 ui.indent("nested", |ui| {
-                    render_element(nested, theme, buffer, edits, ui);
+                    render_element(nested, theme, buffer, edits, ctx, ui);
                 });
             }
         });
@@ -835,7 +881,13 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
     ui.add_space(8.0);
 }
 
-fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+fn render_partial(
+    partial: &Partial,
+    theme: &MdTheme,
+    buffer: &str,
+    mut ctx: Option<&mut AppContext>,
+    ui: &mut Ui,
+) {
     // A streaming list keeps its completed items in `partial.kind` (its content
     // span stays empty), so render those for progressive feedback before the
     // empty-content guard below would bail out.
@@ -845,7 +897,16 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
         items,
     } = &partial.kind
     {
-        render_list_items(*ordered, *start, items, theme, buffer, None, ui);
+        render_list_items(
+            *ordered,
+            *start,
+            items,
+            theme,
+            buffer,
+            None,
+            ctx.as_deref_mut(),
+            ui,
+        );
         return;
     }
 
@@ -894,7 +955,7 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
             // Parse inline elements from the partial content for proper formatting
             let inlines = parse_inline(content, partial.content_start);
             ui.horizontal_wrapped(|ui| {
-                render_inlines(&inlines, theme, buffer, ui);
+                render_inlines(&inlines, theme, buffer, ctx.as_deref_mut(), ui);
             });
         }
 
@@ -902,7 +963,7 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
             // Other partial kinds - parse inline elements too
             let inlines = parse_inline(content, partial.content_start);
             ui.horizontal_wrapped(|ui| {
-                render_inlines(&inlines, theme, buffer, ui);
+                render_inlines(&inlines, theme, buffer, ctx, ui);
             });
         }
     }
@@ -1074,7 +1135,7 @@ mod tests {
         let mut harness = Harness::new_ui(move |ui| {
             let theme = MdTheme::from_visuals(ui.visuals());
             ui.horizontal_wrapped(|ui| {
-                render_inlines(&inlines, &theme, buffer, ui);
+                render_inlines(&inlines, &theme, buffer, None, ui);
             });
         });
 
