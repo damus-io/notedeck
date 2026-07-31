@@ -1,16 +1,19 @@
-//! The front half of inline references: turning a scheme-prefixed text token
-//! into a resolvable nostr entity.
+//! The front half of inline references: recognizing a reference inside a run of
+//! text and resolving it to a nostr entity.
 //!
-//! A surface (a notebook note, a chat message, …) can mention an entity by a
-//! short textual reference like `nostr:nevent1…` or `headway:my-board#maple-river-canyon`.
-//! The universal shape is `scheme:token`: the part before the first `:` names a
-//! [`ReferenceParser`] registered for that scheme, and the parser turns the
-//! `token` into a concrete note ([`ResolvedRef`]). The *back* half — the
+//! A surface (a notebook note, a chat message, …) can mention an entity inline —
+//! `nostr:nevent1…`, or a headway card as a bare `board#maple-river-canyon`.
+//! There is **no shared syntax**: a nostr reference carries a `nostr:` scheme, a
+//! headway reference is a bare `slug#word-word-word` with no prefix at all, and a
+//! future scheme might use `@handle` or `#tag`. So a [`ReferenceParser`] owns its
+//! *whole* grammar — it [`find`](ReferenceParser::find)s its own references in
+//! text and [`resolve`](ReferenceParser::resolve)s a match to a concrete note
+//! ([`ResolvedRef`]). The *back* half — the
 //! [`KindRendererRegistry`](crate::KindRendererRegistry) — then draws that note
 //! inline. The two halves never reference each other: an app registers a parser
-//! for its scheme and a renderer for its kind, and the browser mediates.
+//! for its references and a renderer for its kind, and the browser mediates.
 //!
-//! `nostr:` is the built-in scheme (see [`NostrRefParser`]), reproducing the
+//! `nostr:` is the built-in parser (see [`NostrRefParser`]), reproducing the
 //! prior hardcoded bech32 behaviour; apps add their own via
 //! [`App::reference_parsers`](crate::App::reference_parsers). Parsers are
 //! registered at startup for *all* apps — like inline
@@ -21,11 +24,13 @@
 //! what makes that possible.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-/// The concrete nostr entity a [`ReferenceParser`] resolved a text token to.
+/// The concrete nostr entity a [`ReferenceParser`] resolved a matched reference
+/// to.
 ///
 /// Carries the resolved note; the back half fetches it by id and hands it to the
 /// [`KindRenderer`](crate::KindRenderer) for its kind. A thin newtype rather than
@@ -45,7 +50,7 @@ impl ResolvedRef {
     }
 }
 
-/// The read-only context a [`ReferenceParser`] resolves a token against.
+/// The read-only context a [`ReferenceParser`] resolves a match against.
 ///
 /// Grouped into a struct (rather than loose args) so a parser signature is
 /// stable as resolution grows more inputs. Everything here is shared/read-only:
@@ -56,58 +61,70 @@ pub struct ReferenceResolveCtx<'a> {
     /// A live read transaction for `ndb`, so all references in one body share a
     /// single transaction.
     pub txn: &'a Transaction,
-    /// The selected account, when there is one. Some schemes (e.g. `headway`)
-    /// carry no author in the token and resolve relative to the current account.
+    /// The selected account, when there is one. Some parsers (e.g. `headway`)
+    /// carry no author in the reference and resolve relative to the current
+    /// account.
     pub selected_account: Option<Pubkey>,
 }
 
-/// Turns a scheme-prefixed text reference (`scheme:token`) into a resolvable
-/// nostr entity.
+/// Recognizes and resolves one *kind* of inline reference — its whole grammar,
+/// no shared delimiter.
 ///
-/// An app registers one parser per scheme it owns (see
-/// [`App::reference_parsers`](crate::App::reference_parsers)); the browser scans
-/// text for a registered `scheme:` prefix, carves the token out with
-/// [`token_len`](Self::token_len), and resolves it with [`resolve`](Self::resolve).
+/// An app registers one parser per reference syntax it owns (see
+/// [`App::reference_parsers`](crate::App::reference_parsers)); the browser asks
+/// every registered parser to [`find`](Self::find) its next match in a run of
+/// text, takes the leftmost, and resolves it with [`resolve`](Self::resolve).
 pub trait ReferenceParser {
-    /// The URI-like scheme this parser owns — the text before the `:`, e.g.
-    /// `"nostr"` or `"headway"`. Must be unique across registered parsers;
-    /// `"nostr"` is reserved for the [built-in](NostrRefParser).
-    fn scheme(&self) -> &'static str;
-
-    /// Length in bytes of the reference token that begins `rest` — the text
-    /// immediately after this parser's `scheme:` prefix — or `0` if no valid
-    /// token starts there (so the scanner leaves a bare `scheme:` as plain text).
+    /// A stable identifier for this parser — the registry key, and the handle a
+    /// per-parser default is stored under in settings. Must be unique across
+    /// registered parsers; `"nostr"` is reserved for the [built-in](NostrRefParser).
     ///
-    /// This replaces the single hardcoded bech32 char-class the scanner used for
-    /// `nostr:`, letting each scheme define its own token grammar.
-    fn token_len(&self, rest: &str) -> usize;
+    /// This is *not* a syntax marker: unlike a URI scheme it never has to appear
+    /// in the referenced text (a headway reference is a bare
+    /// `board#word-word-word`). The grammar lives entirely in [`find`](Self::find).
+    fn id(&self) -> &'static str;
 
-    /// Resolve `token` (the text after the `scheme:` prefix) to a concrete nostr
-    /// entity, or `None` if it can't be resolved (unparseable token, or the
-    /// entity isn't in the local db yet).
+    /// Find the next reference this parser recognizes in `text`, as a byte range
+    /// into `text`, or `None` if `text` holds none.
+    ///
+    /// The parser owns its entire grammar — there is no shared `scheme:` prefix,
+    /// so `nostr` matches its scheme plus a bech32 run while `headway` matches a
+    /// bare `slug#word-word-word`. The returned range must be non-empty and fall
+    /// on char boundaries.
+    ///
+    /// `find` may match **loosely** — a cheap syntactic filter — because a match
+    /// that [`resolve`](Self::resolve) then rejects is drawn as ordinary text, so
+    /// a false positive is invisible rather than a broken widget. Runs inline
+    /// while drawing a frame: keep it linear and allocation-free.
+    fn find(&self, text: &str) -> Option<Range<usize>>;
+
+    /// Resolve `matched` — the exact substring [`find`](Self::find) delimited — to
+    /// a concrete nostr entity, or `None` if it doesn't resolve (an unparseable
+    /// match, or an entity not in the local db yet), in which case it renders as
+    /// plain text.
     ///
     /// Must be non-blocking — it runs inline while drawing a frame. A parser that
     /// needs an expensive computation (e.g. folding a board) should cache it
     /// behind interior mutability (`Rc<RefCell<…>>`), the same way
     /// [`KindRenderer`](crate::KindRenderer) impls do.
-    fn resolve(&self, token: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef>;
+    fn resolve(&self, matched: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef>;
 }
 
-/// App-registered [`ReferenceParser`]s indexed by [scheme](ReferenceParser::scheme).
+/// App-registered [`ReferenceParser`]s indexed by [id](ReferenceParser::id).
 ///
 /// Lives in [`AppRegistries`](crate::AppRegistries). Always contains the built-in
 /// [`nostr`](NostrRefParser) parser (seeded by [`Default`]); apps add more at
-/// startup. Later registration of a scheme replaces an earlier one, so an app
-/// must not re-register the reserved `nostr` scheme.
+/// startup. Later registration of an id replaces an earlier one, so an app must
+/// not re-register the reserved `nostr` id.
 pub struct ReferenceParserRegistry {
-    by_scheme: HashMap<&'static str, Box<dyn ReferenceParser>>,
+    by_id: HashMap<&'static str, Box<dyn ReferenceParser>>,
 }
 
 impl Default for ReferenceParserRegistry {
     /// A registry seeded with only the built-in [`nostr`](NostrRefParser) parser.
     fn default() -> Self {
         let mut reg = Self {
-            by_scheme: HashMap::new(),
+            by_id: HashMap::new(),
         };
         reg.register(Box::new(NostrRefParser));
         reg
@@ -115,45 +132,62 @@ impl Default for ReferenceParserRegistry {
 }
 
 impl ReferenceParserRegistry {
-    /// Register a parser under its scheme, replacing any parser already present
-    /// for that scheme.
+    /// Register a parser under its [id](ReferenceParser::id), replacing any parser
+    /// already present for that id.
     pub fn register(&mut self, parser: Box<dyn ReferenceParser>) {
-        self.by_scheme.insert(parser.scheme(), parser);
+        self.by_id.insert(parser.id(), parser);
     }
 
-    /// The parser registered for `scheme`, if any.
-    pub fn get(&self, scheme: &str) -> Option<&dyn ReferenceParser> {
-        self.by_scheme.get(scheme).map(|b| b.as_ref())
+    /// The parser registered under `id`, if any.
+    pub fn get(&self, id: &str) -> Option<&dyn ReferenceParser> {
+        self.by_id.get(id).map(|b| b.as_ref())
     }
 
-    /// Every registered scheme, in arbitrary order. Schemes are `'static` (from
-    /// [`ReferenceParser::scheme`]), so a caller can hold one while taking a
-    /// disjoint `&mut` borrow elsewhere.
-    pub fn schemes(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.by_scheme.keys().copied()
+    /// Every registered parser, in arbitrary order. The scanner asks each to
+    /// [`find`](ReferenceParser::find) its next match and keeps the leftmost.
+    pub fn iter(&self) -> impl Iterator<Item = &dyn ReferenceParser> + '_ {
+        self.by_id.values().map(|b| b.as_ref())
     }
 }
 
-/// The built-in `nostr:` reference parser: resolves a bech32 entity
-/// (`nevent1…`/`note1…`/`naddr1…`) via [`resolve_ref`](crate::resolve_ref),
-/// reproducing the behaviour the markdown scanner hardcoded before schemes
-/// existed. A zero-sized, stateless parser.
+/// The built-in `nostr:` reference parser: matches a `nostr:` scheme followed by
+/// a bech32 entity (`nevent1…`/`note1…`/`naddr1…`) and resolves it via
+/// [`resolve_ref`](crate::resolve_ref), reproducing the behaviour the markdown
+/// scanner hardcoded before parsers existed. A zero-sized, stateless parser.
 pub struct NostrRefParser;
 
+impl NostrRefParser {
+    /// The scheme prefix every nostr reference carries.
+    const PREFIX: &'static str = "nostr:";
+}
+
 impl ReferenceParser for NostrRefParser {
-    fn scheme(&self) -> &'static str {
+    fn id(&self) -> &'static str {
         "nostr"
     }
 
-    fn token_len(&self, rest: &str) -> usize {
-        // A bech32 token is a run of lowercase letters/digits (hrp + data) —
-        // exactly the delimiter the scanner used for `nostr:` before.
-        rest.find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
-            .unwrap_or(rest.len())
+    fn find(&self, text: &str) -> Option<Range<usize>> {
+        let mut from = 0;
+        loop {
+            let start = from + text[from..].find(Self::PREFIX)?;
+            let token_start = start + Self::PREFIX.len();
+            // A bech32 token is a run of lowercase letters/digits (hrp + data) —
+            // exactly the delimiter the scanner used for `nostr:` before.
+            let rest = &text[token_start..];
+            let len = rest
+                .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+                .unwrap_or(rest.len());
+            if len > 0 {
+                return Some(start..token_start + len);
+            }
+            // A bare `nostr:` with no token: skip it and keep scanning.
+            from = token_start;
+        }
     }
 
-    fn resolve(&self, token: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
-        let note = crate::resolve_ref(ctx.ndb, ctx.txn, token)?;
+    fn resolve(&self, matched: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
+        let bech = matched.strip_prefix(Self::PREFIX)?;
+        let note = crate::resolve_ref(ctx.ndb, ctx.txn, bech)?;
         Some(ResolvedRef::note(NoteId::new(*note.id())))
     }
 }
@@ -162,16 +196,22 @@ impl ReferenceParser for NostrRefParser {
 mod tests {
     use super::*;
 
+    /// A stub parser matching a bare `@handle` — a reference with *no* scheme
+    /// prefix, exercising the open-ended [`find`](ReferenceParser::find) contract.
     struct StubParser;
     impl ReferenceParser for StubParser {
-        fn scheme(&self) -> &'static str {
+        fn id(&self) -> &'static str {
             "stub"
         }
-        fn token_len(&self, rest: &str) -> usize {
-            // Token runs until whitespace.
-            rest.find(char::is_whitespace).unwrap_or(rest.len())
+        fn find(&self, text: &str) -> Option<Range<usize>> {
+            let at = text.find('@')?;
+            let rest = &text[at + 1..];
+            let len = rest
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(rest.len());
+            (len > 0).then_some(at..at + 1 + len)
         }
-        fn resolve(&self, _token: &str, _ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
+        fn resolve(&self, _matched: &str, _ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
             None
         }
     }
@@ -180,38 +220,45 @@ mod tests {
     fn default_registry_has_builtin_nostr() {
         let reg = ReferenceParserRegistry::default();
         assert!(reg.get("nostr").is_some());
-        assert_eq!(reg.get("nostr").unwrap().scheme(), "nostr");
-        assert!(reg.get("headway").is_none());
+        assert_eq!(reg.get("nostr").unwrap().id(), "nostr");
+        assert!(reg.get("stub").is_none());
     }
 
     #[test]
-    fn register_adds_scheme_alongside_builtin() {
+    fn register_adds_id_alongside_builtin() {
         let mut reg = ReferenceParserRegistry::default();
         reg.register(Box::new(StubParser));
         assert!(reg.get("nostr").is_some());
         assert!(reg.get("stub").is_some());
-        let mut schemes: Vec<_> = reg.schemes().collect();
-        schemes.sort_unstable();
-        assert_eq!(schemes, vec!["nostr", "stub"]);
+        let mut ids: Vec<_> = reg.iter().map(|p| p.id()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["nostr", "stub"]);
     }
 
     #[test]
-    fn nostr_token_len_stops_at_non_bech32() {
+    fn nostr_find_matches_bech32_and_skips_bare() {
         let p = NostrRefParser;
-        // Stops at the space; the trailing prose is not part of the token.
-        assert_eq!(p.token_len("nevent1abc def"), "nevent1abc".len());
-        // A bare scheme with no token yields 0.
-        assert_eq!(p.token_len(" trailing"), 0);
+        // Matches the scheme plus its bech32 token, stopping at the space.
+        let s = "see nostr:nevent1abc def";
+        assert_eq!(&s[p.find(s).unwrap()], "nostr:nevent1abc");
         // Uppercase is outside the bech32 class, ending the token.
-        assert_eq!(p.token_len("note1xyzABC"), "note1xyz".len());
+        let s = "note1: nostr:note1xyzABC";
+        assert_eq!(&s[p.find(s).unwrap()], "nostr:note1xyz");
+        // A bare `nostr:` with no token is skipped, not matched.
+        assert!(p.find("nostr: trailing").is_none());
+        // …and a later valid reference past a bare one is still found.
+        let s = "nostr: then nostr:note1ok";
+        assert_eq!(&s[p.find(s).unwrap()], "nostr:note1ok");
+        // Prose with no reference yields nothing.
+        assert!(p.find("just prose").is_none());
     }
 
     #[test]
-    fn stub_token_len_uses_its_own_grammar() {
+    fn stub_find_uses_its_own_bare_grammar() {
         let p = StubParser;
-        assert_eq!(
-            p.token_len("board#maple-river more"),
-            "board#maple-river".len()
-        );
+        let s = "hi @alice, hello";
+        assert_eq!(&s[p.find(s).unwrap()], "@alice");
+        // A bare `@` with no handle is not a match.
+        assert!(p.find("mail me @ home").is_none());
     }
 }

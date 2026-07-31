@@ -51,7 +51,7 @@ pub fn render_markdown(text: &str, ui: &mut Ui) {
     parser.push(text);
     parser.finalize();
     let (elements, source) = parser.into_parts();
-    render_assistant_message(&elements, None, &source, None, ui);
+    render_parsed_markdown(&elements, None, &source, None, ui);
 }
 
 /// Render `source` as markdown with **interactive** GFM task-list checkboxes.
@@ -109,127 +109,135 @@ struct CheckboxEdits {
     toggled: Vec<usize>,
 }
 
-/// Render markdown `text`, splicing in inline widgets for any `nostr:`
-/// references. Plain spans outside references go through [`render_markdown`], so
-/// a body reads the same as before unless it actually links to a nostr entity;
-/// each reference is resolved with [`notedeck::resolve_ref`] and handed to the
-/// registered [`notedeck::KindRenderer`] for its kind. Scans in place — no
-/// per-frame allocation for the common reference-free case.
+/// Render markdown `text`, drawing an inline widget for any reference a
+/// registered [`ReferenceParser`](notedeck::ReferenceParser) recognizes. Parses
+/// `text` the same as [`render_markdown`], then renders through the ref-aware
+/// inline path (see [`render_inlines`]): a reference flows *within* its
+/// paragraph, each resolved to a nostr entity and drawn by the registered
+/// [`KindRenderer`](notedeck::KindRenderer) for its kind. The built-in `nostr:`
+/// parser keeps bech32 references rendering exactly as before; the common
+/// reference-free body allocates nothing beyond the parse.
 pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) {
-    let mut rest = text;
-    while let Some(pos) = rest.find("nostr:") {
-        let after = &rest[pos + "nostr:".len()..];
-        // The bech32 token is a run of lowercase letters/digits (hrp + data).
-        let end = after
-            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
-            .unwrap_or(after.len());
-        if end == 0 {
-            // A bare "nostr:" with no entity after it: keep it as text.
-            let upto = pos + "nostr:".len();
-            render_markdown(&rest[..upto], ui);
-            rest = &rest[upto..];
-            continue;
-        }
-        if pos > 0 {
-            render_markdown(&rest[..pos], ui);
-        }
-        nostr_ref_ui(ui, ctx, &after[..end]);
-        rest = &after[end..];
-    }
-    if !rest.is_empty() {
-        render_markdown(rest, ui);
-    }
+    let mut parser = StreamParser::new();
+    parser.push(text);
+    parser.finalize();
+    let (elements, source) = parser.into_parts();
+    render_parsed_markdown(&elements, None, &source, Some(ctx), ui);
 }
 
 /// Like [`render_markdown_with_refs`], but the GFM task-list checkboxes are
 /// **interactive**: clicking one flips its state byte in `source` (`[ ]` <->
 /// `[x]`) in place and returns `true` so the caller can persist the edit.
 ///
-/// `source` is split around `nostr:` references exactly as in the read-only
-/// renderer; each plain segment renders editable boxes, and a toggle inside a
-/// segment is mapped back through the consumed reference text to its absolute
-/// offset in `source` before the state byte is flipped.
+/// `source` is parsed once and rendered through the same ref-aware path, so a
+/// toggle's byte offset indexes `source` directly — references render inline
+/// without splitting the buffer, so there is no offset remapping to do (see
+/// [`apply_checkbox_toggles`]).
 pub fn render_markdown_with_refs_editable(
     ui: &mut Ui,
     ctx: &mut AppContext,
     source: &mut String,
 ) -> bool {
-    let toggled =
-        collect_checkbox_toggles_with_refs(source, ui, |ui, bech| nostr_ref_ui(ui, ctx, bech));
-    apply_checkbox_toggles(source, &toggled)
+    let mut parser = StreamParser::new();
+    parser.push(source);
+    parser.finalize();
+    let (elements, buffer) = parser.into_parts();
+
+    let mut edits = CheckboxEdits::default();
+    render_md_elements(&elements, None, &buffer, Some(&mut edits), Some(ctx), ui);
+    apply_checkbox_toggles(source, &edits.toggled)
 }
 
-/// Walk `text` like [`render_markdown_with_refs`] — rendering each `nostr:`
-/// reference via `render_ref` and each plain segment with interactive checkboxes
-/// — and return every toggled checkbox's byte offset **mapped into `text`**.
+/// A reference located in a run of text: its byte range within the scanned
+/// string and the [id](notedeck::ReferenceParser::id) of the parser that matched
+/// it (so the match can be resolved without re-scanning).
 ///
-/// `base` tracks the absolute offset of the unscanned tail `rest`, so a toggle
-/// at offset `off` within a segment lands at `base + off` in `text` even when
-/// references of varying length precede it.
-fn collect_checkbox_toggles_with_refs(
-    text: &str,
-    ui: &mut Ui,
-    mut render_ref: impl FnMut(&mut Ui, &str),
-) -> Vec<usize> {
-    let mut toggled = Vec::new();
-    let mut rest = text;
-    let mut base = 0usize;
-    let collect = |seg: &str, base: usize, ui: &mut Ui, toggled: &mut Vec<usize>| {
-        for off in collect_checkbox_toggles(seg, ui) {
-            toggled.push(base + off);
-        }
-    };
-    while let Some(pos) = rest.find("nostr:") {
-        let after = &rest[pos + "nostr:".len()..];
-        let end = after
-            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
-            .unwrap_or(after.len());
-        if end == 0 {
-            // Bare "nostr:" with no entity: render it as text, like the read-only path.
-            let upto = pos + "nostr:".len();
-            collect(&rest[..upto], base, ui, &mut toggled);
-            base += upto;
-            rest = &rest[upto..];
-            continue;
-        }
-        if pos > 0 {
-            collect(&rest[..pos], base, ui, &mut toggled);
-        }
-        render_ref(ui, &after[..end]);
-        let consumed = pos + "nostr:".len() + end;
-        base += consumed;
-        rest = &after[end..];
-    }
-    if !rest.is_empty() {
-        collect(rest, base, ui, &mut toggled);
-    }
-    toggled
+/// A named struct (not a tuple) so the range and the parser id can't be
+/// transposed at a call site. Holds no borrow of the text — just offsets and a
+/// `'static` id — so it never pins the immutable scan borrow across the mutable
+/// draw below.
+struct RefMatch {
+    /// Byte range of the whole matched reference within the scanned string.
+    range: std::ops::Range<usize>,
+    /// [`id`](notedeck::ReferenceParser::id) of the parser that matched.
+    parser: &'static str,
 }
 
-/// Resolve a `nostr:` reference to a note and hand it to the registered renderer
-/// for its kind. Falls back to plain link text when the entity can't be parsed,
-/// isn't in the db yet, or has no renderer.
-fn nostr_ref_ui(ui: &mut Ui, ctx: &mut AppContext, bech: &str) {
+/// The leftmost reference in `text` recognized by any parser in `parsers`, or
+/// `None` if `text` holds none.
+///
+/// Each parser owns its whole grammar via
+/// [`find`](notedeck::ReferenceParser::find); this asks every parser for its next
+/// match and keeps the earliest (longest on a tie) — the one shared primitive
+/// both the read-only and editable scans walk with. Allocation-free: `find`
+/// returns byte ranges into `text` and this holds no per-frame `Vec`.
+fn next_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Option<RefMatch> {
+    let mut best: Option<RefMatch> = None;
+    for parser in parsers.iter() {
+        let Some(range) = parser.find(text) else {
+            continue;
+        };
+        let better = match &best {
+            Some(b) => {
+                range.start < b.range.start
+                    || (range.start == b.range.start && range.len() > b.range.len())
+            }
+            None => true,
+        };
+        if better {
+            best = Some(RefMatch {
+                range,
+                parser: parser.id(),
+            });
+        }
+    }
+    best
+}
+
+/// Resolve `matched` via the parser registered under `parser_id` and draw the
+/// resolved entity with the registered [`KindRenderer`](notedeck::KindRenderer)
+/// for its kind, pushing any action it raises (e.g. a click asking to open the
+/// entity) onto [`app_actions`](notedeck::AppContext::app_actions).
+///
+/// Returns `true` after flushing `job` and drawing the widget, or `false`
+/// *without touching `job`* when the reference can't be resolved or its kind has
+/// no renderer — so the caller renders `matched` as ordinary text, keeping a
+/// loose `find` false-positive invisible rather than a broken chip.
+fn draw_reference(
+    job: &mut LayoutJob,
+    ui: &mut Ui,
+    ctx: &mut AppContext,
+    parser_id: &str,
+    matched: &str,
+) -> bool {
     let Ok(txn) = Transaction::new(ctx.ndb) else {
-        nostr_ref_fallback_ui(ui, bech);
-        return;
+        return false;
     };
-    let Some(note) = notedeck::resolve_ref(ctx.ndb, &txn, bech) else {
-        nostr_ref_fallback_ui(ui, bech);
-        return;
+    // The registries are a `&'a` reference held in AppContext; borrow the parser
+    // out of it and finish resolving before the mut reborrow `note_context()`
+    // takes of ctx's other fields below.
+    let Some(parser) = ctx.registries.reference_parsers.get(parser_id) else {
+        return false;
     };
-    // The registries are a `&'a` reference held in AppContext; copy the handle
-    // out so the borrowed renderer doesn't alias the mutable borrow
-    // `note_context()` takes of ctx's other fields below.
-    let registry = &ctx.registries.kind_renderers;
+    let resolve_ctx = notedeck::ReferenceResolveCtx {
+        ndb: ctx.ndb,
+        txn: &txn,
+        selected_account: Some(*ctx.accounts.selected_account_pubkey()),
+    };
+    let Some(resolved) = parser.resolve(matched, &resolve_ctx) else {
+        return false;
+    };
+    let Ok(note) = ctx.ndb.get_note_by_id(&txn, resolved.note_id.bytes()) else {
+        return false;
+    };
     // TODO: per-kind default renderer id from settings (see "Settings UI" card).
-    let Some(renderer) = registry.default_for(note.kind(), None) else {
-        nostr_ref_fallback_ui(ui, bech);
-        return;
+    let Some(renderer) = ctx.registries.kind_renderers.default_for(note.kind(), None) else {
+        return false;
     };
-    // Draw the widget and collect any action it raised (e.g. a click asking to
-    // open the entity in its host app). `note_context` mut-borrows `ctx`, so scope
-    // it and pull the owned action out before pushing onto `ctx.app_actions`.
+    // Committed to drawing: flush the pending text run so the widget breaks out
+    // of it, then draw. `note_context` mut-borrows `ctx`, so scope it and pull the
+    // owned action out before pushing onto `ctx.app_actions`.
+    flush_job(job, ui);
     let req = notedeck::KindRenderRequest {
         txn: &txn,
         note: &note,
@@ -242,15 +250,16 @@ fn nostr_ref_ui(ui: &mut Ui, ctx: &mut AppContext, bech: &str) {
     if let Some(action) = action {
         ctx.app_actions.push(action);
     }
+    true
 }
 
-/// Plain, unobtrusive representation of a `nostr:` reference we couldn't render.
-fn nostr_ref_fallback_ui(ui: &mut Ui, bech: &str) {
-    ui.weak(format!("nostr:{bech}"));
-}
-
-/// Render all parsed markdown elements plus any partial state.
-pub fn render_assistant_message(
+/// Render already-parsed markdown `elements` plus any streaming `partial` tail.
+///
+/// The shared read-only entry point behind [`render_markdown`] and
+/// [`render_markdown_with_refs`], and the one Dave feeds its streaming
+/// [`StreamParser`] output. Pass `Some(ctx)` to resolve inline `scheme:token`
+/// references (see [`render_inlines`]); `None` renders references as plain text.
+pub fn render_parsed_markdown(
     elements: &[MdElement],
     partial: Option<&Partial>,
     buffer: &str,
@@ -382,15 +391,44 @@ fn flush_job(job: &mut LayoutJob, ui: &mut Ui) {
     }
 }
 
-/// `ctx` is the seam through which inline reference resolution will draw live
-/// widgets (a Headway card's title, a nostr entity) in place of a bare token.
-/// It is threaded down the whole render path here but not consumed yet — the
-/// registry-driven scan lands in a follow-up (notedeck#whisper-crop-merge).
+/// Append `text` to `job`, splicing an inline reference widget wherever a
+/// registered parser recognizes one: plain runs accumulate into `job`, and at
+/// each resolved reference the job is flushed and the widget drawn in the
+/// surrounding `horizontal_wrapped` — the same seam bold/link inlines flush
+/// through. A match that doesn't resolve is appended back as ordinary text, so a
+/// loose `find` false-positive is invisible. Walks `&str` subslices with no
+/// per-frame allocation for the reference-free case.
+fn append_text_with_refs(
+    job: &mut LayoutJob,
+    text: &str,
+    fmt: &TextFormat,
+    ctx: &mut AppContext,
+    ui: &mut Ui,
+) {
+    let mut rest = text;
+    while let Some(m) = next_reference(rest, &ctx.registries.reference_parsers) {
+        job.append(&rest[..m.range.start], 0.0, fmt.clone());
+        let matched = &rest[m.range.clone()];
+        if !draw_reference(job, ui, ctx, m.parser, matched) {
+            job.append(matched, 0.0, fmt.clone());
+        }
+        rest = &rest[m.range.end..];
+    }
+    job.append(rest, 0.0, fmt.clone());
+}
+
+/// Render a run of inline elements into the current `horizontal_wrapped` layout.
+///
+/// When `ctx` is `Some`, each [`InlineElement::Text`] span is scanned for a
+/// reference any registered parser recognizes ([`next_reference`]) and a resolved
+/// match is drawn inline as its kind widget ([`draw_reference`]) rather than plain
+/// text, so a reference flows *within* the paragraph. `None` renders every span
+/// as plain text (no registry to resolve against).
 fn render_inlines(
     inlines: &[InlineElement],
     theme: &MdTheme,
     buffer: &str,
-    _ctx: Option<&mut AppContext>,
+    mut ctx: Option<&mut AppContext>,
     ui: &mut Ui,
 ) {
     // Inline runs carry their own spaces in the span text, and bold/link/image
@@ -434,7 +472,11 @@ fn render_inlines(
     for inline in inlines {
         match inline {
             InlineElement::Text(span) => {
-                job.append(span.resolve(buffer), 0.0, text_fmt.clone());
+                let text = span.resolve(buffer);
+                match ctx.as_deref_mut() {
+                    Some(ctx) => append_text_with_refs(&mut job, text, &text_fmt, ctx, ui),
+                    None => job.append(text, 0.0, text_fmt.clone()),
+                }
             }
 
             InlineElement::Code(span) => {
@@ -975,16 +1017,21 @@ mod tests {
     use egui_kittest::{kittest::Queryable, Harness};
     use md_stream::{InlineElement, Span};
 
-    /// Editable ref-aware render without an `AppContext`: exercises the exact
-    /// segment-splitting and offset-mapping of [`render_markdown_with_refs_editable`],
-    /// rendering each reference as a plain label instead of its kind widget (which
-    /// would need a db). The consumed byte counts are identical, so the toggled
-    /// offsets land in the same place.
+    /// The editable render path with no `AppContext` — the `ctx`-less twin of
+    /// [`render_markdown_with_refs_editable`]. Without a registry to resolve
+    /// against, references stay plain text, but this drives the *same*
+    /// single-buffer parse + [`render_md_elements`] the real function does, so a
+    /// toggled checkbox's offset indexes `source` directly whether or not a
+    /// reference precedes it.
     fn test_render_with_refs_editable(source: &mut String, ui: &mut Ui) -> bool {
-        let toggled = collect_checkbox_toggles_with_refs(source, ui, |ui, bech| {
-            ui.label(bech);
-        });
-        apply_checkbox_toggles(source, &toggled)
+        let mut parser = StreamParser::new();
+        parser.push(source);
+        parser.finalize();
+        let (elements, buffer) = parser.into_parts();
+
+        let mut edits = CheckboxEdits::default();
+        render_md_elements(&elements, None, &buffer, Some(&mut edits), None, ui);
+        apply_checkbox_toggles(source, &edits.toggled)
     }
 
     /// Helper: collect (token, text) pairs
@@ -1392,9 +1439,10 @@ mod tests {
         use egui::accesskit::Role;
         use std::cell::RefCell;
 
-        // A `nostr:` reference precedes the checkbox, so the toggled byte offset
-        // must be mapped back through the consumed ref text — otherwise the wrong
-        // byte (or none) flips. The bech32 here is a throwaway token.
+        // A `nostr:` reference precedes the checkbox. The whole source is parsed
+        // once, so the toggled byte offset indexes `source` directly — the ref
+        // never splits the buffer or shifts later offsets. The bech32 here is a
+        // throwaway token.
         let src = "see nostr:npub1xxx\n\n- [ ] after a ref\n";
         let source = RefCell::new(String::from(src));
         let mut harness = Harness::new_ui(|ui| {
@@ -1408,5 +1456,57 @@ mod tests {
             *source.borrow(),
             "see nostr:npub1xxx\n\n- [x] after a ref\n"
         );
+    }
+
+    /// A stub parser recognizing a bare `@handle` — a reference with *no* scheme
+    /// prefix — so [`next_reference`] can be exercised with a second parser that
+    /// owns an entirely different grammar than the built-in `nostr`.
+    struct StubParser;
+    impl notedeck::ReferenceParser for StubParser {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
+            let at = text.find('@')?;
+            let rest = &text[at + 1..];
+            let len = rest
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(rest.len());
+            (len > 0).then_some(at..at + 1 + len)
+        }
+        fn resolve(
+            &self,
+            _matched: &str,
+            _ctx: &notedeck::ReferenceResolveCtx,
+        ) -> Option<notedeck::ResolvedRef> {
+            None
+        }
+    }
+
+    #[test]
+    fn next_reference_matches_a_second_registered_parser() {
+        let mut parsers = notedeck::ReferenceParserRegistry::default();
+        parsers.register(Box::new(StubParser));
+
+        // The built-in nostr parser still matches its `nostr:` + bech32 reference.
+        let s = "see nostr:nevent1abc done";
+        let m = next_reference(s, &parsers).unwrap();
+        assert_eq!(m.parser, "nostr");
+        assert_eq!(&s[m.range], "nostr:nevent1abc");
+
+        // A newly registered parser is matched alongside it, with its own bare grammar.
+        let s = "ping @alice please";
+        let m = next_reference(s, &parsers).unwrap();
+        assert_eq!(m.parser, "stub");
+        assert_eq!(&s[m.range], "@alice");
+
+        // When both appear, the leftmost wins regardless of registration order.
+        let s = "hi @bob and nostr:note1two";
+        let m = next_reference(s, &parsers).unwrap();
+        assert_eq!(m.parser, "stub");
+        assert_eq!(&s[m.range], "@bob");
+
+        // Text with no recognized reference yields nothing.
+        assert!(next_reference("just prose, no refs", &parsers).is_none());
     }
 }

@@ -1,6 +1,6 @@
 use egui_kittest::Harness;
 use md_stream::StreamParser;
-use notedeck_dave::ui::markdown_ui::render_assistant_message;
+use notedeck_dave::ui::markdown_ui::render_parsed_markdown;
 
 fn table_harness(markdown: &str) -> Harness<'static> {
     let mut parser = StreamParser::default();
@@ -13,7 +13,7 @@ fn table_harness(markdown: &str) -> Harness<'static> {
         .with_size(egui::Vec2::new(500.0, 300.0))
         .renderer(notedeck::software_renderer())
         .build_ui(move |ui| {
-            render_assistant_message(&elements, partial.as_ref(), &buffer, None, ui);
+            render_parsed_markdown(&elements, partial.as_ref(), &buffer, None, ui);
         })
 }
 

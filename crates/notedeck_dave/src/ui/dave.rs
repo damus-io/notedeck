@@ -1011,7 +1011,7 @@ impl<'a> DaveUi<'a> {
                         // No AppContext here (exit_plan_mode_ui fans out through
                         // permission_request_ui's many call sites); plan text
                         // renders without inline reference resolution.
-                        markdown_ui::render_assistant_message(
+                        markdown_ui::render_parsed_markdown(
                             &plan.elements,
                             None,
                             &plan.source,
@@ -1503,7 +1503,7 @@ impl<'a> DaveUi<'a> {
         let buffer = msg.buffer();
         let text = msg.text().to_owned();
         let r = ui.scope(|ui| {
-            markdown_ui::render_assistant_message(elements, partial, buffer, Some(ctx), ui);
+            markdown_ui::render_parsed_markdown(elements, partial, buffer, Some(ctx), ui);
         });
         notedeck_ui::context_menu::context_menu(&r.response, |ui| {
             if ui.button("Copy").clicked() {
