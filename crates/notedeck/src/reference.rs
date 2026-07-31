@@ -126,8 +126,10 @@ impl ReferenceParserRegistry {
         self.by_scheme.get(scheme).map(|b| b.as_ref())
     }
 
-    /// Every registered scheme, in arbitrary order.
-    pub fn schemes(&self) -> impl Iterator<Item = &str> + '_ {
+    /// Every registered scheme, in arbitrary order. Schemes are `'static` (from
+    /// [`ReferenceParser::scheme`]), so a caller can hold one while taking a
+    /// disjoint `&mut` borrow elsewhere.
+    pub fn schemes(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.by_scheme.keys().copied()
     }
 }
