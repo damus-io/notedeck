@@ -19,7 +19,7 @@ use crate::BoardSummary;
 use crate::event::{
     self, ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
 };
-use crate::store::BoardAction;
+use crate::store::{self, BoardAction};
 
 /// Width of a single kanban column.
 const COLUMN_WIDTH: f32 = 280.0;
@@ -234,6 +234,21 @@ fn seed_edit_mode(text: &str) -> EditMode {
 /// Drag-and-drop payload: the id of the card being dragged.
 #[derive(Clone)]
 struct DragCard(NoteId);
+
+/// Drag-and-drop payload for reordering a card's subissues in the detail sheet:
+/// the id of the child being dragged. Distinct from [`DragCard`] so a subissue
+/// drag can never be mistaken for a board-column move.
+#[derive(Clone)]
+struct DragSubissue(NoteId);
+
+/// The two siblings a subissue drop would land between, in display order: the
+/// child it should follow (`after`) and the one it should precede (`before`).
+/// Either end is `None` at the top or bottom of the list.
+#[derive(Clone, Copy)]
+struct SubissueDropGap {
+    after: Option<NoteId>,
+    before: Option<NoteId>,
+}
 
 /// A parsed board filter. Linear-inspired: whitespace splits the query into
 /// AND-ed terms, a `label:` prefix scopes a term to labels, and everything else
@@ -1772,6 +1787,14 @@ enum DetailOutcome {
     OpenCard(NoteId),
     /// Commit the "add subissue" field: create a card parented to this one.
     AddSubissue,
+    /// Reorder a subissue: place `child` in the work-order gap between two
+    /// siblings (`after`/`before`, either `None` at an end). The parent is the
+    /// detail card; the fractional rank is computed on resolve.
+    ReorderSubissue {
+        child: NoteId,
+        after: Option<NoteId>,
+        before: Option<NoteId>,
+    },
     /// Clear this card's parent relation.
     DetachParent,
 }
@@ -2148,51 +2171,23 @@ fn detail_subissues_section_ui(
     });
     ui.add_space(SPACING_XS);
 
-    for sub in &ctx.subissues {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = SPACING_XS;
-            // The child's status circle, derived from the board so it can
-            // never go stale. Off-board children fall back to a todo ring.
-            let icon = if sub.done || sub.archived {
-                StatusIcon::Done
-            } else {
-                sub.col_idx
-                    .map(|i| StatusIcon::for_column(i, ctx.columns.len()))
-                    .unwrap_or(StatusIcon::Todo)
-            };
-            status_icon_ui(ui, theme, icon, 14.0);
-            if sub.on_board {
-                // A Link, not a boxed button: the row reads as plain text and
-                // underlines on hover, like Linear's sub-issue list.
-                let link =
-                    egui::Link::new(egui::RichText::new(&sub.title).color(theme.text_primary));
-                if ui.add(link).on_hover_text("Open subissue").clicked() {
-                    *outcome = DetailOutcome::OpenCard(sub.id);
+    // Drag-reorder: each row carries a grip handle (the drag source) and senses
+    // a hovering drag to record the siblings straddling the drop; the list frame
+    // catches the release. The fractional rank is computed later in
+    // `resolve_detail_outcome` (it needs the board view) — here we report intent.
+    let mut drop_gap: Option<SubissueDropGap> = None;
+    let list = ui
+        .vertical(|ui| {
+            for (i, sub) in ctx.subissues.iter().enumerate() {
+                let row = subissue_row_ui(ui, theme, ctx, sub, outcome);
+                if let Some(gap) = subissue_drop_target(ui, theme, &row, i, &ctx.subissues) {
+                    drop_gap = Some(gap);
                 }
-            } else {
-                ui.label(egui::RichText::new(&sub.title).color(theme.text_primary));
             }
-            // Where the child sits: archived trumps the column (an archived
-            // child has no live column to show).
-            let hint = if sub.archived {
-                Some("archived")
-            } else {
-                sub.column.as_deref()
-            };
-            if let Some(hint) = hint {
-                ui.label(
-                    egui::RichText::new(format!("({hint})"))
-                        .small()
-                        .color(theme.text_muted),
-                );
-            }
-            ui.label(
-                egui::RichText::new(format!("#{}", headway::wordid::encode(sub.id.bytes())))
-                    .small()
-                    .color(theme.text_muted.gamma_multiply(0.6)),
-            );
-        });
-    }
+        })
+        .response;
+    commit_subissue_drop(&list, drop_gap, &ctx.subissues, outcome);
+
     if !ctx.subissues.is_empty() {
         ui.add_space(SPACING_XS);
     }
@@ -2229,6 +2224,150 @@ fn detail_subissues_section_ui(
             *outcome = DetailOutcome::AddSubissue;
         }
     });
+}
+
+/// One subissue row: a drag grip, the child's status circle, its title (a link
+/// that opens the child when it's on this board), a placement hint and the muted
+/// word-id. Returns the row response so the caller can sense a hovering drag.
+fn subissue_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    sub: &DetailSubissue,
+    outcome: &mut DetailOutcome,
+) -> egui::Response {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+        // The grip is a separate drag source so the title link's click-to-open
+        // stays untouched.
+        subissue_drag_handle(ui, theme, sub.id);
+        // The child's status circle, derived from the board so it can never go
+        // stale. Off-board children fall back to a todo ring.
+        let icon = if sub.done || sub.archived {
+            StatusIcon::Done
+        } else {
+            sub.col_idx
+                .map(|i| StatusIcon::for_column(i, ctx.columns.len()))
+                .unwrap_or(StatusIcon::Todo)
+        };
+        status_icon_ui(ui, theme, icon, 14.0);
+        if sub.on_board {
+            // A Link, not a boxed button: the row reads as plain text and
+            // underlines on hover, like Linear's sub-issue list.
+            let link = egui::Link::new(egui::RichText::new(&sub.title).color(theme.text_primary));
+            if ui.add(link).on_hover_text("Open subissue").clicked() {
+                *outcome = DetailOutcome::OpenCard(sub.id);
+            }
+        } else {
+            ui.label(egui::RichText::new(&sub.title).color(theme.text_primary));
+        }
+        // Where the child sits: archived trumps the column (an archived child has
+        // no live column to show).
+        let hint = if sub.archived {
+            Some("archived")
+        } else {
+            sub.column.as_deref()
+        };
+        if let Some(hint) = hint {
+            ui.label(
+                egui::RichText::new(format!("({hint})"))
+                    .small()
+                    .color(theme.text_muted),
+            );
+        }
+        ui.label(
+            egui::RichText::new(format!("#{}", headway::wordid::encode(sub.id.bytes())))
+                .small()
+                .color(theme.text_muted.gamma_multiply(0.6)),
+        );
+    })
+    .response
+}
+
+/// A small dotted grip that is the drag source for a subissue row. Painted (not
+/// a glyph) so it never depends on font coverage, and shows a grab cursor on
+/// hover to read as draggable.
+fn subissue_drag_handle(ui: &mut egui::Ui, theme: &ColorTheme, id: NoteId) {
+    let resp = ui
+        .dnd_drag_source(
+            egui::Id::new(("headway-subissue-drag", id)),
+            DragSubissue(id),
+            |ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
+                let color = theme.text_muted.gamma_multiply(0.7);
+                for row in 0..3 {
+                    for col in 0..2 {
+                        let center = egui::pos2(
+                            rect.left() + 3.0 + col as f32 * 4.0,
+                            rect.center().y - 4.0 + row as f32 * 4.0,
+                        );
+                        ui.painter().circle_filled(center, 0.9, color);
+                    }
+                }
+            },
+        )
+        .response;
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+}
+
+/// While a subissue drag hovers `row`, draw an insertion line at the nearer edge
+/// and return the gap (the siblings straddling the drop) the card would land in.
+fn subissue_drop_target(
+    ui: &egui::Ui,
+    theme: &ColorTheme,
+    row: &egui::Response,
+    i: usize,
+    subs: &[DetailSubissue],
+) -> Option<SubissueDropGap> {
+    let pointer = ui.input(|i| i.pointer.interact_pos())?;
+    row.dnd_hover_payload::<DragSubissue>()?;
+    let rect = row.rect;
+    let above = pointer.y < rect.center().y;
+    let y = if above { rect.top() } else { rect.bottom() };
+    ui.painter().hline(
+        rect.x_range(),
+        y,
+        egui::Stroke::new(STROKE_THIN, theme.accent),
+    );
+    Some(if above {
+        SubissueDropGap {
+            after: (i > 0).then(|| subs[i - 1].id),
+            before: Some(subs[i].id),
+        }
+    } else {
+        SubissueDropGap {
+            after: Some(subs[i].id),
+            before: subs.get(i + 1).map(|s| s.id),
+        }
+    })
+}
+
+/// Commit a released subissue drag: land it in the hovered gap (or append to the
+/// end when let go past the last row), unless it was dropped back beside itself.
+fn commit_subissue_drop(
+    list: &egui::Response,
+    drop_gap: Option<SubissueDropGap>,
+    subs: &[DetailSubissue],
+    outcome: &mut DetailOutcome,
+) {
+    let Some(payload) = list.dnd_release_payload::<DragSubissue>() else {
+        return;
+    };
+    let gap = drop_gap.unwrap_or(SubissueDropGap {
+        after: subs.last().map(|s| s.id),
+        before: None,
+    });
+    if gap.after == Some(payload.0) || gap.before == Some(payload.0) {
+        return;
+    }
+    *outcome = DetailOutcome::ReorderSubissue {
+        child: payload.0,
+        after: gap.after,
+        before: gap.before,
+    };
 }
 
 /// Labels section: removable Linear-style chips (a colored dot in a neutral
@@ -2794,6 +2933,13 @@ fn resolve_detail_outcome(
             }
             state.new_subissue.clear();
         }
+        DetailOutcome::ReorderSubissue {
+            child,
+            after,
+            before,
+        } => {
+            resolve_subissue_reorder(view, ctx.card_id, child, after, before, action);
+        }
         DetailOutcome::DetachParent => {
             *action = Some(BoardAction::SetParent {
                 card: ctx.card_id,
@@ -2801,6 +2947,82 @@ fn resolve_detail_outcome(
             });
         }
     }
+}
+
+/// Turn a subissue drop into a [`BoardAction::SetSequence`] on the parent-card
+/// container, computing the fractional rank with the shared [`store::seq_rank`]
+/// kernel — the same one the CLI and column moves use.
+fn resolve_subissue_reorder(
+    view: &BoardView,
+    parent: NoteId,
+    child: NoteId,
+    after: Option<NoteId>,
+    before: Option<NoteId>,
+    action: &mut Option<BoardAction>,
+) {
+    let container = event::Container::Card(*parent.bytes());
+    let position = subissue_seq_position(view, parent, after, before);
+    // A rank only fails to compute when an anchor lost its seq between frames;
+    // we only ever anchor on a sequenced neighbour, so drop the reorder rather
+    // than guess.
+    if let Ok(rank) = store::seq_rank(view, &container, child, &position) {
+        *action = Some(BoardAction::SetSequence {
+            card: child,
+            container,
+            rank,
+        });
+    }
+}
+
+/// Where to insert a dragged subissue, preferring to anchor on a neighbour that
+/// already carries a seq rank. The lazy default leaves most siblings
+/// unsequenced, so the ends (`First`/`Last`) are the common fallback; a drop
+/// into the still-unsequenced tail lands the card at the sequenced boundary
+/// (`Last`), which sharpens as dragging sequences more of the list.
+fn subissue_seq_position(
+    view: &BoardView,
+    parent: NoteId,
+    after: Option<NoteId>,
+    before: Option<NoteId>,
+) -> store::SeqPosition {
+    seq_position_for_gap(
+        after,
+        after.is_some_and(|id| subissue_is_sequenced(view, parent, id)),
+        before,
+        before.is_some_and(|id| subissue_is_sequenced(view, parent, id)),
+    )
+}
+
+/// The pure gap → [`store::SeqPosition`] policy, split from the board-view
+/// lookup so it's unit-testable on its own: anchor on a sequenced neighbour when
+/// there is one (`After` the card above, else `Before` the card below), else
+/// fall to the ends — `First` at the very top, `Last` when dropping into the
+/// still-unsequenced tail.
+fn seq_position_for_gap(
+    after: Option<NoteId>,
+    after_sequenced: bool,
+    before: Option<NoteId>,
+    before_sequenced: bool,
+) -> store::SeqPosition {
+    if let (Some(a), true) = (after, after_sequenced) {
+        return store::SeqPosition::After(a);
+    }
+    if let (Some(b), true) = (before, before_sequenced) {
+        return store::SeqPosition::Before(b);
+    }
+    if after.is_none() {
+        store::SeqPosition::First
+    } else {
+        store::SeqPosition::Last
+    }
+}
+
+/// Whether a subissue of `parent` already carries a seq rank — only sequenced
+/// siblings can anchor an `After`/`Before` insert.
+fn subissue_is_sequenced(view: &BoardView, parent: NoteId, child: NoteId) -> bool {
+    find_card(view, parent)
+        .map(|(_, c)| c.subissues.iter().any(|s| s.id == child && s.seq.is_some()))
+        .unwrap_or(false)
 }
 
 /// The archived-cards sheet: an overlay listing cards taken off the board, each
@@ -3322,5 +3544,33 @@ mod tests {
         assert!(cross_board_ref("headway#maple", "headway", &boards).is_none());
         assert!(cross_board_ref("other#maple c#", "headway", &boards).is_none());
         assert!(cross_board_ref("no refs here", "headway", &boards).is_none());
+    }
+
+    #[test]
+    fn subissue_drop_gap_maps_to_seq_position() {
+        let a = NoteId::new([1u8; 32]);
+        let b = NoteId::new([2u8; 32]);
+        use store::SeqPosition::*;
+
+        // Anchors on the sequenced card above the gap.
+        assert!(matches!(
+            seq_position_for_gap(Some(a), true, Some(b), true),
+            After(x) if x == a
+        ));
+        // Above unsequenced but below sequenced: anchor on the card below.
+        assert!(matches!(
+            seq_position_for_gap(Some(a), false, Some(b), true),
+            Before(x) if x == b
+        ));
+        // Top of the list (no card above) with an unsequenced neighbour -> First.
+        assert!(matches!(
+            seq_position_for_gap(None, false, Some(b), false),
+            First
+        ));
+        // Dropping into the unsequenced tail (a card above, none sequenced) -> Last.
+        assert!(matches!(
+            seq_position_for_gap(Some(a), false, None, false),
+            Last
+        ));
     }
 }
