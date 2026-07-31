@@ -16,7 +16,7 @@ use serde_json::json;
 
 use headway::event::{self, BoardView, CardView, CommentView, Container, Date, Priority};
 use headway::store::{self, BoardAction, Publisher};
-use headway::wordid;
+use headway::{traversal, wordid};
 
 use relay_sync::Result;
 
@@ -95,6 +95,19 @@ enum Command {
     Parent {
         card: String,
         parent: Option<String>,
+    },
+    /// Print what to work on next: walk a container's work-order and show the
+    /// ready frontier (see [`traversal`]). A read command — it never signs.
+    Next {
+        /// `--in`: the container. A card ref (its subissues) or the board slug
+        /// (board root); omitted means the board root. Shares the `seq --in`
+        /// grammar via [`resolve_container`].
+        container: Option<String>,
+        /// `--ready`: print the whole ready set (parallel-dispatch frontier),
+        /// not just the single next card.
+        ready: bool,
+        /// `-n <k>`: cap the number of cards printed.
+        limit: Option<usize>,
     },
     Comment {
         card: String,
@@ -207,6 +220,7 @@ impl Command {
                 }
                 selectors.extend(container.as_deref());
             }
+            Command::Next { container, .. } => selectors.extend(container.as_deref()),
             Command::Move { card, .. }
             | Command::Title { card, .. }
             | Command::Desc { card, .. }
@@ -300,6 +314,7 @@ async fn run() -> Result<()> {
     .await?;
 
     let board = cli.board;
+    let board_explicit = cli.board_explicit;
     let as_json = cli.json;
     let show_archived = cli.archived;
     let show_all = cli.all;
@@ -422,6 +437,30 @@ async fn run() -> Result<()> {
                 "moved to '{to_board}' ({n} events){}",
                 relay_sync::offline_note(&relay)
             );
+        }
+
+        // Read command: walk the work-order and print the ready frontier. Never
+        // signs, and refuses to lean on the persisted current board (see
+        // `board_explicit`), so an autonomous agent's `next` can't be raced.
+        Command::Next {
+            container,
+            ready,
+            limit,
+        } => {
+            if !board_explicit {
+                return Err(
+                    "next never uses the persisted current board — pass --board <id>, \
+                     or an --in <board#word-id> card ref that names its own board"
+                        .into(),
+                );
+            }
+            let view = load_board(&ndb, &author, &board)
+                .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            let container = match container.as_deref() {
+                Some(sel) => resolve_container(&view, sel)?,
+                None => Container::BoardRoot(view.id.clone()),
+            };
+            print_next(&view, &container, ready, limit, as_json);
         }
 
         edit => {
@@ -562,6 +601,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         },
         Command::Rename { title } => BoardAction::RenameBoard { title },
         Command::Show { .. }
+        | Command::Next { .. }
         | Command::Seed
         | Command::Link { .. }
         | Command::MoveBoard { .. }
@@ -845,6 +885,63 @@ fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Print the work-order frontier for `next`: the ready cards of `container`, each
+/// as a `board#word-id` ref an agent can paste straight into `move`/`show`.
+///
+/// How many: `-n <k>` caps to `k`; otherwise `--ready` prints the whole ready set
+/// (the parallel-dispatch frontier) and the default prints just the single next
+/// card. In JSON mode it's an array of `{ref, id, title}` objects.
+fn print_next(
+    view: &BoardView,
+    container: &Container,
+    ready: bool,
+    limit: Option<usize>,
+    as_json: bool,
+) {
+    let frontier = traversal::ready(view, container);
+    let count = match (ready, limit) {
+        (_, Some(k)) => k,
+        (true, None) => frontier.len(),
+        (false, None) => 1,
+    };
+    let picked = frontier.into_iter().take(count);
+
+    if as_json {
+        let arr: Vec<_> = picked
+            .map(|c| {
+                json!({
+                    "ref": plain_ref(view, &c.id),
+                    "id": c.id.hex(),
+                    "title": c.title,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).unwrap_or_else(|_| "[]".into())
+        );
+        return;
+    }
+
+    let mut any = false;
+    for c in picked {
+        any = true;
+        println!("{}  {}", plain_ref(view, &c.id), relay_sync::dim(&c.title));
+    }
+    if !any {
+        eprintln!(
+            "{}",
+            relay_sync::dim("nothing ready — the work-order is empty or everything is done")
+        );
+    }
+}
+
+/// A card's `board#word-id` ref, undimmed — unlike [`card_ref`], `next` output is
+/// the thing an agent copies, so the ref itself must stay plain text.
+fn plain_ref(view: &BoardView, id: &NoteId) -> String {
+    format!("{}#{}", view.id, wordid::encode(id.bytes()))
+}
+
 /// Print a single card in `git show` style: a header block of metadata, then the
 /// title and description body indented underneath. Used when `show` is given
 /// explicit card selectors, where the full card is more useful than the
@@ -1004,6 +1101,12 @@ struct Cli {
     relay: String,
     db: Option<String>,
     board: String,
+    /// Whether `board` was named explicitly — by `--board` or a self-routing
+    /// `<board>#<word-id>` card ref — rather than falling back to
+    /// `$HEADWAY_BOARD`, the persisted current board, or the default. `next`
+    /// requires this so an autonomous agent can't be raced by another session
+    /// flipping the persisted board between commands.
+    board_explicit: bool,
     json: bool,
     archived: bool,
     /// `show` renders every board in the cache instead of just the current one.
@@ -1040,6 +1143,9 @@ impl Cli {
         let mut parent = None;
         let mut labels: Vec<String> = Vec::new();
         let mut seq = SeqFlags::default();
+        // `next` flags.
+        let mut ready = false;
+        let mut count: Option<usize> = None;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -1065,6 +1171,10 @@ impl Cli {
                 "--first" => seq.first = true,
                 "--last" => seq.last = true,
                 "--in" => seq.container = Some(value("--in")?),
+                "--ready" => ready = true,
+                "-n" | "--count" => {
+                    count = Some(value("-n")?.parse().map_err(|_| "-n must be a number")?)
+                }
                 "-l" | "--label" | "--labels" => {
                     // Repeatable, and each value may be a comma-separated list,
                     // so `-l a,b --label c` and `-l a -l b -l c` are equivalent.
@@ -1096,7 +1206,9 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
-        let command = parse_command(name, rest, col, row, to, reply_to, parent, labels, seq)?;
+        let command = parse_command(
+            name, rest, col, row, to, reply_to, parent, labels, seq, ready, count,
+        )?;
 
         // A card selector like `commerce#purse-metal-toilet` already names its
         // board, so the command self-routes there — the display id `show`
@@ -1114,6 +1226,9 @@ impl Cli {
                 _ => board = Some(named),
             }
         }
+        // Explicit iff `--board` or a self-routing ref set it above; the env /
+        // persisted / default fallbacks below are implicit (see `board_explicit`).
+        let board_explicit = board.is_some();
         let board = board
             .or_else(|| env::var("HEADWAY_BOARD").ok())
             .or_else(|| relay_sync::read_config(APP, "board"))
@@ -1134,6 +1249,7 @@ impl Cli {
             relay,
             db,
             board,
+            board_explicit,
             json,
             archived,
             all,
@@ -1153,6 +1269,8 @@ fn parse_command(
     parent: Option<String>,
     labels: Vec<String>,
     seq: SeqFlags,
+    ready: bool,
+    count: Option<usize>,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
     Ok(match name {
@@ -1199,6 +1317,11 @@ fn parse_command(
             card: card()?,
             spec: seq_spec(&seq)?,
             container: seq.container,
+        },
+        "next" => Command::Next {
+            container: seq.container,
+            ready,
+            limit: count,
         },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
@@ -1278,6 +1401,11 @@ COMMANDS:
                                <pos> = --first | --last | --after <card> |
                                --before <card>; --in is a card ref (its
                                subissues) or the board slug (board root)
+    next [--in <c>]            Print what to work on next: the ready frontier of
+                               a container's work-order, each a board#word-id ref.
+                               --ready prints the whole set, -n <k> caps it. Needs
+                               --board or an --in <board#word-id> ref (never the
+                               persisted current board).
     parent <card> [parent]     Make a card a subissue of [parent] (omit to
                                detach)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
@@ -1314,7 +1442,10 @@ OPTIONS:
     --to <board>      Target board for `link`/`move-board`
     --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
     --parent <card>   Parent card for `add` (created as its subissue)
-    --json            Machine-readable output (show)
+    --in <c>          Container for `seq`/`next` (card ref or board slug)
+    --ready           Print the whole ready set for `next` (not just the first)
+    -n, --count <k>   Cap how many cards `next` prints
+    --json            Machine-readable output (show, next)
     --archived        List archived cards in full (show)
     --all             Show every board in the cache, not just the current (show)
     -h, --help        Print this help",
@@ -1418,6 +1549,43 @@ mod tests {
             parse(&["show", "commerce#a-b-c", "commerce#d-e-f"]).board,
             "commerce"
         );
+    }
+
+    /// `next --in <board#word-id>` self-routes to the ref's board and marks the
+    /// board explicit, and `--ready`/`-n` parse into the command.
+    #[test]
+    fn next_parses_and_routes() {
+        let cli = parse(&[
+            "next",
+            "--in",
+            "notedeck#saddle-because-liquid",
+            "--ready",
+            "-n",
+            "3",
+        ]);
+        assert_eq!(cli.board, "notedeck");
+        assert!(cli.board_explicit);
+        match cli.command {
+            Command::Next {
+                container,
+                ready,
+                limit,
+            } => {
+                assert_eq!(container.as_deref(), Some("notedeck#saddle-because-liquid"));
+                assert!(ready);
+                assert_eq!(limit, Some(3));
+            }
+            _ => panic!("expected a Next command"),
+        }
+    }
+
+    /// `--board` marks the board explicit for the statelessness guard; a bare
+    /// `next` (no ref, no `--board`) does not.
+    #[test]
+    fn next_board_explicitness() {
+        assert!(parse(&["next", "--board", "headway"]).board_explicit);
+        assert!(!parse(&["next"]).board_explicit);
+        assert!(!parse(&["next", "--in", "headway"]).board_explicit);
     }
 
     #[test]
