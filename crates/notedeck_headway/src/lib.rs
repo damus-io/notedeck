@@ -21,10 +21,10 @@ use event::{BoardReducer, BoardView};
 
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
-/// The board is backed by nostr events in the local nostrdb: [`BoardSync`] keeps
-/// a long-lived reducer over the account's events and the [`BoardView`] folded
-/// from them, folding only freshly-arrived notes in as an ndb subscription
-/// reports them — not re-walking the history every frame. Every edit is turned
+/// The board is backed by nostr events in the local nostrdb: [`BoardCache`] keeps
+/// a long-lived reducer over the account's events and folds a [`BoardView`] out
+/// of it, folding only freshly-arrived notes in as an ndb subscription reports
+/// them — not re-walking the history every frame. Every edit is turned
 /// into a signed event that is ingested locally (see [`store`]); the sync
 /// coordination — polling that subscription and fanning each freshly-ingested
 /// event out to the account's private relays — runs in [`update`](App::update)
@@ -40,9 +40,6 @@ pub struct Headway {
     board_account: Option<Pubkey>,
     /// Transient, per-board UI state.
     state: BoardUiState,
-    /// Subscription-backed cache of the reduced board (egui-free, so it's
-    /// unit-testable against a bare `Ndb`).
-    sync: BoardSync,
     /// Inbound cross-device sync: declares a live + full-history subscription to
     /// the account's private relays each frame, and resolves the outbound
     /// publish targets.
@@ -58,12 +55,14 @@ pub struct Headway {
     /// [`process_pending_open`](Headway::process_pending_open) on the next render:
     /// switch to the owning board and, for a card, open its detail.
     pending_open: Option<NoteId>,
-    /// The board fold-cache shared by everything this app registers for *inline*
-    /// display: the [`KindRenderer`](notedeck::KindRenderer)s (a referenced card
-    /// or board) and the [`ReferenceParser`](notedeck::ReferenceParser) (a
-    /// `slug#word-word-word` card ref). Handed to each at registration by cloning
-    /// the `Rc`, so a given board folds once no matter how it's referenced.
-    inline_cache: Rc<RefCell<InlineBoardCache>>,
+    /// The one board-data engine (see [`BoardCache`]): the account's folded board
+    /// reducer, pumped in [`update`](App::update) and read by both the foreground
+    /// UI here and everything this app registers for inline display — the
+    /// [`KindRenderer`](notedeck::KindRenderer)s and the
+    /// [`ReferenceParser`](notedeck::ReferenceParser). Handed to each at
+    /// registration by cloning the `Rc`, so a realtime edit folded in by the pump
+    /// is immediately visible to an inline chip drawn in another app.
+    board_cache: Rc<RefCell<BoardCache>>,
 }
 
 impl Default for Headway {
@@ -72,12 +71,11 @@ impl Default for Headway {
             board_id: store::BOARD_ID.to_string(),
             board_account: None,
             state: BoardUiState::default(),
-            sync: BoardSync::default(),
             private_sync: PrivateRelaySync::new("headway"),
             seeded: false,
             repaint_frames: 0,
             pending_open: None,
-            inline_cache: Rc::new(RefCell::new(InlineBoardCache::default())),
+            board_cache: Rc::new(RefCell::new(BoardCache::default())),
         }
     }
 }
@@ -146,7 +144,13 @@ impl Headway {
 
         // On the right board: open the card's detail once its view has folded in.
         // Until then keep the request pending and retry on the next repaint.
-        if self.sync.view().is_some_and(|v| v.id == self.board_id) {
+        let folded = Transaction::new(ctx.ndb).ok().is_some_and(|txn| {
+            self.board_cache
+                .borrow_mut()
+                .board(ctx.ndb, &txn, author, &self.board_id)
+                .is_some_and(|v| v.id == self.board_id)
+        });
+        if folded {
             self.state.open_card(card);
             self.pending_open = None;
         }
@@ -189,189 +193,18 @@ pub fn is_headway_kind(kind: u32) -> bool {
 }
 
 /// One entry in the board switcher: a board's stable `id` (slug) and its display
-/// `title`. Folded from the account's events by [`BoardSync::boards`].
+/// `title`. Folded from the account's events by [`BoardCache::boards`].
 pub struct BoardSummary {
     pub id: String,
     pub title: String,
 }
 
-/// Subscription-backed, *online* reducer for one account's board.
-///
-/// Holds a live nostrdb subscription to the account's headway events **and a
-/// long-lived [`BoardReducer`]** that persists across frames. The first poll
-/// folds the whole history once to seed the reducer; every later poll feeds it
-/// only the freshly-arrived notes ([`event::reduce_delta`]) — an incremental
-/// step, not a re-walk of the history. The reducer is rebuilt from scratch only
-/// on a first load or an account switch.
-///
-/// This is correct because the fold is commutative and idempotent: applying a
-/// delta to an up-to-date reducer lands in the same state as a full re-fold.
-///
-/// Deliberately free of any egui dependency so it can be unit-tested against a
-/// bare `Ndb`.
-#[derive(Default)]
-struct BoardSync {
-    /// The last reduced board. `None` means "no such board" (or not loaded yet).
-    view: Option<BoardView>,
-    /// Which `board_id` the cached `view` was folded for, so a switch to another
-    /// board re-picks from the existing reducer even when no new notes arrived.
-    view_board: Option<String>,
-    /// The accumulator, kept alive across polls so new notes fold in
-    /// incrementally. `None` until the first full fold (and again after an
-    /// account switch), which is the signal to re-fold from scratch.
-    reducer: Option<BoardReducer>,
-    /// Live subscription to `sub_author`'s headway events; polling it is how we
-    /// learn the board changed (including our own async ingests landing).
-    sub: Option<Subscription>,
-    /// The account `sub`/`reducer`/`view` belong to, so we resubscribe and
-    /// re-fold on an account switch.
-    sub_author: Option<Pubkey>,
-    /// Test-only count of full-history re-folds, used to assert that an ordinary
-    /// change folds in as a delta rather than re-walking the whole log.
-    #[cfg(test)]
-    full_reloads: u32,
-}
-
-/// The result of a [`BoardSync::poll`].
-#[derive(Default)]
-struct PollResponse {
-    /// The cached board was (re)reduced this call — a first load, an account
-    /// switch, or new notes folding in — so the caller schedules follow-up
-    /// repaints.
-    changed: bool,
-    /// Note keys folded in *incrementally* this call. Empty on a full reload
-    /// (those are historical notes, not new ingests) and on a no-op; the caller
-    /// fans these out to the account's private relays (see
-    /// [`notedeck::fan_out_unseen_notes`]).
-    fresh: Vec<NoteKey>,
-}
-
-impl BoardSync {
-    /// Ensure a live subscription to `author`, drain it, and update the cached
-    /// board. The cached board is read via [`view`](Self::view); see
-    /// [`PollResponse`] for the returned change flag and freshly-arrived keys.
-    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, board_id: &str) -> PollResponse {
-        self.sync_subscription(ndb, author);
-
-        let Some(sub) = self.sub else {
-            // Subscribe failed: degrade to a full reload each frame so edits show.
-            self.reload(ndb, author, board_id);
-            return PollResponse {
-                changed: true,
-                fresh: Vec::new(),
-            };
-        };
-
-        let keys = ndb.poll_for_notes(sub, 64);
-
-        // First load (or just resubscribed): fold the whole history once to seed
-        // the long-lived reducer.
-        if self.reducer.is_none() {
-            self.reload(ndb, author, board_id);
-            return PollResponse {
-                changed: true,
-                fresh: Vec::new(),
-            };
-        }
-
-        // Nothing new *and* still on the same board: the cached view stands, no
-        // re-fold. A board switch (`board_id` changed) forces a re-pick below even
-        // with no new notes, since the target board is already in the reducer.
-        let board_changed = self.view_board.as_deref() != Some(board_id);
-        if keys.is_empty() && !board_changed {
-            return PollResponse::default();
-        }
-
-        // Incremental: fold only the freshly-arrived notes into the live reducer
-        // and re-finalize (O(cards)). Commutative/idempotent, so this matches a
-        // full re-fold without walking the whole history. With no new notes (a
-        // bare board switch) the delta is a no-op and we just re-pick.
-        if let Ok(txn) = Transaction::new(ndb) {
-            let reducer = self.reducer.as_mut().expect("reducer present");
-            event::reduce_delta(reducer, ndb, &txn, &keys);
-            self.view = event::pick_board(reducer, author, board_id);
-            self.view_board = Some(board_id.to_owned());
-        }
-        PollResponse {
-            changed: true,
-            fresh: keys,
-        }
-    }
-
-    /// Every board folded for the current account, sorted by slug — what the
-    /// switcher lists. Empty until the first fold.
-    fn boards(&self) -> Vec<BoardSummary> {
-        let Some(reducer) = &self.reducer else {
-            return Vec::new();
-        };
-        let mut boards: Vec<BoardSummary> = reducer
-            .finalize()
-            .into_iter()
-            .map(|v| BoardSummary {
-                id: v.id,
-                title: v.title,
-            })
-            .collect();
-        boards.sort_by(|a, b| a.id.cmp(&b.id));
-        boards
-    }
-
-    /// The cached board, if one has been folded.
-    fn view(&self) -> Option<&BoardView> {
-        self.view.as_ref()
-    }
-
-    /// Fold an *arbitrary* board out of the live reducer (not just the cached
-    /// current one) — used to resolve the target of a cross-board card move,
-    /// whose view the current cache doesn't hold. Returns `None` before the first
-    /// fold or when no such board exists.
-    fn board_view(&self, author: &Pubkey, board_id: &str) -> Option<BoardView> {
-        event::pick_board(self.reducer.as_ref()?, author, board_id)
-    }
-
-    /// Re-fold the whole event history into a fresh reducer (seeding or after an
-    /// account switch) and pick out our board.
-    fn reload(&mut self, ndb: &Ndb, author: &Pubkey, board_id: &str) {
-        let reducer = Transaction::new(ndb)
-            .ok()
-            .and_then(|txn| event::fold_board(ndb, &txn, author));
-        self.view = reducer
-            .as_ref()
-            .and_then(|r| event::pick_board(r, author, board_id));
-        self.view_board = Some(board_id.to_owned());
-        self.reducer = reducer;
-        #[cfg(test)]
-        {
-            self.full_reloads += 1;
-        }
-    }
-
-    /// Ensure we hold a live subscription to `author`'s headway events,
-    /// resubscribing (and dropping the cached reducer) when the selected account
-    /// changes. A fresh subscription only reports *future* ingests, so the next
-    /// poll does a one-off full fold to pick up what's already there.
-    fn sync_subscription(&mut self, ndb: &mut Ndb, author: &Pubkey) {
-        if self.sub.is_some() && self.sub_author.as_ref() == Some(author) {
-            return;
-        }
-        if let Some(old) = self.sub.take() {
-            let _ = ndb.unsubscribe(old);
-        }
-        self.sub = ndb.subscribe(&[event::headway_filter(author)]).ok();
-        self.sub_author = Some(*author);
-        // New account (or first run): drop the cache so the next poll re-folds.
-        self.view = None;
-        self.view_board = None;
-        self.reducer = None;
-    }
-}
-
 impl App for Headway {
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
-        // Share the app's one inline cache (see `inline_cache`) so an issue and
-        // its board — and a card referenced by word id — all fold off a single
-        // subscription + reducer per board.
-        let cache = self.inline_cache.clone();
+        // Clone the app's one board cache (see `board_cache`) so an issue and its
+        // board read the same account reducer the foreground UI and `update`'s
+        // realtime pump do — a realtime edit shows on the chip, not just the board.
+        let cache = self.board_cache.clone();
         vec![
             Box::new(HeadwayIssueRenderer {
                 cache: cache.clone(),
@@ -381,10 +214,10 @@ impl App for Headway {
     }
 
     fn reference_parsers(&self) -> Vec<Box<dyn notedeck::ReferenceParser>> {
-        // Same inline cache as the kind renderers: a card referenced by word id
-        // folds the same board the renderers do, once.
+        // Same board cache as the kind renderers and the foreground UI: a card
+        // referenced by word id resolves off the one realtime-pumped reducer.
         vec![Box::new(HeadwayRefParser {
-            cache: self.inline_cache.clone(),
+            cache: self.board_cache.clone(),
         })]
     }
 
@@ -423,11 +256,15 @@ impl App for Headway {
             .private_sync
             .update(ctx, event::headway_filter(&author));
 
-        // Keep a live subscription to this account's events and re-fold the
-        // cached board only when something changed (first load, account switch,
-        // or an async ingest landing — including CLI ingests into the embedded
-        // relay); keep waking while it streams in.
-        let poll = self.sync.poll(ctx.ndb, &author, &self.board_id);
+        // Pump the shared board cache: advance this account's reducer, folding in
+        // any freshly-arrived notes — our own async ingests, CLI moves into the
+        // embedded relay, remote sync. Inline widgets read this same cache, so a
+        // chip drawn in another app stays as live as the open board. Keep waking
+        // while edits stream in.
+        let poll = Transaction::new(ctx.ndb)
+            .ok()
+            .map(|txn| self.board_cache.borrow_mut().poll(ctx.ndb, &txn, &author))
+            .unwrap_or_default();
         if poll.changed {
             self.wake();
         }
@@ -444,22 +281,35 @@ impl App for Headway {
             fan_out_unseen_notes(&mut api, ctx.ndb, &txn, &poll.fresh, &private_relays);
         }
 
-        // No board yet: auto-seed one for an account that can sign. The seeded
-        // events fan out via the same poll path on a following frame. (The UI
-        // feedback for this state is drawn in `render`.)
-        if self.sync.view().is_none()
+        // No board yet: auto-seed one for an account that can sign. Guarded by
+        // `seeded` so the board-existence check (a finalize) only runs until we've
+        // confirmed or created one — not every frame. The seeded events fan out via
+        // the same poll path on a following frame. (The UI feedback for this state
+        // is drawn in `render`.)
+        if !self.seeded
             && let Some(secret) = &signer
-            && !self.seeded
         {
-            store::seed_default_board(
-                ctx.ndb,
-                &author,
-                secret,
-                &self.board_id,
-                &mut store::NoPublish,
-            );
-            self.seeded = true;
-            self.wake();
+            let has_board = Transaction::new(ctx.ndb).ok().is_some_and(|txn| {
+                self.board_cache
+                    .borrow_mut()
+                    .board(ctx.ndb, &txn, &author, &self.board_id)
+                    .is_some()
+            });
+            if has_board {
+                // Already have a board (e.g. synced from another device): nothing
+                // to seed, and no need to keep checking.
+                self.seeded = true;
+            } else {
+                store::seed_default_board(
+                    ctx.ndb,
+                    &author,
+                    secret,
+                    &self.board_id,
+                    &mut store::NoPublish,
+                );
+                self.seeded = true;
+                self.wake();
+            }
         }
 
         self.pump_repaint(egui_ctx);
@@ -480,8 +330,18 @@ impl App for Headway {
         self.process_pending_open(ctx, &author);
 
         // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
-        // in `update` this frame; here we just render the cached view.
-        if self.sync.view().is_none() {
+        // in `update` this frame; read the folded boards off the same shared cache
+        // (a cold, Headway-never-opened session seeds it lazily on this read). One
+        // finalize backs both the active board and the switcher list.
+        let all_boards = Transaction::new(ctx.ndb)
+            .ok()
+            .map(|txn| {
+                self.board_cache
+                    .borrow_mut()
+                    .all_boards(ctx.ndb, &txn, &author)
+            })
+            .unwrap_or_default();
+        let Some(view) = all_boards.iter().find(|v| v.id == self.board_id).cloned() else {
             // No board yet. `update` auto-seeds one for a signing account; a
             // watch-only account can't create one.
             let msg = if signer.is_some() {
@@ -491,13 +351,13 @@ impl App for Headway {
             };
             empty_state(ui, &theme, msg);
             return AppResponse::default();
-        }
+        };
 
-        // Render against the cached view; `sync` and `state` are disjoint fields.
-        // The detail pane draws comments with notedeck_ui's note renderer, so it
-        // needs a `NoteContext` borrowed off `ctx` — dropped before we touch `ctx`
-        // again to ingest the action below.
-        let boards = self.sync.boards();
+        // Render against the folded `view` (owned, so the cache borrow above is
+        // already dropped). The detail pane draws comments with notedeck_ui's note
+        // renderer, so it needs a `NoteContext` borrowed off `ctx` — dropped before
+        // we touch `ctx` again to ingest the action below.
+        let boards = board_summaries(&all_boards);
         // Header sync indicator: are we reaching a private relay right now?
         let sync = sync_status(ctx);
         let action = {
@@ -506,7 +366,7 @@ impl App for Headway {
                 ui,
                 &theme,
                 &mut note_context,
-                self.sync.view().expect("view present"),
+                &view,
                 &boards,
                 sync,
                 &mut self.state,
@@ -548,12 +408,15 @@ impl App for Headway {
         // link/relocate the card. Needs a signing key, and silently no-ops if the
         // target board can't be folded (e.g. it was just deleted).
         if let (Some(mv), Some(secret)) = (self.state.take_card_move(), &signer)
-            && let Some(target_view) = self.sync.board_view(&author, &mv.to_board)
+            && let Some(target_view) = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                self.board_cache
+                    .borrow_mut()
+                    .board(ctx.ndb, &txn, &author, &mv.to_board)
+            })
         {
-            let source_view = self.sync.view().expect("view present");
             let source = store::BoardRef {
                 id: &self.board_id,
-                view: source_view,
+                view: &view,
             };
             let target = store::BoardRef {
                 id: &mv.to_board,
@@ -592,11 +455,10 @@ impl App for Headway {
         // a signing key; a watch-only account simply can't edit. `update`'s poll
         // fans the ingested events out to the private relays next frame.
         if let (Some(action), Some(secret)) = (action, &signer) {
-            let view = self.sync.view().expect("view present");
             store::apply(
                 ctx.ndb,
                 &self.board_id,
-                view,
+                &view,
                 &author,
                 secret,
                 action,
@@ -681,83 +543,158 @@ fn save_board_pref(path: &DataPath, author: &Pubkey, board_id: &str) {
 // registry. These are read-only and self-contained, unlike the editable board.
 // ---------------------------------------------------------------------------
 
-/// Per-board fold cache shared by the inline renderers, so referenced headway
-/// entities resolve to their *current* state without re-folding the whole event
-/// history every frame.
-///
-/// Mirrors [`BoardSync`] but keyed by `(board author, board_id)` for arbitrarily
-/// many boards (an inline reference can point at any board, not just the open
-/// one), driven by a `&Ndb` (the [`notedeck::KindRenderer`] render path has no
-/// `&mut Ndb`). Each board holds a live subscription + long-lived reducer; the
-/// first touch folds the history once to seed it and every later frame folds in
-/// only the freshly-arrived notes ([`event::reduce_delta`]). Subscriptions are
-/// kept for the app's lifetime — there's no eviction, since the set of referenced
-/// boards is small and bounded by what the user actually views.
+/// One account's cached headway state within [`BoardCache`]: a live subscription
+/// to that author's events plus the long-lived [`BoardReducer`] they fold into.
+/// The reducer holds *all* of the author's boards ([`event::fold_board`] folds an
+/// account's whole history), so one entry backs the foreground board and every
+/// inline reference to any of that author's boards.
 #[derive(Default)]
-struct InlineBoardCache {
-    boards: HashMap<(Pubkey, String), InlineBoard>,
+struct CachedAuthor {
+    reducer: Option<BoardReducer>,
+    sub: Option<Subscription>,
+}
+
+/// The single board-data engine for the Headway app: one subscription + folded
+/// [`BoardReducer`] per account, shared (behind `Rc<RefCell<…>>`) between the app
+/// and everything it registers for inline display.
+///
+/// The foreground board and every inline widget — the
+/// [`KindRenderer`](notedeck::KindRenderer)s and the
+/// [`ReferenceParser`](notedeck::ReferenceParser) — read the *same* reducer, so a
+/// realtime edit (a CLI move, a remote sync) that [`update`](App::update)'s
+/// per-frame [`poll`](Self::poll) folds in is immediately visible to an inline
+/// chip drawn in another app, not just to the open board.
+///
+/// Keyed by author, not by board: [`event::fold_board`] folds an account's whole
+/// board history into one reducer, so a single entry serves all of that author's
+/// boards with no per-board refold. Driven by `&Ndb` (the
+/// [`KindRenderer`](notedeck::KindRenderer) render path has no `&mut Ndb`), so a
+/// chip seeds and folds on render even when Headway isn't the foreground surface.
+/// First touch folds the history once to seed; later touches fold in only the
+/// freshly-arrived notes ([`event::reduce_delta`]) — an incremental step, sound
+/// because the fold is commutative and idempotent. Subscriptions live for the
+/// app's lifetime; the touched-account set is tiny, so there's no eviction.
+#[derive(Default)]
+struct BoardCache {
+    authors: HashMap<Pubkey, CachedAuthor>,
     /// Test-only count of full-history folds, to assert later frames fold deltas
     /// rather than re-walking the whole log.
     #[cfg(test)]
     full_reloads: u32,
 }
 
-/// One board's cached subscription + reducer within [`InlineBoardCache`].
+/// The outcome of advancing an author's reducer one step (see
+/// [`BoardCache::poll`]).
 #[derive(Default)]
-struct InlineBoard {
-    reducer: Option<BoardReducer>,
-    sub: Option<Subscription>,
+struct PollResponse {
+    /// The reducer was seeded or had new notes folded in this call, so the caller
+    /// schedules follow-up repaints (keep waking while edits stream in).
+    changed: bool,
+    /// Note keys folded in *incrementally* this call — empty on a seed (those are
+    /// historical, not new ingests) and on a no-op. The caller fans these out to
+    /// the account's private relays (see [`notedeck::fan_out_unseen_notes`]).
+    fresh: Vec<NoteKey>,
 }
 
-impl InlineBoardCache {
-    /// Bring the cached reducer for `(author, board_id)` up to date with the
-    /// local db and return it. Seeds with a one-off full fold on first touch
-    /// (and folds every frame if the subscription couldn't be created), then
-    /// folds only freshly-arrived notes in on later frames.
-    fn reducer(
+impl BoardCache {
+    /// Ensure a live subscription + seeded reducer for `author` and fold in any
+    /// freshly-arrived notes, reporting what changed. The shared primitive behind
+    /// [`poll`](Self::poll) and [`reducer`](Self::reducer): the app's per-frame
+    /// pump and a chip's lazy fold-on-render both flow through it, so a board is
+    /// seeded once and thereafter only ever folds deltas.
+    fn advance(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> PollResponse {
+        let entry = self.authors.entry(*author).or_default();
+        if entry.sub.is_none() {
+            entry.sub = ndb.subscribe(&[event::headway_filter(author)]).ok();
+        }
+        let (changed, fresh) = match entry.sub {
+            // No subscription: fold the whole history each frame so edits still show.
+            None => {
+                entry.reducer = event::fold_board(ndb, txn, author);
+                (true, Vec::new())
+            }
+            Some(sub) => {
+                let keys = ndb.poll_for_notes(sub, 64);
+                if entry.reducer.is_none() {
+                    // First touch (a fresh subscription only reports *future*
+                    // ingests): fold the existing history once to seed.
+                    entry.reducer = event::fold_board(ndb, txn, author);
+                    (true, Vec::new())
+                } else if keys.is_empty() {
+                    (false, Vec::new())
+                } else {
+                    // Incremental: fold only the new notes into the live reducer.
+                    if let Some(reducer) = entry.reducer.as_mut() {
+                        event::reduce_delta(reducer, ndb, txn, &keys);
+                    }
+                    (true, keys)
+                }
+            }
+        };
+        #[cfg(test)]
+        if changed && fresh.is_empty() {
+            // A full seed fold, as opposed to an incremental delta (non-empty
+            // `fresh`) or a no-op (`!changed`).
+            self.full_reloads += 1;
+        }
+        PollResponse { changed, fresh }
+    }
+
+    /// Advance `author`'s reducer and report the change — the per-frame pump
+    /// called from [`update`](App::update). Fan out [`fresh`](PollResponse::fresh)
+    /// and wake on [`changed`](PollResponse::changed).
+    fn poll(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> PollResponse {
+        self.advance(ndb, txn, author)
+    }
+
+    /// Advance `author`'s reducer and return it, seeding on first touch. `None`
+    /// only if the initial fold failed. Used by the inline widgets and the
+    /// reference parser to resolve a card/board out of the folded state.
+    fn reducer(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<&BoardReducer> {
+        self.advance(ndb, txn, author);
+        self.authors.get(author).and_then(|a| a.reducer.as_ref())
+    }
+
+    /// Fold and pick a single board (`board_id`) authored by `author`, seeding the
+    /// reducer on first touch. `None` before the first fold or when no such board
+    /// exists. The foreground board, a cross-board move target and an inline board
+    /// widget all resolve through this.
+    fn board(
         &mut self,
         ndb: &Ndb,
         txn: &Transaction,
         author: &Pubkey,
         board_id: &str,
-    ) -> Option<&BoardReducer> {
-        let key = (*author, board_id.to_owned());
-        let mut seeded = false;
-        {
-            let board = self.boards.entry(key.clone()).or_default();
-            if board.sub.is_none() {
-                board.sub = ndb.subscribe(&[event::headway_filter(author)]).ok();
-            }
-            match board.sub {
-                // No subscription: fold the whole history each frame so edits show.
-                None => {
-                    board.reducer = event::fold_board(ndb, txn, author);
-                    seeded = true;
-                }
-                Some(sub) => {
-                    let keys = ndb.poll_for_notes(sub, 64);
-                    if board.reducer.is_none() {
-                        // First touch (a fresh subscription only reports *future*
-                        // ingests): fold the existing history once to seed.
-                        board.reducer = event::fold_board(ndb, txn, author);
-                        seeded = true;
-                    } else if !keys.is_empty() {
-                        // Incremental: fold only the new notes into the live
-                        // reducer. Commutative/idempotent, so it matches a re-fold.
-                        if let Some(reducer) = board.reducer.as_mut() {
-                            event::reduce_delta(reducer, ndb, txn, &keys);
-                        }
-                    }
-                }
-            }
-        }
-        #[cfg(test)]
-        if seeded {
-            self.full_reloads += 1;
-        }
-        let _ = seeded;
-        self.boards.get(&key).and_then(|b| b.reducer.as_ref())
+    ) -> Option<BoardView> {
+        event::pick_board(self.reducer(ndb, txn, author)?, author, board_id)
     }
+
+    /// Finalize `author`'s reducer once and return every board it currently
+    /// holds, seeding on first touch. The foreground render derives *both* the
+    /// active board and the switcher list from this single fold rather than
+    /// finalizing per read (finalize walks the reducer's placements, so it isn't
+    /// free — but it's O(current state), not a re-walk of the event history).
+    fn all_boards(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<BoardView> {
+        self.reducer(ndb, txn, author)
+            .map(|r| r.finalize())
+            .unwrap_or_default()
+    }
+}
+
+/// The switcher's [`BoardSummary`] list for an already-finalized set of boards,
+/// sorted by slug. A free function over [`BoardCache::all_boards`]'s output so the
+/// foreground render and the test harness summarize one finalize identically,
+/// without a second finalize.
+fn board_summaries(boards: &[BoardView]) -> Vec<BoardSummary> {
+    let mut summaries: Vec<BoardSummary> = boards
+        .iter()
+        .map(|v| BoardSummary {
+            id: v.id.clone(),
+            title: v.title.clone(),
+        })
+        .collect();
+    summaries.sort_by(|a, b| a.id.cmp(&b.id));
+    summaries
 }
 
 /// Wrap an inline widget's response so clicking it opens the entity in the
@@ -784,10 +721,10 @@ fn open_on_click(
 ///
 /// The kind-1621 note is only the card's *creation-time* snapshot; its current
 /// title/labels/description come from folding the owning board's later edits. So
-/// we fold the board (cached, see [`InlineBoardCache`]) and render the resolved
+/// we fold the board (cached, see [`BoardCache`]) and render the resolved
 /// [`event::CardView`], falling back to the raw snapshot if the board isn't local.
 pub struct HeadwayIssueRenderer {
-    cache: Rc<RefCell<InlineBoardCache>>,
+    cache: Rc<RefCell<BoardCache>>,
 }
 
 impl notedeck::KindRenderer for HeadwayIssueRenderer {
@@ -821,7 +758,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
                 let resolved = self
                     .cache
                     .borrow_mut()
-                    .reducer(note_context.ndb, req.txn, &author, &issue.board_id)
+                    .reducer(note_context.ndb, req.txn, &author)
                     .and_then(|reducer| {
                         event::pick_card_with_column(reducer, &author, &issue.board_id, &issue.id)
                     });
@@ -837,7 +774,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
                 let card = self
                     .cache
                     .borrow_mut()
-                    .reducer(note_context.ndb, req.txn, &author, &issue.board_id)
+                    .reducer(note_context.ndb, req.txn, &author)
                     .and_then(|reducer| {
                         event::pick_card(reducer, &author, &issue.board_id, &issue.id)
                     });
@@ -854,9 +791,9 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
 
 /// Renders a headway board (kind 30619) referenced inline. The note is the
 /// addressable board event; we recover its `(author, board_id)` and fold the
-/// full board (cached, see [`InlineBoardCache`]) off the local db to summarise it.
+/// full board (cached, see [`BoardCache`]) off the local db to summarise it.
 pub struct HeadwayBoardRenderer {
-    cache: Rc<RefCell<InlineBoardCache>>,
+    cache: Rc<RefCell<BoardCache>>,
 }
 
 impl notedeck::KindRenderer for HeadwayBoardRenderer {
@@ -884,7 +821,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         let view = self
             .cache
             .borrow_mut()
-            .reducer(note_context.ndb, req.txn, &author, &board.id)
+            .reducer(note_context.ndb, req.txn, &author)
             .and_then(|reducer| event::pick_board(reducer, &author, &board.id));
         let response = match view {
             Some(view) => board_inline_ui(ui, &theme, &view),
@@ -912,10 +849,10 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
 /// only resolves to a board the *current* account owns. A later grammar
 /// extension can carry an explicit author (e.g. an `naddr`-style coordinate).
 pub struct HeadwayRefParser {
-    /// Shared with the app's kind renderers (see [`Headway::inline_cache`]), so a
+    /// Shared with the app's kind renderers (see [`Headway::board_cache`]), so a
     /// card referenced by word id folds the same cached board a directly-embedded
     /// card/board does — the fold happens once per board, not once per surface.
-    cache: Rc<RefCell<InlineBoardCache>>,
+    cache: Rc<RefCell<BoardCache>>,
 }
 
 impl HeadwayRefParser {
@@ -1004,8 +941,7 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
         let note_id = self
             .cache
             .borrow_mut()
-            .reducer(ctx.ndb, ctx.txn, &author, &board_id)
-            .and_then(|reducer| event::pick_board(reducer, &author, &board_id))
+            .board(ctx.ndb, ctx.txn, &author, &board_id)
             .and_then(|board| event::resolve_card_by_wordid(&board, words))?;
         Some(notedeck::ResolvedRef::note(note_id))
     }
@@ -1018,14 +954,14 @@ mod tests {
     use nostrdb::{Config, Filter, Ndb};
     use std::time::{Duration, Instant};
 
-    /// A headless harness driving a [`BoardSync`] against a bare `Ndb` — the
+    /// A headless harness driving a [`BoardCache`] against a bare `Ndb` — the
     /// subscription / poll / refold logic with no egui in sight. Mirrors the
     /// `store::tests::TestNdb` poll-loop pattern (ingest is async).
     struct TestSync {
         ndb: Ndb,
         _dir: tempfile::TempDir,
         kp: FullKeypair,
-        sync: BoardSync,
+        cache: BoardCache,
     }
 
     impl TestSync {
@@ -1036,7 +972,7 @@ mod tests {
                 ndb,
                 _dir: dir,
                 kp: FullKeypair::generate(),
-                sync: BoardSync::default(),
+                cache: BoardCache::default(),
             }
         }
 
@@ -1044,31 +980,42 @@ mod tests {
             self.kp.secret_key.secret_bytes()
         }
 
-        /// One poll cycle against this account's board. Returns whether the
-        /// board was re-folded this call.
+        /// One poll cycle: advance this account's reducer. Returns whether it
+        /// changed (a seed or a folded-in delta) this call.
         fn poll(&mut self) -> bool {
-            self.poll_board(store::BOARD_ID)
-        }
-
-        /// One poll cycle against a specific board id — used to exercise switching
-        /// the active board within a single account/reducer.
-        fn poll_board(&mut self, board_id: &str) -> bool {
-            self.sync
-                .poll(&mut self.ndb, &self.kp.pubkey, board_id)
-                .changed
+            let txn = Transaction::new(&self.ndb).unwrap();
+            self.cache.poll(&self.ndb, &txn, &self.kp.pubkey).changed
         }
 
         fn seed(&mut self) {
             seed_demo(&self.ndb, &self.kp);
         }
 
-        /// Poll until the cached view satisfies `pred` (ingest is async). Fails
-        /// the test if it never holds.
+        /// Fold and pick the default board out of the cache, if present.
+        fn view(&mut self) -> Option<BoardView> {
+            self.board(store::BOARD_ID)
+        }
+
+        /// Fold and pick an arbitrary board — exercises reading a board other than
+        /// the default out of the one per-account reducer.
+        fn board(&mut self, board_id: &str) -> Option<BoardView> {
+            let txn = Transaction::new(&self.ndb).unwrap();
+            self.cache.board(&self.ndb, &txn, &self.kp.pubkey, board_id)
+        }
+
+        /// Every board folded for this account, summarized for the switcher.
+        fn boards(&mut self) -> Vec<BoardSummary> {
+            let txn = Transaction::new(&self.ndb).unwrap();
+            board_summaries(&self.cache.all_boards(&self.ndb, &txn, &self.kp.pubkey))
+        }
+
+        /// Poll until the folded default board satisfies `pred` (ingest is async).
+        /// Fails the test if it never holds.
         fn wait<F: Fn(&BoardView) -> bool>(&mut self, pred: F) {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 self.poll();
-                if self.sync.view().is_some_and(&pred) {
+                if self.view().is_some_and(|v| pred(&v)) {
                     return;
                 }
                 assert!(Instant::now() < deadline, "sync predicate never held");
@@ -1116,7 +1063,7 @@ mod tests {
         t.seed();
 
         t.wait(|v| total_cards(v) == 7);
-        let view = t.sync.view().expect("board loaded");
+        let view = t.view().expect("board loaded");
         assert_eq!(
             view.columns
                 .iter()
@@ -1197,11 +1144,11 @@ mod tests {
 
         // Apply against the cached pre-edit view (as render does).
         {
-            let view = t.sync.view().expect("board loaded");
+            let view = t.view().expect("board loaded");
             store::apply(
                 &t.ndb,
                 store::BOARD_ID,
-                view,
+                &view,
                 &t.kp.pubkey,
                 &t.secret(),
                 store::BoardAction::AddCard {
@@ -1216,7 +1163,7 @@ mod tests {
 
         // The new card only appears if a later poll re-folded the board.
         t.wait(|v| v.columns[1].cards.len() == 3);
-        let view = t.sync.view().expect("board loaded");
+        let view = t.view().expect("board loaded");
         assert_eq!(view.columns[1].cards.last().unwrap().title, "Fresh card");
     }
 
@@ -1242,10 +1189,10 @@ mod tests {
         // folded in too.
         t.wait(|v| total_cards(v) == 7);
         t.drain();
-        let folds = t.sync.full_reloads;
+        let folds = t.cache.full_reloads;
 
         // Both boards are discoverable from the one reducer.
-        let boards = t.sync.boards();
+        let boards = t.boards();
         assert!(
             boards
                 .iter()
@@ -1253,16 +1200,15 @@ mod tests {
         );
         assert!(boards.iter().any(|b| b.id == "work" && b.title == "Work"));
 
-        // Switching to 'work' re-picks the cached reducer — different board, no
-        // full re-fold.
-        assert!(t.poll_board("work"));
-        let view = t.sync.view().expect("work board");
+        // Reading the 'work' board picks it out of the same reducer — a different
+        // board, no full re-fold.
+        let view = t.board("work").expect("work board");
         assert_eq!(view.id, "work");
         assert_eq!(view.title, "Work");
-        assert_eq!(total_cards(view), 0, "fresh board has no cards");
+        assert_eq!(total_cards(&view), 0, "fresh board has no cards");
         assert_eq!(
-            t.sync.full_reloads, folds,
-            "a board switch must not trigger a full re-fold"
+            t.cache.full_reloads, folds,
+            "reading another board must not trigger a full re-fold"
         );
     }
 
@@ -1295,16 +1241,16 @@ mod tests {
 
         // Seeding does exactly one full fold; everything since is incremental.
         assert_eq!(
-            t.sync.full_reloads, 1,
+            t.cache.full_reloads, 1,
             "seeding should fold the history once"
         );
 
         {
-            let view = t.sync.view().expect("board loaded");
+            let view = t.view().expect("board loaded");
             store::apply(
                 &t.ndb,
                 store::BOARD_ID,
-                view,
+                &view,
                 &t.kp.pubkey,
                 &t.secret(),
                 store::BoardAction::AddCard {
@@ -1319,28 +1265,28 @@ mod tests {
         t.wait(|v| v.columns[1].cards.len() == 3);
 
         assert_eq!(
-            t.sync.full_reloads, 1,
+            t.cache.full_reloads, 1,
             "the edit triggered a full re-fold instead of a delta"
         );
     }
 
-    /// The inline-renderer cache ([`InlineBoardCache`]) folds the history once on
-    /// first touch and then absorbs later edits as deltas via its subscription —
-    /// never re-walking the history per frame. The render-path counterpart to
-    /// [`poll_folds_changes_as_a_delta`], driven by `&Ndb` like the renderers.
+    /// [`BoardCache`] folds the history once on first touch and then absorbs later
+    /// edits as deltas via its subscription — never re-walking the history per
+    /// frame. The render-path counterpart to [`poll_folds_changes_as_a_delta`],
+    /// exercising the `&Ndb` fold-on-read the inline widgets use.
     #[test]
-    fn inline_cache_folds_once_then_deltas() {
+    fn board_cache_folds_once_then_deltas() {
         let dir = tempfile::TempDir::new().unwrap();
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
         let kp = FullKeypair::generate();
-        let mut cache = InlineBoardCache::default();
+        let mut cache = BoardCache::default();
 
-        // One cache cycle (what a renderer does each frame): bring the cached
+        // One read cycle (what a renderer does each frame): bring the cached
         // reducer up to date and fold out the board.
-        let fold = |cache: &mut InlineBoardCache, ndb: &Ndb| -> Option<BoardView> {
+        let fold = |cache: &mut BoardCache, ndb: &Ndb| -> Option<BoardView> {
             let txn = Transaction::new(ndb).unwrap();
             cache
-                .reducer(ndb, &txn, &kp.pubkey, store::BOARD_ID)
+                .reducer(ndb, &txn, &kp.pubkey)
                 .and_then(|r| event::pick_board(r, &kp.pubkey, store::BOARD_ID))
         };
 
@@ -1355,7 +1301,7 @@ mod tests {
             if fold(&mut cache, &ndb).is_some_and(|v| total_cards(&v) == 7) {
                 break;
             }
-            assert!(Instant::now() < deadline, "inline board never materialised");
+            assert!(Instant::now() < deadline, "board never materialised");
             std::thread::sleep(Duration::from_millis(20));
         }
 
@@ -1363,13 +1309,13 @@ mod tests {
         // (the whole seeded board) folded in incrementally as deltas.
         assert_eq!(
             cache.full_reloads, 1,
-            "inline cache re-walked the history instead of folding deltas"
+            "board cache re-walked the history instead of folding deltas"
         );
     }
 
     fn ref_parser() -> HeadwayRefParser {
         HeadwayRefParser {
-            cache: Rc::new(RefCell::new(InlineBoardCache::default())),
+            cache: Rc::new(RefCell::new(BoardCache::default())),
         }
     }
 
@@ -1421,7 +1367,7 @@ mod tests {
     }
 
     /// [`HeadwayRefParser::resolve`] folds the referenced board (via the shared
-    /// [`InlineBoardCache`]) and re-encodes its cards to match the word id,
+    /// [`BoardCache`]) and re-encodes its cards to match the word id,
     /// yielding the card's kind-1621 issue note. It resolves relative to the
     /// selected account (the author gap), so no account means no resolution.
     #[test]
