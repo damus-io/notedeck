@@ -11,7 +11,7 @@
 
 use crate::event::LongformNote;
 use egui::{Layout, RichText, ScrollArea, TextEdit};
-use notedeck::AppContext;
+use notedeck::{AppContext, ColorTheme};
 
 /// Minimum visible rows the source editor requests before it scrolls, so a fresh
 /// note still opens with a roomy typing area.
@@ -116,59 +116,67 @@ pub(crate) fn editor_ui(
     ctx: &mut AppContext,
     ui: &mut egui::Ui,
 ) -> Option<EditorAction> {
+    use notedeck::tokens::{SPACING_LG, SPACING_SM};
     let mut action = None;
+    let theme = notedeck::ColorTheme::current(ui.ctx());
 
-    // Header: a back button on the left; the title field, a dirty marker and Save
-    // on the right (laid out right-to-left so the title fills the gap between).
-    ui.horizontal(|ui| {
-        if ui.button("← Canvas").clicked() {
-            action = Some(EditorAction::Close);
-        }
-        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-            let dirty = editor.dirty();
-            if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
-                action = Some(EditorAction::Save);
-            }
-            if dirty {
-                ui.label(RichText::new("●").weak())
-                    .on_hover_text("Unsaved changes");
-            }
-            // The title takes whatever horizontal room is left in the row.
-            ui.add(
-                TextEdit::singleline(&mut editor.title)
-                    .hint_text("Untitled")
-                    .desired_width(f32::INFINITY),
-            );
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(SPACING_LG as i8, SPACING_SM as i8))
+        .show(ui, |ui| {
+            // Header: a back button on the left; the title (a borderless heading),
+            // a dirty marker and Save on the right (right-to-left so the title
+            // fills the gap between).
+            ui.horizontal(|ui| {
+                if ui.button("← Canvas").clicked() {
+                    action = Some(EditorAction::Close);
+                }
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    let dirty = editor.dirty();
+                    if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
+                        action = Some(EditorAction::Save);
+                    }
+                    if dirty {
+                        ui.label(RichText::new("●").color(theme.accent))
+                            .on_hover_text("Unsaved changes");
+                    }
+                    ui.add(
+                        TextEdit::singleline(&mut editor.title)
+                            .hint_text("Untitled")
+                            .font(egui::TextStyle::Heading)
+                            .frame(false)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            });
+
+            ui.add_space(SPACING_SM);
+            ui.separator();
+            ui.add_space(SPACING_SM);
+
+            body_ui(editor, ctx, ui, &theme);
         });
-    });
-
-    ui.separator();
-
-    body_ui(editor, ctx, ui);
 
     action
 }
 
 /// The editor body: source on the left, preview on the right (side-by-side on a
 /// wide viewport; stacked in a single scroll column when narrow).
-fn body_ui(editor: &mut LongformEditor, ctx: &mut AppContext, ui: &mut egui::Ui) {
+fn body_ui(
+    editor: &mut LongformEditor,
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+) {
     let height = ui.available_height();
 
     if notedeck::ui::is_narrow(ui.ctx()) {
-        // Narrow: one scroll column — the source editor, then the live preview
-        // beneath it. The editor keeps a fixed minimum so both stay usable.
+        // Narrow: one scroll column — the source editor panel, then the live
+        // preview beneath it.
         ScrollArea::vertical()
             .id_salt("notebook-editor-narrow")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add(
-                    TextEdit::multiline(&mut editor.content)
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(12),
-                );
-                ui.add_space(notedeck::tokens::SPACING_MD);
-                ui.separator();
+                source_panel_ui(ui, &mut editor.content, theme, SOURCE_MIN_ROWS);
                 ui.add_space(notedeck::tokens::SPACING_MD);
                 preview_body_ui(ui, ctx, &editor.content);
             });
@@ -177,24 +185,40 @@ fn body_ui(editor: &mut LongformEditor, ctx: &mut AppContext, ui: &mut egui::Ui)
 
     // Wide: source | preview, each its own vertically-scrolling column.
     ui.columns(2, |cols| {
-        source_column_ui(&mut cols[0], &mut editor.content, height);
+        source_column_ui(&mut cols[0], &mut editor.content, height, theme);
         preview_column_ui(&mut cols[1], ctx, &editor.content, height);
     });
 }
 
-/// The left column: a monospace markdown source editor that fills the column and
-/// scrolls when the note outgrows it.
-fn source_column_ui(ui: &mut egui::Ui, content: &mut String, height: f32) {
+/// The left column: a monospace markdown source editor in a subtle rounded panel
+/// that fills the column height and scrolls when the note outgrows it.
+fn source_column_ui(ui: &mut egui::Ui, content: &mut String, height: f32, theme: &ColorTheme) {
+    let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+    let rows = ((height / row_h) as usize).max(SOURCE_MIN_ROWS);
     ScrollArea::vertical()
         .id_salt("notebook-editor-source")
         .max_height(height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            source_panel_ui(ui, content, theme, rows);
+        });
+}
+
+/// The monospace source editor itself: a frameless code editor inside a rounded
+/// `surface_secondary` panel, so the raw markdown reads as a distinct "source"
+/// pane against the rendered preview.
+fn source_panel_ui(ui: &mut egui::Ui, content: &mut String, theme: &ColorTheme, rows: usize) {
+    egui::Frame::new()
+        .fill(theme.surface_secondary)
+        .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
+        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
+        .show(ui, |ui| {
             ui.add(
                 TextEdit::multiline(content)
                     .code_editor()
+                    .frame(false)
                     .desired_width(f32::INFINITY)
-                    .desired_rows(SOURCE_MIN_ROWS),
+                    .desired_rows(rows),
             );
         });
 }
@@ -223,17 +247,33 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
     notedeck_ui::markdown::render_markdown_with_refs(ui, ctx, content);
 }
 
-/// Render the vault list — one selectable row per note (newest-edited first) —
-/// and return the index of a note clicked this frame, for the caller to open.
-/// Reads a borrowed slice and builds no owned collections, so it's safe to call
-/// every frame from the canvas-mode sidebar (the list itself is cached upstream).
+/// Render the vault list — one styled, clickable row per note (newest-edited
+/// first) — and return the index of a note clicked this frame, for the caller to
+/// open. Reads a borrowed slice and builds no owned collections, so it's safe to
+/// call every frame from the canvas-mode sidebar (the list itself is cached
+/// upstream).
 pub(crate) fn vault_ui(notes: &[LongformNote], ui: &mut egui::Ui) -> Option<usize> {
-    ui.add_space(notedeck::tokens::SPACING_SM);
-    ui.strong("Notes");
-    ui.separator();
+    use notedeck::tokens::{SPACING_SM, SPACING_XS};
+    let theme = notedeck::ColorTheme::current(ui.ctx());
+
+    // A muted, small-caps section header, left-aligned with the row titles below.
+    ui.add_space(SPACING_SM);
+    ui.horizontal(|ui| {
+        ui.add_space(SPACING_SM);
+        ui.label(
+            egui::RichText::new("NOTES")
+                .small()
+                .strong()
+                .color(theme.text_muted),
+        );
+    });
+    ui.add_space(SPACING_XS);
 
     if notes.is_empty() {
-        ui.weak("No notes yet.");
+        ui.add_space(SPACING_SM);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new("No notes yet").color(theme.text_muted));
+        });
         return None;
     }
 
@@ -242,15 +282,53 @@ pub(crate) fn vault_ui(notes: &[LongformNote], ui: &mut egui::Ui) -> Option<usiz
         .id_salt("notebook-vault-list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             for (i, note) in notes.iter().enumerate() {
                 let title = note.title.trim();
                 let label = if title.is_empty() { "Untitled" } else { title };
-                if ui.selectable_label(false, label).clicked() {
+                if note_row_ui(ui, &theme, label).clicked() {
                     open = Some(i);
                 }
             }
         });
     open
+}
+
+/// One vault row: a full-width, left-aligned, rounded surface that highlights on
+/// hover and elides a long title to a single line. Painted with the semantic
+/// theme so it reads as part of the app rather than a bare label.
+fn note_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, title: &str) -> egui::Response {
+    use notedeck::tokens::{RADIUS_MD, SPACING_SM};
+    let pad = egui::vec2(SPACING_SM, 6.0);
+    let line_h = ui.text_style_height(&egui::TextStyle::Body);
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), line_h + pad.y * 2.0),
+        egui::Sense::click(),
+    );
+
+    if resp.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(RADIUS_MD as u8),
+            theme.interactive_hover,
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    ui.allocate_new_ui(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(pad))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(title).color(theme.text_primary))
+                    .truncate()
+                    .selectable(false),
+            );
+        },
+    );
+
+    resp
 }
 
 #[cfg(test)]

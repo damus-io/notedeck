@@ -7,10 +7,12 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::{App, Notedeck};
 use notedeck_notebook::Notebook;
 use notedeck_notebook::event::{
-    self, EdgeEnds, Geometry, NodeContent, NodeKind, build_canvas, build_edge, build_node,
-    build_transform, canvas_address,
+    self, EdgeEnds, Geometry, LongformInput, NodeContent, NodeKind, build_canvas, build_edge,
+    build_node, build_transform, canvas_address,
 };
-use notedeck_notebook::store::{CANVAS_ID, LongformNote, NoPublish, ingest, load_longform};
+use notedeck_notebook::store::{
+    CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, load_longform,
+};
 
 struct NotebookTestState {
     notedeck: Notedeck,
@@ -228,6 +230,99 @@ fn snapshot_notebook_selected() {
     harness.get_by_label("Cyan").simulate_click();
     harness.run_steps(3);
     harness.snapshot("notebook_selected");
+}
+
+/// Seed a handful of longform notes and snapshot the canvas with its vault
+/// sidebar, for eyeballing the vault's visual design.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_vault() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        for title in [
+            "Meeting notes — Q3 planning",
+            "Reading list",
+            "nostr protocol ideas",
+            "Untitled",
+            "Groceries",
+        ] {
+            let input = LongformInput {
+                title: title.to_string(),
+                content: format!("# {title}\n\nbody"),
+                ..Default::default()
+            };
+            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
+                .expect("seed longform");
+        }
+    }
+
+    wait_for_label(&mut harness, "Reading list");
+    harness.run_steps(3);
+    // Hover a row so the snapshot also shows the row hover highlight.
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(egui::pos2(120.0, 120.0)));
+    harness.run();
+    harness.snapshot("notebook_vault");
+}
+
+/// Seed a note with rich markdown, open it from the vault, and snapshot the
+/// full-screen editor (source on the left, live rendered preview on the right)
+/// for eyeballing the editor's visual design.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_editor() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        let content = concat!(
+            "# Q3 Planning\n\n",
+            "Goals for the **quarter**, with a few *stretch* items.\n\n",
+            "## Milestones\n\n",
+            "- Ship the notebook vault\n",
+            "- [x] Longform editor\n",
+            "- [ ] Backlinks between notes\n\n",
+            "## Notes\n\n",
+            "Persist via `store::create_longform`.\n\n",
+            "> Encrypt everything with PNS.\n\n",
+            "```rust\nfn hello() {\n    println!(\"hi\");\n}\n```\n",
+        );
+        let input = LongformInput {
+            title: "Q3 Planning".to_string(),
+            content: content.to_string(),
+            ..Default::default()
+        };
+        create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
+            .expect("seed longform");
+    }
+
+    // Open the note from the vault into the editor.
+    wait_for_label(&mut harness, "Q3 Planning");
+    harness.get_by_label("Q3 Planning").simulate_click();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        if harness.state().notebook.editor_is_open() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "editor never opened from the vault"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_steps(3);
+    harness.snapshot("notebook_editor");
 }
 
 /// Drag the "Red" node and confirm its position moves; clicking a node selects
@@ -483,11 +578,11 @@ fn wait_for_longform(
 fn create_and_edit_longform_via_editor() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, false);
 
-    // "+ Note" lives in the canvas-mode toolbar (shown even while the canvas is
+    // "+ New note" lives in the canvas-mode toolbar (shown even while the canvas is
     // still seeding). Opening the editor takes over the whole view.
-    wait_for_label(&mut harness, "+ Note");
+    wait_for_label(&mut harness, "+ New note");
     assert!(!harness.state().notebook.editor_is_open());
-    harness.get_by_label("+ Note").simulate_click();
+    harness.get_by_label("+ New note").simulate_click();
     wait_for_label(&mut harness, "← Canvas");
     assert!(harness.state().notebook.editor_is_open());
     assert_eq!(harness.state().notebook.editor_saved(), None);

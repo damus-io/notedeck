@@ -1337,3 +1337,69 @@ fn test_list_then_heading() {
         other => panic!("expected heading, got {:?}", other),
     }
 }
+
+/// A helper: the plain text of the first inline element of a paragraph.
+fn para_text<'a>(elem: &MdElement, buf: &'a str) -> &'a str {
+    match elem {
+        MdElement::Paragraph(inlines) => match inlines.first() {
+            Some(InlineElement::Text(span)) => r(span, buf),
+            other => panic!("expected leading text inline, got {:?}", other),
+        },
+        other => panic!("expected paragraph, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_blockquote_single_line() {
+    let mut parser = StreamParser::new();
+    parser.push("> Encrypt everything with PNS.\n");
+    parser.finalize();
+
+    assert_eq!(parser.parsed().len(), 1);
+    match &parser.parsed()[0] {
+        MdElement::BlockQuote(nested) => {
+            assert_eq!(nested.len(), 1);
+            assert_eq!(
+                para_text(&nested[0], parser.buffer()),
+                "Encrypt everything with PNS."
+            );
+        }
+        other => panic!("expected blockquote, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_blockquote_multi_line() {
+    let mut parser = StreamParser::new();
+    parser.push("> first line\n> second line\n");
+    parser.finalize();
+
+    assert_eq!(parser.parsed().len(), 1);
+    match &parser.parsed()[0] {
+        MdElement::BlockQuote(nested) => {
+            assert_eq!(nested.len(), 2);
+            assert_eq!(para_text(&nested[0], parser.buffer()), "first line");
+            assert_eq!(para_text(&nested[1], parser.buffer()), "second line");
+        }
+        other => panic!("expected blockquote, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_blockquote_terminates_into_paragraph() {
+    // A paragraph, then a quote, then a paragraph: three distinct blocks.
+    let mut parser = StreamParser::new();
+    parser.push("before\n\n> quoted\n\nafter\n");
+    parser.finalize();
+
+    let kinds: Vec<&str> = parser
+        .parsed()
+        .iter()
+        .map(|e| match e {
+            MdElement::Paragraph(_) => "p",
+            MdElement::BlockQuote(_) => "quote",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["p", "quote", "p"]);
+}

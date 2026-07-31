@@ -93,8 +93,12 @@ pub enum PartialKind {
         items: Vec<crate::element::ListItem>,
     },
 
-    /// Blockquote started with >, collecting content
-    BlockQuote { depth: usize },
+    /// Blockquote started with `>`, accumulating one nested element per quoted
+    /// line until a blank or non-`>` line ends it. Span-based like `List`, so it
+    /// stays zero-copy.
+    BlockQuote {
+        items: Vec<crate::element::MdElement>,
+    },
 
     /// Table being accumulated row by row
     Table {

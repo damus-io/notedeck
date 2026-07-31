@@ -33,6 +33,7 @@ enum PartialDispatch {
     Heading { level: u8 },
     Table,
     List,
+    BlockQuote,
     Paragraph,
     Other,
 }
@@ -128,6 +129,7 @@ impl StreamParser {
             PartialKind::Heading { level } => PartialDispatch::Heading { level: *level },
             PartialKind::Table { .. } => PartialDispatch::Table,
             PartialKind::List { .. } => PartialDispatch::List,
+            PartialKind::BlockQuote { .. } => PartialDispatch::BlockQuote,
             PartialKind::Paragraph => PartialDispatch::Paragraph,
             _ => PartialDispatch::Other,
         })
@@ -162,6 +164,12 @@ impl StreamParser {
                     }
                     PartialDispatch::List => {
                         if self.process_list() {
+                            continue;
+                        }
+                        return;
+                    }
+                    PartialDispatch::BlockQuote => {
+                        if self.process_blockquote() {
                             continue;
                         }
                         return;
@@ -380,6 +388,18 @@ impl StreamParser {
                     return Some(leading_space + nl_pos + 1);
                 }
             }
+        }
+
+        // Blockquote: a line starting with `>`. Create an empty BlockQuote
+        // partial and let process_blockquote accumulate the quoted lines; it
+        // consumes nothing here so the first `>` line is handled uniformly.
+        if trimmed.starts_with('>') {
+            self.partial = Some(Partial::new(
+                PartialKind::BlockQuote { items: Vec::new() },
+                self.process_pos,
+            ));
+            self.at_line_start = true;
+            return Some(0);
         }
 
         // List item: "- ", "* ", "+ " (unordered) or "1. ", "1) " (ordered).
@@ -690,6 +710,88 @@ impl StreamParser {
         true
     }
 
+    /// Process blockquote content line by line, one nested [`MdElement`] per
+    /// quoted line, until a blank or non-`>` line ends it. Mirrors
+    /// [`Self::process_list`]. Returns true to continue, false when more input is
+    /// needed. Kept simple: each `>` line becomes its own inline paragraph, which
+    /// covers the common case (a quoted line or two) while staying span-based.
+    fn process_blockquote(&mut self) -> bool {
+        let remaining = self.remaining();
+        if let Some(nl_pos) = remaining.find('\n') {
+            let line = &remaining[..nl_pos];
+            let line_abs = self.process_pos;
+            // Capture everything derived from `line`/`remaining` before any `&mut
+            // self` call releases the immutable borrow.
+            let is_blank = line.trim().is_empty();
+            let item = self.parse_blockquote_line(line, line_abs);
+
+            if let Some(item) = item {
+                if let Some(PartialKind::BlockQuote { items }) =
+                    self.partial.as_mut().map(|p| &mut p.kind)
+                {
+                    items.push(item);
+                }
+                self.advance(nl_pos + 1);
+                self.at_line_start = true;
+                return true;
+            }
+            // Blank or non-`>` line — the blockquote is complete.
+            self.finish_blockquote();
+            self.at_line_start = true;
+            if is_blank {
+                // Swallow a single blank separator line (which also covers a
+                // leading newline that `try_block_start` looked past to spot the
+                // `>`), so we make progress instead of re-detecting it forever.
+                self.advance(nl_pos + 1);
+            }
+            // A non-blank line is left in place for the block parser to reprocess.
+            return true;
+        }
+
+        // No newline yet — the trailing line is incomplete.
+        let trimmed = remaining.trim_start();
+        if trimmed.starts_with('>') || trimmed.is_empty() {
+            // Still (possibly) a quote line; wait for more (finalize flushes).
+            return false;
+        }
+        // Non-quote trailing content ends the quote; re-process it as a new block.
+        self.finish_blockquote();
+        self.at_line_start = true;
+        true
+    }
+
+    /// Parse one line as a blockquote item (an inline paragraph of the text after
+    /// its `>` marker), or `None` if the line isn't a quote line. `line` has no
+    /// trailing newline; `line_abs` is its buffer offset. Content stays
+    /// span-based (the text after `> ` is a contiguous slice of the buffer).
+    fn parse_blockquote_line(&self, line: &str, line_abs: usize) -> Option<MdElement> {
+        let indent = line.len() - line.trim_start().len();
+        let rest = line[indent..].strip_prefix('>')?;
+        // Drop one optional space after the marker.
+        let content = rest.strip_prefix(' ').unwrap_or(rest);
+        if content.trim().is_empty() {
+            // An empty `>` line: keep the quote open but contributes no element.
+            return Some(MdElement::Paragraph(Vec::new()));
+        }
+        let content_abs = line_abs + (line.len() - content.len());
+        Some(MdElement::Paragraph(parse_inline(content, content_abs)))
+    }
+
+    /// Emit the in-progress blockquote partial as a `BlockQuote` element.
+    fn finish_blockquote(&mut self) {
+        if let Some(partial) = self.partial.take() {
+            if let PartialKind::BlockQuote { items } = partial.kind {
+                let items: Vec<MdElement> = items
+                    .into_iter()
+                    .filter(|e| !matches!(e, MdElement::Paragraph(inlines) if inlines.is_empty()))
+                    .collect();
+                if !items.is_empty() {
+                    self.parsed.push(MdElement::BlockQuote(items));
+                }
+            }
+        }
+    }
+
     /// Does the in-progress list accept an item with this `ordered`-ness?
     /// A marker-kind change starts a new list, so it doesn't.
     fn list_accepts(&self, ordered: bool) -> bool {
@@ -780,7 +882,8 @@ impl StreamParser {
                 let is_block_start = trimmed_after.starts_with("```")
                     || trimmed_after.starts_with("~~~")
                     || trimmed_after.starts_with('#')
-                    || trimmed_after.starts_with('|');
+                    || trimmed_after.starts_with('|')
+                    || trimmed_after.starts_with('>');
                 if is_block_start {
                     // Accumulate text before the newline into the paragraph
                     if let Some(ref mut partial) = self.partial {
@@ -955,6 +1058,26 @@ impl StreamParser {
                         });
                     }
                 }
+                PartialKind::BlockQuote { mut items } => {
+                    // Flush a trailing quote line that never got its newline.
+                    let line_abs = self.process_pos;
+                    let trailing = {
+                        let line = self.buffer[self.process_pos..].trim_end_matches('\n');
+                        self.parse_blockquote_line(line, line_abs)
+                    };
+                    if let Some(item) = trailing {
+                        items.push(item);
+                    }
+                    let items: Vec<MdElement> = items
+                        .into_iter()
+                        .filter(
+                            |e| !matches!(e, MdElement::Paragraph(inlines) if inlines.is_empty()),
+                        )
+                        .collect();
+                    if !items.is_empty() {
+                        self.parsed.push(MdElement::BlockQuote(items));
+                    }
+                }
                 PartialKind::Paragraph => {
                     let trimmed = self.trim_span(partial.content_span());
                     if !trimmed.is_empty() {
@@ -964,7 +1087,7 @@ impl StreamParser {
                     }
                 }
                 _ => {
-                    // Other partial kinds (lists, blockquotes, etc.) - emit as paragraph for now
+                    // Other partial kinds - emit as paragraph for now
                     let trimmed = self.trim_span(partial.content_span());
                     if !trimmed.is_empty() {
                         let content = trimmed.resolve(&self.buffer);

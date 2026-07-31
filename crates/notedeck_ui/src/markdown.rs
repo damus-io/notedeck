@@ -366,6 +366,12 @@ fn flush_job(job: &mut LayoutJob, ui: &mut Ui) {
 }
 
 fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+    // Inline runs carry their own spaces in the span text, and bold/link/image
+    // runs are flushed as separate widgets mid-line. The default horizontal gap
+    // would then show as a stray space on each side of every such run (e.g.
+    // "for the  quarter , with"), so zero it — wrapping still breaks on rows.
+    ui.spacing_mut().item_spacing.x = 0.0;
+
     let font_size = ui.style().text_styles[&egui::TextStyle::Body].size;
     let text_color = ui.visuals().text_color();
 
