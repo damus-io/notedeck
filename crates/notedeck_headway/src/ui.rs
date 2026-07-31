@@ -17,7 +17,8 @@ use notedeck::tokens::{
 
 use crate::BoardSummary;
 use crate::event::{
-    self, ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
+    self, ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnPos, ColumnView,
+    CommentView,
 };
 use crate::store::{self, BoardAction};
 
@@ -3349,10 +3350,50 @@ fn card_frame_ui(
 }
 
 /// Render a card's *resolved* state (latest subject, labels and cover applied),
-/// as folded off its board. This is what an inline issue reference should show;
+/// as folded off its board. This is the full-card shape an inline issue
+/// reference shows as a block embed ([`notedeck::RenderContext::Embed`]);
 /// [`issue_inline_ui`] is only the fallback when the board can't be folded.
 pub fn card_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) -> egui::Response {
     card_frame_ui(ui, theme, &card.labels, &card.title, &card.description)
+}
+
+/// A compact, single-line inline reference to a card: a Linear-style status
+/// icon (derived from the card's column position) followed by its title, in a
+/// small rounded pill. This is the default in-prose shape
+/// ([`notedeck::RenderContext::Inline`]) — versus the full [`card_inline_ui`]
+/// card used for block embeds.
+///
+/// `column` is the card's live [`ColumnPos`] (`None` when archived, drawing a
+/// muted backlog-style icon).
+pub fn card_chip_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    title: &str,
+    column: Option<ColumnPos>,
+) -> egui::Response {
+    // Archived cards have no live column: fall back to the unstarted icon.
+    let icon = match column {
+        Some(pos) => StatusIcon::for_column(pos.index, pos.count),
+        None => StatusIcon::Backlog,
+    };
+    egui::Frame::new()
+        .fill(theme.surface_elevated)
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, SPACING_XS as i8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACING_XS;
+                status_icon_ui(
+                    ui,
+                    theme,
+                    icon,
+                    ui.text_style_height(&egui::TextStyle::Body),
+                );
+                ui.label(egui::RichText::new(title).color(theme.text_primary));
+            })
+        })
+        .response
 }
 
 /// Render a single headway issue (kind 1621) from its *creation-time* snapshot:

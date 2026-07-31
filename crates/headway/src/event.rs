@@ -2156,6 +2156,56 @@ pub fn pick_card(
         .find(|card| card.id == want)
 }
 
+/// A card's position among a board's live columns: which column it sits in and
+/// how many columns there are. Enough to derive a positional (Linear-style)
+/// status indicator, which maps the first column to backlog and the last to done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColumnPos {
+    /// Zero-based index of the card's column in board order.
+    pub index: usize,
+    /// Total number of live columns on the board.
+    pub count: usize,
+}
+
+/// A card resolved for inline display: its [`CardView`] plus the live
+/// [`ColumnPos`] used to show a status indicator. See [`pick_card_with_column`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedCard {
+    /// The card's resolved state (latest subject, labels and cover applied).
+    pub card: CardView,
+    /// The card's live column position, or `None` when it is archived (not in a
+    /// live column).
+    pub column: Option<ColumnPos>,
+}
+
+/// Like [`pick_card`], but also resolves the card's live [`ColumnPos`] so an
+/// inline reference can show a status indicator. Returns `None` when the board
+/// or card is absent.
+pub fn pick_card_with_column(
+    reducer: &BoardReducer,
+    author: &Pubkey,
+    board_id: &str,
+    issue_id: &[u8; 32],
+) -> Option<ResolvedCard> {
+    let want = NoteId::new(*issue_id);
+    let board = pick_board(reducer, author, board_id)?;
+    let count = board.columns.len();
+    for (index, col) in board.columns.iter().enumerate() {
+        if let Some(card) = col.cards.iter().find(|c| c.id == want) {
+            return Some(ResolvedCard {
+                card: card.clone(),
+                column: Some(ColumnPos { index, count }),
+            });
+        }
+    }
+    board
+        .archived
+        .into_iter()
+        .map(|a| a.card)
+        .find(|card| card.id == want)
+        .map(|card| ResolvedCard { card, column: None })
+}
+
 /// Fold `author`'s headway events out of `ndb` and reduce them into the board
 /// with the given `board_id`, if it exists. A one-shot [`fold_board`] +
 /// [`pick_board`] for callers that don't keep the reducer around.
@@ -3494,5 +3544,41 @@ mod tests {
 
         // Unknown card id -> None.
         assert!(pick_card(&reducer, &owner.pubkey, "b1", &[0u8; 32]).is_none());
+    }
+
+    #[test]
+    fn pick_card_with_column_resolves_position() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("backlog", "Backlog"),
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder| {
+            let note = b.sign(&owner.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let i1 = note_id(&owner, build_issue(&addr, "In the middle", "body"));
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols)),
+            parse_owned(build_issue(&addr, "In the middle", "body")),
+            // Placed in the second of three columns.
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m")),
+        ];
+
+        let mut reducer = BoardReducer::default();
+        for event in &events {
+            reducer.ingest(event.clone());
+        }
+
+        let resolved = pick_card_with_column(&reducer, &owner.pubkey, "b1", i1.bytes()).unwrap();
+        assert_eq!(resolved.card.title, "In the middle");
+        assert_eq!(resolved.column, Some(ColumnPos { index: 1, count: 3 }));
+
+        // Unknown card id -> None.
+        assert!(pick_card_with_column(&reducer, &owner.pubkey, "b1", &[0u8; 32]).is_none());
     }
 }

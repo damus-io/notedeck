@@ -15,7 +15,7 @@ mod tools;
 mod ui;
 
 use ui::{BoardNav, CardBoardOp, board_ui, empty_state};
-pub use ui::{BoardUiState, board_inline_ui, card_inline_ui, issue_inline_ui};
+pub use ui::{BoardUiState, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
 use event::{BoardReducer, BoardView};
 
@@ -796,16 +796,41 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             return notedeck::KindRenderResponse::new(ui.weak("invalid headway issue"));
         };
         let author = Pubkey::new(issue.board_author);
-        // Resolve the card's current state off the (cached) folded board.
-        let card = self
-            .cache
-            .borrow_mut()
-            .reducer(note_context.ndb, req.txn, &author, &issue.board_id)
-            .and_then(|reducer| event::pick_card(reducer, &author, &issue.board_id, &issue.id));
-        let response = match card {
-            Some(card) => card_inline_ui(ui, &theme, &card),
-            // Board not local to fold: show the creation-time snapshot.
-            None => issue_inline_ui(ui, &theme, &issue),
+        // Resolve the card off the (cached) folded board and draw the shape the
+        // context asks for: a compact chip inline in prose, the full card as a
+        // block embed. `.and_then` resolves owned data so the cache borrow drops
+        // before drawing.
+        let response = match req.context {
+            notedeck::RenderContext::Inline => {
+                let resolved = self
+                    .cache
+                    .borrow_mut()
+                    .reducer(note_context.ndb, req.txn, &author, &issue.board_id)
+                    .and_then(|reducer| {
+                        event::pick_card_with_column(reducer, &author, &issue.board_id, &issue.id)
+                    });
+                match resolved {
+                    Some(resolved) => {
+                        card_chip_ui(ui, &theme, &resolved.card.title, resolved.column)
+                    }
+                    // Board not local to fold: chip from the creation-time snapshot.
+                    None => card_chip_ui(ui, &theme, &issue.subject, None),
+                }
+            }
+            _ => {
+                let card = self
+                    .cache
+                    .borrow_mut()
+                    .reducer(note_context.ndb, req.txn, &author, &issue.board_id)
+                    .and_then(|reducer| {
+                        event::pick_card(reducer, &author, &issue.board_id, &issue.id)
+                    });
+                match card {
+                    Some(card) => card_inline_ui(ui, &theme, &card),
+                    // Board not local to fold: show the creation-time snapshot.
+                    None => issue_inline_ui(ui, &theme, &issue),
+                }
+            }
         };
         open_on_click(ui, response, note)
     }
