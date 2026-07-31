@@ -2218,6 +2218,29 @@ pub fn load_board(
     pick_board(&fold_board(ndb, txn, author)?, author, board_id)
 }
 
+/// Every card on `view` in a stable order — the live columns' cards, in column
+/// then rank order, followed by the archived cards. Shared by callers that
+/// resolve a card by re-encoding each one (word ids, hex prefixes).
+pub fn all_cards(view: &BoardView) -> impl Iterator<Item = &CardView> {
+    view.columns
+        .iter()
+        .flat_map(|c| c.cards.iter())
+        .chain(view.archived.iter().map(|a| &a.card))
+}
+
+/// Resolve a card on `view` by its three-word id (`word-word-word`, *without*
+/// the board slug prefix) by re-encoding every card and matching — exactly how a
+/// git short hash resolves, and how the CLI's `resolve_card` matches word ids.
+/// Archived cards are included. `None` if no card encodes to `words`.
+///
+/// Shared by the CLI and the inline `headway` [reference
+/// parser](../../notedeck_headway) so both agree on what a word id resolves to.
+pub fn resolve_card_by_wordid(view: &BoardView, words: &str) -> Option<NoteId> {
+    all_cards(view)
+        .find(|c| crate::wordid::encode(c.id.bytes()) == words)
+        .map(|c| c.id)
+}
+
 // ---------------------------------------------------------------------------
 // Fractional ranking
 // ---------------------------------------------------------------------------

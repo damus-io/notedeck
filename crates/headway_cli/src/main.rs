@@ -714,11 +714,11 @@ fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId> {
         .strip_prefix(&format!("{}#", view.id.to_lowercase()))
         .or_else(|| sel.strip_prefix('#'))
         .unwrap_or(&sel);
-    if let Some(c) = all_cards(view).find(|c| wordid::encode(c.id.bytes()) == words) {
-        return Ok(c.id);
+    if let Some(id) = event::resolve_card_by_wordid(view, words) {
+        return Ok(id);
     }
 
-    let mut hits = all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
+    let mut hits = event::all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
     match (hits.next(), hits.next()) {
         (Some(c), None) => Ok(c.id),
         (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'").into()),
@@ -748,7 +748,7 @@ fn all_cards(view: &BoardView) -> impl Iterator<Item = &CardView> {
 /// full hex id, a unique hex prefix, or a comment word-id — the same forms
 /// [`resolve_card`] accepts, but scoped to one card's thread.
 fn resolve_comment(view: &BoardView, card: &NoteId, sel: &str) -> Result<NoteId> {
-    let comments = all_cards(view)
+    let comments = event::all_cards(view)
         .find(|c| c.id == *card)
         .map(|c| c.comments.as_slice())
         .unwrap_or(&[]);
