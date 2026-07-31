@@ -563,6 +563,57 @@ fn ingest_live_event(
     }
 }
 
+/// Build a *remote* session's user message through the engine — the
+/// [`agentium_core::Engine::send_message`] equivalent for a controller sending
+/// input to a remote host.
+///
+/// Mirrors [`ingest_live_event`]'s local-ingest + echo-back tracking (marking
+/// the note seen so the relay round-trip isn't reprocessed) and returns the
+/// event for dave's batched relay-publish queue, but derives conversation
+/// threading from ndb (via the engine) rather than the session's in-memory
+/// [`live_threading`](crate::session::AgenticSessionData::live_threading). The
+/// local host-archival path stays on [`ingest_live_event`]; only remote
+/// controller sends route here.
+fn ingest_remote_user_message(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &[u8; 32],
+    text: &str,
+) -> Option<session_events::BuiltEvent> {
+    let agentic = session.agentic.as_mut()?;
+    let session_id = agentic.event_session_id().to_string();
+    let engine = embedded_engine(ndb, secret_key)?;
+    match engine.prepare_message(&session_id, text) {
+        Ok(event) => {
+            agentic.seen_note_ids.insert(event.note_id);
+            Some(event)
+        }
+        Err(e) => {
+            tracing::warn!("failed to build remote user message: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Build the kind-1988 `user` event for a send, PNS-ingested locally and ready
+/// for dave's relay-publish queue. A remote session is a controller send routed
+/// through the engine ([`ingest_remote_user_message`]); a local session archives
+/// the host's own turn via the in-memory threading path ([`ingest_live_event`]).
+/// Shared by the interactive send ([`Dave::handle_user_send`]) and the
+/// programmatic one ([`Dave::add_user_message_for_session`]).
+fn build_user_send_event(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &[u8; 32],
+    text: &str,
+) -> Option<session_events::BuiltEvent> {
+    if session.is_remote() {
+        ingest_remote_user_message(session, ndb, secret_key, text)
+    } else {
+        ingest_live_event(session, ndb, secret_key, text, "user", None, None)
+    }
+}
+
 /// Calculate an anonymous user_id from a keypair
 /// Look up a backend by type from the map, falling back to Remote.
 fn get_backend(
@@ -3256,9 +3307,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-            if let Some(evt) =
-                ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
-            {
+            if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
                 self.pending_relay_events.push(evt);
             }
         }
@@ -3320,11 +3369,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let user_text = session.input.clone();
             session.input.clear();
 
-            // Generate live event for user message
+            // Generate the kind-1988 `user` event (remote sends route through
+            // the engine, local sends archive the host turn in-place).
             if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-                if let Some(evt) =
-                    ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
-                {
+                if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
                     self.pending_relay_events.push(evt);
                 }
             }

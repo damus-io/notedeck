@@ -414,9 +414,35 @@ impl Engine {
         session_id: &str,
         text: &str,
     ) -> Result<(), EngineError> {
+        let built = self.make_user_message(session_id, text)?;
+        self.publish_session_event(transport, built)
+    }
+
+    /// Build a kind-1988 user message, ingest it locally, and return it for the
+    /// caller to publish through its own transport — for a host that batches its
+    /// own relay writes. Unlike [`send_message`](Engine::send_message), this does
+    /// not publish.
+    pub fn prepare_message(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let built = self.make_user_message(session_id, text)?;
+        self.wrap_and_ingest(&built)?;
+        Ok(built)
+    }
+
+    /// Build the inner kind-1988 `user` event threaded onto the session's
+    /// existing conversation (no ingest, no publish). A brand-new session simply
+    /// starts a fresh thread.
+    fn make_user_message(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
         let mut threading = self.session_threading(session_id);
         let cwd = self.session_cwd(session_id);
-        let built = crate::session_events::build_live_event(
+        crate::session_events::build_live_event(
             text,
             "user",
             session_id,
@@ -426,8 +452,7 @@ impl Engine {
             &mut threading,
             &self.seckey(),
         )
-        .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(transport, built)
+        .map_err(|e| EngineError::Build(e.to_string()))
     }
 
     /// Spawn a new session on a remote host.
@@ -1111,6 +1136,24 @@ mod tests {
             .expect("ingest pns envelope");
     }
 
+    /// PNS-wrap a freshly-built inner event and publish its envelope through
+    /// `tx` to `relay`. Models both a host injecting a backend-produced event and
+    /// the controller's "prepare locally, then publish from my own queue" flow —
+    /// the `prepare_*` methods ingest but don't publish, so the caller wraps the
+    /// returned inner event and sends it itself, exactly as dave's drain does.
+    fn publish_prepared(
+        tx: &mut impl Transport,
+        built: &crate::session_events::BuiltEvent,
+        relay: &str,
+    ) {
+        let pns = enostr::pns::derive_pns_keys(&TEST_SECKEY);
+        let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns).expect("wrap pns");
+        tx.publish_event_json(
+            wrapped,
+            vec![enostr::NormRelayUrl::new(relay).expect("relay url")],
+        );
+    }
+
     /// The `message` field from the newest `permission_response` event on
     /// `session_id` in `ndb`, i.e. the answer payload `respond_question` /
     /// `respond_permission` publishes. `None` if no response is present.
@@ -1329,6 +1372,112 @@ mod tests {
         assert!(received, "engine B should receive A's message");
         let messages = b.session_messages(session_id);
         assert!(matches!(&messages[0], Message::User(_)));
+        relay.shutdown();
+    }
+
+    /// End-to-end over a real relay: the controller-side write flow desktop dave
+    /// now uses. A *host* engine publishes a permission request (the event a
+    /// claude-code backend produces), and a *controller* engine uses the
+    /// build-only `prepare_*` API — then publishes the returned events from its
+    /// own transport, exactly as dave's batched drain does — to answer the
+    /// request and send a follow-up message. Both land back on the host.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn controller_prepare_writes_round_trip_to_the_host() {
+        use crate::session_events::{build_permission_request_event, ThreadingState};
+
+        let (_relay_dir, relay_ndb) = temp_ndb();
+        let relay = spawn_relay(relay_ndb.clone());
+        let url = relay.url();
+        let session_id = "controller-round-trip";
+        let perm_id = uuid::Uuid::new_v4();
+
+        // --- host: publish the backend-produced permission request -----------
+        let h_dir = TempDir::new().expect("tmp dir");
+        let mut host =
+            Engine::open(h_dir.path().to_str().expect("path"), TEST_SECKEY).expect("host engine");
+        let mut host_tx = host.transport_handle().expect("host transport");
+        host.connect(&mut host_tx, &url).expect("host connect");
+
+        let mut threading = ThreadingState::new();
+        let request = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({ "command": "ls" }),
+            session_id,
+            &mut threading,
+            &TEST_SECKEY,
+        )
+        .expect("request event");
+        publish_prepared(&mut host_tx, &request, &url);
+
+        // --- controller: connect and wait for the request to sync in ---------
+        let c_dir = TempDir::new().expect("tmp dir");
+        let mut controller = Engine::open(c_dir.path().to_str().expect("path"), TEST_SECKEY)
+            .expect("controller engine");
+        let mut ctrl_tx = controller.transport_handle().expect("controller transport");
+        controller
+            .connect(&mut ctrl_tx, &url)
+            .expect("controller connect");
+
+        let mut ctrl_watch = controller
+            .watch_session(session_id)
+            .expect("controller watch");
+        let saw_request = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let has_req = controller
+                    .session_messages(session_id)
+                    .iter()
+                    .any(|m| matches!(m, Message::PermissionRequest(req) if req.id == perm_id));
+                if has_req {
+                    return true;
+                }
+                if !ctrl_watch.changed().await {
+                    return false;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            saw_request,
+            "controller should sync the host's permission request"
+        );
+
+        // --- controller: prepare (build + local-ingest) then publish itself --
+        let response = controller
+            .prepare_permission_response(session_id, &perm_id.to_string(), true, Some("ok"), false)
+            .expect("prepare permission response");
+        publish_prepared(&mut ctrl_tx, &response, &url);
+
+        let message = controller
+            .prepare_message(session_id, "also add a test")
+            .expect("prepare message");
+        publish_prepared(&mut ctrl_tx, &message, &url);
+
+        // --- host: both the response and the follow-up message land ----------
+        let mut host_watch = host.watch_session(session_id).expect("host watch");
+        let got_both = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let response_landed = latest_permission_response_message(host.ndb(), session_id)
+                    .as_deref()
+                    == Some("ok");
+                let message_landed = host.session_messages(session_id).iter().any(
+                    |m| matches!(m, Message::User(user) if user.as_str() == "also add a test"),
+                );
+                if response_landed && message_landed {
+                    return true;
+                }
+                if !host_watch.changed().await {
+                    return false;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            got_both,
+            "host should receive the controller's prepared response and message"
+        );
         relay.shutdown();
     }
 
@@ -1574,6 +1723,29 @@ mod tests {
             )
             .await,
             "the prepared event should be ingested and queryable locally"
+        );
+    }
+
+    /// `prepare_message` builds a kind-1988 user event, ingests it locally so
+    /// local reads see it immediately, and returns it — no transport required.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepare_message_ingests_without_publish() {
+        let (_dir, ndb) = temp_ndb();
+        let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
+
+        let built = engine
+            .prepare_message("chat-session", "hello remote host")
+            .expect("prepare message");
+
+        assert!(
+            await_note(
+                engine.ndb(),
+                built.note_id,
+                AI_CONVERSATION_KIND as u64,
+                Duration::from_secs(5)
+            )
+            .await,
+            "the prepared user message should be ingested and queryable locally"
         );
     }
 
