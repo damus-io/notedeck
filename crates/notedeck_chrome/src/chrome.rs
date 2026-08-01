@@ -452,10 +452,9 @@ impl Chrome {
     }
 
     fn switch_to_columns(&mut self) {
-        for (i, app) in self.apps.iter().enumerate() {
-            if let NotedeckApp::Columns(_) = app {
-                self.active = i as i32;
-                bitset_set(&mut self.opened, i as u16);
+        for i in 0..self.apps.len() {
+            if let NotedeckApp::Columns(_) = self.apps[i] {
+                self.set_active(i as i32);
             }
         }
     }
@@ -472,20 +471,18 @@ impl Chrome {
 
     #[cfg(feature = "dave")]
     fn switch_to_dave(&mut self) {
-        for (i, app) in self.apps.iter().enumerate() {
-            if let NotedeckApp::Dave(_) = app {
-                self.active = i as i32;
-                bitset_set(&mut self.opened, i as u16);
+        for i in 0..self.apps.len() {
+            if let NotedeckApp::Dave(_) = self.apps[i] {
+                self.set_active(i as i32);
             }
         }
     }
 
     #[cfg(feature = "messages")]
     fn switch_to_messages(&mut self) {
-        for (i, app) in self.apps.iter().enumerate() {
-            if let NotedeckApp::Messages(_) = app {
-                self.active = i as i32;
-                bitset_set(&mut self.opened, i as u16);
+        for i in 0..self.apps.len() {
+            if let NotedeckApp::Messages(_) = self.apps[i] {
+                self.set_active(i as i32);
             }
         }
     }
@@ -502,10 +499,9 @@ impl Chrome {
 
     #[cfg(feature = "headway")]
     fn switch_to_headway(&mut self) {
-        for (i, app) in self.apps.iter().enumerate() {
-            if let NotedeckApp::Headway(_) = app {
-                self.active = i as i32;
-                bitset_set(&mut self.opened, i as u16);
+        for i in 0..self.apps.len() {
+            if let NotedeckApp::Headway(_) = self.apps[i] {
+                self.set_active(i as i32);
             }
         }
     }
@@ -1877,6 +1873,10 @@ fn topdown_sidebar(
         .auto_shrink([false, true])
         .max_height(apps_scroll_height)
         .show(ui, |ui| {
+            // `set_active` needs `&mut chrome`, which the icon loop already
+            // borrows mutably — record the click and apply it after the loop.
+            let mut clicked_ind: Option<i32> = None;
+
             for (i, app) in chrome.apps.iter_mut().enumerate() {
                 if chrome.active == i as i32 {
                     continue;
@@ -1952,12 +1952,15 @@ fn topdown_sidebar(
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                             if resp.clicked() {
-                                chrome.active = i as i32;
-                                bitset_set(&mut chrome.opened, i as u16);
+                                clicked_ind = Some(i as i32);
                                 chrome.nav.close();
                             }
                         })
                     });
+            }
+
+            if let Some(i) = clicked_ind {
+                chrome.set_active(i);
             }
         });
 
