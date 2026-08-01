@@ -3397,6 +3397,8 @@ pub fn card_chip_ui(
             })
         })
         .response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Render a single headway issue (kind 1621) from its *creation-time* snapshot:
