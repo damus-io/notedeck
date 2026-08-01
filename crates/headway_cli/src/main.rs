@@ -737,13 +737,6 @@ fn resolve_container(view: &BoardView, sel: &str) -> Result<Container> {
     }
 }
 
-fn all_cards(view: &BoardView) -> impl Iterator<Item = &CardView> {
-    view.columns
-        .iter()
-        .flat_map(|c| c.cards.iter())
-        .chain(view.archived.iter().map(|a| &a.card))
-}
-
 /// Resolve a `--reply-to` selector against the comments on `card`, accepting a
 /// full hex id, a unique hex prefix, or a comment word-id — the same forms
 /// [`resolve_card`] accepts, but scoped to one card's thread.
