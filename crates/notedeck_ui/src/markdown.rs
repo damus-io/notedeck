@@ -527,6 +527,21 @@ fn render_inlines(
 
             InlineElement::Styled { style, content } => {
                 let text = content.resolve(buffer);
+
+                // A styled run whose whole content is one reference is an
+                // emphasized ref (models love `**board#word-word-word**`); draw
+                // it as its chip, same whole-content rule as inline code. The
+                // emphasis is dropped — a chip has its own styling — but the ref
+                // resolves instead of rendering as bold/italic literal text.
+                if let Some(ctx) = ctx.as_deref_mut() {
+                    let trimmed = text.trim();
+                    if let Some(m) = whole_reference(trimmed, &ctx.registries.reference_parsers) {
+                        if draw_reference(&mut job, ui, ctx, m.parser, trimmed) {
+                            continue;
+                        }
+                    }
+                }
+
                 match style {
                     InlineStyle::Italic => {
                         job.append(text, 0.0, italic_fmt.clone());
