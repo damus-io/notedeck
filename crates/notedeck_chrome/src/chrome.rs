@@ -1426,13 +1426,17 @@ fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui)
 
     ui.spacing_mut().item_spacing.y = 0.0;
 
-    // egui_tabs keys its selection on `ui.id().with("tabs")` and prefers temp
-    // data over `.selected()`, so overwrite it each frame to stay in sync with
-    // app switches that happen elsewhere (e.g. the sidebar).
-    let tabs_id = ui.id().with("tabs");
-    ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
-
     let mut render_tabs = |ui: &mut egui::Ui| {
+        // egui_tabs keys its selection on `ui.id().with("tabs")` and prefers
+        // that temp value over `.selected()`, so overwrite it each frame to
+        // stay in sync with app switches that happen elsewhere (Ctrl+Tab, the
+        // sidebar, note actions). It must be keyed off the *same* ui we hand to
+        // `Tabs::show` — the traffic-light inset below wraps the strip in an
+        // extra `ui.horizontal`, and writing to the outer id instead would
+        // leave egui_tabs re-asserting the last-clicked tab every frame.
+        let tabs_id = ui.id().with("tabs");
+        ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
+
         egui_tabs::Tabs::new(n_tabs as i32)
             .selected(sel as i32)
             .hover_bg(egui_tabs::TabColor::none())
@@ -1470,13 +1474,19 @@ fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui)
 
     tab_strip_fade(ui);
 
-    // switch active app if a different tab was selected
-    let new_sel = tab_res.selected().unwrap_or(sel as i32) as usize;
-    if let Some(app_idx) = nth_opened(&chrome.opened, chrome.apps.len(), new_sel) {
-        if app_idx as i32 != chrome.active {
-            chrome.set_active(app_idx as i32);
-        }
-    }
+    // Switch on an actual click this frame rather than on the strip's current
+    // selection. Reading the selection back would make the tab strip fight
+    // every app switch that originates elsewhere (Ctrl+Tab, the sidebar, a
+    // note action opening Headway) instead of merely reflecting it.
+    let Some(clicked_tab) = tab_res.inner().iter().position(|r| r.response.clicked()) else {
+        return;
+    };
+
+    let Some(app_idx) = nth_opened(&chrome.opened, chrome.apps.len(), clicked_tab) else {
+        return;
+    };
+
+    chrome.set_active(app_idx as i32);
 }
 
 pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
