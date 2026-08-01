@@ -163,6 +163,21 @@ struct RefMatch {
     parser: &'static str,
 }
 
+/// The reference filling `text` in its entirety (ignoring surrounding
+/// whitespace), or `None` if `text` is more than a lone reference.
+///
+/// This is the inline-code (backtick) rule: models habitually wrap a reference
+/// in backticks (`` `board#word-word-word` ``), so a code span whose *whole*
+/// content is one reference is drawn as its chip rather than as literal code.
+/// Requiring the match to span the trimmed content keeps genuine code — a
+/// `#define`, a `board#word-word-word` buried in a longer snippet — rendering as
+/// code untouched.
+fn whole_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Option<RefMatch> {
+    let trimmed = text.trim();
+    let m = next_reference(trimmed, parsers)?;
+    (m.range.start == 0 && m.range.end == trimmed.len()).then_some(m)
+}
+
 /// The leftmost reference in `text` recognized by any parser in `parsers`, or
 /// `None` if `text` holds none.
 ///
@@ -480,7 +495,20 @@ fn render_inlines(
             }
 
             InlineElement::Code(span) => {
-                job.append(span.resolve(buffer), 0.0, code_fmt.clone());
+                // A code span whose whole content is one reference is a
+                // backtick-wrapped ref (models love `board#word-word-word`);
+                // draw it as its chip. Anything else stays literal code.
+                let text = span.resolve(buffer);
+                let mut drawn = false;
+                if let Some(ctx) = ctx.as_deref_mut() {
+                    let trimmed = text.trim();
+                    if let Some(m) = whole_reference(trimmed, &ctx.registries.reference_parsers) {
+                        drawn = draw_reference(&mut job, ui, ctx, m.parser, trimmed);
+                    }
+                }
+                if !drawn {
+                    job.append(text, 0.0, code_fmt.clone());
+                }
             }
 
             InlineElement::Styled { style, content } => {
@@ -1508,5 +1536,23 @@ mod tests {
 
         // Text with no recognized reference yields nothing.
         assert!(next_reference("just prose, no refs", &parsers).is_none());
+    }
+
+    #[test]
+    fn whole_reference_gates_on_the_full_code_span() {
+        let mut parsers = notedeck::ReferenceParserRegistry::default();
+        parsers.register(Box::new(StubParser));
+
+        // A code span that *is* the reference (bare, or padded with the
+        // whitespace `trim` drops) draws as a chip.
+        let m = whole_reference("@alice", &parsers).unwrap();
+        assert_eq!(m.parser, "stub");
+        assert!(whole_reference("  @alice  ", &parsers).is_some());
+
+        // A reference embedded in a longer code snippet stays literal code.
+        assert!(whole_reference("ping @alice now", &parsers).is_none());
+        assert!(whole_reference("@alice.handle", &parsers).is_none());
+        // Ordinary code with no reference is untouched.
+        assert!(whole_reference("let x = 1;", &parsers).is_none());
     }
 }
