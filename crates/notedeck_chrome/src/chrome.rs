@@ -587,14 +587,9 @@ impl Chrome {
             return;
         }
         let active = self.active.clamp(0, n as i32 - 1) as usize;
-        let step = if forward { 1 } else { n - 1 };
         // walk opened slots starting from the one after active, wrapping
-        for offset in 1..=n {
-            let idx = (active + step * offset) % n;
-            if self.is_opened(idx) {
-                self.set_active(idx as i32);
-                return;
-            }
+        if let Some(idx) = bitset_find(&self.opened, active as u16, forward) {
+            self.set_active(idx as i32);
         }
     }
 
@@ -2449,4 +2444,77 @@ fn keyboard_visibility(
     };
 
     soft_kb_anim
+}
+
+/// The next set flag after `flag`, walking forwards (or backwards when
+/// `forward` is false) and wrapping around the end of the bitset. `flag` itself
+/// is only returned when it is the sole set flag, since the walk starts one step
+/// away and comes all the way back. Returns `None` when nothing is set.
+fn bitset_find<const N: usize>(set: &[u16; N], flag: u16, forward: bool) -> Option<u16> {
+    let flag_count = (N * 16) as u32;
+    let start = u32::from(flag);
+
+    assert!(start < flag_count, "flag is outside the bitset");
+
+    for offset in 1..=flag_count {
+        let candidate = if forward {
+            (start + offset) % flag_count
+        } else {
+            (start + flag_count - offset) % flag_count
+        } as u16;
+
+        if bitset_get(set, candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tab_cycle_tests {
+    use super::{bitset_find, MAX_APPS};
+    use oot_bitset::bitset_set;
+
+    const FORWARD: bool = true;
+    const BACK: bool = false;
+
+    fn bitset(flags: &[u16]) -> [u16; MAX_APPS / 16] {
+        let mut set = [0u16; MAX_APPS / 16];
+        for &f in flags {
+            bitset_set(&mut set, f);
+        }
+        set
+    }
+
+    #[test]
+    fn cycles_forward_and_wraps() {
+        let set = bitset(&[0, 1, 6]);
+        assert_eq!(bitset_find(&set, 0, FORWARD), Some(1));
+        assert_eq!(bitset_find(&set, 1, FORWARD), Some(6));
+        assert_eq!(bitset_find(&set, 6, FORWARD), Some(0));
+    }
+
+    #[test]
+    fn cycles_backward_and_wraps() {
+        let set = bitset(&[0, 1, 6]);
+        assert_eq!(bitset_find(&set, 6, BACK), Some(1));
+        assert_eq!(bitset_find(&set, 1, BACK), Some(0));
+        assert_eq!(bitset_find(&set, 0, BACK), Some(6));
+    }
+
+    #[test]
+    fn cycling_from_an_unset_flag_still_finds_neighbours() {
+        // the active app is always opened, but a stale `active` must not
+        // strand the cycle
+        let set = bitset(&[0, 1, 6]);
+        assert_eq!(bitset_find(&set, 3, FORWARD), Some(6));
+        assert_eq!(bitset_find(&set, 3, BACK), Some(1));
+    }
+
+    #[test]
+    fn lone_flag_cycles_to_itself_and_empty_finds_nothing() {
+        assert_eq!(bitset_find(&bitset(&[2]), 2, FORWARD), Some(2));
+        assert_eq!(bitset_find(&bitset(&[]), 0, FORWARD), None);
+    }
 }
