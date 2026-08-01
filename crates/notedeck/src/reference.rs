@@ -166,6 +166,7 @@ impl ReferenceParser for NostrRefParser {
         "nostr"
     }
 
+    #[profiling::function]
     fn find(&self, text: &str) -> Option<Range<usize>> {
         let mut from = 0;
         loop {
@@ -185,6 +186,7 @@ impl ReferenceParser for NostrRefParser {
         }
     }
 
+    #[profiling::function]
     fn resolve(&self, matched: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
         let bech = matched.strip_prefix(Self::PREFIX)?;
         let note = crate::resolve_ref(ctx.ndb, ctx.txn, bech)?;

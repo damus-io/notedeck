@@ -602,6 +602,7 @@ impl BoardCache {
     /// [`poll`](Self::poll) and [`reducer`](Self::reducer): the app's per-frame
     /// pump and a chip's lazy fold-on-render both flow through it, so a board is
     /// seeded once and thereafter only ever folds deltas.
+    #[profiling::function]
     fn advance(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> PollResponse {
         let entry = self.authors.entry(*author).or_default();
         if entry.sub.is_none() {
@@ -650,6 +651,7 @@ impl BoardCache {
     /// Advance `author`'s reducer and return it, seeding on first touch. `None`
     /// only if the initial fold failed. Used by the inline widgets and the
     /// reference parser to resolve a card/board out of the folded state.
+    #[profiling::function]
     fn reducer(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<&BoardReducer> {
         self.advance(ndb, txn, author);
         self.authors.get(author).and_then(|a| a.reducer.as_ref())
@@ -659,6 +661,7 @@ impl BoardCache {
     /// reducer on first touch. `None` before the first fold or when no such board
     /// exists. The foreground board, a cross-board move target and an inline board
     /// widget all resolve through this.
+    #[profiling::function]
     fn board(
         &mut self,
         ndb: &Ndb,
@@ -674,6 +677,7 @@ impl BoardCache {
     /// active board and the switcher list from this single fold rather than
     /// finalizing per read (finalize walks the reducer's placements, so it isn't
     /// free — but it's O(current state), not a re-walk of the event history).
+    #[profiling::function]
     fn all_boards(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<BoardView> {
         self.reducer(ndb, txn, author)
             .map(|r| r.finalize())
@@ -743,6 +747,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         note_context: &mut notedeck::NoteContext,
         req: &notedeck::KindRenderRequest,
     ) -> notedeck::KindRenderResponse {
+        profiling::scope!("HeadwayIssueRenderer::render");
         let note = req.note;
         let theme = ColorTheme::current(ui.ctx());
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
@@ -812,6 +817,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         note_context: &mut notedeck::NoteContext,
         req: &notedeck::KindRenderRequest,
     ) -> notedeck::KindRenderResponse {
+        profiling::scope!("HeadwayBoardRenderer::render");
         let note = req.note;
         let theme = ColorTheme::current(ui.ctx());
         let Some(event::HeadwayEvent::Board(board)) = event::parse(note) else {
@@ -901,6 +907,7 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
         "headway"
     }
 
+    #[profiling::function]
     fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
         let bytes = text.as_bytes();
         let mut search = 0;
@@ -926,6 +933,7 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
         None
     }
 
+    #[profiling::function]
     fn resolve(
         &self,
         matched: &str,

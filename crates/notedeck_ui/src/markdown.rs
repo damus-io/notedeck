@@ -46,11 +46,15 @@ impl MdTheme {
 ///
 /// Convenience entry point for callers that have a finished string (e.g. a
 /// notebook text node) rather than a streaming buffer.
+#[profiling::function]
 pub fn render_markdown(text: &str, ui: &mut Ui) {
-    let mut parser = StreamParser::new();
-    parser.push(text);
-    parser.finalize();
-    let (elements, source) = parser.into_parts();
+    let (elements, source) = {
+        profiling::scope!("StreamParser parse");
+        let mut parser = StreamParser::new();
+        parser.push(text);
+        parser.finalize();
+        parser.into_parts()
+    };
     render_parsed_markdown(&elements, None, &source, None, ui);
 }
 
@@ -117,11 +121,15 @@ struct CheckboxEdits {
 /// [`KindRenderer`](notedeck::KindRenderer) for its kind. The built-in `nostr:`
 /// parser keeps bech32 references rendering exactly as before; the common
 /// reference-free body allocates nothing beyond the parse.
+#[profiling::function]
 pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) {
-    let mut parser = StreamParser::new();
-    parser.push(text);
-    parser.finalize();
-    let (elements, source) = parser.into_parts();
+    let (elements, source) = {
+        profiling::scope!("StreamParser parse");
+        let mut parser = StreamParser::new();
+        parser.push(text);
+        parser.finalize();
+        parser.into_parts()
+    };
     render_parsed_markdown(&elements, None, &source, Some(ctx), ui);
 }
 
@@ -186,6 +194,7 @@ fn whole_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> O
 /// match and keeps the earliest (longest on a tie) — the one shared primitive
 /// both the read-only and editable scans walk with. Allocation-free: `find`
 /// returns byte ranges into `text` and this holds no per-frame `Vec`.
+#[profiling::function]
 fn next_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Option<RefMatch> {
     let mut best: Option<RefMatch> = None;
     for parser in parsers.iter() {
@@ -218,6 +227,7 @@ fn next_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Op
 /// *without touching `job`* when the reference can't be resolved or its kind has
 /// no renderer — so the caller renders `matched` as ordinary text, keeping a
 /// loose `find` false-positive invisible rather than a broken chip.
+#[profiling::function]
 fn draw_reference(
     job: &mut LayoutJob,
     ui: &mut Ui,
@@ -274,6 +284,7 @@ fn draw_reference(
 /// [`render_markdown_with_refs`], and the one Dave feeds its streaming
 /// [`StreamParser`] output. Pass `Some(ctx)` to resolve inline `scheme:token`
 /// references (see [`render_inlines`]); `None` renders references as plain text.
+#[profiling::function]
 pub fn render_parsed_markdown(
     elements: &[MdElement],
     partial: Option<&Partial>,
@@ -286,6 +297,7 @@ pub fn render_parsed_markdown(
 
 /// Shared rendering core. `edits` is `None` for read-only renders and `Some`
 /// for an editable pass (interactive checkboxes); see [`render_markdown_editable`].
+#[profiling::function]
 fn render_md_elements(
     elements: &[MdElement],
     partial: Option<&Partial>,
@@ -413,6 +425,7 @@ fn flush_job(job: &mut LayoutJob, ui: &mut Ui) {
 /// through. A match that doesn't resolve is appended back as ordinary text, so a
 /// loose `find` false-positive is invisible. Walks `&str` subslices with no
 /// per-frame allocation for the reference-free case.
+#[profiling::function]
 fn append_text_with_refs(
     job: &mut LayoutJob,
     text: &str,
@@ -439,6 +452,7 @@ fn append_text_with_refs(
 /// match is drawn inline as its kind widget ([`draw_reference`]) rather than plain
 /// text, so a reference flows *within* the paragraph. `None` renders every span
 /// as plain text (no registry to resolve against).
+#[profiling::function]
 fn render_inlines(
     inlines: &[InlineElement],
     theme: &MdTheme,

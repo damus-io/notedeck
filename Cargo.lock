@@ -3578,6 +3578,7 @@ dependencies = [
  "bip39",
  "enostr",
  "nostrdb",
+ "profiling",
  "serde_json",
  "tempfile",
 ]
@@ -5526,6 +5527,7 @@ dependencies = [
  "notify-rust",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "profiling",
  "rand 0.9.2",
  "rfd",
  "serde",
@@ -5552,6 +5554,7 @@ dependencies = [
  "notedeck",
  "notedeck_testing",
  "notedeck_ui",
+ "profiling",
  "serde",
  "serde_json",
  "tempfile",

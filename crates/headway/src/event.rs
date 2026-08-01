@@ -1929,6 +1929,7 @@ impl BoardReducer {
     /// Resolve the accumulated events into the boards they describe. Takes
     /// `&self` so a cached reducer can be re-finalized after a delta without
     /// being consumed.
+    #[profiling::function]
     pub fn finalize(&self) -> Vec<BoardView> {
         let mut views: Vec<BoardView> = Vec::new();
 
@@ -2100,6 +2101,7 @@ pub fn headway_filter(author: &Pubkey) -> Filter {
 ///
 /// The caller can keep the returned reducer and feed later arrivals into it with
 /// [`reduce_delta`] rather than re-folding the whole history.
+#[profiling::function]
 pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<BoardReducer> {
     let filters = [headway_filter(author)];
     ndb.fold(txn, &filters, BoardReducer::default(), |mut acc, note| {
@@ -2116,6 +2118,7 @@ pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Board
 /// delta to an up-to-date reducer yields the same state as a full re-fold, so
 /// the app can subscribe-then-poll instead of walking the history every frame.
 /// Notes that aren't recognised headway events are skipped.
+#[profiling::function]
 pub fn reduce_delta(reducer: &mut BoardReducer, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) {
     for key in keys {
         if let Ok(note) = ndb.get_note_by_key(txn, *key)
@@ -2128,6 +2131,7 @@ pub fn reduce_delta(reducer: &mut BoardReducer, ndb: &Ndb, txn: &Transaction, ke
 
 /// Pick the board with `board_id` authored by `author` out of a reducer's
 /// resolved boards, if it exists.
+#[profiling::function]
 pub fn pick_board(reducer: &BoardReducer, author: &Pubkey, board_id: &str) -> Option<BoardView> {
     reducer
         .finalize()
@@ -2140,6 +2144,7 @@ pub fn pick_board(reducer: &BoardReducer, author: &Pubkey, board_id: &str) -> Op
 /// Searches the live columns and the archived set. `None` if the board or the
 /// card within it is absent. Unlike parsing the kind-1621 note directly — which
 /// only yields its creation-time snapshot — this reflects later edits.
+#[profiling::function]
 pub fn pick_card(
     reducer: &BoardReducer,
     author: &Pubkey,
@@ -2181,6 +2186,7 @@ pub struct ResolvedCard {
 /// Like [`pick_card`], but also resolves the card's live [`ColumnPos`] so an
 /// inline reference can show a status indicator. Returns `None` when the board
 /// or card is absent.
+#[profiling::function]
 pub fn pick_card_with_column(
     reducer: &BoardReducer,
     author: &Pubkey,
@@ -2209,6 +2215,7 @@ pub fn pick_card_with_column(
 /// Fold `author`'s headway events out of `ndb` and reduce them into the board
 /// with the given `board_id`, if it exists. A one-shot [`fold_board`] +
 /// [`pick_board`] for callers that don't keep the reducer around.
+#[profiling::function]
 pub fn load_board(
     ndb: &Ndb,
     txn: &Transaction,
@@ -2235,6 +2242,7 @@ pub fn all_cards(view: &BoardView) -> impl Iterator<Item = &CardView> {
 ///
 /// Shared by the CLI and the inline `headway` [reference
 /// parser](../../notedeck_headway) so both agree on what a word id resolves to.
+#[profiling::function]
 pub fn resolve_card_by_wordid(view: &BoardView, words: &str) -> Option<NoteId> {
     all_cards(view)
         .find(|c| crate::wordid::encode(c.id.bytes()) == words)

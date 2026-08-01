@@ -1463,6 +1463,7 @@ impl<'a> DaveUi<'a> {
         DaveResponse::none()
     }
 
+    #[profiling::function]
     fn user_chat(
         &self,
         msg: &crate::messages::UserMessage,
@@ -1506,6 +1507,7 @@ impl<'a> DaveUi<'a> {
         });
     }
 
+    #[profiling::function]
     fn assistant_chat(&self, msg: &AssistantMessage, ctx: &mut AppContext, ui: &mut egui::Ui) {
         let elements = msg.parsed_elements();
         let partial = msg.partial();
