@@ -2129,14 +2129,28 @@ pub fn reduce_delta(reducer: &mut BoardReducer, ndb: &Ndb, txn: &Transaction, ke
     }
 }
 
+/// Find the board with `board_id` authored by `author` in an *already-finalized*
+/// board set, without re-finalizing. The steady-state inline path finalizes a
+/// reducer once per frame (memoized) and then resolves every reference against
+/// that one `&[BoardView]` through this, rather than re-walking the reducer per
+/// reference (see [`pick_board`], which finalizes on each call).
+pub fn find_board<'a>(
+    boards: &'a [BoardView],
+    author: &Pubkey,
+    board_id: &str,
+) -> Option<&'a BoardView> {
+    boards
+        .iter()
+        .find(|v| v.id == board_id && &v.author == author.bytes())
+}
+
 /// Pick the board with `board_id` authored by `author` out of a reducer's
-/// resolved boards, if it exists.
+/// resolved boards, if it exists. Finalizes the reducer; a caller resolving many
+/// references against one reducer per frame should finalize once and reuse the
+/// result via [`find_board`] instead.
 #[profiling::function]
 pub fn pick_board(reducer: &BoardReducer, author: &Pubkey, board_id: &str) -> Option<BoardView> {
-    reducer
-        .finalize()
-        .into_iter()
-        .find(|v| v.id == board_id && &v.author == author.bytes())
+    find_board(&reducer.finalize(), author, board_id).cloned()
 }
 
 /// Pick a single card's *resolved* [`CardView`] (latest subject, labels, cover
@@ -2151,14 +2165,21 @@ pub fn pick_card(
     board_id: &str,
     issue_id: &[u8; 32],
 ) -> Option<CardView> {
+    card_in_board(&pick_board(reducer, author, board_id)?, issue_id)
+}
+
+/// Pick a card's resolved [`CardView`] out of an *already-finalized* board,
+/// searching its live columns then its archived set. The re-finalize-free core of
+/// [`pick_card`]: the inline render path finalizes once per frame and resolves
+/// each referenced card through this.
+pub fn card_in_board(view: &BoardView, issue_id: &[u8; 32]) -> Option<CardView> {
     let want = NoteId::new(*issue_id);
-    let board = pick_board(reducer, author, board_id)?;
-    board
-        .columns
-        .into_iter()
-        .flat_map(|col| col.cards)
-        .chain(board.archived.into_iter().map(|a| a.card))
+    view.columns
+        .iter()
+        .flat_map(|col| col.cards.iter())
+        .chain(view.archived.iter().map(|a| &a.card))
         .find(|card| card.id == want)
+        .cloned()
 }
 
 /// A card's position among a board's live columns: which column it sits in and
@@ -2193,10 +2214,17 @@ pub fn pick_card_with_column(
     board_id: &str,
     issue_id: &[u8; 32],
 ) -> Option<ResolvedCard> {
+    card_with_column_in_board(&pick_board(reducer, author, board_id)?, issue_id)
+}
+
+/// Resolve a card *and* its live [`ColumnPos`] out of an *already-finalized*
+/// board. The re-finalize-free core of [`pick_card_with_column`]: the inline chip
+/// render path finalizes once per frame and resolves each referenced card through
+/// this.
+pub fn card_with_column_in_board(view: &BoardView, issue_id: &[u8; 32]) -> Option<ResolvedCard> {
     let want = NoteId::new(*issue_id);
-    let board = pick_board(reducer, author, board_id)?;
-    let count = board.columns.len();
-    for (index, col) in board.columns.iter().enumerate() {
+    let count = view.columns.len();
+    for (index, col) in view.columns.iter().enumerate() {
         if let Some(card) = col.cards.iter().find(|c| c.id == want) {
             return Some(ResolvedCard {
                 card: card.clone(),
@@ -2204,11 +2232,11 @@ pub fn pick_card_with_column(
             });
         }
     }
-    board
-        .archived
-        .into_iter()
-        .map(|a| a.card)
+    view.archived
+        .iter()
+        .map(|a| &a.card)
         .find(|card| card.id == want)
+        .cloned()
         .map(|card| ResolvedCard { card, column: None })
 }
 

@@ -552,6 +552,14 @@ fn save_board_pref(path: &DataPath, author: &Pubkey, board_id: &str) {
 struct CachedAuthor {
     reducer: Option<BoardReducer>,
     sub: Option<Subscription>,
+    /// Memoized [`BoardReducer::finalize`] of `reducer`, rebuilt lazily on the
+    /// next read after a fold changed the reducer (see [`BoardCache::advance`]).
+    /// `finalize` walks every placement into an owned `Vec<BoardView>` (cloning
+    /// each card); without this every inline reference re-walked it *twice* a
+    /// frame — once to resolve the ref, once to render the chip — so N on-screen
+    /// references cost 2·N finalizes per frame. Reads borrow this and extract just
+    /// the owned data they need ([`BoardCache::with_boards`]).
+    finalized: Option<Vec<BoardView>>,
 }
 
 /// The single board-data engine for the Headway app: one subscription + folded
@@ -581,6 +589,10 @@ struct BoardCache {
     /// rather than re-walking the whole log.
     #[cfg(test)]
     full_reloads: u32,
+    /// Test-only count of [`BoardReducer::finalize`] calls, to assert repeated
+    /// reads within a frame reuse the memoized boards rather than re-finalizing.
+    #[cfg(test)]
+    finalizes: u32,
 }
 
 /// The outcome of advancing an author's reducer one step (see
@@ -632,6 +644,11 @@ impl BoardCache {
                 }
             }
         };
+        // A fold happened (seed or delta), so the memoized finalize is stale; drop
+        // it and let the next read rebuild it once (see `with_boards`).
+        if changed {
+            entry.finalized = None;
+        }
         #[cfg(test)]
         if changed && fresh.is_empty() {
             // A full seed fold, as opposed to an incremental delta (non-empty
@@ -648,13 +665,34 @@ impl BoardCache {
         self.advance(ndb, txn, author)
     }
 
-    /// Advance `author`'s reducer and return it, seeding on first touch. `None`
-    /// only if the initial fold failed. Used by the inline widgets and the
-    /// reference parser to resolve a card/board out of the folded state.
+    /// Advance `author`'s reducer, (re)finalize it *at most once per fold*, and run
+    /// `read` against the memoized [`BoardView`]s — the single place a finalize is
+    /// spent. Returns `None` only when the reducer hasn't seeded yet.
+    ///
+    /// Every per-frame inline read (resolve a ref, render a chip) flows through
+    /// here, so on a steady-state frame the first read finalizes and the rest reuse
+    /// the cached [`finalized`](CachedAuthor::finalized) vec. `read` extracts owned
+    /// data from the borrowed slice so the caller's cache borrow can drop before it
+    /// draws.
     #[profiling::function]
-    fn reducer(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<&BoardReducer> {
+    fn with_boards<R>(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        author: &Pubkey,
+        read: impl FnOnce(&[BoardView]) -> R,
+    ) -> Option<R> {
         self.advance(ndb, txn, author);
-        self.authors.get(author).and_then(|a| a.reducer.as_ref())
+        let entry = self.authors.get_mut(author)?;
+        if entry.finalized.is_none() {
+            entry.finalized = Some(entry.reducer.as_ref()?.finalize());
+            #[cfg(test)]
+            {
+                self.finalizes += 1;
+            }
+        }
+        let entry = self.authors.get(author)?;
+        Some(read(entry.finalized.as_ref()?))
     }
 
     /// Fold and pick a single board (`board_id`) authored by `author`, seeding the
@@ -669,18 +707,21 @@ impl BoardCache {
         author: &Pubkey,
         board_id: &str,
     ) -> Option<BoardView> {
-        event::pick_board(self.reducer(ndb, txn, author)?, author, board_id)
+        self.with_boards(ndb, txn, author, |boards| {
+            event::find_board(boards, author, board_id).cloned()
+        })
+        .flatten()
     }
 
-    /// Finalize `author`'s reducer once and return every board it currently
-    /// holds, seeding on first touch. The foreground render derives *both* the
-    /// active board and the switcher list from this single fold rather than
-    /// finalizing per read (finalize walks the reducer's placements, so it isn't
-    /// free — but it's O(current state), not a re-walk of the event history).
+    /// Every board `author` currently holds, seeding on first touch. The foreground
+    /// render derives *both* the active board and the switcher list from this
+    /// single fold (memoized, see [`with_boards`](Self::with_boards)) rather than
+    /// finalizing per read. Clones the memoized vec once (the foreground reads it
+    /// once per frame); inline widgets take [`board`](Self::board) instead, which
+    /// extracts a single board without cloning the whole set.
     #[profiling::function]
     fn all_boards(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<BoardView> {
-        self.reducer(ndb, txn, author)
-            .map(|r| r.finalize())
+        self.with_boards(ndb, txn, author, |boards| boards.to_vec())
             .unwrap_or_default()
     }
 }
@@ -763,10 +804,11 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
                 let resolved = self
                     .cache
                     .borrow_mut()
-                    .reducer(note_context.ndb, req.txn, &author)
-                    .and_then(|reducer| {
-                        event::pick_card_with_column(reducer, &author, &issue.board_id, &issue.id)
-                    });
+                    .with_boards(note_context.ndb, req.txn, &author, |boards| {
+                        event::find_board(boards, &author, &issue.board_id)
+                            .and_then(|b| event::card_with_column_in_board(b, &issue.id))
+                    })
+                    .flatten();
                 match resolved {
                     Some(resolved) => {
                         card_chip_ui(ui, &theme, &resolved.card.title, resolved.column)
@@ -779,10 +821,11 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
                 let card = self
                     .cache
                     .borrow_mut()
-                    .reducer(note_context.ndb, req.txn, &author)
-                    .and_then(|reducer| {
-                        event::pick_card(reducer, &author, &issue.board_id, &issue.id)
-                    });
+                    .with_boards(note_context.ndb, req.txn, &author, |boards| {
+                        event::find_board(boards, &author, &issue.board_id)
+                            .and_then(|b| event::card_in_board(b, &issue.id))
+                    })
+                    .flatten();
                 match card {
                     Some(card) => card_inline_ui(ui, &theme, &card),
                     // Board not local to fold: show the creation-time snapshot.
@@ -827,8 +870,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         let view = self
             .cache
             .borrow_mut()
-            .reducer(note_context.ndb, req.txn, &author)
-            .and_then(|reducer| event::pick_board(reducer, &author, &board.id));
+            .board(note_context.ndb, req.txn, &author, &board.id);
         let response = match view {
             Some(view) => board_inline_ui(ui, &theme, &view),
             None => ui.weak("headway board not found"),
@@ -944,13 +986,18 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
         let author = ctx.selected_account?;
         let board_id = slug.to_lowercase();
 
-        // Fold (cached) the board, then re-encode its cards to match the word id.
-        // `.and_then` yields the owned `NoteId` so the cache borrow drops here.
+        // Fold (memoized) the board, then re-encode its cards to match the word id.
+        // The closure yields the owned `NoteId` so the cache borrow drops here, and
+        // resolving through the shared finalize means a chip drawn right after
+        // reuses this frame's fold instead of walking the reducer again.
         let note_id = self
             .cache
             .borrow_mut()
-            .board(ctx.ndb, ctx.txn, &author, &board_id)
-            .and_then(|board| event::resolve_card_by_wordid(&board, words))?;
+            .with_boards(ctx.ndb, ctx.txn, &author, |boards| {
+                event::find_board(boards, &author, &board_id)
+                    .and_then(|board| event::resolve_card_by_wordid(board, words))
+            })
+            .flatten()?;
         Some(notedeck::ResolvedRef::note(note_id))
     }
 }
@@ -1293,9 +1340,7 @@ mod tests {
         // reducer up to date and fold out the board.
         let fold = |cache: &mut BoardCache, ndb: &Ndb| -> Option<BoardView> {
             let txn = Transaction::new(ndb).unwrap();
-            cache
-                .reducer(ndb, &txn, &kp.pubkey)
-                .and_then(|r| event::pick_board(r, &kp.pubkey, store::BOARD_ID))
+            cache.board(ndb, &txn, &kp.pubkey, store::BOARD_ID)
         };
 
         // Subscribe (seeding an empty reducer) before the board exists, so the
@@ -1318,6 +1363,74 @@ mod tests {
         assert_eq!(
             cache.full_reloads, 1,
             "board cache re-walked the history instead of folding deltas"
+        );
+    }
+
+    /// A frame with several inline references resolves and renders many cards, but
+    /// [`BoardCache`] must [`finalize`](event::BoardReducer::finalize) the reducer
+    /// only *once* per frame — the first read builds the boards, every later read
+    /// reuses them. Only a fresh fold (a new note) invalidates the memo.
+    #[tokio::test]
+    async fn board_cache_finalizes_once_per_fold() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+        let mut cache = BoardCache::default();
+
+        // A read subscription of our own to await the writer thread deterministically
+        // (the cache's own subscription is internal). Subscribe before seeding so
+        // every seeded event is reported.
+        let sub = ndb.subscribe(&[event::headway_filter(&kp.pubkey)]).unwrap();
+        // Prime the cache's subscription too, then seed.
+        let txn = Transaction::new(&ndb).unwrap();
+        cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
+        drop(txn);
+        seed_demo(&ndb, &kp);
+
+        // Fold in the seed as it arrives — awaiting notes rather than sleeping —
+        // until the whole board (7 cards) has materialised.
+        while {
+            let txn = Transaction::new(&ndb).unwrap();
+            let ready = cache
+                .board(&ndb, &txn, &kp.pubkey, store::BOARD_ID)
+                .is_some_and(|v| total_cards(&v) == 7);
+            drop(txn);
+            !ready
+        } {
+            ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        // A steady frame with no new notes: many reads (what N inline references
+        // cost — resolve then render each) reuse the memo built while materialising,
+        // finalizing zero more times.
+        let steady = cache.finalizes;
+        let txn = Transaction::new(&ndb).unwrap();
+        for _ in 0..20 {
+            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
+            cache.all_boards(&ndb, &txn, &kp.pubkey);
+        }
+        drop(txn);
+        assert_eq!(
+            cache.finalizes - steady,
+            0,
+            "reads with no intervening fold re-finalized instead of reusing the memo"
+        );
+
+        // A fold invalidates the memo (see `advance`); the next frame's many reads
+        // then share *exactly one* finalize. Simulate the invalidation a freshly
+        // ingested note performs, then read many times.
+        cache.authors.get_mut(&kp.pubkey).unwrap().finalized = None;
+        let after_fold = cache.finalizes;
+        let txn = Transaction::new(&ndb).unwrap();
+        for _ in 0..20 {
+            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
+            cache.all_boards(&ndb, &txn, &kp.pubkey);
+        }
+        drop(txn);
+        assert_eq!(
+            cache.finalizes - after_fold,
+            1,
+            "reads after a fold didn't share a single finalize"
         );
     }
 

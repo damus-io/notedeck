@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrivateSync — host-owned cross-device sync</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  :root {
+    --bg: #fafaf9;
+    --panel: #ffffff;
+    --panel-2: #f4f4f2;
+    --ink: #1c1c1a;
+    --muted: #6b6b66;
+    --line: #e2e1dd;
+    --accent: #6d4aff;
+    --accent-soft: #efeaff;
+    --good: #1f9d55;
+    --good-soft: #e3f5ea;
+    --bad: #d0432f;
+    --bad-soft: #fbe7e3;
+    --warn: #b7791f;
+    --warn-soft: #fbf1dc;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614;
+      --panel: #1f1f1c;
+      --panel-2: #262622;
+      --ink: #ececea;
+      --muted: #9c9c95;
+      --line: #34342f;
+      --accent: #a78bff;
+      --accent-soft: #2a2440;
+      --good: #58c98a;
+      --good-soft: #17301f;
+      --bad: #f08b78;
+      --bad-soft: #331b16;
+      --warn: #e0b264;
+      --warn-soft: #2f2611;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161614; --panel: #1f1f1c; --panel-2: #262622; --ink: #ececea;
+    --muted: #9c9c95; --line: #34342f; --accent: #a78bff; --accent-soft: #2a2440;
+    --good: #58c98a; --good-soft: #17301f; --bad: #f08b78; --bad-soft: #331b16;
+    --warn: #e0b264; --warn-soft: #2f2611;
+  }
+  :root[data-theme="light"] {
+    --bg: #fafaf9; --panel: #ffffff; --panel-2: #f4f4f2; --ink: #1c1c1a;
+    --muted: #6b6b66; --line: #e2e1dd; --accent: #6d4aff; --accent-soft: #efeaff;
+    --good: #1f9d55; --good-soft: #e3f5ea; --bad: #d0432f; --bad-soft: #fbe7e3;
+    --warn: #b7791f; --warn-soft: #fbf1dc;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  header.hero { margin-bottom: 40px; }
+  .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em;
+    color: var(--accent); text-transform: none; margin-bottom: 10px;
+  }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.02em; }
+  .lede { font-size: 18px; color: var(--muted); max-width: 70ch; margin: 0; }
+
+  h2 {
+    font-size: 22px; margin: 52px 0 16px; letter-spacing: -0.01em;
+    padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 16px; margin: 26px 0 10px; }
+  p { margin: 0 0 14px; }
+  code {
+    font-family: var(--mono); font-size: 0.86em;
+    background: var(--panel-2); padding: 1px 5px; border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px 22px; margin: 16px 0;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .tag {
+    display: inline-block; font-family: var(--mono); font-size: 11px;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--muted); margin-right: 6px;
+  }
+  .tag.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+  .tag.good { background: var(--good-soft); color: var(--good); border-color: transparent; }
+  .tag.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+  .tag.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+  figure { margin: 20px 0; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; text-align: center; }
+  .diagram-scroll { overflow-x: auto; }
+  svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  svg text { font-family: var(--sans); fill: var(--ink); }
+  svg .lbl { font-size: 13px; }
+  svg .sub { font-size: 11px; fill: var(--muted); }
+  svg .mono { font-family: var(--mono); font-size: 11px; }
+
+  ul.clean { margin: 6px 0 14px; padding-left: 20px; }
+  ul.clean li { margin-bottom: 7px; }
+
+  .cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 720px) { .cols3 { grid-template-columns: 1fr; } }
+  .minihead { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); font-weight: 600; }
+  td code { font-size: 0.82em; }
+
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 14px 18px; border-radius: 0 10px 10px 0; margin: 18px 0;
+  }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .callout .t { font-weight: 600; margin-bottom: 4px; }
+
+  ol.steps { counter-reset: s; list-style: none; padding-left: 0; margin: 12px 0; }
+  ol.steps li {
+    position: relative; padding: 12px 0 12px 46px; border-bottom: 1px solid var(--line);
+  }
+  ol.steps li:last-child { border-bottom: none; }
+  ol.steps li::before {
+    counter-increment: s; content: counter(s);
+    position: absolute; left: 0; top: 12px;
+    width: 28px; height: 28px; border-radius: 8px;
+    background: var(--accent); color: #fff; font-family: var(--mono);
+    font-size: 13px; display: grid; place-items: center; font-weight: 600;
+  }
+  .foot { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .foot code { font-size: 0.85em; }
+  .pathref { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="kicker">notedeck#buffalo-change-cook · sync, tools</div>
+    <h1>PrivateSync: one host-owned service for cross-device sync</h1>
+    <p class="lede">Today each private-data app (headway, notebook) re-implements cross-device relay sync inside its own frame loop. That duplicates ~90% boilerplate and leaves a correctness hole. This is what folding it into one host-owned service looks like.</p>
+  </header>
+
+  <h2>The two problems</h2>
+  <div class="grid2">
+    <div class="card">
+      <span class="tag bad">correctness</span>
+      <h3 style="margin-top:12px">The foreground gap</h3>
+      <p>Sync is driven from each app's <code>update()</code>. Chrome only calls <code>update()</code> for <em>opened</em> apps (<code>chrome.rs</code> gated on <code>bitset_get(&self.opened, i)</code>).</p>
+      <p>So a <code>headway</code>/<code>notebook</code> <strong>CLI edit</strong> that lands in the embedded relay while its app was never opened this session syncs to the local board — but is <strong>never fanned out</strong> to the account's private relays. The per-app fix moved sync into <code>update()</code>, but that's still opened-gated: the caveat is structural, not incidental.</p>
+    </div>
+    <div class="card">
+      <span class="tag warn">maintainability</span>
+      <h3 style="margin-top:12px">Triplicated boilerplate</h3>
+      <p><code>BoardSync</code> / <code>CanvasSync</code>, their <code>PollResponse</code>, the poll state machine, and the whole <code>update()</code> fan-out sequence are ~90% identical between headway and notebook.</p>
+      <p>Every new private-data app copies it again and re-risks the render-vs-update detail. The app-specific surface is actually <em>tiny</em> — see below.</p>
+    </div>
+  </div>
+
+  <h2>Where sync lives — now vs. proposed</h2>
+  <figure>
+    <div class="diagram-scroll">
+    <svg viewBox="0 0 900 430" role="img" aria-label="Comparison of per-app sync versus host-owned PrivateSync">
+      <!-- BEFORE -->
+      <text x="20" y="26" class="lbl" font-weight="700">BEFORE — per-app, in update()</text>
+      <text x="20" y="44" class="sub">only runs for OPENED apps</text>
+
+      <!-- chrome loop box -->
+      <rect x="20" y="58" width="410" height="330" rx="10" fill="var(--panel)" stroke="var(--line)"/>
+      <text x="36" y="80" class="mono" fill="var(--muted)">chrome.update() — opened apps only</text>
+
+      <!-- headway app -->
+      <rect x="40" y="96" width="170" height="150" rx="8" fill="var(--panel-2)" stroke="var(--line)"/>
+      <text x="52" y="116" class="lbl" font-weight="600">headway.update()</text>
+      <text x="52" y="138" class="sub">BoardSync.poll()</text>
+      <text x="52" y="156" class="sub">PrivateRelaySync</text>
+      <text x="52" y="174" class="sub">fan_out_unseen_notes()</text>
+      <text x="52" y="192" class="sub">auto-seed</text>
+      <text x="52" y="212" class="mono" fill="var(--bad)">↑ sync coupled to render</text>
+      <text x="52" y="230" class="mono" fill="var(--bad)">↑ never runs if unopened</text>
+
+      <!-- notebook app -->
+      <rect x="230" y="96" width="180" height="150" rx="8" fill="var(--panel-2)" stroke="var(--line)"/>
+      <text x="242" y="116" class="lbl" font-weight="600">notebook.update()</text>
+      <text x="242" y="138" class="sub">CanvasSync.poll()</text>
+      <text x="242" y="156" class="sub">PrivateRelaySync</text>
+      <text x="242" y="174" class="sub">fan_out_unseen_notes()</text>
+      <text x="242" y="192" class="sub">auto-seed</text>
+      <text x="242" y="212" class="mono" fill="var(--warn)">~90% identical copy</text>
+
+      <text x="36" y="300" class="sub">CLI edit → embedded relay → nostrdb</text>
+      <rect x="36" y="312" width="378" height="56" rx="8" fill="var(--bad-soft)" stroke="none"/>
+      <text x="48" y="336" class="lbl" fill="var(--bad)" font-weight="600">✕ app never opened →</text>
+      <text x="48" y="356" class="lbl" fill="var(--bad)">edit never fanned out to private relays</text>
+
+      <!-- arrow -->
+      <line x1="450" y1="220" x2="486" y2="220" stroke="var(--accent)" stroke-width="2"/>
+      <path d="M486 220 l-9 -5 v10 z" fill="var(--accent)"/>
+
+      <!-- AFTER -->
+      <text x="500" y="26" class="lbl" font-weight="700">AFTER — host-owned, in tick()</text>
+      <text x="500" y="44" class="sub">runs every frame, always</text>
+
+      <rect x="500" y="58" width="380" height="330" rx="10" fill="var(--panel)" stroke="var(--line)"/>
+      <text x="516" y="80" class="mono" fill="var(--muted)">Notedeck::tick() — every frame</text>
+
+      <!-- PrivateSync service -->
+      <rect x="516" y="96" width="348" height="130" rx="8" fill="var(--accent-soft)" stroke="var(--accent)"/>
+      <text x="530" y="118" class="lbl" font-weight="700" fill="var(--accent)">PrivateSync service</text>
+      <text x="530" y="140" class="sub">resolve (account, private relays)</text>
+      <text x="530" y="158" class="sub">re-declare inbound sub (merged kinds)</text>
+      <text x="530" y="176" class="sub">poll own ndb sub → fan_out_unseen_notes()</text>
+      <text x="530" y="200" class="mono" fill="var(--good)">✓ decoupled from render</text>
+      <text x="530" y="216" class="mono" fill="var(--good)">✓ runs even if app never opened</text>
+
+      <!-- registry -->
+      <rect x="516" y="238" width="168" height="86" rx="8" fill="var(--panel-2)" stroke="var(--line)"/>
+      <text x="528" y="258" class="lbl" font-weight="600">registry</text>
+      <text x="528" y="278" class="mono">headway: kinds+limit</text>
+      <text x="528" y="294" class="mono">notebook: kinds+limit</text>
+      <text x="528" y="312" class="sub">union → one filter</text>
+
+      <!-- apps render only -->
+      <rect x="696" y="238" width="168" height="86" rx="8" fill="var(--panel-2)" stroke="var(--line)"/>
+      <text x="708" y="258" class="lbl" font-weight="600">apps: render only</text>
+      <text x="708" y="278" class="sub">own ndb sub + reducer</text>
+      <text x="708" y="294" class="sub">BoardView / CanvasView</text>
+      <text x="708" y="312" class="sub">auto-seed</text>
+
+      <rect x="516" y="336" width="348" height="34" rx="8" fill="var(--good-soft)"/>
+      <text x="528" y="358" class="lbl" fill="var(--good)" font-weight="600">✓ CLI edit fans out whether or not app is open</text>
+    </svg>
+    </div>
+    <figcaption>Sync moves out of the opened-gated per-app <code>update()</code> and into the always-run host <code>tick()</code>, beside the media / relay / nip05 / zap pollers.</figcaption>
+  </figure>
+
+  <div class="callout">
+    <div class="t">The host seam already exists.</div>
+    <p style="margin:0"><code>Notedeck::tick</code> (<span class="pathref">crates/notedeck/src/app.rs:215</span>) runs every frame regardless of the foreground app, right next to <code>accounts.update(...)</code>. It already hosts the media-job, relay, nip05, and zap pollers. <code>PrivateSync</code> becomes one more owned field on <code>Notedeck</code>, polled here — <em>not</em> in Chrome's per-app loop.</p>
+  </div>
+
+  <h2>The two directions of sync</h2>
+  <div class="grid2">
+    <div class="card">
+      <span class="tag accent">inbound</span>
+      <h3 style="margin-top:12px">Scoped subscription</h3>
+      <p>A scoped sub of <code>authors([me]).kinds(union_of_registered_kinds)</code> against the private relays — a NIP-77 full-history catch-up <em>and</em> a live REQ. Edits made on another device land in nostrdb.</p>
+      <p class="pathref">generalizes PrivateRelaySync::update — private_sync.rs:150</p>
+    </div>
+    <div class="card">
+      <span class="tag accent">outbound</span>
+      <h3 style="margin-top:12px">Fan-out of unseen notes</h3>
+      <p>Poll the service's own ndb sub over the same merged filter; call <code>fan_out_unseen_notes(...)</code> to publish each freshly-ingested note to the private relays it hasn't been <em>seen on</em> yet (per nostrdb's <code>note.relays()</code>). A note pulled <em>in</em> by inbound sync is not echoed back out.</p>
+      <p class="pathref">reused unchanged — private_sync.rs:66</p>
+    </div>
+  </div>
+  <div class="callout warn">
+    <div class="t">Why this isn't a sync loop.</div>
+    <p style="margin:0">The seen-on check skips relays a note already carries. Even if it misses (e.g. a relay-url normalization mismatch), nostrdb never re-reports an event id it already holds — so a redundant publish can't spiral. The service's ndb sub is independent of each app's rendering sub: two cheap subs over overlapping filters is fine, and sync no longer piggybacks on app polling.</p>
+  </div>
+
+  <h2>What's actually app-specific</h2>
+  <p>Per app, only three things genuinely differ. Everything else is boilerplate that collapses into the service.</p>
+  <div class="cols3">
+    <div class="card" style="margin:0">
+      <div class="minihead">1 · kinds</div>
+      <p style="margin:0"><code>HEADWAY_KINDS</code> / <code>NOTEBOOK_KINDS</code> + a limit. Static consts — known at roster-wiring time.</p>
+    </div>
+    <div class="card" style="margin:0">
+      <div class="minihead">2 · view domain</div>
+      <p style="margin:0">The reducer / view types (<code>BoardView</code>, <code>CanvasView</code>) that fold events into rendering. Stays in the app.</p>
+    </div>
+    <div class="card" style="margin:0">
+      <div class="minihead">3 · auto-seed</div>
+      <p style="margin:0">The app's default-document seed. Stays in the app; the service fans out the seed note on its next poll.</p>
+    </div>
+  </div>
+
+  <h3>What moves where</h3>
+  <table>
+    <thead><tr><th>Piece</th><th>Before</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><td>Inbound scoped sub</td><td>per-app <code>PrivateRelaySync</code> field</td><td><span class="tag good">→ service</span> merged filter</td></tr>
+      <tr><td>Outbound fan-out</td><td>per-app <code>fan_out_unseen_notes()</code> call in <code>update()</code></td><td><span class="tag good">→ service</span> off its own poll</td></tr>
+      <tr><td>Sync driving</td><td>app <code>update()</code> (opened-gated)</td><td><span class="tag good">→ tick()</span> every frame</td></tr>
+      <tr><td>Rendering ndb sub + reducer</td><td>app</td><td><span class="tag">stays in app</span> (render-only)</td></tr>
+      <tr><td>Auto-seed</td><td>app</td><td><span class="tag">stays in app</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Open question: how do apps register?</h2>
+  <div class="grid2">
+    <div class="card">
+      <div class="minihead">Option A — per-frame handle</div>
+      <p>A <code>&mut PrivateSyncRegistry</code> on <code>AppContext</code>; apps call idempotent <code>register(scope)</code> on first <code>update()</code>/<code>render()</code>.</p>
+      <p class="pathref" style="color:var(--bad)">✕ still couples registration to the app having been opened — the exact gap we're fixing.</p>
+    </div>
+    <div class="card" style="border-color:var(--accent)">
+      <div class="minihead" style="color:var(--accent)">Option B — static at roster-wiring ✓ leaning</div>
+      <p>Register when Chrome wires apps into the <code>NotedeckApp</code> roster — once at construction, no per-frame call.</p>
+      <p class="pathref" style="color:var(--good)">✓ decouples the service from whether an app was ever opened, which is the whole point. Kinds are static consts, so they're known then.</p>
+    </div>
+  </div>
+  <p style="font-size:14px;color:var(--muted)">A scope is roughly <code>{ app: &'static str, kinds: &'static [u64], limit: u64 }</code>. Open sub-question: <strong>one merged sub</strong> (union of kinds, simpler, fewer subs) vs. <strong>one sub per scope</strong> (cleaner isolation). Leaning union unless kinds collide semantically.</p>
+
+  <h2>dave is the outlier — don't fold it in</h2>
+  <div class="callout warn">
+    <p style="margin:0">dave syncs <strong>PNS-encrypted</strong> session state (kind-31988 wrapped in kind-1080) keyed on a <em>derived</em> PNS author pubkey, with bespoke wrap/unwrap and its own dedup state. It shares only the kind-10013 relay <em>source</em>. Converging it needs a per-scope <code>outbound: Plaintext | Pns(keys)</code> transform + derived-author sub — a follow-up that aligns with the planned nostrdb-net / agentium-core sync-engine extraction. <strong>This refactor does not block on dave.</strong></p>
+  </div>
+
+  <h2>Migration plan</h2>
+  <ol class="steps">
+    <li><strong>Add the service.</strong> New <code>PrivateSync</code> + registry in notedeck core; poll in <code>tick</code>. Generalize <code>PrivateRelaySync</code>'s inbound-sub logic to the merged filter.</li>
+    <li><strong>Register headway + notebook kinds</strong> via the chosen seam (leaning static / Option B).</li>
+    <li><strong>Delete per-app sync driving.</strong> Revert the <code>update()</code>-based fan-out; keep the <code>fan_out_unseen_notes</code> helper (the service calls it). Apps' <code>BoardSync</code>/<code>CanvasSync</code> shrink to a render-only reducer poll.</li>
+    <li><strong>Test.</strong> Host-level test that a CLI-ingested note for a <em>never-opened</em> app still fans out; keep the seen-on dedup unit tests.</li>
+    <li><strong>Later (separate card).</strong> dave encryption-adapter convergence.</li>
+  </ol>
+
+  <h2>Risks to watch</h2>
+  <ul class="clean">
+    <li><strong>Blast radius.</strong> Touches core host <code>tick</code> — higher risk than the per-app fix. Review that we don't regress the dedup / log-throttle behavior in <code>PrivateRelaySync</code> (it only re-declares + logs on an actual account/relay-set change, not every frame).</li>
+    <li><strong>Merged filter collisions.</strong> If two apps' kinds overlap semantically, a union sub blends them; per-scope subs isolate. Default to union.</li>
+    <li><strong>Auto-seed ordering.</strong> Seed still runs in-app and writes locally first; the service fans it out on the next poll. Correct, but the ordering should be asserted.</li>
+  </ul>
+
+  <div class="foot">
+    <p>Grounded in: <code>private_sync.rs</code>, <code>app.rs:215–281</code> (tick), <code>account/accounts.rs:422</code> (<code>selected_account_private_relays</code>), <code>notedeck_headway/src/lib.rs:300–357</code>. Prior incremental fix landed &amp; In Review as <code>notedeck#mystery-muffin-hint</code>; this card is the robust follow-up. Design-doc-first, per request — no code yet.</p>
+  </div>
+</div>
+
+</body>
+</html>
