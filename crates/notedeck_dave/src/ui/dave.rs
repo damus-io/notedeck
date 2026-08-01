@@ -567,7 +567,7 @@ impl<'a> DaveUi<'a> {
                 }
                 Message::User(msg) => {
                     let is_queued = queued_from.is_some_and(|qi| i >= qi);
-                    self.user_chat(msg, is_queued, ui);
+                    self.user_chat(msg, is_queued, ctx, ui);
                 }
                 Message::Assistant(msg) => {
                     self.assistant_chat(msg, ctx, ui);
@@ -587,7 +587,9 @@ impl<'a> DaveUi<'a> {
                 Message::PermissionRequest(request) => {
                     // Permission requests only in Agentic mode
                     if is_agentic {
-                        if let Some(action) = self.permission_request_ui(request, ui) {
+                        if let Some(action) =
+                            self.permission_request_ui(request, Some(&mut *ctx), ui)
+                        {
                             response = DaveResponse::new(action);
                         }
                     }
@@ -713,6 +715,7 @@ impl<'a> DaveUi<'a> {
     fn permission_request_ui(
         &mut self,
         request: &PermissionRequest,
+        ctx: Option<&mut AppContext>,
         ui: &mut egui::Ui,
     ) -> Option<DaveAction> {
         let mut action = None;
@@ -754,7 +757,7 @@ impl<'a> DaveUi<'a> {
             }
             None => {
                 if request.view.is_plan_review() {
-                    return self.exit_plan_mode_ui(request, ui);
+                    return self.exit_plan_mode_ui(request, ctx, ui);
                 }
 
                 if let PermissionView::QuestionSet(questions) = &request.view {
@@ -979,6 +982,7 @@ impl<'a> DaveUi<'a> {
     fn exit_plan_mode_ui(
         &self,
         request: &PermissionRequest,
+        ctx: Option<&mut AppContext>,
         ui: &mut egui::Ui,
     ) -> Option<DaveAction> {
         let mut action = None;
@@ -1006,16 +1010,16 @@ impl<'a> DaveUi<'a> {
 
                     ui.add_space(8.0);
 
-                    // Render plan content as markdown (pre-parsed at construction)
+                    // Render plan content as markdown (pre-parsed at construction).
+                    // `ctx` is `Some` from the live render path and `None` from
+                    // the ctx-less test harnesses; with it, refs in a plan body
+                    // resolve to their inline chips like the other surfaces.
                     if let Some(plan) = request.view.plan_markdown() {
-                        // No AppContext here (exit_plan_mode_ui fans out through
-                        // permission_request_ui's many call sites); plan text
-                        // renders without inline reference resolution.
                         markdown_ui::render_parsed_markdown(
                             &plan.elements,
                             None,
                             &plan.source,
-                            None,
+                            ctx,
                             ui,
                         );
                     } else if let Some(plan_text) =
@@ -1459,7 +1463,13 @@ impl<'a> DaveUi<'a> {
         DaveResponse::none()
     }
 
-    fn user_chat(&self, msg: &crate::messages::UserMessage, is_queued: bool, ui: &mut egui::Ui) {
+    fn user_chat(
+        &self,
+        msg: &crate::messages::UserMessage,
+        is_queued: bool,
+        ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+    ) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             let r = egui::Frame::new()
                 .inner_margin(10.0)
@@ -1474,11 +1484,10 @@ impl<'a> DaveUi<'a> {
                         );
                     }
                     if !msg.text.is_empty() {
-                        ui.add(
-                            egui::Label::new(&msg.text)
-                                .wrap_mode(egui::TextWrapMode::Wrap)
-                                .selectable(true),
-                        );
+                        // Ref-aware markdown so a headway ref the user types
+                        // (bare or backtick-wrapped) renders as its inline chip,
+                        // matching the assistant surface.
+                        markdown_ui::render_markdown_with_refs(ui, ctx, &msg.text);
                     }
                     if is_queued {
                         ui.label(
@@ -2477,7 +2486,7 @@ mod tests {
                     &mut state.focus_requested,
                     AiMode::Agentic,
                 );
-                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, None, ui) {
                     state.action = Some(action);
                 }
             },
@@ -2529,7 +2538,7 @@ mod tests {
                     &mut state.focus_requested,
                     AiMode::Agentic,
                 );
-                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, None, ui) {
                     state.action = Some(action);
                 }
             },
@@ -2582,7 +2591,7 @@ mod tests {
                 )
                 .question_answers(&mut state.question_answers)
                 .question_index(&mut state.question_index);
-                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, None, ui) {
                     state.action = Some(action);
                 }
             },
@@ -2627,7 +2636,7 @@ mod tests {
                     &mut state.focus_requested,
                     AiMode::Agentic,
                 );
-                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, None, ui) {
                     state.action = Some(action);
                 }
             },
@@ -2756,7 +2765,7 @@ mod tests {
                 for request in &requests {
                     let mut dave_ui =
                         DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
-                    dave_ui.permission_request_ui(request, ui);
+                    dave_ui.permission_request_ui(request, None, ui);
                     ui.add_space(8.0);
                 }
             });
@@ -2803,7 +2812,7 @@ mod tests {
                 for request in &requests {
                     let mut dave_ui =
                         DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
-                    dave_ui.permission_request_ui(request, ui);
+                    dave_ui.permission_request_ui(request, None, ui);
                     ui.add_space(8.0);
                 }
             });
