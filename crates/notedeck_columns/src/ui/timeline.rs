@@ -18,7 +18,8 @@ use crate::timeline::{
 };
 use notedeck::DragResponse;
 use notedeck::{
-    note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
+    note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, NoteRef,
+    ScrollInfo,
 };
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -777,17 +778,11 @@ fn render_reaction_cluster(
         profiling::scope!("vec profile entries");
         reaction
             .reactions
-            .values()
-            .filter(|r| !mute.is_pk_muted(r.sender.bytes()))
-            .map(|r| (&r.sender, r.sender_profilekey))
-            .map(|(p, key)| {
-                let record = if let Some(key) = key {
-                    profiling::scope!("ndb by key");
-                    note_context.ndb.get_profile_by_key(txn, key).ok()
-                } else {
-                    profiling::scope!("ndb by pubkey");
-                    note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok()
-                };
+            .iter()
+            .filter(|(_, r)| !mute.is_pk_muted(r.sender.bytes()))
+            .map(|(note_ref, r)| (note_ref, &r.sender, r.sender_profilekey))
+            .map(|(note_ref, p, key)| {
+                let record = profile_entry_record(note_context, txn, p, key, Some(*note_ref));
                 ProfileEntry { record, pk: p }
             })
             .collect()
@@ -1065,10 +1060,10 @@ fn render_repost_cluster(
 ) -> RenderEntryResponse {
     let profiles_to_show: Vec<ProfileEntry> = repost
         .reposts
-        .values()
-        .filter(|r| !mute.is_pk_muted(r.bytes()))
-        .map(|p| ProfileEntry {
-            record: note_context.ndb.get_profile_by_pubkey(txn, p.bytes()).ok(),
+        .iter()
+        .filter(|(_, r)| !mute.is_pk_muted(r.bytes()))
+        .map(|(note_ref, p)| ProfileEntry {
+            record: profile_entry_record(note_context, txn, p, None, Some(*note_ref)),
             pk: p,
         })
         .collect();
@@ -1097,17 +1092,16 @@ fn render_zap_cluster(
 ) -> RenderEntryResponse {
     let profiles_to_show: Vec<ProfileEntry> = zap
         .zaps
-        .values()
-        .filter(|z| !mute.is_pk_muted(z.sender.bytes()))
-        .map(|z| {
-            let record = if let Some(key) = z.sender_profilekey {
-                note_context.ndb.get_profile_by_key(txn, key).ok()
-            } else {
-                note_context
-                    .ndb
-                    .get_profile_by_pubkey(txn, z.sender.bytes())
-                    .ok()
-            };
+        .iter()
+        .filter(|(_, z)| !mute.is_pk_muted(z.sender.bytes()))
+        .map(|(note_ref, z)| {
+            let record = profile_entry_record(
+                note_context,
+                txn,
+                &z.sender,
+                z.sender_profilekey,
+                Some(*note_ref),
+            );
             ProfileEntry {
                 record,
                 pk: &z.sender,
@@ -1136,4 +1130,43 @@ enum RenderEntryResponse {
 struct ProfileEntry<'a> {
     record: Option<ProfileRecord<'a>>,
     pk: &'a Pubkey,
+}
+
+fn profile_entry_record<'a>(
+    note_context: &mut NoteContext,
+    txn: &'a Transaction,
+    pk: &Pubkey,
+    key: Option<nostrdb::ProfileKey>,
+    source_note_ref: Option<NoteRef>,
+) -> Option<ProfileRecord<'a>> {
+    let record = if let Some(key) = key {
+        profiling::scope!("ndb by key");
+        note_context.ndb.get_profile_by_key(txn, key).ok()
+    } else {
+        profiling::scope!("ndb by pubkey");
+        note_context.ndb.get_profile_by_pubkey(txn, pk.bytes()).ok()
+    };
+
+    if record.is_none() {
+        if let Some(source_note_ref) = source_note_ref {
+            if let Ok(source_note) = note_context.ndb.get_note_by_key(txn, source_note_ref.key) {
+                note_context.unknown_ids.add_pubkey_if_missing_from_note(
+                    note_context.ndb,
+                    txn,
+                    pk.bytes(),
+                    &source_note,
+                );
+            } else {
+                note_context
+                    .unknown_ids
+                    .add_pubkey_if_missing(note_context.ndb, txn, pk.bytes());
+            }
+        } else {
+            note_context
+                .unknown_ids
+                .add_pubkey_if_missing(note_context.ndb, txn, pk.bytes());
+        }
+    }
+
+    record
 }

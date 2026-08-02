@@ -3,15 +3,14 @@ use std::time::Instant;
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
 use nostrdb::Filter;
 
-use crate::relay::FullHistorySubId;
-use crate::relay::SubPassGuardian;
+use crate::relay::{frame::RelayFrameSink, FullHistorySubId, RelayDemandPriority, SubPassGuardian};
 use crate::NoteId;
 
 use super::{
     protocol::{neg_close_msg, neg_msg, neg_open_msg, NegSessionId},
-    relay::NegentropyRelay,
-    session::{prepare_negentropy, ActiveSession},
-    state::{NegentropyData, NegentropyNeed},
+    relay::{NegentropyRelay, NegentropyRelayEffects},
+    session::{prepare_negentropy, ActiveSession, ActiveSessionRelayDemand},
+    state::NegentropyData,
 };
 
 const MIN_FRAME_SIZE_LIMIT: u64 = 4097;
@@ -73,8 +72,21 @@ fn insert_active_session_with_neg(
     let pass = guardian.take_pass().unwrap();
     data.active_sessions.insert(
         NegSessionId::new(session_id.to_owned()),
-        ActiveSession::new(neg, pass, opened_at, filter, owner_history_id),
+        ActiveSession::new(
+            neg,
+            pass,
+            opened_at,
+            filter,
+            owner_history_id,
+            ActiveSessionRelayDemand::single(RelayDemandPriority::Important, 0),
+        ),
     );
+}
+
+fn apply_effects(guardian: &mut SubPassGuardian, effects: NegentropyRelayEffects) {
+    for pass in effects.returned_passes {
+        guardian.return_pass(pass);
+    }
 }
 
 #[test]
@@ -118,22 +130,41 @@ fn prepare_negentropy_produces_hex() {
 }
 
 #[test]
-fn drain_need_ids_empties() {
+fn handle_neg_msg_returns_missing_ids_in_effects() {
+    let mut client_storage = NegentropyStorageVector::new();
+    client_storage.seal().unwrap();
+    let mut client_neg = Negentropy::owned(client_storage, MIN_FRAME_SIZE_LIMIT).unwrap();
+    let init_msg = client_neg.initiate().unwrap();
+
+    let relay_storage = sealed_storage_with_ids(3);
+    let mut relay_neg = Negentropy::borrowed(&relay_storage, MIN_FRAME_SIZE_LIMIT).unwrap();
+    let relay_msg = relay_neg.reconcile(&init_msg).unwrap();
+
     let mut data = NegentropyData::default();
-    data.surfaced_need_ids.push(NegentropyNeed {
-        owner_history_id: FullHistorySubId(0),
-        filter: test_filter(),
-        id: NoteId::new([1; 32]),
-    });
-    assert_eq!(
-        data.drain_need_ids(),
-        vec![NegentropyNeed {
-            owner_history_id: FullHistorySubId(0),
-            filter: test_filter(),
-            id: NoteId::new([1; 32])
-        }]
+    let mut guardian = SubPassGuardian::new(2);
+    insert_active_session_with_neg(
+        &mut data,
+        &mut guardian,
+        "sub-1",
+        client_neg,
+        Instant::now(),
+        test_filter(),
+        FullHistorySubId(4),
     );
-    assert!(data.drain_need_ids().is_empty());
+
+    let (_message, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .handle_neg_msg("sub-1", &hex::encode(relay_msg));
+
+    assert_eq!(effects.needs.len(), 3);
+    for index in 0..3 {
+        let expected_id = NoteId::new(id_for_test(index).to_bytes());
+        assert!(effects.needs.iter().any(|need| {
+            need.owner_history_id == FullHistorySubId(4)
+                && need.id == expected_id
+                && need.filter.same_canonical_attributes(&test_filter())
+        }));
+    }
+    apply_effects(&mut guardian, effects);
 }
 
 #[test]
@@ -149,12 +180,13 @@ fn handle_neg_err_does_not_mark_unsupported() {
         FullHistorySubId(0),
     );
 
-    NegentropyRelay::new(None, &mut data, &mut guardian)
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
         .handle_neg_err("sub-1", "blocked: too many records");
+    assert!(effects.retries.is_empty());
+    apply_effects(&mut guardian, effects);
 
     assert!(!data.is_unsupported());
     assert!(data.is_filter_blocked(&test_filter()));
-    assert!(data.drain_retry_neg_sets().is_empty());
     assert_eq!(guardian.available_passes(), 2);
 }
 
@@ -172,20 +204,49 @@ fn handle_neg_err_closed_does_not_block_filter() {
         FullHistorySubId(0),
     );
 
-    NegentropyRelay::new(None, &mut data, &mut guardian)
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
         .handle_neg_err("sub-1", "closed: session timeout");
-
-    assert!(!data.is_unsupported());
-    assert!(!data.is_filter_blocked(&filter));
-    let retries = data.drain_retry_neg_sets();
+    let retries = &effects.retries;
     assert_eq!(retries.len(), 1);
     assert_eq!(retries[0].owner_history_id, FullHistorySubId(0));
     assert!(retries[0].filter.same_canonical_attributes(&filter));
+    apply_effects(&mut guardian, effects);
+
+    assert!(!data.is_unsupported());
+    assert!(!data.is_filter_blocked(&filter));
     assert_eq!(guardian.available_passes(), 2);
 }
 
 #[test]
-fn handle_relay_disconnect_returns_all_passes() {
+fn handle_notice_unsupported_marks_relay_unsupported() {
+    for notice in [
+        "ERROR: bad msg: negentropy disabled",
+        "unknown message type: NEG-OPEN",
+        "unknown message type: NEG-CLOSE",
+    ] {
+        let mut data = NegentropyData::default();
+        let mut guardian = SubPassGuardian::new(2);
+        insert_active_session(
+            &mut data,
+            &mut guardian,
+            "sub-1",
+            Instant::now(),
+            test_filter(),
+            FullHistorySubId(0),
+        );
+
+        let effects =
+            NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data).handle_notice(notice);
+        apply_effects(&mut guardian, effects);
+
+        assert!(data.is_unsupported(), "{notice}");
+        assert_eq!(data.active_session_count(), 0, "{notice}");
+        assert_eq!(guardian.available_passes(), 2, "{notice}");
+    }
+}
+
+#[test]
+fn handle_notice_generic_does_not_mark_relay_unsupported() {
     let mut data = NegentropyData::default();
     let mut guardian = SubPassGuardian::new(2);
     insert_active_session(
@@ -197,7 +258,36 @@ fn handle_relay_disconnect_returns_all_passes() {
         FullHistorySubId(0),
     );
 
-    NegentropyRelay::new(None, &mut data, &mut guardian).handle_relay_disconnect();
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .handle_notice("unknown message type: REQ");
+    apply_effects(&mut guardian, effects);
+
+    assert!(!data.is_unsupported());
+    assert_eq!(data.active_session_count(), 1);
+    assert_eq!(guardian.available_passes(), 1);
+}
+
+#[test]
+fn handle_relay_disconnect_returns_all_passes() {
+    let mut data = NegentropyData::default();
+    let mut guardian = SubPassGuardian::new(2);
+    let filter = test_filter();
+    insert_active_session(
+        &mut data,
+        &mut guardian,
+        "sub-1",
+        Instant::now(),
+        filter.clone(),
+        FullHistorySubId(0),
+    );
+
+    let effects =
+        NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data).handle_relay_disconnect();
+    let retries = &effects.retries;
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].owner_history_id, FullHistorySubId(0));
+    assert!(retries[0].filter.same_canonical_attributes(&filter));
+    apply_effects(&mut guardian, effects);
 
     assert_eq!(guardian.available_passes(), 2);
 }
@@ -215,7 +305,9 @@ fn handle_timeout_marks_unsupported() {
         FullHistorySubId(0),
     );
 
-    NegentropyRelay::new(None, &mut data, &mut guardian).handle_timeout(Instant::now());
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .handle_timeout(Instant::now());
+    apply_effects(&mut guardian, effects);
 
     assert!(data.is_unsupported());
     assert_eq!(guardian.available_passes(), 2);
@@ -246,7 +338,13 @@ fn handle_timeout_retries_expired_session_after_capability_is_known() {
         FullHistorySubId(11),
     );
 
-    NegentropyRelay::new(None, &mut data, &mut guardian).handle_timeout(Instant::now());
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .handle_timeout(Instant::now());
+    let retries = &effects.retries;
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].owner_history_id, FullHistorySubId(10));
+    assert!(retries[0].filter.same_canonical_attributes(&expired_filter));
+    apply_effects(&mut guardian, effects);
 
     assert!(!data.is_unsupported());
     assert_eq!(data.active_session_count(), 1);
@@ -254,11 +352,6 @@ fn handle_timeout_retries_expired_session_after_capability_is_known() {
         .active_sessions
         .contains_key(&NegSessionId::new("fresh".to_owned())));
     assert_eq!(guardian.available_passes(), 2);
-
-    let retries = data.drain_retry_neg_sets();
-    assert_eq!(retries.len(), 1);
-    assert_eq!(retries[0].owner_history_id, FullHistorySubId(10));
-    assert!(retries[0].filter.same_canonical_attributes(&expired_filter));
 }
 
 #[test]
@@ -284,8 +377,9 @@ fn handle_neg_msg_continue_refreshes_timeout_clock() {
         FullHistorySubId(0),
     );
 
-    let result = NegentropyRelay::new(None, &mut data, &mut guardian)
+    let (result, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
         .handle_neg_msg("sub-1", &hex::encode(relay_msg));
+    apply_effects(&mut guardian, effects);
 
     assert!(result
         .expect("expected follow-up NEG-MSG")
@@ -293,7 +387,9 @@ fn handle_neg_msg_continue_refreshes_timeout_clock() {
         .expect("serialize NEG-MSG")
         .starts_with(r#"["NEG-MSG","sub-1","#));
 
-    NegentropyRelay::new(None, &mut data, &mut guardian).handle_timeout(Instant::now());
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .handle_timeout(Instant::now());
+    apply_effects(&mut guardian, effects);
 
     assert!(!data.is_unsupported());
     assert_eq!(data.active_session_count(), 1);
@@ -313,8 +409,9 @@ fn handle_neg_msg_invalid_hex_marks_relay_unsupported() {
         FullHistorySubId(0),
     );
 
-    let result =
-        NegentropyRelay::new(None, &mut data, &mut guardian).handle_neg_msg("sub-1", "not-hex");
+    let (result, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .handle_neg_msg("sub-1", "not-hex");
+    apply_effects(&mut guardian, effects);
 
     assert!(result.is_none());
     assert!(data.is_unsupported());
@@ -339,22 +436,22 @@ fn handle_neg_msg_invalid_hex_retries_session_after_capability_is_known() {
         FullHistorySubId(10),
     );
 
-    let result =
-        NegentropyRelay::new(None, &mut data, &mut guardian).handle_neg_msg("sub-1", "not-hex");
+    let (result, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .handle_neg_msg("sub-1", "not-hex");
+    let retries = &effects.retries;
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].owner_history_id, FullHistorySubId(10));
+    assert!(retries[0].filter.same_canonical_attributes(&filter));
+    apply_effects(&mut guardian, effects);
 
     assert!(result.is_none());
     assert!(!data.is_unsupported());
     assert_eq!(data.active_session_count(), 0);
     assert_eq!(guardian.available_passes(), 2);
-
-    let retries = data.drain_retry_neg_sets();
-    assert_eq!(retries.len(), 1);
-    assert_eq!(retries[0].owner_history_id, FullHistorySubId(10));
-    assert!(retries[0].filter.same_canonical_attributes(&filter));
 }
 
 #[test]
-fn cancel_owner_clears_active_sessions_and_surfaced_need_ids() {
+fn cancel_owner_clears_active_session_and_retry_state() {
     let mut data = NegentropyData::default();
     let mut guardian = SubPassGuardian::new(4);
 
@@ -372,28 +469,12 @@ fn cancel_owner_clears_active_sessions_and_surfaced_need_ids() {
         );
     }
 
-    data.surfaced_need_ids.push(NegentropyNeed {
-        owner_history_id: FullHistorySubId(1),
-        filter: test_filter(),
-        id: NoteId::new([1; 32]),
-    });
-    data.surfaced_need_ids.push(NegentropyNeed {
-        owner_history_id: FullHistorySubId(2),
-        filter: test_filter(),
-        id: NoteId::new([2; 32]),
-    });
-
-    NegentropyRelay::new(None, &mut data, &mut guardian).cancel_owner(FullHistorySubId(1));
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+        .cancel_owner(FullHistorySubId(1));
+    assert!(effects.needs.is_empty());
+    apply_effects(&mut guardian, effects);
 
     assert_eq!(data.active_sessions.len(), 1);
     assert!(data.active_sessions.contains_key("sub-2"));
-    assert_eq!(
-        data.drain_need_ids(),
-        vec![NegentropyNeed {
-            owner_history_id: FullHistorySubId(2),
-            filter: test_filter(),
-            id: NoteId::new([2; 32])
-        }]
-    );
     assert_eq!(guardian.available_passes(), 3);
 }

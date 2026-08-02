@@ -26,7 +26,7 @@ use super::configure_deck::deck_icon;
 pub static SIDE_PANEL_WIDTH: f32 = 68.0;
 static ICON_WIDTH: f32 = 40.0;
 
-pub struct DesktopSidePanel<'r, 'a> {
+pub struct DesktopSidePanel<'a> {
     selected_account: &'a UserAccount,
     decks_cache: &'a DecksCache,
     i18n: &'a mut Localization,
@@ -34,10 +34,10 @@ pub struct DesktopSidePanel<'r, 'a> {
     img_cache: &'a mut notedeck::Images,
     jobs: &'a MediaJobSender,
     current_route: Option<&'a Route>,
-    relay_inspect: RelayInspectApi<'r, 'a>,
+    relay_inspect: RelayInspectApi<'a>,
 }
 
-impl View for DesktopSidePanel<'_, '_> {
+impl View for DesktopSidePanel<'_> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.show(ui);
     }
@@ -72,7 +72,7 @@ impl SidePanelResponse {
     }
 }
 
-impl<'r, 'a> DesktopSidePanel<'r, 'a> {
+impl<'a> DesktopSidePanel<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         selected_account: &'a UserAccount,
@@ -82,7 +82,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
         img_cache: &'a mut notedeck::Images,
         jobs: &'a MediaJobSender,
         current_route: Option<&'a Route>,
-        relay_inspect: RelayInspectApi<'r, 'a>,
+        relay_inspect: RelayInspectApi<'a>,
     ) -> Self {
         Self {
             selected_account,
@@ -751,15 +751,17 @@ fn home_button() -> impl Widget {
 }
 fn connectivity_indicator(
     ui: &mut egui::Ui,
-    relay_inspect: &RelayInspectApi<'_, '_>,
+    relay_inspect: &RelayInspectApi,
     _current_route: Option<&Route>,
 ) -> egui::Response {
-    let relay_infos = relay_inspect.relay_infos();
-    let connected_count = relay_infos
-        .iter()
-        .filter(|info| matches!(info.status, RelayStatus::Connected))
-        .count();
-    let total_count = relay_infos.len();
+    let mut connected_count = 0;
+    let mut total_count = 0;
+    for info in relay_inspect.relay_infos() {
+        total_count += 1;
+        if matches!(info.status, RelayStatus::Connected) {
+            connected_count += 1;
+        }
+    }
 
     // Calculate connectivity ratio (0.0 to 1.0)
     let ratio = if total_count > 0 {

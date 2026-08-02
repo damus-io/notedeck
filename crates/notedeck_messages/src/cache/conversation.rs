@@ -17,7 +17,7 @@ use super::message_store::MessageStore;
 use enostr::Pubkey;
 use hashbrown::{HashMap, HashSet};
 use nostrdb::{Ndb, Note, NoteKey, Subscription, Transaction};
-use notedeck::{note::event_tag, NoteCache, NoteRef, UnknownIds};
+use notedeck::{note::event_tag, NoteRef, UnknownIds};
 
 pub struct ConversationCache {
     pub registry: ConversationRegistry,
@@ -67,10 +67,12 @@ impl ConversationCache {
         key: NoteKey,
         ndb: &Ndb,
         txn: &Transaction,
-        note_cache: &mut NoteCache,
         unknown_ids: &mut UnknownIds,
     ) {
         let participants = get_participants(&note);
+        for participant in &participants {
+            unknown_ids.add_pubkey_if_missing(ndb, txn, participant);
+        }
 
         let id = self
             .registry
@@ -86,7 +88,6 @@ impl ConversationCache {
         });
 
         tracing::trace!("ingesting into conversation id {id}: {:?}", note.json());
-        UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &note);
         if conversation.ingest_kind_14(note, key) {
             let latest = conversation.last_activity();
             refresh_order(&mut self.order, id, LatestMessage::Latest(latest));

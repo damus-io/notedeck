@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use enostr::{FullKeypair, ProfileState, Pubkey};
 use nostr::key::PublicKey;
 use nostrdb::{Config, FilterBuilder, Ndb, NoteBuilder, Transaction};
-use notedeck::{DataPath, DataPathType, RelayAction, RelayType};
+use notedeck::{DataPath, DataPathType, RelayAction};
 
 use crate::cluster::AccountCluster;
 use crate::device::DeviceHarness;
@@ -83,15 +83,14 @@ pub fn seed_local_profile_metadata(
         .expect("profile metadata note");
 
     let note_json = note.json().expect("profile metadata note json");
-    let ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
     app_ctx
         .ndb
         .process_client_event(&note_json)
         .expect("ingest local profile metadata");
 
-    let mut publisher = app_ctx.remote.publisher(app_ctx.accounts);
-    publisher.publish_note(&note, RelayType::AccountsWrite);
+    let mut publisher = app_ctx.remote.publisher();
+    publisher.accounts_write().publish_note(&note);
 }
 
 /// Returns the canonical NostrDB directory for one device data path.
@@ -142,8 +141,7 @@ pub fn nostr_pubkey(pk: &Pubkey) -> PublicKey {
 
 /// Adds another full account to the device and processes the resulting unknown-id action.
 pub fn add_account_to_device(device: &mut DeviceHarness, account: &FullKeypair) {
-    let ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
     let Some(response) = app_ctx
         .accounts
         .add_account(enostr::Keypair::from_secret(account.secret_key.clone()))
@@ -159,9 +157,8 @@ pub fn add_account_to_device(device: &mut DeviceHarness, account: &FullKeypair) 
 
 /// Switches the device to the provided account through the real app context.
 pub fn select_account_on_device(device: &mut DeviceHarness, account: &FullKeypair) {
-    let ctx = device.ctx.clone();
     {
-        let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+        let app_ctx = &mut device.state_mut().notedeck.app_context();
         app_ctx.select_account(&account.pubkey);
     }
     device.step();
@@ -170,9 +167,8 @@ pub fn select_account_on_device(device: &mut DeviceHarness, account: &FullKeypai
 /// Applies one relay-list mutation through the real app context and advances
 /// the device so host retarget work runs.
 pub fn process_relay_action_on_device(device: &mut DeviceHarness, action: RelayAction) {
-    let ctx = device.ctx.clone();
     {
-        let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+        let app_ctx = &mut device.state_mut().notedeck.app_context();
         app_ctx.process_relay_action(action);
     }
 
@@ -183,11 +179,10 @@ pub fn process_relay_action_on_device(device: &mut DeviceHarness, action: RelayA
 
 /// Publishes one already-built note through the device's real remote publisher.
 pub fn publish_note_via_device(device: &mut DeviceHarness, note: &nostrdb::Note<'_>) {
-    let ctx = device.ctx.clone();
     {
-        let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
-        let mut publisher = app_ctx.remote.publisher(app_ctx.accounts);
-        publisher.publish_note(note, RelayType::AccountsWrite);
+        let app_ctx = &mut device.state_mut().notedeck.app_context();
+        let mut publisher = app_ctx.remote.publisher();
+        publisher.accounts_write().publish_note(note);
     }
 
     device.step();

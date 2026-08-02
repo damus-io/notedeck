@@ -189,12 +189,14 @@ impl Chrome {
         app_args: &[String],
         notedeck: &mut Notedeck,
     ) -> Result<Self, Error> {
+        #[cfg(not(feature = "dave"))]
+        let _ = cc;
         let notedeck_options = notedeck.options();
         stop_debug_mode(notedeck_options);
 
         // Named (not a borrowed temporary) so we can drop it below to release
         // the `&mut notedeck` borrow and register kind-renderers afterwards.
-        let mut notedeck_ref = notedeck.notedeck_ref(&cc.egui_ctx);
+        let mut notedeck_ref = notedeck.notedeck_ref();
         let app_ref = &mut notedeck_ref;
         #[cfg(feature = "dave")]
         let dave = Dave::new(
@@ -802,7 +804,7 @@ fn poll_updater(updater: &mut notedeck::updater::Updater, ctx: &mut notedeck::Ap
         tracing::debug!("updater: sending release filter to relays");
         let release_pubkey = *updater.release_pubkey();
         let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
-        let mut oneshot = ctx.remote.oneshot(ctx.accounts);
+        let mut oneshot = ctx.remote.oneshot();
         oneshot.oneshot(filters);
     }
 
@@ -1462,6 +1464,7 @@ fn chrome_handle_app_action(
                 &mut columns.view_state,
                 ctx.media_jobs.sender(),
                 ui,
+                ctx.settings.columns_use_outbox_relays(),
             );
 
             if let Some(action) = m_action {
@@ -1519,6 +1522,7 @@ fn columns_route_to_profile(
         &mut columns.view_state,
         ctx.media_jobs.sender(),
         ui,
+        ctx.settings.columns_use_outbox_relays(),
     );
 
     if let Some(action) = m_action {

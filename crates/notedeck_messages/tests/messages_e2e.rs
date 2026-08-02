@@ -58,8 +58,7 @@ fn seed_local_chat_history_via_messages_host(
 
     let mut device = build_messages_device_in_path_with_relays(&[OFFLINE_RELAY], account, data_dir);
     {
-        let ctx = device.ctx.clone();
-        let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+        let app_ctx = &mut device.state_mut().notedeck.app_context();
         for note_json in note_jsons {
             app_ctx
                 .ndb
@@ -380,9 +379,9 @@ async fn same_account_devices_backfill_preexisting_giftwraps_e2e() {
     relay.shutdown_and_wait().await;
 }
 
-/// Verifies a paused same-account device can catch up from relay history after other devices stay current.
+/// Verifies remote message delivery continues while one same-account device stops rendering frames.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
+async fn same_account_devices_continue_remote_delivery_without_ui_frames_e2e() {
     init_tracing();
 
     let relay = LocalRelay::run(RelayBuilder::default())
@@ -441,23 +440,29 @@ async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
         &mut [&mut live_device_a, &mut live_device_b],
         &expected,
         TEST_TIMEOUT,
-        "live same-account devices to stay current while one device is paused",
+        "live same-account devices to stay current while one device is not rendering frames",
         &mut [&mut sender_device],
     );
 
-    assert_ne!(
-        local_chat_messages(&mut lagging_device),
-        expected,
-        "expected the paused device to lag behind before it resumes stepping"
-    );
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        sender_device.step();
+        step_device_group(&mut [&mut live_device_a, &mut live_device_b]);
 
-    wait_for_device_messages_while_flushing(
-        &mut lagging_device,
-        &expected,
-        TEST_TIMEOUT,
-        "paused same-account device to catch up from relay history",
-        &mut [&mut sender_device],
-    );
+        let actual = local_chat_messages(&mut lagging_device);
+        if actual == expected {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for non-rendering same-account device remote delivery; expected {:?}, actual {:?}",
+            expected,
+            actual
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     assert_eq!(local_chat_messages(&mut live_device_a), expected);
     assert_eq!(local_chat_messages(&mut live_device_b), expected);
@@ -4384,11 +4389,13 @@ async fn stale_connection_detected_after_silent_stall_e2e() {
     // Alice connects directly to the relay; Bob connects through the proxy.
     // Bob gets a short pong timeout (3s) so the test doesn't need to wait 90s.
     let mut alice_device = build_messages_device(&relay_url, &alice);
-    let mut bob_device = notedeck_testing::device::build_device_with_relays(
+    let remote_config =
+        notedeck::NotedeckRemoteConfig::default().with_pong_timeout(Duration::from_secs(3));
+    let mut bob_device = notedeck_testing::device::build_device_with_relays_and_remote_config(
         &[&proxy_url],
         &bob,
+        remote_config,
         Box::new(|notedeck, _ctx| {
-            notedeck.set_pong_timeout(Duration::from_secs(3));
             notedeck.set_app(notedeck_messages::MessagesApp::new());
         }),
     );

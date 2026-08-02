@@ -21,7 +21,8 @@ use notedeck_testing::{
     init_tracing,
     ndb::{wait_for_two_local_query_counts, LocalQuery},
     negentropy_relay::{
-        run_memory_negentropy_relay_with_mode, NegentropyRelay, NegentropyRelayMode,
+        run_memory_negentropy_relay_with_mode, NegentropyOpenFilter, NegentropyRelay,
+        NegentropyRelayMode,
     },
     stepping::{step_device_for, wait_for_device_condition},
     AppFactory, DeviceHarness,
@@ -92,7 +93,7 @@ impl App for ControllableDave {
 }
 fn dave_app_factory() -> AppFactory {
     Box::new(move |notedeck, egui_ctx| {
-        let app_ctx = notedeck.app_context(egui_ctx);
+        let app_ctx = notedeck.app_context();
         app_ctx.settings.complete_welcome();
         let settings = agentic_dave_settings();
         write_dave_settings(app_ctx.path, &settings);
@@ -105,7 +106,7 @@ fn dave_app_factory() -> AppFactory {
 }
 fn dave_agentic_app_factory() -> AppFactory {
     Box::new(move |notedeck, egui_ctx| {
-        let app_ctx = notedeck.app_context(egui_ctx);
+        let app_ctx = notedeck.app_context();
         app_ctx.settings.complete_welcome();
         let settings = agentic_dave_settings();
         write_dave_settings(app_ctx.path, &settings);
@@ -121,7 +122,7 @@ fn controllable_dave_app_factory() -> (AppFactory, Sender<ControllableDaveComman
     let (command_tx, command_rx) = mpsc::channel();
     let app_factory = Box::new(
         move |notedeck: &mut notedeck::Notedeck, egui_ctx: &egui::Context| {
-            let app_ctx = notedeck.app_context(egui_ctx);
+            let app_ctx = notedeck.app_context();
             app_ctx.settings.complete_welcome();
             let settings = agentic_dave_settings();
             write_dave_settings(app_ctx.path, &settings);
@@ -298,8 +299,7 @@ fn author_session_state_filter(author: &FullKeypair) -> Filter {
         .build()
 }
 fn latest_valid_session_title(device: &mut DeviceHarness, session_id: &str) -> Option<String> {
-    let egui_ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&egui_ctx);
+    let app_ctx = &mut device.state_mut().notedeck.app_context();
     let txn = Transaction::new(app_ctx.ndb).expect("txn");
     session_loader::latest_valid_session(app_ctx.ndb, &txn, session_id).map(|state| state.title)
 }
@@ -345,6 +345,14 @@ fn pns_filter_matcher(account: &FullKeypair) -> impl FnMut(&nostr::Filter) -> bo
     let pns_keys = enostr::pns::derive_pns_keys(&secret_key);
     let pns_pubkey = nostr_pubkey(&pns_keys.keypair.pubkey);
     move |filter| is_pns_filter(filter, &pns_pubkey)
+}
+fn pns_negentropy_open_filter(account: &FullKeypair) -> NegentropyOpenFilter {
+    let secret_key = account.secret_key.secret_bytes();
+    let pns_keys = enostr::pns::derive_pns_keys(&secret_key);
+    NegentropyOpenFilter::new(
+        Kind::Custom(enostr::pns::PNS_KIND as u16),
+        nostr_pubkey(&pns_keys.keypair.pubkey),
+    )
 }
 fn pns_neg_open_session_ids(relay: &NegentropyRelay, account: &FullKeypair) -> Vec<String> {
     relay.captured_neg_open_session_ids(pns_filter_matcher(account))
@@ -393,10 +401,13 @@ fn wait_for_pns_import_and_open(
     wait_for_pns_neg_open(device, relay, account, &format!("{context} PNS NEG-OPEN"));
 }
 
-async fn run_pns_retry_backfill_case(mode: NegentropyRelayMode, context: &str) {
+async fn run_pns_retry_backfill_case(
+    mode: impl FnOnce(&FullKeypair) -> NegentropyRelayMode,
+    context: &str,
+) {
     let account = FullKeypair::generate();
     let expected_count = PNS_LIVE_LIMIT + 1;
-    let relay = setup_seeded_relay_with_mode(&account, expected_count, mode).await;
+    let relay = setup_seeded_relay_with_mode(&account, expected_count, mode(&account)).await;
     let mut device = build_pns_device(&relay, &account);
 
     session_state_query().wait_for_count(
@@ -741,7 +752,10 @@ async fn dave_pns_blocked_relay_does_not_retry_e2e() {
 async fn dave_pns_closed_retry_backfills_beyond_live_limit_e2e() {
     init_tracing();
     run_pns_retry_backfill_case(
-        NegentropyRelayMode::NegErrOnOpenOnce("closed: retry later".to_string()),
+        |account| NegentropyRelayMode::NegErrOnMatchingOpenOnce {
+            reason: "closed: retry later".to_string(),
+            filter: pns_negentropy_open_filter(account),
+        },
         "closed",
     )
     .await;
@@ -750,7 +764,13 @@ async fn dave_pns_closed_retry_backfills_beyond_live_limit_e2e() {
 #[serial]
 async fn dave_pns_disconnect_retry_backfills_beyond_live_limit_e2e() {
     init_tracing();
-    run_pns_retry_backfill_case(NegentropyRelayMode::DisconnectOnOpenOnce, "disconnect").await;
+    run_pns_retry_backfill_case(
+        |account| NegentropyRelayMode::DisconnectOnMatchingOpenOnce {
+            filter: pns_negentropy_open_filter(account),
+        },
+        "disconnect",
+    )
+    .await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]

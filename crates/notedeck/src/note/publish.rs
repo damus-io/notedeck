@@ -2,7 +2,7 @@ use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 use tracing::info;
 
-use crate::{Muted, PublishApi, RelayType};
+use crate::{Muted, PublishApi};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ReportType {
@@ -86,7 +86,7 @@ where
 pub fn publish_note_builder(
     builder: NoteBuilder,
     ndb: &Ndb,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     kp: FilledKeypair,
 ) {
     let note = builder
@@ -106,13 +106,13 @@ pub fn publish_note_builder(
 
     let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
     info!("sending {}", &json);
-    publisher.publish_note(&note, RelayType::AccountsWrite);
+    publisher.accounts_write().publish_note(&note);
 }
 
 pub fn send_unmute_event(
     ndb: &Ndb,
     txn: &Transaction,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     kp: FilledKeypair,
     muted: &Muted,
     target: &Pubkey,
@@ -163,7 +163,7 @@ pub fn send_unmute_event(
 pub fn send_mute_event(
     ndb: &Ndb,
     txn: &Transaction,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     kp: FilledKeypair,
     muted: &Muted,
     target: &Pubkey,
@@ -210,7 +210,7 @@ pub fn send_mute_event(
 
 pub fn send_people_list_event(
     ndb: &Ndb,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     kp: FilledKeypair,
     name: &str,
     members: &[Pubkey],
@@ -243,7 +243,7 @@ pub fn construct_people_list_note<'a>(name: &str, members: &[Pubkey]) -> NoteBui
 
 pub fn send_report_event(
     ndb: &Ndb,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     kp: FilledKeypair,
     target: &ReportTarget,
     report_type: ReportType,

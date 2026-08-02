@@ -34,7 +34,7 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
 
         let secret = state.account.secret_key.clone();
         let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context(ctx);
+        let app_ctx = &mut state.notedeck.app_context();
         if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             resp.unk_id_action
@@ -54,7 +54,7 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
         return;
     }
 
-    let mut app_ctx = state.notedeck.app_context(ctx);
+    let mut app_ctx = state.notedeck.app_context();
     egui::CentralPanel::default().show(ctx, |ui| {
         state.notebook.render(&mut app_ctx, ui);
     });

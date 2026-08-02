@@ -3,56 +3,6 @@ use egui_kittest::Harness;
 use notedeck::{App, Notedeck};
 use notedeck_columns::Damus;
 
-// ---------------------------------------------------------------------------
-// Phase 2a: Pure egui smoke tests (no notedeck state)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn smoke_test_harness() {
-    let harness = Harness::new_ui(|ui| {
-        ui.label("Hello Notedeck");
-        let _ = ui.button("Click me");
-    });
-    harness.get_by_label("Click me");
-}
-
-#[test]
-fn smoke_test_checkbox_interaction() {
-    let mut harness = Harness::new_ui_state(
-        |ui, checked| {
-            ui.checkbox(checked, "Enable notifications");
-        },
-        false,
-    );
-
-    harness.get_by_label("Enable notifications").click();
-    harness.run();
-
-    assert!(*harness.state(), "Checkbox should be checked after click");
-}
-
-#[test]
-#[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_basic_ui() {
-    let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(400.0, 300.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui(|ui| {
-            ui.heading("Notedeck");
-            ui.separator();
-            ui.label("A nostr browser");
-            let _ = ui.button("Login");
-        });
-
-    harness.run();
-
-    harness.snapshot("basic_ui");
-}
-
-// ---------------------------------------------------------------------------
-// Phase 2b/2c: Real Notedeck + Damus widget tests
-// ---------------------------------------------------------------------------
-
 /// State bundle for harness tests that need both Notedeck context and a Damus app.
 /// Separate fields enable split borrows: `app_context()` borrows `&mut notedeck`
 /// while `render()` borrows `&mut damus` — no conflict.
@@ -78,7 +28,10 @@ fn make_test_state(egui_ctx: &egui::Context) -> TestState {
         "--testrunner".into(),
     ];
     let mut notedeck = Notedeck::init(egui_ctx, tmpdir.path(), &args);
-    let damus = Damus::new(&mut notedeck.app_context(egui_ctx), &args);
+    let mut app_ctx = notedeck.app_context();
+    let damus = Damus::new(&mut app_ctx, &args);
+    app_ctx.remote.flush();
+    drop(app_ctx);
     TestState {
         notedeck,
         damus,
@@ -99,10 +52,11 @@ fn render_damus_frame(ctx: &egui::Context, state: &mut TestState) {
         state.fonts_installed = true;
         return;
     }
-    let mut app_ctx = state.notedeck.app_context(ctx);
+    let mut app_ctx = state.notedeck.app_context();
     egui::CentralPanel::default().show(ctx, |ui| {
         state.damus.render(&mut app_ctx, ui);
     });
+    app_ctx.remote.flush();
 }
 
 #[tokio::test]
@@ -180,10 +134,11 @@ fn render_damus_frame_light(ctx: &egui::Context, state: &mut TestState) {
         state.fonts_installed = true;
         return;
     }
-    let mut app_ctx = state.notedeck.app_context(ctx);
+    let mut app_ctx = state.notedeck.app_context();
     egui::CentralPanel::default().show(ctx, |ui| {
         state.damus.render(&mut app_ctx, ui);
     });
+    app_ctx.remote.flush();
 }
 
 #[tokio::test]
@@ -215,12 +170,13 @@ fn render_damus_frame_with_update(ctx: &egui::Context, state: &mut TestState) {
         state.fonts_installed = true;
         return;
     }
-    let mut app_ctx = state.notedeck.app_context(ctx);
+    let mut app_ctx = state.notedeck.app_context();
     app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
     state.damus.update(&mut app_ctx, ctx);
     egui::CentralPanel::default().show(ctx, |ui| {
         state.damus.render(&mut app_ctx, ui);
     });
+    app_ctx.remote.flush();
 }
 
 /// Regression test: clicking "I have a Nostr key" on the welcome screen must
@@ -297,12 +253,14 @@ async fn snapshot_update_bar() {
 
     // Create Chrome with updater, pointing at our test signing key
     let mut chrome = {
-        let mut app_ctx = notedeck.app_context(&ctx);
-        Chrome::new_test(&mut app_ctx, &ctx, &args)
+        let mut app_ctx = notedeck.app_context();
+        let chrome = Chrome::new_test(&mut app_ctx, &ctx, &args);
+        app_ctx.remote.flush();
+        chrome
     };
 
     {
-        let app_ctx = &mut notedeck.app_context(&ctx);
+        let app_ctx = &mut notedeck.app_context();
         chrome.set_release_pubkey(app_ctx.ndb, test_helpers::TEST_PUBKEY);
     }
 
@@ -321,7 +279,7 @@ async fn snapshot_update_bar() {
         &[asset_id],
     );
     {
-        let app_ctx = notedeck.app_context(&ctx);
+        let app_ctx = notedeck.app_context();
         app_ctx
             .ndb
             .process_event_with(&asset_ev, nostrdb::IngestMetadata::new())

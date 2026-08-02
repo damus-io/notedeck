@@ -1,10 +1,15 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use crate::{AccountData, RelaySpec, RemoteApi};
+use crate::{relayspec::relays_from_nip65_note, AccountData, RelaySpec, RemoteApi};
 use enostr::{Keypair, NormRelayUrl, RelayId};
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
 use tracing::{debug, error, info};
+
+const RELAY_LIST_POLL_LIMIT: u32 = 64;
 
 #[derive(Clone)]
 pub(crate) struct AccountRelayData {
@@ -17,6 +22,14 @@ pub(crate) struct AccountRelayData {
     /// dave/headway/notebook to sync private state across the user's own
     /// devices. Empty for read-only accounts (can't decrypt the list).
     pub private: BTreeSet<NormRelayUrl>,
+    ndb_advertised_created_at: Option<u64>,
+    pending_advertised: Option<RelayListProjection>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RelayListProjection {
+    pub created_at: u64,
+    pub advertised: BTreeSet<RelaySpec>,
 }
 
 impl AccountRelayData {
@@ -41,26 +54,35 @@ impl AccountRelayData {
             local: BTreeSet::new(),
             advertised: BTreeSet::new(),
             private: BTreeSet::new(),
+            ndb_advertised_created_at: None,
+            pending_advertised: None,
         }
     }
 
     pub fn query(&mut self, ndb: &Ndb, txn: &Transaction, keypair: &Keypair) {
-        // Query the ndb immediately to see if the user list is already there
+        let projection = self.newest_nip65_projection(ndb, txn);
+        self.apply_nip65_projection(projection);
+        debug!("initial relays {:?}", self.advertised);
+        self.private = self.query_private_relays(ndb, txn, keypair);
+    }
+
+    fn newest_nip65_projection(&self, ndb: &Ndb, txn: &Transaction) -> Option<RelayListProjection> {
         let lim = self
             .filter
             .limit()
             .unwrap_or(crate::filter::default_limit()) as i32;
-        let nks = ndb
+        let results = ndb
             .query(txn, std::slice::from_ref(&self.filter), lim)
-            .expect("query user relays results")
-            .iter()
-            .map(|qr| qr.note_key)
-            .collect::<Vec<NoteKey>>();
-        let relays = Self::harvest_nip65_relays(ndb, txn, &nks);
-        debug!("initial relays {:?}", relays);
+            .expect("query user relays results");
 
-        self.advertised = relays.into_iter().collect();
-        self.private = self.query_private_relays(ndb, txn, keypair);
+        for result in results {
+            let Ok(note) = ndb.get_note_by_key(txn, result.note_key) else {
+                continue;
+            };
+            return Some(Self::projection_from_nip65_note(&note));
+        }
+
+        None
     }
 
     /// Query the ndb for the account's current kind-10013 private relay list and
@@ -101,52 +123,128 @@ impl AccountRelayData {
         construct_private_relay_list_note(self.private.iter(), keypair)
     }
 
-    pub(crate) fn harvest_nip65_relays(
+    pub(crate) fn newest_effective_nip65_relays(
+        &self,
         ndb: &Ndb,
         txn: &Transaction,
-        nks: &[NoteKey],
-    ) -> Vec<RelaySpec> {
-        let mut relays = Vec::new();
-        for nk in nks.iter() {
-            if let Ok(note) = ndb.get_note_by_key(txn, *nk) {
-                parse_nip65_relays_note(&note, &mut relays);
+    ) -> Option<(u64, BTreeSet<RelaySpec>)> {
+        let ndb_projection = self.newest_nip65_projection(ndb, txn);
+        Self::effective_projection(self.pending_advertised.as_ref(), ndb_projection.as_ref())
+            .map(|projection| (projection.created_at, projection.advertised))
+    }
+
+    pub(crate) fn accept_local_relay_list(&mut self, projection: RelayListProjection) {
+        self.advertised = projection.advertised.clone();
+        self.pending_advertised = Some(projection);
+    }
+
+    fn effective_projection(
+        pending: Option<&RelayListProjection>,
+        ndb: Option<&RelayListProjection>,
+    ) -> Option<RelayListProjection> {
+        match (pending, ndb) {
+            (Some(pending), Some(ndb)) if pending.created_at >= ndb.created_at => {
+                Some(pending.clone())
+            }
+            (Some(_), Some(ndb)) => Some(ndb.clone()),
+            (Some(pending), None) => Some(pending.clone()),
+            (None, Some(ndb)) => Some(ndb.clone()),
+            (None, None) => None,
+        }
+    }
+
+    fn apply_nip65_projection(&mut self, ndb_projection: Option<RelayListProjection>) -> bool {
+        let old = self.advertised.clone();
+
+        match ndb_projection {
+            Some(projection) => {
+                if self
+                    .ndb_advertised_created_at
+                    .is_some_and(|current| projection.created_at < current)
+                {
+                    return false;
+                }
+
+                if self.pending_advertised.as_ref().is_some_and(|pending| {
+                    projection.created_at > pending.created_at
+                        || (projection.created_at == pending.created_at
+                            && projection.advertised == pending.advertised)
+                }) {
+                    self.pending_advertised = None;
+                }
+
+                self.ndb_advertised_created_at = Some(projection.created_at);
+                if self
+                    .pending_advertised
+                    .as_ref()
+                    .is_some_and(|pending| pending.created_at >= projection.created_at)
+                {
+                    self.advertised = self
+                        .pending_advertised
+                        .as_ref()
+                        .expect("pending projection")
+                        .advertised
+                        .clone();
+                } else {
+                    self.advertised = projection.advertised;
+                }
+            }
+            None => {
+                self.ndb_advertised_created_at = None;
+                if let Some(pending) = &self.pending_advertised {
+                    self.advertised = pending.advertised.clone();
+                } else {
+                    self.advertised.clear();
+                }
             }
         }
-        relays
+
+        self.advertised != old
     }
 
-    pub fn new_nip65_relays_note(&'_ self, seckey: &[u8; 32]) -> Note<'_> {
-        construct_nip65_relays_note(&self.advertised)
-            .sign(seckey)
-            .build()
-            .expect("note build")
+    fn projection_from_nip65_note(note: &Note<'_>) -> RelayListProjection {
+        RelayListProjection {
+            created_at: note.created_at(),
+            advertised: relays_from_nip65_note(note).into_iter().collect(),
+        }
     }
 
+    /// Drain relay-list poll hits and rebuild advertised relays from local NDB.
+    ///
+    /// Returns the previous relay data only when the effective advertised relay
+    /// projection changed. Idle frames do not clone relay state.
     #[profiling::function]
-    pub fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) -> bool {
-        let nks = ndb.poll_for_notes(sub, 1);
+    pub fn poll_for_updates(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        sub: Subscription,
+    ) -> Option<Self> {
+        let nks = ndb.poll_for_notes(sub, RELAY_LIST_POLL_LIMIT);
 
         if nks.is_empty() {
-            return false;
+            return None;
         }
 
-        let advertised: BTreeSet<RelaySpec> =
-            AccountRelayData::harvest_nip65_relays(ndb, txn, &nks)
-                .into_iter()
-                .collect();
-
-        // A 10002 note landed, but it may carry the same relay set we already
-        // have. Only report a change (and trigger a read-relay retarget) when
-        // the advertised set actually differs, so callers don't re-resolve
-        // relays for a no-op update.
-        if advertised == self.advertised {
-            return false;
+        let mut newest = None;
+        for nk in nks {
+            let Ok(note) = ndb.get_note_by_key(txn, nk) else {
+                continue;
+            };
+            let projection = Self::projection_from_nip65_note(&note);
+            if newest.as_ref().is_none_or(|current: &RelayListProjection| {
+                projection.created_at >= current.created_at
+            }) {
+                newest = Some(projection);
+            }
         }
 
-        debug!("updated relays {:?}", advertised);
-        self.advertised = advertised;
+        let newest = newest?;
 
-        true
+        let previous = self.clone();
+        let changed = self.apply_nip65_projection(Some(newest));
+        debug!("updated relays {:?}", self.advertised);
+        changed.then_some(previous)
     }
 
     /// Poll the kind-10013 private relay subscription, re-decrypting the list
@@ -176,39 +274,6 @@ impl AccountRelayData {
     }
 }
 
-/// Parses the `r` tags of a single kind-10002 NIP-65 note into [`RelaySpec`]s,
-/// appending them to `relays`.
-pub(crate) fn parse_nip65_relays_note(note: &Note, relays: &mut Vec<RelaySpec>) {
-    for tag in note.tags() {
-        match tag.get(0).and_then(|t| t.variant().str()) {
-            Some("r") => {
-                if let Some(url) = tag.get(1).and_then(|f| f.variant().str()) {
-                    let has_read_marker = tag
-                        .get(2)
-                        .is_some_and(|m| m.variant().str() == Some("read"));
-                    let has_write_marker = tag
-                        .get(2)
-                        .is_some_and(|m| m.variant().str() == Some("write"));
-
-                    let Ok(norm_url) = NormRelayUrl::new(url) else {
-                        continue;
-                    };
-                    relays.push(RelaySpec::new(norm_url, has_read_marker, has_write_marker));
-                }
-            }
-            Some("alt") => {
-                // ignore for now
-            }
-            Some(x) => {
-                error!("harvest_nip65_relays: unexpected tag type: {}", x);
-            }
-            None => {
-                error!("harvest_nip65_relays: invalid tag");
-            }
-        }
-    }
-}
-
 /// Builds a kind-10002 NIP-65 relay-list note for the provided advertised relays.
 pub fn construct_nip65_relays_note<'a>(
     relay_specs: impl IntoIterator<Item = &'a RelaySpec>,
@@ -231,7 +296,7 @@ pub fn construct_nip65_relays_note<'a>(
 /// NIP-37 "Relay List for Private Content" (kind `10013`).
 ///
 /// The user's private-sync relays are *not* published as a public NIP-65
-/// marker — they live in a dedicated kind-10013 event whose `.content` is the
+/// marker -- they live in a dedicated kind-10013 event whose `.content` is the
 /// NIP-44 self-encrypted (encrypted to the author's own pubkey) JSON array of
 /// `["relay", url]` private tags. This keeps the private set off the public
 /// relay list, is only decryptable by the author, and is the same event
@@ -239,7 +304,7 @@ pub fn construct_nip65_relays_note<'a>(
 pub const PRIVATE_RELAY_LIST_KIND: u32 = 10013;
 
 /// NIP-44 self-encrypt `plaintext` to the keypair's own pubkey. Returns `None`
-/// for a read-only (pubkey-only) account — it has no secret key to encrypt with.
+/// for a read-only (pubkey-only) account -- it has no secret key to encrypt with.
 fn nip44_self_encrypt(keypair: &Keypair, plaintext: &str) -> Option<String> {
     let secret_key = keypair.secret_key.as_ref()?;
     let public_key = nostr::PublicKey::from_slice(keypair.pubkey.bytes()).ok()?;
@@ -304,6 +369,14 @@ pub fn construct_private_relay_list_note<'a>(
         .content(&content)
         .sign(&secret_key.to_secret_bytes())
         .build()
+}
+
+/// Current Unix timestamp used for locally signed relay-list replacements.
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_secs()
 }
 
 pub(crate) struct RelayDefaults {
@@ -416,8 +489,6 @@ impl RelayAction {
         }
     }
 
-    /// Whether this action mutates the kind-10013 private relay list rather than
-    /// the public NIP-65 (kind-10002) advertised list.
     fn is_private(&self) -> bool {
         matches!(
             self,
@@ -426,37 +497,11 @@ impl RelayAction {
     }
 }
 
-pub(super) fn modify_advertised_relays(
-    kp: &Keypair,
-    action: RelayAction,
-    remote: &mut RemoteApi<'_>,
-    relay_defaults: &RelayDefaults,
-    account_data: &mut AccountData,
+fn apply_relay_action(
+    advertised: &mut BTreeSet<RelaySpec>,
+    action: &RelayAction,
+    relay_url: NormRelayUrl,
 ) {
-    let Ok(relay_url) = NormRelayUrl::new(action.get_url()) else {
-        return;
-    };
-
-    if action.is_private() {
-        modify_private_relays(kp, action, relay_url, remote, relay_defaults, account_data);
-        return;
-    }
-
-    let relay_url_str = relay_url.to_string();
-    match action {
-        RelayAction::Add(_) => info!("add advertised relay \"{relay_url_str}\""),
-        RelayAction::Remove(_) => info!("remove advertised relay \"{relay_url_str}\""),
-        RelayAction::AddPrivate(_) | RelayAction::RemovePrivate(_) => unreachable!(),
-    }
-
-    // let selected = self.cache.selected_mut();
-
-    let advertised = &mut account_data.relay.advertised;
-    if advertised.is_empty() {
-        // If the selected account has no advertised relays,
-        // initialize with the bootstrapping set.
-        advertised.extend(relay_defaults.bootstrap_relays.iter().cloned());
-    }
     match action {
         RelayAction::Add(_) => {
             advertised.insert(RelaySpec::new(relay_url, false, false));
@@ -466,40 +511,173 @@ pub(super) fn modify_advertised_relays(
         }
         RelayAction::AddPrivate(_) | RelayAction::RemovePrivate(_) => unreachable!(),
     }
+}
 
-    // If we have the secret key publish the NIP-65 relay list
-    if let Some(secretkey) = &kp.secret_key {
-        let note = account_data
-            .relay
-            .new_nip65_relays_note(&secretkey.to_secret_bytes());
+fn normalize_relay_action(action: &RelayAction) -> Option<NormRelayUrl> {
+    let Ok(relay_url) = NormRelayUrl::new(action.get_url()) else {
+        return None;
+    };
 
-        let mut publisher = remote.publisher_explicit();
-        publisher.publish_note(&note, write_relays(relay_defaults, &account_data.relay));
+    let relay_url_str = relay_url.to_string();
+    match action {
+        RelayAction::Add(_) => info!("add advertised relay \"{relay_url_str}\""),
+        RelayAction::Remove(_) => info!("remove advertised relay \"{relay_url_str}\""),
+        RelayAction::AddPrivate(_) => info!("add private relay \"{relay_url_str}\""),
+        RelayAction::RemovePrivate(_) => info!("remove private relay \"{relay_url_str}\""),
     }
+
+    Some(relay_url)
+}
+
+/// Apply a local advertised-relay edit without creating a signed relay-list note.
+pub(super) fn apply_local_advertised_relay_action(
+    action: RelayAction,
+    relay_defaults: &RelayDefaults,
+    relay_data: &mut AccountRelayData,
+) -> bool {
+    if action.is_private() {
+        return false;
+    }
+
+    let old = relay_data.advertised.clone();
+    let Some(relay_url) = normalize_relay_action(&action) else {
+        return false;
+    };
+
+    if relay_data.advertised.is_empty() {
+        relay_data
+            .advertised
+            .extend(relay_defaults.bootstrap_relays.iter().cloned());
+    }
+
+    apply_relay_action(&mut relay_data.advertised, &action, relay_url);
+    relay_data.pending_advertised = None;
+
+    relay_data.advertised != old
+}
+
+/// Locally-authored relay-list edit ready for NDB ingest and broadcast.
+pub(super) struct AdvertisedRelayEdit {
+    pub note: Note<'static>,
+    pub projection: RelayListProjection,
+    pub write_relays: Vec<RelayId>,
+}
+
+/// Computes write relay targets for a specific advertised relay-list projection.
+fn write_relays_for_advertised(
+    relay_defaults: &RelayDefaults,
+    relay_data: &AccountRelayData,
+    advertised: BTreeSet<RelaySpec>,
+) -> Vec<RelayId> {
+    let mut projected_data = relay_data.clone();
+    projected_data.advertised = advertised;
+    write_relays(relay_defaults, &projected_data)
+}
+
+/// Merges old and new write targets into a stable relay publish order.
+fn merge_write_relays(
+    old_write_relays: impl IntoIterator<Item = RelayId>,
+    new_write_relays: impl IntoIterator<Item = RelayId>,
+) -> Vec<RelayId> {
+    let mut websocket_relays = BTreeSet::new();
+    let mut has_multicast = false;
+
+    for relay in old_write_relays.into_iter().chain(new_write_relays) {
+        match relay {
+            RelayId::Websocket(url) => {
+                websocket_relays.insert(url);
+            }
+            RelayId::Multicast => {
+                has_multicast = true;
+            }
+        }
+    }
+
+    let mut relays = websocket_relays
+        .into_iter()
+        .map(RelayId::Websocket)
+        .collect::<Vec<_>>();
+    if has_multicast {
+        relays.push(RelayId::Multicast);
+    }
+
+    relays
+}
+
+/// Computes a signed NIP-65 relay-list edit without mutating account state.
+pub(super) fn modify_advertised_relays(
+    kp: &Keypair,
+    action: RelayAction,
+    relay_defaults: &RelayDefaults,
+    relay_data: &AccountRelayData,
+    base_advertised: &BTreeSet<RelaySpec>,
+    bootstrap_if_empty: bool,
+    created_after: Option<u64>,
+) -> Option<AdvertisedRelayEdit> {
+    if action.is_private() {
+        return None;
+    }
+
+    let secretkey = kp.secret_key.as_ref()?;
+    let relay_url = normalize_relay_action(&action)?;
+
+    let old_write_relays =
+        write_relays_for_advertised(relay_defaults, relay_data, base_advertised.clone());
+    let mut advertised = base_advertised.clone();
+    if advertised.is_empty() && bootstrap_if_empty {
+        // If there is no local relay-list event and the selected account
+        // has no advertised relays, initialize with the bootstrapping set.
+        advertised.extend(relay_defaults.bootstrap_relays.iter().cloned());
+    }
+    apply_relay_action(&mut advertised, &action, relay_url);
+
+    let secret_bytes = secretkey.to_secret_bytes();
+    let created_at = created_after
+        .map(|created_at| created_at.saturating_add(1))
+        .unwrap_or(0)
+        .max(current_unix_timestamp());
+    let note_builder = construct_nip65_relays_note(&advertised).created_at(created_at);
+    let note = note_builder
+        .sign(&secret_bytes)
+        .build()
+        .expect("note build");
+    let advertised: BTreeSet<RelaySpec> = relays_from_nip65_note(&note).into_iter().collect();
+    let new_write_relays =
+        write_relays_for_advertised(relay_defaults, relay_data, advertised.clone());
+    let write_relays = merge_write_relays(old_write_relays, new_write_relays);
+
+    let projection = RelayListProjection {
+        created_at: note.created_at(),
+        advertised,
+    };
+
+    Some(AdvertisedRelayEdit {
+        note,
+        projection,
+        write_relays,
+    })
 }
 
 /// Apply an `AddPrivate`/`RemovePrivate` action: mutate the in-memory private
 /// relay set and republish the kind-10013 NIP-37 list to the account's NIP-65
-/// write relays (and the private relays themselves, so the new set lands on the
-/// very relays it names). A read-only account can't encrypt/sign the list, so
-/// the change stays local.
-fn modify_private_relays(
+/// write relays and the private relays themselves.
+pub(super) fn modify_private_relays(
     kp: &Keypair,
     action: RelayAction,
-    relay_url: NormRelayUrl,
     remote: &mut RemoteApi<'_>,
     relay_defaults: &RelayDefaults,
     account_data: &mut AccountData,
 ) {
-    let relay_url_str = relay_url.to_string();
+    let Some(relay_url) = normalize_relay_action(&action) else {
+        return;
+    };
+
     let private = &mut account_data.relay.private;
     match action {
         RelayAction::AddPrivate(_) => {
-            info!("add private relay \"{relay_url_str}\"");
             private.insert(relay_url);
         }
         RelayAction::RemovePrivate(_) => {
-            info!("remove private relay \"{relay_url_str}\"");
             private.remove(&relay_url);
         }
         RelayAction::Add(_) | RelayAction::Remove(_) => unreachable!(),
@@ -537,12 +715,54 @@ pub fn write_relays(relay_defaults: &RelayDefaults, data: &AccountRelayData) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
-        construct_nip65_relays_note, construct_private_relay_list_note,
-        parse_private_relay_list_note, PRIVATE_RELAY_LIST_KIND,
+        construct_nip65_relays_note, construct_private_relay_list_note, modify_advertised_relays,
+        parse_private_relay_list_note, AccountRelayData, RelayAction, RelayDefaults,
+        RelayListProjection, PRIVATE_RELAY_LIST_KIND,
     };
     use crate::RelaySpec;
-    use enostr::{FullKeypair, Keypair, NormRelayUrl};
+    use enostr::{FullKeypair, Keypair, NormRelayUrl, RelayId};
+
+    fn relay_spec(url: &str) -> RelaySpec {
+        RelaySpec::new(NormRelayUrl::new(url).expect("relay url"), false, false)
+    }
+
+    fn relay_projection(
+        created_at: u64,
+        relays: impl IntoIterator<Item = RelaySpec>,
+    ) -> RelayListProjection {
+        RelayListProjection {
+            created_at,
+            advertised: relays.into_iter().collect(),
+        }
+    }
+
+    fn relay_defaults(bootstrap_relays: Vec<RelaySpec>) -> RelayDefaults {
+        RelayDefaults {
+            forced_relays: BTreeSet::new(),
+            bootstrap_relays: bootstrap_relays.into_iter().collect(),
+        }
+    }
+
+    fn websocket_targets(relays: &[RelayId]) -> BTreeSet<NormRelayUrl> {
+        relays
+            .iter()
+            .filter_map(|relay| match relay {
+                RelayId::Websocket(url) => Some(url.clone()),
+                RelayId::Multicast => None,
+            })
+            .collect()
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs()
+    }
 
     #[test]
     fn construct_nip65_relays_note_emits_expected_tags() {
@@ -602,7 +822,6 @@ mod tests {
             .expect("private relay list note");
 
         assert_eq!(note.kind(), PRIVATE_RELAY_LIST_KIND);
-        // The relay set must not leak into the public content or tags.
         assert!(!note.content().contains("private-a.example.com"));
         assert_eq!(note.tags().into_iter().count(), 0);
     }
@@ -659,7 +878,7 @@ mod tests {
     }
 
     /// NIP-65 relays serialize to just the `r` tag plus an optional read/write
-    /// marker — no trailing entries.
+    /// marker -- no trailing entries.
     #[test]
     fn construct_nip65_relays_note_no_trailing_entries() {
         let owner = FullKeypair::generate();
@@ -681,18 +900,201 @@ mod tests {
             .build()
             .expect("relay list note");
 
-        // read relay: marker at index 2, nothing after
         assert!(note.tags().into_iter().any(|tag| {
             tag.get_str(0) == Some("r")
                 && tag.get_str(1) == Some("wss://relay-read.example.com/")
                 && tag.get_str(2) == Some("read")
                 && tag.get(3).is_none()
         }));
-        // both relay: nothing past the url
         assert!(note.tags().into_iter().any(|tag| {
             tag.get_str(0) == Some("r")
                 && tag.get_str(1) == Some("wss://relay-both.example.com/")
                 && tag.get(2).is_none()
         }));
+    }
+
+    #[test]
+    fn apply_nip65_projection_keeps_same_second_mismatched_pending_advertised() {
+        let account = FullKeypair::generate();
+        let created_at = 42;
+        let relay_a = relay_spec("wss://relay-a.example.com");
+        let relay_b = relay_spec("wss://relay-b.example.com");
+        let projection = relay_projection(created_at, [relay_a.clone(), relay_b]);
+        let mut relay_data = AccountRelayData::new(account.pubkey.bytes());
+
+        relay_data.accept_local_relay_list(projection);
+        let changed =
+            relay_data.apply_nip65_projection(Some(relay_projection(created_at, [relay_a])));
+
+        assert!(
+            !changed,
+            "same-second mismatched NDB projection must not replace pending advertised relays"
+        );
+        let pending = relay_data
+            .pending_advertised
+            .as_ref()
+            .expect("same-second mismatch remains pending");
+        assert_eq!(pending.created_at, created_at);
+        assert_eq!(relay_data.advertised, pending.advertised);
+        assert_eq!(relay_data.ndb_advertised_created_at, Some(created_at));
+    }
+
+    #[test]
+    fn apply_nip65_projection_clears_same_second_matching_pending_advertised() {
+        let account = FullKeypair::generate();
+        let created_at = 42;
+        let relay_a = relay_spec("wss://relay-a.example.com");
+        let relay_b = relay_spec("wss://relay-b.example.com");
+        let advertised: BTreeSet<_> = [relay_a, relay_b].into_iter().collect();
+        let projection = RelayListProjection {
+            created_at,
+            advertised,
+        };
+        let ndb_projection = projection.clone();
+        let mut relay_data = AccountRelayData::new(account.pubkey.bytes());
+
+        relay_data.accept_local_relay_list(projection);
+        let changed = relay_data.apply_nip65_projection(Some(ndb_projection.clone()));
+
+        assert!(!changed);
+        assert_eq!(relay_data.advertised, ndb_projection.advertised);
+        assert!(
+            relay_data.pending_advertised.is_none(),
+            "same-second matching NDB projection confirms pending advertised relays"
+        );
+        assert_eq!(relay_data.ndb_advertised_created_at, Some(created_at));
+    }
+
+    #[test]
+    fn apply_nip65_projection_ignores_older_confirmed_projection() {
+        let account = FullKeypair::generate();
+        let relay_new = relay_spec("wss://relay-newer.example.com");
+        let relay_old = relay_spec("wss://relay-older.example.com");
+        let mut relay_data = AccountRelayData::new(account.pubkey.bytes());
+
+        assert!(relay_data.apply_nip65_projection(Some(relay_projection(20, [relay_new.clone()]))));
+        let changed = relay_data.apply_nip65_projection(Some(relay_projection(10, [relay_old])));
+
+        assert!(!changed);
+        assert_eq!(relay_data.advertised, [relay_new].into_iter().collect());
+        assert_eq!(relay_data.ndb_advertised_created_at, Some(20));
+    }
+
+    #[test]
+    fn modify_advertised_relays_remove_targets_removed_write_relay() {
+        let account = FullKeypair::generate();
+        let keypair = account.clone().to_keypair();
+        let relay_defaults = relay_defaults(Vec::new());
+        let relay_a = relay_spec("wss://relay-remove-a.example.com");
+        let relay_b = relay_spec("wss://relay-remove-b.example.com");
+        let base_advertised = [relay_a.clone(), relay_b.clone()].into_iter().collect();
+        let mut relay_data = AccountRelayData::new(account.pubkey.bytes());
+        relay_data.advertised = base_advertised;
+
+        let edit = modify_advertised_relays(
+            &keypair,
+            RelayAction::Remove(relay_b.url.to_string()),
+            &relay_defaults,
+            &relay_data,
+            &relay_data.advertised,
+            false,
+            None,
+        )
+        .expect("relay edit");
+
+        assert_eq!(
+            edit.write_relays,
+            vec![
+                RelayId::Websocket(relay_a.url.clone()),
+                RelayId::Websocket(relay_b.url.clone()),
+                RelayId::Multicast,
+            ]
+        );
+        let write_targets = websocket_targets(&edit.write_relays);
+        assert!(write_targets.contains(&relay_a.url));
+        assert!(
+            write_targets.contains(&relay_b.url),
+            "removed writable relay must receive the replacement kind-10002"
+        );
+    }
+
+    #[test]
+    fn modify_advertised_relays_add_targets_pre_edit_bootstrap_and_new_write_relay() {
+        let account = FullKeypair::generate();
+        let keypair = account.clone().to_keypair();
+        let bootstrap_a = relay_spec("wss://relay-bootstrap-a.example.com");
+        let bootstrap_b = relay_spec("wss://relay-bootstrap-b.example.com");
+        let relay_defaults = relay_defaults(vec![bootstrap_a.clone(), bootstrap_b.clone()]);
+        let relay_c = relay_spec("wss://relay-c-add.example.com");
+        let relay_data = AccountRelayData::new(account.pubkey.bytes());
+
+        let edit = modify_advertised_relays(
+            &keypair,
+            RelayAction::Add(relay_c.url.to_string()),
+            &relay_defaults,
+            &relay_data,
+            &relay_data.advertised,
+            false,
+            None,
+        )
+        .expect("relay edit");
+
+        assert_eq!(
+            edit.write_relays,
+            vec![
+                RelayId::Websocket(bootstrap_a.url.clone()),
+                RelayId::Websocket(bootstrap_b.url.clone()),
+                RelayId::Websocket(relay_c.url.clone()),
+                RelayId::Multicast,
+            ]
+        );
+        let write_targets = websocket_targets(&edit.write_relays);
+        assert!(
+            write_targets.contains(&bootstrap_a.url) && write_targets.contains(&bootstrap_b.url),
+            "old empty effective write set should route through bootstrap relays"
+        );
+        assert!(
+            write_targets.contains(&relay_c.url),
+            "new writable relay must receive the replacement kind-10002"
+        );
+        assert_eq!(
+            edit.projection.advertised,
+            std::iter::once(relay_c).collect(),
+            "bootstrap relays are publish targets only, not signed relay-list entries"
+        );
+    }
+
+    #[test]
+    fn modify_advertised_relays_uses_current_time_for_stale_replacement() {
+        let account = FullKeypair::generate();
+        let keypair = account.clone().to_keypair();
+        let relay_defaults = relay_defaults(Vec::new());
+        let relay_a = relay_spec("wss://relay-stale-replacement-a.example.com");
+        let relay_b = relay_spec("wss://relay-stale-replacement-b.example.com");
+        let base_advertised = std::iter::once(relay_a).collect::<BTreeSet<_>>();
+        let mut relay_data = AccountRelayData::new(account.pubkey.bytes());
+        relay_data.advertised = base_advertised;
+        let stale_created_at = 1;
+        let before_edit = now_secs();
+
+        let edit = modify_advertised_relays(
+            &keypair,
+            RelayAction::Add(relay_b.url.to_string()),
+            &relay_defaults,
+            &relay_data,
+            &relay_data.advertised,
+            false,
+            Some(stale_created_at),
+        )
+        .expect("relay edit");
+
+        assert!(
+            edit.note.created_at() >= before_edit,
+            "new user intent must not be backdated to stale_created_at + 1"
+        );
+        assert!(
+            edit.note.created_at() > stale_created_at.saturating_add(1),
+            "stale local projection should not force a near-past replacement timestamp"
+        );
     }
 }

@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use egui::TextureHandle;
 use hashbrown::HashMap;
 
-use crate::{jobs::NoOutputRun, TextureState};
+use crate::TextureState;
 use crate::{
     jobs::{
         CompleteResponse, JobOutput, JobPackage, JobRun, MediaJobKind, MediaJobResult,
-        MediaJobSender, RunType,
+        MediaJobSender, NoOutputRun, RunType,
     },
     ImageType,
 };
@@ -18,8 +18,8 @@ use crate::{
             process_image, should_persist_full_content, TextureRequestKey, TextureRequestVariant,
         },
         load_texture_checked,
-        network::http_req,
     },
+    network::http_req,
     MediaCache,
 };
 

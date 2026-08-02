@@ -13,8 +13,9 @@ use crate::{
 fn participant_relay_prefetch_spec(participants: &[Pubkey]) -> SubConfig {
     let filter = participant_dm_relay_list_prefetch_filter(participants);
 
-    SubConfig::live(vec![filter.clone()])
+    SubConfig::builder(vec![filter.clone()])
         .full_history(FullHistoryConfig::new(vec![filter]))
+        .accounts_read_important()
         .build()
 }
 
@@ -99,7 +100,7 @@ fn participant_prefetch_candidates(
 /// Sets the single account-scoped relay-list prefetch declaration.
 #[profiling::function]
 fn set_participant_prefetch_sub(
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
+    scoped_subs: &mut ScopedSubApi<'_>,
     owner: SubOwnerKey,
     participants: &[Pubkey],
 ) {

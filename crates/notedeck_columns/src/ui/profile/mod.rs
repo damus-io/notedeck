@@ -81,17 +81,19 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
         let output = scroll_area.show(ui, |ui| {
             let mut action = None;
-            let txn = Transaction::new(self.note_context.ndb).expect("txn");
-            let profile = self
-                .note_context
-                .ndb
-                .get_profile_by_pubkey(&txn, self.pubkey.bytes())
-                .ok();
-
-            if let Some(profile_view_action) =
-                profile_body(ui, self.pubkey, self.note_context, profile.as_ref(), &txn)
             {
-                action = Some(profile_view_action);
+                let txn = Transaction::new(self.note_context.ndb).expect("txn");
+                let profile = self
+                    .note_context
+                    .ndb
+                    .get_profile_by_pubkey(&txn, self.pubkey.bytes())
+                    .ok();
+
+                if let Some(profile_view_action) =
+                    profile_body(ui, self.pubkey, self.note_context, profile.as_ref(), &txn)
+                {
+                    action = Some(profile_view_action);
+                }
             }
 
             let tabs_resp = tabs_ui(
@@ -104,17 +106,21 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
             let reversed = false;
             // poll for new notes and insert them into our existing notes
-            if let Err(e) = profile_timeline.poll_notes_into_view(
+            match profile_timeline.poll_notes_into_view(
                 self.note_context.accounts.selected_account_pubkey(),
                 self.note_context.ndb,
-                &txn,
-                self.note_context.unknown_ids,
                 self.note_context.note_cache,
                 reversed,
             ) {
-                error!("Profile::poll_notes_into_view: {e}");
+                Ok(new_note_keys) => {
+                    if !new_note_keys.is_empty() {
+                        ui.ctx().request_repaint();
+                    }
+                }
+                Err(e) => error!("Profile::poll_notes_into_view: {e}"),
             }
 
+            let txn = Transaction::new(self.note_context.ndb).expect("txn");
             if let Some(note_action) = TimelineTabView::new(
                 profile_timeline.current_view(),
                 self.note_options,

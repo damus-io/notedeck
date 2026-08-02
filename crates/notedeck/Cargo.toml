@@ -77,6 +77,7 @@ path = "src/bin/update_test_helper.rs"
 required-features = ["auto-update"]
 
 [dev-dependencies]
+enostr_test_support = { path = "../enostr_test_support" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 nostr-relay-builder = "0.37"

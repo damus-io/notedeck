@@ -24,7 +24,7 @@ use nostrdb::Filter;
 
 use crate::{
     AppContext, ExplicitPublishApi, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey,
-    SubOwnerKey,
+    SubOwnerKey, SubRelayPolicy,
 };
 
 /// Fan a single locally-ingested `["EVENT", {…}]` frame out to `relays` as a
@@ -115,8 +115,11 @@ impl PrivateRelaySync {
             return relays;
         }
 
-        let config = SubConfig::live(vec![filter.clone()])
-            .explicit_relays(urls.into_iter().collect::<HashSet<_>>())
+        let config = SubConfig::builder(vec![filter.clone()])
+            .explicit(
+                urls.into_iter().collect::<HashSet<_>>(),
+                SubRelayPolicy::accounts_read_important(),
+            )
             .full_history(FullHistoryConfig::new(vec![filter]))
             .build();
         let _ = scoped.set_sub(ScopedSubIdentity::account(self.owner, self.key), config);
@@ -137,12 +140,11 @@ impl PrivateRelaySync {
         }
 
         let inspect = ctx.remote.relay_inspect();
-        let infos = inspect.relay_infos();
         let statuses: Vec<String> = urls
             .iter()
             .map(|url| {
-                let status = infos
-                    .iter()
+                let status = inspect
+                    .relay_infos()
                     .find(|info| info.relay_url == url)
                     .map(|info| format!("{:?}", info.status))
                     .unwrap_or_else(|| "NotConnected".to_string());
@@ -160,8 +162,11 @@ impl PrivateRelaySync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EguiWakeup, ExplicitPublishApi};
-    use enostr::{FullKeypair, NormRelayUrl, OutboxPool, OutboxSessionHandler};
+    use crate::{
+        remote_data::{RemoteIntent, RemoteIntentBatchBuilder, RemotePublishCommand},
+        ExplicitPublishApi,
+    };
+    use enostr::{FullKeypair, NormRelayUrl};
     use nostrdb::NoteBuilder;
 
     /// Frame a signed note as the `["EVENT", {…}]` envelope `ingest` hands the
@@ -179,33 +184,45 @@ mod tests {
         serde_json::json!(["EVENT", event]).to_string()
     }
 
-    /// Drive `fan_out_event_frame` and return the relay set the outbox opened.
-    fn relays_opened_for(frame: &str, relays: Vec<RelayId>) -> HashSet<NormRelayUrl> {
-        let mut pool = OutboxPool::default();
+    /// Drive `fan_out_event_frame` and return the explicit publish relay set.
+    fn explicit_publish_relays_for(frame: &str, relays: Vec<RelayId>) -> Option<Vec<RelayId>> {
+        let mut batch = RemoteIntentBatchBuilder::new();
         {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
-            let mut api = ExplicitPublishApi::new(&mut outbox);
+            let mut api = ExplicitPublishApi::new(&mut batch);
             fan_out_event_frame(&mut api, frame, &relays);
         }
-        pool.websocket_statuses()
-            .keys()
-            .map(|url| (*url).clone())
-            .collect()
+
+        let batch = batch.take()?;
+        let mut publish_relays = None;
+        for section in batch.sections() {
+            for intent in section.intents() {
+                let RemoteIntent::Publish(RemotePublishCommand::Explicit { relays, .. }) = intent
+                else {
+                    panic!("unexpected private-sync intent");
+                };
+                assert!(
+                    publish_relays.is_none(),
+                    "fan_out_event_frame should emit one explicit publish"
+                );
+                publish_relays = Some(relays.clone());
+            }
+        }
+        publish_relays
     }
 
     /// A well-formed frame is unwrapped and published to each target relay.
     #[tokio::test]
     async fn fan_out_publishes_inner_event_to_targets() {
         let relay = NormRelayUrl::new("wss://private.example.com").expect("relay");
-        let opened = relays_opened_for(&event_frame(), vec![RelayId::Websocket(relay.clone())]);
-        assert_eq!(opened, HashSet::from_iter([relay]));
+        let publish_relays =
+            explicit_publish_relays_for(&event_frame(), vec![RelayId::Websocket(relay.clone())]);
+        assert_eq!(publish_relays, Some(vec![RelayId::Websocket(relay)]));
     }
 
     /// An empty relay set is a no-op — no relay connection is opened.
     #[test]
     fn fan_out_empty_relays_is_noop() {
-        assert!(relays_opened_for(&event_frame(), vec![]).is_empty());
+        assert!(explicit_publish_relays_for(&event_frame(), vec![]).is_none());
     }
 
     /// A malformed frame (no inner event object) opens no relay; the local ingest
@@ -213,7 +230,7 @@ mod tests {
     #[test]
     fn fan_out_malformed_frame_is_noop() {
         let relay = RelayId::Websocket(NormRelayUrl::new("wss://private.example.com").expect("r"));
-        assert!(relays_opened_for("not json", vec![relay.clone()]).is_empty());
-        assert!(relays_opened_for("[\"EVENT\"]", vec![relay]).is_empty());
+        assert!(explicit_publish_relays_for("not json", vec![relay.clone()]).is_none());
+        assert!(explicit_publish_relays_for("[\"EVENT\"]", vec![relay]).is_none());
     }
 }

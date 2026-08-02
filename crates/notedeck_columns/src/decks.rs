@@ -2,12 +2,13 @@ use std::collections::{hash_map::ValuesMut, HashMap};
 
 use enostr::Pubkey;
 use nostrdb::Transaction;
-use notedeck::{tr, AppContext, Localization, ScopedSubApi, FALLBACK_PUBKEY};
+use notedeck::{tr, AppContext, Localization, FALLBACK_PUBKEY};
 use tracing::{error, info};
 
 use crate::{
-    column::{Column, Columns},
-    timeline::{TimelineCache, TimelineKind},
+    column::{Column, ColumnId, Columns},
+    route::Route,
+    timeline::{RemoteSubscriptionPolicy, TimelineCache, TimelineKind},
     ui::configure_deck::ConfigureDeckResponse,
 };
 
@@ -19,6 +20,12 @@ pub enum DecksAction {
 pub struct DecksCache {
     account_to_decks: HashMap<Pubkey, Decks>,
     fallback_pubkey: Pubkey,
+}
+
+#[must_use = "removed deck routes must be disposed"]
+pub(crate) struct DecksRemoval {
+    pub account_pk: Pubkey,
+    pub decks: Vec<Deck>,
 }
 
 impl DecksCache {
@@ -127,7 +134,7 @@ impl DecksCache {
             ctx,
             timeline_cache,
             pubkey,
-            &mut decks.decks_mut()[0].columns,
+            decks.active_mut().columns_mut(),
         );
 
         self.account_to_decks.insert(pubkey, decks);
@@ -165,25 +172,21 @@ impl DecksCache {
         }
     }
 
-    pub fn remove(
-        &mut self,
-        i18n: &mut Localization,
-        key: &Pubkey,
-        timeline_cache: &mut TimelineCache,
-        ndb: &mut nostrdb::Ndb,
-        scoped_subs: &mut ScopedSubApi<'_, '_>,
-    ) {
-        let Some(decks) = self.account_to_decks.remove(key) else {
-            return;
-        };
+    pub(crate) fn remove(&mut self, i18n: &mut Localization, key: &Pubkey) -> Option<DecksRemoval> {
+        let decks = self.account_to_decks.remove(key)?;
         info!("Removing decks for {:?}", key);
 
-        decks.unsubscribe_all(timeline_cache, ndb, scoped_subs);
+        let removal = DecksRemoval {
+            account_pk: *key,
+            decks: decks.decks,
+        };
 
         if !self.account_to_decks.contains_key(&self.fallback_pubkey) {
             self.account_to_decks
                 .insert(self.fallback_pubkey, Decks::default_decks(i18n));
         }
+
+        Some(removal)
     }
 
     pub fn get_fallback_pubkey(&self) -> &Pubkey {
@@ -197,12 +200,24 @@ impl DecksCache {
     pub fn get_mapping(&self) -> &HashMap<Pubkey, Decks> {
         &self.account_to_decks
     }
+
+    /// Remove the top route from the column owned by `account_pk` and `column_id`.
+    pub(crate) fn remove_top_route_for_column(
+        &mut self,
+        account_pk: &Pubkey,
+        column_id: ColumnId,
+    ) -> Option<Route> {
+        self.account_to_decks
+            .get_mut(account_pk)
+            .and_then(|decks| decks.remove_top_route_for_column(column_id))
+    }
 }
 
 pub struct Decks {
     active_deck: usize,
     removal_request: Option<usize>,
     decks: Vec<Deck>,
+    next_deck_id: u64,
 }
 
 impl Decks {
@@ -211,20 +226,28 @@ impl Decks {
     }
 
     pub fn new(deck: Deck) -> Self {
-        let decks = vec![deck];
+        let mut next_deck_id = 1;
+        let mut decks = vec![deck];
+        assign_deck_ids(&mut decks, &mut next_deck_id);
 
         Decks {
             active_deck: 0,
             removal_request: None,
             decks,
+            next_deck_id,
         }
     }
 
     pub fn from_decks(active_deck: usize, decks: Vec<Deck>) -> Self {
+        let mut next_deck_id = 1;
+        let mut decks = decks;
+        assign_deck_ids(&mut decks, &mut next_deck_id);
+
         Self {
             active_deck,
             removal_request: None,
             decks,
+            next_deck_id,
         }
     }
 
@@ -240,8 +263,17 @@ impl Decks {
             .expect("active_deck index was invalid")
     }
 
-    pub fn decks(&self) -> &Vec<Deck> {
+    pub fn decks(&self) -> &[Deck] {
         &self.decks
+    }
+
+    pub fn decks_mut(&mut self) -> &mut Vec<Deck> {
+        &mut self.decks
+    }
+
+    #[cfg(test)]
+    pub fn deck_mut(&mut self, index: usize) -> Option<&mut Deck> {
+        self.decks.get_mut(index)
     }
 
     fn active_deck_index(&self) -> Option<usize> {
@@ -265,11 +297,9 @@ impl Decks {
         self.active_deck_index().map(|ind| &mut self.decks[ind])
     }
 
-    pub fn decks_mut(&mut self) -> &mut Vec<Deck> {
-        &mut self.decks
-    }
-
     pub fn add_deck(&mut self, deck: Deck) {
+        let mut deck = deck;
+        assign_deck_id(&mut deck, &mut self.next_deck_id);
         self.decks.push(deck);
     }
 
@@ -289,18 +319,9 @@ impl Decks {
         }
     }
 
-    pub fn remove_deck(
-        &mut self,
-        index: usize,
-        timeline_cache: &mut TimelineCache,
-        ndb: &mut nostrdb::Ndb,
-        scoped_subs: &mut ScopedSubApi<'_, '_>,
-    ) {
-        let Some(deck) = self.remove_deck_internal(index) else {
-            return;
-        };
-
-        delete_deck(deck, timeline_cache, ndb, scoped_subs);
+    #[must_use = "removed deck routes must be disposed"]
+    pub(crate) fn remove_deck(&mut self, index: usize) -> Option<Deck> {
+        self.remove_deck_internal(index)
     }
 
     fn remove_deck_internal(&mut self, index: usize) -> Option<Deck> {
@@ -353,35 +374,27 @@ impl Decks {
         res
     }
 
-    pub fn unsubscribe_all(
-        self,
-        timeline_cache: &mut TimelineCache,
-        ndb: &mut nostrdb::Ndb,
-        scoped_subs: &mut ScopedSubApi<'_, '_>,
-    ) {
-        for deck in self.decks {
-            delete_deck(deck, timeline_cache, ndb, scoped_subs);
+    /// Remove the top route from the deck column with `column_id`.
+    pub(crate) fn remove_top_route_for_column(&mut self, column_id: ColumnId) -> Option<Route> {
+        for deck in &mut self.decks {
+            if let Some((_index, column)) = deck.columns_mut().column_mut_by_id(column_id) {
+                return column.router_mut().remove_top_route_for_disposal();
+            }
         }
+
+        None
     }
 }
 
-fn delete_deck(
-    mut deck: Deck,
-    timeline_cache: &mut TimelineCache,
-    ndb: &mut nostrdb::Ndb,
-    scoped_subs: &mut ScopedSubApi<'_, '_>,
-) {
-    let cols = deck.columns_mut();
-    let num_cols = cols.num_columns();
-    for i in (0..num_cols).rev() {
-        let kinds_to_pop = cols.delete_column(i);
-
-        for kind in &kinds_to_pop {
-            if let Err(err) = timeline_cache.pop(kind, ndb, scoped_subs) {
-                error!("error popping timeline: {err}");
-            }
-        }
+fn assign_deck_ids(decks: &mut [Deck], next_deck_id: &mut u64) {
+    for deck in decks {
+        assign_deck_id(deck, next_deck_id);
     }
+}
+
+fn assign_deck_id(deck: &mut Deck, next_deck_id: &mut u64) {
+    deck.columns_mut().assign_deck_id(*next_deck_id);
+    *next_deck_id = next_deck_id.saturating_add(1);
 }
 
 pub struct Deck {
@@ -465,14 +478,9 @@ pub fn add_demo_columns(
             &mut scoped_subs,
             kind,
             pubkey,
+            RemoteSubscriptionPolicy::from_outbox_relays(ctx.settings.columns_use_outbox_relays()),
         ) {
-            results.process(
-                ctx.ndb,
-                ctx.note_cache,
-                &txn,
-                timeline_cache,
-                ctx.unknown_ids,
-            );
+            results.process(ctx.ndb, ctx.note_cache, &txn, timeline_cache);
         }
     }
 }
@@ -497,4 +505,59 @@ pub fn demo_decks(
     };
 
     Decks::new(deck)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::column::ColumnId;
+    use crate::route::Route;
+    use crate::ui::add_column::AddColumnRoute;
+
+    fn deck_with_column() -> Deck {
+        let mut columns = Columns::new();
+        columns.add_column(Column::new(vec![Route::AddColumn(AddColumnRoute::Base)]));
+
+        Deck::new_with_columns(Deck::default_icon(), "Deck".to_owned(), columns)
+    }
+
+    #[test]
+    fn decks_allocate_unique_column_ids_across_decks() {
+        let first = deck_with_column();
+        let second = deck_with_column();
+        let second_initial_id = second.columns().column(0).id();
+        let mut decks = Decks::new(first);
+
+        decks.add_deck(second);
+        decks.active_mut().columns_mut().new_column_picker();
+
+        let first_id = decks.decks()[0].columns().column(0).id();
+        let second_assigned_id = decks.decks()[1].columns().column(0).id();
+        let first_added_id = decks.decks()[0].columns().column(1).id();
+        assert_eq!(first_id, ColumnId::for_test_in_deck(1, 1));
+        assert_eq!(second_initial_id, ColumnId::for_test_in_deck(0, 1));
+        assert_eq!(second_assigned_id, ColumnId::for_test_in_deck(2, 1));
+        assert_eq!(first_added_id, ColumnId::for_test_in_deck(1, 2));
+        assert_ne!(first_id, second_assigned_id);
+        assert_ne!(first_added_id, second_assigned_id);
+    }
+
+    #[test]
+    fn adding_cloned_column_reassigns_id_to_target_deck() {
+        let first = deck_with_column();
+        let cloned_column = first.columns().column(0).clone();
+        let mut decks = Decks::new(first);
+        decks.add_deck(deck_with_column());
+
+        decks
+            .deck_mut(1)
+            .expect("second deck")
+            .columns_mut()
+            .add_column(cloned_column);
+
+        assert_eq!(
+            decks.decks()[1].columns().column(1).id(),
+            ColumnId::for_test_in_deck(2, 2)
+        );
+    }
 }

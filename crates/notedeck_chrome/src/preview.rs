@@ -1,4 +1,4 @@
-use notedeck::{DataPath, Notedeck};
+use notedeck::{DataPath, Notedeck, RuntimeThreadBudget};
 use notedeck_chrome::setup::generate_native_options;
 use notedeck_columns::ui::configure_deck::ConfigureDeckView;
 use notedeck_columns::ui::edit_deck::EditDeckView;
@@ -32,7 +32,7 @@ impl PreviewRunner {
                 let args: Vec<String> = std::env::args().collect();
                 let ctx = &cc.egui_ctx;
 
-                let mut notedeck = Notedeck::new(ctx, &base_path, &args);
+                let mut notedeck = Notedeck::init(ctx, &base_path, &args);
                 assert!(
                     notedeck.unrecognized_args().is_empty(),
                     "unrecognized args: {:?}",
@@ -62,8 +62,12 @@ macro_rules! previews {
     };
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let runtime = RuntimeThreadBudget::from_available_parallelism().build_main_runtime();
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     let mut name: Option<String> = None;
     let mut is_mobile: Option<bool> = None;
     let mut light_mode: bool = false;

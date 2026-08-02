@@ -3,7 +3,7 @@ use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
 use notedeck::{
     builder_from_note, note::publish::publish_note_builder, send_mute_event, Accounts,
-    ContactState, DataPath, Localization, ProfileContext, PublishApi, RelayType, RemoteApi,
+    ContactState, DataPath, Localization, ProfileContext, PublishApi, RemoteApi,
 };
 use tracing::info;
 
@@ -44,6 +44,17 @@ pub enum ProfileAction {
     Context(ProfileContext),
 }
 
+pub enum ProfileActionResponse {
+    Router(RouterAction),
+    ViewAsAccount(Pubkey),
+}
+
+impl From<RouterAction> for ProfileActionResponse {
+    fn from(action: RouterAction) -> Self {
+        Self::Router(action)
+    }
+}
+
 impl ProfileAction {
     #[allow(clippy::too_many_arguments)]
     pub fn process_profile_action(
@@ -55,9 +66,11 @@ impl ProfileAction {
         ndb: &Ndb,
         remote: &mut RemoteApi<'_>,
         accounts: &Accounts,
-    ) -> Option<RouterAction> {
+    ) -> Option<ProfileActionResponse> {
         match self {
-            ProfileAction::Edit(kp) => Some(RouterAction::route_to(Route::EditProfile(kp.pubkey))),
+            ProfileAction::Edit(kp) => {
+                Some(RouterAction::route_to(Route::EditProfile(kp.pubkey)).into())
+            }
             ProfileAction::SaveChanges(changes) => {
                 let note = changes.to_note();
                 let Ok(event) = enostr::ClientMessage::event(&note) else {
@@ -74,27 +87,27 @@ impl ProfileAction {
                 let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
 
                 info!("sending {}", &json);
-                let mut publisher = remote.publisher(accounts);
-                publisher.publish_note(&note, RelayType::AccountsWrite);
+                let mut publisher = remote.publisher();
+                publisher.accounts_write().publish_note(&note);
 
-                Some(RouterAction::GoBack)
+                Some(RouterAction::GoBack.into())
             }
             ProfileAction::Follow(target_key) => {
-                let mut publisher = remote.publisher(accounts);
+                let mut publisher = remote.publisher();
                 Self::send_follow_user_event(ndb, &mut publisher, accounts, target_key);
                 None
             }
             ProfileAction::Unfollow(target_key) => {
-                let mut publisher = remote.publisher(accounts);
+                let mut publisher = remote.publisher();
                 Self::send_unfollow_user_event(ndb, &mut publisher, accounts, target_key);
                 None
             }
             ProfileAction::Context(profile_context) => {
                 use notedeck::ProfileContextSelection;
                 match &profile_context.selection {
-                    ProfileContextSelection::ViewAs => {
-                        Some(RouterAction::SwitchAccount(profile_context.profile))
-                    }
+                    ProfileContextSelection::ViewAs => Some(ProfileActionResponse::ViewAsAccount(
+                        profile_context.profile,
+                    )),
                     ProfileContextSelection::AddProfileColumn => {
                         let timeline_route = Route::Timeline(
                             crate::timeline::TimelineKind::Profile(profile_context.profile),
@@ -122,7 +135,7 @@ impl ProfileAction {
                         let kp = accounts.get_selected_account().key.to_full()?;
                         let muted = accounts.mute();
                         let txn = Transaction::new(ndb).expect("txn");
-                        let publisher = &mut remote.publisher(accounts);
+                        let publisher = &mut remote.publisher();
                         if muted.is_pk_muted(profile_context.profile.bytes()) {
                             notedeck::send_unmute_event(
                                 ndb,
@@ -149,10 +162,13 @@ impl ProfileAction {
                             pubkey: profile_context.profile,
                             note_id: None,
                         };
-                        Some(RouterAction::route_to_sheet(
-                            Route::Report(target),
-                            egui_nav::Split::AbsoluteFromBottom(340.0),
-                        ))
+                        Some(
+                            RouterAction::route_to_sheet(
+                                Route::Report(target),
+                                egui_nav::Split::AbsoluteFromBottom(340.0),
+                            )
+                            .into(),
+                        )
                     }
                     _ => {
                         profile_context
@@ -167,7 +183,7 @@ impl ProfileAction {
 
     fn send_follow_user_event(
         ndb: &Ndb,
-        publisher: &mut PublishApi<'_, '_>,
+        publisher: &mut PublishApi<'_>,
         accounts: &Accounts,
         target_key: &Pubkey,
     ) {
@@ -176,7 +192,7 @@ impl ProfileAction {
 
     fn send_unfollow_user_event(
         ndb: &Ndb,
-        publisher: &mut PublishApi<'_, '_>,
+        publisher: &mut PublishApi<'_>,
         accounts: &Accounts,
         target_key: &Pubkey,
     ) {
@@ -191,7 +207,7 @@ enum FollowAction<'a> {
 
 fn send_kind_3_event(
     ndb: &Ndb,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     accounts: &Accounts,
     action: FollowAction,
 ) {
@@ -260,7 +276,7 @@ fn send_kind_3_event(
 pub fn send_new_contact_list(
     kp: FilledKeypair,
     ndb: &Ndb,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
     mut pks_to_follow: Vec<Pubkey>,
 ) {
     if !pks_to_follow.contains(kp.pubkey) {
@@ -289,7 +305,7 @@ fn construct_contact_list_note<'a>(pks: Vec<Pubkey>) -> NoteBuilder<'a> {
 pub fn send_default_dms_relay_list(
     kp: FilledKeypair<'_>,
     ndb: &Ndb,
-    publisher: &mut PublishApi<'_, '_>,
+    publisher: &mut PublishApi<'_>,
 ) {
     publish_note_builder(construct_default_dms_relay_list(), ndb, publisher, kp);
 }

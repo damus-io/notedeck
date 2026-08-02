@@ -29,12 +29,12 @@ use std::collections::HashMap;
 /// (AUTH/wireguard) relay. TODO: PNS-encrypt these events (as dave does for its
 /// session state via `wrap_pns`) and then we could also fan them out to the
 /// user's *public* write relays without leaking canvas contents.
-struct PrivateRelayPublisher<'o, 'a> {
-    api: ExplicitPublishApi<'o, 'a>,
+struct PrivateRelayPublisher<'o> {
+    api: ExplicitPublishApi<'o>,
     relays: Vec<RelayId>,
 }
 
-impl store::Publisher for PrivateRelayPublisher<'_, '_> {
+impl store::Publisher for PrivateRelayPublisher<'_> {
     fn publish(&mut self, event_frame: &str) {
         fan_out_event_frame(&mut self.api, event_frame, &self.relays);
     }

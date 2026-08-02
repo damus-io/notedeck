@@ -6,8 +6,11 @@ use std::sync::{
 };
 use tokio::sync::oneshot::{self, Receiver};
 
+use crate::runtime::{AppAsyncSpawnError, AppAsyncSpawner};
+
 type Job = Box<dyn FnOnce() + Send + 'static>;
 type JobTx = channel::Sender<JobMessage>;
+const DEFAULT_SYNC_JOB_THREADS: usize = 2;
 
 enum JobMessage {
     Run(Job),
@@ -26,6 +29,7 @@ pub struct JobPool {
     tx: JobTx,
     workers: Vec<std::thread::JoinHandle<()>>,
     accepts_jobs: Arc<AtomicBool>,
+    app_async: AppAsyncSpawner,
 }
 
 impl Drop for JobPool {
@@ -44,16 +48,24 @@ impl Drop for JobPool {
 
 impl Default for JobPool {
     fn default() -> Self {
-        JobPool::new(2)
+        JobPool::new(DEFAULT_SYNC_JOB_THREADS)
     }
 }
 
 impl JobPool {
-    pub fn new(num_threads: usize) -> Self {
+    pub fn new(sync_threads: usize) -> Self {
+        Self::with_app_async(sync_threads, AppAsyncSpawner::unavailable())
+    }
+
+    pub(crate) fn with_app_async(sync_threads: usize, app_async: AppAsyncSpawner) -> Self {
+        assert!(
+            sync_threads > 0,
+            "JobPool requires at least one sync worker"
+        );
         let (tx, rx) = channel::unbounded::<JobMessage>();
         let accepts_jobs = Arc::new(AtomicBool::new(true));
-        let mut workers = Vec::with_capacity(num_threads);
-        for i in 0..num_threads {
+        let mut workers = Vec::with_capacity(sync_threads);
+        for i in 0..sync_threads {
             let rx = rx.clone();
             let handle = std::thread::Builder::new()
                 .name(format!("job-pool-{i}"))
@@ -75,6 +87,7 @@ impl JobPool {
             tx,
             workers,
             accepts_jobs,
+            app_async,
         }
     }
 
@@ -103,6 +116,13 @@ impl JobPool {
         push_job(&self.tx, &self.accepts_jobs, Box::new(job));
     }
 
+    pub(crate) fn spawn_async_no_output<F>(&self, future: F) -> Result<(), AppAsyncSpawnError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.app_async.spawn(future)
+    }
+
     /// Create a clonable submission handle for this pool.
     pub(crate) fn spawner(&self) -> JobSpawner {
         JobSpawner {
@@ -113,12 +133,19 @@ impl JobPool {
 }
 
 impl JobSpawner {
-    pub(crate) fn schedule_receivable<F, T>(&self, job: F) -> Receiver<T>
+    /// Run a synchronous job on the pool, then deliver its result from the
+    /// worker thread through a caller-owned closure.
+    pub(crate) fn schedule_then<F, T, D>(&self, job: F, deliver: D)
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
+        D: FnOnce(T) + Send + 'static,
     {
-        schedule_receivable_on(&self.tx, &self.accepts_jobs, job)
+        let job = Box::new(move || {
+            let output = job();
+            deliver(output);
+        });
+        push_job(&self.tx, &self.accepts_jobs, job);
     }
 }
 

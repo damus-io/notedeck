@@ -9,7 +9,7 @@ use re_memory::AccountingAllocator;
 static GLOBAL: AccountingAllocator<std::alloc::System> =
     AccountingAllocator::new(std::alloc::System);
 
-use notedeck::{Args, DataPath, DataPathType, Notedeck, NotedeckOptions};
+use notedeck::{Args, DataPath, DataPathType, Notedeck, NotedeckOptions, RuntimeThreadBudget};
 use notedeck_chrome::{setup::generate_native_options, Chrome};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
@@ -76,8 +76,13 @@ fn resolve_native_title(args_raw: &[String]) -> (String, bool) {
 
 // Desktop
 #[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn main() {
+fn main() {
+    let runtime = RuntimeThreadBudget::from_available_parallelism().build_main_runtime();
+    runtime.block_on(async_main());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn async_main() {
     #[cfg(feature = "memory")]
     re_memory::accounting_allocator::set_tracking_callstacks(true);
 
@@ -213,7 +218,7 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut notedeck = Notedeck::init(&ctx, &tmpdir, &args);
-        let mut app_ctx = notedeck.app_context(&ctx);
+        let mut app_ctx = notedeck.app_context();
         let app = Damus::new(&mut app_ctx, &args);
 
         assert_eq!(app.columns(app_ctx.accounts).columns().len(), 2);
@@ -237,6 +242,8 @@ mod tests {
         assert_eq!(app.timeline_cache.num_timelines(), 2);
         assert!(app.timeline_cache.get(&tl1).is_some());
         assert!(app.timeline_cache.get(&tl2).is_some());
+
+        app_ctx.remote.flush();
 
         rmrf(tmpdir);
     }
@@ -262,7 +269,10 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut notedeck = Notedeck::init(&ctx, &tmpdir, &args);
-        let app = Damus::new(&mut notedeck.app_context(&ctx), &args);
+        let mut app_ctx = notedeck.app_context();
+        let app = Damus::new(&mut app_ctx, &args);
+        app_ctx.remote.flush();
+        drop(app_ctx);
 
         // ensure we recognized all the arguments
         let completely_unrecognized: Vec<String> = notedeck

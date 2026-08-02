@@ -80,6 +80,11 @@ impl FlushBackoff {
         self.last_attempt.elapsed() >= self.retry_after
     }
 
+    /// Return the instant when the current flush attempt may be retried.
+    pub fn retry_deadline(&self) -> Instant {
+        self.last_attempt + self.retry_after
+    }
+
     pub fn escalate(&mut self) {
         self.attempt += 1;
         let seed = jitter_seed(&"multicast_flush", self.attempt);

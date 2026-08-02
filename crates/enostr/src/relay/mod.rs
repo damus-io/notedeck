@@ -1,7 +1,7 @@
 mod backoff;
-mod broadcast;
 mod compaction;
 mod coordinator;
+mod frame;
 mod identity;
 mod indexed_queue;
 mod limits;
@@ -15,28 +15,33 @@ mod subscription;
 mod transparent;
 mod websocket;
 
-pub use broadcast::{BroadcastCache, BroadcastRelay};
 pub use identity::{
-    FullHistorySubId, NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus,
-    RelayRoutingPreference, RelayType, RelayUrlPkgs,
+    FullHistorySubId, NormRelayUrl, OutboxSubId, RelayConnectionPriority, RelayDemandPriority,
+    RelayId, RelayLegReadiness, RelayReqId, RelayReqStatus, RelayRoutingPreference, RelayType,
+    RelayUrlPkgs, RelayUrlPolicy, RelayUrlSource,
 };
-pub use limits::{
-    RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
-};
-pub use multicast::{MulticastRelay, MulticastRelayCache};
-pub use negentropy::{EventChecker, NegSetProvider};
-pub use nip11::{Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw};
+pub(crate) use limits::ReqFilterLimits;
+pub use limits::{RelayCoordinatorLimits, RelayLimitations};
+pub(in crate::relay) use limits::{SubPass, SubPassGuardian, SubPassRevocation};
+pub(crate) use multicast::MulticastTransportRuntime;
+pub use nip11::{Nip11ApplyOutcome, Nip11LimitationsRaw};
 use nostrdb::Filter;
 pub use outbox::{
-    OutboxPool, OutboxRecvBudget, OutboxRecvResult, OutboxSession, OutboxSessionHandler,
+    EventIngestCapability, EventIngestRequest, FullHistoryCapability,
+    FullHistoryLocalPresenceRequest, FullHistoryLocalPresenceResult, FullHistoryLocalSetRequest,
+    FullHistoryLocalSetResult, FullHistoryPendingIngestionPresenceRequest,
+    FullHistoryPendingIngestionPresenceResult, Nip11Capability, Nip11FetchRequest, OutboxEvent,
+    OutboxIdRegistry, OutboxService, OutboxServiceConfig, OutboxServiceOutput, OutboxSubRelayEose,
 };
 pub use queue::QueuedTasks;
-pub use subscription::{
-    FullHistoryConfig, FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask,
-    OutboxSubscriptions, OutboxTask, SubscribeTask,
+pub(in crate::relay) use subscription::{
+    full_history_filters_from_relay_targets, normalize_full_history_targets, FullHistoryRelayFilter,
 };
-pub use websocket::{WebsocketConn, WebsocketRelay, WebsocketSlot};
-
+pub use subscription::{
+    full_history_targets_have_work, FullHistoryConfig, FullHistoryTarget,
+    FullRelayPkgsModificationTask, ModifyTask, OutboxSubscriptions, SubscribeTask,
+};
+pub(crate) use websocket::WebsocketConn;
 #[cfg(test)]
 pub mod test_utils;
 
@@ -47,11 +52,6 @@ pub enum RelayStatus {
     Disconnected,
 }
 
-enum UnownedRelay<'a> {
-    Websocket(&'a mut WebsocketRelay),
-    Multicast(&'a mut MulticastRelay),
-}
-
 /// RawEventData is the event raw data from a relay
 pub struct RawEventData<'a> {
     pub url: &'a str,
@@ -60,6 +60,7 @@ pub struct RawEventData<'a> {
 }
 
 /// RelayImplType identifies whether an event came from a websocket or multicast relay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelayImplType {
     Websocket,
     Multicast,
@@ -125,8 +126,8 @@ impl MetadataFilters {
         self.meta.iter().map(|f| f.filter_json_size).sum()
     }
 
-    /// Returns a compaction-specific filter projection with any available
-    /// `last_seen` cursor applied as a synthetic `since`.
+    /// Returns filters with any available `last_seen` cursor applied as a
+    /// synthetic `since`.
     pub fn projected_filters(&self) -> Vec<Filter> {
         self.filters
             .iter()
@@ -141,19 +142,12 @@ impl MetadataFilters {
             .collect()
     }
 
-    #[cfg(test)]
-    pub fn since_optimize(&mut self) {
-        for (filter, meta) in self.filters.iter_mut().zip(self.meta.iter()) {
-            let Some(last_seen) = meta.last_seen else {
-                continue;
-            };
-
-            *filter = filter.clone().since_mut(last_seen);
-        }
-    }
-
     pub fn get_filters(&self) -> &Vec<Filter> {
         &self.filters
+    }
+
+    pub(crate) fn filters_for_single_req(&self, limits: ReqFilterLimits) -> Option<Vec<Filter>> {
+        limits.filters_for_single_req(&self.filters)
     }
 
     #[allow(dead_code)]
@@ -214,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn since_optimize_applies_last_seen_to_filter() {
+    fn projected_filters_applies_last_seen_to_filter() {
         let filter = Filter::new().kinds(vec![1]).build();
         let mut metadata_filters = MetadataFilters::new(vec![filter]);
 
@@ -230,12 +224,11 @@ mod tests {
         // Set last_seen on metadata
         metadata_filters.meta[0].last_seen = Some(12345);
 
-        // Call since_optimize
-        metadata_filters.since_optimize();
+        let projected = metadata_filters.projected_filters();
 
         // Now filter should have since
         assert!(
-            filter_has_since(&metadata_filters.get_filters()[0], 12345),
+            filter_has_since(&projected[0], 12345),
             "filter should have since:12345 after optimization"
         );
     }
@@ -274,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn since_optimize_skips_filters_without_last_seen() {
+    fn projected_filters_skips_filters_without_last_seen() {
         let filter1 = Filter::new().kinds(vec![1]).build();
         let filter2 = Filter::new().kinds(vec![2]).build();
         let mut metadata_filters = MetadataFilters::new(vec![filter1, filter2]);
@@ -282,18 +275,16 @@ mod tests {
         // Only set last_seen on first filter
         metadata_filters.meta[0].last_seen = Some(99999);
 
-        metadata_filters.since_optimize();
+        let projected = metadata_filters.projected_filters();
 
         // First filter should have since
         assert!(
-            filter_has_since(&metadata_filters.get_filters()[0], 99999),
+            filter_has_since(&projected[0], 99999),
             "first filter should have since"
         );
 
         // Second filter should NOT have since
-        let json_second = metadata_filters.get_filters()[1]
-            .json()
-            .expect("filter json");
+        let json_second = projected[1].json().expect("filter json");
         assert!(
             !json_second.contains("\"since\""),
             "second filter should not have since"
@@ -301,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn since_optimize_overwrites_existing_since() {
+    fn projected_filters_overwrites_existing_since() {
         // Create filter with initial since value
         let filter = Filter::new().kinds(vec![1]).since(100).build();
         let mut metadata_filters = MetadataFilters::new(vec![filter]);
@@ -314,11 +305,11 @@ mod tests {
 
         // Set different last_seen
         metadata_filters.meta[0].last_seen = Some(200);
-        metadata_filters.since_optimize();
+        let projected = metadata_filters.projected_filters();
 
         // Since should be updated to new value
         assert!(
-            filter_has_since(&metadata_filters.get_filters()[0], 200),
+            filter_has_since(&projected[0], 200),
             "filter should have updated since:200"
         );
     }

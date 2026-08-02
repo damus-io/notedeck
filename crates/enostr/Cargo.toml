@@ -7,14 +7,15 @@ edition = "2021"
 
 [features]
 default = ["tokio-websocket"]
-# ewebsock/tls only enables TLS for ewebsock's blocking tungstenite backend.
-# The tokio backend connects via tokio-tungstenite, which needs its own TLS
-# feature, otherwise wss:// fails with "TLS support not compiled in".
-tokio-websocket = ["ewebsock/tokio", "tokio-tungstenite/rustls-tls-webpki-roots"]
+tokio-websocket = [
+    "ewebsock/tokio",
+    "ewebsock/tls",
+    "dep:tokio-tungstenite",
+    "tokio-tungstenite/rustls-tls-webpki-roots",
+]
 
 [dependencies]
-ewebsock = { version = "0.8.0", features = ["tls"] }
-tokio-tungstenite = { workspace = true, optional = true }
+ewebsock = { workspace = true }
 serde_derive = { workspace = true }
 serde = { workspace = true, features = ["derive"] } # You only need this if you want app persistence
 serde_json = { workspace = true }
@@ -26,7 +27,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 mio = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokenator = { workspace = true }
 hashbrown = { workspace = true }
 slab = { workspace = true }
@@ -36,12 +37,14 @@ base64 = { workspace = true }
 negentropy = { workspace = true }
 uuid = { workspace = true }
 profiling = { workspace = true }
+libc = "0.2"
+tokio-tungstenite = { workspace = true, optional = true }
 
 [dev-dependencies]
 nostr-database = "0.37"
 nostr-relay-builder = "0.37"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = { workspace = true }

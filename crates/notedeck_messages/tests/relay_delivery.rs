@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use enostr::FullKeypair;
+use enostr_test_support::outbox::{test_outbox_service, TestOutboxService};
 use harness::fixtures::{seed_local_dm_relay_list, test_config};
 use harness::ui::{open_conversation_via_ui, send_message_via_ui};
 use harness::{
@@ -17,6 +18,7 @@ use harness::{
     wait_for_device_giftwrap_subs_ready, wait_for_device_messages, LocalRelayExt, TEST_TIMEOUT,
 };
 use harness::{build_messages_device_with_relays, wait_for_device_group_messages};
+use hashbrown::HashSet;
 use nostr::{Filter as NostrFilter, Kind as NostrKind};
 use nostr_relay_builder::{
     prelude::{MemoryDatabase, MemoryDatabaseOptions, NostrEventsDatabase},
@@ -24,6 +26,45 @@ use nostr_relay_builder::{
 };
 use nostrdb::{Filter, NoteBuilder};
 use notedeck_testing::negentropy_relay::{run_memory_negentropy_relay, MemoryNegentropyRelay};
+use serial_test::serial;
+
+fn explicit_relay_pkgs(relay: enostr::NormRelayUrl) -> enostr::RelayUrlPkgs {
+    enostr::RelayUrlPkgs::new(
+        HashSet::from([relay]),
+        enostr::RelayUrlPolicy::explicit(
+            enostr::RelayDemandPriority::Important,
+            enostr::RelayRoutingPreference::PreferDedicated,
+        ),
+    )
+}
+
+async fn wait_for_service_relay_connected(
+    service: &mut TestOutboxService,
+    relay: &enostr::NormRelayUrl,
+    timeout: Duration,
+) {
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            let output = service.next().await;
+            let enostr::OutboxServiceOutput::Events(events) = output else {
+                continue;
+            };
+            if events.into_iter().any(|event| {
+                matches!(
+                    event,
+                    enostr::OutboxEvent::RelayStatusChanged {
+                        relay: event_relay,
+                        status: Some(enostr::RelayStatus::Connected),
+                    } if &event_relay == relay
+                )
+            }) {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(result.is_ok(), "timed out waiting for relay connection");
+}
 
 async fn wait_for_relay_text_note(
     relay_db: &MemoryDatabase,
@@ -94,6 +135,7 @@ fn thread_names() -> std::collections::BTreeMap<String, usize> {
 /// Verify that creating and dropping Notedeck components doesn't leak threads.
 /// Only meaningful on Linux where /proc/self/task is available.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn thread_leak_isolation() {
     init_tracing();
 
@@ -118,12 +160,6 @@ async fn thread_leak_isolation() {
     std::thread::sleep(Duration::from_millis(100));
 
     let egui_ctx = egui::Context::default();
-
-    #[derive(Clone, Default)]
-    struct MockWakeup;
-    impl enostr::Wakeup for MockWakeup {
-        fn wake(&self) {}
-    }
 
     fn assert_no_leaks(label: &str, before: &std::collections::BTreeMap<String, usize>) {
         let after = thread_names();
@@ -155,7 +191,7 @@ async fn thread_leak_isolation() {
     std::thread::sleep(Duration::from_secs(1));
     assert_no_leaks("Step 1: bare Ndb", &b);
 
-    // Step 2: Ndb + OutboxPool (relay connection)
+    // Step 2: Ndb + OutboxService (no relay demand)
     let b = thread_names();
     {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -163,12 +199,12 @@ async fn thread_leak_isolation() {
         std::fs::create_dir_all(&db).unwrap();
         let cfg = test_config().set_ingester_threads(2);
         let _ndb = nostrdb::Ndb::new(db.to_str().unwrap(), &cfg).unwrap();
-        let _pool = enostr::OutboxPool::default();
+        let _service = test_outbox_service();
     }
     std::thread::sleep(Duration::from_secs(1));
-    assert_no_leaks("Step 2: Ndb + OutboxPool", &b);
+    assert_no_leaks("Step 2: Ndb + OutboxService", &b);
 
-    // Step 3: Ndb + OutboxPool + connect to relay
+    // Step 3: Ndb + OutboxService + connect to relay
     let relay = run_local_relay("start relay").await;
     let relay_url = relay.url().to_owned();
     let b = thread_names();
@@ -178,27 +214,19 @@ async fn thread_leak_isolation() {
         std::fs::create_dir_all(&db).unwrap();
         let cfg = test_config().set_ingester_threads(2);
         let _ndb = nostrdb::Ndb::new(db.to_str().unwrap(), &cfg).unwrap();
-        let mut pool = enostr::OutboxPool::default();
-        {
-            let mut session = pool.start_session(MockWakeup);
-            session.subscribe(
-                vec![Filter::new().kinds([1]).build()],
-                enostr::RelayUrlPkgs::new(
-                    [enostr::NormRelayUrl::new(&relay_url).unwrap()]
-                        .into_iter()
-                        .collect(),
-                ),
-            );
-        }
-        // pump until connected
-        for _ in 0..50 {
-            pool.try_recv(|_| {});
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        drop(pool);
+        let mut service = test_outbox_service();
+        let norm_relay = enostr::NormRelayUrl::new(&relay_url).unwrap();
+        let id = service.id_registry().next_sub_id();
+        let _ = service.set_live(
+            id,
+            vec![Filter::new().kinds([1]).build()],
+            explicit_relay_pkgs(norm_relay.clone()),
+        );
+        wait_for_service_relay_connected(&mut service, &norm_relay, Duration::from_secs(5)).await;
+        drop(service);
     }
     std::thread::sleep(Duration::from_secs(1));
-    assert_no_leaks("Step 3: Ndb + OutboxPool + relay", &b);
+    assert_no_leaks("Step 3: Ndb + OutboxService + relay", &b);
 
     // Step 4: Ndb + JobPool
     let b = thread_names();
@@ -770,16 +798,15 @@ async fn multi_relay_explicit_publish_no_ui() {
         now,
     );
     {
-        let ctx = sender_device.ctx.clone();
-        let app_ctx = &mut sender_device.state_mut().notedeck.app_context(&ctx);
+        let app_ctx = &mut sender_device.state_mut().notedeck.app_context();
         let relay_a_norm = enostr::NormRelayUrl::new(&relay_a_url).expect("norm a");
         let relay_b_norm = enostr::NormRelayUrl::new(&relay_b_url).expect("norm b");
         let explicit_relays = vec![
             enostr::RelayId::Websocket(relay_a_norm),
             enostr::RelayId::Websocket(relay_b_norm),
         ];
-        let mut publisher = app_ctx.remote.publisher(app_ctx.accounts);
-        publisher.publish_note(&giftwrap, notedeck::RelayType::Explicit(explicit_relays));
+        let mut publisher = app_ctx.remote.publisher_explicit();
+        publisher.publish_note(&giftwrap, explicit_relays);
     }
     // Step to flush
     for _ in 0..10 {

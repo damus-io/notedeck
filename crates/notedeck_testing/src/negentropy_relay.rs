@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
-use nostr::{ClientMessage, Filter, JsonUtil};
+use nostr::{ClientMessage, Filter, JsonUtil, Kind, PublicKey};
 use nostr_relay_builder::{
     prelude::{MemoryDatabase, MemoryDatabaseOptions, NostrEventsDatabase},
     LocalRelay, RelayBuilder,
@@ -38,11 +38,45 @@ pub enum NegentropyRelayMode {
     /// Reply to only the first `NEG-OPEN` with one `NEG-ERR`, then behave
     /// normally on later attempts.
     NegErrOnOpenOnce(String),
+    /// Reply to only the first matching `NEG-OPEN` with one `NEG-ERR`, then
+    /// behave normally on later matching attempts.
+    NegErrOnMatchingOpenOnce {
+        reason: String,
+        filter: NegentropyOpenFilter,
+    },
     /// Accept `NEG-OPEN` but never answer, forcing the real timeout path.
     SilentOnOpen,
     /// Drop the first `NEG-OPEN` connection before replying, then behave
     /// normally on later attempts.
     DisconnectOnOpenOnce,
+    /// Drop the first matching `NEG-OPEN` connection before replying, then
+    /// behave normally on later matching attempts.
+    DisconnectOnMatchingOpenOnce { filter: NegentropyOpenFilter },
+}
+
+/// Filter selector for targeted negentropy failure injection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NegentropyOpenFilter {
+    kind: Kind,
+    author: PublicKey,
+}
+
+impl NegentropyOpenFilter {
+    pub fn new(kind: Kind, author: PublicKey) -> Self {
+        Self { kind, author }
+    }
+
+    fn matches(&self, filter: &Filter) -> bool {
+        let has_kind = filter
+            .kinds
+            .as_ref()
+            .is_some_and(|kinds| kinds.contains(&self.kind));
+        let has_author = filter
+            .authors
+            .as_ref()
+            .is_some_and(|authors| authors.contains(&self.author));
+        has_kind && has_author
+    }
 }
 
 #[derive(Clone, Default)]
@@ -456,11 +490,34 @@ async fn handle_client_text(
                         return Ok(ClientTextAction::Respond(Some(reply)));
                     }
                 }
+                NegentropyRelayMode::NegErrOnMatchingOpenOnce {
+                    reason,
+                    filter: expected_filter,
+                } => {
+                    if expected_filter.matches(&filter)
+                        && !probe.did_neg_err_once.swap(true, Ordering::SeqCst)
+                    {
+                        let reply = capture_neg_err(probe, &session_key, reason);
+                        return Ok(ClientTextAction::Respond(Some(reply)));
+                    }
+                }
                 NegentropyRelayMode::SilentOnOpen => {
                     return Ok(ClientTextAction::Respond(None));
                 }
                 NegentropyRelayMode::DisconnectOnOpenOnce => {
                     if !probe.did_disconnect_once.swap(true, Ordering::SeqCst) {
+                        tracing::debug!(
+                            "proxy NEG-OPEN disconnecting once for session {session_key}"
+                        );
+                        return Ok(ClientTextAction::Disconnect);
+                    }
+                }
+                NegentropyRelayMode::DisconnectOnMatchingOpenOnce {
+                    filter: expected_filter,
+                } => {
+                    if expected_filter.matches(&filter)
+                        && !probe.did_disconnect_once.swap(true, Ordering::SeqCst)
+                    {
                         tracing::debug!(
                             "proxy NEG-OPEN disconnecting once for session {session_key}"
                         );

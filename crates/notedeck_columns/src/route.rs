@@ -9,6 +9,7 @@ use std::ops::Range;
 
 use crate::{
     accounts::AccountsRoute,
+    column::ColumnId,
     onboarding::Onboarding,
     scoped_sub_owner_keys::onboarding_owner_key,
     timeline::{kind::ColumnTitle, thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
@@ -598,8 +599,25 @@ impl<R: Clone> ColumnsRouter<R> {
         }
     }
 
-    /// Pop a route, should only be called on a NavRespose::Returned reseponse
+    /// Pop a route, should only be called on a `NavResponse::Returned` response.
     pub fn pop(&mut self) -> Option<R> {
+        self.remove_top_route(true)
+    }
+
+    /// Remove the top route outside a rendered nav return.
+    ///
+    /// This is for owner-driven cleanup paths, such as account switching, where
+    /// the source route must be removed before another account becomes selected.
+    pub fn remove_top_route_for_disposal(&mut self) -> Option<R> {
+        let removed = self.remove_top_route(false);
+        if removed.is_some() {
+            self.router_internal.returning = false;
+            self.router_internal.navigating = false;
+        }
+        removed
+    }
+
+    fn remove_top_route(&mut self, keep_forward_route: bool) -> Option<R> {
         if self.router_internal.len() == 1 {
             return None;
         }
@@ -623,7 +641,7 @@ impl<R: Clone> ColumnsRouter<R> {
         };
 
         let popped = self.router_internal.pop()?;
-        if !is_overlay {
+        if keep_forward_route && !is_overlay {
             self.forward_stack.push(popped.clone());
         }
         Some(popped)
@@ -633,7 +651,24 @@ impl<R: Clone> ColumnsRouter<R> {
         self.router_internal.complete_replacement();
     }
 
-    /// Removes all routes in the overlay besides the last
+    /// Removes all routes in the overlay besides the last.
+    ///
+    /// Do not treat the drained routes as missing cleanup work. In Columns, a
+    /// multi-route overlay is a thread stack, not a list of independent route
+    /// owners: `route_to_overlaid` appends another route to the same
+    /// `ThreadSubs` scope, while `route_to_overlaid_new` is the call that starts
+    /// a separate overlay/scope. On click/back, the retained top overlay route is
+    /// returned through normal nav handling with `ReturnType::Click`; then
+    /// `ThreadSubs::unsubscribe_click` drops the whole current thread scope,
+    /// including the stack entries represented by routes drained here.
+    ///
+    /// Returning the drained routes from this generic router would make callers
+    /// dispose them as separate owners, which is the wrong model for thread
+    /// overlays and regresses the master behavior. If a future overlay route
+    /// type really needs per-route ownership inside one overlay range, model that
+    /// ownership explicitly at the route owner layer instead of reusing these
+    /// drained router entries as disposal events. Drag returns do not call
+    /// `go_back`; they pop one route and use `ReturnType::Drag`.
     fn remove_overlay(&mut self, overlay_range: Range<usize>) {
         let num_routes = self.router_internal.routes.len();
         if num_routes <= 1 {
@@ -677,6 +712,16 @@ impl<R: Clone> ColumnsRouter<R> {
 
     pub fn routes(&self) -> &Vec<R> {
         self.router_internal.routes()
+    }
+
+    /// Snapshot the visible route stack for forced disposal.
+    ///
+    /// This must stay aligned with `remove_overlay`: forced disposal owns the
+    /// visible routes only. Routes already drained from a thread overlay are
+    /// represented by the retained top route's `ThreadSubs` scope and must not be
+    /// synthesized back into a disposal list.
+    pub fn routes_for_disposal(&self) -> Vec<R> {
+        self.router_internal.routes().clone()
     }
 
     pub fn navigating(&self) -> bool {
@@ -840,10 +885,15 @@ impl<R: Clone> Default for SingletonRouter<R> {
     }
 }
 
+enum RouteCleanup {
+    Returned { return_type: ReturnType },
+    Disposed { account_pk: Pubkey },
+}
+
 /// Centralized resource cleanup for popped routes.
-/// This handles cleanup for Timeline, Thread, and EditProfile routes.
+/// This handles cleanup for routes with owned caches, subscriptions, or UI state.
 #[allow(clippy::too_many_arguments)]
-pub fn cleanup_popped_route(
+pub(crate) fn cleanup_popped_route(
     route: &Route,
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
@@ -852,23 +902,90 @@ pub fn cleanup_popped_route(
     ndb: &mut Ndb,
     scoped_subs: &mut ScopedSubApi,
     return_type: ReturnType,
-    col_index: usize,
+    column_id: ColumnId,
+) {
+    cleanup_route(
+        route,
+        column_id,
+        timeline_cache,
+        threads,
+        onboarding,
+        view_state,
+        ndb,
+        scoped_subs,
+        RouteCleanup::Returned { return_type },
+    );
+}
+
+/// Centralized resource cleanup for routes removed outside normal nav returns.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dispose_removed_route(
+    route: &Route,
+    account_pk: Pubkey,
+    column_id: ColumnId,
+    timeline_cache: &mut TimelineCache,
+    threads: &mut Threads,
+    onboarding: &mut Onboarding,
+    view_state: &mut ViewState,
+    ndb: &mut Ndb,
+    scoped_subs: &mut ScopedSubApi,
+) {
+    cleanup_route(
+        route,
+        column_id,
+        timeline_cache,
+        threads,
+        onboarding,
+        view_state,
+        ndb,
+        scoped_subs,
+        RouteCleanup::Disposed { account_pk },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cleanup_route(
+    route: &Route,
+    column_id: ColumnId,
+    timeline_cache: &mut TimelineCache,
+    threads: &mut Threads,
+    onboarding: &mut Onboarding,
+    view_state: &mut ViewState,
+    ndb: &mut Ndb,
+    scoped_subs: &mut ScopedSubApi,
+    cleanup: RouteCleanup,
 ) {
     match route {
         Route::Timeline(kind) => {
-            if let Err(err) = timeline_cache.pop(kind, ndb, scoped_subs) {
+            let account_pk = match cleanup {
+                RouteCleanup::Returned { .. } => scoped_subs.selected_account_pubkey(),
+                RouteCleanup::Disposed { account_pk } => account_pk,
+            };
+            if let Err(err) = timeline_cache.pop_for_account(kind, account_pk, ndb, scoped_subs) {
                 tracing::error!("popping timeline had an error: {err} for {:?}", kind);
             }
         }
-        Route::Thread(selection) => {
-            threads.close(ndb, scoped_subs, selection, return_type, col_index);
-        }
+        Route::Thread(selection) => match cleanup {
+            RouteCleanup::Returned { return_type } => {
+                threads.close(ndb, scoped_subs, selection, return_type, column_id);
+            }
+            RouteCleanup::Disposed { account_pk } => {
+                threads.dispose_route_for_account(
+                    ndb,
+                    scoped_subs,
+                    account_pk,
+                    column_id,
+                    selection,
+                );
+            }
+        },
         Route::EditProfile(pk) => {
             view_state.pubkey_to_profile_state.remove(pk);
         }
         Route::Accounts(AccountsRoute::Onboarding) => {
             onboarding.end_onboarding(ndb);
-            let _ = scoped_subs.drop_owner(onboarding_owner_key(col_index));
+            view_state.follow_packs = Default::default();
+            let _ = scoped_subs.drop_owner(onboarding_owner_key(column_id));
         }
         _ => {}
     }
@@ -879,7 +996,7 @@ mod tests {
     use enostr::NoteId;
     use tokenator::{TokenParser, TokenWriter};
 
-    use crate::{timeline::ThreadSelection, Route};
+    use crate::{route::ColumnsRouter, timeline::ThreadSelection, Route};
     use enostr::Pubkey;
     use notedeck::RootNoteIdBuf;
 
@@ -898,5 +1015,37 @@ mod tests {
         parsed.serialize_tokens(&mut token_writer);
         assert_eq!(expected, parsed);
         assert_eq!(token_writer.str(), data_str);
+    }
+
+    #[test]
+    fn click_back_collapses_overlay_and_pop_returns_retained_top_route() {
+        let mut router = ColumnsRouter::new(vec![0]);
+        router.route_to_overlaid(1);
+        router.route_to_overlaid(2);
+
+        assert_eq!(router.routes(), &[0, 1, 2]);
+        router.go_back();
+        assert_eq!(router.routes(), &[0, 2]);
+
+        let removed = router.pop();
+
+        assert_eq!(removed, Some(2));
+        assert_eq!(router.routes(), &[0]);
+    }
+
+    #[test]
+    fn direct_route_disposal_clears_pending_return_state_without_forwarding() {
+        let mut router = ColumnsRouter::new(vec![0]);
+        router.route_to(1);
+        assert_eq!(router.go_back(), Some(0));
+        assert!(router.returning());
+
+        let removed = router.remove_top_route_for_disposal();
+
+        assert_eq!(removed, Some(1));
+        assert_eq!(router.routes(), &[0]);
+        assert!(!router.returning());
+        assert!(!router.navigating());
+        assert!(!router.go_forward());
     }
 }

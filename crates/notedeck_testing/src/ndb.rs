@@ -96,8 +96,7 @@ impl LocalQuery {
     }
 
     pub fn count(&self, device: &mut DeviceHarness) -> usize {
-        let egui_ctx = device.ctx.clone();
-        let app_ctx = &mut device.state_mut().notedeck.app_context(&egui_ctx);
+        let app_ctx = &mut device.state_mut().notedeck.app_context();
         let txn = Transaction::new(app_ctx.ndb).expect("txn");
         let count = app_ctx
             .ndb

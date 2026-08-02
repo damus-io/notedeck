@@ -2556,6 +2556,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "hex",
  "hkdf",
+ "libc",
  "mio",
  "negentropy 0.5.0",
  "nostr 0.37.0",
@@ -2577,6 +2578,16 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "enostr_test_support"
+version = "0.10.0-beta.4"
+dependencies = [
+ "enostr",
+ "futures-util",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
 ]
 
 [[package]]
@@ -2807,8 +2818,7 @@ dependencies = [
 [[package]]
 name = "ewebsock"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "679247b4a005c82218a5f13b713239b0b6d484ec25347a719f5b7066152a748a"
+source = "git+https://github.com/kernelkind/ewebsock?rev=efc578f1e5d2a1d29d1bc9e5ce1bd0d93eda3574#efc578f1e5d2a1d29d1bc9e5ce1bd0d93eda3574"
 dependencies = [
  "async-stream",
  "document-features",
@@ -5216,6 +5226,7 @@ dependencies = [
  "egui_kittest",
  "ehttp",
  "enostr",
+ "enostr_test_support",
  "flate2",
  "fluent",
  "fluent-langneg",
@@ -5512,6 +5523,7 @@ dependencies = [
  "egui_nav",
  "egui_virtual_list",
  "enostr",
+ "enostr_test_support",
  "hashbrown 0.15.5",
  "nostr 0.37.0",
  "nostr-relay-builder",

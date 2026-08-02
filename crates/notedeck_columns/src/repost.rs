@@ -1,6 +1,6 @@
 use enostr::{Keypair, NoteId, RelayId};
 use nostrdb::{Ndb, Note, NoteBuilder, Transaction};
-use notedeck::{Accounts, RelayType, RemoteApi};
+use notedeck::{Accounts, RemoteApi};
 
 use crate::{nav::RouterAction, Route};
 
@@ -101,8 +101,8 @@ impl RepostAction {
 
                 let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
 
-                let mut publisher = remote.publisher(accounts);
-                publisher.publish_note(&repost_ev, RelayType::AccountsWrite);
+                let mut publisher = remote.publisher();
+                publisher.accounts_write().publish_note(&repost_ev);
 
                 Some(RouterAction::GoBack)
             }

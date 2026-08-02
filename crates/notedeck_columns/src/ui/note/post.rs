@@ -19,7 +19,7 @@ use notedeck::platform::android::try_open_file_picker;
 use notedeck::platform::get_next_selected_file;
 use notedeck::{
     name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction,
-    NoteContext, PublishApi, RelayType,
+    NoteContext, PublishApi,
 };
 use notedeck::{DragResponse, PixelDimensions};
 use notedeck_ui::{
@@ -71,7 +71,7 @@ impl NewPostAction {
         &self,
         ndb: &Ndb,
         txn: &Transaction,
-        publisher: &mut PublishApi<'_, '_>,
+        publisher: &mut PublishApi<'_>,
         drafts: &mut Drafts,
         col: usize,
     ) -> Result<()> {
@@ -98,7 +98,7 @@ impl NewPostAction {
             let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
         }
 
-        publisher.publish_note(&note, RelayType::AccountsWrite);
+        publisher.accounts_write().publish_note(&note);
         drafts.get_from_post_type(&self.post_type, col).clear();
 
         Ok(())

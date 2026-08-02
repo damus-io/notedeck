@@ -9,8 +9,11 @@ use nostr_relay_builder::prelude::{MemoryDatabase, NostrEventsDatabase};
 use nostrdb::{Filter, FilterBuilder, Ndb, NoteBuilder, Transaction};
 use notedeck::{construct_people_list_note, filter, App, AppContext, AppResponse, RootNoteIdBuf};
 use notedeck_columns::{
-    timeline::{thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
-    Damus,
+    column::{Column, ColumnId, Columns},
+    timeline::{
+        thread::Threads, RemoteSubscriptionPolicy, ThreadSelection, TimelineCache, TimelineKind,
+    },
+    Damus, Route,
 };
 use notedeck_testing::{
     device::{
@@ -29,9 +32,9 @@ use notedeck_testing::{
 use serial_test::serial;
 use tempfile::TempDir;
 fn columns_app_factory() -> notedeck_testing::AppFactory {
-    Box::new(|notedeck, ctx| {
+    Box::new(|notedeck, _ctx| {
         let args = vec!["--column".to_string(), "contacts".to_string()];
-        let mut app_ctx = notedeck.app_context(ctx);
+        let mut app_ctx = notedeck.app_context();
         // Skip onboarding/welcome screen for tests
         app_ctx.settings.complete_welcome();
         let damus = Damus::new(&mut app_ctx, &args);
@@ -43,7 +46,7 @@ fn columns_app_factory() -> notedeck_testing::AppFactory {
 struct ThreadLoadApp {
     threads: Threads,
     selection: ThreadSelection,
-    col: usize,
+    col: ColumnId,
     opened: bool,
 }
 
@@ -52,7 +55,7 @@ impl ThreadLoadApp {
         Self {
             threads: Threads::default(),
             selection,
-            col,
+            col: test_column_id(col),
             opened: false,
         }
     }
@@ -74,6 +77,7 @@ impl App for ThreadLoadApp {
             true,
             self.col,
             0.0,
+            RemoteSubscriptionPolicy::from_outbox_relays(true),
         );
         self.opened = true;
     }
@@ -88,7 +92,7 @@ struct TimelineAndThreadLoadApp {
     threads: Threads,
     kind: TimelineKind,
     selection: ThreadSelection,
-    thread_col: usize,
+    thread_col: ColumnId,
     timeline_opened: bool,
     thread_opened: bool,
 }
@@ -100,7 +104,7 @@ impl TimelineAndThreadLoadApp {
             threads: Threads::default(),
             kind,
             selection,
-            thread_col,
+            thread_col: test_column_id(thread_col),
             timeline_opened: false,
             thread_opened: false,
         }
@@ -132,7 +136,7 @@ impl App for SingleTimelineApp {
         let txn = Transaction::new(ctx.ndb).expect("txn");
         let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
         let account_pk = scoped_subs.selected_account_pubkey();
-        let _ = self.timelines.open(
+        if let Some(open_result) = self.timelines.open(
             ctx.ndb,
             ctx.note_cache,
             &txn,
@@ -140,7 +144,10 @@ impl App for SingleTimelineApp {
             &self.kind,
             account_pk,
             true,
-        );
+            RemoteSubscriptionPolicy::from_outbox_relays(true),
+        ) {
+            open_result.process(ctx.ndb, ctx.note_cache, &txn, &mut self.timelines);
+        }
         self.opened = true;
     }
 
@@ -156,7 +163,7 @@ impl App for TimelineAndThreadLoadApp {
         let account_pk = scoped_subs.selected_account_pubkey();
 
         if !self.timeline_opened {
-            let _ = self.timelines.open(
+            if let Some(open_result) = self.timelines.open(
                 ctx.ndb,
                 ctx.note_cache,
                 &txn,
@@ -164,7 +171,10 @@ impl App for TimelineAndThreadLoadApp {
                 &self.kind,
                 account_pk,
                 true,
-            );
+                RemoteSubscriptionPolicy::from_outbox_relays(true),
+            ) {
+                open_result.process(ctx.ndb, ctx.note_cache, &txn, &mut self.timelines);
+            }
             self.timeline_opened = true;
         }
 
@@ -177,6 +187,7 @@ impl App for TimelineAndThreadLoadApp {
                 true,
                 self.thread_col,
                 0.0,
+                RemoteSubscriptionPolicy::from_outbox_relays(true),
             );
             self.thread_opened = true;
         }
@@ -185,6 +196,14 @@ impl App for TimelineAndThreadLoadApp {
     fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
         AppResponse::none()
     }
+}
+
+fn test_column_id(index: usize) -> ColumnId {
+    let mut columns = Columns::new();
+    for _ in 0..=index {
+        columns.add_column(Column::new(vec![Route::timeline(TimelineKind::Universe)]));
+    }
+    columns.column(index).id()
 }
 
 fn thread_app_factory(selection: ThreadSelection, col: usize) -> notedeck_testing::AppFactory {

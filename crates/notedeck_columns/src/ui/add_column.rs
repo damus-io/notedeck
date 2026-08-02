@@ -13,7 +13,7 @@ use crate::{
     login_manager::AcquireKeyState,
     options::AppOptions,
     route::Route,
-    timeline::{kind::ListKind, PubkeySource, TimelineKind},
+    timeline::{kind::ListKind, PubkeySource, RemoteSubscriptionPolicy, TimelineKind},
     Damus,
 };
 use notedeck::{
@@ -977,6 +977,7 @@ fn attach_timeline_column(
         &mut scoped_subs,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,
+        RemoteSubscriptionPolicy::from_outbox_relays(ctx.settings.columns_use_outbox_relays()),
     );
 
     let route_kind = timeline.kind.clone();
@@ -1178,13 +1179,7 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         return;
     };
 
-    notedeck::send_people_list_event(
-        ctx.ndb,
-        &mut ctx.remote.publisher(ctx.accounts),
-        kp,
-        &name,
-        &members,
-    );
+    notedeck::send_people_list_event(ctx.ndb, &mut ctx.remote.publisher(), kp, &name, &members);
 
     // Reset the people_lists cache so it picks up the new list
     app.view_state.people_lists = None;
@@ -1212,6 +1207,7 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         &mut scoped_subs,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,
+        RemoteSubscriptionPolicy::from_outbox_relays(ctx.settings.columns_use_outbox_relays()),
     );
 
     app.columns_mut(ctx.i18n, ctx.accounts)

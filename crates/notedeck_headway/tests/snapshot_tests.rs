@@ -26,7 +26,7 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
 
         let secret = state.account.secret_key.clone();
         let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context(ctx);
+        let app_ctx = &mut state.notedeck.app_context();
         if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             resp.unk_id_action
@@ -46,7 +46,7 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
         return;
     }
 
-    let mut app_ctx = state.notedeck.app_context(ctx);
+    let mut app_ctx = state.notedeck.app_context();
     egui::CentralPanel::default().show(ctx, |ui| {
         state.headway.render(&mut app_ctx, ui);
     });
@@ -264,7 +264,7 @@ fn snapshot_inline_card() {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
     let card = CardView {
         id: enostr::NoteId::new([1u8; 32]),

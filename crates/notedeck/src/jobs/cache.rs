@@ -9,7 +9,7 @@ use crossbeam::queue::SegQueue;
 
 use crate::jobs::types::{
     AsyncJob, JobAccess, JobComplete, JobId, JobIdAccessible, JobOutput, JobPackage, JobRun,
-    NoOutputRun, RunType,
+    NoOutputRun, RunType, SyncJob,
 };
 use crate::jobs::JobPool;
 
@@ -96,24 +96,23 @@ fn run_received_job<K, T>(
     T: Send + 'static,
 {
     match job_run {
-        JobRun::Sync(run) => {
-            run_sync(pool, send_new_jobs, completion_queue, id, run);
+        JobRun::Sync(run_job) => {
+            run_sync(pool, send_new_jobs, completion_queue, id, run_job);
         }
-        JobRun::Async(run) => {
-            run_async(send_new_jobs, completion_queue, id, run);
+        JobRun::Async(run_job) => {
+            run_async(pool, send_new_jobs, completion_queue, id, run_job);
         }
     }
 }
 
 #[profiling::function]
-fn run_sync<F, K, T>(
+fn run_sync<K, T>(
     job_pool: &mut JobPool,
     send_new_jobs: Sender<JobPackage<K, T>>,
     completion_queue: CompletionQueue<K, T>,
     id: JobIdAccessible<K>,
-    run_job: F,
+    run_job: SyncJob<T>,
 ) where
-    F: FnOnce() -> JobOutput<T> + Send + 'static,
     K: Hash + Eq + Clone + Debug + Send + 'static,
     T: Send + 'static,
 {
@@ -155,6 +154,7 @@ fn run_sync<F, K, T>(
 
 #[profiling::function]
 fn run_async<K, T>(
+    job_pool: &mut JobPool,
     send_new_jobs: Sender<JobPackage<K, T>>,
     completion_queue: CompletionQueue<K, T>,
     id: JobIdAccessible<K>,
@@ -164,47 +164,49 @@ fn run_async<K, T>(
     T: Send + 'static,
 {
     tracing::trace!("Spawning async job: {id:?}");
-    tokio::spawn(async move {
-        {
-            let res = run_job.await;
-            match res {
-                JobOutput::Complete(complete_response) => {
-                    completion_queue.push(JobComplete {
-                        job_id: id.job_id.clone(),
-                        response: complete_response.response,
-                    });
-                    if let Some(run) = complete_response.run_no_output {
-                        if let Err(e) = send_new_jobs.send(JobPackage {
-                            id: id.into_internal(),
-                            run: RunType::NoOutput(run),
-                        }) {
-                            tracing::error!("{e}");
-                        }
-                    }
-                }
-                JobOutput::Next(job_run) => {
+    if let Err(error) = job_pool.spawn_async_no_output(async move {
+        let res = run_job.await;
+        match res {
+            JobOutput::Complete(complete_response) => {
+                completion_queue.push(JobComplete {
+                    job_id: id.job_id.clone(),
+                    response: complete_response.response,
+                });
+                if let Some(run) = complete_response.run_no_output {
                     if let Err(e) = send_new_jobs.send(JobPackage {
                         id: id.into_internal(),
-                        run: RunType::Output(job_run),
+                        run: RunType::NoOutput(run),
                     }) {
                         tracing::error!("{e}");
                     }
                 }
             }
+            JobOutput::Next(job_run) => {
+                if let Err(e) = send_new_jobs.send(JobPackage {
+                    id: id.into_internal(),
+                    run: RunType::Output(job_run),
+                }) {
+                    tracing::error!("{e}");
+                }
+            }
         }
-    });
+    }) {
+        tracing::debug!("async job not submitted: {error}");
+    }
 }
 
 #[profiling::function]
 fn no_output_run(pool: &mut JobPool, run: NoOutputRun) {
     match run {
-        NoOutputRun::Sync(c) => {
+        NoOutputRun::Sync(run) => {
             tracing::trace!("Spawning no output sync job");
-            pool.schedule_no_output(c);
+            pool.schedule_no_output(run);
         }
-        NoOutputRun::Async(f) => {
-            tracing::trace!("Spawning no output async sync job");
-            tokio::spawn(f);
+        NoOutputRun::Async(run) => {
+            tracing::trace!("Spawning no output async job");
+            if let Err(error) = pool.spawn_async_no_output(run) {
+                tracing::debug!("async no-output job not submitted: {error}");
+            }
         }
     }
 }

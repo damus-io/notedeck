@@ -3,7 +3,7 @@ use nostr::RelayUrl;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use tracing::error;
 
-use crate::{Accounts, RelayType, RemoteApi};
+use crate::{Accounts, RemoteApi};
 
 /// When broadcasting notes, this determines whether to broadcast
 /// over the local network via multicast, or globally
@@ -74,11 +74,14 @@ impl NoteContextSelection {
         match self {
             NoteContextSelection::Broadcast(context) => {
                 tracing::info!("Broadcasting note {}", hex::encode(note.id()));
-                let relays = match context {
-                    BroadcastContext::LocalNetwork => RelayType::Explicit(vec![RelayId::Multicast]),
-                    BroadcastContext::Everywhere => RelayType::AccountsWrite,
-                };
-                remote.publisher(accounts).publish_note(note, relays);
+                match context {
+                    BroadcastContext::LocalNetwork => remote
+                        .publisher_explicit()
+                        .publish_note(note, vec![RelayId::Multicast]),
+                    BroadcastContext::Everywhere => {
+                        remote.publisher().accounts_write().publish_note(note)
+                    }
+                }
             }
             NoteContextSelection::CopyText => {
                 ui.ctx().copy_text(note.content().to_string());
@@ -119,7 +122,7 @@ impl NoteContextSelection {
                     super::publish::send_unmute_event(
                         ndb,
                         txn,
-                        &mut remote.publisher(accounts),
+                        &mut remote.publisher(),
                         kp,
                         &muted,
                         &target,
@@ -128,7 +131,7 @@ impl NoteContextSelection {
                     super::publish::send_mute_event(
                         ndb,
                         txn,
-                        &mut remote.publisher(accounts),
+                        &mut remote.publisher(),
                         kp,
                         &muted,
                         &target,

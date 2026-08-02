@@ -85,6 +85,7 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
         return;
     };
 
+    let column_id = cols.column(col_index).id();
     let column = cols.column_mut(col_index);
 
     // Close any open sheets first
@@ -94,10 +95,10 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
 
     // Pop all routes except the base route
     while column.router().routes().len() > 1 {
-        if let Some(popped) = column.router_mut().pop() {
-            // Clean up resources for the popped route
+        if let Some(route) = column.router_mut().pop() {
+            // Clean up resources for routes removed by this pop.
             cleanup_popped_route(
-                &popped,
+                &route,
                 &mut app.timeline_cache,
                 &mut app.threads,
                 &mut app.onboarding,
@@ -105,7 +106,7 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
                 ctx.ndb,
                 &mut ctx.remote.scoped_subs(ctx.accounts),
                 ReturnType::Click,
-                col_index,
+                column_id,
             );
         }
     }

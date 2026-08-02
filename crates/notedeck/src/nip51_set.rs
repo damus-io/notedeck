@@ -1,8 +1,8 @@
-use enostr::{OutboxSubId, Pubkey, RelayUrlPkgs};
+use enostr::{OutboxSubId, Pubkey};
 use indexmap::IndexMap;
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 
-use crate::{Accounts, Outbox, UnifiedSubscription, UnknownIds};
+use crate::{UnifiedSubscription, UnknownIds};
 
 /// Keeps track of most recent NIP-51 sets
 #[derive(Debug)]
@@ -14,27 +14,6 @@ pub struct Nip51SetCache {
 type PackId = String;
 
 impl Nip51SetCache {
-    pub fn new_accounts_read(
-        pool: &mut Outbox<'_>,
-        accounts: &Accounts,
-        ndb: &Ndb,
-        txn: &Transaction,
-        unknown_ids: &mut UnknownIds,
-        nip51_set_filter: Vec<Filter>,
-    ) -> Option<Self> {
-        let (cached_notes, local) =
-            load_cached_notes_and_local_sub(ndb, txn, unknown_ids, &nip51_set_filter)?;
-        let remote = pool.subscribe(
-            nip51_set_filter.clone(),
-            RelayUrlPkgs::new(accounts.selected_account_read_relays()),
-        );
-
-        Some(Self {
-            sub: UnifiedSubscription { local, remote },
-            cached_notes,
-        })
-    }
-
     pub fn new_local(
         ndb: &Ndb,
         txn: &Transaction,

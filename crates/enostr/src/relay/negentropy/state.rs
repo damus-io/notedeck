@@ -1,14 +1,17 @@
 use hashbrown::HashMap;
-#[cfg(test)]
-use std::time::Duration;
+use negentropy::NegentropyStorageVector;
 use std::time::Instant;
 
 use nostrdb::Filter;
 
-use crate::relay::FullHistorySubId;
-use crate::NoteId;
+use crate::relay::{FullHistorySubId, SubPass};
+use crate::{ClientMessage, NoteId};
 
-use super::{protocol::NegSessionId, session::ActiveSession};
+use super::{
+    protocol::{neg_open_msg, NegSessionId},
+    relay::NegentropyStartResult,
+    session::{prepare_negentropy, ActiveSession, ActiveSessionRelayDemand},
+};
 
 /// Parsed `NEG-ERR` reason per NIP-77.
 #[derive(Debug)]
@@ -34,13 +37,35 @@ impl NegErrKind {
     }
 }
 
+/// Parsed relay `NOTICE` text for negentropy capability handling.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum NegentropyNoticeKind {
+    /// The relay explicitly rejected a negentropy client frame.
+    Unsupported,
+    /// The notice does not describe negentropy capability.
+    Other,
+}
+
+impl NegentropyNoticeKind {
+    /// Parses one raw relay NOTICE into a negentropy capability outcome.
+    pub(super) fn parse(notice: &str) -> Self {
+        let notice = notice.to_ascii_lowercase();
+        if notice.contains("negentropy disabled")
+            || notice.contains("unknown message type: neg-open")
+            || notice.contains("unknown message type: neg-close")
+        {
+            return Self::Unsupported;
+        }
+
+        Self::Other
+    }
+}
+
 /// Relay-local NIP-77 state hosted alongside the regular routing engines.
 #[derive(Default)]
 pub(crate) struct NegentropyData {
     pub(super) active_sessions: HashMap<NegSessionId, ActiveSession>,
     pub(super) capability: Option<bool>,
-    pub(super) surfaced_need_ids: Vec<NegentropyNeed>,
-    pub(super) retry_neg_sets: Vec<NegentropyRetry>,
     /// Filters that received `blocked:` from this relay.
     pub(super) blocked_filters: Vec<Filter>,
 }
@@ -73,10 +98,17 @@ pub(crate) struct NegentropyRetry {
 
 impl NegentropyData {
     /// Whether this relay still has negentropy work that needs polling.
+    #[cfg(test)]
     pub(crate) fn has_pending_work(&self) -> bool {
         !self.active_sessions.is_empty()
-            || !self.surfaced_need_ids.is_empty()
-            || !self.retry_neg_sets.is_empty()
+    }
+
+    /// Whether this relay still has work for one full-history owner.
+    #[cfg(test)]
+    pub(crate) fn has_pending_work_for_owner(&self, owner_history_id: FullHistorySubId) -> bool {
+        self.active_sessions
+            .values()
+            .any(|session| session.target.owner_history_id == owner_history_id)
     }
 
     /// Whether the relay is known to reject or ignore negentropy.
@@ -99,9 +131,58 @@ impl NegentropyData {
         filter: &Filter,
     ) -> bool {
         self.active_sessions.values().any(|session| {
-            session.owner_history_id == owner_history_id
-                && session.filter.same_canonical_attributes(filter)
+            session.target.owner_history_id == owner_history_id
+                && session.target.filter.same_canonical_attributes(filter)
         })
+    }
+
+    /// Start one relay-facing NIP-77 session using an already granted sub-pass.
+    pub(crate) fn try_start_full_history(
+        &mut self,
+        pass: SubPass,
+        storage: impl FnOnce() -> NegentropyStorageVector,
+        filter: Filter,
+        owner_history_id: FullHistorySubId,
+        relay_demand: ActiveSessionRelayDemand,
+    ) -> NegentropyStartResult {
+        if self.is_unsupported()
+            || self.is_filter_blocked(&filter)
+            || self.has_active_session_for_owner_filter(owner_history_id, &filter)
+        {
+            return NegentropyStartResult::Rejected(pass);
+        }
+
+        let filter_json = match filter.json() {
+            Ok(filter_json) => filter_json,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    filter_elements = filter.num_elements(),
+                    "negentropy could not serialize NEG-OPEN filter"
+                );
+                return NegentropyStartResult::Rejected(pass);
+            }
+        };
+
+        let (neg, init_hex) = match prepare_negentropy(storage()) {
+            Some(value) => value,
+            None => return NegentropyStartResult::Rejected(pass),
+        };
+
+        let session_id = NegSessionId::new(uuid::Uuid::new_v4().to_string());
+        let msg: ClientMessage = neg_open_msg(&session_id, filter_json, &init_hex);
+        self.active_sessions.insert(
+            session_id.clone(),
+            ActiveSession::new(
+                neg,
+                pass,
+                Instant::now(),
+                filter,
+                owner_history_id,
+                relay_demand,
+            ),
+        );
+        NegentropyStartResult::Started(msg)
     }
 
     /// Remember that this relay rejected one filter as too broad.
@@ -109,16 +190,6 @@ impl NegentropyData {
         if !self.is_filter_blocked(&filter) {
             self.blocked_filters.push(filter);
         }
-    }
-
-    /// Drain missing ids surfaced by completed sessions on this relay.
-    pub(crate) fn drain_need_ids(&mut self) -> Vec<NegentropyNeed> {
-        std::mem::take(&mut self.surfaced_need_ids)
-    }
-
-    /// Drain transient per-session retry requests for this relay.
-    pub(crate) fn drain_retry_neg_sets(&mut self) -> Vec<NegentropyRetry> {
-        std::mem::take(&mut self.retry_neg_sets)
     }
 
     /// Earliest active session timeout deadline for this relay, if any.
@@ -156,45 +227,34 @@ impl NegentropyData {
         self.active_sessions.len()
     }
 
+    /// Return one active session id for coordinator tests.
     #[cfg(test)]
-    /// Seed one relay-local need for outbox tests below the NIP-77 parser layer.
-    pub(crate) fn seed_need_for_test(
+    pub(crate) fn first_active_session_id_for_test(&self) -> Option<String> {
+        self.active_sessions
+            .keys()
+            .next()
+            .map(|session_id| session_id.as_str().to_owned())
+    }
+
+    /// Return aggregate relay demand from every active relay-local session.
+    pub(crate) fn active_session_relay_demand(&self) -> Option<ActiveSessionRelayDemand> {
+        self.active_sessions.values().fold(None, |demand, session| {
+            ActiveSessionRelayDemand::merge_optional(demand, Some(session.relay_demand))
+        })
+    }
+
+    /// Refresh active relay-local session demand for a retained owner/filter.
+    pub(crate) fn refresh_active_session_relay_demand_for_owner_filter(
         &mut self,
         owner_history_id: FullHistorySubId,
-        filter: Filter,
-        id: NoteId,
+        filter: &Filter,
+        relay_demand: ActiveSessionRelayDemand,
     ) {
-        self.surfaced_need_ids.push(NegentropyNeed {
-            owner_history_id,
-            filter,
-            id,
-        });
-    }
-
-    #[cfg(test)]
-    /// Seed one relay-local retry for outbox tests below the NIP-77 parser layer.
-    pub(crate) fn seed_retry_for_test(
-        &mut self,
-        owner_history_id: FullHistorySubId,
-        filter: Filter,
-    ) {
-        self.retry_neg_sets.push(NegentropyRetry {
-            owner_history_id,
-            filter,
-        });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_capability_for_test(&mut self, capability: Option<bool>) {
-        self.capability = capability;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn age_sessions_for_test(&mut self, duration: Duration) {
         for session in self.active_sessions.values_mut() {
-            session.opened_at -= duration;
-            if let Some(last_response_at) = session.last_response_at.as_mut() {
-                *last_response_at -= duration;
+            if session.target.owner_history_id == owner_history_id
+                && session.target.filter.same_canonical_attributes(filter)
+            {
+                session.relay_demand = relay_demand;
             }
         }
     }

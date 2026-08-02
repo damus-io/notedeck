@@ -6,6 +6,7 @@ use notedeck_ui::nip51_set::Nip51SetUiCache;
 
 pub use crate::accounts::route::AccountsResponse;
 use crate::app::get_active_columns_mut;
+use crate::column::ColumnId;
 use crate::decks::DecksCache;
 use crate::onboarding::{Onboarding, OnboardingEffect};
 use crate::profile::{send_default_dms_relay_list, send_new_contact_list};
@@ -37,7 +38,8 @@ impl AddAccountAction {
 
 #[derive(Debug, Clone)]
 pub struct SwitchAccountAction {
-    pub source_column: usize,
+    pub source_account: Pubkey,
+    pub source_column_id: ColumnId,
 
     /// The account to switch to
     pub switch_to: Pubkey,
@@ -45,9 +47,10 @@ pub struct SwitchAccountAction {
 }
 
 impl SwitchAccountAction {
-    pub fn new(source_column: usize, switch_to: Pubkey) -> Self {
+    pub fn new(source_account: Pubkey, source_column_id: ColumnId, switch_to: Pubkey) -> Self {
         SwitchAccountAction {
-            source_column,
+            source_account,
+            source_column_id,
             switch_to,
             switching_to_new: false,
         }
@@ -56,6 +59,11 @@ impl SwitchAccountAction {
     pub fn switching_to_new(mut self) -> Self {
         self.switching_to_new = true;
         self
+    }
+
+    /// Remove the source route before changing the selected account.
+    pub(crate) fn remove_source_route(&self, decks: &mut DecksCache) -> Option<Route> {
+        decks.remove_top_route_for_column(&self.source_account, self.source_column_id)
     }
 }
 
@@ -127,6 +135,10 @@ pub fn process_accounts_view_response(
     col: usize,
     response: AccountsViewResponse,
 ) -> Option<AccountsAction> {
+    let source_account = *accounts.selected_account_pubkey();
+    let source_column_id = get_active_columns_mut(i18n, accounts, decks)
+        .column(col)
+        .id();
     let router = get_active_columns_mut(i18n, accounts, decks)
         .column_mut(col)
         .router_mut();
@@ -138,7 +150,11 @@ pub fn process_accounts_view_response(
             action = Some(cur_action);
         }
         AccountsViewResponse::SelectAccount(new_pk) => {
-            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(col, new_pk));
+            let acc_sel = AccountsAction::Switch(SwitchAccountAction::new(
+                source_account,
+                source_column_id,
+                new_pk,
+            ));
             info!("account selection: {:?}", acc_sel);
             action = Some(acc_sel);
         }
@@ -156,6 +172,10 @@ pub fn process_login_view_response(
     col: usize,
     response: AccountLoginResponse,
 ) -> AddAccountAction {
+    let source_account = *app_ctx.accounts.selected_account_pubkey();
+    let source_column_id = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, decks)
+        .column(col)
+        .id();
     let cur_router = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, decks)
         .column_mut(col)
         .router_mut();
@@ -167,13 +187,13 @@ pub fn process_login_view_response(
         }
         AccountLoginResponse::CreatingNew => {
             cur_router.route_to(Route::Accounts(AccountsRoute::Onboarding));
-            process_onboarding_step(app_ctx, onboarding, col);
+            process_onboarding_step(app_ctx, onboarding, source_column_id);
 
             None
         }
         AccountLoginResponse::Onboarding(onboarding_response) => match onboarding_response {
             FollowPacksResponse::NoFollowPacks => {
-                process_onboarding_step(app_ctx, onboarding, col);
+                process_onboarding_step(app_ctx, onboarding, source_column_id);
                 None
             }
             FollowPacksResponse::UserSelectedPacks(nip51_sets_ui_state) => {
@@ -182,7 +202,7 @@ pub fn process_login_view_response(
                 let kp = FullKeypair::generate();
 
                 {
-                    let mut publisher = app_ctx.remote.publisher(app_ctx.accounts);
+                    let mut publisher = app_ctx.remote.publisher();
                     send_new_contact_list(
                         kp.to_filled(),
                         app_ctx.ndb,
@@ -194,7 +214,7 @@ pub fn process_login_view_response(
                 cur_router.go_back();
                 onboarding.end_onboarding(app_ctx.ndb);
                 let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
-                let _ = scoped_subs.drop_owner(onboarding_owner_key(col));
+                let _ = scoped_subs.drop_owner(onboarding_owner_key(source_column_id));
 
                 app_ctx.accounts.add_account(kp.to_keypair())
             }
@@ -204,7 +224,8 @@ pub fn process_login_view_response(
     if let Some(action) = r {
         AddAccountAction {
             accounts_action: Some(AccountsAction::Switch(SwitchAccountAction {
-                source_column: col,
+                source_account,
+                source_column_id,
                 switch_to: action.switch_to,
                 switching_to_new: true,
             })),
@@ -218,7 +239,7 @@ pub fn process_login_view_response(
     }
 }
 
-fn process_onboarding_step(app_ctx: &mut AppContext, onboarding: &mut Onboarding, col: usize) {
+fn process_onboarding_step(app_ctx: &mut AppContext, onboarding: &mut Onboarding, col: ColumnId) {
     let owner = onboarding_owner_key(col);
     let effect = {
         let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
@@ -226,7 +247,7 @@ fn process_onboarding_step(app_ctx: &mut AppContext, onboarding: &mut Onboarding
     };
 
     if let Some(OnboardingEffect::Oneshot(filters)) = effect {
-        let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
+        let mut oneshot = app_ctx.remote.oneshot();
         oneshot.oneshot(filters);
     }
 }

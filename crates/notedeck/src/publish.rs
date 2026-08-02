@@ -1,211 +1,82 @@
 use enostr::{EventClientMessage, RelayId};
 use nostrdb::Note;
 
-use crate::{Accounts, Outbox};
-
-/// Relay target policy for publishing.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RelayType {
-    /// Publish to the selected account's write relay set.
-    AccountsWrite,
-    /// Publish to an explicit relay target set.
-    Explicit(Vec<RelayId>),
-}
+use crate::remote_data::{RemoteIntent, RemoteIntentBatchBuilder, RemotePublishCommand};
 
 /// Explicit-relay publishing API that does not depend on account state.
-pub struct ExplicitPublishApi<'o, 'a> {
-    pool: &'o mut Outbox<'a>,
+pub struct ExplicitPublishApi<'o> {
+    batch: &'o mut RemoteIntentBatchBuilder,
 }
 
-impl<'o, 'a> ExplicitPublishApi<'o, 'a> {
-    pub fn new(pool: &'o mut Outbox<'a>) -> Self {
-        Self { pool }
+impl<'o> ExplicitPublishApi<'o> {
+    pub(crate) fn new(batch: &'o mut RemoteIntentBatchBuilder) -> Self {
+        Self { batch }
     }
 
     /// Publish a note to an explicit relay target set.
     pub fn publish_note(&mut self, note: &Note, relays: Vec<RelayId>) {
-        self.pool.broadcast_note(note, relays);
+        let note_json = match note.json() {
+            Ok(note_json) => note_json,
+            Err(err) => {
+                tracing::error!("failed to serialize note for publish: {err}");
+                return;
+            }
+        };
+        self.publish_event_json(note_json, relays);
     }
 
     /// Publish an already-built event JSON to an explicit relay target set.
     pub fn publish_event_json(&mut self, note_json: String, relays: Vec<RelayId>) {
-        self.pool
-            .broadcast_event(EventClientMessage { note_json }, relays);
+        self.batch
+            .push(RemoteIntent::Publish(RemotePublishCommand::Explicit {
+                msg: EventClientMessage { note_json },
+                relays,
+            }));
     }
 }
 
 /// Selected-account write-relay publishing API.
-pub struct AccountsPublishApi<'o, 'a> {
-    pool: &'o mut Outbox<'a>,
-    accounts: &'o Accounts,
+pub struct AccountsPublishApi<'o> {
+    batch: &'o mut RemoteIntentBatchBuilder,
 }
 
-impl<'o, 'a> AccountsPublishApi<'o, 'a> {
-    pub fn new(pool: &'o mut Outbox<'a>, accounts: &'o Accounts) -> Self {
-        Self { pool, accounts }
+impl<'o> AccountsPublishApi<'o> {
+    pub(crate) fn new(batch: &'o mut RemoteIntentBatchBuilder) -> Self {
+        Self { batch }
     }
 
     /// Publish a note to the selected account's write relay set.
     pub fn publish_note(&mut self, note: &Note) {
-        self.pool
-            .broadcast_note(note, self.accounts.selected_account_write_relays());
+        let note_json = match note.json() {
+            Ok(note_json) => note_json,
+            Err(err) => {
+                tracing::error!("failed to serialize note for publish: {err}");
+                return;
+            }
+        };
+        self.batch.push(RemoteIntent::Publish(
+            RemotePublishCommand::SelectedAccountWrite {
+                msg: EventClientMessage { note_json },
+            },
+        ));
     }
 }
 
 /// Compatibility wrapper over typed publishing APIs.
-pub struct PublishApi<'o, 'a> {
-    pool: &'o mut Outbox<'a>,
-    accounts: &'o Accounts,
+pub struct PublishApi<'o> {
+    batch: &'o mut RemoteIntentBatchBuilder,
 }
 
-impl<'o, 'a> PublishApi<'o, 'a> {
-    pub fn new(pool: &'o mut Outbox<'a>, accounts: &'o Accounts) -> Self {
-        Self { pool, accounts }
+impl<'o> PublishApi<'o> {
+    pub(crate) fn new(batch: &'o mut RemoteIntentBatchBuilder) -> Self {
+        Self { batch }
     }
 
-    pub fn explicit(&mut self) -> ExplicitPublishApi<'_, 'a> {
-        ExplicitPublishApi::new(self.pool)
+    pub fn explicit(&mut self) -> ExplicitPublishApi<'_> {
+        ExplicitPublishApi::new(self.batch)
     }
 
-    pub fn accounts_write(&mut self) -> AccountsPublishApi<'_, 'a> {
-        AccountsPublishApi::new(self.pool, self.accounts)
-    }
-
-    pub fn publish_note(&mut self, note: &Note, relays: RelayType) {
-        match relays {
-            RelayType::AccountsWrite => self.accounts_write().publish_note(note),
-            RelayType::Explicit(relays) => self.explicit().publish_note(note, relays),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_util::test_config;
-    use crate::{EguiWakeup, UnknownIds, FALLBACK_PUBKEY};
-    use enostr::{FullKeypair, NormRelayUrl, OutboxPool, OutboxSessionHandler};
-    use nostrdb::{Ndb, Note, NoteBuilder, Transaction};
-    use tempfile::TempDir;
-
-    fn test_accounts_with_forced_relay(relay: &str) -> (TempDir, crate::Accounts) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        let txn = Transaction::new(&ndb).expect("txn");
-        let mut unknown_ids = UnknownIds::default();
-
-        let accounts = crate::Accounts::new(
-            None,
-            vec![relay.to_owned()],
-            Vec::new(),
-            FALLBACK_PUBKEY(),
-            &mut ndb,
-            &txn,
-            &mut unknown_ids,
-        );
-
-        (tmp, accounts)
-    }
-
-    fn signed_note() -> Note<'static> {
-        let keypair = FullKeypair::generate();
-        let seckey = keypair.secret_key.to_secret_bytes();
-
-        NoteBuilder::new()
-            .kind(1)
-            .content("publish-test")
-            .sign(&seckey)
-            .build()
-            .expect("note")
-    }
-
-    /// Verifies explicit relay publishing targets only the provided relay set.
-    #[tokio::test]
-    async fn publish_note_explicit_targets_requested_relay() {
-        let (_tmp, accounts) = test_accounts_with_forced_relay("wss://relay-write.example.com");
-        let note = signed_note();
-        let relay = NormRelayUrl::new("wss://relay-explicit.example.com").expect("relay");
-        let mut expected = hashbrown::HashSet::new();
-        expected.insert(relay.clone());
-
-        let mut pool = OutboxPool::default();
-        {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
-            let mut publish = PublishApi::new(&mut outbox, &accounts);
-
-            publish.publish_note(
-                &note,
-                RelayType::Explicit(vec![RelayId::Websocket(relay.clone())]),
-            );
-        }
-        let actual: hashbrown::HashSet<NormRelayUrl> = pool
-            .websocket_statuses()
-            .keys()
-            .map(|url| (*url).clone())
-            .collect();
-        assert_eq!(actual, expected);
-    }
-
-    /// Verifies explicit relay publishing supports already-built event JSON.
-    #[tokio::test]
-    async fn publish_event_json_explicit_targets_requested_relay() {
-        let (_tmp, accounts) = test_accounts_with_forced_relay("wss://relay-write.example.com");
-        let note = signed_note();
-        let relay = NormRelayUrl::new("wss://relay-json.example.com").expect("relay");
-        let mut expected = hashbrown::HashSet::new();
-        expected.insert(relay.clone());
-
-        let mut pool = OutboxPool::default();
-        {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
-            let mut publish = PublishApi::new(&mut outbox, &accounts);
-
-            publish.explicit().publish_event_json(
-                note.json().expect("event json"),
-                vec![RelayId::Websocket(relay)],
-            );
-        }
-
-        let actual: hashbrown::HashSet<NormRelayUrl> = pool
-            .websocket_statuses()
-            .keys()
-            .map(|url| (*url).clone())
-            .collect();
-        assert_eq!(actual, expected);
-    }
-
-    /// Verifies account-write publishing targets the selected account's write relays.
-    #[tokio::test]
-    async fn publish_note_accounts_write_targets_selected_account_relays() {
-        let (_tmp, accounts) =
-            test_accounts_with_forced_relay("wss://relay-accounts-write.example.com");
-        let note = signed_note();
-        let expected_relays: hashbrown::HashSet<NormRelayUrl> = accounts
-            .selected_account_write_relays()
-            .into_iter()
-            .filter_map(|relay| match relay {
-                RelayId::Websocket(url) => Some(url),
-                RelayId::Multicast => None,
-            })
-            .collect();
-        assert!(!expected_relays.is_empty());
-
-        let mut pool = OutboxPool::default();
-        {
-            let mut outbox =
-                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
-            let mut publish = PublishApi::new(&mut outbox, &accounts);
-
-            publish.publish_note(&note, RelayType::AccountsWrite);
-        }
-
-        let actual_relays: hashbrown::HashSet<NormRelayUrl> = pool
-            .websocket_statuses()
-            .keys()
-            .map(|url| (*url).clone())
-            .collect();
-        assert_eq!(actual_relays, expected_relays);
+    pub fn accounts_write(&mut self) -> AccountsPublishApi<'_> {
+        AccountsPublishApi::new(self.batch)
     }
 }
