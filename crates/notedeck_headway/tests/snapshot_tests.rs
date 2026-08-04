@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::{Key, Node, Queryable};
-use enostr::{FullKeypair, Keypair, Pubkey};
+use enostr::{FullKeypair, Keypair, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{App, Notedeck};
 use notedeck_headway::{Headway, store};
@@ -76,15 +76,27 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     // `--testrunner` hands a fresh account an empty bootstrap relay set, so
     // selecting it never opens a relay websocket and the outbox has nothing to
     // flush on `AppContext` drop — no Tokio runtime required.
-    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
     // The harness renders on this same thread, so the frozen clock covers
     // every relative time the app draws (e.g. the card detail's "created").
     headway::fmt::freeze_now(SEED_AT);
 
+    // Chrome registers every app's inline-reference contributions at startup
+    // (`setup_app_registries`); mirror that here, off *this* Headway instance,
+    // so the parser and renderers share its board cache and a
+    // `board#word-word-word` reference in a card description resolves.
+    let headway = Headway::new();
+    for renderer in headway.kind_renderers() {
+        notedeck.register_kind_renderer(renderer);
+    }
+    for parser in headway.reference_parsers() {
+        notedeck.register_reference_parser(parser);
+    }
+
     let state = HeadwayTestState {
         notedeck,
-        headway: Headway::new(),
+        headway,
         account: test_keypair(),
         _tmpdir: tmpdir,
         fonts_installed: false,
@@ -224,6 +236,92 @@ fn snapshot_headway_subissue_detail() {
         .simulate_click();
     harness.run_steps(3);
     harness.snapshot("headway_subissue_detail");
+}
+
+/// The id of the demo card titled `title`. Folded fresh off the db rather than
+/// hard-coded: the ids are stable (fixed key + frozen clock), but deriving them
+/// keeps the test honest if the demo fixture changes.
+fn demo_card_id(ndb: &Ndb, author: &Pubkey, title: &str) -> NoteId {
+    let txn = Transaction::new(ndb).expect("txn");
+    let reducer = headway::event::fold_board(ndb, &txn, author).expect("demo board folded");
+    let boards = reducer.finalize();
+    let view = headway::event::find_board(&boards, author, store::BOARD_ID).expect("demo board");
+    view.columns
+        .iter()
+        .flat_map(|c| c.cards.iter())
+        .find(|c| c.title == title)
+        .unwrap_or_else(|| panic!("no demo card titled {title:?}"))
+        .id
+}
+
+/// The canonical `board#word-word-word` reference for `card` — the same string
+/// the detail pane shows in its topbar and the CLI prints.
+fn card_ref(card: NoteId) -> String {
+    format!(
+        "{}#{}",
+        store::BOARD_ID,
+        headway::wordid::encode(card.bytes())
+    )
+}
+
+/// A card description that mentions another card by word-id renders it as a live
+/// status chip, in headway's own detail pane — the surface where cross-references
+/// are densest. Guards both the wiring (the description goes through the ref-aware
+/// markdown path) and the re-entrancy: the parser and the issue renderer both
+/// borrow the board cache the app is rendering out of.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_detail_inline_ref() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    // Point the event-model card's description at the sync card. Scoped so the
+    // `AppContext` (and its harness borrow) is dropped before we pump frames
+    // again; `ctx` is cloned out first because `state_mut` borrows the harness.
+    let description = {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let secret = state.account.secret_key.secret_bytes();
+        let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+
+        let target_ref = card_ref(demo_card_id(
+            app_ctx.ndb,
+            &author,
+            "Sync cards across relays",
+        ));
+        let host = demo_card_id(app_ctx.ndb, &author, "Define nostr event model for boards");
+        let description = format!("Blocked on {target_ref} until the model lands.");
+
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let reducer = headway::event::fold_board(app_ctx.ndb, &txn, &author).expect("folded");
+        let boards = reducer.finalize();
+        let view =
+            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+        store::apply(
+            app_ctx.ndb,
+            store::BOARD_ID,
+            view,
+            &author,
+            &secret,
+            store::BoardAction::EditDescription {
+                card: host,
+                description: description.clone(),
+            },
+            &mut store::NoPublish,
+        );
+        description
+    };
+
+    // The edit lands through an async ndb ingest, and the detail pane seeds its
+    // edit buffer *once* when the card opens — so wait for the board card (which
+    // renders the raw description under its title) to carry the new text before
+    // opening it, or the pane renders the pre-edit description all run.
+    wait_for_label(&mut harness, &description);
+    harness
+        .get_by_label("Define nostr event model for boards")
+        .simulate_click();
+    harness.run_steps(3);
+    harness.snapshot("headway_detail_inline_ref");
 }
 
 /// The detail pane's subissue checklist and its inline composer: the demo
