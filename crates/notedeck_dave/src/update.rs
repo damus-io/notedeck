@@ -1239,7 +1239,6 @@ pub fn create_session_with_cwd(
     cwd: PathBuf,
     hostname: &str,
     backend_type: BackendType,
-    conversation_subscription: Option<crate::ConversationSubscriptionScope<'_>>,
     model: Model,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
@@ -1257,26 +1256,8 @@ pub fn create_session_with_cwd(
                 scene.focus_on(agentic.scene_position);
             }
         }
-
-        // Set up ndb subscriptions so remote clients can send messages
-        // to this session (e.g. to kickstart the backend remotely).
-        if let (Some(subscription), Some(agentic)) =
-            (conversation_subscription, &mut session.agentic)
-        {
-            let event_id = agentic.event_session_id().to_string();
-            crate::setup_conversation_subscription(
-                agentic,
-                &event_id,
-                subscription.account,
-                subscription.ndb,
-            );
-            crate::setup_conversation_action_subscription(
-                agentic,
-                &event_id,
-                subscription.account,
-                subscription.ndb,
-            );
-        }
+        // Remote clients reach this session's live conversation events through
+        // the shared per-account subscription; nothing per-session to wire up.
     }
     session_manager.rebuild_cwd_groups();
     id
@@ -1360,7 +1341,6 @@ pub fn clone_session(
         cwd,
         hostname,
         backend_type,
-        None,
         model,
     );
     None
@@ -1488,7 +1468,6 @@ mod tests {
             PathBuf::from(cwd),
             hostname,
             BackendType::Claude,
-            None,
             Model::Default,
         );
 
@@ -1515,7 +1494,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "remote-a",
             BackendType::Claude,
-            None,
             Model::Default,
         );
         let session = sm.get_mut(id).expect("session should exist");
@@ -1607,7 +1585,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Claude,
-            None,
             Model::Opus,
         );
 
@@ -1654,7 +1631,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Claude,
-            None,
             Model::Default,
         );
 
@@ -1694,7 +1670,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Codex,
-            None,
             Model::Custom("gpt-5.2-codex".to_string()),
         );
 
@@ -2197,7 +2172,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Claude,
-            None,
             Model::Default,
         );
 

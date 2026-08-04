@@ -101,7 +101,6 @@ fn test_picker_selection_flows_to_session() {
         PathBuf::from("/tmp"),
         "localhost",
         picked_backend,
-        None,
         picked_model,
     );
 
@@ -126,7 +125,6 @@ fn test_picker_selection_flows_to_session() {
         PathBuf::from("/tmp"),
         "localhost",
         picked_backend,
-        None,
         picked_model,
     );
 
