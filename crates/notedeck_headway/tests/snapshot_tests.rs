@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{Key, Node, Queryable};
 use enostr::{FullKeypair, Keypair, NoteId, Pubkey};
-use nostrdb::{Ndb, Transaction};
-use notedeck::{App, Notedeck};
+use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
+use notedeck::{App, AppContext, Notedeck};
 use notedeck_headway::{Headway, store};
 
 struct HeadwayTestState {
@@ -15,6 +15,12 @@ struct HeadwayTestState {
     account: FullKeypair,
     _tmpdir: tempfile::TempDir,
     fonts_installed: bool,
+    /// When set, the harness renders this note through `NoteView` instead of the
+    /// Headway app — how the note-renderer inline-reference snapshot views a
+    /// kind-1 note that mentions a card. Headway's `update` still runs each frame
+    /// so its board cache (which the reference parser + issue renderer resolve
+    /// against) stays live.
+    ref_note: Option<NoteId>,
 }
 
 fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
@@ -50,9 +56,66 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
     // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
     // every opened app each frame, then `render` for the foreground one.
     state.headway.update(&mut app_ctx, ctx);
+
+    // The inline-reference snapshot views a kind-1 note through NoteView rather
+    // than the Headway app; the board sync above keeps its cache live either way.
+    if let Some(note_id) = state.ref_note {
+        render_ref_note(ctx, &mut app_ctx, note_id);
+        return;
+    }
+
     egui::CentralPanel::default().show(ctx, |ui| {
         state.headway.render(&mut app_ctx, ui);
     });
+}
+
+/// Render `note_id` (a kind-1 note) through `NoteView`, the surface the
+/// note-renderer inline-reference feature lights up: a `board#word-word-word` in
+/// the note's content resolves to the card's live status chip via the registered
+/// reference parser + issue renderer, with no note→headway dependency.
+fn render_ref_note(ctx: &egui::Context, app_ctx: &mut AppContext, note_id: NoteId) {
+    egui::CentralPanel::default().show(ctx, |ui| {
+        ui.add_space(16.0);
+        let mut note_context = app_ctx.note_context();
+        let txn = Transaction::new(note_context.ndb).expect("txn");
+        // `ndb` is a shared `&` on NoteContext, so the note borrow doesn't pin the
+        // context we hand to NoteView.
+        let Ok(note) = note_context.ndb.get_note_by_id(&txn, note_id.bytes()) else {
+            ui.label("(waiting for note to ingest)");
+            return;
+        };
+        notedeck_ui::NoteView::new(
+            &mut note_context,
+            &note,
+            notedeck_ui::NoteOptions::default(),
+        )
+        .show(ui);
+    });
+}
+
+/// Sign and ingest a kind-1 note, returning its id and a subscription that fires
+/// once the async writer has committed it (subscribe *before* ingesting, then
+/// `wait_for_notes` — never a sleep). Pins `created_at` to the frozen clock so the
+/// note's id is stable across runs.
+fn ingest_kind1(ndb: &Ndb, content: &str, secret: &[u8; 32]) -> (NoteId, Subscription) {
+    let note = NoteBuilder::new()
+        .content(content)
+        .kind(1)
+        .created_at(SEED_AT)
+        .sign(secret)
+        .build()
+        .expect("note builds");
+    let id = NoteId::new(*note.id());
+    let sub = ndb
+        .subscribe(&[Filter::new().ids([id.bytes()]).build()])
+        .expect("subscribe");
+    let json = enostr::ClientMessage::event(&note)
+        .expect("client msg")
+        .to_json()
+        .expect("json");
+    ndb.process_event_with(&json, IngestMetadata::new().client(true))
+        .expect("ingest");
+    (id, sub)
 }
 
 /// The instant the demo board is seeded at, and what the frozen clock reads.
@@ -100,6 +163,7 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
         account: test_keypair(),
         _tmpdir: tmpdir,
         fonts_installed: false,
+        ref_note: None,
     };
 
     // `wake()` schedules an 8-frame `request_repaint_after` burst to poll for
@@ -322,6 +386,45 @@ fn snapshot_headway_detail_inline_ref() {
         .simulate_click();
     harness.run_steps(3);
     harness.snapshot("headway_detail_inline_ref");
+}
+
+/// A plain kind-1 nostr note that mentions a card by its `board#word-word-word`
+/// id renders that reference as the card's live status chip in NoteView — the
+/// note-renderer counterpart to the detail-pane test above. Proves the browser's
+/// reference parser fires on note *content* (nostrdb shatters `#`-anchored ids
+/// across Text/Hashtag blocks, so the note renderer reconstructs the run before
+/// scanning) with no notedeck_ui→headway dependency.
+#[tokio::test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+async fn snapshot_note_inline_ref() {
+    let mut harness = headway_harness(egui::Vec2::new(560.0, 160.0));
+
+    // Post a note referencing a seeded card, then flip the harness to view it
+    // through NoteView. Scoped so the `AppContext` borrow is dropped before we
+    // pump frames; `ctx` is cloned out first because `state_mut` borrows the
+    // harness.
+    let card_title = "Sync cards across relays";
+    let (ndb, sub) = {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let secret = state.account.secret_key.secret_bytes();
+        let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+
+        let target = card_ref(demo_card_id(app_ctx.ndb, &author, card_title));
+        let content = format!("picking up {target} next week");
+        let (note_id, sub) = ingest_kind1(app_ctx.ndb, &content, &secret);
+        state.ref_note = Some(note_id);
+        (app_ctx.ndb.clone(), sub)
+    };
+
+    // Await the async ndb write, then let the UI settle. `wait_for_label` on the
+    // referenced card's title proves the reference resolved to its live chip
+    // (drawn as a `Label`), not just that the note ingested.
+    ndb.wait_for_notes(sub, 1).await.expect("note ingested");
+    wait_for_label(&mut harness, card_title);
+    harness.run_steps(3);
+    harness.snapshot("note_inline_ref");
 }
 
 /// The detail pane's subissue checklist and its inline composer: the demo
