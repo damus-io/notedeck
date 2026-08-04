@@ -3021,9 +3021,21 @@ fn resolve_detail_outcome(
     }
 }
 
-/// Turn a subissue drop into a [`BoardAction::SetSequence`] on the parent-card
-/// container, computing the fractional rank with the shared [`store::seq_rank`]
-/// kernel — the same one the CLI and column moves use.
+/// Turn a subissue drop into a work-order edit on the `card:<parent>` container.
+///
+/// Two paths, because the lazy sort (sequenced children lead by rank, the rest
+/// follow by creation order) means a lone [`BoardAction::SetSequence`] can only
+/// land a card *ahead of every unsequenced sibling* — so dropping between two
+/// unsequenced siblings would snap the card to the top instead of the gap:
+///
+/// - **Already fully sequenced:** a single `SetSequence` insert against the
+///   dragged card's (sequenced) neighbours, via the shared [`store::seq_rank`]
+///   kernel. This is the steady state named in the epic's breakdown.
+/// - **Not fully sequenced:** promote the whole container to an explicit order
+///   with [`BoardAction::ReorderSubissues`], placing the dragged card in the
+///   drop gap. One drag makes the list fully sequenced; every later drag takes
+///   the cheap single-insert path above. The lazy *migration* default is
+///   untouched — only an explicit drag promotes.
 fn resolve_subissue_reorder(
     view: &BoardView,
     parent: NoteId,
@@ -3032,25 +3044,49 @@ fn resolve_subissue_reorder(
     before: Option<NoteId>,
     action: &mut Option<BoardAction>,
 ) {
-    let container = event::Container::Card(*parent.bytes());
-    let position = subissue_seq_position(view, parent, after, before);
-    // A rank only fails to compute when an anchor lost its seq between frames;
-    // we only ever anchor on a sequenced neighbour, so drop the reorder rather
-    // than guess.
-    if let Ok(rank) = store::seq_rank(view, &container, child, &position) {
-        *action = Some(BoardAction::SetSequence {
-            card: child,
-            container,
-            rank,
-        });
+    let Some((_, card)) = find_card(view, parent) else {
+        return;
+    };
+    if card.subissues.iter().all(|s| s.seq.is_some()) {
+        let container = event::Container::Card(*parent.bytes());
+        let position = subissue_seq_position(view, parent, after, before);
+        // A rank only fails to compute when an anchor lost its seq between
+        // frames; every sibling is sequenced here, so drop the reorder rather
+        // than guess.
+        if let Ok(rank) = store::seq_rank(view, &container, child, &position) {
+            *action = Some(BoardAction::SetSequence {
+                card: child,
+                container,
+                rank,
+            });
+        }
+        return;
     }
+    // `card.subissues` is already in display order, so lift the dragged child
+    // out and reinsert it in the drop gap to get the promoted order.
+    let siblings: Vec<NoteId> = card.subissues.iter().map(|s| s.id).collect();
+    let order = reorder_ids(&siblings, child, before);
+    *action = Some(BoardAction::ReorderSubissues { parent, order });
 }
 
-/// Where to insert a dragged subissue, preferring to anchor on a neighbour that
-/// already carries a seq rank. The lazy default leaves most siblings
-/// unsequenced, so the ends (`First`/`Last`) are the common fallback; a drop
-/// into the still-unsequenced tail lands the card at the sequenced boundary
-/// (`Last`), which sharpens as dragging sequences more of the list.
+/// Rebuild a display-ordered sibling id list with `child` moved into the drop
+/// gap: lifted out, then reinserted just above `before` (or appended when
+/// `before` is `None`, i.e. dropped past the last row). Pure, so the
+/// gap → promoted-order mapping is unit-testable on its own.
+fn reorder_ids(siblings: &[NoteId], child: NoteId, before: Option<NoteId>) -> Vec<NoteId> {
+    let mut order: Vec<NoteId> = siblings.iter().copied().filter(|&id| id != child).collect();
+    let idx = before
+        .and_then(|b| order.iter().position(|&id| id == b))
+        .unwrap_or(order.len());
+    order.insert(idx, child);
+    order
+}
+
+/// Where to insert a dragged subissue within an already fully-sequenced
+/// container (the caller only takes this path once every sibling has a seq
+/// rank): anchor `After` the card above, else `Before` the card below. The
+/// `First`/`Last` fallbacks are unreachable for that caller but kept so the
+/// helper stays a total gap → position mapping.
 fn subissue_seq_position(
     view: &BoardView,
     parent: NoteId,
@@ -3763,5 +3799,20 @@ mod tests {
             seq_position_for_gap(Some(a), false, None, false),
             Last
         ));
+    }
+
+    #[test]
+    fn reorder_ids_moves_child_into_the_drop_gap() {
+        let ids: Vec<NoteId> = (1..=4u8).map(|n| NoteId::new([n; 32])).collect();
+        let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+
+        // Drop D above B (gap `before = B`): D lands just before B.
+        assert_eq!(reorder_ids(&ids, d, Some(b)), vec![a, d, b, c]);
+        // Drop D to the very top (gap `before` = the old first card A): D leads.
+        assert_eq!(reorder_ids(&ids, d, Some(a)), vec![d, a, b, c]);
+        // Drop B below C, i.e. above D: reinserted just before D.
+        assert_eq!(reorder_ids(&ids, b, Some(d)), vec![a, c, b, d]);
+        // Dropped past the last row (`before = None`): appended to the end.
+        assert_eq!(reorder_ids(&ids, b, None), vec![a, c, d, b]);
     }
 }
