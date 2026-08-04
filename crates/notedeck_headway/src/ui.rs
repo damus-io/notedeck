@@ -3389,26 +3389,11 @@ pub fn card_chip_ui(
         Some(pos) => StatusIcon::for_column(pos.index, pos.count),
         None => StatusIcon::Backlog,
     };
-    egui::Frame::new()
-        .fill(theme.surface_elevated)
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
-        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
-        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, SPACING_XS as i8))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACING_XS;
-                status_icon_ui(
-                    ui,
-                    theme,
-                    icon,
-                    ui.text_style_height(&egui::TextStyle::Body),
-                );
-                ui.label(egui::RichText::new(title).color(theme.text_primary));
-            })
-        })
-        .response
-        .interact(egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    notedeck_ui::inline_chip(ui, theme, title, |ui, size| {
+        status_icon_ui(ui, theme, icon, size);
+    })
+    .interact(egui::Sense::click())
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Render a single headway issue (kind 1621) from its *creation-time* snapshot:

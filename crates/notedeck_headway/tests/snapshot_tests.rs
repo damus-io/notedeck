@@ -407,6 +407,78 @@ fn snapshot_inline_card() {
     harness.snapshot("inline_card");
 }
 
+/// How a chip behaves when it meets the edge of a row — the three cases, top to
+/// bottom in one 560px column:
+///
+/// 1. **Fits.** Drawn inline after the text, title in full.
+/// 2. **Doesn't fit.** Breaks to a fresh row and draws in full there, the way a
+///    word too long for the line would. egui does that for text on its own, but a
+///    widget is placed at the cursor and has to fit into what remains, so the
+///    chip measures itself first ([`notedeck_ui::inline_chip`]). Without it the
+///    pill ellipsized away to nothing against the right edge with an empty row
+///    waiting below.
+/// 3. **Wider than a whole row.** Breaking can't help, so it truncates — one
+///    line, never a second.
+///
+/// The whole pass runs under `style.wrap_mode = Some(Wrap)`, which is what Dave
+/// used to force over its chat. A style override reaches inside every descendant
+/// widget, so that folded a chip's title into a tall column of text; the label
+/// now names its own wrap mode and can't be overridden from outside.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_inline_chip_row_wrapping() {
+    use headway::event::ColumnPos;
+    use notedeck_headway::card_chip_ui;
+
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let ctx = egui::Context::default();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+
+    let short = "cache the parse";
+    let long = "notedeck_ui: cache per-frame markdown parse + reference scan";
+    let column = Some(ColumnPos { index: 1, count: 5 });
+
+    let mut installed = false;
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(560.0, 260.0))
+        .renderer(notedeck::software_renderer())
+        .build_ui(move |ui| {
+            if !installed {
+                notedeck.setup(ui.ctx());
+                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                installed = true;
+            }
+            let theme = notedeck::ColorTheme::current(ui.ctx());
+            // What Dave used to do to its whole chat pass.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+
+            let paragraph = |ui: &mut egui::Ui, lead: &str, title: &str| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(lead);
+                    card_chip_ui(ui, &theme, title, column);
+                    ui.label("last.");
+                });
+                ui.add_space(12.0);
+            };
+
+            // 1. Room on the row: inline, in full.
+            paragraph(ui, "Flagged by", short);
+            // 2. Not enough room: breaks to its own row, still in full.
+            paragraph(ui, "Scanning every block each frame is the cost flagged by", long);
+            // 3. Longer than any row: truncates rather than growing a second line.
+            paragraph(
+                ui,
+                "Blocked on",
+                "notedeck_ui: resolve inline references in note content blocks, gated behind a NoteOptions bit",
+            );
+        });
+
+    harness.run();
+    harness.snapshot("inline_chip_row_wrapping");
+}
+
 /// The compact chip shape ([`notedeck::RenderContext::Inline`]) previewed within
 /// a run of flowing text — the Linear/GitHub target look, with the different
 /// column-derived status icons.

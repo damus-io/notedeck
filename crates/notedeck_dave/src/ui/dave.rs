@@ -389,8 +389,14 @@ impl<'a> DaveUi<'a> {
 
     /// The main render function. Call this to render Dave
     pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        // Override Truncate wrap mode that StripBuilder sets when clip=true
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        // Clear the Truncate the enclosing `StripBuilder` cell sets when
+        // clip=true (`egui_extras`: "better to truncate than hard clip"). `None`
+        // rather than `Some(Wrap)`: what we want back is egui's default — each
+        // `Ui` derives wrapping from its own layout — not a blanket rule that
+        // outranks it. A style override reaches *inside* every descendant
+        // widget, so forcing `Wrap` here made labels wrap in non-wrapping
+        // horizontal rows, folding inline chips into tall blocks.
+        ui.style_mut().wrap_mode = None;
 
         let is_compact = self.flags.contains(DaveUiFlags::Compact);
 
