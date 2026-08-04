@@ -469,7 +469,7 @@ fn sync_indicator(ui: &mut egui::Ui, theme: &ColorTheme, status: SyncStatus) {
 pub fn board_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    note_context: &mut notedeck::NoteContext,
+    app_ctx: &mut notedeck::AppContext,
     view: &BoardView,
     boards: &[BoardSummary],
     sync: SyncStatus,
@@ -484,7 +484,7 @@ pub fn board_ui(
         .is_some_and(|id| find_card(view, id).is_some())
     {
         let mut action: Option<BoardAction> = None;
-        card_detail_pane_ui(ui, theme, note_context, view, state, &mut action);
+        card_detail_pane_ui(ui, theme, app_ctx, view, state, &mut action);
         return action;
     }
     if state.selected.take().is_some() {
@@ -1518,7 +1518,7 @@ fn add_column_ui(
 fn card_detail_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    note_context: &mut notedeck::NoteContext,
+    app_ctx: &mut notedeck::AppContext,
     view: &BoardView,
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
@@ -1632,7 +1632,7 @@ fn card_detail_pane_ui(
                             detail_main_column_ui(
                                 ui,
                                 theme,
-                                note_context,
+                                app_ctx,
                                 &ctx,
                                 state,
                                 action,
@@ -1655,7 +1655,7 @@ fn card_detail_pane_ui(
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.set_max_width(avail.min(DETAIL_CONTENT_WIDTH));
-                        detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                        detail_body_ui(ui, theme, app_ctx, &ctx, state, action, &mut outcome);
                         ui.add_space(SPACING_MD);
                         ui.separator();
                         ui.add_space(SPACING_MD);
@@ -1663,7 +1663,7 @@ fn card_detail_pane_ui(
                         ui.add_space(SPACING_MD);
                         ui.separator();
                         ui.add_space(SPACING_MD);
-                        detail_comments_ui(ui, theme, note_context, &ctx, state, &mut outcome);
+                        detail_comments_ui(ui, theme, app_ctx, &ctx, state, &mut outcome);
                     });
             }
         });
@@ -1841,7 +1841,7 @@ fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
 fn detail_main_column_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    note_context: &mut notedeck::NoteContext,
+    app_ctx: &mut notedeck::AppContext,
     ctx: &DetailCtx,
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
@@ -1851,11 +1851,11 @@ fn detail_main_column_ui(
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(DETAIL_CONTENT_WIDTH));
-            detail_body_ui(ui, theme, ctx, state, action, outcome);
+            detail_body_ui(ui, theme, app_ctx, ctx, state, action, outcome);
             ui.add_space(SPACING_MD);
             ui.separator();
             ui.add_space(SPACING_MD);
-            detail_comments_ui(ui, theme, note_context, ctx, state, outcome);
+            detail_comments_ui(ui, theme, app_ctx, ctx, state, outcome);
         });
 }
 
@@ -1866,6 +1866,7 @@ fn detail_main_column_ui(
 fn detail_body_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
     ctx: &DetailCtx,
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
@@ -1878,7 +1879,7 @@ fn detail_body_ui(
     detail_title_section_ui(ui, ctx, state, action);
 
     ui.add_space(SPACING_MD);
-    detail_description_section_ui(ui, theme, ctx, state, action);
+    detail_description_section_ui(ui, theme, app_ctx, ctx, state, action);
 
     ui.add_space(SPACING_LG);
     detail_subissues_section_ui(ui, theme, ctx, state, outcome);
@@ -2019,9 +2020,16 @@ fn detail_title_section_ui(
 /// double-click on the rendered text as the shortcut into the raw multiline
 /// editor. Edits commit as a [`BoardAction::EditDescription`] when the editor
 /// loses focus, which also returns the section to its rendered view.
+///
+/// Rendered through the ref-aware markdown path, so a `board#word-word-word`
+/// mention of another card draws as that card's live status chip (resolved by
+/// our own [`HeadwayRefParser`](crate::HeadwayRefParser)) and opens it on click —
+/// descriptions cross-reference constantly, so this is the surface the inline
+/// reference registry pays for most.
 fn detail_description_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
     ctx: &DetailCtx,
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
@@ -2045,7 +2053,11 @@ fn detail_description_section_ui(
             // Render with interactive task-list checkboxes; a click flips the
             // box in `detail_desc` in place and we persist it like any edit.
             let scope = ui.scope(|ui| {
-                notedeck_ui::markdown::render_markdown_editable(&mut state.detail_desc, ui)
+                notedeck_ui::markdown::render_markdown_with_refs_editable(
+                    ui,
+                    app_ctx,
+                    &mut state.detail_desc,
+                )
             });
             let toggled = scope.inner;
             // The whole rendered block is a double-click target into the editor.
@@ -2509,7 +2521,7 @@ fn detail_status_row_ui(
 fn detail_comments_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    note_context: &mut notedeck::NoteContext,
+    app_ctx: &mut notedeck::AppContext,
     ctx: &DetailCtx,
     state: &mut BoardUiState,
     outcome: &mut DetailOutcome,
@@ -2527,7 +2539,7 @@ fn detail_comments_ui(
     // pfp/name/time chrome they'd get anywhere else in notedeck. Both lists
     // arrive sorted oldest-first, so a two-pointer merge interleaves them
     // without allocating; a same-second tie shows the activity row first.
-    let txn = nostrdb::Transaction::new(note_context.ndb).ok();
+    let txn = nostrdb::Transaction::new(app_ctx.ndb).ok();
     let (mut ai, mut ci) = (0, 0);
     while ai < ctx.activity.len() || ci < ctx.comments.len() {
         let comment_first = match (ctx.activity.get(ai), ctx.comments.get(ci)) {
@@ -2536,13 +2548,13 @@ fn detail_comments_ui(
             _ => false,
         };
         if comment_first {
-            comment_note_ui(ui, theme, note_context, txn.as_ref(), &ctx.comments[ci]);
+            comment_note_ui(ui, theme, app_ctx, txn.as_ref(), &ctx.comments[ci]);
             ci += 1;
         } else {
             activity_row_ui(
                 ui,
                 theme,
-                note_context,
+                app_ctx,
                 txn.as_ref(),
                 &ctx.activity[ai],
                 ctx.columns.len(),
@@ -2563,7 +2575,7 @@ fn detail_comments_ui(
 fn activity_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    note_context: &mut notedeck::NoteContext,
+    app_ctx: &mut notedeck::AppContext,
     txn: Option<&nostrdb::Transaction>,
     activity: &ActivityView,
     ncols: usize,
@@ -2595,7 +2607,7 @@ fn activity_row_ui(
             ui.label(egui::RichText::new(s).small().color(theme.text_muted));
         };
 
-        strong(ui, &author_name(note_context, txn, &activity.author));
+        strong(ui, &author_name(app_ctx, txn, &activity.author));
         match &activity.kind {
             ActivityKind::Created => muted(ui, "created the card"),
             ActivityKind::Moved { from, to, .. } => {
@@ -2680,11 +2692,11 @@ fn activity_row_ui(
 /// back to the shared short-hex handle ([`headway::fmt::short_author`]) when
 /// no usable profile is known.
 fn author_name(
-    note_context: &notedeck::NoteContext,
+    app_ctx: &notedeck::AppContext,
     txn: Option<&nostrdb::Transaction>,
     author: &[u8; 32],
 ) -> String {
-    txn.and_then(|txn| note_context.ndb.get_profile_by_pubkey(txn, author).ok())
+    txn.and_then(|txn| app_ctx.ndb.get_profile_by_pubkey(txn, author).ok())
         .and_then(|record| {
             let name = notedeck::name::get_display_name(Some(&record));
             name.display_name.or(name.username).map(str::to_owned)
@@ -2699,16 +2711,11 @@ fn author_name(
 fn comment_note_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    note_context: &mut notedeck::NoteContext,
+    app_ctx: &mut notedeck::AppContext,
     txn: Option<&nostrdb::Transaction>,
     comment: &CommentView,
 ) {
-    let note = txn.and_then(|txn| {
-        note_context
-            .ndb
-            .get_note_by_id(txn, comment.id.bytes())
-            .ok()
-    });
+    let note = txn.and_then(|txn| app_ctx.ndb.get_note_by_id(txn, comment.id.bytes()).ok());
     let Some(note) = note else {
         comment_row_ui(ui, theme, comment);
         return;
@@ -2733,7 +2740,8 @@ fn comment_note_ui(
     let flags = notedeck_ui::NoteOptions::SelectableText
         | notedeck_ui::NoteOptions::SmallPfp
         | notedeck_ui::NoteOptions::Framed;
-    notedeck_ui::NoteView::new(note_context, &note, flags).show(ui);
+    let mut note_context = app_ctx.note_context();
+    notedeck_ui::NoteView::new(&mut note_context, &note, flags).show(ui);
 }
 
 /// A single comment: an attribution line (short author, relative time, word-id,
@@ -3353,8 +3361,10 @@ fn card_frame_ui(
 }
 
 /// Render a card's *resolved* state (latest subject, labels and cover applied),
-/// as folded off its board. This is the full-card shape an inline issue
-/// reference shows as a block embed ([`notedeck::RenderContext::Embed`]);
+/// as folded off its board. This is the full-card block-embed shape
+/// ([`notedeck::RenderContext::Embed`]), drawn for a surface that gives the
+/// reference its own box — the markdown scanner asks for the
+/// [`card_chip_ui`] chip instead, since it always splices within a run of text.
 /// [`issue_inline_ui`] is only the fallback when the board can't be folded.
 pub fn card_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) -> egui::Response {
     card_frame_ui(ui, theme, &card.labels, &card.title, &card.description)

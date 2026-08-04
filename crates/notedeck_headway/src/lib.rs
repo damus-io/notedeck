@@ -354,24 +354,13 @@ impl App for Headway {
         };
 
         // Render against the folded `view` (owned, so the cache borrow above is
-        // already dropped). The detail pane draws comments with notedeck_ui's note
-        // renderer, so it needs a `NoteContext` borrowed off `ctx` — dropped before
-        // we touch `ctx` again to ingest the action below.
+        // already dropped — which matters here: a description that references
+        // another card resolves through `self.board_cache` *during* `board_ui`,
+        // so holding a borrow across the render would panic the `RefCell`).
         let boards = board_summaries(&all_boards);
         // Header sync indicator: are we reaching a private relay right now?
         let sync = sync_status(ctx);
-        let action = {
-            let mut note_context = ctx.note_context();
-            board_ui(
-                ui,
-                &theme,
-                &mut note_context,
-                &view,
-                &boards,
-                sync,
-                &mut self.state,
-            )
-        };
+        let action = board_ui(ui, &theme, ctx, &view, &boards, sync, &mut self.state);
 
         // A switcher request (raised in the UI state): switch the active board or
         // seed a new one. Both persist the selection so it survives a restart.
