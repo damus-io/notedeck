@@ -32,9 +32,9 @@ pub(crate) struct SavedLongform {
 /// edited in place each frame; `saved` plus the `saved_*` snapshots record what's
 /// been persisted so [`LongformEditor::dirty`] can report unsaved changes.
 ///
-/// There is no vault/browse yet (a later card), so an editor is only ever created
-/// fresh via [`LongformEditor::new`]; reopening an existing note by `d` is future
-/// work once a note list exists.
+/// An editor is created either fresh via [`LongformEditor::new`] (the toolbar's
+/// New-note button) or bound to an existing note via [`LongformEditor::open`]
+/// (clicking a vault row).
 pub(crate) struct LongformEditor {
     /// Working title buffer (the NIP-23 `title` tag).
     pub title: String,
@@ -247,12 +247,69 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
     notedeck_ui::markdown::render_markdown_with_refs(ui, ctx, content);
 }
 
-/// Render the vault list — one styled, clickable row per note (newest-edited
-/// first) — and return the index of a note clicked this frame, for the caller to
-/// open. Reads a borrowed slice and builds no owned collections, so it's safe to
-/// call every frame from the canvas-mode sidebar (the list itself is cached
-/// upstream).
-pub(crate) fn vault_ui(notes: &[LongformNote], ui: &mut egui::Ui) -> Option<usize> {
+/// The vault sidebar's transient interaction state — the one thing that must
+/// persist across frames in this otherwise-immediate list: an in-progress rename
+/// buffer, or a delete awaiting confirmation. Held in [`crate::Notebook`] and
+/// driven entirely by [`vault_ui`]; every *completed* interaction leaves as a
+/// [`VaultAction`] for the app to persist, so this stays purely UI-local.
+#[derive(Default)]
+pub(crate) enum VaultState {
+    /// Nothing in progress — all rows are plain and clickable.
+    #[default]
+    Idle,
+    /// A row is being inline-renamed.
+    Renaming(VaultRename),
+    /// A row's delete is awaiting modal confirmation; holds the note's `d`.
+    ConfirmingDelete(String),
+}
+
+/// An in-progress inline rename of a vault row. While the vault is in
+/// [`VaultState::Renaming`], the row whose note matches [`d`](Self::d) renders an
+/// editable title field in place of its label; every other row stays plain.
+pub(crate) struct VaultRename {
+    /// The `d` of the note being renamed (its stable addressable id).
+    pub d: String,
+    /// Editable title buffer, seeded from the note's current title.
+    pub buffer: String,
+    /// True only until the field has grabbed keyboard focus (its first frame).
+    pub focus: bool,
+}
+
+/// A completed vault interaction the app persists this frame — at most one,
+/// mirroring the canvas's single [`crate::UiIntent`]. In-progress steps (arming a
+/// rename, opening the delete prompt) mutate the passed-in [`VaultState`] and
+/// yield nothing; only a terminal action surfaces here.
+pub(crate) enum VaultAction {
+    /// Open the note at this index in the editor.
+    Open(usize),
+    /// A rename committed: persist `title` as note `d`'s new title.
+    Rename { d: String, title: String },
+    /// A delete was confirmed: tombstone note `d`.
+    Delete { d: String },
+}
+
+/// The outcome of one frame of an inline rename field.
+#[derive(Clone, Copy)]
+enum RenameOutcome {
+    /// Still editing.
+    Pending,
+    /// Committed (Enter or click-away): persist the buffer.
+    Commit,
+    /// Dismissed (Esc): discard the buffer, keep the old title.
+    Cancel,
+}
+
+/// Render the vault list — one styled row per note (newest-edited first) — plus
+/// any in-progress rename field or delete-confirmation modal, and return the
+/// single terminal [`VaultAction`] the user triggered this frame. All transient
+/// interaction lives in `state`; the function reads a borrowed slice and only
+/// allocates on a discrete user action, so it's safe to call every frame from the
+/// canvas-mode sidebar (the list itself is cached upstream).
+pub(crate) fn vault_ui(
+    notes: &[LongformNote],
+    state: &mut VaultState,
+    ui: &mut egui::Ui,
+) -> Option<VaultAction> {
     use notedeck::tokens::{SPACING_SM, SPACING_XS};
     let theme = notedeck::ColorTheme::current(ui.ctx());
 
@@ -277,21 +334,194 @@ pub(crate) fn vault_ui(notes: &[LongformNote], ui: &mut egui::Ui) -> Option<usiz
         return None;
     }
 
-    let mut open = None;
+    let mut action = None;
     ScrollArea::vertical()
         .id_salt("notebook-vault-list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for (i, note) in notes.iter().enumerate() {
-                let title = note.title.trim();
-                let label = if title.is_empty() { "Untitled" } else { title };
-                if note_row_ui(ui, &theme, label).clicked() {
-                    open = Some(i);
+                // The row being renamed shows an editable field; the rest render
+                // as plain, clickable rows with a context menu.
+                let renaming = matches!(state, VaultState::Renaming(r) if r.d == note.d);
+                let row = if renaming {
+                    renaming_row_ui(ui, &theme, state)
+                } else {
+                    note_menu_row_ui(ui, &theme, note, i, state)
+                };
+                if row.is_some() {
+                    action = row;
                 }
             }
         });
-    open
+
+    // A pending delete draws its confirmation modal over the list.
+    action.or_else(|| confirm_delete_ui(ui, notes, state))
+}
+
+/// Render the active rename row and resolve its outcome: a commit clears `state`
+/// to [`VaultState::Idle`] and yields a [`VaultAction::Rename`] (dropping an empty
+/// title as a cancel), a cancel just clears it, still-editing leaves it armed.
+/// `state` is [`VaultState::Renaming`] for this row (the caller checks).
+fn renaming_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    state: &mut VaultState,
+) -> Option<VaultAction> {
+    let VaultState::Renaming(active) = state else {
+        return None;
+    };
+    let outcome = rename_row_ui(ui, theme, active);
+    let committed = matches!(outcome, RenameOutcome::Commit)
+        .then(|| (active.d.clone(), active.buffer.trim().to_owned()))
+        .filter(|(_, title)| !title.is_empty());
+    if !matches!(outcome, RenameOutcome::Pending) {
+        *state = VaultState::Idle;
+    }
+    committed.map(|(d, title)| VaultAction::Rename { d, title })
+}
+
+/// Render a plain, clickable vault row plus its Rename/Delete context menu.
+/// Clicking opens the note; Rename arms the inline field for the next frame;
+/// Delete opens the confirmation modal. Both menu entries transition `state`;
+/// only a click (Open) returns an action here.
+fn note_menu_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note: &LongformNote,
+    index: usize,
+    state: &mut VaultState,
+) -> Option<VaultAction> {
+    let title = note.title.trim();
+    let label = if title.is_empty() { "Untitled" } else { title };
+    let resp = note_row_ui(ui, theme, label);
+    let action = resp.clicked().then_some(VaultAction::Open(index));
+    // Right-click (or long-press on touch) mirrors the canvas node's menu.
+    notedeck_ui::context_menu::context_menu(&resp, |ui| {
+        if ui.button("Rename").clicked() {
+            *state = VaultState::Renaming(VaultRename {
+                d: note.d.clone(),
+                buffer: note.title.clone(),
+                focus: true,
+            });
+            ui.close_menu();
+        }
+        if ui.button("Delete").clicked() {
+            *state = VaultState::ConfirmingDelete(note.d.clone());
+            ui.close_menu();
+        }
+    });
+    action
+}
+
+/// While a delete is pending, draw the confirmation modal and resolve it: confirm
+/// clears `state` and yields a [`VaultAction::Delete`]; cancel (button, backdrop,
+/// or Esc) just clears it. No-op unless `state` is [`VaultState::ConfirmingDelete`].
+fn confirm_delete_ui(
+    ui: &mut egui::Ui,
+    notes: &[LongformNote],
+    state: &mut VaultState,
+) -> Option<VaultAction> {
+    let VaultState::ConfirmingDelete(d) = state else {
+        return None;
+    };
+    // The note may have vanished (a concurrent sync) — abandon the prompt if so.
+    let Some(note) = notes.iter().find(|n| &n.d == d) else {
+        *state = VaultState::Idle;
+        return None;
+    };
+    match note_delete_confirm_ui(ui, &note.title) {
+        DeleteConfirm::Pending => None,
+        DeleteConfirm::Cancelled => {
+            *state = VaultState::Idle;
+            None
+        }
+        DeleteConfirm::Confirmed => {
+            let d = d.clone();
+            *state = VaultState::Idle;
+            Some(VaultAction::Delete { d })
+        }
+    }
+}
+
+/// One vault row in rename mode: a full-width singleline title field that grabs
+/// focus on its first frame. Enter or clicking away commits; Esc discards. Sized
+/// to match [`note_row_ui`] so the list doesn't jump as a row flips to editing.
+fn rename_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, rename: &mut VaultRename) -> RenameOutcome {
+    use notedeck::tokens::SPACING_SM;
+    let resp = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 2))
+        .show(ui, |ui| {
+            ui.add(
+                TextEdit::singleline(&mut rename.buffer)
+                    .desired_width(f32::INFINITY)
+                    .text_color(theme.text_primary)
+                    .hint_text("Untitled"),
+            )
+        })
+        .inner;
+
+    if std::mem::take(&mut rename.focus) {
+        resp.request_focus();
+    }
+
+    if resp.lost_focus() {
+        // Esc leaves the buffer behind (cancel); Enter or a click elsewhere keeps
+        // the typed title (commit), matching the canvas node editor's blur-commit.
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            return RenameOutcome::Cancel;
+        }
+        return RenameOutcome::Commit;
+    }
+    RenameOutcome::Pending
+}
+
+/// The user's choice this frame from the vault delete-confirmation modal.
+enum DeleteConfirm {
+    /// Still open; no choice yet.
+    Pending,
+    /// Confirmed the deletion.
+    Confirmed,
+    /// Dismissed (Cancel button, backdrop click, or Esc).
+    Cancelled,
+}
+
+/// A centered modal confirming deletion of the note titled `title`, returning the
+/// user's choice this frame. Mirrors the canvas node's delete prompt
+/// ([`crate::ui`]); a backdrop click or Esc counts as cancelling.
+fn note_delete_confirm_ui(ui: &egui::Ui, title: &str) -> DeleteConfirm {
+    use notedeck::tokens::{SPACING_LG, SPACING_SM};
+    let shown = title.trim();
+    let shown = if shown.is_empty() { "Untitled" } else { shown };
+    let modal =
+        egui::Modal::new(egui::Id::new("notebook_note_delete_confirm")).show(ui.ctx(), |ui| {
+            ui.set_max_width(320.0);
+            ui.heading("Delete note?");
+            ui.add_space(SPACING_SM);
+            ui.label(format!("“{shown}” will be removed from your notes."));
+            ui.add_space(SPACING_LG);
+            ui.horizontal(|ui| {
+                let delete = egui::Button::new(
+                    egui::RichText::new("Delete").color(egui::Color32::from_rgb(0xE0, 0x31, 0x31)),
+                );
+                if ui.add(delete).clicked() {
+                    return DeleteConfirm::Confirmed;
+                }
+                if ui.button("Cancel").clicked() {
+                    return DeleteConfirm::Cancelled;
+                }
+                DeleteConfirm::Pending
+            })
+            .inner
+        });
+
+    // The buttons take precedence; a backdrop/Esc dismissal otherwise cancels.
+    match modal.inner {
+        DeleteConfirm::Confirmed => DeleteConfirm::Confirmed,
+        DeleteConfirm::Cancelled => DeleteConfirm::Cancelled,
+        DeleteConfirm::Pending if modal.should_close() => DeleteConfirm::Cancelled,
+        DeleteConfirm::Pending => DeleteConfirm::Pending,
+    }
 }
 
 /// One vault row: a full-width, left-aligned, rounded surface that highlights on
