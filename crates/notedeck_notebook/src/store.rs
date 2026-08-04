@@ -25,8 +25,8 @@ use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder};
 
 use crate::event::{
     self, CanvasView, EdgeEnds, Geometry, NodeContent, NodeKind, NodeView, build_canvas,
-    build_content, build_edge, build_edge_tombstone, build_longform, build_node,
-    build_node_tombstone, build_transform, canvas_address, rank_between,
+    build_content, build_edge, build_edge_tombstone, build_longform, build_longform_tombstone,
+    build_node, build_node_tombstone, build_transform, canvas_address, rank_between,
 };
 
 /// The single canvas the notebook manages for now. Multi-canvas support will
@@ -248,6 +248,38 @@ pub fn edit_longform(
 ) -> Option<LongformSaved> {
     let _ = author;
     let note = build_longform(d, input)
+        .created_at(next_after(prev_created_at))
+        .sign(secret)
+        .build()?;
+    let created_at = note.created_at();
+    let id = ingest_pns(ndb, &note, secret, publisher)?;
+    Some(LongformSaved {
+        id,
+        d: d.to_string(),
+        created_at,
+    })
+}
+
+/// Delete a longform note by superseding it with a tombstone revision: an empty
+/// kind-30023 tagged `del`/`1` under the same `d`. Stamps strictly past
+/// `prev_created_at` (the loaded note's timestamp) so the tombstone wins
+/// latest-wins, then PNS-wraps + ingests it exactly like a normal revision — so
+/// the delete stays local-only and syncs the same way. Returns the tombstone's
+/// inner note id, or `None` if signing/ingest failed.
+///
+/// Reversible: a later [`edit_longform`] under the same `d` revives the note (see
+/// [`event::build_longform_tombstone`]). Returns the tombstone's [`LongformSaved`]
+/// — its `created_at` is the supersede baseline a revive would stamp past.
+pub fn delete_longform(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    d: &str,
+    prev_created_at: u64,
+    publisher: &mut dyn Publisher,
+) -> Option<LongformSaved> {
+    let _ = author;
+    let note = build_longform_tombstone(d)
         .created_at(next_after(prev_created_at))
         .sign(secret)
         .build()?;
@@ -899,6 +931,11 @@ mod tests {
             let txn = Transaction::new(&self.ndb).unwrap();
             load_longform(&self.ndb, &txn, &self.kp.pubkey, d)
         }
+
+        fn list(&self) -> Vec<LongformNote> {
+            let txn = Transaction::new(&self.ndb).unwrap();
+            list_longform(&self.ndb, &txn, &self.kp.pubkey)
+        }
     }
 
     fn sample_input() -> LongformInput {
@@ -979,6 +1016,64 @@ mod tests {
         assert_eq!(after.d, saved.d);
         assert_eq!(after.content, "# Draft\n\nedited body");
         assert_eq!(after.created_at, saved_edit.created_at);
+    }
+
+    #[tokio::test]
+    async fn delete_hides_note_and_edit_revives_it() {
+        let mut t = LongformTest::new();
+        let saved = create_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &sample_input(),
+            None,
+            &mut NoPublish,
+        )
+        .expect("create longform");
+        t.await_notes(1).await;
+        let before = t.load(&saved.d).expect("note loads");
+        assert_eq!(t.list().len(), 1, "the note is in the vault list");
+
+        // Delete: a tombstone revision supersedes the note. Loads/lists then treat
+        // it as gone even though nostrdb keeps the winning (tombstone) revision.
+        let tomb = delete_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &saved.d,
+            before.created_at,
+            &mut NoPublish,
+        )
+        .expect("delete longform");
+        assert!(
+            tomb.created_at > before.created_at,
+            "the tombstone supersedes the live note"
+        );
+        t.await_notes(1).await;
+        assert!(t.load(&saved.d).is_none(), "a deleted note doesn't load");
+        assert!(t.list().is_empty(), "a deleted note leaves the vault list");
+
+        // Revive: a later edit under the same d supersedes the tombstone, so the
+        // note reappears — the delete was reversible.
+        let revived = LongformInput {
+            content: "back again".to_string(),
+            ..sample_input()
+        };
+        edit_longform(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &saved.d,
+            // Stamp past the tombstone (the newest revision) so the revive wins.
+            tomb.created_at,
+            &revived,
+            &mut NoPublish,
+        )
+        .expect("revive longform");
+        t.await_notes(1).await;
+        let after = t.load(&saved.d).expect("the revived note loads again");
+        assert_eq!(after.content, "back again");
+        assert_eq!(t.list().len(), 1, "the revived note is back in the vault");
     }
 
     #[tokio::test]

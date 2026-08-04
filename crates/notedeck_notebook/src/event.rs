@@ -221,6 +221,23 @@ pub fn build_longform<'a>(d: &str, input: &'a LongformInput) -> NoteBuilder<'a> 
     b
 }
 
+/// Build a tombstone revision that deletes the longform note keyed by `d`: a
+/// superseding kind-30023 with an empty body tagged `del`/`1`. Because kind 30023
+/// is replaceable, the store stamps a strictly-later `created_at` so this wins
+/// latest-wins over the live revision, and [`parse_longform`] surfaces it as
+/// [`LongformNote::deleted`] so the vault list drops it. Reversible: a later
+/// [`build_longform`] revision restores the note, mirroring the canvas's
+/// [`build_node_tombstone`].
+pub fn build_longform_tombstone<'a>(d: &str) -> NoteBuilder<'a> {
+    base(KIND_LONGFORM, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(d)
+        .start_tag()
+        .tag_str("del")
+        .tag_str("1")
+}
+
 /// Append the content-bearing tags (everything but `text`, which is the body).
 fn tag_content<'a>(mut b: NoteBuilder<'a>, content: &NodeContent) -> NoteBuilder<'a> {
     let pairs = [
@@ -541,6 +558,10 @@ pub struct LongformNote {
     pub published_at: Option<u64>,
     pub hashtags: Vec<String>,
     pub created_at: u64,
+    /// Whether this revision is a delete tombstone (a `del`/`1` tag). The winning
+    /// revision of a deleted note carries this; [`list_longform`]/[`load_longform`]
+    /// drop such notes so they leave the vault.
+    pub deleted: bool,
 }
 
 /// Parse a note into a [`LongformNote`], or `None` if it isn't a well-formed
@@ -555,10 +576,12 @@ pub fn parse_longform(note: &Note) -> Option<LongformNote> {
     let mut summary = None;
     let mut published_at = None;
     let mut hashtags = Vec::new();
+    let mut deleted = false;
 
     for tag in note.tags() {
         match tag.get_str(0) {
             Some("d") => d = tag.get_str(1).map(|s| s.to_owned()),
+            Some("del") => deleted = tag.get_str(1) == Some("1"),
             Some("title") => {
                 if let Some(t) = tag.get_str(1) {
                     title = t.to_owned();
@@ -586,6 +609,7 @@ pub fn parse_longform(note: &Note) -> Option<LongformNote> {
         published_at,
         hashtags,
         created_at: note.created_at(),
+        deleted,
     })
 }
 
@@ -1135,6 +1159,8 @@ pub fn load_longform(
         .filter_map(|r| parse_longform(&r.note))
         .filter(|n| n.d == d)
         .max_by_key(|n| n.created_at)
+        // A tombstone is the winning revision of a deleted note: report it gone.
+        .filter(|n| !n.deleted)
 }
 
 /// List all of `author`'s longform notes — one per `d`, the current (latest-wins)
@@ -1153,6 +1179,9 @@ pub fn list_longform(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<Longf
             .into_iter()
             .filter_map(|key| ndb.get_note_by_key(txn, key).ok())
             .filter_map(|note| parse_longform(&note))
+            // Deleted notes keep a winning tombstone revision; drop them here so
+            // they leave the vault list (a later edit revives them).
+            .filter(|note| !note.deleted)
             .collect();
     notes.sort_by_key(|n| std::cmp::Reverse(n.created_at));
     notes
@@ -1332,6 +1361,25 @@ mod tests {
 
         // A longform note is not a canvas event — it must not reach the reducer.
         assert!(parse(&note).is_none());
+        // A normal revision is not a tombstone.
+        assert!(!parsed.deleted);
+    }
+
+    #[test]
+    fn longform_tombstone_parses_as_deleted() {
+        let author = FullKeypair::generate();
+        let note = build_longform_tombstone("note-1")
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("build tombstone");
+        let parsed = parse_longform(&note).expect("a tombstone still parses");
+
+        // It keeps the `d` (so it supersedes that note) but is flagged deleted, and
+        // carries no content — the caller drops it from lists rather than showing it.
+        assert_eq!(parsed.d, "note-1");
+        assert!(parsed.deleted);
+        assert!(parsed.title.is_empty());
+        assert!(parsed.content.is_empty());
     }
 
     #[test]
