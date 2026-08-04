@@ -1135,7 +1135,11 @@ fn text_node_ui(
 /// the node's text with the checkbox flipped if one was toggled this frame.
 fn node_text_ui(ui: &mut egui::Ui, ctx: &mut AppContext, text: &str) -> Option<String> {
     let mut source = text.to_string();
-    notedeck_ui::markdown::render_markdown_with_refs_editable(ui, ctx, &mut source)
+    // Canvas rendering holds no transaction; open one here and pass it in so the
+    // node's inline references resolve.
+    let mut note_ctx = ctx.note_context();
+    let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("node txn");
+    notedeck_ui::markdown::render_markdown_with_refs_editable(ui, &mut note_ctx, &txn, &mut source)
         .then_some(source)
 }
 

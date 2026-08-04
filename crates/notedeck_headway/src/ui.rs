@@ -2052,10 +2052,15 @@ fn detail_description_section_ui(
 
             // Render with interactive task-list checkboxes; a click flips the
             // box in `detail_desc` in place and we persist it like any edit.
+            // The detail pane holds no transaction; open one here and pass it in
+            // so a `board#word-word-word` in the description resolves to its chip.
+            let mut note_ctx = app_ctx.note_context();
+            let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("detail txn");
             let scope = ui.scope(|ui| {
                 notedeck_ui::markdown::render_markdown_with_refs_editable(
                     ui,
-                    app_ctx,
+                    &mut note_ctx,
+                    &txn,
                     &mut state.detail_desc,
                 )
             });

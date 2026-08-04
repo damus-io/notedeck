@@ -10,7 +10,7 @@ use md_stream::{
     Span, StreamParser,
 };
 use nostrdb::Transaction;
-use notedeck::AppContext;
+use notedeck::NoteContext;
 
 /// Theme for markdown rendering, derived from egui visuals.
 pub struct MdTheme {
@@ -55,7 +55,7 @@ pub fn render_markdown(text: &str, ui: &mut Ui) {
         parser.finalize();
         parser.into_parts()
     };
-    render_parsed_markdown(&elements, None, &source, None, ui);
+    render_parsed_markdown(&elements, None, &source, None, None, ui);
 }
 
 /// Render `source` as markdown with **interactive** GFM task-list checkboxes.
@@ -121,8 +121,18 @@ struct CheckboxEdits {
 /// [`KindRenderer`](notedeck::KindRenderer) for its kind. The built-in `nostr:`
 /// parser keeps bech32 references rendering exactly as before; the common
 /// reference-free body allocates nothing beyond the parse.
+///
+/// `txn` is the caller's transaction, threaded down to every reference read.
+/// Markdown rendering is a pure pass and may run inside a transaction already
+/// (nostrdb allows only one per thread), so this never opens its own — the caller
+/// passes the one it holds, or opens one at a point it knows is txn-free.
 #[profiling::function]
-pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) {
+pub fn render_markdown_with_refs(
+    ui: &mut Ui,
+    note: &mut NoteContext,
+    txn: &Transaction,
+    text: &str,
+) {
     let (elements, source) = {
         profiling::scope!("StreamParser parse");
         let mut parser = StreamParser::new();
@@ -130,7 +140,7 @@ pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) 
         parser.finalize();
         parser.into_parts()
     };
-    render_parsed_markdown(&elements, None, &source, Some(ctx), ui);
+    render_parsed_markdown(&elements, None, &source, Some(note), Some(txn), ui);
 }
 
 /// Like [`render_markdown_with_refs`], but the GFM task-list checkboxes are
@@ -143,7 +153,8 @@ pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) 
 /// [`apply_checkbox_toggles`]).
 pub fn render_markdown_with_refs_editable(
     ui: &mut Ui,
-    ctx: &mut AppContext,
+    note: &mut NoteContext,
+    txn: &Transaction,
     source: &mut String,
 ) -> bool {
     let mut parser = StreamParser::new();
@@ -152,7 +163,15 @@ pub fn render_markdown_with_refs_editable(
     let (elements, buffer) = parser.into_parts();
 
     let mut edits = CheckboxEdits::default();
-    render_md_elements(&elements, None, &buffer, Some(&mut edits), Some(ctx), ui);
+    let mut refs = bundle_refs(Some(note), Some(txn));
+    render_md_elements(
+        &elements,
+        None,
+        &buffer,
+        Some(&mut edits),
+        refs.as_mut(),
+        ui,
+    );
     apply_checkbox_toggles(source, &edits.toggled)
 }
 
@@ -275,51 +294,67 @@ fn next_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Op
 /// the prose baseline. Only the renderer knows how wide it wants to be, so that
 /// is its own business — [`inline_chip`](crate::inline_chip) is the shape that
 /// already handles both.
+/// The note context inline references render against, bundled with the
+/// transaction their reads share.
+///
+/// Threaded together through the markdown render tree (`Option<&mut RefCtx>`)
+/// because a reference needs both: the registries + accounts to resolve and draw,
+/// and a live transaction to read the resolved note. nostrdb allows only one
+/// transaction per thread, so it is opened once where the context is built (the
+/// markdown entry points, or the note-content renderer) and passed down — never
+/// reopened per reference.
+struct RefCtx<'a, 'ctx> {
+    note: &'a mut NoteContext<'ctx>,
+    txn: &'a Transaction,
+}
+
 #[profiling::function]
 fn draw_reference(
     job: &mut LayoutJob,
     ui: &mut Ui,
-    ctx: &mut AppContext,
+    ctx: &mut NoteContext,
+    txn: &Transaction,
     parser_id: &str,
     matched: &str,
 ) -> bool {
-    let Ok(txn) = Transaction::new(ctx.ndb) else {
-        return false;
-    };
-    // The registries are a `&'a` reference held in AppContext; borrow the parser
-    // out of it and finish resolving before the mut reborrow `note_context()`
-    // takes of ctx's other fields below.
-    let Some(parser) = ctx.registries.reference_parsers.get(parser_id) else {
+    // `ndb` and `registries` are shared `&'d` references; copy them out so the
+    // note, parser, and renderer borrowed from them outlive the `&mut ctx`
+    // reborrow the kind renderer takes below (the same copy-out pattern
+    // `AppContext::call_tool` uses to dodge the `note_context()` mut-borrow).
+    //
+    // `txn` is the caller's transaction, never a fresh one: nostrdb allows only a
+    // single transaction per thread, and the note-content renderer already holds
+    // one open while it walks the note's blocks.
+    let ndb = ctx.ndb;
+    let registries = ctx.registries;
+    let Some(parser) = registries.reference_parsers.get(parser_id) else {
         return false;
     };
     let resolve_ctx = notedeck::ReferenceResolveCtx {
-        ndb: ctx.ndb,
-        txn: &txn,
+        ndb,
+        txn,
         selected_account: Some(*ctx.accounts.selected_account_pubkey()),
     };
     let Some(resolved) = parser.resolve(matched, &resolve_ctx) else {
         return false;
     };
-    let Ok(note) = ctx.ndb.get_note_by_id(&txn, resolved.note_id.bytes()) else {
+    let Ok(note) = ndb.get_note_by_id(txn, resolved.note_id.bytes()) else {
         return false;
     };
     // TODO: per-kind default renderer id from settings (see "Settings UI" card).
-    let Some(renderer) = ctx.registries.kind_renderers.default_for(note.kind(), None) else {
+    let Some(renderer) = registries.kind_renderers.default_for(note.kind(), None) else {
         return false;
     };
     // Committed to drawing: flush the pending text run so the widget breaks out
-    // of it, then draw. `note_context` mut-borrows `ctx`, so scope it and pull the
+    // of it, then draw. The renderer mut-borrows `ctx`, so scope it and pull the
     // owned action out before pushing onto `ctx.app_actions`.
     flush_job(job, ui);
     let req = notedeck::KindRenderRequest {
-        txn: &txn,
+        txn,
         note: &note,
         context: notedeck::RenderContext::default(),
     };
-    let action = {
-        let mut note_context = ctx.note_context();
-        renderer.render(ui, &mut note_context, &req).action
-    };
+    let action = renderer.render(ui, ctx, &req).action;
     if let Some(action) = action {
         ctx.app_actions.push(action);
     }
@@ -337,10 +372,28 @@ pub fn render_parsed_markdown(
     elements: &[MdElement],
     partial: Option<&Partial>,
     buffer: &str,
-    ctx: Option<&mut AppContext>,
+    note: Option<&mut NoteContext>,
+    txn: Option<&Transaction>,
     ui: &mut Ui,
 ) {
-    render_md_elements(elements, partial, buffer, None, ctx, ui);
+    // A reference needs both a context (to resolve + draw) and the caller's
+    // transaction (to read the resolved note); bundle them so they thread as one.
+    let mut refs = bundle_refs(note, txn);
+    render_md_elements(elements, partial, buffer, None, refs.as_mut(), ui);
+}
+
+/// Bundle a [`NoteContext`] with the transaction reference reads run through into
+/// a [`RefCtx`], if both are present. `None` (no context, or no transaction)
+/// renders references as plain text. Shared by every markdown entry point so the
+/// "context and txn travel together" invariant lives in one place.
+fn bundle_refs<'a, 'ctx>(
+    note: Option<&'a mut NoteContext<'ctx>>,
+    txn: Option<&'a Transaction>,
+) -> Option<RefCtx<'a, 'ctx>> {
+    match (note, txn) {
+        (Some(note), Some(txn)) => Some(RefCtx { note, txn }),
+        _ => None,
+    }
 }
 
 /// Shared rendering core. `edits` is `None` for read-only renders and `Some`
@@ -351,7 +404,7 @@ fn render_md_elements(
     partial: Option<&Partial>,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
-    mut ctx: Option<&mut AppContext>,
+    mut ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
     let theme = MdTheme::from_visuals(ui.visuals());
@@ -381,7 +434,7 @@ fn render_element(
     theme: &MdTheme,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
-    mut ctx: Option<&mut AppContext>,
+    mut ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
     match element {
@@ -478,14 +531,15 @@ fn append_text_with_refs(
     job: &mut LayoutJob,
     text: &str,
     fmt: &TextFormat,
-    ctx: &mut AppContext,
+    ctx: &mut NoteContext,
+    txn: &Transaction,
     ui: &mut Ui,
 ) {
     let mut rest = text;
     while let Some(m) = next_reference(rest, &ctx.registries.reference_parsers) {
         job.append(&rest[..m.range.start], 0.0, fmt.clone());
         let matched = &rest[m.range.clone()];
-        if !draw_reference(job, ui, ctx, m.parser, matched) {
+        if !draw_reference(job, ui, ctx, txn, m.parser, matched) {
             job.append(matched, 0.0, fmt.clone());
         }
         rest = &rest[m.range.end..];
@@ -505,7 +559,7 @@ fn render_inlines(
     inlines: &[InlineElement],
     theme: &MdTheme,
     buffer: &str,
-    mut ctx: Option<&mut AppContext>,
+    mut ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
     // Inline runs carry their own spaces in the span text, and bold/link/image
@@ -551,7 +605,9 @@ fn render_inlines(
             InlineElement::Text(span) => {
                 let text = span.resolve(buffer);
                 match ctx.as_deref_mut() {
-                    Some(ctx) => append_text_with_refs(&mut job, text, &text_fmt, ctx, ui),
+                    Some(ctx) => {
+                        append_text_with_refs(&mut job, text, &text_fmt, ctx.note, ctx.txn, ui)
+                    }
                     None => job.append(text, 0.0, text_fmt.clone()),
                 }
             }
@@ -563,8 +619,8 @@ fn render_inlines(
                 let text = span.resolve(buffer);
                 let mut drawn = false;
                 if let Some(ctx) = ctx.as_deref_mut() {
-                    if let Some(r) = whole_reference(text, &ctx.registries.reference_parsers) {
-                        drawn = draw_reference(&mut job, ui, ctx, r.parser, r.text);
+                    if let Some(r) = whole_reference(text, &ctx.note.registries.reference_parsers) {
+                        drawn = draw_reference(&mut job, ui, ctx.note, ctx.txn, r.parser, r.text);
                     }
                 }
                 if !drawn {
@@ -582,8 +638,8 @@ fn render_inlines(
                 // dropped — a chip has its own styling — but the ref resolves
                 // instead of rendering as bold/italic literal text.
                 if let Some(ctx) = ctx.as_deref_mut() {
-                    if let Some(r) = whole_reference(text, &ctx.registries.reference_parsers) {
-                        if draw_reference(&mut job, ui, ctx, r.parser, r.text) {
+                    if let Some(r) = whole_reference(text, &ctx.note.registries.reference_parsers) {
+                        if draw_reference(&mut job, ui, ctx.note, ctx.txn, r.parser, r.text) {
                             continue;
                         }
                     }
@@ -892,7 +948,7 @@ fn render_list_items(
     theme: &MdTheme,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
-    mut ctx: Option<&mut AppContext>,
+    mut ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
     for (i, item) in items.iter().enumerate() {
@@ -928,7 +984,7 @@ fn render_list_item(
     theme: &MdTheme,
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
-    mut ctx: Option<&mut AppContext>,
+    mut ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
     ui.horizontal(|ui| {
@@ -1031,7 +1087,7 @@ fn render_partial(
     partial: &Partial,
     theme: &MdTheme,
     buffer: &str,
-    mut ctx: Option<&mut AppContext>,
+    mut ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
     // A streaming list keeps its completed items in `partial.kind` (its content

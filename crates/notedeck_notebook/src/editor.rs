@@ -244,7 +244,11 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
         ui.weak("Nothing to preview yet.");
         return;
     }
-    notedeck_ui::markdown::render_markdown_with_refs(ui, ctx, content);
+    // The preview holds no transaction; open one here and pass it in so the
+    // markdown's inline references resolve.
+    let mut note_ctx = ctx.note_context();
+    let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("preview txn");
+    notedeck_ui::markdown::render_markdown_with_refs(ui, &mut note_ctx, &txn, content);
 }
 
 /// Render the vault list — one styled, clickable row per note (newest-edited
