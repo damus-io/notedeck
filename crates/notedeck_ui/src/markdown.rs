@@ -171,19 +171,61 @@ struct RefMatch {
     parser: &'static str,
 }
 
-/// The reference filling `text` in its entirety (ignoring surrounding
-/// whitespace), or `None` if `text` is more than a lone reference.
+/// A span whose entire content is one reference: the reference text with the
+/// span's own decoration stripped off, plus the parser that matched it.
 ///
-/// This is the inline-code (backtick) rule: models habitually wrap a reference
-/// in backticks (`` `board#word-word-word` ``), so a code span whose *whole*
-/// content is one reference is drawn as its chip rather than as literal code.
-/// Requiring the match to span the trimmed content keeps genuine code — a
-/// `#define`, a `board#word-word-word` buried in a longer snippet — rendering as
-/// code untouched.
-fn whole_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Option<RefMatch> {
-    let trimmed = text.trim();
-    let m = next_reference(trimmed, parsers)?;
-    (m.range.start == 0 && m.range.end == trimmed.len()).then_some(m)
+/// Carries the stripped text rather than leaving the caller to re-derive it —
+/// what [`whole_reference`] peels off (whitespace, backticks) is exactly what
+/// must *not* reach [`ReferenceParser::resolve`](notedeck::ReferenceParser::resolve).
+struct WholeRef<'a> {
+    /// The reference itself, ready to resolve.
+    text: &'a str,
+    /// [`id`](notedeck::ReferenceParser::id) of the parser that matched.
+    parser: &'static str,
+}
+
+/// The reference filling `text` in its entirety (ignoring surrounding whitespace
+/// and one balanced run of backticks), or `None` if `text` is more than a lone
+/// reference.
+///
+/// This is the whole-span rule shared by the inline-code and emphasis arms of
+/// [`render_inlines`]: models habitually decorate a reference — `` `board#a-b-c` ``,
+/// `**board#a-b-c**`, and (since emphasis content is *not* re-parsed for inline
+/// code) the doubly-wrapped ``**`board#a-b-c`**`` — so a span whose *whole*
+/// content is one reference is drawn as its chip rather than as literal text.
+/// Requiring the match to span the stripped content keeps genuine code — a
+/// `#define`, a `board#word-word-word` buried in a longer snippet — untouched.
+fn whole_reference<'a>(
+    text: &'a str,
+    parsers: &notedeck::ReferenceParserRegistry,
+) -> Option<WholeRef<'a>> {
+    let stripped = unwrap_code_span(text.trim());
+    let m = next_reference(stripped, parsers)?;
+    (m.range.start == 0 && m.range.end == stripped.len()).then_some(WholeRef {
+        text: stripped,
+        parser: m.parser,
+    })
+}
+
+/// `text` with one balanced run of surrounding backticks (and the whitespace
+/// inside them) removed, or `text` unchanged when it isn't backtick-wrapped.
+///
+/// md-stream parses emphasis content as a flat span — ``**`x`**`` yields one
+/// styled run whose text still holds the backticks — so the emphasis arm has to
+/// undo the code span itself.
+fn unwrap_code_span(text: &str) -> &str {
+    let opening = text.len() - text.trim_start_matches('`').len();
+    if opening == 0 {
+        return text;
+    }
+    let inner = &text[opening..];
+    let closing = inner.len() - inner.trim_end_matches('`').len();
+    // Unbalanced (or all-backtick, where the two runs are the same characters
+    // counted twice): not a code span, leave it alone.
+    if closing != opening {
+        return text;
+    }
+    inner[..inner.len() - closing].trim()
 }
 
 /// The leftmost reference in `text` recognized by any parser in `parsers`, or
@@ -515,9 +557,8 @@ fn render_inlines(
                 let text = span.resolve(buffer);
                 let mut drawn = false;
                 if let Some(ctx) = ctx.as_deref_mut() {
-                    let trimmed = text.trim();
-                    if let Some(m) = whole_reference(trimmed, &ctx.registries.reference_parsers) {
-                        drawn = draw_reference(&mut job, ui, ctx, m.parser, trimmed);
+                    if let Some(r) = whole_reference(text, &ctx.registries.reference_parsers) {
+                        drawn = draw_reference(&mut job, ui, ctx, r.parser, r.text);
                     }
                 }
                 if !drawn {
@@ -529,14 +570,14 @@ fn render_inlines(
                 let text = content.resolve(buffer);
 
                 // A styled run whose whole content is one reference is an
-                // emphasized ref (models love `**board#word-word-word**`); draw
-                // it as its chip, same whole-content rule as inline code. The
-                // emphasis is dropped — a chip has its own styling — but the ref
-                // resolves instead of rendering as bold/italic literal text.
+                // emphasized ref (models love `**board#word-word-word**`, and
+                // just as often ``**`board#word-word-word`**``); draw it as its
+                // chip, same whole-content rule as inline code. The emphasis is
+                // dropped — a chip has its own styling — but the ref resolves
+                // instead of rendering as bold/italic literal text.
                 if let Some(ctx) = ctx.as_deref_mut() {
-                    let trimmed = text.trim();
-                    if let Some(m) = whole_reference(trimmed, &ctx.registries.reference_parsers) {
-                        if draw_reference(&mut job, ui, ctx, m.parser, trimmed) {
+                    if let Some(r) = whole_reference(text, &ctx.registries.reference_parsers) {
+                        if draw_reference(&mut job, ui, ctx, r.parser, r.text) {
                             continue;
                         }
                     }
@@ -1574,14 +1615,41 @@ mod tests {
 
         // A code span that *is* the reference (bare, or padded with the
         // whitespace `trim` drops) draws as a chip.
-        let m = whole_reference("@alice", &parsers).unwrap();
-        assert_eq!(m.parser, "stub");
-        assert!(whole_reference("  @alice  ", &parsers).is_some());
+        let r = whole_reference("@alice", &parsers).unwrap();
+        assert_eq!(r.parser, "stub");
+        assert_eq!(r.text, "@alice");
+        assert_eq!(
+            whole_reference("  @alice  ", &parsers).unwrap().text,
+            "@alice"
+        );
 
         // A reference embedded in a longer code snippet stays literal code.
         assert!(whole_reference("ping @alice now", &parsers).is_none());
         assert!(whole_reference("@alice.handle", &parsers).is_none());
         // Ordinary code with no reference is untouched.
         assert!(whole_reference("let x = 1;", &parsers).is_none());
+    }
+
+    /// `**`@alice`**` — a code span *inside* emphasis. md-stream doesn't re-parse
+    /// emphasis content, so the styled run still carries the backticks and the
+    /// whole-span rule has to strip them itself.
+    #[test]
+    fn whole_reference_unwraps_a_backticked_reference() {
+        let mut parsers = notedeck::ReferenceParserRegistry::default();
+        parsers.register(Box::new(StubParser));
+
+        for decorated in ["`@alice`", "``@alice``", "` @alice `"] {
+            let r = whole_reference(decorated, &parsers)
+                .unwrap_or_else(|| panic!("{decorated} should resolve"));
+            // The backticks must not reach `resolve`.
+            assert_eq!(r.text, "@alice");
+        }
+
+        // Unbalanced or partial backticks aren't a code span; the leftover tick
+        // then makes the match short of the whole span, so it stays literal.
+        assert!(whole_reference("`@alice", &parsers).is_none());
+        assert!(whole_reference("``@alice`", &parsers).is_none());
+        // A run of backticks with nothing inside matches nothing either way.
+        assert!(whole_reference("```", &parsers).is_none());
     }
 }
