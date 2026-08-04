@@ -1021,11 +1021,18 @@ impl<'a> DaveUi<'a> {
                     // the ctx-less test harnesses; with it, refs in a plan body
                     // resolve to their inline chips like the other surfaces.
                     if let Some(plan) = request.view.plan_markdown() {
+                        // Plan rendering holds no transaction; open one (when we
+                        // have a context) so refs in the plan body resolve.
+                        let mut note_ctx = ctx.map(|c| c.note_context());
+                        let txn = note_ctx
+                            .as_ref()
+                            .and_then(|nc| Transaction::new(nc.ndb).ok());
                         markdown_ui::render_parsed_markdown(
                             &plan.elements,
                             None,
                             &plan.source,
-                            ctx,
+                            note_ctx.as_mut(),
+                            txn.as_ref(),
                             ui,
                         );
                     } else if let Some(plan_text) =
@@ -1311,6 +1318,8 @@ impl<'a> DaveUi<'a> {
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
             sound: ctx.sound,
+            registries: ctx.registries,
+            app_actions: ctx.app_actions,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();
@@ -1493,8 +1502,11 @@ impl<'a> DaveUi<'a> {
                     if !msg.text.is_empty() {
                         // Ref-aware markdown so a headway ref the user types
                         // (bare or backtick-wrapped) renders as its inline chip,
-                        // matching the assistant surface.
-                        markdown_ui::render_markdown_with_refs(ui, ctx, &msg.text);
+                        // matching the assistant surface. Chat rendering holds no
+                        // transaction, so open one here and pass it in.
+                        let mut note_ctx = ctx.note_context();
+                        let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
+                        markdown_ui::render_markdown_with_refs(ui, &mut note_ctx, &txn, &msg.text);
                     }
                     if is_queued {
                         ui.label(
@@ -1519,8 +1531,19 @@ impl<'a> DaveUi<'a> {
         let partial = msg.partial();
         let buffer = msg.buffer();
         let text = msg.text().to_owned();
+        // Chat rendering holds no transaction; open one here and thread it in so
+        // the streamed markdown can resolve inline references.
+        let mut note_ctx = ctx.note_context();
+        let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
         let r = ui.scope(|ui| {
-            markdown_ui::render_parsed_markdown(elements, partial, buffer, Some(ctx), ui);
+            markdown_ui::render_parsed_markdown(
+                elements,
+                partial,
+                buffer,
+                Some(&mut note_ctx),
+                Some(&txn),
+                ui,
+            );
         });
         notedeck_ui::context_menu::context_menu(&r.response, |ui| {
             if ui.button("Copy").clicked() {

@@ -55,6 +55,8 @@ pub fn note_hover_ui(
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
             sound: ctx.sound,
+            registries: ctx.registries,
+            app_actions: ctx.app_actions,
         };
 
         let options = notedeck_ui::NoteOptions::default();

@@ -50,6 +50,14 @@ bitflags! {
 
         /// Show detailed counts (reposts, reactions, zaps) above the action bar
         const DetailedCounts = 1 << 21;
+
+        /// Splice inline reference widgets into note text: a text run mentioning
+        /// an app-native identifier a registered
+        /// [`ReferenceParser`](notedeck::ReferenceParser) recognizes (e.g.
+        /// `headway#word-word-word`) renders the referenced entity's live widget
+        /// inline, the same seam Dave's chat uses. Gates the per-block reference
+        /// scan, so surfaces that don't want it (or the cost) leave it clear.
+        const InlineReferences = 1 << 22;
     }
 }
 
@@ -59,6 +67,7 @@ impl Default for NoteOptions {
             | NoteOptions::HasNotePreviews
             | NoteOptions::ActionBar
             | NoteOptions::Truncate
+            | NoteOptions::InlineReferences
     }
 }
 

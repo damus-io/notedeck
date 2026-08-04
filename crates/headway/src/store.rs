@@ -62,6 +62,15 @@ pub enum BoardAction {
         container: Container,
         rank: String,
     },
+    /// Sequence every subissue of `parent` into the exact work-order `order`
+    /// (top-first). Writes one sequence overlay per child with fresh, evenly
+    /// spaced ranks, promoting a partly- or un-sequenced list to a fully explicit
+    /// order in one step. This is what a drag-reorder emits when the list isn't
+    /// already fully sequenced: a lone [`Self::SetSequence`] can't land a card
+    /// between two *unsequenced* siblings (they have no rank to insert between,
+    /// and a sequenced child always sorts ahead of an unsequenced one), so the
+    /// whole list is normalised instead.
+    ReorderSubissues { parent: NoteId, order: Vec<NoteId> },
     /// Make `card` a subissue of `parent`, or detach it when `parent` is `None`.
     /// Refused (no events) when it would create a parent cycle.
     SetParent {
@@ -350,6 +359,25 @@ pub fn seed_demo_board(
             publisher,
         );
     }
+
+    // Prioritise a few cards so the board and detail views showcase the priority
+    // glyph across levels (the rest stay at the unadorned `Priority::None`).
+    for (title, priority) in [
+        // Keyed by each card's *seed* title (`ids`), before the rename above.
+        ("Nostr event model", Priority::Urgent),
+        ("Drag-and-drop between columns", Priority::High),
+        ("Card detail / comments view", Priority::Medium),
+        ("Column reordering", Priority::Low),
+    ] {
+        if let Some(card) = ids.get(title) {
+            ingest(
+                ndb,
+                build_field(card, Field::Priority, priority.as_str()).created_at(at - 2 * 86_400),
+                secret,
+                publisher,
+            );
+        }
+    }
 }
 
 /// Apply one [`BoardAction`] against the current `view`, ingesting the events it
@@ -467,6 +495,25 @@ pub fn apply(
                 secret,
                 publisher,
             );
+        }
+        BoardAction::ReorderSubissues { parent, order } => {
+            // Re-rank the whole container in one shot: walk `order` top-first,
+            // appending each child after the previous with the shared
+            // `rank_between` kernel. Fresh, strictly increasing ranks give the
+            // container a fully explicit order, so a later single-card drag can
+            // insert against sequenced neighbours (see `SetSequence`).
+            let container = Container::Card(*parent.bytes());
+            let mut prev: Option<String> = None;
+            for card in &order {
+                let rank = rank_between(prev.as_deref(), None);
+                ingest(
+                    ndb,
+                    build_sequence(&container, card, &rank),
+                    secret,
+                    publisher,
+                );
+                prev = Some(rank);
+            }
         }
         BoardAction::SetParent { card, parent } => {
             if let Some(parent) = parent {
@@ -1048,6 +1095,73 @@ mod tests {
             .iter()
             .map(|c| c.title.clone())
             .collect()
+    }
+
+    /// The id of the (first) card titled `title`, across every column.
+    fn card_id_by_title(view: &BoardView, title: &str) -> Option<NoteId> {
+        view.columns
+            .iter()
+            .flat_map(|c| c.cards.iter())
+            .find(|c| c.title == title)
+            .map(|c| c.id)
+    }
+
+    #[test]
+    fn reorder_subissues_promotes_unsequenced_children_into_exact_order() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+
+        // A parent with three children, all left unsequenced (creation order).
+        t.apply(
+            &view,
+            BoardAction::AddCard {
+                col: 1,
+                title: "epic".into(),
+                labels: vec![],
+                parent: None,
+            },
+        );
+        let view = t.wait(|v| card_id_by_title(v, "epic").is_some());
+        let epic = card_id_by_title(&view, "epic").unwrap();
+        for title in ["a", "b", "c"] {
+            let v = t.wait(|v| card_id_by_title(v, "epic").is_some());
+            t.apply(
+                &v,
+                BoardAction::AddCard {
+                    col: 1,
+                    title: title.into(),
+                    labels: vec![],
+                    parent: Some(epic),
+                },
+            );
+        }
+        let view = t.wait(|v| find_card(v, epic).is_some_and(|c| c.subissues.len() == 3));
+        let id = |title: &str| card_id_by_title(&view, title).unwrap();
+        let (a, b, c) = (id("a"), id("b"), id("c"));
+
+        // Promote into an order that isn't creation order: c, a, b.
+        t.apply(
+            &view,
+            BoardAction::ReorderSubissues {
+                parent: epic,
+                order: vec![c, a, b],
+            },
+        );
+
+        // Every child is now sequenced, in exactly the requested order — the
+        // proof a drop into an all-unsequenced list lands where dropped rather
+        // than snapping to the top.
+        let view = t.wait(|v| {
+            find_card(v, epic).is_some_and(|card| card.subissues.iter().all(|s| s.seq.is_some()))
+        });
+        let order: Vec<NoteId> = find_card(&view, epic)
+            .unwrap()
+            .subissues
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(order, vec![c, a, b]);
     }
 
     /// Seed the populated demo board for the card-operation tests to act on.

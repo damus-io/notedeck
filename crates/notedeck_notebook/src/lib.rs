@@ -6,7 +6,9 @@ mod ui;
 pub mod wordid;
 
 use crate::convert::view_to_canvas;
-use crate::editor::{EditorAction, LongformEditor, SavedLongform, editor_ui, vault_ui};
+use crate::editor::{
+    EditorAction, LongformEditor, SavedLongform, VaultAction, VaultState, editor_ui, vault_ui,
+};
 use crate::event::{CanvasReducer, CanvasView};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
@@ -100,6 +102,10 @@ pub struct Notebook {
     /// canvas; `Some` replaces it with [`editor_ui`]. Opened from the toolbar's
     /// "＋ Note" button and dismissed by the editor's Close.
     editor: Option<LongformEditor>,
+    /// The vault sidebar's transient interaction state (an inline rename in
+    /// progress, or a delete awaiting confirmation). Driven by [`vault_ui`], which
+    /// surfaces each completed interaction as a [`VaultAction`].
+    vault: VaultState,
 }
 
 /// Inline text-editing state for the notebook canvas. Nodes are tracked by their
@@ -473,6 +479,100 @@ impl Notebook {
         }
         self.wake();
     }
+
+    /// Apply a completed [`VaultAction`] from the sidebar. Returns whether the
+    /// action takes over the view (only Open does — it opens the editor; Rename
+    /// and Delete persist in place).
+    fn apply_vault_action(
+        &mut self,
+        ctx: &mut AppContext,
+        author: &Pubkey,
+        signer: &Option<[u8; 32]>,
+        action: VaultAction,
+    ) -> bool {
+        match action {
+            VaultAction::Open(i) => {
+                let Some(editor) = self.sync.notes().get(i).map(LongformEditor::open) else {
+                    return false;
+                };
+                self.editor = Some(editor);
+                true
+            }
+            VaultAction::Rename { d, title } => {
+                self.rename_note(ctx, author, signer, &d, title);
+                false
+            }
+            VaultAction::Delete { d } => {
+                self.delete_note(ctx, author, signer, &d);
+                false
+            }
+        }
+    }
+
+    /// Persist an inline rename: supersede note `d` with a title-only edit that
+    /// keeps its body. Needs a signing key (a watch-only account can't edit); the
+    /// current revision (looked up by `d`) supplies the body and the supersede
+    /// baseline. A no-op if the title is unchanged.
+    fn rename_note(
+        &mut self,
+        ctx: &mut AppContext,
+        author: &Pubkey,
+        signer: &Option<[u8; 32]>,
+        d: &str,
+        title: String,
+    ) {
+        let Some(secret) = signer else { return };
+        // Copy out what the edit needs so the `sync` borrow ends before `wake`.
+        let Some((content, prev)) = self
+            .sync
+            .notes()
+            .iter()
+            .find(|n| n.d == d)
+            .filter(|n| n.title != title)
+            .map(|n| (n.content.clone(), n.created_at))
+        else {
+            return;
+        };
+        let input = event::LongformInput {
+            title,
+            content,
+            ..Default::default()
+        };
+        store::edit_longform(
+            ctx.ndb,
+            author,
+            secret,
+            d,
+            prev,
+            &input,
+            &mut store::NoPublish,
+        );
+        self.wake();
+    }
+
+    /// Persist a confirmed vault delete: tombstone note `d`, superseding its
+    /// current revision (whose `created_at`, looked up by `d`, is the supersede
+    /// baseline). Needs a signing key.
+    fn delete_note(
+        &mut self,
+        ctx: &mut AppContext,
+        author: &Pubkey,
+        signer: &Option<[u8; 32]>,
+        d: &str,
+    ) {
+        let Some(secret) = signer else { return };
+        let Some(prev) = self
+            .sync
+            .notes()
+            .iter()
+            .find(|n| n.d == d)
+            .map(|n| n.created_at)
+        else {
+            return;
+        };
+        store::delete_longform(ctx.ndb, author, secret, d, prev, &mut store::NoPublish);
+        self.wake();
+    }
 }
 
 impl Default for Notebook {
@@ -494,6 +594,7 @@ impl Default for Notebook {
             seeded: false,
             repaint_frames: 0,
             editor: None,
+            vault: VaultState::default(),
         }
     }
 }
@@ -623,9 +724,9 @@ impl notedeck::App for Notebook {
 
         // Vault sidebar: the account's notes down the left, shown once there's at
         // least one — an empty vault stays out of the way and lets the canvas use
-        // the full width. Clicking a note opens it in the editor, which takes over
-        // from the next frame.
-        let mut open_note = None;
+        // the full width. A row can be opened, renamed, or deleted; opening takes
+        // over with the editor from the next frame.
+        let mut vault_action = None;
         if !self.sync.notes().is_empty() {
             egui::SidePanel::left("notebook-vault")
                 .resizable(true)
@@ -639,13 +740,14 @@ impl notedeck::App for Notebook {
                         )),
                 )
                 .show_inside(ui, |ui| {
-                    open_note = vault_ui(self.sync.notes(), ui);
+                    vault_action = vault_ui(self.sync.notes(), &mut self.vault, ui);
                 });
         }
-        if let Some(i) = open_note
-            && let Some(editor) = self.sync.notes().get(i).map(LongformEditor::open)
+        // Only Open takes over the view; Rename/Delete persist in place and let
+        // the canvas keep rendering this frame.
+        if let Some(action) = vault_action
+            && self.apply_vault_action(ctx, &author, &signer, action)
         {
-            self.editor = Some(editor);
             ui.ctx().request_repaint();
             return AppResponse::default();
         }

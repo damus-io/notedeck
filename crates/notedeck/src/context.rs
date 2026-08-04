@@ -85,6 +85,10 @@ impl<'a> AppContext<'a> {
             clipboard: self.clipboard,
             i18n: self.i18n,
             sound: self.sound,
+            // `registries` is a shared `&'a` borrow and `app_actions` a disjoint
+            // field, so both compose with the mut reborrows above.
+            registries: self.registries,
+            app_actions: self.app_actions,
         }
     }
 

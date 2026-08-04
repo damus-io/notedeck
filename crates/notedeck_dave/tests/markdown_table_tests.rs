@@ -13,7 +13,7 @@ fn table_harness(markdown: &str) -> Harness<'static> {
         .with_size(egui::Vec2::new(500.0, 300.0))
         .renderer(notedeck::software_renderer())
         .build_ui(move |ui| {
-            render_parsed_markdown(&elements, partial.as_ref(), &buffer, None, ui);
+            render_parsed_markdown(&elements, partial.as_ref(), &buffer, None, None, ui);
         })
 }
 

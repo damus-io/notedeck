@@ -11,7 +11,7 @@ use notedeck_notebook::event::{
     build_node, build_transform, canvas_address,
 };
 use notedeck_notebook::store::{
-    CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, load_longform,
+    CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_longform, load_longform,
 };
 
 struct NotebookTestState {
@@ -270,6 +270,69 @@ fn snapshot_notebook_vault() {
         .push(egui::Event::PointerMoved(egui::pos2(120.0, 120.0)));
     harness.run();
     harness.snapshot("notebook_vault");
+}
+
+/// Seed vault notes and snapshot the delete-confirmation modal (opened from a
+/// row's context menu) for eyeballing the destructive-action prompt.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_vault_delete() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
+            let input = LongformInput {
+                title: title.to_string(),
+                content: format!("# {title}\n\nbody"),
+                ..Default::default()
+            };
+            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
+                .expect("seed longform");
+        }
+    }
+
+    wait_for_label(&mut harness, "Reading list");
+    harness.run_steps(3);
+    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
+    harness.get_by_label("Delete").simulate_click();
+    wait_for_label(&mut harness, "Delete note?");
+    harness.run_steps(2);
+    harness.snapshot("notebook_vault_delete");
+}
+
+/// Seed vault notes and snapshot a row in inline-rename mode (its editable title
+/// field) for eyeballing the rename affordance.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_vault_rename() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
+            let input = LongformInput {
+                title: title.to_string(),
+                content: format!("# {title}\n\nbody"),
+                ..Default::default()
+            };
+            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
+                .expect("seed longform");
+        }
+    }
+
+    wait_for_label(&mut harness, "Reading list");
+    harness.run_steps(3);
+    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
+    harness.get_by_label("Rename").simulate_click();
+    harness.run_steps(3);
+    harness.snapshot("notebook_vault_rename");
 }
 
 /// Seed a note with rich markdown, open it from the vault, and snapshot the
@@ -676,6 +739,150 @@ fn create_and_edit_longform_via_editor() {
     }
 }
 
+/// The count of the account's live (non-deleted) vault notes, read through the
+/// app's own ndb.
+fn vault_len(harness: &mut Harness<'static, NotebookTestState>) -> usize {
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    list_longform(app_ctx.ndb, &txn, &pubkey).len()
+}
+
+/// Press and release a key this frame, routed to whatever egui widget has focus.
+fn key_press(harness: &mut Harness<'static, NotebookTestState>, key: egui::Key) {
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    harness.run();
+}
+
+/// The titles of the account's live vault notes, read through the app's own ndb.
+fn vault_titles(harness: &mut Harness<'static, NotebookTestState>) -> Vec<String> {
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    list_longform(app_ctx.ndb, &txn, &pubkey)
+        .into_iter()
+        .map(|n| n.title)
+        .collect()
+}
+
+/// End-to-end vault rename: seed two notes, right-click a vault row, choose
+/// Rename, type into the inline field, and commit with Enter — then verify the
+/// edit supersedes that note in place (the vault still holds both notes, one now
+/// carrying the edited title).
+#[test]
+fn rename_note_via_vault_context_menu() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, false);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        for title in ["First draft", "Second draft"] {
+            let input = LongformInput {
+                title: title.to_string(),
+                content: format!("# {title}\n\nbody"),
+                ..Default::default()
+            };
+            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
+                .expect("seed longform");
+        }
+    }
+
+    wait_for_label(&mut harness, "First draft");
+    harness.run_steps(3);
+    assert!(
+        vault_titles(&mut harness).iter().all(|t| !t.contains("v2")),
+        "no note is renamed yet"
+    );
+
+    // Right-click a row and choose Rename, arming the inline field.
+    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
+    harness.get_by_label("Rename").simulate_click();
+    harness.run();
+
+    // Type into the field (appending to the seeded title) and commit with Enter.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" v2");
+    harness.run();
+    key_press(&mut harness, egui::Key::Enter);
+
+    // The rename supersedes the note in place: both notes remain, one now edited.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        let titles = vault_titles(&mut harness);
+        if titles.len() == 2 && titles.iter().any(|t| t.contains("v2")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the note was never renamed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// End-to-end vault delete: seed two notes, right-click a vault row to open its
+/// context menu, choose Delete, confirm the modal, and verify a tombstone drops
+/// that note from the vault (the list shrinks by one) while the other survives.
+#[test]
+fn delete_note_via_vault_context_menu() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, false);
+
+    // Seed two longform notes directly (the create path is covered elsewhere).
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        for title in ["Keep me", "Delete me"] {
+            let input = LongformInput {
+                title: title.to_string(),
+                content: format!("# {title}\n\nbody"),
+                ..Default::default()
+            };
+            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
+                .expect("seed longform");
+        }
+    }
+
+    // Wait until both notes have unwrapped and the vault has rendered its rows.
+    wait_for_label(&mut harness, "Keep me");
+    harness.run_steps(3);
+    assert_eq!(vault_len(&mut harness), 2);
+
+    // Right-click the first vault row (its rough on-screen position, same spot the
+    // vault snapshot hovers) to open the context menu, then choose Delete.
+    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
+    harness.get_by_label("Delete").simulate_click();
+    harness.run();
+
+    // The confirmation modal appears; its Delete button fires the tombstone.
+    wait_for_label(&mut harness, "Delete note?");
+    harness.get_by_label("Delete").simulate_click();
+
+    // The tombstone ingests + unwraps asynchronously; poll until the vault drops
+    // to a single note.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        if vault_len(&mut harness) == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the note was never deleted");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// A click delivered as press+release within a single frame, so it registers
 /// even though the canvas keeps requesting repaints (which would otherwise
 /// stretch a held button past egui's click-time threshold across `run()`).
@@ -696,6 +903,24 @@ fn click_at(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) 
         pressed: false,
         modifiers: egui::Modifiers::default(),
     });
+    harness.run();
+}
+
+/// A secondary (right) click delivered as press+release in one frame, to open a
+/// widget's context menu. Same single-frame reasoning as [`click_at`].
+fn secondary_click_at(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
     harness.run();
 }
 

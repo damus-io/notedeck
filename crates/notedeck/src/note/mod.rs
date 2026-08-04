@@ -38,6 +38,17 @@ pub struct NoteContext<'d> {
     pub nip05_cache: &'d mut Nip05Cache,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
     pub sound: &'d SoundManager,
+    /// Read-only, app-contributed registries for this frame (inline kind
+    /// renderers, reference parsers). A shared `&'d` handle — mirrors
+    /// [`AppContext::registries`](crate::AppContext::registries) — so a caller can
+    /// copy it out before taking a disjoint `&mut` reborrow of the other fields
+    /// (e.g. to hand this `NoteContext` to a [`KindRenderer`](crate::KindRenderer)).
+    pub registries: &'d crate::AppRegistries,
+    /// Actions raised imperatively this frame (e.g. by a clicked inline
+    /// [`KindRenderer`](crate::KindRenderer) reference widget drawn into note
+    /// contents) for the shell to route after `render`, mirroring
+    /// [`AppContext::app_actions`](crate::AppContext::app_actions).
+    pub app_actions: &'d mut crate::AppActionQueue,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
