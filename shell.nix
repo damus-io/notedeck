@@ -1,5 +1,5 @@
 { pkgs ? import <nixpkgs> { }
-, android ? "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2026-04-20-stable.tar.gz"
+, android ? "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2026-08-03-stable.tar.gz"
 , use_android ? false
 , android_emulator ? false
 }:
