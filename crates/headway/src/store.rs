@@ -1084,15 +1084,22 @@ mod tests {
         let t = TestNdb::new();
         seed_demo(&t);
 
-        let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
+        // seed_demo_board renames the first backlog card ("Nostr event model" →
+        // "Define nostr event model for boards") via a subject edit ingested
+        // *after* all seven cards land. Waiting only for the card count would
+        // race that amendment, so wait for the renamed title itself — the
+        // amendment folds after every card, so its presence also implies all
+        // seven cards are here.
+        let view = t.wait(|v| {
+            v.columns[0]
+                .cards
+                .first()
+                .is_some_and(|c| c.title == "Define nostr event model for boards")
+        });
+        assert_eq!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 7);
         assert_eq!(view.columns[0].cards.len(), 3);
         // Done is the last column; the seeded "done" card lands there.
         assert_eq!(view.columns.last().unwrap().cards.len(), 1);
-        // Seeded order is preserved by increasing ranks.
-        assert_eq!(
-            view.columns[0].cards[0].title,
-            "Define nostr event model for boards"
-        );
         assert!(!view.columns[0].cards[0].description.is_empty());
     }
 
