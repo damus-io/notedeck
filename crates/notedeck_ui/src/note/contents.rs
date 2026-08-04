@@ -187,7 +187,43 @@ fn render_undecorated_note_contents<'a>(
             return;
         };
 
+        // Reference mode is decided on the note's whole content, not per block:
+        // nostrdb claims `#` for hashtags and so shatters `board#word-word-word`
+        // into Text+Hashtag+Text, which no single block sees whole. It's the
+        // browser's reference parsers — never nostrdb — that detect a reference,
+        // so gate on a cheap scan of `note.content()` and, when it hits, hand each
+        // run of adjacent text/hashtag blocks (the `#` restored) to the browser's
+        // ref-aware renderer below. The common reference-free note skips all of
+        // this and keeps its per-block fast path.
+        let ref_mode = options.contains(NoteOptions::InlineReferences)
+            && crate::markdown::contains_reference(
+                note.content(),
+                &note_context.registries.reference_parsers,
+            );
+        // The current text/hashtag run. Empty (and unallocated) unless a run is
+        // actually accumulating in reference mode.
+        let mut pending = String::new();
+
         for block in blocks.iter(note) {
+            // In reference mode, text and hashtag blocks accumulate into the
+            // current run (restoring the `#` nostrdb dropped) so a reference split
+            // across them is scanned whole; any other block flushes the run first
+            // — drawing its chips in place — so order is preserved.
+            if ref_mode {
+                match block.blocktype() {
+                    BlockType::Text => {
+                        pending.push_str(block.as_str());
+                        continue;
+                    }
+                    BlockType::Hashtag => {
+                        pending.push('#');
+                        pending.push_str(block.as_str());
+                        continue;
+                    }
+                    _ => flush_pending_refs(&mut pending, ui, note_context, txn, options),
+                }
+            }
+
             match block.blocktype() {
                 BlockType::MentionBech32 => match block.as_mention().unwrap() {
                     Mention::Profile(profile) => {
@@ -341,6 +377,12 @@ fn render_undecorated_note_contents<'a>(
                 }
             }
         }
+
+        // Flush the trailing text/hashtag run (a note that ends in a reference or
+        // plain text).
+        if ref_mode {
+            flush_pending_refs(&mut pending, ui, note_context, txn, options);
+        }
     });
 
     let preview_note_action = inline_note.and_then(|(id, _)| {
@@ -378,6 +420,40 @@ fn render_undecorated_note_contents<'a>(
         .or(media_action.map(NoteAction::Media));
 
     NoteResponse::new(response.response).with_action(note_action)
+}
+
+/// Flush the accumulated text/hashtag run through the browser's reference-aware
+/// renderer: it scans the run left-to-right, drawing an inline chip for each
+/// reference a registered [`ReferenceParser`](notedeck::ReferenceParser) resolves
+/// and the rest as note-body text (see
+/// [`render_text_run_with_refs`](crate::markdown::render_text_run_with_refs)).
+/// Clears `pending`; a no-op when the run is empty.
+///
+/// The run is drawn as flushed labels, so its plain text isn't selectable and its
+/// hashtags aren't clickable — the reference-bearing note trades those for the
+/// inline chips, while the reference-free note keeps the per-block path that has
+/// them.
+fn flush_pending_refs(
+    pending: &mut String,
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    txn: &Transaction,
+    options: NoteOptions,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let fmt = egui::text::TextFormat {
+        font_id: NotedeckTextStyle::NoteBody.get_font_id(ui.ctx()),
+        color: if options.contains(NoteOptions::NotificationPreview) {
+            egui::Color32::from_rgb(0x87, 0x87, 0x8D)
+        } else {
+            ui.visuals().text_color()
+        },
+        ..Default::default()
+    };
+    crate::markdown::render_text_run_with_refs(ui, note_context, txn, pending, &fmt);
+    pending.clear();
 }
 
 fn rot13(input: &str) -> String {

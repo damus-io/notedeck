@@ -547,6 +547,39 @@ fn append_text_with_refs(
     job.append(rest, 0.0, fmt.clone());
 }
 
+/// Render one run of plain `text` styled as `fmt` into the current
+/// `horizontal_wrapped` layout, splicing an inline widget for any reference a
+/// registered parser resolves (see [`append_text_with_refs`]).
+///
+/// The note-content renderer's counterpart to [`render_markdown_with_refs`] for a
+/// single nostrdb text block: it reuses the exact reference seam without markdown
+/// parsing, so a `board#word-word-word` in a plain kind-1 note renders the same
+/// chip it does in Dave's chat. `text` is drawn as one flushed [`egui::Label`]
+/// (like every ref-bearing run), so the caller keeps its own selectable-text fast
+/// path for the common reference-free block.
+#[profiling::function]
+pub(crate) fn render_text_run_with_refs(
+    ui: &mut Ui,
+    ctx: &mut NoteContext,
+    txn: &Transaction,
+    text: &str,
+    fmt: &TextFormat,
+) {
+    let mut job = LayoutJob::default();
+    append_text_with_refs(&mut job, text, fmt, ctx, txn, ui);
+    flush_job(&mut job, ui);
+}
+
+/// Whether any registered reference parser recognizes a reference in `text`.
+///
+/// The note-content renderer's cheap gate: a `true` sends the block through
+/// [`render_text_run_with_refs`], a `false` (the common case) keeps the plain
+/// selectable-`Label` fast path. Allocation-free — [`next_reference`] returns
+/// borrowed ranges.
+pub(crate) fn contains_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> bool {
+    next_reference(text, parsers).is_some()
+}
+
 /// Render a run of inline elements into the current `horizontal_wrapped` layout.
 ///
 /// When `ctx` is `Some`, each [`InlineElement::Text`] span is scanned for a
