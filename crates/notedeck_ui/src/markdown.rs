@@ -271,10 +271,10 @@ fn next_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Op
 /// loose `find` false-positive invisible rather than a broken chip.
 ///
 /// The widget is drawn at the cursor, mid-paragraph, in the caller's
-/// `horizontal_wrapped` layout. Fitting the row is the renderer's own business —
-/// only it knows how wide it wants to be — so an inline renderer should measure
-/// itself and call [`break_row_unless_fits`](crate::break_row_unless_fits) rather
-/// than let a long widget ellipsize into the tail of a row.
+/// `horizontal_wrapped` layout, so it has to fit the row it lands in and share
+/// the prose baseline. Only the renderer knows how wide it wants to be, so that
+/// is its own business — [`inline_chip`](crate::inline_chip) is the shape that
+/// already handles both.
 #[profiling::function]
 fn draw_reference(
     job: &mut LayoutJob,

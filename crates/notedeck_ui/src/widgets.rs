@@ -1,7 +1,7 @@
 use crate::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
 use crate::icons::search_icon;
 use egui::{emath::GuiRounding, Align, CornerRadius, Label, Pos2, RichText, Stroke, TextEdit};
-use notedeck::tokens::{RADIUS_MD, RADIUS_PILL, SPACING_SM, SPACING_XS, STROKE_THIN};
+use notedeck::tokens::{RADIUS_MD, RADIUS_PILL, RADIUS_SM, SPACING_SM, SPACING_XS, STROKE_THIN};
 use notedeck::{ColorTheme, NotedeckTextStyle};
 
 pub fn x_button(rect: egui::Rect) -> impl egui::Widget {
@@ -137,27 +137,41 @@ pub fn search_input_box<'a>(query: &'a mut String, hint_text: &'a str) -> impl e
     }
 }
 
-/// A compact inline reference: a leading icon and one line of text in a small
-/// rounded, outlined pill. The shape a [`KindRenderer`](notedeck::KindRenderer)
-/// draws for [`RenderContext::Inline`](notedeck::RenderContext::Inline), spliced
-/// into a row of flowing prose.
+/// Height of the leading icon as a fraction of the text row it sits in.
 ///
-/// Owns the two things that make a widget safe to place mid-paragraph, so no
-/// renderer has to rediscover them:
+/// Roughly the cap height of the body font: a glyph that fills the whole row
+/// reads as a badge stuck onto the line, where one sized to the capitals beside
+/// it reads as part of the word.
+const INLINE_ICON_RATIO: f32 = 0.65;
+
+/// A compact inline reference: a leading icon and one line of text on a rounded
+/// tint. The shape a [`KindRenderer`](notedeck::KindRenderer) draws for
+/// [`RenderContext::Inline`](notedeck::RenderContext::Inline), spliced into a row
+/// of flowing prose.
+///
+/// Sized to **sit in the line rather than on it**: the chip is one text row tall
+/// plus its own outline, so the enclosing `horizontal_wrapped` row barely grows
+/// around it and the chip's text lands on the prose baseline either side. Its
+/// breathing room above and below is the leading the row already carries, which
+/// is why the vertical inner margin is zero — any more and the chip would push
+/// the line apart.
+///
+/// It also owns the two things that make a widget safe to place mid-paragraph, so
+/// no renderer has to rediscover them:
 ///
 /// - It is **one line**, always. The label names its wrap mode instead of
-///   inheriting one, so a long title ellipsizes rather than folding the pill into
+///   inheriting one, so a long title ellipsizes rather than folding the chip into
 ///   a tall block — and an ambient `style.wrap_mode` (a `StripBuilder` cell sets
 ///   one, and hosts sometimes override that in turn) can't reach inside it.
 /// - It **breaks the row** when it wouldn't fit in what's left of the current
 ///   one. egui wraps text mid-row for you, but a widget is placed at the cursor
-///   and has to fit into whatever remains; a pill measures itself first so it can
+///   and has to fit into whatever remains; a chip measures itself first so it can
 ///   move to the next row like a word too long for the line, instead of
 ///   ellipsizing away to nothing with an empty row waiting below. Wider than a
 ///   whole row, it truncates — breaking can't help there.
 ///
 /// `icon` paints the leading glyph into a square of the size it is handed. The
-/// returned response covers the whole pill, so callers add their own
+/// returned response covers the whole chip, so callers add their own
 /// [`Sense`](egui::Sense) and hover feedback.
 pub fn inline_chip(
     ui: &mut egui::Ui,
@@ -165,16 +179,20 @@ pub fn inline_chip(
     text: &str,
     icon: impl FnOnce(&mut egui::Ui, f32),
 ) -> egui::Response {
+    // Padding on the sides only. The outline is the one thing that costs height —
+    // a stroke sits outside the content — but `surface_elevated` is the page color
+    // in the light theme, so without it the chip would be invisible there.
     let frame = egui::Frame::new()
         .fill(theme.surface_elevated)
-        .corner_radius(CornerRadius::same(RADIUS_PILL as u8))
+        .corner_radius(CornerRadius::same(RADIUS_SM as u8))
         .stroke(Stroke::new(STROKE_THIN, theme.border_default))
-        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, SPACING_XS as i8));
+        .inner_margin(egui::Margin::symmetric(SPACING_XS as i8, 0));
 
-    // The icon is square at body height, and `item_spacing` below puts one gap
-    // between it and the text. `total_margin` covers the frame's own margins and
-    // stroke, so the pill's width is derived from what actually draws it.
-    let icon_size = ui.text_style_height(&egui::TextStyle::Body);
+    // `item_spacing` below puts one gap between icon and text, and `total_margin`
+    // covers the frame's own margins, so the chip's width is derived from what
+    // actually draws it.
+    let row_height = ui.text_style_height(&egui::TextStyle::Body);
+    let icon_size = (row_height * INLINE_ICON_RATIO).round();
     let width = frame.total_margin().sum().x + icon_size + SPACING_XS + text_width(ui, text);
     break_row_unless_fits(ui, width);
 
@@ -182,7 +200,15 @@ pub fn inline_chip(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = SPACING_XS;
-                icon(ui, icon_size);
+                // Center the icon in a slot as tall as the text row. Placed
+                // straight into the row it lands on the cap band instead — level
+                // with the capitals, but visibly high in a chip whose lower half
+                // is the descender space the icon has no use for.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(icon_size, row_height),
+                    egui::Layout::left_to_right(Align::Center),
+                    |ui| icon(ui, icon_size),
+                );
                 ui.add(
                     Label::new(RichText::new(text).color(theme.text_primary))
                         .wrap_mode(egui::TextWrapMode::Truncate),
