@@ -920,6 +920,8 @@ mod preview {
                 clipboard: app.clipboard,
                 i18n: app.i18n,
                 sound: app.sound,
+                registries: app.registries,
+                app_actions: app.app_actions,
             };
 
             PostView::new(

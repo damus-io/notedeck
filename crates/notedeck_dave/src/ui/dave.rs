@@ -1311,6 +1311,8 @@ impl<'a> DaveUi<'a> {
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
             sound: ctx.sound,
+            registries: ctx.registries,
+            app_actions: ctx.app_actions,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();

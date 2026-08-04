@@ -883,6 +883,8 @@ fn render_nav_body(
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
         sound: ctx.sound,
+        registries: ctx.registries,
+        app_actions: ctx.app_actions,
     };
     match top {
         Route::Timeline(kind) => {
