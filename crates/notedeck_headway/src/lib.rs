@@ -1140,7 +1140,10 @@ mod tests {
         t.poll();
         t.seed();
 
-        t.wait(|v| total_cards(v) == 7).await;
+        // Wait on the seed's *terminal* event (the drag card landing in In
+        // Progress), not a card count: `total_cards == 7` can hold mid-fold
+        // before the drag move settles, asserting a half-materialised layout.
+        t.wait(demo_seed_complete).await;
         let view = t.view().expect("board loaded");
         assert_eq!(
             view.columns
