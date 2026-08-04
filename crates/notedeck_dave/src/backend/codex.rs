@@ -4634,16 +4634,31 @@ mod tests {
 
     /// Helper: spawn a real codex app-server process and wire it into
     /// `session_actor_loop`. Returns the command sender, response receiver,
-    /// and join handle.
-    fn setup_real_codex_test() -> (
+    /// and join handle, or `None` when the `codex` binary isn't installed so
+    /// the caller can skip rather than fail.
+    ///
+    /// These tests are `#[ignore]`d, but the snapshot CI job runs every ignored
+    /// test in this binary via `--ignored` (see `scripts/snapshot-test`), which
+    /// sweeps these real-binary tests up too. Skipping on a missing binary keeps
+    /// that sweep green on runners without codex while still exercising the real
+    /// path locally when codex is present.
+    fn setup_real_codex_test() -> Option<(
         tokio_mpsc::Sender<SessionCommand>,
         mpsc::Receiver<DaveApiResponse>,
         tokio::task::JoinHandle<()>,
-    ) {
+    )> {
         let codex_binary = std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string());
 
-        let mut child = spawn_codex(&codex_binary, &None)
-            .expect("Failed to spawn codex app-server — is codex installed?");
+        let mut child = match spawn_codex(&codex_binary, &None) {
+            Ok(child) => child,
+            Err(e) => {
+                eprintln!(
+                    "[test] skipping real codex test: cannot spawn `{codex_binary}`: {e} \
+                     (is codex installed?)"
+                );
+                return None;
+            }
+        };
 
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
@@ -4693,13 +4708,15 @@ mod tests {
                 .unwrap();
         });
 
-        (command_tx, response_rx, handle)
+        Some((command_tx, response_rx, handle))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore] // Requires `codex` binary on PATH
     async fn test_real_codex_streaming() {
-        let (command_tx, response_rx, handle) = setup_real_codex_test();
+        let Some((command_tx, response_rx, handle)) = setup_real_codex_test() else {
+            return;
+        };
 
         // Wait for at least one token (with a generous timeout for API calls)
         let mut got_token = false;
@@ -4748,7 +4765,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore] // Requires `codex` binary on PATH
     async fn test_real_codex_turn_completes() {
-        let (command_tx, response_rx, handle) = setup_real_codex_test();
+        let Some((command_tx, response_rx, handle)) = setup_real_codex_test() else {
+            return;
+        };
 
         // Wait for turn to complete
         let mut got_turn_done = false;
