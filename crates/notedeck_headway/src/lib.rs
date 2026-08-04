@@ -1388,12 +1388,25 @@ mod tests {
         seed_demo(&ndb, &kp);
 
         // Fold in the seed as it arrives — awaiting notes rather than sleeping —
-        // until the whole board (7 cards) has materialised.
+        // until the board has fully materialised *and quiesced*. `seed_demo`
+        // keeps ingesting after the 7th card lands (parent relations, card
+        // amendments, and finally the drag-card move into "In Progress"), so
+        // stopping at `total_cards == 7` would leave those trailing notes to
+        // arrive mid-frame below — each folds and re-finalizes, breaking the
+        // "no fold ⇒ no finalize" invariant this test measures. The drag move
+        // is the *last* event seeded, so the drag card landing in In Progress
+        // means every prior seed event has folded too and the writer is done.
         while {
             let txn = Transaction::new(&ndb).unwrap();
             let ready = cache
                 .board(&ndb, &txn, &kp.pubkey, store::BOARD_ID)
-                .is_some_and(|v| total_cards(&v) == 7);
+                .is_some_and(|v| {
+                    total_cards(&v) == 7
+                        && v.columns[2]
+                            .cards
+                            .iter()
+                            .any(|c| c.title == "Drag-and-drop between columns")
+                });
             drop(txn);
             !ready
         } {
