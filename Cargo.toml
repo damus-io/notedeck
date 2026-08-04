@@ -138,6 +138,7 @@ hashbrown = "0.15.2"
 slab = "0.4.9"
 socket2 = { version = "0.6", features = ["all"] }
 if-watch = { version = "3.2", features = ["tokio"] }
+ipnet = "2.12"
 openai-api-rs = "6.0.3"
 re_memory = "0.23.4"
 oot_bitset = "0.1.1"

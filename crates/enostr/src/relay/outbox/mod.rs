@@ -19,7 +19,7 @@ use crate::{
     },
     EventClientMessage, Wakeup,
 };
-use if_watch::IpNet;
+use ipnet::IpNet;
 
 mod eose;
 mod full_history;

@@ -11,10 +11,19 @@
 //! The watcher runs on a background tokio task and forwards the subnet of each
 //! interface-down event through a channel the pool drains from its per-frame
 //! keepalive pass.
+//!
+//! Android has no OS watcher here: if-watch only implements netlink for
+//! `target_os = "linux"`, so Android would get its `getifaddrs()` polling
+//! fallback — a battery drain that isn't even an instant signal, and a link
+//! error below Android API 24 where `getifaddrs()` doesn't exist. There
+//! [`NetworkWatcher::spawn`] reports no watcher and the pool relies on TCP
+//! keepalive alone.
 
+#[cfg(not(target_os = "android"))]
 use futures_util::StreamExt;
-use if_watch::tokio::IfWatcher;
-use if_watch::{IfEvent, IpNet};
+#[cfg(not(target_os = "android"))]
+use if_watch::{tokio::IfWatcher, IfEvent};
+use ipnet::IpNet;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Watches network interfaces and reports the subnets that go away.
@@ -27,6 +36,7 @@ impl NetworkWatcher {
     /// on each interface-down event so the host schedules a pool poll. Returns
     /// `None` if the platform watcher can't be created (the pool then falls back
     /// to TCP keepalive alone). Requires an active tokio runtime.
+    #[cfg(not(target_os = "android"))]
     pub fn spawn<W>(wakeup: W) -> Option<Self>
     where
         W: Fn() + Send + Sync + 'static,
@@ -58,6 +68,16 @@ impl NetworkWatcher {
         });
 
         Some(Self { down_subnets: rx })
+    }
+
+    /// Android has no OS interface watcher (see the module docs), so there is
+    /// nothing to spawn: always reports no watcher.
+    #[cfg(target_os = "android")]
+    pub fn spawn<W>(_wakeup: W) -> Option<Self>
+    where
+        W: Fn() + Send + Sync + 'static,
+    {
+        None
     }
 
     /// Drain the next interface-down subnet, if one has arrived. Non-blocking.

@@ -12,7 +12,7 @@ edition = "2021"
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 futures-util = { workspace = true }
 socket2 = { workspace = true }
-if-watch = { workspace = true }
+ipnet = { workspace = true }
 serde_derive = { workspace = true }
 serde = { workspace = true, features = ["derive"] } # You only need this if you want app persistence
 serde_json = { workspace = true }
@@ -34,6 +34,13 @@ base64 = { workspace = true }
 negentropy = { workspace = true }
 uuid = { workspace = true }
 profiling = { workspace = true }
+
+# Interface watching (crate::relay::netwatch). Android is excluded: if-watch has
+# no netlink backend there, so it falls back to polling getifaddrs(), which is
+# both a battery drain and unavailable below Android API 24 — it fails to link
+# against the NDK platform level we build with.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+if-watch = { workspace = true }
 
 [dev-dependencies]
 nostr-database = "0.37"
