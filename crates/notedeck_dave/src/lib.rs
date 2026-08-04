@@ -1967,6 +1967,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
+        // In Chat mode the manager already has the active default chat session.
+        // `new_resumed_session` steals focus for each restored session, so
+        // remember the active session and restore it afterwards — discovered
+        // agentic sessions should appear in the list, not yank the user away.
+        // In Agentic mode the manager starts empty (no prior active), so this
+        // is a no-op and startup focus behavior is unchanged.
+        let prior_active = (self.ai_mode == AiMode::Chat)
+            .then(|| self.session_manager.active_id())
+            .flatten();
+
         tracing::info!("restoring {} sessions from ndb", states.len());
         let mut existing_ids: std::collections::HashSet<String> = self
             .session_manager
@@ -2096,6 +2106,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         self.session_manager.rebuild_cwd_groups();
+
+        // Restore the pre-existing active session (Chat mode — see above).
+        if let Some(active) = prior_active {
+            self.session_manager.switch_to(active);
+        }
 
         // Seed per-host recent paths from session state events
         let host_paths =
@@ -3576,11 +3591,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pns_remote_sub_state = None;
     }
 
+    /// Keep the selected account's PNS session state (workspace + ndb
+    /// subscriptions + restored sessions) in sync with the account picker.
+    ///
+    /// This drives discovery of remote *agentic* sessions, so it must run
+    /// regardless of the app's own `ai_mode`. A remote-only device (e.g.
+    /// Android, which has no local agentic backend and so boots in
+    /// `AiMode::Chat`) still needs to view and control agentic sessions synced
+    /// from relays — that is the entire purpose of `RemoteOnlyBackend`.
+    ///
+    /// The per-account workspace *swap* is Agentic-only: Chat mode keeps a
+    /// single default session that must survive account changes, so we never
+    /// swap it out from under the user. In Chat mode the subscription and
+    /// restore instead run against the existing session manager, adding any
+    /// discovered agentic sessions alongside the chat session.
+    ///
+    /// Known limitation: switching accounts while in Chat mode does not
+    /// re-scope the live subscription or evict the previous account's restored
+    /// sessions (that bookkeeping is what the Agentic workspace swap handles).
+    /// Single-account remote viewing — the common remote-only case — is
+    /// unaffected.
     fn ensure_pns_local_state(&mut self, ctx: &mut AppContext<'_>) {
-        if self.ai_mode != AiMode::Agentic {
-            return;
-        }
-
         let account = *ctx.accounts.selected_account_pubkey();
         let has_secret_key = ctx
             .accounts
@@ -3597,18 +3628,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        self.save_active_pns_local_runtime();
-        self.pns_local_state = Some(next_state);
+        if self.ai_mode == AiMode::Agentic {
+            self.save_active_pns_local_runtime();
 
-        if has_secret_key {
-            let runtime = self
-                .pns_local_runtimes
-                .remove(&account)
-                .unwrap_or_else(PnsLocalRuntime::empty_agentic);
-            self.install_pns_local_runtime(runtime);
-        } else {
-            self.install_pns_local_runtime(PnsLocalRuntime::empty_agentic());
+            if has_secret_key {
+                let runtime = self
+                    .pns_local_runtimes
+                    .remove(&account)
+                    .unwrap_or_else(PnsLocalRuntime::empty_agentic);
+                self.install_pns_local_runtime(runtime);
+            } else {
+                self.install_pns_local_runtime(PnsLocalRuntime::empty_agentic());
+            }
         }
+
+        self.pns_local_state = Some(next_state);
 
         if !has_secret_key {
             return;
