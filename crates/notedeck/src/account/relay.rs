@@ -17,6 +17,21 @@ pub(crate) struct AccountRelayData {
     /// dave/headway/notebook to sync private state across the user's own
     /// devices. Empty for read-only accounts (can't decrypt the list).
     pub private: BTreeSet<NormRelayUrl>,
+    /// `created_at` of the last kind-10013 list this device authoritatively
+    /// resolved — either by publishing it or by adopting a strictly-newer note.
+    /// Republishes stamp a strictly monotonic `created_at` above this, and polls
+    /// reject any note at or below it, so a stale re-delivery of a superseded
+    /// list can never resurrect a private relay the user already cleared (NIP-01
+    /// otherwise breaks a same-`created_at` tie by note id, non-deterministically).
+    private_updated_at: u64,
+}
+
+/// The account's canonical kind-10013 private relay list resolved from ndb: the
+/// decrypted relay set plus the `created_at` of the note it came from (`None`
+/// when the account has no kind-10013 note yet).
+struct PrivateRelayList {
+    relays: BTreeSet<NormRelayUrl>,
+    created_at: Option<u64>,
 }
 
 impl AccountRelayData {
@@ -41,6 +56,7 @@ impl AccountRelayData {
             local: BTreeSet::new(),
             advertised: BTreeSet::new(),
             private: BTreeSet::new(),
+            private_updated_at: 0,
         }
     }
 
@@ -60,26 +76,43 @@ impl AccountRelayData {
         debug!("initial relays {:?}", relays);
 
         self.advertised = relays.into_iter().collect();
-        self.private = self.query_private_relays(ndb, txn, keypair);
+
+        // Seed the private list from the canonical note and remember its
+        // `created_at` as the authoritative floor, so a later stale re-delivery
+        // (and republishes) resolve against the newest list we've seen.
+        let list = self.query_private_relays(ndb, txn, keypair);
+        if let Some(created_at) = list.created_at {
+            self.private_updated_at = created_at;
+        }
+        self.private = list.relays;
     }
 
-    /// Query the ndb for the account's current kind-10013 private relay list and
-    /// return the decrypted relay set.
+    /// Query the ndb for the account's current kind-10013 private relay list.
+    ///
+    /// Returns the decrypted relay set alongside the `created_at` of the
+    /// canonical (latest replaceable) note it came from. Callers use that
+    /// `created_at` to reject a stale re-delivery of a list this device already
+    /// superseded (see [`Self::poll_private_for_updates`]).
     fn query_private_relays(
         &self,
         ndb: &Ndb,
         txn: &Transaction,
         keypair: &Keypair,
-    ) -> BTreeSet<NormRelayUrl> {
+    ) -> PrivateRelayList {
         let nks = ndb
             .query(txn, std::slice::from_ref(&self.private_filter), 1)
             .expect("query private relays results")
             .iter()
             .map(|qr| qr.note_key)
             .collect::<Vec<NoteKey>>();
-        Self::harvest_private_relays(ndb, txn, &nks, keypair)
+        let created_at = nks
+            .first()
+            .and_then(|nk| ndb.get_note_by_key(txn, *nk).ok())
+            .map(|note| note.created_at());
+        let relays = Self::harvest_private_relays(ndb, txn, &nks, keypair)
             .into_iter()
-            .collect()
+            .collect();
+        PrivateRelayList { relays, created_at }
     }
 
     pub(crate) fn harvest_private_relays(
@@ -97,8 +130,12 @@ impl AccountRelayData {
         relays
     }
 
-    pub fn new_private_relay_list_note(&'_ self, keypair: &Keypair) -> Option<Note<'_>> {
-        construct_private_relay_list_note(self.private.iter(), keypair)
+    pub fn new_private_relay_list_note(
+        &'_ self,
+        keypair: &Keypair,
+        created_at: u64,
+    ) -> Option<Note<'_>> {
+        construct_private_relay_list_note(self.private.iter(), keypair, created_at)
     }
 
     pub(crate) fn harvest_nip65_relays(
@@ -159,19 +196,34 @@ impl AccountRelayData {
         sub: Subscription,
         keypair: &Keypair,
     ) {
-        let nks = ndb.poll_for_notes(sub, 1);
-        if nks.is_empty() {
+        // A poll hit only signals that *some* kind-10013 note landed; it may be
+        // an out-of-order re-delivery of a list the account already superseded.
+        // Re-resolve the canonical latest replaceable note instead of trusting
+        // the arrived note, so a stale re-delivery can't resurrect a private
+        // relay the user just cleared.
+        if ndb.poll_for_notes(sub, 1).is_empty() {
             return;
         }
 
-        let private: BTreeSet<NormRelayUrl> =
-            AccountRelayData::harvest_private_relays(ndb, txn, &nks, keypair)
-                .into_iter()
-                .collect();
+        let list = self.query_private_relays(ndb, txn, keypair);
 
-        if private != self.private {
-            debug!("updated private relays {:?}", private);
-            self.private = private;
+        // The canonical note lost to an authoritative list this device already
+        // resolved (a local clear/edit, or a newer note we adopted). Local ndb
+        // may still hold only the older note until the newer one round-trips, so
+        // treat our floor as authoritative and ignore this stale resolution.
+        if list
+            .created_at
+            .is_some_and(|at| at < self.private_updated_at)
+        {
+            return;
+        }
+
+        if let Some(created_at) = list.created_at {
+            self.private_updated_at = created_at;
+        }
+        if list.relays != self.private {
+            debug!("updated private relays {:?}", list.relays);
+            self.private = list.relays;
         }
     }
 }
@@ -291,6 +343,7 @@ pub(crate) fn parse_private_relay_list_note(
 pub fn construct_private_relay_list_note<'a>(
     relays: impl IntoIterator<Item = &'a NormRelayUrl>,
     keypair: &Keypair,
+    created_at: u64,
 ) -> Option<Note<'a>> {
     let secret_key = keypair.secret_key.as_ref()?;
     let tags: Vec<Vec<String>> = relays
@@ -301,6 +354,7 @@ pub fn construct_private_relay_list_note<'a>(
     let content = nip44_self_encrypt(keypair, &plaintext)?;
     NoteBuilder::new()
         .kind(PRIVATE_RELAY_LIST_KIND)
+        .created_at(created_at)
         .content(&content)
         .sign(&secret_key.to_secret_bytes())
         .build()
@@ -505,8 +559,17 @@ fn modify_private_relays(
         RelayAction::Add(_) | RelayAction::Remove(_) => unreachable!(),
     }
 
+    // Keep republishes strictly newer than the last one this device wrote so an
+    // add immediately followed by a remove (same wall-clock second) still
+    // resolves to the remove, rather than relying on NIP-01's id tie-break.
+    let created_at = crate::unix_time_secs().max(account_data.relay.private_updated_at + 1);
+    account_data.relay.private_updated_at = created_at;
+
     // Encrypt + sign the kind-10013 list. None for a read-only account.
-    let Some(note) = account_data.relay.new_private_relay_list_note(kp) else {
+    let Some(note) = account_data
+        .relay
+        .new_private_relay_list_note(kp, created_at)
+    else {
         return;
     };
 
@@ -598,7 +661,7 @@ mod tests {
             NormRelayUrl::new("wss://private-b.example.com").expect("relay"),
         ];
 
-        let note = construct_private_relay_list_note(relays.iter(), &owner)
+        let note = construct_private_relay_list_note(relays.iter(), &owner, 1_700_000_000)
             .expect("private relay list note");
 
         assert_eq!(note.kind(), PRIVATE_RELAY_LIST_KIND);
@@ -616,7 +679,7 @@ mod tests {
             NormRelayUrl::new("wss://private-b.example.com").expect("relay"),
         ];
 
-        let note = construct_private_relay_list_note(relays.iter(), &owner)
+        let note = construct_private_relay_list_note(relays.iter(), &owner, 1_700_000_000)
             .expect("private relay list note");
 
         let mut parsed = Vec::new();
@@ -633,7 +696,7 @@ mod tests {
         let other = FullKeypair::generate().to_keypair();
         let relays = [NormRelayUrl::new("wss://private-a.example.com").expect("relay")];
 
-        let note = construct_private_relay_list_note(relays.iter(), &owner)
+        let note = construct_private_relay_list_note(relays.iter(), &owner, 1_700_000_000)
             .expect("private relay list note");
 
         let mut parsed = Vec::new();
@@ -647,11 +710,13 @@ mod tests {
     fn private_relay_list_read_only_account_is_noop() {
         let owner = FullKeypair::generate().to_keypair();
         let relays = [NormRelayUrl::new("wss://private-a.example.com").expect("relay")];
-        let note = construct_private_relay_list_note(relays.iter(), &owner)
+        let note = construct_private_relay_list_note(relays.iter(), &owner, 1_700_000_000)
             .expect("private relay list note");
 
         let read_only = Keypair::only_pubkey(owner.pubkey);
-        assert!(construct_private_relay_list_note(relays.iter(), &read_only).is_none());
+        assert!(
+            construct_private_relay_list_note(relays.iter(), &read_only, 1_700_000_000).is_none()
+        );
 
         let mut parsed = Vec::new();
         parse_private_relay_list_note(&note, &read_only, &mut parsed);
