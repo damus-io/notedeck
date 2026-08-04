@@ -350,6 +350,25 @@ pub fn seed_demo_board(
             publisher,
         );
     }
+
+    // Prioritise a few cards so the board and detail views showcase the priority
+    // glyph across levels (the rest stay at the unadorned `Priority::None`).
+    for (title, priority) in [
+        // Keyed by each card's *seed* title (`ids`), before the rename above.
+        ("Nostr event model", Priority::Urgent),
+        ("Drag-and-drop between columns", Priority::High),
+        ("Card detail / comments view", Priority::Medium),
+        ("Column reordering", Priority::Low),
+    ] {
+        if let Some(card) = ids.get(title) {
+            ingest(
+                ndb,
+                build_field(card, Field::Priority, priority.as_str()).created_at(at - 2 * 86_400),
+                secret,
+                publisher,
+            );
+        }
+    }
 }
 
 /// Apply one [`BoardAction`] against the current `view`, ingesting the events it
