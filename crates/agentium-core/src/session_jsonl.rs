@@ -303,7 +303,7 @@ pub fn display_content_for_block(block: &ContentBlock<'_>) -> String {
     }
 }
 
-use crate::session_loader::truncate as truncate_str;
+use crate::util::truncate as truncate_str;
 
 #[cfg(test)]
 mod tests {

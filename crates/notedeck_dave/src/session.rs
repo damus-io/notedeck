@@ -8,14 +8,10 @@ use crate::backend::BackendType;
 use crate::config::AiMode;
 use crate::focus_queue::FocusPriority;
 use crate::git_status::GitStatusCache;
-use crate::messages::{
-    AnswerSummary, CompactionInfo, ExecutedTool, PermissionResponse, PermissionResponseType,
-    QuestionAnswer, SessionInfo, SubagentStatus,
-};
+use crate::messages::{CompactionInfo, ExecutedTool, QuestionAnswer, SessionInfo, SubagentStatus};
 use crate::session_events::ThreadingState;
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;
-use tokio::sync::oneshot;
 use uuid::Uuid;
 
 pub type SessionId = u32;
@@ -158,99 +154,18 @@ pub enum PermissionMessageState {
     TentativeDeny,
 }
 
-/// Consolidated permission tracking for a session.
-///
-/// Bundles the local oneshot channels (for local sessions), the note-ID
-/// mapping (for linking relay responses), and the already-responded set
-/// (for remote sessions) into a single struct.
-pub struct PermissionTracker {
-    /// Local oneshot senders waiting for the user to allow/deny.
-    pub pending: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
-    /// Maps permission-request UUID → nostr note ID of the published request.
-    pub request_note_ids: HashMap<Uuid, [u8; 32]>,
-    /// Permission UUIDs that have already been responded to, with the decision.
-    pub responded: HashMap<Uuid, PermissionResponseType>,
-}
-
-impl PermissionTracker {
-    pub fn new() -> Self {
-        Self {
-            pending: HashMap::new(),
-            request_note_ids: HashMap::new(),
-            responded: HashMap::new(),
-        }
-    }
-
-    /// Whether there are unresolved local permission requests.
-    pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
-    /// Resolve a permission request. This is the ONLY place resolution state
-    /// is updated — both `handle_permission_response` and
-    /// `handle_question_response` funnel through here.
-    pub fn resolve(
-        &mut self,
-        chat: &mut [Message],
-        request_id: Uuid,
-        response_type: PermissionResponseType,
-        answer_summary: Option<AnswerSummary>,
-        is_remote: bool,
-        oneshot_response: Option<PermissionResponse>,
-    ) {
-        // 1. Update the PermissionRequest message in chat
-        for msg in chat.iter_mut() {
-            if let Message::PermissionRequest(req) = msg {
-                if req.id == request_id {
-                    req.response = Some(response_type);
-                    if answer_summary.is_some() {
-                        req.answer_summary = answer_summary;
-                    }
-                    break;
-                }
-            }
-        }
-
-        // 2. Update PermissionTracker state
-        if is_remote {
-            self.responded.insert(request_id, response_type);
-        } else if let Some(response) = oneshot_response {
-            if let Some(sender) = self.pending.remove(&request_id) {
-                if sender.send(response).is_err() {
-                    tracing::error!(
-                        "failed to send permission response for request {}",
-                        request_id
-                    );
-                }
-            } else {
-                tracing::warn!("no pending permission found for request {}", request_id);
-            }
-        }
-    }
-
-    /// Merge loaded permission state from restored events.
-    pub fn merge_loaded(
-        &mut self,
-        responded: HashMap<Uuid, PermissionResponseType>,
-        request_note_ids: HashMap<Uuid, [u8; 32]>,
-    ) {
-        self.responded = responded;
-        self.request_note_ids.extend(request_note_ids);
-    }
-}
-
-impl Default for PermissionTracker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// PermissionTracker is platform-neutral session state; it now lives in the
+// agentium-core engine. Keep it reachable as `crate::session::PermissionTracker`.
+pub use agentium_core::session::PermissionTracker;
 
 /// Agentic-mode specific session data (Claude backend only)
 pub struct AgenticSessionData {
     /// Permission state (pending channels, note IDs, responded set)
     pub permissions: PermissionTracker,
-    /// Position in the RTS scene (in scene coordinates)
-    pub scene_position: egui::Vec2,
+    /// Position in the RTS scene, as plain `(x, y)` scene coordinates.
+    /// Kept egui-free so `AgenticSessionData` stays platform-neutral; the UI
+    /// converts to/from `egui::Vec2` at the rendering boundary.
+    pub scene_position: (f32, f32),
     /// Permission mode for Claude (Default or Plan)
     pub permission_mode: PermissionMode,
     /// State for permission response message (tentative accept/deny)
@@ -276,18 +191,12 @@ pub struct AgenticSessionData {
     pub git_status: GitStatusCache,
     /// Threading state for live kind-1988 event generation.
     pub live_threading: ThreadingState,
-    /// Subscription for remote kind-1988 events (permission responses, commands).
-    /// Set up once when the session's claude_session_id becomes known.
-    pub conversation_action_sub: Option<nostrdb::Subscription>,
     /// Status as reported by the remote desktop's kind-31988 event.
     /// Only meaningful when session source is Remote.
     pub remote_status: Option<AgentStatus>,
     /// Timestamp of the kind-31988 event that last set `remote_status`.
     /// Used to ignore older replaceable event revisions that arrive out of order.
     pub remote_status_ts: u64,
-    /// Subscription for live kind-1988 conversation events from relays.
-    /// Used by remote sessions to receive new messages in real-time.
-    pub live_conversation_sub: Option<nostrdb::Subscription>,
     /// Note IDs we've already processed from live conversation polling.
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
@@ -325,7 +234,7 @@ impl AgenticSessionData {
 
         AgenticSessionData {
             permissions: PermissionTracker::new(),
-            scene_position: egui::Vec2::new(x, y),
+            scene_position: (x, y),
             permission_mode: PermissionMode::Default,
             permission_message_state: PermissionMessageState::None,
             question_answers: HashMap::new(),
@@ -338,10 +247,8 @@ impl AgenticSessionData {
             resume_session_id: None,
             git_status,
             live_threading: ThreadingState::new(),
-            conversation_action_sub: None,
             remote_status: None,
             remote_status_ts: 0,
-            live_conversation_sub: None,
             seen_note_ids: HashSet::new(),
             max_seen_seq: None,
             usage: Default::default(),

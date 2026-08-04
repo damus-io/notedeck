@@ -618,7 +618,7 @@ fn truncate_tool_input(tool_input: &serde_json::Value, max_bytes: usize) -> serd
             let trim = trim_amounts.get(key.as_str()).copied().unwrap_or(0);
             if trim > 0 && s.len() > suffix_len + trim {
                 let keep = s.len() - trim;
-                let cut = notedeck::abbrev::floor_char_boundary(s, keep);
+                let cut = crate::util::floor_char_boundary(s, keep);
                 let truncated = format!("{}{}", &s[..cut], suffix);
                 result.insert(key.clone(), Value::String(truncated));
                 did_truncate = true;
@@ -891,7 +891,7 @@ pub fn build_spawn_command_event(
 ///
 /// One event per individual config. The d-tag is the config's stable UUID,
 /// which survives renames, command edits, reloads, and cross-device sync.
-pub(crate) fn build_run_config_event(
+pub fn build_run_config_event(
     config: &RunConfig,
     cwd: &str,
     hostname: &str,
@@ -915,7 +915,7 @@ pub(crate) fn build_run_config_event(
 ///
 /// Publishes an event with the same d-tag (config UUID) but with a `deleted`
 /// tag. This replaces the live config in nostrdb via NIP-33.
-pub(crate) fn build_run_config_delete_event(
+pub fn build_run_config_delete_event(
     config_id: &str,
     cwd: &str,
     hostname: &str,
@@ -935,7 +935,7 @@ pub(crate) fn build_run_config_delete_event(
 ///
 /// Returns `None` if this is a tombstone (has `deleted` tag) or if
 /// required tags (`d`, `cwd`, `name`, `command`) are missing.
-pub(crate) fn parse_run_config_event(note: &nostrdb::Note) -> Option<(PathBuf, RunConfig)> {
+pub fn parse_run_config_event(note: &nostrdb::Note) -> Option<(PathBuf, RunConfig)> {
     // Tombstone — treat as deleted
     if get_tag_value(note, "deleted").is_some() {
         return None;
@@ -966,12 +966,12 @@ pub(crate) fn parse_run_config_event(note: &nostrdb::Note) -> Option<(PathBuf, R
 /// Extract the d-tag from a kind-31991 note. Used to identify tombstones
 /// so the caller can remove the config by ID even when `parse_run_config_event`
 /// returns `None`.
-pub(crate) fn run_config_event_id(note: &nostrdb::Note) -> Option<String> {
+pub fn run_config_event_id(note: &nostrdb::Note) -> Option<String> {
     get_tag_value(note, "d").map(|s| s.to_string())
 }
 
 /// Check whether a kind-31991 note is a deletion tombstone.
-pub(crate) fn is_run_config_deleted(note: &nostrdb::Note) -> bool {
+pub fn is_run_config_deleted(note: &nostrdb::Note) -> bool {
     get_tag_value(note, "deleted").is_some()
 }
 

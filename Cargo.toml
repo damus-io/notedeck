@@ -2,6 +2,7 @@
 resolver = "2"
 package.version = "0.10.0-beta.4"
 members = [
+    "crates/agentium-core",
     "crates/notedeck",
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
@@ -30,6 +31,7 @@ members = [
 ]
 
 [workspace.dependencies]
+agentium-core = { path = "crates/agentium-core" }
 opener = "0.8.2"
 chrono = "0.4.40" 
 crossbeam-channel = "0.5"
@@ -80,8 +82,9 @@ md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip44", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/kernelkind/nostrdb-rs", rev = "aca2f66e3579dee0c9245e4c66100dd12cd940d6" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "e2ef5b47838b" }
 #nostrdb = "0.6.1"
+nostrdb_net = { git = "https://github.com/damus-io/nostrdb-rs", rev = "e2ef5b47838b" }
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }

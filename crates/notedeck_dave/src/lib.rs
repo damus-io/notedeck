@@ -4,30 +4,33 @@ mod avatar;
 pub mod backend;
 pub(crate) mod collapse_state;
 pub mod config;
-pub mod file_update;
 mod focus_queue;
 pub(crate) mod git_status;
 pub mod ipc;
 pub(crate) mod mesh;
-mod messages;
 mod notifications;
 mod path_normalize;
 pub(crate) mod path_utils;
 mod quaternion;
 pub mod session;
-pub mod session_converter;
 pub mod session_discovery;
-pub mod session_events;
-pub mod session_jsonl;
-pub mod session_loader;
-pub mod session_reconstructor;
-mod tools;
+mod transport;
+
+// The pure, egui-free engine modules live in the platform-neutral
+// `agentium-core` crate. Re-export them under their historical `crate::` paths
+// so the rest of dave keeps referring to `crate::messages`, `crate::tools`, etc.
+// The async_openai request mapping for these types lives in `backend/openai.rs`.
+pub use agentium_core::{
+    file_update, messages, session_converter, session_events, session_jsonl, session_loader,
+    session_reconstructor, tools,
+};
 pub mod ui;
 pub mod update;
 mod vec3;
 pub mod worktree;
 
 use agent_status::AgentStatus;
+use agentium_core::transport::{SubscriptionId, SubscriptionSpec, Transport};
 use backend::{
     AiBackend, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend, RemoteOnlyBackend,
 };
@@ -38,21 +41,22 @@ use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
+    DataPathType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
+use transport::RemoteApiTransport;
 
-pub use avatar::DaveAvatar;
-pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
-pub use messages::{
+pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
     PermissionResponseType, QuestionAnswer, QuestionSetInput, SessionInfo, SubagentInfo,
     SubagentStatus, UserMessage,
 };
+pub use avatar::DaveAvatar;
+pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
 pub use session_discovery::{discover_sessions, format_relative_time, ResumableSession};
@@ -93,6 +97,26 @@ fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
     })
 }
 
+/// Build a loop-less [`agentium_core::Engine`] over dave's shared db, bound to
+/// the selected account's secret.
+///
+/// Dave drives its own relay stack, so it takes the *embedded* engine (no relay
+/// loop, no Tokio requirement) and uses the engine's `prepare_*` methods to
+/// build + locally-ingest its remote-session write events, then publishes them
+/// from its own batched [`Dave::pending_relay_events`] queue. Constructed on
+/// demand at each drain from the current account, so it always signs and
+/// author-scopes with whichever account is selected. `None` if the secret is
+/// rejected (logged).
+fn embedded_engine(ndb: &nostrdb::Ndb, secret_key: &[u8; 32]) -> Option<agentium_core::Engine> {
+    match agentium_core::Engine::embedded(ndb.clone(), *secret_key) {
+        Ok(engine) => Some(engine),
+        Err(e) => {
+            tracing::error!("failed to build embedded engine: {:?}", e);
+            None
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PnsRemoteSubState {
     account: enostr::Pubkey,
@@ -123,6 +147,13 @@ struct PnsLocalRuntime {
     pending_relay_events: Vec<session_events::BuiltEvent>,
     session_state_sub: Option<nostrdb::Subscription>,
     session_command_sub: Option<nostrdb::Subscription>,
+    /// One shared per-account subscription for live conversation events across
+    /// every session (demuxed by `d`-tag in `poll_remote_conversation_events`),
+    /// so the session count is not bounded by nostrdb's per-db subscription cap.
+    conversation_sub: Option<nostrdb::Subscription>,
+    /// Independent shared cursor over the same conversation events, consumed by
+    /// `poll_remote_conversation_actions` at a different point in the frame.
+    conversation_action_sub: Option<nostrdb::Subscription>,
     processed_commands: std::collections::HashSet<String>,
     pending_spawn_commands: Vec<PendingSpawnCommand>,
     pending_perm_responses: Vec<PermissionPublish>,
@@ -135,21 +166,6 @@ struct PnsLocalRuntime {
     run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     run_config_sub: Option<nostrdb::Subscription>,
     pending_reap: Vec<std::process::Child>,
-}
-
-/// Account-scoped ndb context for live Dave conversation subscriptions.
-#[derive(Clone, Copy)]
-pub struct ConversationSubscriptionScope<'a> {
-    pub(crate) account: enostr::Pubkey,
-    pub(crate) ndb: &'a nostrdb::Ndb,
-}
-
-impl<'a> ConversationSubscriptionScope<'a> {
-    /// Pair an ndb handle with the selected account author for Dave live
-    /// conversation subscriptions.
-    pub fn new(account: enostr::Pubkey, ndb: &'a nostrdb::Ndb) -> Self {
-        Self { account, ndb }
-    }
 }
 
 impl PnsLocalRuntime {
@@ -171,6 +187,8 @@ impl PnsLocalRuntime {
             pending_relay_events: Vec::new(),
             session_state_sub: None,
             session_command_sub: None,
+            conversation_sub: None,
+            conversation_action_sub: None,
             processed_commands: std::collections::HashSet::new(),
             pending_spawn_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
@@ -198,26 +216,22 @@ impl PnsLocalRuntime {
     }
 }
 
-/// Stable owner key for Dave-owned scoped subscriptions.
-fn pns_remote_sub_owner_key() -> SubOwnerKey {
-    SubOwnerKey::new("dave/pns")
-}
-
-/// Stable identity for the selected account's PNS discovery subscription.
-fn pns_remote_sub_identity() -> ScopedSubIdentity {
-    ScopedSubIdentity::account(pns_remote_sub_owner_key(), SubKey::new("pns"))
+/// Stable transport identity for the selected account's PNS discovery
+/// subscription.
+fn pns_remote_sub_id() -> SubscriptionId {
+    SubscriptionId::new("dave/pns", "pns")
 }
 
 fn pns_remote_sub_author(secret_key: &[u8; 32]) -> enostr::Pubkey {
     enostr::pns::derive_pns_keys(secret_key).keypair.pubkey
 }
 
-/// Build the PNS discovery subscription for the shared outbox path.
+/// Build the PNS discovery subscription spec for the engine's [`Transport`].
 fn pns_remote_sub_config(
     pns_relay_url: &str,
     pns_author: enostr::Pubkey,
     now: u64,
-) -> Result<(ScopedSubIdentity, SubConfig), enostr::Error> {
+) -> Result<SubscriptionSpec, enostr::Error> {
     let relay = NormRelayUrl::new(pns_relay_url)?;
     let since = now.saturating_sub(PNS_HISTORY_WINDOW_SECS);
     let pns_filter = nostrdb::Filter::new()
@@ -230,13 +244,12 @@ fn pns_remote_sub_config(
         .authors([pns_author.bytes()])
         .since(since)
         .build();
-    Ok((
-        pns_remote_sub_identity(),
-        SubConfig::live(vec![pns_filter])
-            .explicit_relay(relay)
-            .full_history(FullHistoryConfig::new(vec![pns_history_filter]))
-            .build(),
-    ))
+    Ok(SubscriptionSpec {
+        id: pns_remote_sub_id(),
+        relay,
+        live_filters: vec![pns_filter],
+        history_filters: vec![pns_history_filter],
+    })
 }
 
 /// A pending spawn command waiting to be built and published.
@@ -338,6 +351,16 @@ pub struct Dave {
     session_state_sub: Option<nostrdb::Subscription>,
     /// Local ndb subscription for kind-31989 session command events.
     session_command_sub: Option<nostrdb::Subscription>,
+    /// One shared per-account subscription for kind-1988 live conversation
+    /// events across every session. Notes are demuxed by their `d`-tag
+    /// (`event_session_id`) to the owning session in
+    /// `poll_remote_conversation_events`, so the number of live sessions is no
+    /// longer bounded by nostrdb's per-db subscription cap.
+    conversation_sub: Option<nostrdb::Subscription>,
+    /// Independent shared cursor over the same kind-1988 events, consumed by
+    /// `poll_remote_conversation_actions` (permission responses / mode commands)
+    /// at a different point in the frame than `conversation_sub`.
+    conversation_action_sub: Option<nostrdb::Subscription>,
     /// Command UUIDs already processed (dedup for spawn commands).
     processed_commands: std::collections::HashSet<String>,
     /// Spawn commands waiting to be built+published in update() where secret key is available.
@@ -544,6 +567,57 @@ fn ingest_live_event(
     }
 }
 
+/// Build a *remote* session's user message through the engine — the
+/// [`agentium_core::Engine::send_message`] equivalent for a controller sending
+/// input to a remote host.
+///
+/// Mirrors [`ingest_live_event`]'s local-ingest + echo-back tracking (marking
+/// the note seen so the relay round-trip isn't reprocessed) and returns the
+/// event for dave's batched relay-publish queue, but derives conversation
+/// threading from ndb (via the engine) rather than the session's in-memory
+/// [`live_threading`](crate::session::AgenticSessionData::live_threading). The
+/// local host-archival path stays on [`ingest_live_event`]; only remote
+/// controller sends route here.
+fn ingest_remote_user_message(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &[u8; 32],
+    text: &str,
+) -> Option<session_events::BuiltEvent> {
+    let agentic = session.agentic.as_mut()?;
+    let session_id = agentic.event_session_id().to_string();
+    let engine = embedded_engine(ndb, secret_key)?;
+    match engine.prepare_message(&session_id, text) {
+        Ok(event) => {
+            agentic.seen_note_ids.insert(event.note_id);
+            Some(event)
+        }
+        Err(e) => {
+            tracing::warn!("failed to build remote user message: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Build the kind-1988 `user` event for a send, PNS-ingested locally and ready
+/// for dave's relay-publish queue. A remote session is a controller send routed
+/// through the engine ([`ingest_remote_user_message`]); a local session archives
+/// the host's own turn via the in-memory threading path ([`ingest_live_event`]).
+/// Shared by the interactive send ([`Dave::handle_user_send`]) and the
+/// programmatic one ([`Dave::add_user_message_for_session`]).
+fn build_user_send_event(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &[u8; 32],
+    text: &str,
+) -> Option<session_events::BuiltEvent> {
+    if session.is_remote() {
+        ingest_remote_user_message(session, ndb, secret_key, text)
+    } else {
+        ingest_live_event(session, ndb, secret_key, text, "user", None, None)
+    }
+}
+
 /// Calculate an anonymous user_id from a keypair
 /// Look up a backend by type from the map, falling back to Remote.
 fn get_backend(
@@ -736,6 +810,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_relay_events: Vec::new(),
             session_state_sub: None,
             session_command_sub: None,
+            conversation_sub: None,
+            conversation_action_sub: None,
             processed_commands: std::collections::HashSet::new(),
             pending_spawn_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
@@ -847,7 +923,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cwd,
             &self.hostname,
             self.model_config.backend,
-            None,
             Model::Default,
         );
 
@@ -881,7 +956,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Extract secret key once for live event generation
         let secret_key = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
-        let account = *app_ctx.accounts.selected_account_pubkey();
 
         // Get all session IDs to process
         let session_ids = self.session_manager.session_ids();
@@ -997,11 +1071,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         handle_tool_result(session, result);
                     }
                     DaveApiResponse::SessionInfo(info) => {
-                        handle_session_info(
-                            session,
-                            info,
-                            ConversationSubscriptionScope::new(account, app_ctx.ndb),
-                        );
+                        handle_session_info(session, info);
                     }
                     DaveApiResponse::SubagentSpawned(subagent) => {
                         handle_subagent_spawned(session, subagent);
@@ -1584,7 +1654,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cwd,
             &self.hostname,
             backend_type,
-            None,
             model,
         );
     }
@@ -1657,7 +1726,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if self.show_scene {
                     self.scene.select(id);
                     if let Some(agentic) = &session.agentic {
-                        self.scene.focus_on(agentic.scene_position);
+                        self.scene.focus_on(agentic.scene_position.into());
                     }
                 }
             }
@@ -1695,76 +1764,98 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return mode_applies;
         };
-        let session_ids = self.session_manager.session_ids();
-        for session_id in session_ids {
+        let Some(sub) = self.conversation_action_sub else {
+            return mode_applies;
+        };
+
+        let note_keys = ndb.poll_for_notes(sub, 256);
+        if note_keys.is_empty() {
+            return mode_applies;
+        }
+
+        // Route each conversation event to its session by `d`-tag. Only local
+        // sessions process remote actions, so the index excludes remote ones.
+        let by_dtag = self.conversation_session_index(true);
+
+        let txn = match Transaction::new(ndb) {
+            Ok(txn) => txn,
+            Err(_) => return mode_applies,
+        };
+
+        for key in note_keys {
+            let Ok(note) = ndb.get_note_by_key(&txn, key) else {
+                continue;
+            };
+            if *note.pubkey() != *account.bytes() {
+                continue;
+            }
+            let Some(session_id) = session_events::get_tag_value(&note, "d")
+                .and_then(|dtag| by_dtag.get(dtag).copied())
+            else {
+                continue;
+            };
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
-            // Only local sessions poll for remote actions
-            if session.is_remote() {
-                continue;
-            }
             let Some(agentic) = &mut session.agentic else {
                 continue;
             };
-            let Some(sub) = agentic.conversation_action_sub else {
-                continue;
-            };
 
-            let note_keys = ndb.poll_for_notes(sub, 64);
-            if note_keys.is_empty() {
-                continue;
-            }
-
-            let txn = match Transaction::new(ndb) {
-                Ok(txn) => txn,
-                Err(_) => continue,
-            };
-
-            for key in note_keys {
-                let Ok(note) = ndb.get_note_by_key(&txn, key) else {
-                    continue;
-                };
-                if *note.pubkey() != *account.bytes() {
-                    continue;
+            match session_events::get_tag_value(&note, "role") {
+                Some("permission_response") => {
+                    handle_remote_permission_response(&note, agentic, &mut session.chat);
                 }
+                Some("set_permission_mode") => {
+                    let content = note.content();
+                    let mode_str = match serde_json::from_str::<serde_json::Value>(content) {
+                        Ok(v) => v
+                            .get("mode")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("default")
+                            .to_string(),
+                        Err(_) => continue,
+                    };
 
-                match session_events::get_tag_value(&note, "role") {
-                    Some("permission_response") => {
-                        handle_remote_permission_response(&note, agentic, &mut session.chat);
-                    }
-                    Some("set_permission_mode") => {
-                        let content = note.content();
-                        let mode_str = match serde_json::from_str::<serde_json::Value>(content) {
-                            Ok(v) => v
-                                .get("mode")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("default")
-                                .to_string(),
-                            Err(_) => continue,
-                        };
+                    let new_mode = crate::session::permission_mode_from_str(&mode_str);
+                    agentic.permission_mode = new_mode;
+                    session.state_dirty = true;
 
-                        let new_mode = crate::session::permission_mode_from_str(&mode_str);
-                        agentic.permission_mode = new_mode;
-                        session.state_dirty = true;
+                    mode_applies.push((
+                        format!("dave-session-{}", session_id),
+                        session.backend_type,
+                        new_mode,
+                    ));
 
-                        mode_applies.push((
-                            format!("dave-session-{}", session_id),
-                            session.backend_type,
-                            new_mode,
-                        ));
-
-                        tracing::info!(
-                            "remote command: set permission mode to {:?} for session {}",
-                            new_mode,
-                            session_id,
-                        );
-                    }
-                    _ => {}
+                    tracing::info!(
+                        "remote command: set permission mode to {:?} for session {}",
+                        new_mode,
+                        session_id,
+                    );
                 }
+                _ => {}
             }
         }
         mode_applies
+    }
+
+    /// Map each session's live-event `d`-tag (its `event_session_id`) to the
+    /// session id, so a shared conversation subscription can route polled notes
+    /// to the right session. `local_only` drops remote sessions (used by the
+    /// action consumer, which only applies actions to local sessions).
+    fn conversation_session_index(&self, local_only: bool) -> HashMap<String, SessionId> {
+        let mut index = HashMap::new();
+        for session_id in self.session_manager.session_ids() {
+            let Some(session) = self.session_manager.get(session_id) else {
+                continue;
+            };
+            if local_only && session.is_remote() {
+                continue;
+            }
+            if let Some(agentic) = session.agentic.as_ref() {
+                index.insert(agentic.event_session_id().to_string(), session_id);
+            }
+        }
+        index
     }
 
     /// Publish kind-31988 state events for sessions whose status changed.
@@ -1887,8 +1978,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Build and queue permission response events.
+    /// Build and queue permission response events through the engine.
     /// Called in the update loop where AppContext is available.
+    ///
+    /// The engine builds + locally-ingests each response (resolving the request's
+    /// note id from ndb); we publish it from [`Dave::pending_relay_events`].
     fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
         if self.pending_perm_responses.is_empty() {
             return;
@@ -1899,29 +1993,33 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.pending_perm_responses.clear();
             return;
         };
+        let Some(engine) = embedded_engine(ctx.ndb, &sk) else {
+            self.pending_perm_responses.clear();
+            return;
+        };
 
-        let pending = std::mem::take(&mut self.pending_perm_responses);
-
-        for resp in pending {
-            queue_built_event(
-                session_events::build_permission_response_event(
-                    &resp.perm_id,
-                    &resp.request_note_id,
-                    resp.allowed,
-                    resp.message.as_deref(),
-                    resp.cancel_turn,
-                    &resp.event_session_id,
-                    &sk,
-                ),
-                &format!(
-                    "queued permission response for {} ({})",
+        for resp in std::mem::take(&mut self.pending_perm_responses) {
+            match engine.prepare_permission_response(
+                &resp.event_session_id,
+                &resp.perm_id.to_string(),
+                resp.allowed,
+                resp.message.as_deref(),
+                resp.cancel_turn,
+            ) {
+                Ok(evt) => {
+                    tracing::info!(
+                        "queued permission response for {} ({})",
+                        resp.perm_id,
+                        if resp.allowed { "allow" } else { "deny" }
+                    );
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => tracing::error!(
+                    "failed to build permission response for {}: {:?}",
                     resp.perm_id,
-                    if resp.allowed { "allow" } else { "deny" }
+                    e
                 ),
-                ctx.ndb,
-                &sk,
-                &mut self.pending_relay_events,
-            );
+            }
         }
     }
 
@@ -1937,18 +2035,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.pending_mode_commands.clear();
             return;
         };
+        let Some(engine) = embedded_engine(ctx.ndb, &sk) else {
+            self.pending_mode_commands.clear();
+            return;
+        };
 
         for cmd in std::mem::take(&mut self.pending_mode_commands) {
-            queue_built_event(
-                session_events::build_set_permission_mode_event(cmd.mode, &cmd.session_id, &sk),
-                &format!(
-                    "publishing permission mode command: {} -> {}",
-                    cmd.session_id, cmd.mode
+            match engine.prepare_set_permission_mode(&cmd.session_id, cmd.mode) {
+                Ok(evt) => {
+                    tracing::info!(
+                        "publishing permission mode command: {} -> {}",
+                        cmd.session_id,
+                        cmd.mode
+                    );
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => tracing::error!(
+                    "failed to build mode command for {}: {:?}",
+                    cmd.session_id,
+                    e
                 ),
-                ctx.ndb,
-                &sk,
-                &mut self.pending_relay_events,
-            );
+            }
         }
     }
 
@@ -2093,13 +2200,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     if let Some(ref pm) = state.permission_mode {
                         agentic.permission_mode = crate::session::permission_mode_from_str(pm);
                     }
-
-                    setup_conversation_subscription(
-                        agentic,
-                        &state.claude_session_id,
-                        account,
-                        ctx.ndb,
-                    );
+                    // Live conversation events flow through the shared per-account
+                    // subscription; no per-session subscription needed here.
                 }
             }
             existing_ids.insert(state.claude_session_id.clone());
@@ -2377,8 +2479,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     if let Some(ref pm) = state.permission_mode {
                         agentic.permission_mode = crate::session::permission_mode_from_str(pm);
                     }
-
-                    setup_conversation_subscription(agentic, claude_sid, account, ctx.ndb);
+                    // Live conversation events flow through the shared per-account
+                    // subscription; no per-session subscription needed here.
                 }
             }
 
@@ -2465,7 +2567,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 PathBuf::from(cwd),
                 &self.hostname,
                 backend,
-                Some(ConversationSubscriptionScope::new(account, ctx.ndb)),
                 Model::Default,
             );
 
@@ -2497,37 +2598,52 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return (remote_user_messages, events_to_publish);
         };
-        let session_ids = self.session_manager.session_ids();
-        for session_id in session_ids {
+        let Some(sub) = self.conversation_sub else {
+            return (remote_user_messages, events_to_publish);
+        };
+
+        let note_keys = ndb.poll_for_notes(sub, 256);
+        if note_keys.is_empty() {
+            return (remote_user_messages, events_to_publish);
+        }
+
+        // Route each polled conversation event to its session by `d`-tag. Both
+        // local and remote sessions consume conversation events, so the index
+        // keeps remote sessions too.
+        let by_dtag = self.conversation_session_index(false);
+
+        let txn = match Transaction::new(ndb) {
+            Ok(txn) => txn,
+            Err(_) => return (remote_user_messages, events_to_publish),
+        };
+
+        // Group polled notes by their target session, preserving arrival order
+        // within each session so `process_conversation_notes` sees a coherent
+        // batch.
+        let mut by_session: HashMap<SessionId, Vec<nostrdb::NoteKey>> = HashMap::new();
+        for key in note_keys {
+            let Ok(note) = ndb.get_note_by_key(&txn, key) else {
+                continue;
+            };
+            if *note.pubkey() != *account.bytes() {
+                continue;
+            }
+            let Some(session_id) = session_events::get_tag_value(&note, "d")
+                .and_then(|dtag| by_dtag.get(dtag).copied())
+            else {
+                continue;
+            };
+            by_session.entry(session_id).or_default().push(key);
+        }
+
+        for (session_id, keys) in by_session {
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
             let is_remote = session.is_remote();
-
-            // Get sub without holding agentic borrow
-            let sub = match session
-                .agentic
-                .as_ref()
-                .and_then(|a| a.live_conversation_sub)
-            {
-                Some(s) => s,
-                None => continue,
-            };
-
-            let note_keys = ndb.poll_for_notes(sub, 128);
-            if note_keys.is_empty() {
-                continue;
-            }
-
-            let txn = match Transaction::new(ndb) {
-                Ok(txn) => txn,
-                Err(_) => continue,
-            };
-
-            let notes: Vec<_> = note_keys
+            let notes: Vec<_> = keys
                 .iter()
                 .filter_map(|key| ndb.get_note_by_key(&txn, *key).ok())
-                .filter(|note| *note.pubkey() == *account.bytes())
                 .collect();
 
             let result =
@@ -2538,6 +2654,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 reorder_ids.push(session_id);
             }
         }
+
+        // Drop the read txn before the reorder pass, which opens its own fresh
+        // transaction per session (avoids nested transactions).
+        drop(txn);
 
         // Out-of-order relay delivery was detected for these remote sessions:
         // rebuild each chat from ndb in `seq` order. Done after the poll loop
@@ -3236,9 +3356,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-            if let Some(evt) =
-                ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
-            {
+            if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
                 self.pending_relay_events.push(evt);
             }
         }
@@ -3300,11 +3418,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let user_text = session.input.clone();
             session.input.clear();
 
-            // Generate live event for user message
+            // Generate the kind-1988 `user` event (remote sends route through
+            // the engine, local sends archive the host turn in-place).
             if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-                if let Some(evt) =
-                    ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
-                {
+                if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
                     self.pending_relay_events.push(evt);
                 }
             }
@@ -3382,7 +3499,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_id,
             cwd,
             resume_session_id,
-            ctx,
+            crate::backend::egui_waker(&ctx),
         );
         if let Some(rx) = rx {
             session.incoming_tokens = Some(rx);
@@ -3568,26 +3685,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        let Ok((identity, config)) =
-            pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
+        let Ok(spec) = pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
         else {
             self.clear_pns_remote_subscription(ctx);
             return;
         };
 
-        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
-        let _ = scoped_subs.set_sub(identity, config);
+        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts).set_subscription(spec);
         self.pns_remote_sub_state = Some(next_state);
     }
 
-    /// Remove Dave's PNS discovery subscription from RemoteApi.
+    /// Remove Dave's PNS discovery subscription via the engine [`Transport`].
     fn clear_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
         if self.pns_remote_sub_state.is_none() {
             return;
         }
 
-        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
-        let _ = scoped_subs.drop_owner(pns_remote_sub_owner_key());
+        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts)
+            .drop_subscription(&pns_remote_sub_id());
         self.pns_remote_sub_state = None;
     }
 
@@ -3676,6 +3791,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_relay_events: std::mem::take(&mut self.pending_relay_events),
             session_state_sub: self.session_state_sub.take(),
             session_command_sub: self.session_command_sub.take(),
+            conversation_sub: self.conversation_sub.take(),
+            conversation_action_sub: self.conversation_action_sub.take(),
             processed_commands: std::mem::take(&mut self.processed_commands),
             pending_spawn_commands: std::mem::take(&mut self.pending_spawn_commands),
             pending_perm_responses: std::mem::take(&mut self.pending_perm_responses),
@@ -3718,6 +3835,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pending_relay_events = runtime.pending_relay_events;
         self.session_state_sub = runtime.session_state_sub;
         self.session_command_sub = runtime.session_command_sub;
+        self.conversation_sub = runtime.conversation_sub;
+        self.conversation_action_sub = runtime.conversation_action_sub;
         self.processed_commands = runtime.processed_commands;
         self.pending_spawn_commands = runtime.pending_spawn_commands;
         self.pending_perm_responses = runtime.pending_perm_responses;
@@ -3760,6 +3879,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 tracing::warn!("failed to subscribe for session command events: {:?}", e);
             }
         }
+
+        // Two shared cursors over all kind-1988 conversation events for this
+        // account. One drives `poll_remote_conversation_events` (chat sync), the
+        // other `poll_remote_conversation_actions` (permission responses / mode
+        // commands); they poll at different points in the frame, so each needs
+        // its own cursor. Notes are demuxed by `d`-tag to the owning session, so
+        // one pair of subscriptions serves any number of sessions.
+        self.conversation_sub = subscribe_conversation_events(ndb, account);
+        self.conversation_action_sub = subscribe_conversation_events(ndb, account);
     }
 
     fn subscribe_pns_run_configs(&mut self, ndb: &nostrdb::Ndb, account: enostr::Pubkey) {
@@ -3875,16 +4003,18 @@ impl notedeck::App for Dave {
         // Build permission response events from remote sessions
         self.publish_pending_perm_responses(ctx);
 
-        // Build spawn command events (need secret key from AppContext)
+        // Build spawn command events through the engine (needs the selected
+        // account's secret from AppContext); publish them from our own queue.
         if !self.pending_spawn_commands.is_empty() {
-            if let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) {
+            if let Some(engine) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
+                .and_then(|sk| embedded_engine(ctx.ndb, &sk))
+            {
                 for cmd in std::mem::take(&mut self.pending_spawn_commands) {
-                    match session_events::build_spawn_command_event(
+                    match engine.prepare_spawn_command(
                         &cmd.target_host,
                         &cmd.cwd.to_string_lossy(),
                         cmd.backend.as_str(),
                         &cmd.spawn_id,
-                        &sk,
                     ) {
                         Ok(evt) => self.pending_relay_events.push(evt),
                         Err(e) => tracing::warn!("failed to build spawn command: {:?}", e),
@@ -3909,13 +4039,12 @@ impl notedeck::App for Dave {
                     match NormRelayUrl::new(&pns_relay_url) {
                         Ok(relay) => {
                             let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                            let pns_relay = RelayId::Websocket(relay);
-                            let mut publisher = ctx.remote.publisher_explicit();
+                            let mut transport =
+                                RemoteApiTransport::new(&mut ctx.remote, ctx.accounts);
                             for event in std::mem::take(&mut self.pending_relay_events) {
                                 match session_events::wrap_pns(&event.note_json, &pns_keys) {
                                     Ok(pns_json) => {
-                                        publisher
-                                            .publish_event_json(pns_json, vec![pns_relay.clone()]);
+                                        transport.publish_event_json(pns_json, vec![relay.clone()]);
                                     }
                                     Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                                 }
@@ -3937,7 +4066,7 @@ impl notedeck::App for Dave {
             get_backend(&self.backends, bt).set_permission_mode(
                 backend_sid,
                 mode,
-                egui_ctx.clone(),
+                crate::backend::egui_waker(egui_ctx),
             );
         }
 
@@ -4089,61 +4218,26 @@ impl notedeck::App for Dave {
 /// single-window mode is particularly aggressive, so we use both
 /// NSRunningApplication::activateWithOptions and orderFrontRegardless
 /// on the key window.
-/// Set up a live conversation subscription for a session if not already subscribed.
+/// Subscribe to every kind-1988 conversation event authored by `account`.
 ///
-/// Subscribes to kind-1988 events tagged with the session's claude ID so we
-/// receive messages from remote clients (phone) even before the local backend starts.
-pub(crate) fn setup_conversation_subscription(
-    agentic: &mut session::AgenticSessionData,
-    claude_session_id: &str,
-    account: enostr::Pubkey,
+/// This is the shared, session-independent subscription that replaces the old
+/// per-session (kind + author + `d`-tag) subscriptions: callers poll it once and
+/// demux notes to the owning session by their `d`-tag. Returns `None` if nostrdb
+/// refuses the subscription (e.g. cap reached), matching the old warn-and-skip
+/// behavior.
+pub(crate) fn subscribe_conversation_events(
     ndb: &nostrdb::Ndb,
-) {
-    if agentic.live_conversation_sub.is_some() {
-        return;
-    }
+    account: enostr::Pubkey,
+) -> Option<nostrdb::Subscription> {
     let filter = nostrdb::Filter::new()
         .kinds([session_events::AI_CONVERSATION_KIND as u64])
         .authors([account.bytes()])
-        .tags([claude_session_id], 'd')
         .build();
     match ndb.subscribe(&[filter]) {
-        Ok(sub) => {
-            agentic.live_conversation_sub = Some(sub);
-            tracing::info!(
-                "subscribed for live conversation events (session {})",
-                claude_session_id,
-            );
-        }
+        Ok(sub) => Some(sub),
         Err(e) => {
-            tracing::warn!("failed to subscribe for conversation events: {:?}", e,);
-        }
-    }
-}
-
-/// Subscribe for kind-1988 conversation action events (permission responses,
-/// mode commands) for the given session d-tag.
-pub(crate) fn setup_conversation_action_subscription(
-    agentic: &mut session::AgenticSessionData,
-    event_id: &str,
-    account: enostr::Pubkey,
-    ndb: &nostrdb::Ndb,
-) {
-    if agentic.conversation_action_sub.is_some() {
-        return;
-    }
-    let filter = nostrdb::Filter::new()
-        .kinds([session_events::AI_CONVERSATION_KIND as u64])
-        .authors([account.bytes()])
-        .tags([event_id], 'd')
-        .build();
-    match ndb.subscribe(&[filter]) {
-        Ok(sub) => {
-            agentic.conversation_action_sub = Some(sub);
-            tracing::info!("subscribed for conversation actions (session {})", event_id,);
-        }
-        Err(e) => {
-            tracing::warn!("failed to subscribe for conversation actions: {:?}", e);
+            tracing::warn!("failed to subscribe for conversation events: {:?}", e);
+            None
         }
     }
 }
@@ -4190,7 +4284,7 @@ fn handle_tool_calls(
                 needs_send = true;
             }
             ToolCalls::Query(search_call) => {
-                let resp = tools::execute_query(search_call, &txn, ndb);
+                let resp = search_call.execute(&txn, ndb);
                 session.chat.push(Message::ToolResponse(ToolResponse::new(
                     call.id().to_owned(),
                     ToolResponses::Query(resp),
@@ -4715,14 +4809,7 @@ fn handle_query_complete(session: &mut session::ChatSession, info: messages::Usa
 }
 
 /// Handle a SessionInfo response from the AI backend.
-///
-/// Sets up ndb subscriptions for permission responses and conversation events
-/// when we first learn the claude session ID.
-fn handle_session_info(
-    session: &mut session::ChatSession,
-    info: SessionInfo,
-    subscription_scope: ConversationSubscriptionScope<'_>,
-) {
+fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo) {
     // Propagate the runtime model for header display only.
     // Keep the original requested override intact so duplicate/clear
     // can reuse the user's intent instead of the backend's resolved model.
@@ -4731,22 +4818,9 @@ fn handle_session_info(
     }
 
     if let Some(agentic) = &mut session.agentic {
-        // Use the stable event_id (not the CLI session ID) for subscriptions,
-        // since all live events are tagged with event_id as the d-tag.
-        let event_id = agentic.event_session_id().to_string();
-        setup_conversation_action_subscription(
-            agentic,
-            &event_id,
-            subscription_scope.account,
-            subscription_scope.ndb,
-        );
-        setup_conversation_subscription(
-            agentic,
-            &event_id,
-            subscription_scope.account,
-            subscription_scope.ndb,
-        );
-
+        // Live conversation and action events flow through the shared
+        // per-account subscriptions (see `subscribe_conversation_events`); no
+        // per-session subscription is created here.
         agentic.session_info = Some(info);
     }
     // Persist initial session state now that we know the claude_session_id
@@ -4834,7 +4908,7 @@ fn dispatch_compact_for_active(
     tracing::info!("Compact requested for session {}", session_id);
     let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
-    if let Some(rx) = backend.compact_session(session_id.clone(), ctx.clone()) {
+    if let Some(rx) = backend.compact_session(session_id.clone(), crate::backend::egui_waker(ctx)) {
         tracing::info!("Compact dispatched for session {}", session_id);
         if let Some(session) = session_manager.get_active_mut() {
             session.incoming_tokens = Some(rx);
@@ -4869,7 +4943,7 @@ fn dispatch_compact_for_session(
     );
     let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
-    let compact_rx = backend.compact_session(backend_session_id, ctx.clone());
+    let compact_rx = backend.compact_session(backend_session_id, crate::backend::egui_waker(ctx));
     // A non-persistent backend that returned no receiver has no live session to
     // compact — nothing to do. A persistent backend reuses its existing channel
     // (None) and must still record the compact-and-proceed intent.
@@ -4936,10 +5010,14 @@ mod tests {
         key
     }
 
-    async fn same_d_live_subscription_pubkeys(
-        setup: impl FnOnce(&mut session::AgenticSessionData, &str, enostr::Pubkey, &Ndb),
-        sub: impl FnOnce(&session::AgenticSessionData) -> Option<nostrdb::Subscription>,
-    ) -> ([u8; 32], Vec<[u8; 32]>) {
+    /// The selected account's pubkey alongside the author pubkeys of every
+    /// note the shared conversation subscription matched.
+    struct ConversationSubAuthors {
+        account: [u8; 32],
+        matched: Vec<[u8; 32]>,
+    }
+
+    async fn conversation_subscription_author_pubkeys() -> ConversationSubAuthors {
         let account = enostr::FullKeypair::generate();
         let other_account = enostr::FullKeypair::generate();
         let account_pubkey = *account.pubkey.bytes();
@@ -4972,15 +5050,8 @@ mod tests {
 
         let tmp_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
-        let mut session = session::ChatSession::new(
-            1,
-            PathBuf::from("/tmp"),
-            AiMode::Agentic,
-            BackendType::Claude,
-        );
-        let agentic = session.agentic.as_mut().expect("agentic session");
-        setup(agentic, session_id_str, account.pubkey, &ndb);
-        let sub = sub(agentic).expect("live subscription");
+        let sub =
+            subscribe_conversation_events(&ndb, account.pubkey).expect("conversation subscription");
 
         ndb.process_event_with(
             &other_event.to_event_json(),
@@ -5003,7 +5074,10 @@ mod tests {
             .iter()
             .map(|key| *ndb.get_note_by_key(&txn, *key).expect("note").pubkey())
             .collect();
-        (account_pubkey, pubkeys)
+        ConversationSubAuthors {
+            account: account_pubkey,
+            matched: pubkeys,
+        }
     }
 
     fn test_dave(data_path: &DataPath) -> Dave {
@@ -5013,36 +5087,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_conversation_subscription_filters_selected_account_author() {
-        let (account_pubkey, pubkeys) = same_d_live_subscription_pubkeys(
-            |agentic, session_id, account, ndb| {
-                setup_conversation_subscription(agentic, session_id, account, ndb);
-            },
-            |agentic| agentic.live_conversation_sub,
-        )
-        .await;
+    async fn conversation_subscription_filters_selected_account_author() {
+        let authors = conversation_subscription_author_pubkeys().await;
 
         assert_eq!(
-            pubkeys,
-            vec![account_pubkey],
-            "same-d events from another account must not match conversation subscription"
-        );
-    }
-
-    #[tokio::test]
-    async fn live_action_subscription_filters_selected_account_author() {
-        let (account_pubkey, pubkeys) = same_d_live_subscription_pubkeys(
-            |agentic, session_id, account, ndb| {
-                setup_conversation_action_subscription(agentic, session_id, account, ndb);
-            },
-            |agentic| agentic.conversation_action_sub,
-        )
-        .await;
-
-        assert_eq!(
-            pubkeys,
-            vec![account_pubkey],
-            "same-d events from another account must not match action subscription"
+            authors.matched,
+            vec![authors.account],
+            "same-d events from another account must not match the conversation subscription"
         );
     }
 

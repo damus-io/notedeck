@@ -4,13 +4,12 @@
 //! orders them by their monotonic `seq` tag, and converts them into
 //! `Message` variants for populating the chat UI.
 
-use crate::messages::{AssistantMessage, ExecutedTool, PermissionRequest};
+use crate::messages::{AssistantMessage, ExecutedTool, Message, PermissionRequest};
 use crate::session::PermissionTracker;
 use crate::session_events::{
     decode_permission_response, get_tag_value, is_conversation_role, AI_CONVERSATION_KIND,
 };
 use crate::tools::ToolResponse;
-use crate::Message;
 use nostrdb::{Filter, Ndb, Transaction};
 use std::collections::{HashMap, HashSet};
 
@@ -149,7 +148,7 @@ fn load_session_messages_with_author(
                 AssistantMessage::from_text(content.to_string()),
             )),
             Some("tool_result") => {
-                let summary = truncate(content, 200);
+                let summary = crate::util::truncate(content, 200);
                 Some(Message::ToolResponse(ToolResponse::executed_tool(
                     ExecutedTool {
                         tool_name: get_tag_value(note, "tool-name")
@@ -320,7 +319,7 @@ fn load_session_states_with_author(
 /// tag matches `local_hostname` are loaded.
 ///
 /// Returns a map from CWD to sorted config list.
-pub(crate) fn load_run_configs_from_ndb(
+pub fn load_run_configs_from_ndb(
     ndb: &Ndb,
     txn: &Transaction,
     author: &enostr::Pubkey,
@@ -492,15 +491,6 @@ fn load_recent_paths_by_host_with_author(
     }
 
     result
-}
-
-pub(crate) fn truncate(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_chars).collect();
-        format!("{}...", truncated)
-    }
 }
 
 #[cfg(test)]

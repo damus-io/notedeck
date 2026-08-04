@@ -48,7 +48,7 @@ pub fn handle_interrupt_request(
             // Second Escape within timeout - confirm interrupt
             if let Some(session) = session_manager.get_active() {
                 let session_id = format!("dave-session-{}", session.id);
-                backend.interrupt_session(session_id, ctx.clone());
+                backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
             }
             None
         } else {
@@ -69,7 +69,7 @@ pub fn execute_interrupt(
 ) {
     if let Some(session) = session_manager.get_active_mut() {
         let session_id = format!("dave-session-{}", session.id);
-        backend.interrupt_session(session_id, ctx.clone());
+        backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
         session.incoming_tokens = None;
         if let Some(agentic) = &mut session.agentic {
             agentic.permissions.pending.clear();
@@ -218,7 +218,7 @@ pub fn set_permission_mode(
     } else {
         // Local session: apply directly and mark dirty for state event publish
         let backend_sid = format!("dave-session-{}", session_id);
-        backend.set_permission_mode(backend_sid, new_mode, ctx.clone());
+        backend.set_permission_mode(backend_sid, new_mode, crate::backend::egui_waker(ctx));
         session.state_dirty = true;
         None
     };
@@ -243,7 +243,11 @@ pub fn exit_plan_mode(
         if let Some(agentic) = &mut session.agentic {
             agentic.permission_mode = PermissionMode::Default;
             let session_id = format!("dave-session-{}", session.id);
-            backend.set_permission_mode(session_id, PermissionMode::Default, ctx.clone());
+            backend.set_permission_mode(
+                session_id,
+                PermissionMode::Default,
+                crate::backend::egui_waker(ctx),
+            );
             tracing::debug!("Exited plan mode for session {}", session.id);
         }
     }
@@ -572,7 +576,7 @@ pub fn switch_and_focus_session(
         scene.select(id);
         if let Some(session) = session_manager.get(id) {
             if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position);
+                scene.focus_on(agentic.scene_position.into());
             }
         }
     }
@@ -1239,7 +1243,6 @@ pub fn create_session_with_cwd(
     cwd: PathBuf,
     hostname: &str,
     backend_type: BackendType,
-    conversation_subscription: Option<crate::ConversationSubscriptionScope<'_>>,
     model: Model,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
@@ -1254,29 +1257,11 @@ pub fn create_session_with_cwd(
         if show_scene {
             scene.select(id);
             if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position);
+                scene.focus_on(agentic.scene_position.into());
             }
         }
-
-        // Set up ndb subscriptions so remote clients can send messages
-        // to this session (e.g. to kickstart the backend remotely).
-        if let (Some(subscription), Some(agentic)) =
-            (conversation_subscription, &mut session.agentic)
-        {
-            let event_id = agentic.event_session_id().to_string();
-            crate::setup_conversation_subscription(
-                agentic,
-                &event_id,
-                subscription.account,
-                subscription.ndb,
-            );
-            crate::setup_conversation_action_subscription(
-                agentic,
-                &event_id,
-                subscription.account,
-                subscription.ndb,
-            );
-        }
+        // Remote clients reach this session's live conversation events through
+        // the shared per-account subscription; nothing per-session to wire up.
     }
     session_manager.rebuild_cwd_groups();
     id
@@ -1306,7 +1291,7 @@ pub fn create_resumed_session_with_cwd(
         if show_scene {
             scene.select(id);
             if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position);
+                scene.focus_on(agentic.scene_position.into());
             }
         }
     }
@@ -1360,7 +1345,6 @@ pub fn clone_session(
         cwd,
         hostname,
         backend_type,
-        None,
         model,
     );
     None
@@ -1488,7 +1472,6 @@ mod tests {
             PathBuf::from(cwd),
             hostname,
             BackendType::Claude,
-            None,
             Model::Default,
         );
 
@@ -1515,7 +1498,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "remote-a",
             BackendType::Claude,
-            None,
             Model::Default,
         );
         let session = sm.get_mut(id).expect("session should exist");
@@ -1607,7 +1589,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Claude,
-            None,
             Model::Opus,
         );
 
@@ -1654,7 +1635,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Claude,
-            None,
             Model::Default,
         );
 
@@ -1694,7 +1674,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Codex,
-            None,
             Model::Custom("gpt-5.2-codex".to_string()),
         );
 
@@ -2197,7 +2176,6 @@ mod tests {
             PathBuf::from("/tmp"),
             "localhost",
             BackendType::Claude,
-            None,
             Model::Default,
         );
 

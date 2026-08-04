@@ -9,6 +9,7 @@ use crate::messages::{
 };
 use crate::tools::Tool;
 use crate::Message;
+use agentium_core::Waker;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
     PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolResultBlock,
@@ -96,7 +97,7 @@ fn handle_tool_result(
     subagent_stack: &mut Vec<String>,
     task_tracker: &mut TaskTracker,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) {
     let tool_use_id = &tool_result.tool_use_id;
     let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) else {
@@ -111,14 +112,20 @@ fn handle_tool_result(
     if tool_name == "Task" && !is_background_task(&tool_input) {
         let result_text =
             extract_response_content(&result_value).unwrap_or_else(|| "completed".to_string());
-        shared::complete_subagent(tool_use_id, &result_text, subagent_stack, response_tx, ctx);
+        shared::complete_subagent(
+            tool_use_id,
+            &result_text,
+            subagent_stack,
+            response_tx,
+            waker,
+        );
     }
 
     // Fold TaskCreate/TaskUpdate into the task list sidebar (the id is
     // assigned in the result, so this has to happen at result time).
     if let Some(todos) = task_tracker.handle_tool(&tool_name, &tool_input, &result_value) {
         let _ = response_tx.send(DaveApiResponse::TodoUpdate(todos));
-        ctx.request_repaint();
+        waker.wake();
     }
 
     let file_update = FileUpdate::from_tool_call(&tool_name, &tool_input);
@@ -130,7 +137,7 @@ fn handle_tool_result(
         parent_override,
         subagent_stack,
         response_tx,
-        ctx,
+        waker,
     );
 }
 
@@ -145,7 +152,7 @@ fn handle_task_started(
     data: &serde_json::Value,
     pending_tools: &HashMap<String, (String, serde_json::Value)>,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) {
     if data.get("task_type").and_then(|v| v.as_str()) != Some("local_agent") {
         return;
@@ -180,7 +187,7 @@ fn handle_task_started(
         background: true,
     };
     let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
-    ctx.request_repaint();
+    waker.wake();
 }
 
 /// Handle a `system` / `task_notification` message: a background task finished.
@@ -191,7 +198,7 @@ fn handle_task_started(
 fn handle_task_notification(
     data: &serde_json::Value,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) {
     let Some(tool_use_id) = data.get("tool_use_id").and_then(|v| v.as_str()) else {
         return;
@@ -215,7 +222,7 @@ fn handle_task_notification(
         }
     };
     let _ = response_tx.send(response);
-    ctx.request_repaint();
+    waker.wake();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +254,7 @@ fn cancelled_turn_message_action(message: &ClaudeMessage) -> CancelledTurnMessag
 fn handle_stream_message(
     message: ClaudeMessage,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
     pending_tools: &mut HashMap<String, (String, serde_json::Value)>,
     subagent_stack: &mut Vec<String>,
     task_tracker: &mut TaskTracker,
@@ -268,7 +275,7 @@ fn handle_stream_message(
                     ..Default::default()
                 };
                 let _ = response_tx.send(DaveApiResponse::UsageUpdate(usage_info));
-                ctx.request_repaint();
+                waker.wake();
             }
 
             for block in &assistant_msg.message.content {
@@ -305,13 +312,13 @@ fn handle_stream_message(
                             background: false,
                         };
                         let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
-                        ctx.request_repaint();
+                        waker.wake();
                     }
 
                     // Emit TodoUpdate for TodoWrite tool calls
                     if name == "TodoWrite" {
                         let _ = response_tx.send(DaveApiResponse::TodoUpdate(input.clone()));
-                        ctx.request_repaint();
+                        waker.wake();
                     }
                 }
             }
@@ -331,7 +338,7 @@ fn handle_stream_message(
                         {
                             tracing::error!("Failed to send token to UI");
                         }
-                        ctx.request_repaint();
+                        waker.wake();
                     }
                 }
             }
@@ -388,7 +395,7 @@ fn handle_stream_message(
                         subagent_stack,
                         task_tracker,
                         response_tx,
-                        ctx,
+                        waker,
                     );
                 }
             }
@@ -398,13 +405,13 @@ fn handle_stream_message(
             if system_msg.subtype == "init" {
                 let session_info = parse_session_info(&system_msg);
                 let _ = response_tx.send(DaveApiResponse::SessionInfo(session_info));
-                ctx.request_repaint();
+                waker.wake();
             } else if system_msg.subtype == "status" {
                 // Handle status messages (compaction start/end)
                 let status = system_msg.data.get("status").and_then(|v| v.as_str());
                 if status == Some("compacting") {
                     let _ = response_tx.send(DaveApiResponse::CompactionStarted);
-                    ctx.request_repaint();
+                    waker.wake();
                 }
                 // status: null means compaction finished (handled by compact_boundary)
             } else if system_msg.subtype == "compact_boundary" {
@@ -417,11 +424,11 @@ fn handle_stream_message(
                     .unwrap_or(0);
                 let info = CompactionInfo { pre_tokens };
                 let _ = response_tx.send(DaveApiResponse::CompactionComplete(info));
-                ctx.request_repaint();
+                waker.wake();
             } else if system_msg.subtype == "task_started" {
-                handle_task_started(&system_msg.data, pending_tools, response_tx, ctx);
+                handle_task_started(&system_msg.data, pending_tools, response_tx, waker);
             } else if system_msg.subtype == "task_notification" {
-                handle_task_notification(&system_msg.data, response_tx, ctx);
+                handle_task_notification(&system_msg.data, response_tx, waker);
             } else {
                 tracing::debug!("Received system message subtype: {}", system_msg.subtype);
             }
@@ -443,7 +450,7 @@ async fn handle_permission_request(
     client: &ClaudeClient,
     session_id: &str,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
     cancel_current_turn: &mut bool,
 ) {
     if shared::should_auto_accept(&perm_req.tool_name, &perm_req.tool_input) {
@@ -457,7 +464,7 @@ async fn handle_permission_request(
         &perm_req.tool_name,
         perm_req.tool_input.clone(),
         response_tx,
-        ctx,
+        waker,
     ) {
         Some(rx) => rx,
         None => {
@@ -595,7 +602,7 @@ async fn session_actor(
     response_tx: mpsc::Sender<DaveApiResponse>,
     // Fallback egui context; refreshed from each Query/Compact command so
     // wake-up turns (which carry no command) can still request repaints.
-    initial_ctx: egui::Context,
+    initial_waker: Waker,
 ) {
     // Permission channel - the callback sends to perm_tx, actor receives on perm_rx
     let (perm_tx, mut perm_rx) = tokio_mpsc::channel::<PermissionRequestInternal>(16);
@@ -721,7 +728,7 @@ async fn session_actor(
     // outlive a single turn: a `run_in_background` task's tool_use lands in one
     // turn while its tool_result / completion lands in a later wake-up turn, so
     // attribution needs them to survive across turns.
-    let mut ctx = initial_ctx;
+    let mut waker = initial_waker;
     let mut pending_tools: HashMap<String, (String, serde_json::Value)> = HashMap::new();
     let mut subagent_stack: Vec<String> = Vec::new();
     // Set when the user exits a tool call; suppresses the rest of that turn's
@@ -748,10 +755,10 @@ async fn session_actor(
                     break;
                 };
                 match cmd {
-                    SessionCommand::Query { prompt, images, ctx: query_ctx, .. } => {
-                        // A fresh user turn: refresh ctx and clear any leftover
+                    SessionCommand::Query { prompt, images, waker: query_waker, .. } => {
+                        // A fresh user turn: refresh waker and clear any leftover
                         // cancellation from a previous turn.
-                        ctx = query_ctx;
+                        waker = query_waker;
                         cancel_current_turn = false;
                         let blocks = build_content_blocks(&images, &prompt);
                         if let Err(err) = client
@@ -762,16 +769,16 @@ async fn session_actor(
                             let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
                         }
                     }
-                    SessionCommand::Interrupt { ctx: interrupt_ctx } => {
+                    SessionCommand::Interrupt { waker: interrupt_waker } => {
                         tracing::debug!("Session {} received interrupt", session_id);
                         if let Err(err) = client.interrupt().await {
                             tracing::error!("Failed to send interrupt: {}", err);
                         }
                         // The stream ends naturally with a Result; the CLI
                         // preserves session history.
-                        interrupt_ctx.request_repaint();
+                        interrupt_waker.wake();
                     }
-                    SessionCommand::SetPermissionMode { mode, ctx: mode_ctx } => {
+                    SessionCommand::SetPermissionMode { mode, waker: mode_waker } => {
                         tracing::debug!(
                             "Session {} setting permission mode to {:?}",
                             session_id,
@@ -780,12 +787,12 @@ async fn session_actor(
                         if let Err(err) = client.set_permission_mode(mode).await {
                             tracing::error!("Failed to set permission mode: {}", err);
                         }
-                        mode_ctx.request_repaint();
+                        mode_waker.wake();
                     }
-                    SessionCommand::Compact { ctx: compact_ctx, .. } => {
+                    SessionCommand::Compact { waker: compact_waker, .. } => {
                         // Claude compaction is driven by sending `/compact` as a
                         // query on the persistent channel (see compact_session).
-                        ctx = compact_ctx;
+                        waker = compact_waker;
                         if let Err(err) = client
                             .query_with_content_and_session(
                                 vec![UserContentBlock::text("/compact")],
@@ -811,7 +818,7 @@ async fn session_actor(
                     &client,
                     &session_id,
                     &response_tx,
-                    &ctx,
+                    &waker,
                     &mut cancel_current_turn,
                 )
                 .await;
@@ -854,7 +861,7 @@ async fn session_actor(
                 handle_stream_message(
                     message,
                     &response_tx,
-                    &ctx,
+                    &waker,
                     &mut pending_tools,
                     &mut subagent_stack,
                     &mut task_tracker,
@@ -881,7 +888,7 @@ impl AiBackend for ClaudeBackend {
         session_id: String,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
-        ctx: egui::Context,
+        waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
@@ -910,12 +917,12 @@ impl AiBackend for ClaudeBackend {
                 created_rx = Some(response_rx);
 
                 // Spawn session actor with cwd, optional resume session ID, model,
-                // and the session-lifetime response channel + initial ctx.
+                // and the session-lifetime response channel + initial waker.
                 let session_id_clone = session_id.clone();
                 let cwd_clone = cwd.clone();
                 let resume_session_id_clone = resume_session_id.clone();
                 let model_clone = model.clone();
-                let ctx_clone = ctx.clone();
+                let waker_clone = waker.clone();
                 tokio::spawn(async move {
                     session_actor(
                         session_id_clone,
@@ -924,7 +931,7 @@ impl AiBackend for ClaudeBackend {
                         model_clone,
                         command_rx,
                         response_tx,
-                        ctx_clone,
+                        waker_clone,
                     )
                     .await;
                 });
@@ -942,7 +949,7 @@ impl AiBackend for ClaudeBackend {
                     prompt,
                     images,
                     response_tx: None,
-                    ctx,
+                    waker,
                 })
                 .await
             {
@@ -963,23 +970,23 @@ impl AiBackend for ClaudeBackend {
         }
     }
 
-    fn interrupt_session(&self, session_id: String, ctx: egui::Context) {
+    fn interrupt_session(&self, session_id: String, waker: Waker) {
         if let Some(handle) = self.sessions.get(&session_id) {
             let command_tx = handle.command_tx.clone();
             tokio::spawn(async move {
-                if let Err(err) = command_tx.send(SessionCommand::Interrupt { ctx }).await {
+                if let Err(err) = command_tx.send(SessionCommand::Interrupt { waker }).await {
                     tracing::warn!("Failed to send interrupt command: {}", err);
                 }
             });
         }
     }
 
-    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, ctx: egui::Context) {
+    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, waker: Waker) {
         if let Some(handle) = self.sessions.get(&session_id) {
             let command_tx = handle.command_tx.clone();
             tokio::spawn(async move {
                 if let Err(err) = command_tx
-                    .send(SessionCommand::SetPermissionMode { mode, ctx })
+                    .send(SessionCommand::SetPermissionMode { mode, waker })
                     .await
                 {
                     tracing::warn!("Failed to send set_permission_mode command: {}", err);
@@ -996,7 +1003,7 @@ impl AiBackend for ClaudeBackend {
     fn compact_session(
         &self,
         session_id: String,
-        ctx: egui::Context,
+        waker: Waker,
     ) -> Option<mpsc::Receiver<DaveApiResponse>> {
         let handle = self.sessions.get(&session_id)?;
         let command_tx = handle.command_tx.clone();
@@ -1009,7 +1016,7 @@ impl AiBackend for ClaudeBackend {
                     prompt: "/compact".to_string(),
                     images: vec![],
                     response_tx: None,
-                    ctx,
+                    waker,
                 })
                 .await
             {
@@ -1076,7 +1083,7 @@ mod tests {
     #[test]
     fn task_started_local_agent_spawns_background_subagent() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
 
         // The originating Task tool_use is still pending (its launch result
         // hasn't landed), so the subagent type is recoverable from its input.
@@ -1095,7 +1102,7 @@ mod tests {
             "description": "do background work",
             "task_type": "local_agent",
         });
-        handle_task_started(&data, &pending, &tx, &ctx);
+        handle_task_started(&data, &pending, &tx, &waker);
 
         match rx.try_recv().expect("expected a spawn response") {
             DaveApiResponse::SubagentSpawned(info) => {
@@ -1116,7 +1123,7 @@ mod tests {
     #[test]
     fn task_started_local_bash_is_not_a_subagent() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
 
         let data = serde_json::json!({
@@ -1125,7 +1132,7 @@ mod tests {
             "description": "sleep 6",
             "task_type": "local_bash",
         });
-        handle_task_started(&data, &pending, &tx, &ctx);
+        handle_task_started(&data, &pending, &tx, &waker);
 
         assert!(
             rx.try_recv().is_err(),
@@ -1136,7 +1143,7 @@ mod tests {
     #[test]
     fn task_notification_completes_and_fails_by_tool_use_id() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
 
         handle_task_notification(
             &serde_json::json!({
@@ -1145,7 +1152,7 @@ mod tests {
                 "summary": "all done",
             }),
             &tx,
-            &ctx,
+            &waker,
         );
         match rx.try_recv().expect("expected a completion") {
             DaveApiResponse::SubagentCompleted { task_id, result } => {
@@ -1165,7 +1172,7 @@ mod tests {
                 "summary": "it broke",
             }),
             &tx,
-            &ctx,
+            &waker,
         );
         match rx.try_recv().expect("expected a failure") {
             DaveApiResponse::SubagentFailed { task_id, error } => {
@@ -1182,7 +1189,7 @@ mod tests {
     #[test]
     fn subagent_internal_tool_result_routes_by_parent_tool_use_id() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
         let mut subagent_stack: Vec<String> = Vec::new();
         let mut task_tracker = TaskTracker::new();
@@ -1204,7 +1211,7 @@ mod tests {
         handle_stream_message(
             assistant,
             &tx,
-            &ctx,
+            &waker,
             &mut pending,
             &mut subagent_stack,
             &mut task_tracker,
@@ -1226,7 +1233,7 @@ mod tests {
         handle_stream_message(
             user,
             &tx,
-            &ctx,
+            &waker,
             &mut pending,
             &mut subagent_stack,
             &mut task_tracker,

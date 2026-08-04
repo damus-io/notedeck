@@ -995,8 +995,8 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
 mod tests {
     use super::*;
     use enostr::FullKeypair;
-    use nostrdb::{Config, Filter, Ndb};
-    use std::time::{Duration, Instant};
+    use futures_util::StreamExt;
+    use nostrdb::{Config, Filter, Ndb, SubscriptionStream};
 
     /// A headless harness driving a [`BoardCache`] against a bare `Ndb` — the
     /// subscription / poll / refold logic with no egui in sight. Mirrors the
@@ -1053,33 +1053,67 @@ mod tests {
             board_summaries(&self.cache.all_boards(&self.ndb, &txn, &self.kp.pubkey))
         }
 
-        /// Poll until the folded default board satisfies `pred` (ingest is async).
-        /// Fails the test if it never holds.
-        fn wait<F: Fn(&BoardView) -> bool>(&mut self, pred: F) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                self.poll();
-                if self.view().is_some_and(|v| pred(&v)) {
-                    return;
-                }
-                assert!(Instant::now() < deadline, "sync predicate never held");
-                std::thread::sleep(Duration::from_millis(20));
-            }
+        /// Fold until the default board satisfies `pred` (ingest is async).
+        async fn wait<F: Fn(&BoardView) -> bool>(&mut self, pred: F) {
+            self.wait_until(|t| t.view().is_some_and(|v| pred(&v)))
+                .await;
         }
 
-        /// Poll until the subscription stops reporting new notes, so the cache
-        /// is quiescent (the async writer has drained).
-        fn drain(&mut self) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while self.poll() {
-                assert!(Instant::now() < deadline, "sync never quiesced");
-                std::thread::sleep(Duration::from_millis(20));
+        /// Like [`wait`](Self::wait) but keyed on the switcher's board list —
+        /// used when the quiescence signal is a *second* board appearing rather
+        /// than a change to the default board.
+        async fn wait_boards<F: Fn(&[BoardSummary]) -> bool>(&mut self, pred: F) {
+            self.wait_until(|t| pred(&t.boards())).await;
+        }
+
+        /// Shared loop for [`wait`](Self::wait) / [`wait_boards`](Self::wait_boards):
+        /// pump the reducer until `done` holds, awaiting the writer's own ingest
+        /// notification (see [`await_ingest`]) between folds rather than polling
+        /// against a wall-clock deadline — the only race-free way to wait on an
+        /// async ingest. Replaces the old fixed deadline and `drain()` quiescence
+        /// guess (see `demo_seed_complete`).
+        async fn wait_until(&mut self, done: impl Fn(&mut Self) -> bool) {
+            let mut stream = ingest_stream(&self.ndb, &self.kp.pubkey);
+            while !done(self) {
+                await_ingest(&mut stream).await;
             }
         }
     }
 
+    /// Open a live await-handle on `author`'s headway events. Subscribing before
+    /// a wait means every note the async writer ingests *after* this point wakes
+    /// [`await_ingest`], so the fold loops advance on the writer's own
+    /// notification instead of a wall-clock sleep.
+    fn ingest_stream(ndb: &Ndb, author: &Pubkey) -> SubscriptionStream {
+        let sub = ndb.subscribe(&[event::headway_filter(author)]).unwrap();
+        SubscriptionStream::new(ndb.clone(), sub)
+    }
+
+    /// Await the next batch of ingested notes on `stream`. Panics if the
+    /// subscription closes first, so a predicate that never holds surfaces as a
+    /// test-timeout hang rather than a silent spin.
+    async fn await_ingest(stream: &mut SubscriptionStream) {
+        stream
+            .next()
+            .await
+            .expect("subscription closed before predicate held");
+    }
+
     fn total_cards(view: &BoardView) -> usize {
         view.columns.iter().map(|c| c.cards.len()).sum()
+    }
+
+    /// The demo seed's terminal state: [`seed_demo`] moves the drag card into
+    /// In Progress with the *last* event it ingests, so the drag card sitting in
+    /// column 2 means every earlier seed event has folded and the async writer is
+    /// quiescent. A deterministic "seed fully materialised" signal that — unlike a
+    /// card-count check plus a `drain()` — can't be satisfied mid-materialisation.
+    fn demo_seed_complete(view: &BoardView) -> bool {
+        view.columns.get(2).is_some_and(|col| {
+            col.cards
+                .iter()
+                .any(|c| c.title == "Drag-and-drop between columns")
+        })
     }
 
     /// Seed the populated demo board for the sync tests to fold and act on. The
@@ -1099,14 +1133,17 @@ mod tests {
 
     /// Subscribing before seeding, then polling, materialises the whole board
     /// from events already in ndb.
-    #[test]
-    fn poll_materialises_the_board() {
+    #[tokio::test]
+    async fn poll_materialises_the_board() {
         let mut t = TestSync::new();
         // Subscribe first so the seed's ingests are reported as new notes.
         t.poll();
         t.seed();
 
-        t.wait(|v| total_cards(v) == 7);
+        // Wait on the seed's *terminal* event (the drag card landing in In
+        // Progress), not a card count: `total_cards == 7` can hold mid-fold
+        // before the drag move settles, asserting a half-materialised layout.
+        t.wait(demo_seed_complete).await;
         let view = t.view().expect("board loaded");
         assert_eq!(
             view.columns
@@ -1121,12 +1158,12 @@ mod tests {
     /// A click on an inline widget resolves to the app's navigation target
     /// (see [`resolve_open_target`]): a board opens itself with no card detail,
     /// while an issue opens its owning board *and* its own card detail.
-    #[test]
-    fn resolve_open_target_board_and_issue() {
+    #[tokio::test]
+    async fn resolve_open_target_board_and_issue() {
         let mut t = TestSync::new();
         t.poll();
         t.seed();
-        t.wait(|v| total_cards(v) == 7);
+        t.wait(|v| total_cards(v) == 7).await;
 
         // Pull a board (kind 30619) and an issue (kind 1621) note id out of the db.
         let (board_id, issue_id, issue_board) = {
@@ -1179,12 +1216,14 @@ mod tests {
 
     /// An edit ingested after the initial load is picked up on a later poll —
     /// the cache reflects the change, not a stale snapshot.
-    #[test]
-    fn poll_reloads_on_change() {
+    #[tokio::test]
+    async fn poll_reloads_on_change() {
         let mut t = TestSync::new();
         t.poll();
         t.seed();
-        t.wait(|v| v.columns[1].cards.len() == 2);
+        // Fully materialise the seed first (Todo settles at 2 once the drag card
+        // moves out), so the edit below folds against a stable board.
+        t.wait(demo_seed_complete).await;
 
         // Apply against the cached pre-edit view (as render does).
         {
@@ -1206,7 +1245,13 @@ mod tests {
         }
 
         // The new card only appears if a later poll re-folded the board.
-        t.wait(|v| v.columns[1].cards.len() == 3);
+        t.wait(|v| {
+            v.columns[1]
+                .cards
+                .last()
+                .is_some_and(|c| c.title == "Fresh card")
+        })
+        .await;
         let view = t.view().expect("board loaded");
         assert_eq!(view.columns[1].cards.last().unwrap().title, "Fresh card");
     }
@@ -1214,8 +1259,8 @@ mod tests {
     /// Two boards under one account are both discoverable, and switching the
     /// active board re-picks from the existing reducer — no full re-fold, since
     /// the target board's events are already folded in.
-    #[test]
-    fn switching_board_repicks_without_refold() {
+    #[tokio::test]
+    async fn switching_board_repicks_without_refold() {
         let mut t = TestSync::new();
         // Subscribe first so the seeds' ingests arrive as subscription deltas.
         t.poll();
@@ -1229,10 +1274,10 @@ mod tests {
             &mut store::NoPublish,
         );
 
-        // Materialise on the default board, then quiesce so the 'work' events are
-        // folded in too.
-        t.wait(|v| total_cards(v) == 7);
-        t.drain();
+        // The 'work' board is seeded after the whole demo board, so its event is
+        // the last one ingested: waiting for it to appear means every demo event
+        // has folded in too, with no quiescence guess.
+        t.wait_boards(|bs| bs.iter().any(|b| b.id == "work")).await;
         let folds = t.cache.full_reloads;
 
         // Both boards are discoverable from the one reducer.
@@ -1258,13 +1303,12 @@ mod tests {
 
     /// Once quiescent, polling with nothing new must NOT re-fold — this is the
     /// whole point of the cache (no per-frame walk of the event history).
-    #[test]
-    fn poll_does_not_refold_when_idle() {
+    #[tokio::test]
+    async fn poll_does_not_refold_when_idle() {
         let mut t = TestSync::new();
         t.poll();
         t.seed();
-        t.wait(|v| total_cards(v) == 7);
-        t.drain();
+        t.wait(demo_seed_complete).await;
 
         assert!(
             !t.poll(),
@@ -1275,13 +1319,12 @@ mod tests {
     /// A change after the initial load is absorbed incrementally: the live
     /// reducer folds the delta, with no additional full-history re-fold. Guards
     /// against a regression to reload-on-every-change.
-    #[test]
-    fn poll_folds_changes_as_a_delta() {
+    #[tokio::test]
+    async fn poll_folds_changes_as_a_delta() {
         let mut t = TestSync::new();
         t.poll();
         t.seed();
-        t.wait(|v| v.columns[1].cards.len() == 2);
-        t.drain();
+        t.wait(demo_seed_complete).await;
 
         // Seeding does exactly one full fold; everything since is incremental.
         assert_eq!(
@@ -1306,7 +1349,7 @@ mod tests {
                 &mut store::NoPublish,
             );
         }
-        t.wait(|v| v.columns[1].cards.len() == 3);
+        t.wait(|v| v.columns[1].cards.len() == 3).await;
 
         assert_eq!(
             t.cache.full_reloads, 1,
@@ -1318,8 +1361,8 @@ mod tests {
     /// edits as deltas via its subscription — never re-walking the history per
     /// frame. The render-path counterpart to [`poll_folds_changes_as_a_delta`],
     /// exercising the `&Ndb` fold-on-read the inline widgets use.
-    #[test]
-    fn board_cache_folds_once_then_deltas() {
+    #[tokio::test]
+    async fn board_cache_folds_once_then_deltas() {
         let dir = tempfile::TempDir::new().unwrap();
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
         let kp = FullKeypair::generate();
@@ -1335,16 +1378,13 @@ mod tests {
         // Subscribe (seeding an empty reducer) before the board exists, so the
         // seed's ingests arrive as subscription deltas rather than a re-fold.
         fold(&mut cache, &ndb);
+        let mut stream = ingest_stream(&ndb, &kp.pubkey);
         seed_demo(&ndb, &kp);
 
-        // Poll until the board materialises (ingest is async on a writer thread).
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if fold(&mut cache, &ndb).is_some_and(|v| total_cards(&v) == 7) {
-                break;
-            }
-            assert!(Instant::now() < deadline, "board never materialised");
-            std::thread::sleep(Duration::from_millis(20));
+        // Fold each ingest in as the writer delivers it (ingest is async on a
+        // writer thread), until the whole board has materialised.
+        while fold(&mut cache, &ndb).is_none_or(|v| total_cards(&v) != 7) {
+            await_ingest(&mut stream).await;
         }
 
         // Exactly one full fold — the initial empty seed; every event since
@@ -1366,40 +1406,32 @@ mod tests {
         let kp = FullKeypair::generate();
         let mut cache = BoardCache::default();
 
-        // A read subscription of our own to await the writer thread deterministically
-        // (the cache's own subscription is internal). Subscribe before seeding so
-        // every seeded event is reported.
-        let sub = ndb.subscribe(&[event::headway_filter(&kp.pubkey)]).unwrap();
-        // Prime the cache's subscription too, then seed.
-        let txn = Transaction::new(&ndb).unwrap();
-        cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
-        drop(txn);
+        // Prime the cache's own (internal) subscription and open a read stream to
+        // await the writer, both before seeding so every seeded event is reported.
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
+        }
+        let mut stream = ingest_stream(&ndb, &kp.pubkey);
         seed_demo(&ndb, &kp);
 
-        // Fold in the seed as it arrives — awaiting notes rather than sleeping —
-        // until the board has fully materialised *and quiesced*. `seed_demo`
-        // keeps ingesting after the 7th card lands (parent relations, card
-        // amendments, and finally the drag-card move into "In Progress"), so
-        // stopping at `total_cards == 7` would leave those trailing notes to
-        // arrive mid-frame below — each folds and re-finalizes, breaking the
-        // "no fold ⇒ no finalize" invariant this test measures. The drag move
-        // is the *last* event seeded, so the drag card landing in In Progress
-        // means every prior seed event has folded too and the writer is done.
+        // Fold in the seed as the writer delivers it, until the board has fully
+        // materialised *and quiesced*. `seed_demo` keeps ingesting after the 7th
+        // card lands (parent relations, card amendments, and finally the drag-card
+        // move into In Progress), so stopping at `total_cards == 7` would leave
+        // those trailing notes to arrive mid-frame below — each folds and
+        // re-finalizes, breaking the "no fold ⇒ no finalize" invariant this test
+        // measures. The drag move is the *last* seed event, so `demo_seed_complete`
+        // (drag card in In Progress) means every prior event has folded too.
         while {
             let txn = Transaction::new(&ndb).unwrap();
             let ready = cache
                 .board(&ndb, &txn, &kp.pubkey, store::BOARD_ID)
-                .is_some_and(|v| {
-                    total_cards(&v) == 7
-                        && v.columns[2]
-                            .cards
-                            .iter()
-                            .any(|c| c.title == "Drag-and-drop between columns")
-                });
+                .is_some_and(|v| demo_seed_complete(&v));
             drop(txn);
             !ready
         } {
-            ndb.wait_for_notes(sub, 1).await.unwrap();
+            await_ingest(&mut stream).await;
         }
 
         // A steady frame with no new notes: many reads (what N inline references
@@ -1493,14 +1525,13 @@ mod tests {
     /// [`BoardCache`]) and re-encodes its cards to match the word id,
     /// yielding the card's kind-1621 issue note. It resolves relative to the
     /// selected account (the author gap), so no account means no resolution.
-    #[test]
-    fn ref_parser_resolves_word_id_to_card() {
+    #[tokio::test]
+    async fn ref_parser_resolves_word_id_to_card() {
         use notedeck::{ReferenceParser, ReferenceResolveCtx};
         let mut t = TestSync::new();
         t.poll();
         t.seed();
-        t.wait(|v| total_cards(v) == 7);
-        t.drain();
+        t.wait(demo_seed_complete).await;
 
         // Take a real card and its word id off the folded board.
         let (card_id, words) = {

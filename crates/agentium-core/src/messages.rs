@@ -1,5 +1,4 @@
-use crate::tools::{ToolCall, ToolResponse, ToolResponses};
-use async_openai::types::*;
+use crate::tools::{ToolCall, ToolResponse};
 use md_stream::{MdElement, Partial, StreamParser};
 
 /// Raw image bytes with MIME type, attached to a user message.
@@ -87,7 +86,6 @@ impl ParsedMarkdown {
         Self { source, elements }
     }
 }
-use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -642,70 +640,6 @@ pub enum DaveApiResponse {
 impl Message {
     pub fn tool_error(id: String, msg: String) -> Self {
         Self::ToolResponse(ToolResponse::error(id, msg))
-    }
-
-    pub fn to_api_msg(&self, txn: &Transaction, ndb: &Ndb) -> Option<ChatCompletionRequestMessage> {
-        match self {
-            Message::Error(_err) => None,
-
-            Message::User(msg) => Some(ChatCompletionRequestMessage::User(
-                ChatCompletionRequestUserMessage {
-                    name: None,
-                    content: ChatCompletionRequestUserMessageContent::Text(msg.text.clone()),
-                },
-            )),
-
-            Message::Assistant(msg) => Some(ChatCompletionRequestMessage::Assistant(
-                ChatCompletionRequestAssistantMessage {
-                    content: Some(ChatCompletionRequestAssistantMessageContent::Text(
-                        msg.text().to_string(),
-                    )),
-                    ..Default::default()
-                },
-            )),
-
-            Message::System(msg) => Some(ChatCompletionRequestMessage::System(
-                ChatCompletionRequestSystemMessage {
-                    content: ChatCompletionRequestSystemMessageContent::Text(msg.clone()),
-                    ..Default::default()
-                },
-            )),
-
-            Message::ToolCalls(calls) => Some(ChatCompletionRequestMessage::Assistant(
-                ChatCompletionRequestAssistantMessage {
-                    tool_calls: Some(calls.iter().map(|c| c.to_api()).collect()),
-                    ..Default::default()
-                },
-            )),
-
-            Message::ToolResponse(resp) => {
-                // ExecutedTool results are UI-only, not sent to the API
-                if matches!(resp.responses(), ToolResponses::ExecutedTool(_)) {
-                    return None;
-                }
-
-                let tool_response = resp.responses().format_for_dave(txn, ndb);
-
-                Some(ChatCompletionRequestMessage::Tool(
-                    ChatCompletionRequestToolMessage {
-                        tool_call_id: resp.id().to_owned(),
-                        content: ChatCompletionRequestToolMessageContent::Text(tool_response),
-                    },
-                ))
-            }
-
-            // Permission requests are UI-only, not sent to the API
-            Message::PermissionRequest(_) => None,
-
-            // Compaction complete is UI-only, not sent to the API
-            Message::CompactionComplete(_) => None,
-
-            // Subagent info is UI-only, not sent to the API
-            Message::Subagent(_) => None,
-
-            // Todo updates are UI-only, not sent to the API
-            Message::TodoUpdate(_) => None,
-        }
     }
 }
 

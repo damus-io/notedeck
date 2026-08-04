@@ -11,6 +11,7 @@ use crate::messages::{
 };
 use crate::tools::Tool;
 use crate::Message;
+use agentium_core::Waker;
 use claude_agent_sdk_rs::PermissionMode;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -210,7 +211,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 prompt,
                 images,
                 response_tx,
-                ctx,
+                waker,
             } => {
                 // Codex mints a fresh UI channel per query, so response_tx is
                 // always present. (Only persistent-stream backends pass None.)
@@ -228,7 +229,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                         ..Default::default()
                     };
                     let _ = response_tx.send(DaveApiResponse::SessionInfo(info));
-                    ctx.request_repaint();
+                    waker.wake();
                 }
 
                 // Write images to temp files. _temp_files holds NamedTempFile
@@ -239,7 +240,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                     Err(err) => {
                         tracing::error!("Image staging failed: {}", err);
                         let _ = response_tx.send(DaveApiResponse::Failed(err));
-                        ctx.request_repaint();
+                        waker.wake();
                         break;
                     }
                 };
@@ -309,7 +310,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
 
                             Some(cmd) = command_rx.recv() => {
                                 match cmd {
-                                    SessionCommand::Interrupt { ctx: int_ctx } => {
+                                    SessionCommand::Interrupt { waker: int_waker } => {
                                         tracing::debug!("Session {} interrupted during approval", session_id);
                                         // Cancel the approval and interrupt the turn
                                         let _ = send_approval(
@@ -320,7 +321,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                             request_counter += 1;
                                             let _ = send_turn_interrupt(&mut writer, request_counter, &thread_id, tid).await;
                                         }
-                                        int_ctx.request_repaint();
+                                        int_waker.wake();
                                         // Don't restore pending — it's been cancelled
                                     }
                                     SessionCommand::Shutdown => {
@@ -336,8 +337,8 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                         // Restore the pending approval — still waiting
                                         pending_approval = Some(approval);
                                     }
-                                    SessionCommand::SetPermissionMode { ctx: mode_ctx, .. } => {
-                                        mode_ctx.request_repaint();
+                                    SessionCommand::SetPermissionMode { waker: mode_waker, .. } => {
+                                        mode_waker.wake();
                                         pending_approval = Some(approval);
                                     }
                                     SessionCommand::Compact { response_tx: compact_tx, .. } => {
@@ -380,13 +381,13 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
 
                             Some(cmd) = command_rx.recv() => {
                                 match cmd {
-                                    SessionCommand::Interrupt { ctx: int_ctx } => {
+                                    SessionCommand::Interrupt { waker: int_waker } => {
                                         tracing::debug!("Session {} interrupted", session_id);
                                         if let Some(ref tid) = current_turn_id {
                                             request_counter += 1;
                                             let _ = send_turn_interrupt(&mut writer, request_counter, &thread_id, tid).await;
                                         }
-                                        int_ctx.request_repaint();
+                                        int_waker.wake();
                                     }
                                     SessionCommand::Query { response_tx: new_tx, .. } => {
                                         if let Some(new_tx) = new_tx {
@@ -395,12 +396,12 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                             ));
                                         }
                                     }
-                                    SessionCommand::SetPermissionMode { mode, ctx: mode_ctx } => {
+                                    SessionCommand::SetPermissionMode { mode, waker: mode_waker } => {
                                         tracing::debug!(
                                             "Session {} ignoring permission mode {:?} (not supported by Codex)",
                                             session_id, mode
                                         );
-                                        mode_ctx.request_repaint();
+                                        mode_waker.wake();
                                     }
                                     SessionCommand::Compact { response_tx: compact_tx, .. } => {
                                         let _ = compact_tx.send(DaveApiResponse::Failed(
@@ -428,7 +429,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                         match handle_codex_message(
                                             msg,
                                             &response_tx,
-                                            &ctx,
+                                            &waker,
                                             &mut subagent_stack,
                                             &turn_count,
                                             &mut agent_token_state,
@@ -478,18 +479,18 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 drop(response_tx);
                 tracing::debug!("Turn complete for session {}", session_id);
             }
-            SessionCommand::Interrupt { ctx } => {
-                ctx.request_repaint();
+            SessionCommand::Interrupt { waker } => {
+                waker.wake();
             }
-            SessionCommand::SetPermissionMode { mode, ctx } => {
+            SessionCommand::SetPermissionMode { mode, waker } => {
                 tracing::debug!(
                     "Session {} ignoring permission mode {:?} (not supported by Codex)",
                     session_id,
                     mode
                 );
-                ctx.request_repaint();
+                waker.wake();
             }
-            SessionCommand::Compact { response_tx, ctx } => {
+            SessionCommand::Compact { response_tx, waker } => {
                 request_counter += 1;
                 let compact_req_id = request_counter;
 
@@ -502,7 +503,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                         err
                     );
                     let _ = response_tx.send(DaveApiResponse::Failed(err));
-                    ctx.request_repaint();
+                    waker.wake();
                     continue;
                 }
 
@@ -516,7 +517,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                 err.message
                             );
                             let _ = response_tx.send(DaveApiResponse::Failed(err.message));
-                            ctx.request_repaint();
+                            waker.wake();
                             continue;
                         }
                     }
@@ -527,14 +528,14 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                             err
                         );
                         let _ = response_tx.send(DaveApiResponse::Failed(err));
-                        ctx.request_repaint();
+                        waker.wake();
                         continue;
                     }
                 }
 
                 // Compact accepted — stream notifications until item/completed
                 let _ = response_tx.send(DaveApiResponse::CompactionStarted);
-                ctx.request_repaint();
+                waker.wake();
 
                 loop {
                     tokio::select! {
@@ -576,7 +577,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                                 let _ = response_tx.send(DaveApiResponse::CompactionComplete(
                                                     CompactionInfo { pre_tokens },
                                                 ));
-                                                ctx.request_repaint();
+                                                waker.wake();
                                                 break;
                                             }
                                         }
@@ -677,7 +678,7 @@ fn extract_codex_error(msg: &RpcMessage) -> String {
 fn handle_codex_message(
     msg: RpcMessage,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
     subagent_stack: &mut Vec<String>,
     turn_count: &u32,
     agent_token_state: &mut TokenState,
@@ -714,7 +715,7 @@ fn handle_codex_message(
                     }
                     *agent_token_state = TokenState::Streaming;
                     let _ = response_tx.send(DaveApiResponse::Token(delta.delta));
-                    ctx.request_repaint();
+                    waker.wake();
                 }
             }
         }
@@ -739,7 +740,7 @@ fn handle_codex_message(
                                 background: false,
                             };
                             let _ = response_tx.send(DaveApiResponse::SubagentSpawned(info));
-                            ctx.request_repaint();
+                            waker.wake();
                         }
                         "commandExecution" => {
                             let cmd = started.command.unwrap_or_default();
@@ -753,7 +754,7 @@ fn handle_codex_message(
                                 None,
                                 subagent_stack,
                                 response_tx,
-                                ctx,
+                                waker,
                             );
                         }
                         "fileChange" => {
@@ -768,12 +769,12 @@ fn handle_codex_message(
                                 None,
                                 subagent_stack,
                                 response_tx,
-                                ctx,
+                                waker,
                             );
                         }
                         "contextCompaction" => {
                             let _ = response_tx.send(DaveApiResponse::CompactionStarted);
-                            ctx.request_repaint();
+                            waker.wake();
                         }
                         _ => {}
                     }
@@ -784,7 +785,7 @@ fn handle_codex_message(
         "item/completed" => {
             if let Some(params) = msg.params {
                 if let Ok(completed) = serde_json::from_value::<ItemCompletedParams>(params) {
-                    handle_item_completed(&completed, response_tx, ctx, subagent_stack);
+                    handle_item_completed(&completed, response_tx, waker, subagent_stack);
                 }
             }
         }
@@ -809,7 +810,7 @@ fn handle_codex_message(
                             "Bash",
                             serde_json::json!({ "command": cmd }),
                             response_tx,
-                            ctx,
+                            waker,
                         );
                     }
                     Err(e) => {
@@ -869,7 +870,7 @@ fn handle_codex_message(
                             tool_name,
                             tool_input,
                             response_tx,
-                            ctx,
+                            waker,
                         );
                     }
                     Err(e) => {
@@ -885,7 +886,7 @@ fn handle_codex_message(
             (Some(rpc_id), Some(params)) => {
                 match serde_json::from_value::<RequestUserInputParams>(params) {
                     Ok(input_req) => {
-                        return handle_request_user_input(rpc_id, input_req, response_tx, ctx);
+                        return handle_request_user_input(rpc_id, input_req, response_tx, waker);
                     }
                     Err(e) => {
                         tracing::error!("requestUserInput deser FAILED: {}", e);
@@ -919,7 +920,7 @@ fn handle_codex_message(
                         ..Default::default()
                     };
                     let _ = response_tx.send(DaveApiResponse::QueryComplete(info));
-                    ctx.request_repaint();
+                    waker.wake();
                 }
             }
         }
@@ -984,10 +985,10 @@ fn handle_codex_message(
                             None,
                             subagent_stack,
                             response_tx,
-                            ctx,
+                            waker,
                         );
                     }
-                    ctx.request_repaint();
+                    waker.wake();
                 }
             }
         }
@@ -996,7 +997,7 @@ fn handle_codex_message(
             let err_msg: String = extract_codex_error(&msg);
             tracing::warn!("Codex error: {}", err_msg);
             let _ = response_tx.send(DaveApiResponse::Failed(err_msg));
-            ctx.request_repaint();
+            waker.wake();
         }
 
         other => {
@@ -1023,7 +1024,7 @@ fn check_approval_or_forward(
     tool_name: &str,
     tool_input: Value,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) -> HandleResult {
     if shared::should_auto_accept(tool_name, &tool_input) {
         return HandleResult::AutoAccepted {
@@ -1032,7 +1033,7 @@ fn check_approval_or_forward(
         };
     }
 
-    match shared::forward_permission_to_ui(tool_name, tool_input, response_tx, ctx) {
+    match shared::forward_permission_to_ui(tool_name, tool_input, response_tx, waker) {
         Some(rx) => HandleResult::NeedsApproval {
             rpc_id,
             rx,
@@ -1261,7 +1262,7 @@ fn handle_request_user_input(
     rpc_id: u64,
     input_req: RequestUserInputParams,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) -> HandleResult {
     if input_req.questions.is_empty() {
         tracing::warn!("requestUserInput with empty questions array, rejecting");
@@ -1343,7 +1344,7 @@ fn handle_request_user_input(
             tool_input,
             Some(PermissionView::Approval(prompt)),
             response_tx,
-            ctx,
+            waker,
         ) {
             Some(rx) => HandleResult::NeedsApproval { rpc_id, rx, kind },
             None => HandleResult::Rejected {
@@ -1376,7 +1377,7 @@ fn handle_request_user_input(
             tool_input,
             Some(PermissionView::Approval(prompt)),
             response_tx,
-            ctx,
+            waker,
         ) {
             Some(rx) => HandleResult::NeedsApproval { rpc_id, rx, kind },
             None => HandleResult::Rejected {
@@ -1422,7 +1423,7 @@ fn make_codex_file_update(
 fn handle_item_completed(
     completed: &ItemCompletedParams,
     response_tx: &mpsc::Sender<DaveApiResponse>,
-    ctx: &egui::Context,
+    waker: &Waker,
     subagent_stack: &mut Vec<String>,
 ) {
     match completed.item_type.as_str() {
@@ -1441,7 +1442,7 @@ fn handle_item_completed(
                 None,
                 subagent_stack,
                 response_tx,
-                ctx,
+                waker,
             );
         }
 
@@ -1479,7 +1480,7 @@ fn handle_item_completed(
                 None,
                 subagent_stack,
                 response_tx,
-                ctx,
+                waker,
             );
         }
 
@@ -1489,7 +1490,13 @@ fn handle_item_completed(
                     .result
                     .clone()
                     .unwrap_or_else(|| "completed".to_string());
-                shared::complete_subagent(item_id, &result_text, subagent_stack, response_tx, ctx);
+                shared::complete_subagent(
+                    item_id,
+                    &result_text,
+                    subagent_stack,
+                    response_tx,
+                    waker,
+                );
             }
         }
 
@@ -1498,7 +1505,7 @@ fn handle_item_completed(
             let _ = response_tx.send(DaveApiResponse::CompactionComplete(CompactionInfo {
                 pre_tokens,
             }));
-            ctx.request_repaint();
+            waker.wake();
         }
 
         other => {
@@ -1930,7 +1937,7 @@ impl AiBackend for CodexBackend {
         session_id: String,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
-        ctx: egui::Context,
+        waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
         Option<tokio::task::JoinHandle<()>>,
@@ -1977,7 +1984,7 @@ impl AiBackend for CodexBackend {
                     prompt,
                     images,
                     response_tx: Some(response_tx),
-                    ctx,
+                    waker,
                 })
                 .await
             {
@@ -1998,23 +2005,23 @@ impl AiBackend for CodexBackend {
         }
     }
 
-    fn interrupt_session(&self, session_id: String, ctx: egui::Context) {
+    fn interrupt_session(&self, session_id: String, waker: Waker) {
         if let Some(handle) = self.sessions.get(&session_id) {
             let command_tx = handle.command_tx.clone();
             tokio::spawn(async move {
-                if let Err(err) = command_tx.send(SessionCommand::Interrupt { ctx }).await {
+                if let Err(err) = command_tx.send(SessionCommand::Interrupt { waker }).await {
                     tracing::warn!("Failed to send interrupt to codex session: {}", err);
                 }
             });
         }
     }
 
-    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, ctx: egui::Context) {
+    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, waker: Waker) {
         if let Some(handle) = self.sessions.get(&session_id) {
             let command_tx = handle.command_tx.clone();
             tokio::spawn(async move {
                 if let Err(err) = command_tx
-                    .send(SessionCommand::SetPermissionMode { mode, ctx })
+                    .send(SessionCommand::SetPermissionMode { mode, waker })
                     .await
                 {
                     tracing::warn!(
@@ -2029,14 +2036,14 @@ impl AiBackend for CodexBackend {
     fn compact_session(
         &self,
         session_id: String,
-        ctx: egui::Context,
+        waker: Waker,
     ) -> Option<mpsc::Receiver<DaveApiResponse>> {
         let handle = self.sessions.get(&session_id)?;
         let command_tx = handle.command_tx.clone();
         let (response_tx, response_rx) = mpsc::channel();
         tokio::spawn(async move {
             if let Err(err) = command_tx
-                .send(SessionCommand::Compact { response_tx, ctx })
+                .send(SessionCommand::Compact { response_tx, waker })
                 .await
             {
                 tracing::warn!("Failed to send compact to codex session: {}", err);
@@ -2188,13 +2195,19 @@ mod tests {
     #[test]
     fn test_handle_delta_sends_token() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification("item/agentMessage/delta", json!({ "delta": "Hello world" }));
 
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -2207,17 +2220,17 @@ mod tests {
     #[test]
     fn test_handle_delta_inserts_paragraph_break_only_after_item_boundary() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
         let mut token_state = TokenState::Initial;
 
         let first = notification("item/agentMessage/delta", json!({ "delta": "First" }));
-        let result = handle_codex_message(first, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        let result = handle_codex_message(first, &tx, &waker, &mut subagents, &0, &mut token_state);
         assert!(matches!(result, HandleResult::Continue));
         assert!(matches!(token_state, TokenState::Streaming));
 
         let noise = notification("some/future/event", json!({}));
-        let result = handle_codex_message(noise, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        let result = handle_codex_message(noise, &tx, &waker, &mut subagents, &0, &mut token_state);
         assert!(matches!(result, HandleResult::Continue));
         assert!(
             matches!(token_state, TokenState::Streaming),
@@ -2229,7 +2242,7 @@ mod tests {
             json!({ "delta": " still first" }),
         );
         let result =
-            handle_codex_message(continued, &tx, &ctx, &mut subagents, &0, &mut token_state);
+            handle_codex_message(continued, &tx, &waker, &mut subagents, &0, &mut token_state);
         assert!(matches!(result, HandleResult::Continue));
         assert!(matches!(token_state, TokenState::Streaming));
 
@@ -2238,12 +2251,13 @@ mod tests {
             json!({ "item": { "id": "agent-1", "type": "agentMessage" } }),
         );
         let result =
-            handle_codex_message(boundary, &tx, &ctx, &mut subagents, &0, &mut token_state);
+            handle_codex_message(boundary, &tx, &waker, &mut subagents, &0, &mut token_state);
         assert!(matches!(result, HandleResult::Continue));
         assert!(matches!(token_state, TokenState::Paused));
 
         let second = notification("item/agentMessage/delta", json!({ "delta": "Second" }));
-        let result = handle_codex_message(second, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        let result =
+            handle_codex_message(second, &tx, &waker, &mut subagents, &0, &mut token_state);
         assert!(matches!(result, HandleResult::Continue));
         assert!(matches!(token_state, TokenState::Streaming));
 
@@ -2260,27 +2274,39 @@ mod tests {
     #[test]
     fn test_handle_turn_completed_success() {
         let (tx, _rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification("turn/completed", json!({ "status": "completed" }));
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::TurnDone));
     }
 
     #[test]
     fn test_handle_turn_completed_failure_sends_error() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification(
             "turn/completed",
             json!({ "status": "failed", "error": "rate limit exceeded" }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::TurnDone));
 
         let response = rx.try_recv().unwrap();
@@ -2293,7 +2319,7 @@ mod tests {
     #[test]
     fn test_handle_response_message_ignored() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // A response (has id, no method) — should be ignored
@@ -2304,8 +2330,14 @@ mod tests {
             error: None,
             params: None,
         };
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err()); // nothing sent
     }
@@ -2313,12 +2345,18 @@ mod tests {
     #[test]
     fn test_handle_unknown_method_ignored() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification("some/future/event", json!({}));
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err());
     }
@@ -2326,15 +2364,21 @@ mod tests {
     #[test]
     fn test_handle_codex_event_error_sends_failed() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification(
             "codex/event/error",
             json!({ "message": "context window exceeded" }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -2347,12 +2391,18 @@ mod tests {
     #[test]
     fn test_handle_error_notification_sends_failed() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification("error", json!({ "message": "something broke" }));
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -2365,12 +2415,18 @@ mod tests {
     #[test]
     fn test_handle_error_without_message_uses_default() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification("codex/event/error", json!({}));
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -2383,7 +2439,7 @@ mod tests {
     #[test]
     fn test_handle_error_nested_msg_message() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // Codex shape: params.msg.message is JSON with a "detail" field
@@ -2399,8 +2455,14 @@ mod tests {
                 "conversationId": "thread-1"
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -2413,7 +2475,7 @@ mod tests {
     #[test]
     fn test_handle_error_nested_error_object() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // Codex shape: params.error is an object with a "message" field
@@ -2430,8 +2492,14 @@ mod tests {
                 "turnId": "1"
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -2444,7 +2512,7 @@ mod tests {
     #[test]
     fn test_handle_subagent_started() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = notification(
@@ -2455,8 +2523,14 @@ mod tests {
                 "name": "research agent"
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
         assert_eq!(subagents.len(), 1);
         assert_eq!(subagents[0], "agent-1");
@@ -2477,7 +2551,7 @@ mod tests {
     #[test]
     fn test_handle_command_approval_auto_accept() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // "git status" should be auto-accepted by default rules
@@ -2486,8 +2560,14 @@ mod tests {
             "item/commandExecution/requestApproval",
             json!({ "command": "git status" }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         match result {
             HandleResult::AutoAccepted { rpc_id, .. } => assert_eq!(rpc_id, 99),
             other => panic!(
@@ -2502,7 +2582,7 @@ mod tests {
     #[test]
     fn test_handle_command_approval_needs_ui() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // "rm -rf /" should NOT be auto-accepted
@@ -2511,8 +2591,14 @@ mod tests {
             "item/commandExecution/requestApproval",
             json!({ "command": "rm -rf /" }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         match result {
             HandleResult::NeedsApproval { rpc_id, .. } => assert_eq!(rpc_id, 100),
             other => panic!(
@@ -2533,7 +2619,7 @@ mod tests {
     #[test]
     fn test_request_user_input_mcp_approval_needs_ui() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = server_request(
@@ -2557,8 +2643,14 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         match result {
             HandleResult::NeedsApproval {
                 rpc_id,
@@ -2595,7 +2687,7 @@ mod tests {
     #[test]
     fn test_request_user_input_mcp_approval_extracts_tool_name() {
         let (tx, _rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // When the tool name can't be parsed, falls back to "mcp_tool"
@@ -2613,8 +2705,14 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         match result {
             HandleResult::NeedsApproval {
                 rpc_id,
@@ -2636,7 +2734,7 @@ mod tests {
     fn test_request_user_input_mcp_approval_rejects_when_ui_unavailable() {
         let (tx, rx) = mpsc::channel();
         drop(rx);
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = server_request(
@@ -2653,15 +2751,21 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 209, .. }));
     }
 
     #[test]
     fn test_request_user_input_mcp_with_unsafe_non_mcp_rejected() {
         let (tx, _rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // MCP approval + a secret question in the same request — should reject
@@ -2690,15 +2794,21 @@ mod tests {
                 ]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 206, .. }));
     }
 
     #[test]
     fn test_request_user_input_missing_id_ignored() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // Notification (no id) — should be ignored
@@ -2712,8 +2822,14 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err());
     }
@@ -2721,7 +2837,7 @@ mod tests {
     #[test]
     fn test_request_user_input_missing_params_rejected() {
         let (tx, _rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = RpcMessage {
@@ -2732,15 +2848,21 @@ mod tests {
             params: None,
         };
 
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 207, .. }));
     }
 
     #[test]
     fn test_request_user_input_invalid_params_rejected() {
         let (tx, _rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = server_request(
@@ -2751,15 +2873,21 @@ mod tests {
             }),
         );
 
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 208, .. }));
     }
 
     #[test]
     fn test_request_user_input_non_mcp_non_approval_declined() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // Non-MCP question with non-approval options — should be declined
@@ -2774,8 +2902,14 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         match result {
             HandleResult::Rejected { rpc_id, .. } => {
                 assert_eq!(rpc_id, 202);
@@ -2793,7 +2927,7 @@ mod tests {
     #[test]
     fn test_request_user_input_non_mcp_ambiguous_approval_rejected() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = server_request(
@@ -2811,8 +2945,14 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 211, .. }));
         assert!(rx.try_recv().is_err());
     }
@@ -2820,7 +2960,7 @@ mod tests {
     #[test]
     fn test_request_user_input_non_mcp_approval_shaped_forwards_to_ui() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // Non-MCP but approval-shaped (has approve/cancel options)
@@ -2839,8 +2979,14 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         match result {
             HandleResult::NeedsApproval {
                 rpc_id,
@@ -2868,7 +3014,7 @@ mod tests {
     fn test_request_user_input_non_mcp_approval_rejects_when_ui_unavailable() {
         let (tx, rx) = mpsc::channel();
         drop(rx);
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = server_request(
@@ -2886,15 +3032,21 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 210, .. }));
     }
 
     #[test]
     fn test_request_user_input_secret_declined() {
         let (tx, _rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         // Secret input — should be declined even with approve/cancel options
@@ -2913,15 +3065,21 @@ mod tests {
                 }]
             }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 204, .. }));
     }
 
     #[test]
     fn test_request_user_input_empty_questions() {
         let (tx, _rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let msg = server_request(
@@ -2929,8 +3087,14 @@ mod tests {
             "item/tool/requestUserInput",
             json!({ "questions": [] }),
         );
-        let result =
-            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        let result = handle_codex_message(
+            msg,
+            &tx,
+            &waker,
+            &mut subagents,
+            &0,
+            &mut TokenState::Initial,
+        );
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 205, .. }));
     }
 
@@ -3169,7 +3333,7 @@ mod tests {
     #[test]
     fn test_item_completed_command_execution() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let completed = ItemCompletedParams {
@@ -3186,7 +3350,7 @@ mod tests {
             content: None,
         };
 
-        handle_item_completed(&completed, &tx, &ctx, &mut subagents);
+        handle_item_completed(&completed, &tx, &waker, &mut subagents);
 
         let response = rx.try_recv().unwrap();
         match response {
@@ -3204,7 +3368,7 @@ mod tests {
     #[test]
     fn test_item_completed_file_change_edit() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let completed = ItemCompletedParams {
@@ -3221,7 +3385,7 @@ mod tests {
             content: None,
         };
 
-        handle_item_completed(&completed, &tx, &ctx, &mut subagents);
+        handle_item_completed(&completed, &tx, &waker, &mut subagents);
 
         let response = rx.try_recv().unwrap();
         match response {
@@ -3238,7 +3402,7 @@ mod tests {
     #[test]
     fn test_item_completed_file_change_create() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let completed = ItemCompletedParams {
@@ -3255,7 +3419,7 @@ mod tests {
             content: None,
         };
 
-        handle_item_completed(&completed, &tx, &ctx, &mut subagents);
+        handle_item_completed(&completed, &tx, &waker, &mut subagents);
 
         let response = rx.try_recv().unwrap();
         match response {
@@ -3272,7 +3436,7 @@ mod tests {
     #[test]
     fn test_item_completed_subagent() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = vec!["agent-1".to_string()];
 
         let completed = ItemCompletedParams {
@@ -3289,7 +3453,7 @@ mod tests {
             content: None,
         };
 
-        handle_item_completed(&completed, &tx, &ctx, &mut subagents);
+        handle_item_completed(&completed, &tx, &waker, &mut subagents);
 
         // Subagent removed from stack
         assert!(subagents.is_empty());
@@ -3310,7 +3474,7 @@ mod tests {
     #[test]
     fn test_item_completed_compaction() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = Vec::new();
 
         let completed = ItemCompletedParams {
@@ -3327,7 +3491,7 @@ mod tests {
             content: None,
         };
 
-        handle_item_completed(&completed, &tx, &ctx, &mut subagents);
+        handle_item_completed(&completed, &tx, &waker, &mut subagents);
 
         let response = rx.try_recv().unwrap();
         match response {
@@ -3344,7 +3508,7 @@ mod tests {
     #[test]
     fn test_item_completed_with_parent_subagent() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
         let mut subagents = vec!["parent-agent".to_string()];
 
         let completed = ItemCompletedParams {
@@ -3361,7 +3525,7 @@ mod tests {
             content: None,
         };
 
-        handle_item_completed(&completed, &tx, &ctx, &mut subagents);
+        handle_item_completed(&completed, &tx, &waker, &mut subagents);
 
         let response = rx.try_recv().unwrap();
         match response {
@@ -3383,10 +3547,10 @@ mod tests {
     #[test]
     fn test_approval_auto_accept_read_tool() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
 
         // Glob/Grep/Read are always auto-accepted
-        let result = check_approval_or_forward(1, "Glob", json!({"pattern": "*.rs"}), &tx, &ctx);
+        let result = check_approval_or_forward(1, "Glob", json!({"pattern": "*.rs"}), &tx, &waker);
         assert!(matches!(
             result,
             HandleResult::AutoAccepted { rpc_id: 1, .. }
@@ -3397,10 +3561,10 @@ mod tests {
     #[test]
     fn test_approval_forwards_dangerous_command() {
         let (tx, rx) = mpsc::channel();
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
 
         let result =
-            check_approval_or_forward(42, "Bash", json!({"command": "sudo rm -rf /"}), &tx, &ctx);
+            check_approval_or_forward(42, "Bash", json!({"command": "sudo rm -rf /"}), &tx, &waker);
         match result {
             HandleResult::NeedsApproval { rpc_id, .. } => assert_eq!(rpc_id, 42),
             other => panic!(
@@ -3426,10 +3590,10 @@ mod tests {
     fn test_approval_rejects_when_ui_channel_closed() {
         let (tx, rx) = mpsc::channel();
         drop(rx);
-        let ctx = egui::Context::default();
+        let waker = Waker::noop();
 
         let result =
-            check_approval_or_forward(43, "Bash", json!({"command": "sudo rm -rf /"}), &tx, &ctx);
+            check_approval_or_forward(43, "Bash", json!({"command": "sudo rm -rf /"}), &tx, &waker);
         assert!(matches!(result, HandleResult::Rejected { rpc_id: 43, .. }));
     }
 
@@ -3683,7 +3847,7 @@ mod tests {
                 prompt: prompt.to_string(),
                 images: vec![],
                 response_tx: Some(response_tx),
-                ctx: egui::Context::default(),
+                waker: Waker::noop(),
             })
             .await
             .unwrap();
@@ -4226,7 +4390,7 @@ mod tests {
                 prompt: "hello".to_string(),
                 images: vec![],
                 response_tx: Some(response_tx),
-                ctx: egui::Context::default(),
+                waker: Waker::noop(),
             })
             .await
             .unwrap();
@@ -4403,7 +4567,7 @@ mod tests {
         // Send interrupt
         command_tx
             .send(SessionCommand::Interrupt {
-                ctx: egui::Context::default(),
+                waker: Waker::noop(),
             })
             .await
             .unwrap();
@@ -4467,7 +4631,7 @@ mod tests {
         // Send interrupt while approval is pending
         command_tx
             .send(SessionCommand::Interrupt {
-                ctx: egui::Context::default(),
+                waker: Waker::noop(),
             })
             .await
             .unwrap();
@@ -4634,16 +4798,31 @@ mod tests {
 
     /// Helper: spawn a real codex app-server process and wire it into
     /// `session_actor_loop`. Returns the command sender, response receiver,
-    /// and join handle.
-    fn setup_real_codex_test() -> (
+    /// and join handle, or `None` when the `codex` binary isn't installed so
+    /// the caller can skip rather than fail.
+    ///
+    /// These tests are `#[ignore]`d, but the snapshot CI job runs every ignored
+    /// test in this binary via `--ignored` (see `scripts/snapshot-test`), which
+    /// sweeps these real-binary tests up too. Skipping on a missing binary keeps
+    /// that sweep green on runners without codex while still exercising the real
+    /// path locally when codex is present.
+    fn setup_real_codex_test() -> Option<(
         tokio_mpsc::Sender<SessionCommand>,
         mpsc::Receiver<DaveApiResponse>,
         tokio::task::JoinHandle<()>,
-    ) {
+    )> {
         let codex_binary = std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string());
 
-        let mut child = spawn_codex(&codex_binary, &None)
-            .expect("Failed to spawn codex app-server — is codex installed?");
+        let mut child = match spawn_codex(&codex_binary, &None) {
+            Ok(child) => child,
+            Err(e) => {
+                eprintln!(
+                    "[test] skipping real codex test: cannot spawn `{codex_binary}`: {e} \
+                     (is codex installed?)"
+                );
+                return None;
+            }
+        };
 
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
@@ -4687,19 +4866,21 @@ mod tests {
                     prompt: "Say exactly: hello world".to_string(),
                     images: vec![],
                     response_tx: Some(response_tx),
-                    ctx: egui::Context::default(),
+                    waker: Waker::noop(),
                 })
                 .await
                 .unwrap();
         });
 
-        (command_tx, response_rx, handle)
+        Some((command_tx, response_rx, handle))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore] // Requires `codex` binary on PATH
     async fn test_real_codex_streaming() {
-        let (command_tx, response_rx, handle) = setup_real_codex_test();
+        let Some((command_tx, response_rx, handle)) = setup_real_codex_test() else {
+            return;
+        };
 
         // Wait for at least one token (with a generous timeout for API calls)
         let mut got_token = false;
@@ -4748,7 +4929,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore] // Requires `codex` binary on PATH
     async fn test_real_codex_turn_completes() {
-        let (command_tx, response_rx, handle) = setup_real_codex_test();
+        let Some((command_tx, response_rx, handle)) = setup_real_codex_test() else {
+            return;
+        };
 
         // Wait for turn to complete
         let mut got_turn_done = false;

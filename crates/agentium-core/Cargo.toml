@@ -1,0 +1,31 @@
+[package]
+name = "agentium-core"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+nostrdb = { workspace = true }
+# nostrdb_net backs the standalone Engine's relay layer: RelayPool for the live
+# subscription stream and relay::sync for NIP-77 negentropy backfill.
+nostrdb_net = { workspace = true }
+enostr = { workspace = true }
+# negentropy set construction for the engine's NIP-77 history reconcile.
+negentropy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+uuid = { version = "1.10.0", features = ["v4"] }
+# md-stream is a zero-dependency, egui-free markdown parser (String -> elements);
+# it backs AssistantMessage's incremental parse and stays platform-neutral.
+md-stream = { workspace = true }
+similar = "2"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# StreamExt::next drives the session-watch subscription stream.
+futures-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }

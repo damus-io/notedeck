@@ -26,160 +26,25 @@
 
 use std::collections::HashMap;
 
-use enostr::Pubkey;
-use nostrdb::{Filter, Ndb, Note, Transaction};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use nostrdb::{Ndb, Transaction};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
 use crate::{Accounts, AppAction, ExplicitPublishApi, NoteCache};
 
-/// The JSON type of a tool argument, as advertised in the tool's schema.
-#[derive(Debug, Clone)]
-pub enum ToolArgType {
-    String,
-    Number,
-    /// A string constrained to a fixed set of values (rendered as JSON `enum`).
-    Enum(Vec<&'static str>),
-}
+/// The portable tool *type* layer — argument types, args, and the tool spec —
+/// lives in [`agentium_core::tool`] so the engine owns it and any platform can
+/// share it. notedeck re-exports it here so `notedeck::tool::ToolSpec` (and the
+/// crate-root `notedeck::ToolSpec`) keep resolving for the browser-level tool
+/// machinery below, which builds specs from these types.
+pub use agentium_core::tool::{ToolArg, ToolArgType, ToolSpec};
 
-impl ToolArgType {
-    /// The JSON Schema `type` string for this argument.
-    pub fn type_string(&self) -> &'static str {
-        match self {
-            Self::String => "string",
-            Self::Number => "number",
-            Self::Enum(_) => "string",
-        }
-    }
-}
-
-/// One argument in a [`ToolSpec`]: its name, JSON type, docs, and whether it is
-/// required. Built with [`ToolArg::new`] plus the [`required`](Self::required)
-/// and [`default`](Self::default) builders.
-#[derive(Debug, Clone)]
-pub struct ToolArg {
-    name: &'static str,
-    typ: ToolArgType,
-    description: &'static str,
-    required: bool,
-    default: Option<Value>,
-}
-
-impl ToolArg {
-    /// A new optional argument with no default. Chain
-    /// [`required`](Self::required)/[`default`](Self::default) to refine it.
-    pub fn new(name: &'static str, typ: ToolArgType, description: &'static str) -> Self {
-        Self {
-            name,
-            typ,
-            description,
-            required: false,
-            default: None,
-        }
-    }
-
-    /// Mark whether the backend must supply this argument.
-    pub fn required(mut self, required: bool) -> Self {
-        self.required = required;
-        self
-    }
-
-    /// Set a default value, appended to the argument's description in the schema
-    /// so the model sees it.
-    pub fn default(mut self, default: Value) -> Self {
-        self.default = Some(default);
-        self
-    }
-
-    pub fn name(&self) -> &'static str {
-        self.name
-    }
-}
-
-/// A portable, backend-agnostic description of a tool: what it's called, what it
-/// does, and the arguments it accepts. Reused to build an OpenAI
-/// `FunctionObject` (via [`json_schema`](Self::json_schema)) or an MCP
-/// `tools/list` entry, so a tool is declared exactly once.
-#[derive(Debug, Clone)]
-pub struct ToolSpec {
-    name: &'static str,
-    description: &'static str,
-    arguments: Vec<ToolArg>,
-}
-
-impl ToolSpec {
-    /// Declare a tool with the given name, description, and arguments.
-    pub fn new(name: &'static str, description: &'static str, arguments: Vec<ToolArg>) -> Self {
-        Self {
-            name,
-            description,
-            arguments,
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        self.name
-    }
-
-    pub fn description(&self) -> &'static str {
-        self.description
-    }
-
-    pub fn arguments(&self) -> &[ToolArg] {
-        &self.arguments
-    }
-
-    /// The JSON Schema object describing this tool's arguments — the `parameters`
-    /// payload for an OpenAI `FunctionObject` and the `inputSchema` for an MCP
-    /// tool entry. Required args are listed in `required`; each property carries
-    /// its type, description (with any default appended), and `enum` constraint.
-    pub fn json_schema(&self) -> Value {
-        let required_args: Vec<Value> = self
-            .arguments
-            .iter()
-            .filter(|arg| arg.required)
-            .map(|arg| Value::String(arg.name.to_owned()))
-            .collect();
-
-        let mut properties = serde_json::Map::new();
-        for arg in &self.arguments {
-            let mut props = serde_json::Map::new();
-            props.insert(
-                "type".to_string(),
-                Value::String(arg.typ.type_string().to_string()),
-            );
-
-            let description = if let Some(default) = &arg.default {
-                format!("{} (Default: {default})", arg.description)
-            } else {
-                arg.description.to_owned()
-            };
-            props.insert("description".to_string(), Value::String(description));
-
-            if let ToolArgType::Enum(variants) = &arg.typ {
-                props.insert(
-                    "enum".to_string(),
-                    Value::Array(
-                        variants
-                            .iter()
-                            .map(|s| Value::String((*s).to_owned()))
-                            .collect(),
-                    ),
-                );
-            }
-
-            properties.insert(arg.name.to_owned(), Value::Object(props));
-        }
-
-        let mut parameters = serde_json::Map::new();
-        parameters.insert("type".to_string(), Value::String("object".to_string()));
-        parameters.insert("required".to_string(), Value::Array(required_args));
-        parameters.insert("additionalProperties".to_string(), Value::Bool(false));
-        parameters.insert("properties".to_string(), Value::Object(properties));
-
-        Value::Object(parameters)
-    }
-}
+/// The canonical [`QueryCall`] — the single nostrdb query tool — is likewise
+/// owned by the engine and re-exported here, so `notedeck::tool::QueryCall`
+/// keeps resolving for the browser [`ToolCall`] below. The browser and the
+/// engine's own dave tools share one struct, `to_filter`, `spec`, and
+/// note-key execution rather than each maintaining a copy.
+pub use agentium_core::tools::QueryCall;
 
 /// The browser state a tool executes against, reborrowed from an
 /// [`AppContext`](crate::AppContext) via
@@ -258,7 +123,9 @@ impl ToolCall {
                     Ok(txn) => txn,
                     Err(err) => return ToolOutcome::Error(format!("failed to open db: {err}")),
                 };
-                ToolOutcome::Data(json!({ "note_ids": query.execute(&txn, cx.ndb) }))
+                // Local nostrdb note keys (not portable hex ids) — the engine's
+                // single [`QueryCall`] executes to keys.
+                ToolOutcome::Data(json!({ "note_keys": query.execute(&txn, cx.ndb).notes }))
             }
         }
     }
@@ -416,138 +283,11 @@ impl ToolRegistry {
     }
 }
 
-/// Whether a note is a reply (used to exclude replies from query results, so
-/// searches surface root notes rather than conversation fragments).
-fn is_reply(note: Note) -> bool {
-    for tag in note.tags() {
-        if tag.count() < 4 {
-            continue;
-        }
-
-        let Some("e") = tag.get_str(0) else {
-            continue;
-        };
-
-        let Some(s) = tag.get_str(3) else {
-            continue;
-        };
-
-        if s == "root" || s == "reply" {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// A parsed nostrdb query the backend wants to run: an optional full-text
-/// `search`, constrained by author, kind, time range, and a result limit.
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
-pub struct QueryCall {
-    pub author: Option<Pubkey>,
-    pub limit: Option<u64>,
-    pub since: Option<u64>,
-    pub kind: Option<u64>,
-    pub until: Option<u64>,
-    pub search: Option<String>,
-}
-
-impl QueryCall {
-    /// The tool name advertised to backends.
-    pub const NAME: &'static str = "query";
-
-    /// The portable spec advertised for this tool.
-    pub fn spec() -> ToolSpec {
-        ToolSpec::new(
-            Self::NAME,
-            "Note query functionality. Used for finding notes using full-text search terms, scoped by different contexts. You can use a combination of limit, since, and until to pull notes from any time range.",
-            vec![
-                ToolArg::new(
-                    "search",
-                    ToolArgType::String,
-                    "A fulltext search query. Queries with multiple words will only return results with notes that have all of those words. Don't include filler words/symbols like 'and', punctuation, etc",
-                ),
-                ToolArg::new("limit", ToolArgType::Number, "The number of results to return.")
-                    .required(true)
-                    .default(Value::from(50)),
-                ToolArg::new(
-                    "since",
-                    ToolArgType::Number,
-                    "Only pull notes after this unix timestamp",
-                ),
-                ToolArg::new(
-                    "until",
-                    ToolArgType::Number,
-                    "Only pull notes up until this unix timestamp. Always include this when searching notes within some date range (yesterday, last week, etc).",
-                ),
-                ToolArg::new(
-                    "author",
-                    ToolArgType::String,
-                    "An author *pubkey* to constrain the query on. Can be used to search for notes from individual users. If unsure what pubkey to use, you can query for kind 0 profiles with the search argument.",
-                ),
-                ToolArg::new("kind", ToolArgType::Number, r#"The kind of note. Kind list:
-                - 0: profiles
-                - 1: microblogs/\"tweets\"/posts
-                - 6: reposts of kind 1 notes
-                - 7: emoji reactions/likes
-                - 9735: zaps (bitcoin micropayment receipts)
-                - 30023: longform articles, blog posts, etc
-                "#)
-                    .default(Value::from(1)),
-            ],
-        )
-    }
-
-    /// Build the nostrdb [`Filter`] this query describes. Replies are excluded so
-    /// results are root notes rather than conversation fragments.
-    pub fn to_filter(&self) -> Filter {
-        let mut filter = Filter::new()
-            .limit(self.limit())
-            .custom(|n| !is_reply(n))
-            .kinds([self.kind.unwrap_or(1)]);
-
-        if let Some(author) = &self.author {
-            filter = filter.authors([author.bytes()]);
-        }
-
-        if let Some(search) = &self.search {
-            filter = filter.search(search);
-        }
-
-        if let Some(until) = self.until {
-            filter = filter.until(until);
-        }
-
-        if let Some(since) = self.since {
-            filter = filter.since(since);
-        }
-
-        filter.build()
-    }
-
-    /// The result limit, defaulting to 10 when the backend omits it.
-    pub fn limit(&self) -> u64 {
-        self.limit.unwrap_or(10)
-    }
-
-    /// Run the query, returning the hex note ids of the matches (stable nostr
-    /// ids, so the result is portable to any backend).
-    pub fn execute(&self, txn: &Transaction, ndb: &Ndb) -> Vec<String> {
-        ndb.query(txn, &[self.to_filter()], self.limit() as i32)
-            .map(|results| {
-                results
-                    .into_iter()
-                    .map(|r| hex::encode(r.note.id()))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{test_util::test_config, UnknownIds, FALLBACK_PUBKEY};
+    use serde::Deserialize;
     use tempfile::TempDir;
 
     /// An app tool whose typed `Args`/`Output` exercise the serde boundary. It

@@ -1030,8 +1030,8 @@ pub use event::load_board;
 mod tests {
     use super::*;
     use enostr::FullKeypair;
-    use nostrdb::{Config, Ndb, Transaction};
-    use std::time::{Duration, Instant};
+    use futures_util::StreamExt;
+    use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
 
     struct TestNdb {
         ndb: Ndb,
@@ -1054,21 +1054,26 @@ mod tests {
             self.kp.secret_key.secret_bytes()
         }
 
-        /// Poll the board out of ndb until `pred` holds (ingest is async).
-        fn wait<F>(&self, pred: F) -> BoardView
+        /// Fold the board out of ndb until `pred` holds. Ingest is async, so
+        /// between folds this awaits the writer's own subscription notification
+        /// (see [`await_ingest`]) rather than polling against a wall-clock
+        /// deadline — the only way to wait for an async ingest that a loaded CI
+        /// runner can't race.
+        async fn wait<F>(&self, pred: F) -> BoardView
         where
             F: Fn(&BoardView) -> bool,
         {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = ingest_stream(&self.ndb, &self.kp.pubkey);
             loop {
-                let txn = Transaction::new(&self.ndb).unwrap();
-                if let Some(view) = load_board(&self.ndb, &txn, &self.kp.pubkey, BOARD_ID)
-                    && pred(&view)
                 {
-                    return view;
+                    let txn = Transaction::new(&self.ndb).unwrap();
+                    if let Some(view) = load_board(&self.ndb, &txn, &self.kp.pubkey, BOARD_ID)
+                        && pred(&view)
+                    {
+                        return view;
+                    }
                 }
-                assert!(Instant::now() < deadline, "board predicate never held");
-                std::thread::sleep(Duration::from_millis(20));
+                await_ingest(&mut stream).await;
             }
         }
 
@@ -1083,6 +1088,25 @@ mod tests {
                 &mut NoPublish,
             );
         }
+    }
+
+    /// Open a live await-handle on `author`'s headway events. Subscribing before
+    /// a wait means every note the async writer ingests *after* this point wakes
+    /// [`await_ingest`], so the fold loops advance on the writer's own
+    /// notification instead of a wall-clock sleep.
+    fn ingest_stream(ndb: &Ndb, author: &Pubkey) -> SubscriptionStream {
+        let sub = ndb.subscribe(&[event::headway_filter(author)]).unwrap();
+        SubscriptionStream::new(ndb.clone(), sub)
+    }
+
+    /// Await the next batch of ingested notes on `stream`. Panics if the
+    /// subscription closes first, so a predicate that never holds surfaces as a
+    /// test-timeout hang rather than a silent spin.
+    async fn await_ingest(stream: &mut SubscriptionStream) {
+        stream
+            .next()
+            .await
+            .expect("subscription closed before predicate held");
     }
 
     fn col_titles(view: &BoardView) -> Vec<String> {
@@ -1179,13 +1203,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn seed_materialises_default_board() {
+    #[tokio::test]
+    async fn seed_materialises_default_board() {
         let t = TestNdb::new();
         seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
 
         // The default board is card-less: just the five columns.
-        let view = t.wait(|v| v.columns.len() == 5);
+        let view = t.wait(|v| v.columns.len() == 5).await;
         assert_eq!(
             col_titles(&view),
             ["Backlog", "Todo", "In Progress", "In Review", "Done"]
@@ -1193,28 +1217,37 @@ mod tests {
         assert!(view.columns.iter().all(|c| c.cards.is_empty()));
     }
 
-    #[test]
-    fn seed_demo_materialises_cards() {
+    #[tokio::test]
+    async fn seed_demo_materialises_cards() {
         let t = TestNdb::new();
         seed_demo(&t);
 
-        let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
+        // seed_demo_board renames the first backlog card ("Nostr event model" →
+        // "Define nostr event model for boards") via a subject edit ingested
+        // *after* all seven cards land. Waiting only for the card count would
+        // race that amendment, so wait for the renamed title itself — the
+        // amendment folds after every card, so its presence also implies all
+        // seven cards are here.
+        let view = t
+            .wait(|v| {
+                v.columns[0]
+                    .cards
+                    .first()
+                    .is_some_and(|c| c.title == "Define nostr event model for boards")
+            })
+            .await;
+        assert_eq!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 7);
         assert_eq!(view.columns[0].cards.len(), 3);
         // Done is the last column; the seeded "done" card lands there.
         assert_eq!(view.columns.last().unwrap().cards.len(), 1);
-        // Seeded order is preserved by increasing ranks.
-        assert_eq!(
-            view.columns[0].cards[0].title,
-            "Define nostr event model for boards"
-        );
         assert!(!view.columns[0].cards[0].description.is_empty());
     }
 
-    #[test]
-    fn add_card_appends_to_column() {
+    #[tokio::test]
+    async fn add_card_appends_to_column() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
 
         t.apply(
             &view,
@@ -1226,15 +1259,15 @@ mod tests {
             },
         );
 
-        let view = t.wait(|v| v.columns[1].cards.len() == 3);
+        let view = t.wait(|v| v.columns[1].cards.len() == 3).await;
         assert_eq!(card_titles(&view, 1).last().unwrap(), "New idea");
     }
 
-    #[test]
-    fn add_card_with_labels_tags_the_new_card() {
+    #[tokio::test]
+    async fn add_card_with_labels_tags_the_new_card() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
 
         t.apply(
             &view,
@@ -1246,12 +1279,14 @@ mod tests {
             },
         );
 
-        let view = t.wait(|v| {
-            v.columns[1]
-                .cards
-                .iter()
-                .any(|c| c.title == "Tagged idea" && c.labels.len() == 2)
-        });
+        let view = t
+            .wait(|v| {
+                v.columns[1]
+                    .cards
+                    .iter()
+                    .any(|c| c.title == "Tagged idea" && c.labels.len() == 2)
+            })
+            .await;
         let card = view.columns[1]
             .cards
             .iter()
@@ -1260,8 +1295,8 @@ mod tests {
         assert_eq!(card.labels, vec!["bug".to_string(), "ux".to_string()]);
     }
 
-    #[test]
-    fn publisher_receives_a_frame_per_ingested_event() {
+    #[tokio::test]
+    async fn publisher_receives_a_frame_per_ingested_event() {
         #[derive(Default)]
         struct Collect(Vec<String>);
         impl Publisher for Collect {
@@ -1272,7 +1307,7 @@ mod tests {
 
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
 
         // AddCard ingests two events — the issue and its placement — so the
         // publisher should see exactly two ready-to-send EVENT frames.
@@ -1301,11 +1336,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn move_card_changes_column() {
+    #[tokio::test]
+    async fn move_card_changes_column() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[0].cards.len() == 3);
+        let view = t.wait(|v| v.columns[0].cards.len() == 3).await;
 
         // Move a Backlog card into Done (the last column, which seeds one card).
         let done = view.columns.len() - 1;
@@ -1319,16 +1354,16 @@ mod tests {
             },
         );
 
-        let view = t.wait(|v| v.columns[done].cards.len() == 2);
+        let view = t.wait(|v| v.columns[done].cards.len() == 2).await;
         assert_eq!(view.columns[0].cards.len(), 2);
         assert!(view.columns[done].cards.iter().any(|c| c.id == card));
     }
 
-    #[test]
-    fn edit_title_description_and_labels() {
+    #[tokio::test]
+    async fn edit_title_description_and_labels() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
         // The second Todo card ("Column reordering") is seeded without labels,
         // so the SetLabels union below is exactly the two we add.
         let card = view.columns[1].cards[1].id;
@@ -1355,25 +1390,27 @@ mod tests {
             },
         );
 
-        let view = t.wait(|v| {
-            v.columns[1].cards.iter().any(|c| {
-                c.id == card
-                    && c.title == "Renamed"
-                    && c.description == "the details"
-                    && c.labels.len() == 2
+        let view = t
+            .wait(|v| {
+                v.columns[1].cards.iter().any(|c| {
+                    c.id == card
+                        && c.title == "Renamed"
+                        && c.description == "the details"
+                        && c.labels.len() == 2
+                })
             })
-        });
+            .await;
         let edited = view.columns[1].cards.iter().find(|c| c.id == card).unwrap();
         assert_eq!(edited.title, "Renamed");
         assert_eq!(edited.description, "the details");
         assert_eq!(edited.labels, vec!["bug".to_string(), "ux".to_string()]);
     }
 
-    #[test]
-    fn add_comment_and_reply_fold_onto_the_card() {
+    #[tokio::test]
+    async fn add_comment_and_reply_fold_onto_the_card() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
         let card = view.columns[1].cards[0].id;
 
         // Top-level comment.
@@ -1385,12 +1422,14 @@ mod tests {
                 reply_to: None,
             },
         );
-        let view = t.wait(|v| {
-            v.columns[1]
-                .cards
-                .iter()
-                .any(|c| c.id == card && c.comments.len() == 1)
-        });
+        let view = t
+            .wait(|v| {
+                v.columns[1]
+                    .cards
+                    .iter()
+                    .any(|c| c.id == card && c.comments.len() == 1)
+            })
+            .await;
         let parent = view.columns[1]
             .cards
             .iter()
@@ -1408,12 +1447,14 @@ mod tests {
                 reply_to: Some(parent),
             },
         );
-        let view = t.wait(|v| {
-            v.columns[1]
-                .cards
-                .iter()
-                .any(|c| c.id == card && c.comments.len() == 2)
-        });
+        let view = t
+            .wait(|v| {
+                v.columns[1]
+                    .cards
+                    .iter()
+                    .any(|c| c.id == card && c.comments.len() == 2)
+            })
+            .await;
 
         let comments = &view.columns[1]
             .cards
@@ -1427,32 +1468,32 @@ mod tests {
         assert_eq!(comments[1].parent, Some(parent));
     }
 
-    #[test]
-    fn delete_card_removes_it() {
+    #[tokio::test]
+    async fn delete_card_removes_it() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[0].cards.len() == 3);
+        let view = t.wait(|v| v.columns[0].cards.len() == 3).await;
         let card = view.columns[0].cards[0].id;
 
         t.apply(&view, BoardAction::DeleteCard { card });
 
-        let view = t.wait(|v| v.columns[0].cards.len() == 2);
+        let view = t.wait(|v| v.columns[0].cards.len() == 2).await;
         assert!(!view.columns[0].cards.iter().any(|c| c.id == card));
     }
 
-    #[test]
-    fn archive_then_restore_round_trips_to_origin() {
+    #[tokio::test]
+    async fn archive_then_restore_round_trips_to_origin() {
         let t = TestNdb::new();
         seed_demo(&t);
         // Pick a card out of "In Progress" (column 2), not the first column, so a
         // restore that ignored the origin would land it somewhere else.
-        let view = t.wait(|v| v.columns[2].cards.len() == 1);
+        let view = t.wait(|v| v.columns[2].cards.len() == 1).await;
         let card = view.columns[2].cards[0].id;
 
         t.apply(&view, BoardAction::ArchiveCard { card });
 
         // It leaves the columns and shows up in the archived list, with origin.
-        let view = t.wait(|v| !v.archived.is_empty());
+        let view = t.wait(|v| !v.archived.is_empty()).await;
         assert!(
             view.columns
                 .iter()
@@ -1465,15 +1506,17 @@ mod tests {
         t.apply(&view, BoardAction::RestoreCard { card });
 
         // Restored back into the exact column it came from, and unarchived.
-        let view = t.wait(|v| v.archived.is_empty() && v.columns[2].cards.len() == 1);
+        let view = t
+            .wait(|v| v.archived.is_empty() && v.columns[2].cards.len() == 1)
+            .await;
         assert_eq!(view.columns[2].cards[0].id, card);
     }
 
-    #[test]
-    fn column_ops_round_trip() {
+    #[tokio::test]
+    async fn column_ops_round_trip() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns.len() == 5);
+        let view = t.wait(|v| v.columns.len() == 5).await;
 
         t.apply(
             &view,
@@ -1481,7 +1524,7 @@ mod tests {
                 name: "Review".to_string(),
             },
         );
-        let view = t.wait(|v| v.columns.len() == 6);
+        let view = t.wait(|v| v.columns.len() == 6).await;
         assert_eq!(view.columns[5].name, "Review");
 
         t.apply(
@@ -1491,22 +1534,26 @@ mod tests {
                 name: "Inbox".to_string(),
             },
         );
-        let view = t.wait(|v| v.columns[0].name == "Inbox");
+        let view = t.wait(|v| v.columns[0].name == "Inbox").await;
 
         t.apply(&view, BoardAction::MoveColumn { from: 0, to: 1 });
-        let view = t.wait(|v| v.columns[1].name == "Inbox");
+        let view = t.wait(|v| v.columns[1].name == "Inbox").await;
 
         t.apply(&view, BoardAction::RemoveColumn { col: 1 });
-        let view = t.wait(|v| !v.columns.iter().any(|c| c.name == "Inbox"));
+        let view = t
+            .wait(|v| !v.columns.iter().any(|c| c.name == "Inbox"))
+            .await;
         // The removed column's cards aren't lost; they fall back to column 0.
         assert!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>() >= 7);
     }
 
-    #[test]
-    fn rename_board_changes_title_preserving_columns_and_cards() {
+    #[tokio::test]
+    async fn rename_board_changes_title_preserving_columns_and_cards() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
+        let view = t
+            .wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7)
+            .await;
         let cols_before = col_titles(&view);
 
         t.apply(
@@ -1516,7 +1563,7 @@ mod tests {
             },
         );
 
-        let view = t.wait(|v| v.title == "Renamed Board");
+        let view = t.wait(|v| v.title == "Renamed Board").await;
         // Slug (the addressable `d`-tag) is untouched, so refs still resolve.
         assert_eq!(view.id, BOARD_ID);
         // Columns and cards ride along the republished definition unchanged.
@@ -1552,33 +1599,35 @@ mod tests {
         assert_eq!(board_slug("", taken_board), "board-2");
     }
 
-    /// Load an arbitrary board (the [`TestNdb`] helpers are pinned to `BOARD_ID`).
-    fn poll_board(t: &TestNdb, board_id: &str, pred: impl Fn(&BoardView) -> bool) -> BoardView {
-        let deadline = Instant::now() + Duration::from_secs(5);
+    /// Load an arbitrary board (the [`TestNdb`] helpers are pinned to `BOARD_ID`),
+    /// awaiting the writer's ingest notifications until `pred` holds.
+    async fn poll_board(
+        t: &TestNdb,
+        board_id: &str,
+        pred: impl Fn(&BoardView) -> bool,
+    ) -> BoardView {
+        let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
         loop {
-            let txn = Transaction::new(&t.ndb).unwrap();
-            if let Some(view) = load_board(&t.ndb, &txn, &t.kp.pubkey, board_id)
-                && pred(&view)
             {
-                return view;
+                let txn = Transaction::new(&t.ndb).unwrap();
+                if let Some(view) = load_board(&t.ndb, &txn, &t.kp.pubkey, board_id)
+                    && pred(&view)
+                {
+                    return view;
+                }
             }
-            drop(txn);
-            assert!(
-                Instant::now() < deadline,
-                "board '{board_id}' predicate never held"
-            );
-            std::thread::sleep(Duration::from_millis(20));
+            await_ingest(&mut stream).await;
         }
     }
 
     /// Seed two boards, add a card to one, and add a card we can relocate.
-    fn two_boards_with_a_card(t: &TestNdb) -> NoteId {
+    async fn two_boards_with_a_card(t: &TestNdb) -> NoteId {
         seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "src", &mut NoPublish);
         seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "dst", &mut NoPublish);
-        poll_board(t, "src", |v| v.columns.len() == 5);
-        poll_board(t, "dst", |v| v.columns.len() == 5);
+        poll_board(t, "src", |v| v.columns.len() == 5).await;
+        poll_board(t, "dst", |v| v.columns.len() == 5).await;
 
-        let src = poll_board(t, "src", |v| v.columns.len() == 5);
+        let src = poll_board(t, "src", |v| v.columns.len() == 5).await;
         super::apply(
             &t.ndb,
             "src",
@@ -1593,16 +1642,20 @@ mod tests {
             },
             &mut NoPublish,
         );
-        poll_board(t, "src", |v| v.columns[0].cards.len() == 1).columns[0].cards[0].id
+        poll_board(t, "src", |v| v.columns[0].cards.len() == 1)
+            .await
+            .columns[0]
+            .cards[0]
+            .id
     }
 
-    #[test]
-    fn link_card_places_on_both_boards() {
+    #[tokio::test]
+    async fn link_card_places_on_both_boards() {
         let t = TestNdb::new();
-        let card = two_boards_with_a_card(&t);
+        let card = two_boards_with_a_card(&t).await;
 
-        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
-        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1).await;
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5).await;
         link_card(
             &t.ndb,
             BoardRef {
@@ -1620,8 +1673,8 @@ mod tests {
         );
 
         // Same card on both boards, with its labels intact (it's shared, not copied).
-        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
-        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1).await;
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1).await;
         assert_eq!(src.columns[0].cards[0].id, card);
         assert_eq!(dst.columns[0].cards[0].id, card);
         assert_eq!(
@@ -1630,13 +1683,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn move_card_between_boards_relocates_it() {
+    #[tokio::test]
+    async fn move_card_between_boards_relocates_it() {
         let t = TestNdb::new();
-        let card = two_boards_with_a_card(&t);
+        let card = two_boards_with_a_card(&t).await;
 
-        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
-        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1).await;
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5).await;
         move_card_between_boards(
             &t.ndb,
             BoardRef {
@@ -1654,19 +1707,19 @@ mod tests {
         );
 
         // Leaves src, lands on dst — same id, same overlays.
-        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
-        poll_board(&t, "src", |v| v.columns[0].cards.is_empty());
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1).await;
+        poll_board(&t, "src", |v| v.columns[0].cards.is_empty()).await;
         assert_eq!(dst.columns[0].cards[0].id, card);
         assert_eq!(dst.columns[0].cards[0].title, "Roamer");
     }
 
-    #[test]
-    fn move_card_preserves_column_when_target_has_it() {
+    #[tokio::test]
+    async fn move_card_preserves_column_when_target_has_it() {
         let t = TestNdb::new();
-        let card = two_boards_with_a_card(&t);
+        let card = two_boards_with_a_card(&t).await;
 
         // Push the card into In Progress on src (both default boards share this column).
-        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1).await;
         super::apply(
             &t.ndb,
             "src",
@@ -1681,8 +1734,8 @@ mod tests {
             &mut NoPublish,
         );
 
-        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1);
-        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1).await;
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5).await;
         move_card_between_boards(
             &t.ndb,
             BoardRef {
@@ -1700,13 +1753,13 @@ mod tests {
         );
 
         // Lands in the same-id column (In Progress), not the first column.
-        let dst = poll_board(&t, "dst", |v| v.columns[2].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns[2].cards.len() == 1).await;
         assert_eq!(dst.columns[2].cards[0].id, card);
         assert!(dst.columns[0].cards.is_empty());
     }
 
-    #[test]
-    fn move_card_falls_back_to_first_column_when_target_lacks_it() {
+    #[tokio::test]
+    async fn move_card_falls_back_to_first_column_when_target_lacks_it() {
         let t = TestNdb::new();
         seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "src", &mut NoPublish);
         // A target board whose columns don't include "in-progress".
@@ -1724,11 +1777,11 @@ mod tests {
             &t.secret(),
             &mut NoPublish,
         );
-        poll_board(&t, "src", |v| v.columns.len() == 5);
-        poll_board(&t, "dst", |v| v.columns.len() == 2);
+        poll_board(&t, "src", |v| v.columns.len() == 5).await;
+        poll_board(&t, "dst", |v| v.columns.len() == 2).await;
 
         // Add a card and move it into In Progress on src.
-        let src = poll_board(&t, "src", |v| v.columns.len() == 5);
+        let src = poll_board(&t, "src", |v| v.columns.len() == 5).await;
         super::apply(
             &t.ndb,
             "src",
@@ -1744,9 +1797,9 @@ mod tests {
             &mut NoPublish,
         );
 
-        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1);
+        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1).await;
         let card = src.columns[2].cards[0].id;
-        let dst = poll_board(&t, "dst", |v| v.columns.len() == 2);
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 2).await;
         move_card_between_boards(
             &t.ndb,
             BoardRef {
@@ -1764,7 +1817,7 @@ mod tests {
         );
 
         // No "in-progress" on dst, so it falls back to the first column (Inbox).
-        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1).await;
         assert_eq!(dst.columns[0].id, "inbox");
         assert_eq!(dst.columns[0].cards[0].id, card);
     }

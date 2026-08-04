@@ -557,7 +557,7 @@ pub fn scene_ui(
                 SceneAction::AgentMoved { id, position } => {
                     if let Some(session) = session_manager.get_mut(id) {
                         if let Some(agentic) = &mut session.agentic {
-                            agentic.scene_position = position;
+                            agentic.scene_position = (position.x, position.y);
                         }
                     }
                 }
