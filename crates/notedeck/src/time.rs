@@ -28,8 +28,10 @@ pub fn is_future_timestamp(timestamp: u64, now: u64) -> bool {
 
 /// Calculate relative time between two timestamps, with two units only
 /// when the scale is large enough (e.g., "1y 6m", "5d 4h"),
-/// but not for hours/minutes/seconds.
-fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> String {
+/// but not for hours/minutes/seconds. Takes `now` explicitly (unlike
+/// [`time_ago_since`], which reads the wall clock) so callers can drive it off a
+/// captured timestamp and test it deterministically.
+pub fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> String {
     let duration = if now >= timestamp {
         now.saturating_sub(timestamp)
     } else {

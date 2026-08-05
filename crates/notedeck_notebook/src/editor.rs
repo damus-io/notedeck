@@ -11,7 +11,7 @@
 
 use crate::event::LongformNote;
 use egui::{Layout, RichText, ScrollArea, TextEdit};
-use notedeck::{AppContext, ColorTheme};
+use notedeck::{AppContext, ColorTheme, Localization};
 
 /// Minimum visible rows the source editor requests before it scrolls, so a fresh
 /// note still opens with a roomy typing area.
@@ -251,6 +251,56 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
     notedeck_ui::markdown::render_markdown_with_refs(ui, &mut note_ctx, &txn, content);
 }
 
+/// A vault row ready to render: a note's display strings, precomputed once when
+/// the vault list is rebuilt (see [`vault_rows`]) rather than per frame in
+/// [`vault_ui`] — the render loop must not allocate or format (CLAUDE.md rule 18).
+/// The full [`LongformNote`] stays in the sync cache; the app resolves it by
+/// [`d`](Self::d) only when a row is actually opened/renamed/deleted.
+pub(crate) struct VaultRow {
+    /// The note's stable addressable `d`, the identity carried in every
+    /// [`VaultAction`] so the app can look the full note back up.
+    pub d: String,
+    /// The note title (already trimmed of surrounding whitespace, but possibly
+    /// empty — the row renders "Untitled" for a blank title).
+    pub title: String,
+    /// The muted "edited …" subtitle, e.g. "edited 2h ago" (empty if unavailable).
+    pub subtitle: String,
+}
+
+/// Project the sync cache's notes into renderable [`VaultRow`]s, formatting each
+/// row's relative "edited …" subtitle once. Called on the vault relist path (not
+/// per frame), so the localized time string and its allocation stay out of the
+/// render loop.
+pub(crate) fn vault_rows(i18n: &mut Localization, notes: &[LongformNote]) -> Vec<VaultRow> {
+    let now = notedeck::unix_time_secs();
+    notes
+        .iter()
+        .map(|note| VaultRow {
+            d: note.d.clone(),
+            title: note.title.trim().to_owned(),
+            subtitle: edited_subtitle(i18n, note.created_at, now),
+        })
+        .collect()
+}
+
+/// The muted "edited …" subtitle for a vault row, relative to `now`. A note's
+/// `created_at` is its last-edited time — kind 30023 is replaceable, so each edit
+/// republishes with a fresh timestamp — so this reads as when the note was last
+/// touched: "edited just now" for a very recent edit, else "edited <relative> ago"
+/// (e.g. "edited 2h ago"), reusing notedeck's shared relative-time bucketer.
+fn edited_subtitle(i18n: &mut Localization, created_at: u64, now: u64) -> String {
+    // A very recent edit reads oddly through the "edited … ago" frame ("edited now
+    // ago"), so phrase it directly. The same `now` drives the relative string
+    // below, keeping the two consistent.
+    if now.saturating_sub(created_at) <= 2 {
+        return "edited just now".to_owned();
+    }
+    format!(
+        "edited {} ago",
+        notedeck::time_ago_between(i18n, created_at, now)
+    )
+}
+
 /// The vault sidebar's transient interaction state — the one thing that must
 /// persist across frames in this otherwise-immediate list: an in-progress rename
 /// buffer, or a delete awaiting confirmation. Held in [`crate::Notebook`] and
@@ -284,8 +334,8 @@ pub(crate) struct VaultRename {
 /// rename, opening the delete prompt) mutate the passed-in [`VaultState`] and
 /// yield nothing; only a terminal action surfaces here.
 pub(crate) enum VaultAction {
-    /// Open the note at this index in the editor.
-    Open(usize),
+    /// Open note `d` in the editor.
+    Open { d: String },
     /// A rename committed: persist `title` as note `d`'s new title.
     Rename { d: String, title: String },
     /// A delete was confirmed: tombstone note `d`.
@@ -306,11 +356,11 @@ enum RenameOutcome {
 /// Render the vault list — one styled row per note (newest-edited first) — plus
 /// any in-progress rename field or delete-confirmation modal, and return the
 /// single terminal [`VaultAction`] the user triggered this frame. All transient
-/// interaction lives in `state`; the function reads a borrowed slice and only
-/// allocates on a discrete user action, so it's safe to call every frame from the
-/// canvas-mode sidebar (the list itself is cached upstream).
+/// interaction lives in `state`; the rows are pre-projected ([`vault_rows`]), so
+/// the function reads a borrowed slice and only allocates on a discrete user
+/// action — safe to call every frame from the canvas-mode sidebar.
 pub(crate) fn vault_ui(
-    notes: &[LongformNote],
+    rows: &[VaultRow],
     state: &mut VaultState,
     ui: &mut egui::Ui,
 ) -> Option<VaultAction> {
@@ -330,7 +380,7 @@ pub(crate) fn vault_ui(
     });
     ui.add_space(SPACING_XS);
 
-    if notes.is_empty() {
+    if rows.is_empty() {
         ui.add_space(SPACING_SM);
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new("No notes yet").color(theme.text_muted));
@@ -344,23 +394,23 @@ pub(crate) fn vault_ui(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            for (i, note) in notes.iter().enumerate() {
+            for row in rows {
                 // The row being renamed shows an editable field; the rest render
                 // as plain, clickable rows with a context menu.
-                let renaming = matches!(state, VaultState::Renaming(r) if r.d == note.d);
-                let row = if renaming {
+                let renaming = matches!(state, VaultState::Renaming(r) if r.d == row.d);
+                let out = if renaming {
                     renaming_row_ui(ui, &theme, state)
                 } else {
-                    note_menu_row_ui(ui, &theme, note, i, state)
+                    note_menu_row_ui(ui, &theme, row, state)
                 };
-                if row.is_some() {
-                    action = row;
+                if out.is_some() {
+                    action = out;
                 }
             }
         });
 
     // A pending delete draws its confirmation modal over the list.
-    action.or_else(|| confirm_delete_ui(ui, notes, state))
+    action.or_else(|| confirm_delete_ui(ui, rows, state))
 }
 
 /// Render the active rename row and resolve its outcome: a commit clears `state`
@@ -392,26 +442,30 @@ fn renaming_row_ui(
 fn note_menu_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    note: &LongformNote,
-    index: usize,
+    row: &VaultRow,
     state: &mut VaultState,
 ) -> Option<VaultAction> {
-    let title = note.title.trim();
-    let label = if title.is_empty() { "Untitled" } else { title };
-    let resp = note_row_ui(ui, theme, label);
-    let action = resp.clicked().then_some(VaultAction::Open(index));
+    let label = if row.title.is_empty() {
+        "Untitled"
+    } else {
+        &row.title
+    };
+    let resp = note_row_ui(ui, theme, label, &row.subtitle);
+    let action = resp
+        .clicked()
+        .then(|| VaultAction::Open { d: row.d.clone() });
     // Right-click (or long-press on touch) mirrors the canvas node's menu.
     notedeck_ui::context_menu::context_menu(&resp, |ui| {
         if ui.button("Rename").clicked() {
             *state = VaultState::Renaming(VaultRename {
-                d: note.d.clone(),
-                buffer: note.title.clone(),
+                d: row.d.clone(),
+                buffer: row.title.clone(),
                 focus: true,
             });
             ui.close_menu();
         }
         if ui.button("Delete").clicked() {
-            *state = VaultState::ConfirmingDelete(note.d.clone());
+            *state = VaultState::ConfirmingDelete(row.d.clone());
             ui.close_menu();
         }
     });
@@ -423,18 +477,18 @@ fn note_menu_row_ui(
 /// or Esc) just clears it. No-op unless `state` is [`VaultState::ConfirmingDelete`].
 fn confirm_delete_ui(
     ui: &mut egui::Ui,
-    notes: &[LongformNote],
+    rows: &[VaultRow],
     state: &mut VaultState,
 ) -> Option<VaultAction> {
     let VaultState::ConfirmingDelete(d) = state else {
         return None;
     };
     // The note may have vanished (a concurrent sync) — abandon the prompt if so.
-    let Some(note) = notes.iter().find(|n| &n.d == d) else {
+    let Some(row) = rows.iter().find(|r| &r.d == d) else {
         *state = VaultState::Idle;
         return None;
     };
-    match note_delete_confirm_ui(ui, &note.title) {
+    match note_delete_confirm_ui(ui, &row.title) {
         DeleteConfirm::Pending => None,
         DeleteConfirm::Cancelled => {
             *state = VaultState::Idle;
@@ -529,14 +583,27 @@ fn note_delete_confirm_ui(ui: &egui::Ui, title: &str) -> DeleteConfirm {
 }
 
 /// One vault row: a full-width, left-aligned, rounded surface that highlights on
-/// hover and elides a long title to a single line. Painted with the semantic
-/// theme so it reads as part of the app rather than a bare label.
-fn note_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, title: &str) -> egui::Response {
+/// hover, with the title on top and a muted `subtitle` beneath (omitted when
+/// empty). Both lines elide to a single line. Painted with the semantic theme so
+/// it reads as part of the app rather than a bare label.
+fn note_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    title: &str,
+    subtitle: &str,
+) -> egui::Response {
     use notedeck::tokens::{RADIUS_MD, SPACING_SM};
     let pad = egui::vec2(SPACING_SM, 6.0);
-    let line_h = ui.text_style_height(&egui::TextStyle::Body);
+    let title_h = ui.text_style_height(&egui::TextStyle::Body);
+    // The subtitle line adds its own height plus a hair of leading; a blank
+    // subtitle collapses the row back to a single line.
+    let subtitle_h = if subtitle.is_empty() {
+        0.0
+    } else {
+        ui.text_style_height(&egui::TextStyle::Small) + 2.0
+    };
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), line_h + pad.y * 2.0),
+        egui::vec2(ui.available_width(), title_h + subtitle_h + pad.y * 2.0),
         egui::Sense::click(),
     );
 
@@ -552,13 +619,25 @@ fn note_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, title: &str) -> egui::Resp
     ui.allocate_new_ui(
         egui::UiBuilder::new()
             .max_rect(rect.shrink2(pad))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            .layout(egui::Layout::top_down(egui::Align::Min)),
         |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             ui.add(
                 egui::Label::new(egui::RichText::new(title).color(theme.text_primary))
                     .truncate()
                     .selectable(false),
             );
+            if !subtitle.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(subtitle)
+                            .small()
+                            .color(theme.text_muted),
+                    )
+                    .truncate()
+                    .selectable(false),
+                );
+            }
         },
     );
 
@@ -568,6 +647,25 @@ fn note_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, title: &str) -> egui::Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The "edited …" subtitle formatting: very-recent edits read "just now"
+    /// (never "now ago"), older edits frame the relative unit, and both use the
+    /// same injected `now` so the phrasing is deterministic.
+    #[test]
+    fn edited_subtitle_phrasing() {
+        let mut i18n = Localization::no_bidi();
+        let now = 2_000_000u64;
+
+        assert_eq!(edited_subtitle(&mut i18n, now, now), "edited just now");
+        assert_eq!(edited_subtitle(&mut i18n, now - 2, now), "edited just now");
+        assert_eq!(edited_subtitle(&mut i18n, now - 7200, now), "edited 2h ago");
+        assert_eq!(
+            edited_subtitle(&mut i18n, now - 86_400, now),
+            "edited 1d ago"
+        );
+        // A note stamped slightly in the future (clock skew) still reads cleanly.
+        assert_eq!(edited_subtitle(&mut i18n, now + 1, now), "edited just now");
+    }
 
     /// The dirty/baseline bookkeeping that decides when Save is offered: a new
     /// note is clean until typed into, dirty once it has text, and clean again
