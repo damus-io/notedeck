@@ -583,16 +583,16 @@ fn note_delete_confirm_ui(ui: &egui::Ui, title: &str) -> DeleteConfirm {
 }
 
 /// One vault row: a full-width, left-aligned, rounded surface that highlights on
-/// hover, with the title on top and a muted `subtitle` beneath (omitted when
-/// empty). Both lines elide to a single line. Painted with the semantic theme so
-/// it reads as part of the app rather than a bare label.
+/// hover, with a leading document icon, the title on top and a muted `subtitle`
+/// beneath (omitted when empty). Both lines elide to a single line. Painted with
+/// the semantic theme so it reads as part of the app rather than a bare label.
 fn note_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     title: &str,
     subtitle: &str,
 ) -> egui::Response {
-    use notedeck::tokens::{RADIUS_MD, SPACING_SM};
+    use notedeck::tokens::{ICON_SM, RADIUS_MD, SPACING_SM};
     let pad = egui::vec2(SPACING_SM, 6.0);
     let title_h = ui.text_style_height(&egui::TextStyle::Body);
     // The subtitle line adds its own height plus a hair of leading; a blank
@@ -616,9 +616,19 @@ fn note_row_ui(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
+    // A fixed leading gutter holds a document glyph aligned to the title line, so
+    // titles stay aligned regardless of whether a row wraps to two lines.
+    let inner = rect.shrink2(pad);
+    let icon_center = egui::pos2(inner.left() + ICON_SM / 2.0, inner.top() + title_h / 2.0);
+    document_icon(ui.painter(), icon_center, ICON_SM, theme.text_muted);
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(inner.left() + ICON_SM + SPACING_SM, inner.top()),
+        inner.max,
+    );
+
     ui.allocate_new_ui(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(pad))
+            .max_rect(text_rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
         |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -642,6 +652,27 @@ fn note_row_ui(
     );
 
     resp
+}
+
+/// A small monochrome document glyph — a rounded page with three ruled text lines
+/// — for a vault row's leading gutter. Painter-drawn rather than an image asset so
+/// it inherits the row's muted theme color and scales with `size`.
+fn document_icon(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
+    let stroke = egui::Stroke::new((size * 0.08).max(1.0), color);
+    let page = egui::Rect::from_center_size(center, egui::vec2(size * 0.68, size * 0.86));
+    painter.rect_stroke(
+        page,
+        egui::CornerRadius::same((size * 0.12) as u8),
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    // Three ruled "text" lines, inset from the page edges.
+    let x0 = page.left() + size * 0.16;
+    let x1 = page.right() - size * 0.16;
+    for i in -1..=1 {
+        let y = center.y + i as f32 * size * 0.2;
+        painter.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], stroke);
+    }
 }
 
 #[cfg(test)]
