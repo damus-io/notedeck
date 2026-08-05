@@ -1031,8 +1031,28 @@ mod tests {
             self.cache.poll(&self.ndb, &txn, &self.kp.pubkey).changed
         }
 
-        fn seed(&mut self) {
-            seed_demo(&self.ndb, &self.kp);
+        /// Seed the demo board, returning how many events it wrote (for
+        /// [`seed_and_settle`](Self::seed_and_settle) to await).
+        fn seed(&mut self) -> usize {
+            seed_demo(&self.ndb, &self.kp)
+        }
+
+        /// Seed the demo board and fold until the *whole* seed has committed.
+        ///
+        /// Ingest is async, so quiescence is proven by count, not by inspecting
+        /// the board: [`seed`](Self::seed) reports how many events it wrote and
+        /// this returns only once the writer has delivered them all. That is what
+        /// lets the idle / finalize tests assert "no further folds" without racing
+        /// a straggler, and it holds no matter which seed event lands last.
+        ///
+        /// Subscribe *before* seeding so every ingest wakes the stream; a prior
+        /// [`poll`](Self::poll) must have primed the cache's own subscription so
+        /// the seed folds in as deltas (one full reload, not a per-event walk).
+        async fn seed_and_settle(&mut self) {
+            let mut stream = ingest_stream(&self.ndb, &self.kp.pubkey);
+            let n = self.seed();
+            await_ingested(&mut stream, n).await;
+            self.poll();
         }
 
         /// Fold and pick the default board out of the cache, if present.
@@ -1070,8 +1090,9 @@ mod tests {
         /// pump the reducer until `done` holds, awaiting the writer's own ingest
         /// notification (see [`await_ingest`]) between folds rather than polling
         /// against a wall-clock deadline — the only race-free way to wait on an
-        /// async ingest. Replaces the old fixed deadline and `drain()` quiescence
-        /// guess (see `demo_seed_complete`).
+        /// async ingest. Used when the test waits for a *specific* change to
+        /// appear; [`seed_and_settle`](Self::seed_and_settle) instead waits for the
+        /// whole seed to commit by count.
         async fn wait_until(&mut self, done: impl Fn(&mut Self) -> bool) {
             let mut stream = ingest_stream(&self.ndb, &self.kp.pubkey);
             while !done(self) {
@@ -1089,38 +1110,38 @@ mod tests {
         SubscriptionStream::new(ndb.clone(), sub)
     }
 
-    /// Await the next batch of ingested notes on `stream`. Panics if the
-    /// subscription closes first, so a predicate that never holds surfaces as a
-    /// test-timeout hang rather than a silent spin.
-    async fn await_ingest(stream: &mut SubscriptionStream) {
+    /// Await the next batch of ingested notes on `stream`, returning their keys.
+    /// Panics if the subscription closes first, so a predicate that never holds
+    /// surfaces as a test-timeout hang rather than a silent spin.
+    async fn await_ingest(stream: &mut SubscriptionStream) -> Vec<NoteKey> {
         stream
             .next()
             .await
-            .expect("subscription closed before predicate held");
+            .expect("subscription closed before predicate held")
+    }
+
+    /// Drain `stream` until the async writer has delivered `n` ingested notes in
+    /// total (summing each batch). `n` is the exact number of events the seed
+    /// wrote (see [`seed_demo`] / [`store::seed_demo_board`]), so this returns the
+    /// instant the whole seed has committed — a quiescence signal that, unlike a
+    /// board-state predicate, can't be satisfied while trailing events are still
+    /// in flight and doesn't depend on which event the seed writes last.
+    async fn await_ingested(stream: &mut SubscriptionStream, n: usize) {
+        let mut seen = 0;
+        while seen < n {
+            seen += await_ingest(stream).await.len();
+        }
     }
 
     fn total_cards(view: &BoardView) -> usize {
         view.columns.iter().map(|c| c.cards.len()).sum()
     }
 
-    /// The demo seed's terminal state: [`seed_demo`] moves the drag card into
-    /// In Progress with the *last* event it ingests, so the drag card sitting in
-    /// column 2 means every earlier seed event has folded and the async writer is
-    /// quiescent. A deterministic "seed fully materialised" signal that — unlike a
-    /// card-count check plus a `drain()` — can't be satisfied mid-materialisation.
-    fn demo_seed_complete(view: &BoardView) -> bool {
-        view.columns.get(2).is_some_and(|col| {
-            col.cards
-                .iter()
-                .any(|c| c.title == "Drag-and-drop between columns")
-        })
-    }
-
     /// Seed the populated demo board for the sync tests to fold and act on. The
     /// production seed is card-less; the fixture lives in [`store::seed_demo_board`].
     /// Seeded in the past so follow-up edits (stamped with the wall clock)
     /// always sort after it.
-    fn seed_demo(ndb: &Ndb, kp: &FullKeypair) {
+    fn seed_demo(ndb: &Ndb, kp: &FullKeypair) -> usize {
         store::seed_demo_board(
             ndb,
             &kp.pubkey,
@@ -1128,7 +1149,7 @@ mod tests {
             store::BOARD_ID,
             1_700_000_000,
             &mut store::NoPublish,
-        );
+        )
     }
 
     /// Subscribing before seeding, then polling, materialises the whole board
@@ -1136,14 +1157,11 @@ mod tests {
     #[tokio::test]
     async fn poll_materialises_the_board() {
         let mut t = TestSync::new();
-        // Subscribe first so the seed's ingests are reported as new notes.
+        // Subscribe (via poll) first so the seed's ingests are reported as new
+        // notes, then seed and fold until the writer has delivered every event —
+        // a card count can hold mid-fold, asserting a half-materialised layout.
         t.poll();
-        t.seed();
-
-        // Wait on the seed's *terminal* event (the drag card landing in In
-        // Progress), not a card count: `total_cards == 7` can hold mid-fold
-        // before the drag move settles, asserting a half-materialised layout.
-        t.wait(demo_seed_complete).await;
+        t.seed_and_settle().await;
         let view = t.view().expect("board loaded");
         assert_eq!(
             view.columns
@@ -1220,10 +1238,9 @@ mod tests {
     async fn poll_reloads_on_change() {
         let mut t = TestSync::new();
         t.poll();
-        t.seed();
         // Fully materialise the seed first (Todo settles at 2 once the drag card
         // moves out), so the edit below folds against a stable board.
-        t.wait(demo_seed_complete).await;
+        t.seed_and_settle().await;
 
         // Apply against the cached pre-edit view (as render does).
         {
@@ -1307,8 +1324,7 @@ mod tests {
     async fn poll_does_not_refold_when_idle() {
         let mut t = TestSync::new();
         t.poll();
-        t.seed();
-        t.wait(demo_seed_complete).await;
+        t.seed_and_settle().await;
 
         assert!(
             !t.poll(),
@@ -1323,8 +1339,7 @@ mod tests {
     async fn poll_folds_changes_as_a_delta() {
         let mut t = TestSync::new();
         t.poll();
-        t.seed();
-        t.wait(demo_seed_complete).await;
+        t.seed_and_settle().await;
 
         // Seeding does exactly one full fold; everything since is incremental.
         assert_eq!(
@@ -1413,25 +1428,18 @@ mod tests {
             cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
         }
         let mut stream = ingest_stream(&ndb, &kp.pubkey);
-        seed_demo(&ndb, &kp);
+        let n = seed_demo(&ndb, &kp);
 
-        // Fold in the seed as the writer delivers it, until the board has fully
-        // materialised *and quiesced*. `seed_demo` keeps ingesting after the 7th
-        // card lands (parent relations, card amendments, and finally the drag-card
-        // move into In Progress), so stopping at `total_cards == 7` would leave
-        // those trailing notes to arrive mid-frame below — each folds and
-        // re-finalizes, breaking the "no fold ⇒ no finalize" invariant this test
-        // measures. The drag move is the *last* seed event, so `demo_seed_complete`
-        // (drag card in In Progress) means every prior event has folded too.
-        while {
+        // Wait for the seed to fully commit *and quiesce* before measuring. Any
+        // straggler arriving mid-frame below would fold and re-finalize, breaking
+        // the "no fold ⇒ no finalize" invariant this test measures — and a board
+        // predicate (e.g. `total_cards == 7`) can hold while trailing notes are
+        // still in flight. Counting the seed's own events is the race-free signal:
+        // once the writer has delivered all `n`, nothing else is coming.
+        await_ingested(&mut stream, n).await;
+        {
             let txn = Transaction::new(&ndb).unwrap();
-            let ready = cache
-                .board(&ndb, &txn, &kp.pubkey, store::BOARD_ID)
-                .is_some_and(|v| demo_seed_complete(&v));
-            drop(txn);
-            !ready
-        } {
-            await_ingest(&mut stream).await;
+            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
         }
 
         // A steady frame with no new notes: many reads (what N inline references
@@ -1530,8 +1538,7 @@ mod tests {
         use notedeck::{ReferenceParser, ReferenceResolveCtx};
         let mut t = TestSync::new();
         t.poll();
-        t.seed();
-        t.wait(demo_seed_complete).await;
+        t.seed_and_settle().await;
 
         // Take a real card and its word id off the folded board.
         let (card_id, words) = {

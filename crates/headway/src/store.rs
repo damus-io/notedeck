@@ -164,8 +164,8 @@ pub fn seed_default_board(
     secret: &[u8; 32],
     board_id: &str,
     publisher: &mut dyn Publisher,
-) {
-    seed_board(ndb, author, secret, board_id, "Headway", publisher);
+) -> usize {
+    seed_board(ndb, author, secret, board_id, "Headway", publisher)
 }
 
 /// Derive a board slug (its stable `d`-tag id) from a human `title`, avoiding any
@@ -201,6 +201,10 @@ pub fn board_slug(title: &str, taken: impl Fn(&str) -> bool) -> String {
 /// Seed a fresh board with a display `title` (the `board_id` is its stable slug).
 /// Like [`seed_default_board`] but lets a caller create a *named* board — e.g. a
 /// separate "Work" board alongside the default one, all under one identity.
+///
+/// Returns the number of events ingested (0 or 1). Callers awaiting an async
+/// writer (tests) use the count to know when the whole seed has committed; the
+/// GUI/CLI ignore it.
 pub fn seed_board(
     ndb: &Ndb,
     author: &Pubkey,
@@ -208,7 +212,7 @@ pub fn seed_board(
     board_id: &str,
     title: &str,
     publisher: &mut dyn Publisher,
-) {
+) -> usize {
     let _ = author;
     let columns = default_columns();
     ingest(
@@ -216,7 +220,8 @@ pub fn seed_board(
         build_board(board_id, title, "", &columns),
         secret,
         publisher,
-    );
+    )
+    .is_some() as usize
 }
 
 /// Seed a default board *and* a fixed set of demo cards. The product seed
@@ -229,6 +234,12 @@ pub fn seed_board(
 /// derived from them) and the created/updated times the UI renders only stay
 /// stable across runs if the seed's timestamps do. Snapshot tests pin `at`
 /// (together with [`crate::fmt::freeze_now`]) for reproducible frames.
+///
+/// Returns the number of events ingested. Ingest is async (a writer thread), so
+/// a test can't tell the seed has fully committed by inspecting board state —
+/// trailing events land after any given card appears. The count is the race-free
+/// signal instead: wait until the writer has delivered exactly this many notes
+/// and the whole seed is in, no matter the order or which event is last.
 pub fn seed_demo_board(
     ndb: &Ndb,
     author: &Pubkey,
@@ -236,8 +247,19 @@ pub fn seed_demo_board(
     board_id: &str,
     at: u64,
     publisher: &mut dyn Publisher,
-) {
-    seed_default_board(ndb, author, secret, board_id, publisher);
+) -> usize {
+    let mut ingested = seed_default_board(ndb, author, secret, board_id, publisher);
+
+    // Tally every event the seed writes. `ingest!` wraps [`ingest`], counting each
+    // success; using it for every ingest below keeps the returned count correct as
+    // seed events are added or removed — nothing has to be hand-maintained.
+    macro_rules! ingest {
+        ($builder:expr) => {{
+            let id = ingest(ndb, $builder, secret, publisher);
+            ingested += id.is_some() as usize;
+            id
+        }};
+    }
 
     let addr = board_address(author, board_id);
     // The cards are created a fortnight before `at` and amended at instants in
@@ -275,29 +297,14 @@ pub fn seed_demo_board(
     let mut last_rank: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     let mut ids: std::collections::HashMap<&str, NoteId> = std::collections::HashMap::new();
     for (col_id, title, body, labels) in cards {
-        let Some(id) = ingest(
-            ndb,
-            build_issue(&addr, title, body).created_at(created),
-            secret,
-            publisher,
-        ) else {
+        let Some(id) = ingest!(build_issue(&addr, title, body).created_at(created)) else {
             continue;
         };
         ids.insert(title, id);
         let rank = rank_between(last_rank.get(col_id).map(|s| s.as_str()), None);
-        ingest(
-            ndb,
-            build_placement(board_id, &addr, &id, col_id, &rank).created_at(created),
-            secret,
-            publisher,
-        );
+        ingest!(build_placement(board_id, &addr, &id, col_id, &rank).created_at(created));
         if !labels.is_empty() {
-            ingest(
-                ndb,
-                build_labels(&id, labels).created_at(created),
-                secret,
-                publisher,
-            );
+            ingest!(build_labels(&id, labels).created_at(created));
         }
         last_rank.insert(col_id, rank);
     }
@@ -309,12 +316,7 @@ pub fn seed_demo_board(
     if let Some(parent) = ids.get("Nostr event model") {
         for child in ["Sync cards across relays", "Scaffold the Headway app crate"] {
             if let Some(child) = ids.get(child) {
-                ingest(
-                    ndb,
-                    build_relation(child, Some(parent)).created_at(created),
-                    secret,
-                    publisher,
-                );
+                ingest!(build_relation(child, Some(parent)).created_at(created));
             }
         }
     }
@@ -324,39 +326,25 @@ pub fn seed_demo_board(
     // own instant, so the detail views showcase a populated activity timeline.
     // These land the cards on their final, test-visible state.
     if let Some(card) = ids.get("Nostr event model") {
-        ingest(
-            ndb,
+        ingest!(
             build_subject_edit(card, "Define nostr event model for boards")
-                .created_at(at - 10 * 86_400),
-            secret,
-            publisher,
+                .created_at(at - 10 * 86_400)
         );
-        ingest(
-            ndb,
-            build_labels(card, &["nostr"]).created_at(at - 6 * 86_400),
-            secret,
-            publisher,
-        );
-        ingest(
-            ndb,
+        ingest!(build_labels(card, &["nostr"]).created_at(at - 6 * 86_400));
+        ingest!(
             build_cover_note(
                 card,
                 author,
                 "Decide how boards, columns and cards map to nostr events. \
-                 Likely an addressable (NIP-33) board event plus per-card events.",
+             Likely an addressable (NIP-33) board event plus per-card events.",
             )
-            .created_at(at - 3 * 86_400),
-            secret,
-            publisher,
+            .created_at(at - 3 * 86_400)
         );
     }
     if let Some(card) = ids.get("Drag-and-drop between columns") {
         let rank = rank_between(None, None);
-        ingest(
-            ndb,
-            build_placement(board_id, &addr, card, "in-progress", &rank).created_at(at - 86_400),
-            secret,
-            publisher,
+        ingest!(
+            build_placement(board_id, &addr, card, "in-progress", &rank).created_at(at - 86_400)
         );
     }
 
@@ -370,14 +358,13 @@ pub fn seed_demo_board(
         ("Column reordering", Priority::Low),
     ] {
         if let Some(card) = ids.get(title) {
-            ingest(
-                ndb,
-                build_field(card, Field::Priority, priority.as_str()).created_at(at - 2 * 86_400),
-                secret,
-                publisher,
+            ingest!(
+                build_field(card, Field::Priority, priority.as_str()).created_at(at - 2 * 86_400)
             );
         }
     }
+
+    ingested
 }
 
 /// Apply one [`BoardAction`] against the current `view`, ingesting the events it
