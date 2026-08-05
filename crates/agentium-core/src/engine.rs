@@ -795,14 +795,6 @@ fn pns_discovery_sub_id() -> SubscriptionId {
     SubscriptionId::new("agentium/pns", "discovery")
 }
 
-/// Format question-set answers into the `{"answers": {header: {selected:[…],
-/// other:…}}}` payload the host decodes as the tool result.
-///
-/// Each answer's selected option *indices* are mapped back to their option
-/// *labels* using `questions`, keyed by the question's header (falling back to
-/// `question_{i}` when a header is empty). When the request's option labels
-/// aren't available (`questions` is `None`), the raw answers are serialized
-/// directly as a best-effort fallback.
 /// The current Unix time in seconds.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
