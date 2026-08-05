@@ -641,7 +641,7 @@ impl Engine {
             });
             (
                 request_note_id,
-                format_question_answers(questions, &answers),
+                crate::messages::format_question_answers(questions, &answers),
             )
         };
 
@@ -803,57 +803,6 @@ fn pns_discovery_sub_id() -> SubscriptionId {
 /// `question_{i}` when a header is empty). When the request's option labels
 /// aren't available (`questions` is `None`), the raw answers are serialized
 /// directly as a best-effort fallback.
-/// Render question-set answers as plain, human-readable prose — one
-/// `Header: label, label, other` line per question.
-///
-/// The result rides in the permission_response's `message` field and is
-/// injected to the model verbatim as user text, so it MUST be prose. This
-/// deliberately replaces the old shape, where the answers were serialized to a
-/// JSON string and then escaped *inside* `message` — a double-encoding the
-/// receiver never re-parsed (it always treated `message` as opaque text). New
-/// events carry prose; old events keep decoding fine because `message` is still
-/// just a string on the wire. Formatting happens here, at encode time, because
-/// only the sender holds the question metadata needed to resolve selected
-/// indices to option labels — the decoder never sees the request's options.
-fn format_question_answers(
-    questions: Option<&crate::messages::QuestionSetInput>,
-    answers: &[crate::messages::QuestionAnswer],
-) -> String {
-    let questions = questions.map(|q| q.questions.as_slice()).unwrap_or(&[]);
-
-    answers
-        .iter()
-        .enumerate()
-        .map(|(q_idx, answer)| {
-            let question = questions.get(q_idx);
-
-            // Resolve selected indices to option labels when we have the
-            // question metadata; otherwise fall back to the raw index. Any
-            // free-text "other" is appended as its own part.
-            let mut parts: Vec<String> = answer
-                .selected
-                .iter()
-                .map(|&idx| match question.and_then(|q| q.options.get(idx)) {
-                    Some(opt) => opt.label.clone(),
-                    None => idx.to_string(),
-                })
-                .collect();
-            if let Some(other) = answer.other_text.as_ref().filter(|other| !other.is_empty()) {
-                parts.push(other.clone());
-            }
-
-            let label = match question {
-                Some(q) if !q.header.is_empty() => q.header.clone(),
-                Some(q) if !q.question.is_empty() => q.question.clone(),
-                _ => format!("Question {}", q_idx + 1),
-            };
-
-            format!("{label}: {}", parts.join(", "))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// The current Unix time in seconds.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -1682,7 +1631,9 @@ mod tests {
     /// gracefully when a header or the whole question metadata is missing.
     #[test]
     fn format_question_answers_renders_prose() {
-        use crate::messages::{QuestionAnswer, QuestionOption, QuestionSetInput, UserQuestion};
+        use crate::messages::{
+            format_question_answers, QuestionAnswer, QuestionOption, QuestionSetInput, UserQuestion,
+        };
 
         let question = |header: &str, question: &str, labels: &[&str]| UserQuestion {
             question: question.to_string(),

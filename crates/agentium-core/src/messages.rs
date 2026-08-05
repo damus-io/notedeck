@@ -251,6 +251,54 @@ pub struct QuestionAnswer {
     pub other_text: Option<String>,
 }
 
+/// Render question-set answers as plain, human-readable prose — one
+/// `Header: label, label, other` line per question.
+///
+/// The result is injected to the model verbatim as user text, so it MUST be
+/// prose, NOT a JSON blob. Both answer paths share this: the engine's remote
+/// [`respond_question`](crate::Engine::respond_question) (carrying it in the
+/// permission_response `message`) and desktop dave's local answer handling.
+/// Formatting happens at answer time because only the sender holds the
+/// question metadata needed to resolve selected indices to option labels.
+pub fn format_question_answers(
+    questions: Option<&QuestionSetInput>,
+    answers: &[QuestionAnswer],
+) -> String {
+    let questions = questions.map(|q| q.questions.as_slice()).unwrap_or(&[]);
+
+    answers
+        .iter()
+        .enumerate()
+        .map(|(q_idx, answer)| {
+            let question = questions.get(q_idx);
+
+            // Resolve selected indices to option labels when we have the
+            // question metadata; otherwise fall back to the raw index. Any
+            // free-text "other" is appended as its own part.
+            let mut parts: Vec<String> = answer
+                .selected
+                .iter()
+                .map(|&idx| match question.and_then(|q| q.options.get(idx)) {
+                    Some(opt) => opt.label.clone(),
+                    None => idx.to_string(),
+                })
+                .collect();
+            if let Some(other) = answer.other_text.as_ref().filter(|other| !other.is_empty()) {
+                parts.push(other.clone());
+            }
+
+            let label = match question {
+                Some(q) if !q.header.is_empty() => q.header.clone(),
+                Some(q) if !q.question.is_empty() => q.question.clone(),
+                _ => format!("Question {}", q_idx + 1),
+            };
+
+            format!("{label}: {}", parts.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A request for user permission to use a tool (displayable data only)
 #[derive(Debug, Clone)]
 pub struct PermissionRequest {
