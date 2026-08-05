@@ -2240,6 +2240,92 @@ pub fn card_with_column_in_board(view: &BoardView, issue_id: &[u8; 32]) -> Optio
         .map(|card| ResolvedCard { card, column: None })
 }
 
+/// A card resolved for inline display together with the board it currently lives
+/// on. For a card that was moved across boards this is the *destination* board —
+/// where [`finalize`](BoardReducer::finalize) actually places it — not the origin
+/// board recorded in the card's `a` tag. See [`locate_card`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocatedCard {
+    /// The board the card is live on — the [`BoardView`] this resolution came
+    /// from, and the board a click on the card should open.
+    pub board_id: String,
+    /// The card's resolved state (latest subject, labels and cover applied).
+    pub card: CardView,
+    /// The card's live [`ColumnPos`], or `None` when it is archived (off the live
+    /// columns).
+    pub column: Option<ColumnPos>,
+}
+
+/// Resolve a card for inline display across *every* board `author` owns, rather
+/// than assuming the board recorded in the card's `a` tag.
+///
+/// A card's `a` tag records its *origin* board, but a cross-board move deletes it
+/// there and places it on the destination — membership follows the live placement
+/// ([`finalize`](BoardReducer::finalize) is placement-driven). Resolving against
+/// the stale `a`-tag board would find the card deleted (or absent) and render an
+/// "invalid" chip that opens the wrong board, so we scan the finalized boards and
+/// return the card where it is actually shown.
+///
+/// A live column placement is preferred over an archived one, and among live
+/// boards the newest placement (by [`CardView::placed_at`]) wins — a card is
+/// normally placed on exactly one board, so a move is unambiguous; a genuine
+/// multi-board placement resolves to its most-recently-touched board. `None` when
+/// the card is on no board of this author (deleted everywhere, or its board isn't
+/// folded — the caller falls back to the card's creation-time snapshot).
+pub fn locate_card(
+    reducer: &BoardReducer,
+    author: &Pubkey,
+    issue_id: &[u8; 32],
+) -> Option<LocatedCard> {
+    locate_card_in_boards(&reducer.finalize(), author, issue_id)
+}
+
+/// Resolve a card across an *already-finalized* board set, preferring a live
+/// column placement over an archived one and the newest placement among live
+/// boards. The re-finalize-free core of [`locate_card`]: the inline render path
+/// finalizes once per frame (memoized) and locates each referenced card through
+/// this, mirroring [`card_with_column_in_board`]'s split from [`pick_card_with_column`].
+pub fn locate_card_in_boards(
+    boards: &[BoardView],
+    author: &Pubkey,
+    issue_id: &[u8; 32],
+) -> Option<LocatedCard> {
+    let want = NoteId::new(*issue_id);
+    boards
+        .iter()
+        .filter(|board| &board.author == author.bytes())
+        .filter_map(|board| {
+            let count = board.columns.len();
+            // A live column hit resolves to a status; prefer it over archived.
+            for (index, col) in board.columns.iter().enumerate() {
+                if let Some(card) = col.cards.iter().find(|c| c.id == want) {
+                    return Some(LocatedCard {
+                        board_id: board.id.clone(),
+                        card: card.clone(),
+                        column: Some(ColumnPos { index, count }),
+                    });
+                }
+            }
+            board
+                .archived
+                .iter()
+                .map(|a| &a.card)
+                .find(|c| c.id == want)
+                .cloned()
+                .map(|card| LocatedCard {
+                    board_id: board.id.clone(),
+                    card,
+                    column: None,
+                })
+        })
+        .max_by(|a, b| {
+            a.column
+                .is_some()
+                .cmp(&b.column.is_some())
+                .then(a.card.placed_at.cmp(&b.card.placed_at))
+        })
+}
+
 /// Fold `author`'s headway events out of `ndb` and reduce them into the board
 /// with the given `board_id`, if it exists. A one-shot [`fold_board`] +
 /// [`pick_board`] for callers that don't keep the reducer around.
@@ -3639,5 +3725,80 @@ mod tests {
 
         // Unknown card id -> None.
         assert!(pick_card_with_column(&reducer, &owner.pubkey, "b1", &[0u8; 32]).is_none());
+    }
+
+    /// A card moved across boards keeps its origin board in its `a` tag but lives
+    /// on the destination via its placement. [`locate_card`] resolves it on the
+    /// destination (where it's actually shown), not the stale origin — the board
+    /// an inline chip must read for its status and a click must open.
+    #[test]
+    fn locate_card_resolves_cross_board_move() {
+        let owner = FullKeypair::generate();
+        // The card's `a` tag anchors it to "notedeck" (its origin board).
+        let origin = board_address(&owner.pubkey, "notedeck");
+        let dest = board_address(&owner.pubkey, "dave");
+        let cols = vec![
+            ColumnDef::new("backlog", "Backlog"),
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("in-progress", "In Progress"),
+            ColumnDef::new("in-review", "In Review"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder| {
+            let note = b.sign(&owner.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        // Moved card: created on notedeck, deleted there, placed live on dave.
+        let moved = note_id(&owner, build_issue(&origin, "Moved", "body"));
+        // Orphan: anchored to notedeck by its `a` tag, never placed anywhere.
+        let orphan = note_id(&owner, build_issue(&origin, "Orphan", "body"));
+
+        let events = vec![
+            parse_owned(build_board("notedeck", "Notedeck", "", &cols)),
+            parse_owned(build_board("dave", "Dave", "", &cols)),
+            parse_owned(build_issue(&origin, "Moved", "body")),
+            parse_owned(build_issue(&origin, "Orphan", "body")),
+            // Origin history: placed then deleted (the cross-board move's origin half).
+            parse_owned(
+                build_placement("notedeck", &origin, &moved, "todo", "m").created_at(1_000),
+            ),
+            parse_owned(
+                build_placement("notedeck", &origin, &moved, COL_DELETED, "m").created_at(2_000),
+            ),
+            // Destination: live in In Progress (index 2 of 5).
+            parse_owned(
+                build_placement("dave", &dest, &moved, "in-progress", "m").created_at(3_000),
+            ),
+        ];
+
+        let mut reducer = BoardReducer::default();
+        for event in &events {
+            reducer.ingest(event.clone());
+        }
+
+        // The moved card resolves on dave (the live placement), not its `a`-tag
+        // origin — with its real column position.
+        let located = locate_card(&reducer, &owner.pubkey, moved.bytes()).unwrap();
+        assert_eq!(located.board_id, "dave");
+        assert_eq!(located.card.title, "Moved");
+        assert_eq!(located.column, Some(ColumnPos { index: 2, count: 5 }));
+
+        // The bug this guards: the board-scoped resolver keyed on the origin `a`-tag
+        // board finds the card deleted there and returns nothing.
+        assert!(
+            pick_card_with_column(&reducer, &owner.pubkey, "notedeck", moved.bytes()).is_none(),
+            "card is deleted on its origin board"
+        );
+
+        // An orphan (no placement anywhere) still resolves on its origin board via
+        // the finalize fallback — first column.
+        let located = locate_card(&reducer, &owner.pubkey, orphan.bytes()).unwrap();
+        assert_eq!(located.board_id, "notedeck");
+        assert_eq!(located.column, Some(ColumnPos { index: 0, count: 5 }));
+
+        // Unknown card id -> None.
+        assert!(locate_card(&reducer, &owner.pubkey, &[0u8; 32]).is_none());
     }
 }

@@ -128,9 +128,29 @@ impl Headway {
             return;
         };
 
+        // A card lives on whichever board it's *placed* on, which a cross-board
+        // move makes differ from the origin board its `a` tag records (what
+        // `resolve_open_target` reads). Route to the board it's actually on so the
+        // detail can open; fall back to the origin board when it isn't folded.
+        let board_id = match &target.card {
+            Some(card) => Transaction::new(ctx.ndb)
+                .ok()
+                .and_then(|txn| {
+                    self.board_cache
+                        .borrow_mut()
+                        .with_boards(ctx.ndb, &txn, author, |boards| {
+                            event::locate_card_in_boards(boards, author, card.bytes())
+                        })
+                        .flatten()
+                        .map(|located| located.board_id)
+                })
+                .unwrap_or(target.board_id),
+            None => target.board_id,
+        };
+
         // Switch to the owning board first; the fold lands on a later frame.
-        if self.board_id != target.board_id {
-            self.board_id = target.board_id;
+        if self.board_id != board_id {
+            self.board_id = board_id;
             save_board_pref(ctx.path, author, &self.board_id);
             self.wake();
             return;
@@ -786,41 +806,33 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let author = Pubkey::new(issue.board_author);
         // Resolve the card off the (cached) folded board and draw the shape the
         // context asks for: a compact chip inline in prose, the full card as a
-        // block embed. `.and_then` resolves owned data so the cache borrow drops
-        // before drawing.
+        // block embed. Resolve across *all* the author's boards, not the card's
+        // `a`-tag board: a cross-board move leaves the `a` tag on the origin board
+        // while the card lives on the destination (see [`event::locate_card`]).
+        // `.and_then` resolves owned data so the cache borrow drops before drawing.
+        // Locate the card across *all* the author's boards off the memoized
+        // finalize (see [`with_boards`]), not the card's `a`-tag board: a
+        // cross-board move leaves the `a` tag on the origin while the card lives
+        // on the destination (see [`event::locate_card`]). Resolve to owned data
+        // so the cache borrow drops before drawing.
+        let located = self
+            .cache
+            .borrow_mut()
+            .with_boards(note_context.ndb, req.txn, &author, |boards| {
+                event::locate_card_in_boards(boards, &author, &issue.id)
+            })
+            .flatten();
         let response = match req.context {
-            notedeck::RenderContext::Inline => {
-                let resolved = self
-                    .cache
-                    .borrow_mut()
-                    .with_boards(note_context.ndb, req.txn, &author, |boards| {
-                        event::find_board(boards, &author, &issue.board_id)
-                            .and_then(|b| event::card_with_column_in_board(b, &issue.id))
-                    })
-                    .flatten();
-                match resolved {
-                    Some(resolved) => {
-                        card_chip_ui(ui, &theme, &resolved.card.title, resolved.column)
-                    }
-                    // Board not local to fold: chip from the creation-time snapshot.
-                    None => card_chip_ui(ui, &theme, &issue.subject, None),
-                }
-            }
-            _ => {
-                let card = self
-                    .cache
-                    .borrow_mut()
-                    .with_boards(note_context.ndb, req.txn, &author, |boards| {
-                        event::find_board(boards, &author, &issue.board_id)
-                            .and_then(|b| event::card_in_board(b, &issue.id))
-                    })
-                    .flatten();
-                match card {
-                    Some(card) => card_inline_ui(ui, &theme, &card),
-                    // Board not local to fold: show the creation-time snapshot.
-                    None => issue_inline_ui(ui, &theme, &issue),
-                }
-            }
+            notedeck::RenderContext::Inline => match located {
+                Some(located) => card_chip_ui(ui, &theme, &located.card.title, located.column),
+                // Card on no folded board: chip from the creation-time snapshot.
+                None => card_chip_ui(ui, &theme, &issue.subject, None),
+            },
+            _ => match located {
+                Some(located) => card_inline_ui(ui, &theme, &located.card),
+                // Card on no folded board: show the creation-time snapshot.
+                None => issue_inline_ui(ui, &theme, &issue),
+            },
         };
         open_on_click(ui, response, note)
     }
