@@ -687,6 +687,16 @@ impl ChatSession {
             return 0;
         }
 
+        // The allowlist accepted these without a user click, so flag them as
+        // auto-accepted — their responded rows start expanded for review.
+        for msg in self.chat.iter_mut() {
+            if let Message::PermissionRequest(req) = msg {
+                if to_resolve.contains(&req.id) {
+                    req.auto_accepted = true;
+                }
+            }
+        }
+
         // Resolve each: send Allow on the oneshot and mark in chat
         let agentic = self.agentic.as_mut().unwrap();
         for id in &to_resolve {

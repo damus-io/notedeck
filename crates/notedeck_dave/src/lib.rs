@@ -4324,8 +4324,7 @@ fn handle_permission_request(
             let _ = pending
                 .response_tx
                 .send(PermissionResponse::Allow { message: None });
-            let mut request = pending.request;
-            request.response = Some(crate::messages::PermissionResponseType::Allowed);
+            let request = pending.request.auto_accept();
             session.chat.push(Message::PermissionRequest(request));
             return;
         }
@@ -4646,16 +4645,9 @@ fn handle_remote_permission_request(
                 events_to_publish.push(evt);
             }
         }
-        chat.push(Message::PermissionRequest(
-            crate::messages::PermissionRequest::new(
-                perm_id,
-                tool_name,
-                tool_input,
-                None,
-                Some(crate::messages::PermissionResponseType::Allowed),
-                None,
-            ),
-        ));
+        let request = crate::messages::PermissionRequest::pending(perm_id, tool_name, tool_input)
+            .auto_accept();
+        chat.push(Message::PermissionRequest(request));
         return;
     }
 

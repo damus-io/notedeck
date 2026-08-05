@@ -266,6 +266,11 @@ pub struct PermissionRequest {
     pub response: Option<PermissionResponseType>,
     /// For question-set prompts: pre-computed summary of answers for display
     pub answer_summary: Option<AnswerSummary>,
+    /// Whether this request was auto-accepted (runtime allowlist / Auto Accept
+    /// All) rather than approved by an explicit user click. The user never got
+    /// to review it up front, so its responded row starts expanded for
+    /// after-the-fact inspection. Defaults to `false` (manual approval).
+    pub auto_accepted: bool,
 }
 
 impl PermissionRequest {
@@ -288,7 +293,26 @@ impl PermissionRequest {
             view,
             response,
             answer_summary,
+            auto_accepted: false,
         }
+    }
+
+    /// A fresh, still-pending request: no response yet, no answer summary, and
+    /// the UI view inferred from the tool. This is the common case; use
+    /// [`new`](Self::new) when a backend supplies an explicit view or a
+    /// pre-set response.
+    pub fn pending(id: Uuid, tool_name: String, tool_input: Value) -> Self {
+        Self::new(id, tool_name, tool_input, None, None, None)
+    }
+
+    /// Mark a request as auto-accepted by the runtime allowlist / Auto Accept
+    /// All: records the `Allowed` response and flags it so the responded row
+    /// starts expanded for after-the-fact review (the user never approved it
+    /// up front). These two always travel together for auto-acceptance.
+    pub fn auto_accept(mut self) -> Self {
+        self.response = Some(PermissionResponseType::Allowed);
+        self.auto_accepted = true;
+        self
     }
 }
 
