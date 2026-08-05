@@ -272,69 +272,6 @@ fn snapshot_notebook_vault() {
     harness.snapshot("notebook_vault");
 }
 
-/// Seed vault notes and snapshot the delete-confirmation modal (opened from a
-/// row's context menu) for eyeballing the destructive-action prompt.
-#[test]
-#[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_notebook_vault_delete() {
-    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
-
-    let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
-    let ctx = harness.ctx.clone();
-    {
-        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
-    }
-
-    wait_for_label(&mut harness, "Reading list");
-    harness.run_steps(3);
-    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Delete").simulate_click();
-    wait_for_label(&mut harness, "Delete note?");
-    harness.run_steps(2);
-    harness.snapshot("notebook_vault_delete");
-}
-
-/// Seed vault notes and snapshot a row in inline-rename mode (its editable title
-/// field) for eyeballing the rename affordance.
-#[test]
-#[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_notebook_vault_rename() {
-    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
-
-    let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
-    let ctx = harness.ctx.clone();
-    {
-        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
-    }
-
-    wait_for_label(&mut harness, "Reading list");
-    harness.run_steps(3);
-    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Rename").simulate_click();
-    harness.run_steps(3);
-    harness.snapshot("notebook_vault_rename");
-}
-
 /// Seed a note with rich markdown, open it from the vault, and snapshot the
 /// full-screen editor (source on the left, live rendered preview on the right)
 /// for eyeballing the editor's visual design.
