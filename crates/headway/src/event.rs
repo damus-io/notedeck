@@ -2118,15 +2118,36 @@ pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Board
 /// delta to an up-to-date reducer yields the same state as a full re-fold, so
 /// the app can subscribe-then-poll instead of walking the history every frame.
 /// Notes that aren't recognised headway events are skipped.
+///
+/// Returns the keys that couldn't be read under `txn`. A subscription drains a
+/// key the instant its note is committed, but a read `txn` is a snapshot fixed
+/// at *open* time: a note committed after the caller opened `txn` isn't visible
+/// to it yet, so [`get_note_by_key`](Ndb::get_note_by_key) fails even though the
+/// note exists. Because polling already removed the key from the subscription
+/// inbox, silently skipping it would drop the note until the next full re-seed.
+/// Instead we hand those keys back so the caller can retry them on a later
+/// advance with that frame's fresher snapshot — the re-fold is idempotent, so a
+/// key that turns out to have been visible all along costs nothing to replay.
+#[must_use = "keys that couldn't be read must be retried with a fresher txn, not dropped"]
 #[profiling::function]
-pub fn reduce_delta(reducer: &mut BoardReducer, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) {
+pub fn reduce_delta(
+    reducer: &mut BoardReducer,
+    ndb: &Ndb,
+    txn: &Transaction,
+    keys: &[NoteKey],
+) -> Vec<NoteKey> {
+    let mut deferred = Vec::new();
     for key in keys {
-        if let Ok(note) = ndb.get_note_by_key(txn, *key)
-            && let Some(event) = parse(&note)
-        {
+        let Ok(note) = ndb.get_note_by_key(txn, *key) else {
+            // Committed after `txn`'s snapshot — retry next advance.
+            deferred.push(*key);
+            continue;
+        };
+        if let Some(event) = parse(&note) {
             reducer.ingest(event);
         }
     }
+    deferred
 }
 
 /// Find the board with `board_id` authored by `author` in an *already-finalized*

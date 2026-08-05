@@ -569,6 +569,12 @@ struct CachedAuthor {
     /// references cost 2·N finalizes per frame. Reads borrow this and extract just
     /// the owned data they need ([`BoardCache::with_boards`]).
     finalized: Option<Vec<BoardView>>,
+    /// Keys the subscription drained but that weren't yet visible under the
+    /// read txn they were polled with (their note committed after that txn's
+    /// snapshot — see [`event::reduce_delta`]). Retried on the next advance with
+    /// a fresher snapshot; without this they'd be lost until a full re-seed,
+    /// which is why a cross-device edit could go missing until an app restart.
+    pending: Vec<NoteKey>,
 }
 
 /// The single board-data engine for the Headway app: one subscription + folded
@@ -636,20 +642,35 @@ impl BoardCache {
                 (true, Vec::new())
             }
             Some(sub) => {
-                let keys = ndb.poll_for_notes(sub, 64);
+                let polled = ndb.poll_for_notes(sub, 64);
                 if entry.reducer.is_none() {
                     // First touch (a fresh subscription only reports *future*
-                    // ingests): fold the existing history once to seed.
+                    // ingests): fold the existing history once to seed. Notes
+                    // just drained by `polled` may postdate this seed's snapshot,
+                    // so carry them into `pending` to fold in next advance rather
+                    // than lose them.
                     entry.reducer = event::fold_board(ndb, txn, author);
+                    entry.pending = polled;
                     (true, Vec::new())
-                } else if keys.is_empty() {
+                } else if polled.is_empty() && entry.pending.is_empty() {
                     (false, Vec::new())
+                } else if let Some(reducer) = entry.reducer.as_mut() {
+                    // Incremental: fold the new notes (plus any that a staler
+                    // snapshot couldn't yet see) into the live reducer, and carry
+                    // forward the ones still not visible under this txn.
+                    let mut batch = std::mem::take(&mut entry.pending);
+                    batch.extend_from_slice(&polled);
+                    let deferred = event::reduce_delta(reducer, ndb, txn, &batch);
+                    let fresh: Vec<NoteKey> = batch
+                        .into_iter()
+                        .filter(|k| !deferred.contains(k))
+                        .collect();
+                    entry.pending = deferred;
+                    // Everything deferred (nothing folded) reads as a no-op: keep
+                    // waiting, and crucially don't count it as a full re-seed.
+                    (!fresh.is_empty(), fresh)
                 } else {
-                    // Incremental: fold only the new notes into the live reducer.
-                    if let Some(reducer) = entry.reducer.as_mut() {
-                        event::reduce_delta(reducer, ndb, txn, &keys);
-                    }
-                    (true, keys)
+                    (false, Vec::new())
                 }
             }
         };
@@ -1009,6 +1030,7 @@ mod tests {
     use enostr::FullKeypair;
     use futures_util::StreamExt;
     use nostrdb::{Config, Filter, Ndb, SubscriptionStream};
+    use std::time::{Duration, Instant};
 
     /// A headless harness driving a [`BoardCache`] against a bare `Ndb` — the
     /// subscription / poll / refold logic with no egui in sight. Mirrors the
@@ -1477,6 +1499,93 @@ mod tests {
             cache.finalizes - after_fold,
             1,
             "reads after a fold didn't share a single finalize"
+        );
+    }
+
+    /// A note committed *after* the read txn the delta was polled with — the
+    /// shape of a cross-device edit landing mid-frame — must still fold in, not
+    /// vanish until an app restart. The subscription drains the key immediately,
+    /// but a stale snapshot can't see the note yet; the cache has to retain the
+    /// key and retry it, rather than drop it (the bug this guards against).
+    #[test]
+    fn board_cache_retries_deltas_committed_after_the_read_txn() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+        let mut cache = BoardCache::default();
+
+        // Block until `sub` reports an ingest (the writer commits asynchronously).
+        // Reads the subscription inbox, not the db, so it needs no transaction —
+        // which lets us wait while holding a stale read txn open below.
+        let wait_commit = |sub| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while ndb.poll_for_notes(sub, 64).is_empty() {
+                assert!(Instant::now() < deadline, "note never committed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let has_board = |cache: &BoardCache, id: &str| {
+            cache
+                .authors
+                .get(&kp.pubkey)
+                .and_then(|a| a.reducer.as_ref())
+                .is_some_and(|r| r.finalize().iter().any(|b| b.id == id))
+        };
+        let seed = |id: &str, title: &str| {
+            store::seed_board(
+                &ndb,
+                &kp.pubkey,
+                &kp.secret_key.secret_bytes(),
+                id,
+                title,
+                &mut store::NoPublish,
+            );
+        };
+
+        // Board "alpha" exists before the cache subscribes, so it lands in the
+        // seed fold (a detector sub tells us when the async write has committed).
+        let det = ndb.subscribe(&[event::headway_filter(&kp.pubkey)]).unwrap();
+        seed("alpha", "Alpha");
+        wait_commit(det);
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            cache.poll(&ndb, &txn, &kp.pubkey);
+        }
+        assert!(has_board(&cache, "alpha"), "seed fold picked up alpha");
+
+        // Open a snapshot, *then* commit board "beta" after it: beta's note is now
+        // in the subscription inbox but invisible to this older transaction.
+        let stale = Transaction::new(&ndb).unwrap();
+        seed("beta", "Beta");
+        wait_commit(det);
+
+        // Advancing under the stale snapshot drains beta's key but can't read the
+        // note — it must be retained, not folded and not lost.
+        let changed = cache.poll(&ndb, &stale, &kp.pubkey).changed;
+        drop(stale);
+        assert!(!changed, "a deferred-only advance reads as a no-op");
+        assert!(
+            !has_board(&cache, "beta"),
+            "beta isn't visible under the stale snapshot yet"
+        );
+        assert!(
+            !cache.authors[&kp.pubkey].pending.is_empty(),
+            "the undrained key is retained for retry, not dropped"
+        );
+
+        // The next advance opens a fresh snapshot; the retained key now resolves.
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            cache.poll(&ndb, &txn, &kp.pubkey);
+        }
+        assert!(
+            has_board(&cache, "beta"),
+            "the retained delta folds in on the next, fresher advance"
+        );
+        assert!(cache.authors[&kp.pubkey].pending.is_empty());
+        assert_eq!(
+            cache.full_reloads, 1,
+            "recovered by folding a delta, not by re-seeding the whole history"
         );
     }
 
