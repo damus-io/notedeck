@@ -803,45 +803,55 @@ fn pns_discovery_sub_id() -> SubscriptionId {
 /// `question_{i}` when a header is empty). When the request's option labels
 /// aren't available (`questions` is `None`), the raw answers are serialized
 /// directly as a best-effort fallback.
+/// Render question-set answers as plain, human-readable prose — one
+/// `Header: label, label, other` line per question.
+///
+/// The result rides in the permission_response's `message` field and is
+/// injected to the model verbatim as user text, so it MUST be prose. This
+/// deliberately replaces the old shape, where the answers were serialized to a
+/// JSON string and then escaped *inside* `message` — a double-encoding the
+/// receiver never re-parsed (it always treated `message` as opaque text). New
+/// events carry prose; old events keep decoding fine because `message` is still
+/// just a string on the wire. Formatting happens here, at encode time, because
+/// only the sender holds the question metadata needed to resolve selected
+/// indices to option labels — the decoder never sees the request's options.
 fn format_question_answers(
     questions: Option<&crate::messages::QuestionSetInput>,
     answers: &[crate::messages::QuestionAnswer],
 ) -> String {
-    let Some(questions) = questions else {
-        return serde_json::to_string(answers).unwrap_or_else(|_| "{}".to_string());
-    };
+    let questions = questions.map(|q| q.questions.as_slice()).unwrap_or(&[]);
 
-    let mut answers_obj = serde_json::Map::new();
-    for (q_idx, (question, answer)) in questions.questions.iter().zip(answers.iter()).enumerate() {
-        let mut answer_obj = serde_json::Map::new();
+    answers
+        .iter()
+        .enumerate()
+        .map(|(q_idx, answer)| {
+            let question = questions.get(q_idx);
 
-        let selected_labels: Vec<serde_json::Value> = answer
-            .selected
-            .iter()
-            .filter_map(|&idx| question.options.get(idx))
-            .map(|opt| serde_json::Value::String(opt.label.clone()))
-            .collect();
-        answer_obj.insert(
-            "selected".to_string(),
-            serde_json::Value::Array(selected_labels),
-        );
+            // Resolve selected indices to option labels when we have the
+            // question metadata; otherwise fall back to the raw index. Any
+            // free-text "other" is appended as its own part.
+            let mut parts: Vec<String> = answer
+                .selected
+                .iter()
+                .map(|&idx| match question.and_then(|q| q.options.get(idx)) {
+                    Some(opt) => opt.label.clone(),
+                    None => idx.to_string(),
+                })
+                .collect();
+            if let Some(other) = answer.other_text.as_ref().filter(|other| !other.is_empty()) {
+                parts.push(other.clone());
+            }
 
-        if let Some(other) = answer.other_text.as_ref().filter(|other| !other.is_empty()) {
-            answer_obj.insert(
-                "other".to_string(),
-                serde_json::Value::String(other.clone()),
-            );
-        }
+            let label = match question {
+                Some(q) if !q.header.is_empty() => q.header.clone(),
+                Some(q) if !q.question.is_empty() => q.question.clone(),
+                _ => format!("Question {}", q_idx + 1),
+            };
 
-        let key = if question.header.is_empty() {
-            format!("question_{q_idx}")
-        } else {
-            question.header.clone()
-        };
-        answers_obj.insert(key, serde_json::Value::Object(answer_obj));
-    }
-
-    serde_json::json!({ "answers": answers_obj }).to_string()
+            format!("{label}: {}", parts.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The current Unix time in seconds.
@@ -1565,8 +1575,9 @@ mod tests {
     }
 
     /// Seeding an `AskUserQuestion` request and answering it publishes an
-    /// approving response whose message carries the answers keyed by question
-    /// header, with selected *indices* resolved to option *labels*.
+    /// approving response whose message carries the answers as plain prose —
+    /// `Header: label, label, other` — with selected *indices* resolved to
+    /// option *labels*, and with no JSON escaped inside `message`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn respond_question_formats_selected_labels_by_header() {
         use crate::messages::QuestionAnswer;
@@ -1656,15 +1667,65 @@ mod tests {
         })
         .await
         .expect("a permission_response should have been published");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&payload).expect("message is answers json");
-        let answer = &parsed["answers"]["Languages"];
-        assert_eq!(
-            answer["selected"],
-            serde_json::json!(["Rust", "Zig"]),
-            "selected indices resolve to their option labels"
+        // Plain prose, not a JSON blob: the header labels the line and the
+        // selected indices are resolved to their option labels, with the
+        // free-text "other" appended.
+        assert_eq!(payload, "Languages: Rust, Zig, Haskell");
+        assert!(
+            !payload.contains('{') && !payload.contains('\\'),
+            "the answers must not be JSON escaped into the message: {payload:?}"
         );
-        assert_eq!(answer["other"], serde_json::json!("Haskell"));
+    }
+
+    /// `format_question_answers` renders one `Header: …` prose line per
+    /// question, joins multiple with newlines, resolves labels, and degrades
+    /// gracefully when a header or the whole question metadata is missing.
+    #[test]
+    fn format_question_answers_renders_prose() {
+        use crate::messages::{QuestionAnswer, QuestionOption, QuestionSetInput, UserQuestion};
+
+        let question = |header: &str, question: &str, labels: &[&str]| UserQuestion {
+            question: question.to_string(),
+            header: header.to_string(),
+            multi_select: true,
+            options: labels
+                .iter()
+                .map(|l| QuestionOption {
+                    label: l.to_string(),
+                    description: String::new(),
+                })
+                .collect(),
+        };
+
+        // Two questions: a multi-select with an "other", and a single-select
+        // whose header is empty (falls back to the question text).
+        let set = QuestionSetInput {
+            questions: vec![
+                question("Languages", "Which?", &["Rust", "Swift", "Zig"]),
+                question("", "Pick a theme", &["Light", "Dark"]),
+            ],
+        };
+        let answers = vec![
+            QuestionAnswer {
+                selected: vec![0, 2],
+                other_text: Some("Haskell".into()),
+            },
+            QuestionAnswer {
+                selected: vec![1],
+                other_text: None,
+            },
+        ];
+        assert_eq!(
+            format_question_answers(Some(&set), &answers),
+            "Languages: Rust, Zig, Haskell\nPick a theme: Dark",
+        );
+
+        // No question metadata: indices can't resolve to labels, so fall back to
+        // the raw index and a numbered header — still prose, never JSON.
+        assert_eq!(
+            format_question_answers(None, &answers),
+            "Question 1: 0, 2, Haskell\nQuestion 2: 1",
+        );
     }
 
     #[tokio::test]

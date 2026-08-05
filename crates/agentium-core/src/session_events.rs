@@ -1530,6 +1530,28 @@ mod tests {
         assert!(cancel_turn);
     }
 
+    /// Backward compat: a legacy question-set response, where the answers were
+    /// serialized to JSON and escaped *inside* `message` (the old
+    /// double-encoding), must still decode. The decoder treats `message` as
+    /// opaque text, so the escaped JSON round-trips back out as-is — old events
+    /// already stored in nostrdb keep working after the encode switched to prose.
+    #[test]
+    fn test_decode_permission_response_legacy_answers_json() {
+        let legacy = r#"{"decision":"allow","message":"{\"answers\":{\"Languages\":{\"selected\":[\"Rust\"]}}}","interrupt":false}"#;
+        let (response_type, message, cancel_turn) = decode_permission_response(legacy);
+
+        assert_eq!(
+            response_type,
+            crate::messages::PermissionResponseType::Allowed
+        );
+        assert_eq!(
+            message.as_deref(),
+            Some(r#"{"answers":{"Languages":{"selected":["Rust"]}}}"#),
+            "the legacy escaped-JSON message decodes back intact"
+        );
+        assert!(!cancel_turn);
+    }
+
     #[test]
     fn test_build_session_state_event() {
         let sk = test_secret_key();
