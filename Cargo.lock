@@ -175,7 +175,6 @@ dependencies = [
  "futures-util",
  "hex",
  "md-stream",
- "negentropy 0.5.0",
  "nostrdb",
  "nostrdb_net",
  "serde",
@@ -5257,7 +5256,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.10.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=e2ef5b47838b#e2ef5b47838b49dde14a077f2c704dc8c00d96db"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=a329c7d58f79#a329c7d58f79439c59c4cd9a7d2f149aa9ef9a48"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -5273,12 +5272,14 @@ dependencies = [
 [[package]]
 name = "nostrdb_net"
 version = "0.1.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=e2ef5b47838b#e2ef5b47838b49dde14a077f2c704dc8c00d96db"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=a329c7d58f79#a329c7d58f79439c59c4cd9a7d2f149aa9ef9a48"
 dependencies = [
+ "base64 0.22.1",
  "bech32",
  "dirs",
  "futures-util",
  "hex",
+ "hkdf",
  "libc",
  "negentropy 0.5.0",
  "nostr 0.37.0",
@@ -5286,6 +5287,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.24.0",

@@ -88,7 +88,6 @@ use std::time::Duration;
 use enostr::pns::PNS_KIND;
 use enostr::NormRelayUrl;
 use futures_util::StreamExt;
-use negentropy::{Id, NegentropyStorageVector};
 use nostrdb::{Filter, Ndb, SendFilter, SubscriptionStream, Transaction};
 use nostrdb_net::relay::sync;
 use nostrdb_net::{ClientMessage, RelayPool, RelayStatus, WsEvent, WsMessage};
@@ -99,10 +98,6 @@ use crate::messages::Message;
 use crate::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
 use crate::session_loader::SessionState;
 use crate::transport::{SubscriptionId, SubscriptionSpec, Transport};
-
-/// How many event ids to pull per `REQ` when fetching reconciled events, kept
-/// under the relay's single-`REQ` replay cap (mirrors nostrdb_net's sync).
-const ID_FETCH_CHUNK: usize = 300;
 
 /// An error from constructing or driving the [`Engine`].
 #[derive(Debug, thiserror::Error)]
@@ -1124,71 +1119,25 @@ async fn backfill(ndb: Ndb, url: String, filters: Vec<SendFilter>) {
 
     // Consume by value: an owned `SendFilter` is `Send` and may cross the awaits
     // below, whereas a `&SendFilter` would require `SendFilter: Sync` (it isn't).
+    // Reduce each filter to its wire JSON and sealed local set *synchronously* —
+    // the transient `nostrdb::Filter` from `as_filter()` drops at each `;`, so it
+    // never crosses an await — then hand both to `pull_reconcile`, whose future
+    // stays `Send` precisely because it takes no `Filter`.
     for filter in filters {
         let Ok(filter_json) = filter.as_filter().json() else {
             continue;
         };
-        let storage = match local_negentropy_set(&ndb, filter.as_filter()) {
-            Ok(storage) => storage,
+        let local = match sync::local_set(&ndb, filter.as_filter()) {
+            Ok(local) => local,
             Err(e) => {
                 tracing::warn!("engine backfill: local set failed: {e}");
                 continue;
             }
         };
-
-        // Collapse the reconcile `Result` (whose `Box<dyn Error>` is !Send) into
-        // a `Send` `Option` *before* any further await — otherwise the `match`
-        // scrutinee temporary keeps the `Box` slot alive across the `sync_into`
-        // awaits below and the whole future becomes !Send. `None` means the relay
-        // couldn't reconcile, so fall back to a plain NIP-01 `REQ`.
-        let need = match relay.reconcile(&filter_json, storage).await {
-            Ok(diff) => Some(diff.need),
-            Err(e) => {
-                tracing::debug!("engine backfill: reconcile unavailable ({e}); REQ fallback");
-                None
-            }
-        };
-        match need {
-            Some(need) => {
-                for chunk in need.chunks(ID_FETCH_CHUNK) {
-                    let ids: Vec<String> = chunk.iter().map(hex::encode).collect();
-                    let req = serde_json::json!({ "ids": ids }).to_string();
-                    if let Err(e) = relay.sync_into(&ndb, &req).await {
-                        tracing::warn!("engine backfill: fetch failed: {e}");
-                        break;
-                    }
-                }
-            }
-            None => {
-                if let Err(e) = relay.sync_into(&ndb, &filter_json).await {
-                    tracing::warn!("engine backfill: REQ fallback failed: {e}");
-                }
-            }
+        if let Err(e) = sync::pull_reconcile(&mut relay, &ndb, &filter_json, local).await {
+            tracing::warn!("engine backfill: {url}: {e}");
         }
     }
-}
-
-/// The sealed negentropy set of the cached events matching `filter`, keyed by
-/// `(created_at, id)` — the local side handed to [`sync::Relay::reconcile`].
-///
-/// Opens the transaction inline and drops it before returning, so no non-`Send`
-/// value escapes into the async caller.
-fn local_negentropy_set(ndb: &Ndb, filter: &Filter) -> Result<NegentropyStorageVector, String> {
-    let txn = Transaction::new(ndb).map_err(|e| format!("txn: {e}"))?;
-    let mut storage = NegentropyStorageVector::new();
-    ndb.fold(
-        &txn,
-        std::slice::from_ref(filter),
-        &mut storage,
-        |acc, note| {
-            // insert only fails on a bad id length, impossible for a stored note.
-            let _ = acc.insert(note.created_at(), Id::from_byte_array(*note.id()));
-            acc
-        },
-    )
-    .map_err(|e| format!("fold: {e}"))?;
-    storage.seal().map_err(|e| format!("seal: {e}"))?;
-    Ok(storage)
 }
 
 #[cfg(test)]
