@@ -74,6 +74,19 @@ impl JsonlLine {
         Some(dt.timestamp() as u64)
     }
 
+    /// Parse the timestamp as unix **milliseconds**.
+    ///
+    /// Claude Code JSONL timestamps carry millisecond precision (e.g.
+    /// `2026-02-09T20:43:35.675Z`), and a single turn emits several lines within
+    /// one wall-clock second. This sub-second component is what lets converted
+    /// events order correctly against live ones without relying on the `seq`
+    /// counter — see the ordering note in [`crate::session_loader`].
+    pub fn timestamp_millis(&self) -> Option<u64> {
+        let ts_str = self.timestamp()?;
+        let dt = chrono::DateTime::parse_from_rfc3339(ts_str).ok()?;
+        dt.timestamp_millis().try_into().ok()
+    }
+
     pub fn cwd(&self) -> Option<&str> {
         self.get_str("cwd")
     }

@@ -4537,22 +4537,13 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
     let mut needs_reorder = false;
 
-    // Sort this batch by `created_at`, using `seq` only as a same-second
-    // tiebreaker — the same ordering the loader uses (see `session_loader`).
-    // `created_at` is the authoritative wall-clock order; `seq` disambiguates
-    // the burst of events a turn stamps into a single second. Sorting by `seq`
-    // first is wrong once a session mixes the live and convert seq counters,
-    // whose ranges diverge. Events with no `seq` tiebreak last (`u32::MAX`).
+    // Sort this batch by wall-clock time at millisecond resolution, keyed off
+    // the same `EventOrder` the loader uses so the two can never drift apart.
     // NOTE: this only orders within a single poll batch; events that arrive in
     // a later batch are still appended after earlier ones (see
     // process_conversation_notes docs), so out-of-order delivery across polls
     // can still misorder the chat.
-    notes.sort_by_key(|n| {
-        let seq = session_events::get_tag_value(n, "seq")
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(u32::MAX);
-        (n.created_at(), seq)
-    });
+    notes.sort_by_key(|n| session_loader::EventOrder::from_note(n));
 
     for note in &notes {
         // Skip events we've already processed (dedup)
@@ -4585,9 +4576,9 @@ pub(crate) fn process_conversation_notes<'a>(
         };
 
         // Track conversation ordering. Live events are appended in arrival
-        // order, so a displayable note whose `seq` is below the highest seen
-        // means relay delivery was out of order; flag a rebuild from ndb in
-        // `seq` order. Only newly-seen notes reach here (deduped above).
+        // order, so a displayable note whose ordering key is below the highest
+        // seen means relay delivery was out of order; flag a rebuild from ndb in
+        // sorted order. Only newly-seen notes reach here (deduped above).
         let displayable = matches!(
             role,
             Some("user")
@@ -4598,14 +4589,11 @@ pub(crate) fn process_conversation_notes<'a>(
                 | Some("compaction_complete")
         );
         if displayable {
-            if let Some(seq) =
-                session_events::get_tag_value(note, "seq").and_then(|s| s.parse::<u32>().ok())
-            {
-                if matches!(agentic.max_seen_seq, Some(prev) if seq < prev) {
-                    needs_reorder = true;
-                }
-                agentic.max_seen_seq = Some(agentic.max_seen_seq.map_or(seq, |p| p.max(seq)));
+            let order = session_loader::EventOrder::from_note(note);
+            if matches!(agentic.max_seen_order, Some(prev) if order < prev) {
+                needs_reorder = true;
             }
+            agentic.max_seen_order = Some(agentic.max_seen_order.map_or(order, |p| p.max(order)));
         }
 
         match role {

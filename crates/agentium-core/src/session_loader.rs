@@ -19,6 +19,39 @@ use std::collections::{HashMap, HashSet};
 // of this module. (Eventual home is nostrdb itself.)
 pub use enostr::{query_replaceable, query_replaceable_filtered};
 
+/// Total ordering key for a conversation event, at millisecond wall-clock
+/// resolution.
+///
+/// `millis` — the sub-second `ms` tag, or `created_at * 1000` for events synced
+/// before that tag existed — is authoritative. Time is used rather than `seq`
+/// alone because a session mixes two independent `seq` counters whose ranges
+/// diverge (the live `ThreadingState` and `convert_session_to_events`), so
+/// `seq`-first ordering floats live-typed user messages to the bottom. `seq` is
+/// kept only as the final tiebreak for legacy same-second events that also
+/// predate `ms`. Field order (millis, then seq) is the comparison order.
+///
+/// This is the single source of truth for conversation ordering: the loader,
+/// the live poll-batch sorter, and out-of-order delivery detection all key off
+/// it, so they can never drift apart.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct EventOrder {
+    millis: u64,
+    seq: u32,
+}
+
+impl EventOrder {
+    /// Derive the ordering key from a conversation note's `ms` and `seq` tags.
+    pub fn from_note(note: &nostrdb::Note) -> Self {
+        let millis = get_tag_value(note, "ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or_else(|| note.created_at() * 1000);
+        let seq = get_tag_value(note, "seq")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(u32::MAX);
+        EventOrder { millis, seq }
+    }
+}
+
 /// Result of loading session messages, including threading info for live events.
 pub struct LoadedSession {
     pub messages: Vec<Message>,
@@ -89,29 +122,9 @@ fn load_session_messages_with_author(
         .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
         .collect();
 
-    // Sort by `created_at` first, using `seq` only as a same-second tiebreaker.
-    //
-    // `created_at` is the authoritative order: every event carries real
-    // wall-clock time — convert preserves the original JSONL timestamp, live
-    // events use `now_secs()` — and a live event is always emitted at or after
-    // the conversation it follows, so `created_at` never inverts logical order
-    // across seconds. `seq` is NOT reliable as the primary key: a session mixes
-    // events from two independent counters (the live `ThreadingState` seeded
-    // from ndb, and `convert_session_to_events`, which restarts at 0), so their
-    // `seq` ranges diverge and live-typed user messages float to the bottom
-    // when sorted by `seq`. `created_at` has no such split.
-    //
-    // `seq` still matters within a single second: `created_at` is only
-    // second-resolution, so a turn's burst of events (or a synced backlog) can
-    // share one timestamp, and there `seq` — the per-turn monotonic counter —
-    // orders them (e.g. keeps a pending permission request after the assistant
-    // text it follows). Events missing a `seq` tag tiebreak last (`u32::MAX`).
-    notes.sort_by_key(|note| {
-        let seq = get_tag_value(note, "seq")
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(u32::MAX);
-        (note.created_at(), seq)
-    });
+    // Sort by wall-clock time at millisecond resolution — see [`EventOrder`]
+    // for why time, not `seq`, is the authoritative axis.
+    notes.sort_by_key(|note| EventOrder::from_note(note));
 
     // The next event's `seq` is one past the highest `seq` actually assigned,
     // ignoring seq-less events (see `LoadedSession::next_seq`). Using the note
@@ -669,6 +682,59 @@ mod tests {
         assert!(
             matches!(loaded.messages[1], Message::Assistant(_)),
             "later assistant reply must sort second: {:?}",
+            loaded.messages
+        );
+    }
+
+    /// Within a single wall-clock second, the sub-second `ms` tag wins over
+    /// `seq`. This is the case only millisecond time can resolve: two events
+    /// share one `created_at`, but their `seq` values come from the two
+    /// independent counters (live vs convert) and so disagree with real order.
+    /// The event with the *earlier* `ms` must sort first even though it carries
+    /// the *higher* `seq`.
+    #[tokio::test]
+    async fn same_second_events_order_by_ms() {
+        let sk = test_secret_key();
+        let session_id = "same-second-ms-test";
+        let t = 1_770_000_000u64; // one shared second for both events
+
+        // "first" is earlier by ms (t+0.100s) but carries the higher seq (9);
+        // "second" is later by ms (t+0.900s) but the lower seq (2). If `seq`
+        // won, "second" would sort first — `ms` must override that.
+        let first_ms = (t * 1000 + 100).to_string();
+        let second_ms = (t * 1000 + 900).to_string();
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "first", t, 9, &[("ms", &first_ms)]),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "assistant",
+                "second",
+                t,
+                2,
+                &[("ms", &second_ms)],
+            ),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        // Ingest reversed to mimic out-of-order relay delivery.
+        let reversed: Vec<String> = events.iter().rev().cloned().collect();
+        ingest_all(&ndb, &filter, &reversed).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        assert_eq!(loaded.messages.len(), 2);
+        assert!(
+            matches!(loaded.messages[0], Message::User(_)),
+            "earlier-ms event must sort first despite its higher seq (9 vs 2): {:?}",
+            loaded.messages
+        );
+        assert!(
+            matches!(loaded.messages[1], Message::Assistant(_)),
+            "later-ms event must sort second despite its lower seq: {:?}",
             loaded.messages
         );
     }

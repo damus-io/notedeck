@@ -94,6 +94,11 @@ pub struct ThreadingState {
     session_id: Option<String>,
     /// Last seen timestamp in seconds (carried forward for lines that lack it).
     last_timestamp: Option<u64>,
+    /// Last seen timestamp in milliseconds (carried forward for lines that lack
+    /// it). Kept alongside [`last_timestamp`](Self::last_timestamp) so the
+    /// sub-second ordering tag stays consistent with the second-resolution
+    /// `created_at`.
+    last_timestamp_millis: Option<u64>,
 }
 
 impl Default for ThreadingState {
@@ -111,6 +116,7 @@ impl ThreadingState {
             seq: 0,
             session_id: None,
             last_timestamp: None,
+            last_timestamp_millis: None,
         }
     }
 
@@ -127,6 +133,9 @@ impl ThreadingState {
         if let Some(ts) = line.timestamp_secs() {
             self.last_timestamp = Some(ts);
         }
+        if let Some(ms) = line.timestamp_millis() {
+            self.last_timestamp_millis = Some(ms);
+        }
     }
 
     /// Get the session ID for the current line, falling back to the last seen.
@@ -139,6 +148,12 @@ impl ThreadingState {
     /// Get the timestamp for the current line, falling back to the last seen.
     fn timestamp_for(&self, line: &JsonlLine) -> Option<u64> {
         line.timestamp_secs().or(self.last_timestamp)
+    }
+
+    /// Get the millisecond timestamp for the current line, falling back to the
+    /// last seen. Used to stamp the sub-second ordering tag.
+    fn timestamp_millis_for(&self, line: &JsonlLine) -> Option<u64> {
+        line.timestamp_millis().or(self.last_timestamp_millis)
     }
 
     /// Seed threading state from existing events (e.g. loaded from ndb).
@@ -202,6 +217,33 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// Get the current Unix timestamp in milliseconds.
+///
+/// Live events stamp this into the `ms` ordering tag so a turn's burst of
+/// events — all sharing one `created_at` second — orders sub-second without
+/// leaning on the `seq` counter (see [`crate::session_loader`]).
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Stamp the `ms` sub-second ordering tag (unix milliseconds) when the event's
+/// millisecond timestamp is known.
+///
+/// `created_at` is only second-resolution, so it cannot order the several
+/// events a single turn emits within one second. `ms` carries the full
+/// millisecond timestamp and is the loader's primary same-second tiebreak,
+/// consistent across the archive (`convert`) and live paths because both derive
+/// it from the same instant as `created_at`.
+fn stamp_ms_tag(builder: NoteBuilder<'_>, timestamp_ms: Option<u64>) -> NoteBuilder<'_> {
+    match timestamp_ms {
+        Some(ms) => builder.start_tag().tag_str("ms").tag_str(&ms.to_string()),
+        None => builder,
+    }
+}
+
 /// Initialize a NoteBuilder with kind, content, and optional timestamp.
 fn init_note_builder(kind: u32, content: &str, timestamp: Option<u64>) -> NoteBuilder<'_> {
     let mut builder = NoteBuilder::new()
@@ -260,6 +302,7 @@ pub fn build_events(
     // then update context for subsequent lines.
     let session_id = threading.session_id_for(line);
     let timestamp = threading.timestamp_for(line);
+    let timestamp_ms = threading.timestamp_millis_for(line);
     threading.update_context(line);
 
     let msg = line.message();
@@ -316,6 +359,7 @@ pub fn build_events(
                 session_id.as_deref(),
                 None,
                 timestamp,
+                timestamp_ms,
                 threading,
                 secret_key,
             )?;
@@ -360,6 +404,7 @@ pub fn build_events(
             session_id.as_deref(),
             None,
             timestamp,
+            timestamp_ms,
             threading,
             secret_key,
         )?;
@@ -460,6 +505,7 @@ fn build_single_event(
     session_id: Option<&str>,
     cwd: Option<&str>,
     timestamp: Option<u64>,
+    timestamp_ms: Option<u64>,
     threading: &ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
@@ -491,7 +537,11 @@ fn build_single_event(
             .tag_str("reply");
     }
 
-    // -- Sequence number (monotonic, for unambiguous ordering) --
+    // -- Ordering tags --
+    // `ms` (sub-second wall-clock) is the primary same-second tiebreak the
+    // loader uses; `seq` is retained as a per-session monotonic index for the
+    // JSONL reconstructor and out-of-order detection (see `session_loader`).
+    builder = stamp_ms_tag(builder, timestamp_ms);
     let seq_str = threading.seq.to_string();
     builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
@@ -561,6 +611,9 @@ pub fn build_live_event(
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
+    // One instant for both `created_at` (seconds) and the `ms` ordering tag so
+    // they never straddle a second boundary.
+    let now_ms = now_millis();
     let event = build_single_event(
         None,
         content,
@@ -571,7 +624,8 @@ pub fn build_live_event(
         tool_name,
         Some(session_id),
         cwd,
-        Some(now_secs()),
+        Some(now_ms / 1000),
+        Some(now_ms),
         threading,
         secret_key,
     )?;
@@ -684,12 +738,14 @@ pub fn build_permission_request_event(
 
     let perm_id_str = perm_id.to_string();
 
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
 
-    // Sequence number (monotonic, for unambiguous ordering)
+    // Ordering tags: `ms` sub-second (primary tiebreak), `seq` monotonic index.
+    builder = stamp_ms_tag(builder, Some(now_ms));
     let seq_str = threading.seq.to_string();
     builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
@@ -744,14 +800,17 @@ pub fn build_permission_response_event(
 
     let perm_id_str = perm_id.to_string();
 
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
 
-    // Sequence number (monotonic, for unambiguous ordering). Every kind-1988
-    // conversation event carries one — see the `no_conversation_event_is_seqless`
-    // invariant test.
+    // Ordering tags. `ms` (sub-second wall-clock) is the loader's primary
+    // same-second tiebreak; `seq` remains a per-session monotonic index. Every
+    // kind-1988 conversation event carries a `seq` — see the
+    // `no_conversation_event_is_seqless` invariant test.
+    builder = stamp_ms_tag(builder, Some(now_ms));
     let seq_str = threading.seq.to_string();
     builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
@@ -1026,13 +1085,15 @@ pub fn build_set_permission_mode_event(
     })
     .to_string();
 
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
 
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
 
-    // Sequence number (monotonic, for unambiguous ordering). Every kind-1988
-    // conversation event carries one — see the `no_conversation_event_is_seqless`
-    // invariant test.
+    // Ordering tags: `ms` sub-second (primary tiebreak), `seq` monotonic index.
+    // Every kind-1988 conversation event carries a `seq` — see the
+    // `no_conversation_event_is_seqless` invariant test.
+    builder = stamp_ms_tag(builder, Some(now_ms));
     let seq_str = threading.seq.to_string();
     builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
