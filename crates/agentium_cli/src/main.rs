@@ -26,10 +26,16 @@ use relay_sync::Result;
 /// `~/.local/share/agentium-cli` on Linux).
 const APP: &str = "agentium-cli";
 
-/// How long a read command waits for the relay's initial reconcile to stream
-/// session state into the cache before reading it. Bounded so an empty or
-/// unreachable relay falls through to the cache promptly rather than hanging.
-const SYNC_SETTLE: Duration = Duration::from_secs(2);
+/// How long to wait for the *first* synced session-state event before giving up.
+/// Short, since the common relay is local, but enough for a remote one to
+/// answer; an empty or unreachable relay falls through to the cache after this.
+const SYNC_FIRST_WAIT: Duration = Duration::from_secs(2);
+/// Once events are flowing, treat the initial sync as settled after this long
+/// with no new session-state event — so a read sees the whole batch, not just
+/// the first session to land.
+const SYNC_IDLE: Duration = Duration::from_millis(400);
+/// Hard cap on the total settle wait, so a chatty relay can't stall the read.
+const SYNC_MAX: Duration = Duration::from_secs(6);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -103,10 +109,29 @@ async fn run() -> Result<()> {
     // still can't decrypt *their* private sessions — only they hold that key.
     engine.connect(&mut transport, &relay)?;
 
-    // Give the initial reconcile a bounded moment to land session state before
-    // we read. Times out cleanly when the relay is empty or unreachable.
+    // Let the initial reconcile stream session state into the cache before we
+    // read. `watch.changed()` fires on the *first* event, so waiting on it alone
+    // reads after only one of many sessions has landed — the rest are still
+    // streaming in. Instead: wait for the first event, then keep draining until
+    // the stream goes quiet (SYNC_IDLE), bounded by SYNC_MAX so a chatty relay
+    // can't stall us. An empty/unreachable relay just times out the first wait.
     if let Ok(mut watch) = engine.watch_sessions() {
-        let _ = tokio::time::timeout(SYNC_SETTLE, watch.changed()).await;
+        // Wait for the first synced session-state event; an empty or unreachable
+        // relay just times out here and we read whatever the cache already holds.
+        let synced = tokio::time::timeout(SYNC_FIRST_WAIT, watch.changed())
+            .await
+            .unwrap_or(false);
+        // Then keep draining until the stream goes quiet, so we read the whole
+        // batch rather than the first session to land — bounded by SYNC_MAX.
+        if synced {
+            let deadline = tokio::time::Instant::now() + SYNC_MAX;
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    got = watch.changed() => if !got { break; },
+                    _ = tokio::time::sleep(SYNC_IDLE) => break,
+                }
+            }
+        }
     }
 
     // `--author` overrides whose sessions we read; it defaults to the signer.
