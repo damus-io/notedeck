@@ -72,8 +72,10 @@ pub fn ask_user_question_ui(
                     ui.add_space(4.0);
                 }
 
-                // Header badge and question text
-                ui.horizontal(|ui| {
+                // Header badge and question text. Use a wrapping horizontal
+                // layout so long questions flow onto the next line instead of
+                // escaping the column width on narrow (mobile) layouts.
+                ui.horizontal_wrapped(|ui| {
                     badge::StatusBadge::new(&question.header)
                         .variant(badge::BadgeVariant::Info)
                         .show(ui);
@@ -150,8 +152,16 @@ pub fn ask_user_question_ui(
                         }
 
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(&option.label));
-                            ui.label(egui::RichText::new(&option.description).weak().size(11.0));
+                            // Wrap the label/description to the width remaining
+                            // after the number hint and radio/checkbox, so long
+                            // option text doesn't push the frame off-screen.
+                            ui.add(egui::Label::new(egui::RichText::new(&option.label)).wrap());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&option.description).weak().size(11.0),
+                                )
+                                .wrap(),
+                            );
                         });
                     });
 
@@ -196,11 +206,12 @@ pub fn ask_user_question_ui(
 
                     ui.label("Other:");
 
-                    // Text input for "Other"
+                    // Text input for "Other". Fill the remaining width rather
+                    // than a fixed 200px so it never overflows a narrow column.
                     if let Some(text) = &mut answers[current_idx].other_text {
                         ui.add(
                             egui::TextEdit::singleline(text)
-                                .desired_width(200.0)
+                                .desired_width(f32::INFINITY)
                                 .hint_text("Type your answer..."),
                         );
                     }

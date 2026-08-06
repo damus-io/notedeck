@@ -6,11 +6,11 @@ version.workspace = true
 [dependencies]
 nostrdb = { workspace = true }
 # nostrdb_net backs the standalone Engine's relay layer: RelayPool for the live
-# subscription stream and relay::sync for NIP-77 negentropy backfill.
+# subscription stream and relay::sync::pull_reconcile for NIP-77 negentropy
+# backfill (which owns the negentropy set construction, so this crate no longer
+# depends on the negentropy crate directly).
 nostrdb_net = { workspace = true }
 enostr = { workspace = true }
-# negentropy set construction for the engine's NIP-77 history reconcile.
-negentropy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
