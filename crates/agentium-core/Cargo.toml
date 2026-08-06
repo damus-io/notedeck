@@ -16,6 +16,8 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 uuid = { version = "1.10.0", features = ["v4"] }
+# Shared BIP-39 word-id rendering for sayable session references.
+wordid = { workspace = true }
 # md-stream is a zero-dependency, egui-free markdown parser (String -> elements);
 # it backs AssistantMessage's incremental parse and stays platform-neutral.
 md-stream = { workspace = true }

@@ -210,26 +210,24 @@ const SGR_NEEDS_INPUT: &str = "33";
 const SGR_BOLD: &str = "1";
 
 /// Render one session as a padded, aligned row (indented under its host header).
+///
+/// Leads with the session's sayable `agentium:word-word-word` reference — the
+/// selector a human copies into `show`/`send`/etc. — then the status, title,
+/// working dir, backend, permission mode, and last-updated age.
 fn session_row(s: &SessionState, now: u64, color: bool) -> String {
     let (glyph, label, sgr) = status_style(&s.status);
+    let sref = agentium_core::wordid::session_ref(&s.claude_session_id);
+    let sref_col = paint(color, "90", &col(&sref, 28));
     let status_col = paint(color, sgr, &format!("{glyph} {}", col(&label, 11)));
-    let title = col(display_title(s), 30);
+    let title = col(s.display_title(), 30);
     let cwd = col(&abbreviate_home(&s.cwd, &s.home_dir), 26);
     let backend = col(s.backend.as_deref().unwrap_or("-"), 8);
     let mode = col(s.permission_mode.as_deref().unwrap_or("-"), 12);
     format!(
-        "  {status_col}  {title}  {}  {backend}  {mode}  {}",
+        "  {sref_col}  {status_col}  {title}  {}  {backend}  {mode}  {}",
         paint(color, "90", &cwd),
         paint(color, "90", &relative_time(now, s.created_at)),
     )
-}
-
-/// The title to show: the user's custom title when set, else the derived one.
-fn display_title(s: &SessionState) -> &str {
-    match s.custom_title.as_deref() {
-        Some(t) if !t.is_empty() => t,
-        _ => &s.title,
-    }
 }
 
 /// Terminal presentation for a status string: a glyph, a human label, and an SGR
@@ -586,11 +584,11 @@ mod tests {
     #[test]
     fn display_title_prefers_nonempty_custom() {
         let mut s = session("h", "derived", "idle", 0);
-        assert_eq!(display_title(&s), "derived");
+        assert_eq!(s.display_title(), "derived");
         s.custom_title = Some("Custom".into());
-        assert_eq!(display_title(&s), "Custom");
+        assert_eq!(s.display_title(), "Custom");
         s.custom_title = Some(String::new());
-        assert_eq!(display_title(&s), "derived");
+        assert_eq!(s.display_title(), "derived");
     }
 
     #[test]
@@ -654,6 +652,7 @@ mod tests {
         let s = session("mac", "Hello", "working", 0);
         let row = session_row(&s, 60, false);
         assert!(!row.contains('\x1b'), "no ANSI when color=false: {row:?}");
+        assert!(row.contains("agentium:"), "row leads with the sayable ref");
         assert!(row.contains("● Working"));
         assert!(row.contains("Hello"));
         assert!(row.contains("~/proj")); // cwd home-abbreviated

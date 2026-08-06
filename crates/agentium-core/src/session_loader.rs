@@ -203,7 +203,7 @@ fn load_session_messages_with_author(
 }
 
 /// A persisted session state from a kind-31988 event.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct SessionState {
     pub claude_session_id: String,
     pub title: String,
@@ -251,6 +251,97 @@ impl SessionState {
             spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
         })
     }
+
+    /// The title to show: the user's custom title when set and non-empty, else
+    /// the derived one. Shared by the CLI's row rendering and the selector's
+    /// title-substring matching so both agree on what "the title" is.
+    pub fn display_title(&self) -> &str {
+        match self.custom_title.as_deref() {
+            Some(t) if !t.is_empty() => t,
+            _ => &self.title,
+        }
+    }
+}
+
+/// Resolve a user-typed session selector to exactly one session.
+///
+/// The shared resolver behind every session-scoped command, modeled on
+/// headway's `resolve_card` / notebook's `resolve_node`. Accepts, in precedence
+/// order:
+/// 1. an exact `claude_session_id` (the kind-31988 d-tag),
+/// 2. an exact `cli_session_id` (the real CLI id, when the d-tag is provisional),
+/// 3. a word-id — `agentium:word-word-word` or the bare words — matched by
+///    re-encoding each session's stable id,
+/// 4. a unique prefix of a session/cli id, or a unique case-insensitive
+///    substring of the display title.
+///
+/// Exact and word-id matches win outright. Otherwise a fuzzy form must identify
+/// exactly one session: zero matches gives `no session matching '<sel>'`, and
+/// two or more gives an error listing the candidates by word-id and title so the
+/// caller can retype a longer, unique selector.
+pub fn resolve_session<'a>(
+    sessions: &'a [SessionState],
+    sel: &str,
+) -> Result<&'a SessionState, String> {
+    // 1. exact session id (the d-tag) — unambiguous, wins outright.
+    if let Some(s) = sessions.iter().find(|s| s.claude_session_id == sel) {
+        return Ok(s);
+    }
+    // 2. exact real cli-session id.
+    if let Some(s) = sessions
+        .iter()
+        .find(|s| s.cli_session_id.as_deref() == Some(sel))
+    {
+        return Ok(s);
+    }
+    // 3. word-id, with an optional `agentium:` scheme prefix stripped.
+    let words = sel
+        .strip_prefix(&format!("{}:", crate::wordid::SCHEME))
+        .unwrap_or(sel);
+    let by_word: Vec<&SessionState> = sessions
+        .iter()
+        .filter(|s| crate::wordid::encode_session_id(&s.claude_session_id) == words)
+        .collect();
+    // Word-ids are unique per session, but guard against a 33-bit collision.
+    match by_word.as_slice() {
+        [one] => return Ok(one),
+        [_, _, ..] => return Err(ambiguous_session(sel, &by_word)),
+        [] => {}
+    }
+    // 4. unique id-prefix or display-title substring.
+    let needle = sel.to_lowercase();
+    let fuzzy: Vec<&SessionState> = sessions
+        .iter()
+        .filter(|s| {
+            s.claude_session_id.starts_with(sel)
+                || s.cli_session_id
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with(sel))
+                || s.display_title().to_lowercase().contains(&needle)
+        })
+        .collect();
+    match fuzzy.as_slice() {
+        [one] => Ok(one),
+        [] => Err(format!("no session matching '{sel}'")),
+        many => Err(ambiguous_session(sel, many)),
+    }
+}
+
+/// Format an "ambiguous selector" error listing each candidate by its sayable
+/// word-id and title, so the user can retype a longer, unique selector.
+fn ambiguous_session(sel: &str, hits: &[&SessionState]) -> String {
+    let mut msg = format!(
+        "ambiguous session '{sel}' — matches {} sessions:",
+        hits.len()
+    );
+    for s in hits {
+        msg.push_str(&format!(
+            "\n  {}  {}",
+            crate::wordid::session_ref(&s.claude_session_id),
+            s.display_title()
+        ));
+    }
+    msg
 }
 
 /// Load all session states from kind-31988 events in ndb.
@@ -597,5 +688,98 @@ mod tests {
             "permission request must sort last (by seq), not float to the top: {:?}",
             loaded.messages
         );
+    }
+
+    /// A minimal SessionState for resolver tests: only the fields the selector
+    /// looks at (id, cli id, title) are meaningful; the rest are inert defaults.
+    fn sess(id: &str, cli: Option<&str>, title: &str) -> SessionState {
+        SessionState {
+            claude_session_id: id.to_string(),
+            title: title.to_string(),
+            custom_title: None,
+            cwd: String::new(),
+            status: "idle".to_string(),
+            indicator: None,
+            hostname: String::new(),
+            home_dir: String::new(),
+            backend: None,
+            permission_mode: None,
+            created_at: 0,
+            cli_session_id: cli.map(|s| s.to_string()),
+            spawn_id: None,
+        }
+    }
+
+    #[test]
+    fn resolve_exact_ids_win() {
+        let sessions = vec![
+            sess("aaaa-1111", Some("cli-abc"), "Refactor auth"),
+            sess("bbbb-2222", None, "Fix relay reconnect"),
+        ];
+        // exact d-tag
+        assert_eq!(
+            resolve_session(&sessions, "aaaa-1111")
+                .unwrap()
+                .claude_session_id,
+            "aaaa-1111"
+        );
+        // exact cli-session id
+        assert_eq!(
+            resolve_session(&sessions, "cli-abc")
+                .unwrap()
+                .claude_session_id,
+            "aaaa-1111"
+        );
+    }
+
+    #[test]
+    fn resolve_word_id_forms() {
+        let sessions = vec![sess("aaaa-1111", None, "Refactor auth")];
+        let words = crate::wordid::encode_session_id("aaaa-1111");
+        // the full URI ref and the bare words both resolve to the same session.
+        for sel in [format!("agentium:{words}"), words.clone()] {
+            assert_eq!(
+                resolve_session(&sessions, &sel).unwrap().claude_session_id,
+                "aaaa-1111",
+                "selector {sel:?} should resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_prefix_and_title_substring() {
+        let sessions = vec![
+            sess("aaaa-1111", None, "Refactor auth"),
+            sess("bbbb-2222", None, "Fix relay reconnect"),
+        ];
+        // unique id prefix
+        assert_eq!(
+            resolve_session(&sessions, "aaaa")
+                .unwrap()
+                .claude_session_id,
+            "aaaa-1111"
+        );
+        // unique case-insensitive title substring
+        assert_eq!(
+            resolve_session(&sessions, "RELAY")
+                .unwrap()
+                .claude_session_id,
+            "bbbb-2222"
+        );
+    }
+
+    #[test]
+    fn resolve_none_and_ambiguous() {
+        let sessions = vec![
+            sess("aaaa-1111", None, "Refactor auth module"),
+            sess("aaaa-9999", None, "Refactor billing"),
+        ];
+        // nothing matches
+        let err = resolve_session(&sessions, "zzz").unwrap_err();
+        assert!(err.contains("no session matching 'zzz'"), "{err}");
+        // both share the "aaaa" prefix and the "Refactor" title word
+        let err = resolve_session(&sessions, "aaaa").unwrap_err();
+        assert!(err.starts_with("ambiguous session 'aaaa'"), "{err}");
+        assert!(err.contains("agentium:"), "candidates are listed: {err}");
     }
 }

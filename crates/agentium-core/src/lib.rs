@@ -28,6 +28,7 @@ pub mod tools;
 pub mod transport;
 mod util;
 pub mod waker;
+pub mod wordid;
 
 pub use engine::{Engine, EngineError, EngineTransport, SessionWatch};
 pub use tool::{ToolArg, ToolArgType, ToolSpec};
