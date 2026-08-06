@@ -1183,7 +1183,16 @@ pub fn list_longform(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<Longf
             // they leave the vault list (a later edit revives them).
             .filter(|note| !note.deleted)
             .collect();
-    notes.sort_by_key(|n| std::cmp::Reverse(n.created_at));
+    // Newest-edited first, with deterministic tiebreakers so a same-second batch
+    // (all sharing a whole-second `created_at`) never falls back to nostrdb's
+    // ingest-order, which shuffles run-to-run. `title` keeps ties human-ordered;
+    // `d` (the unique addressable id) guarantees a total order.
+    notes.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.d.cmp(&b.d))
+    });
     notes
 }
 

@@ -8,7 +8,7 @@ use notedeck::{App, Notedeck};
 use notedeck_notebook::Notebook;
 use notedeck_notebook::event::{
     self, EdgeEnds, Geometry, LongformInput, NodeContent, NodeKind, build_canvas, build_edge,
-    build_node, build_transform, canvas_address,
+    build_longform, build_node, build_transform, canvas_address,
 };
 use notedeck_notebook::store::{
     CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_longform, load_longform,
@@ -222,6 +222,46 @@ fn wait_for_seed(harness: &mut Harness<'static, NotebookTestState>) {
     }
 }
 
+/// Pump frames until all `expected` seeded longform notes have folded into the
+/// vault list, or panic after a deadline. Each seed ingests asynchronously, so
+/// waiting for a single row's label doesn't guarantee the rest are in — a
+/// snapshot taken too early would render a nondeterministic subset (and, with
+/// them, a nondeterministic row order). Use this as the vault setup barrier.
+fn wait_for_vault(harness: &mut Harness<'static, NotebookTestState>, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness.state().notebook.notes().len() >= expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "only {} of {expected} vault notes folded in",
+            harness.state().notebook.notes().len()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Seed one longform note per title with a deterministic `d` and `created_at`,
+/// so the vault renders the same rows in the same order every run. Production's
+/// `create_longform` stamps wall-clock `now_secs()`, which in a slow debug build
+/// spreads a seeded batch across whole-second boundaries and shuffles the
+/// newest-first order — the snapshot flake. Here `created_at` is `base + i`
+/// (later titles are newer), so the primary sort key is fixed run-to-run.
+fn seed_vault(ndb: &Ndb, secret: &[u8; 32], titles: &[&str]) {
+    for (i, title) in titles.iter().enumerate() {
+        let input = LongformInput {
+            title: title.to_string(),
+            content: format!("# {title}\n\nbody"),
+            ..Default::default()
+        };
+        let builder =
+            build_longform(&format!("seed-{i:02}"), &input).created_at(1_700_000_000 + i as u64);
+        ingest(ndb, builder, secret, &mut NoPublish).expect("seed longform");
+    }
+}
+
 /// Render the colored demo canvas at a desktop viewport and snapshot it.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
@@ -262,28 +302,23 @@ fn snapshot_notebook_vault() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
 
     let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in [
-            "Meeting notes — Q3 planning",
-            "Reading list",
-            "nostr protocol ideas",
-            "Untitled",
-            "Groceries",
-        ] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
+        seed_vault(
+            app_ctx.ndb,
+            &secret,
+            &[
+                "Meeting notes — Q3 planning",
+                "Reading list",
+                "nostr protocol ideas",
+                "Untitled",
+                "Groceries",
+            ],
+        );
     }
 
-    wait_for_label(&mut harness, "Reading list");
+    wait_for_vault(&mut harness, 5);
     harness.run_steps(3);
     // Hover a row so the snapshot also shows the row hover highlight.
     harness
@@ -302,22 +337,17 @@ fn snapshot_notebook_vault_delete() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
 
     let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
+        seed_vault(
+            app_ctx.ndb,
+            &secret,
+            &["Meeting notes — Q3 planning", "Reading list", "Groceries"],
+        );
     }
 
-    wait_for_label(&mut harness, "Reading list");
+    wait_for_vault(&mut harness, 3);
     harness.run_steps(3);
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
     harness.get_by_label("Delete").simulate_click();
@@ -334,22 +364,17 @@ fn snapshot_notebook_vault_rename() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
 
     let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
+        seed_vault(
+            app_ctx.ndb,
+            &secret,
+            &["Meeting notes — Q3 planning", "Reading list", "Groceries"],
+        );
     }
 
-    wait_for_label(&mut harness, "Reading list");
+    wait_for_vault(&mut harness, 3);
     harness.run_steps(3);
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
     harness.get_by_label("Rename").simulate_click();
