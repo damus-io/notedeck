@@ -82,20 +82,29 @@ async fn run() -> Result<()> {
         .secret
         .ok_or("need a signing key — run `agentium login <nsec>` (or pass --nsec)")?;
 
+    // Resolve the relay and cache dir, persisting either when it was passed
+    // explicitly so later runs reuse it without the flag.
+    let relay = resolve_relay(cli.relay)?;
+    let db = resolve_db(cli.db)?;
+
     // The engine owns its own nostrdb cache and a self-driving relay loop. Open
     // it over the cache dir relay_sync manages so co-located tools share one
-    // cache; the engine takes a clone and drives sync itself.
-    let ndb = relay_sync::open_ndb(cli.db.as_deref(), APP)?;
+    // cache; the engine takes a clone and drives sync itself. Opening also
+    // registers the device key with ndb so its ingest threads can decrypt this
+    // identity's inbound kind-1080 PNS envelopes into queryable inner events.
+    let ndb = relay_sync::open_ndb(db.as_deref(), APP)?;
     let mut engine = Engine::with_ndb(ndb, secret)?;
     let mut transport = engine
         .transport_handle()
         .ok_or("engine started without a relay loop")?;
 
-    // Connect installs the PNS discovery subscription that streams this
-    // identity's encrypted session corpus into the cache and points publishes at
-    // the relay. Best-effort: an unreachable relay just leaves us reading
-    // whatever the cache already holds.
-    engine.connect(&mut transport, &cli.relay)?;
+    // Connect installs the PNS discovery subscription — kind-1080 events authored
+    // by this identity's derived PNS pubkey — which streams the whole encrypted
+    // session corpus into the cache (where ndb decrypts it) and points publishes
+    // at the relay. Best-effort: an unreachable relay just leaves us reading
+    // whatever the cache already holds. A `--author` pointing at someone else
+    // still can't decrypt *their* private sessions — only they hold that key.
+    engine.connect(&mut transport, &relay)?;
 
     // Give the initial reconcile a bounded moment to land session state before
     // we read. Times out cleanly when the relay is empty or unreachable.
@@ -127,6 +136,34 @@ fn cmd_list(engine: &Engine, author: &Pubkey, _as_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the relay URL, preferring `--relay`, then `$AGENTIUM_RELAY`, then the
+/// stored config, then the built-in default. Passing `--relay` also persists it
+/// as the sticky default for later runs, so the flag is only needed once — the
+/// relay is a single connection endpoint, not a per-operation target, so
+/// remembering it can't race a concurrent run the way a stateful
+/// current-selection would.
+fn resolve_relay(flag: Option<String>) -> Result<String> {
+    if let Some(url) = flag {
+        relay_sync::write_config(APP, "relay", &url)?;
+        return Ok(url);
+    }
+    Ok(env::var("AGENTIUM_RELAY")
+        .ok()
+        .or_else(|| relay_sync::read_config(APP, "relay"))
+        .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string()))
+}
+
+/// Resolve the nostrdb cache dir. Precedence: `--db > stored config > default`
+/// (`open_ndb`'s `<data-dir>/agentium-cli`). Passing `--db` persists it, same as
+/// `--relay`; `None` lets `open_ndb` pick the default.
+fn resolve_db(flag: Option<String>) -> Result<Option<String>> {
+    if let Some(path) = flag {
+        relay_sync::write_config(APP, "db", &path)?;
+        return Ok(Some(path));
+    }
+    Ok(relay_sync::read_config(APP, "db"))
+}
+
 // ---------------------------------------------------------------------------
 // argument parsing
 // ---------------------------------------------------------------------------
@@ -134,7 +171,9 @@ fn cmd_list(engine: &Engine, author: &Pubkey, _as_json: bool) -> Result<()> {
 struct Cli {
     secret: Option<([u8; 32], Pubkey)>,
     author: Option<Pubkey>,
-    relay: String,
+    /// Raw `--relay`/`--db` flags, if given; resolved (and persisted) by
+    /// [`resolve_relay`]/[`resolve_db`] against env vars and stored config.
+    relay: Option<String>,
     db: Option<String>,
     json: bool,
     command: Command,
@@ -145,13 +184,13 @@ impl Cli {
     /// should be printed (no command, `-h`/`--help`).
     fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
         // Precedence: `--nsec` overrides the `AGENTIUM_NSEC` env var, which
-        // overrides the key stored by `login`.
+        // overrides the key stored by `login`. `--relay`/`--db` are captured raw
+        // here and resolved against env/stored config in `run` (see
+        // `resolve_relay`/`resolve_db`).
         let mut nsec = env::var("AGENTIUM_NSEC")
             .ok()
             .or_else(|| relay_sync::stored_nsec(APP));
-        let mut relay = env::var("AGENTIUM_RELAY")
-            .ok()
-            .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string());
+        let mut relay = None;
         let mut db = None;
         let mut author = None;
         let mut json = false;
@@ -167,7 +206,7 @@ impl Cli {
             match arg.as_str() {
                 "-h" | "--help" => return Ok(None),
                 "--nsec" => nsec = Some(value("--nsec")?),
-                "--relay" => relay = value("--relay")?,
+                "--relay" => relay = Some(value("--relay")?),
                 "--db" => db = Some(value("--db")?),
                 "--author" => author = Some(Pubkey::parse(&value("--author")?)?),
                 "--json" => json = true,
@@ -237,9 +276,14 @@ OPTIONS:
     --nsec <nsec>     Signing key for this run. Normally unnecessary — run
                       `agentium login` once and it's reused. ($AGENTIUM_NSEC,
                       if set, takes precedence over the stored key.)
-    --author <pk>     Identity whose sessions to read (defaults to the signer)
-    --relay <url>     Relay URL (or $AGENTIUM_RELAY) [default: {DEFAULT_RELAY}]
-    --db <path>       nostrdb cache dir [default: <data-dir>/agentium-cli]
+    --author <pk>     Identity whose sessions to read (defaults to the signer).
+                      Note: sessions are PNS-encrypted to their owner, so a
+                      pubkey other than yours lists nothing decryptable.
+    --relay <url>     Relay URL. Passing it also remembers it as the default for
+                      later runs. (Precedence: --relay > $AGENTIUM_RELAY > stored
+                      > {DEFAULT_RELAY})
+    --db <path>       nostrdb cache dir (remembered like --relay)
+                      [default: <data-dir>/agentium-cli]
     --json            Machine-readable output
     -h, --help        Print this help",
         DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
