@@ -7,19 +7,16 @@
 //! and a background relay connect/sync loop that streams this identity's
 //! PNS-encrypted session corpus into that cache. The shared [`relay_sync`] crate
 //! still owns the incidental plumbing — the stored signing key, the cache
-//! directory convention, and `login`/`logout`. This file is just the command
-//! surface: argument parsing and (in later cards) rendering.
-//!
-//! This is the scaffold: it proves the pipeline — key resolution, engine open,
-//! relay connect, and an initial sync — compiles and connects end to end. The
-//! `list` command's session-table rendering lands in a follow-up
-//! (dave#lunch-twice-below).
+//! directory convention, and `login`/`logout`. This file is the command surface:
+//! argument parsing, config resolution, and rendering the session list.
 
 use std::env;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use agentium_core::Engine;
+use agentium_core::session_loader::SessionState;
 use enostr::Pubkey;
 use nostrdb::Transaction;
 
@@ -29,10 +26,16 @@ use relay_sync::Result;
 /// `~/.local/share/agentium-cli` on Linux).
 const APP: &str = "agentium-cli";
 
-/// How long a read command waits for the relay's initial reconcile to stream
-/// session state into the cache before reading it. Bounded so an empty or
-/// unreachable relay falls through to the cache promptly rather than hanging.
-const SYNC_SETTLE: Duration = Duration::from_secs(2);
+/// How long to wait for the *first* synced session-state event before giving up.
+/// Short, since the common relay is local, but enough for a remote one to
+/// answer; an empty or unreachable relay falls through to the cache after this.
+const SYNC_FIRST_WAIT: Duration = Duration::from_secs(2);
+/// Once events are flowing, treat the initial sync as settled after this long
+/// with no new session-state event — so a read sees the whole batch, not just
+/// the first session to land.
+const SYNC_IDLE: Duration = Duration::from_millis(400);
+/// Hard cap on the total settle wait, so a chatty relay can't stall the read.
+const SYNC_MAX: Duration = Duration::from_secs(6);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -106,34 +109,246 @@ async fn run() -> Result<()> {
     // still can't decrypt *their* private sessions — only they hold that key.
     engine.connect(&mut transport, &relay)?;
 
-    // Give the initial reconcile a bounded moment to land session state before
-    // we read. Times out cleanly when the relay is empty or unreachable.
+    // Let the initial reconcile stream session state into the cache before we
+    // read. `watch.changed()` fires on the *first* event, so waiting on it alone
+    // reads after only one of many sessions has landed — the rest are still
+    // streaming in. Instead: wait for the first event, then keep draining until
+    // the stream goes quiet (SYNC_IDLE), bounded by SYNC_MAX so a chatty relay
+    // can't stall us. An empty/unreachable relay just times out the first wait.
     if let Ok(mut watch) = engine.watch_sessions() {
-        let _ = tokio::time::timeout(SYNC_SETTLE, watch.changed()).await;
+        // Wait for the first synced session-state event; an empty or unreachable
+        // relay just times out here and we read whatever the cache already holds.
+        let synced = tokio::time::timeout(SYNC_FIRST_WAIT, watch.changed())
+            .await
+            .unwrap_or(false);
+        // Then keep draining until the stream goes quiet, so we read the whole
+        // batch rather than the first session to land — bounded by SYNC_MAX.
+        if synced {
+            let deadline = tokio::time::Instant::now() + SYNC_MAX;
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    got = watch.changed() => if !got { break; },
+                    _ = tokio::time::sleep(SYNC_IDLE) => break,
+                }
+            }
+        }
     }
 
     // `--author` overrides whose sessions we read; it defaults to the signer.
     let read_pk = cli.author.unwrap_or(self_pk);
 
+    let filters = ListFilters {
+        host: cli.host,
+        status: cli.status,
+        cwd: cli.cwd,
+        backend: cli.backend,
+    };
+
     match cli.command {
-        Command::List => cmd_list(&engine, &read_pk, cli.json)?,
+        Command::List => cmd_list(&engine, &read_pk, &filters, cli.json)?,
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
 
     Ok(())
 }
 
-/// `agentium list` — enumerate this identity's sessions.
+/// `agentium list` — enumerate this identity's sessions, newest first, grouped
+/// by host.
 ///
-/// Scaffold stub: it exercises the read path (a transaction over the engine's
-/// synced cache, scoped to `author`) so the whole pipeline is proven end to end,
-/// but rendering the session table — id, title, status — lands in a follow-up
-/// (dave#lunch-twice-below). Prints nothing for now.
-fn cmd_list(engine: &Engine, author: &Pubkey, _as_json: bool) -> Result<()> {
+/// Reads the kind-31988 session-state set from the engine's synced cache (scoped
+/// to `author`), drops rows that don't match `filters`, and renders one row per
+/// session: a colored status glyph + label, the title, the working directory,
+/// backend, permission mode, and how long ago it last updated. With `as_json`,
+/// the raw [`SessionState`] set is emitted instead. Status colors are written
+/// only when stdout is a terminal.
+fn cmd_list(engine: &Engine, author: &Pubkey, filters: &ListFilters, as_json: bool) -> Result<()> {
     let txn = Transaction::new(engine.ndb())?;
-    let _sessions =
+    let mut sessions =
         agentium_core::session_loader::load_session_states_for_author(engine.ndb(), &txn, author);
+    sessions.retain(|s| filters.matches(s));
+
+    if as_json {
+        // The full SessionState set, machine-readable. `SessionState` derives
+        // Serialize in agentium-core precisely so read commands can do this.
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        return Ok(());
+    }
+
+    if sessions.is_empty() {
+        println!("no sessions");
+        return Ok(());
+    }
+
+    let color = std::io::stdout().is_terminal();
+    let now = now_secs();
+
+    // Surface sessions waiting on the user up front — the one status a human
+    // scanning the list most needs to act on.
+    let waiting = sessions
+        .iter()
+        .filter(|s| s.status == "needs_input")
+        .count();
+    if waiting > 0 {
+        let note = format!("{waiting} session(s) need input");
+        println!("{}\n", paint(color, SGR_NEEDS_INPUT, &note));
+    }
+
+    for (host, group) in group_by_host(sessions) {
+        println!("{}", paint(color, SGR_BOLD, &host));
+        for s in group {
+            println!("{}", session_row(&s, now, color));
+        }
+    }
+
     Ok(())
+}
+
+/// Amber — the status color for a session waiting on the user, and the color of
+/// the summary line that surfaces them.
+const SGR_NEEDS_INPUT: &str = "33";
+/// Bold, for the per-host group headers.
+const SGR_BOLD: &str = "1";
+
+/// Render one session as a padded, aligned row (indented under its host header).
+fn session_row(s: &SessionState, now: u64, color: bool) -> String {
+    let (glyph, label, sgr) = status_style(&s.status);
+    let status_col = paint(color, sgr, &format!("{glyph} {}", col(&label, 11)));
+    let title = col(display_title(s), 30);
+    let cwd = col(&abbreviate_home(&s.cwd, &s.home_dir), 26);
+    let backend = col(s.backend.as_deref().unwrap_or("-"), 8);
+    let mode = col(s.permission_mode.as_deref().unwrap_or("-"), 12);
+    format!(
+        "  {status_col}  {title}  {}  {backend}  {mode}  {}",
+        paint(color, "90", &cwd),
+        paint(color, "90", &relative_time(now, s.created_at)),
+    )
+}
+
+/// The title to show: the user's custom title when set, else the derived one.
+fn display_title(s: &SessionState) -> &str {
+    match s.custom_title.as_deref() {
+        Some(t) if !t.is_empty() => t,
+        _ => &s.title,
+    }
+}
+
+/// Terminal presentation for a status string: a glyph, a human label, and an SGR
+/// color. Mirrors [`AgentStatus`] — which lives in the egui-side notedeck_dave
+/// crate (its `color()` returns an `egui::Color32`), so it can't be reused from a
+/// terminal CLI. An unknown status shows its raw token, uncolored.
+///
+/// [`AgentStatus`]: https://docs.rs/notedeck_dave
+fn status_style(status: &str) -> (&'static str, String, &'static str) {
+    match status {
+        "idle" => ("○", "Idle".into(), "90"),
+        "working" => ("●", "Working".into(), "32"),
+        "needs_input" => ("◆", "Needs Input".into(), SGR_NEEDS_INPUT),
+        "error" => ("✖", "Error".into(), "31"),
+        "done" => ("✓", "Done".into(), "34"),
+        "pending" => ("◌", "Pending".into(), "36"),
+        other => ("?", other.to_string(), "0"),
+    }
+}
+
+/// Replace a leading home directory with `~`, matching how the desktop shows
+/// working directories.
+fn abbreviate_home(cwd: &str, home: &str) -> String {
+    match cwd.strip_prefix(home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => cwd.to_string(),
+    }
+}
+
+/// A coarse "2h ago" for an event timestamp, relative to `now` (both Unix secs).
+fn relative_time(now: u64, then: u64) -> String {
+    let secs = now.saturating_sub(then);
+    match secs {
+        s if s < 60 => format!("{s}s ago"),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86400),
+    }
+}
+
+/// Truncate `s` to `width` display chars (appending `…` when cut) and left-pad
+/// to `width` so columns align. ANSI color must be applied *after* this, or the
+/// invisible escape bytes would throw the padding off.
+fn col(s: &str, width: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() > width {
+        let mut t: String = chars[..width.saturating_sub(1)].iter().collect();
+        t.push('…');
+        return t;
+    }
+    format!("{s:<width$}")
+}
+
+/// Wrap `s` in an SGR color when `enabled` (stdout is a tty), else return it
+/// plain. `sgr` is the numeric code(s), e.g. `"32"` or `"33"`.
+fn paint(enabled: bool, sgr: &str, s: &str) -> String {
+    if enabled {
+        format!("\x1b[{sgr}m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Group sessions by host, ordering hosts by their most recent activity and
+/// sessions within a host newest-first — mirroring how the desktop groups the
+/// scene by host then cwd.
+fn group_by_host(sessions: Vec<SessionState>) -> Vec<(String, Vec<SessionState>)> {
+    let mut groups: Vec<(String, Vec<SessionState>)> = Vec::new();
+    for s in sessions {
+        let host = if s.hostname.is_empty() {
+            "(unknown host)".to_string()
+        } else {
+            s.hostname.clone()
+        };
+        match groups.iter_mut().find(|(h, _)| *h == host) {
+            Some((_, v)) => v.push(s),
+            None => groups.push((host, vec![s])),
+        }
+    }
+    // Newest-first within each host, then hosts by their newest session.
+    for (_, v) in &mut groups {
+        v.sort_by_key(|s| std::cmp::Reverse(s.created_at));
+    }
+    groups.sort_by_key(|g| std::cmp::Reverse(g.1.first().map_or(0, |s| s.created_at)));
+    groups
+}
+
+/// The current Unix time in seconds.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// `list` row filters, all optional and case-insensitive. `status` matches the
+/// raw status token exactly; `host`, `cwd`, and `backend` match as substrings.
+struct ListFilters {
+    host: Option<String>,
+    status: Option<String>,
+    cwd: Option<String>,
+    backend: Option<String>,
+}
+
+impl ListFilters {
+    fn matches(&self, s: &SessionState) -> bool {
+        let contains = |hay: &str, needle: &Option<String>| {
+            needle
+                .as_ref()
+                .is_none_or(|n| hay.to_lowercase().contains(&n.to_lowercase()))
+        };
+        let eq = |hay: &str, needle: &Option<String>| {
+            needle.as_ref().is_none_or(|n| hay.eq_ignore_ascii_case(n))
+        };
+        contains(&s.hostname, &self.host)
+            && eq(&s.status, &self.status)
+            && contains(&s.cwd, &self.cwd)
+            && contains(s.backend.as_deref().unwrap_or(""), &self.backend)
+    }
 }
 
 /// Resolve the relay URL, preferring `--relay`, then `$AGENTIUM_RELAY`, then the
@@ -176,6 +391,11 @@ struct Cli {
     relay: Option<String>,
     db: Option<String>,
     json: bool,
+    /// `list` row filters (`--host`/`--status`/`--cwd`/`--backend`).
+    host: Option<String>,
+    status: Option<String>,
+    cwd: Option<String>,
+    backend: Option<String>,
     command: Command,
 }
 
@@ -194,6 +414,10 @@ impl Cli {
         let mut db = None;
         let mut author = None;
         let mut json = false;
+        let mut host = None;
+        let mut status = None;
+        let mut cwd = None;
+        let mut backend = None;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -210,6 +434,10 @@ impl Cli {
                 "--db" => db = Some(value("--db")?),
                 "--author" => author = Some(Pubkey::parse(&value("--author")?)?),
                 "--json" => json = true,
+                "--host" => host = Some(value("--host")?),
+                "--status" => status = Some(value("--status")?),
+                "--cwd" => cwd = Some(value("--cwd")?),
+                "--backend" => backend = Some(value("--backend")?),
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -236,6 +464,10 @@ impl Cli {
             relay,
             db,
             json,
+            host,
+            status,
+            cwd,
+            backend,
             command,
         }))
     }
@@ -268,7 +500,9 @@ USAGE:
     agentium [OPTIONS] <COMMAND>
 
 COMMANDS:
-    list              List this identity's sessions (--json for machine output)
+    list              List this identity's sessions, newest first, grouped by
+                      host. Filter with --host/--status/--cwd/--backend; --json
+                      emits the raw session set.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
@@ -285,7 +519,146 @@ OPTIONS:
     --db <path>       nostrdb cache dir (remembered like --relay)
                       [default: <data-dir>/agentium-cli]
     --json            Machine-readable output
+
+  list filters (case-insensitive):
+    --host <h>        Only sessions whose host contains <h>
+    --status <s>      Only sessions with exactly this status
+                      (idle|working|needs_input|error|done|pending)
+    --cwd <c>         Only sessions whose working dir contains <c>
+    --backend <b>     Only sessions whose backend contains <b>
+
     -h, --help        Print this help",
         DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A SessionState with sensible defaults, overriding the fields the tests
+    /// care about. (End-to-end coverage over a real relay lives in a separate
+    /// card; these exercise the pure rendering/filtering logic.)
+    fn session(host: &str, title: &str, status: &str, created_at: u64) -> SessionState {
+        SessionState {
+            claude_session_id: format!("{host}-{title}"),
+            title: title.to_string(),
+            custom_title: None,
+            cwd: "/home/u/proj".to_string(),
+            status: status.to_string(),
+            indicator: None,
+            hostname: host.to_string(),
+            home_dir: "/home/u".to_string(),
+            backend: Some("claude".to_string()),
+            permission_mode: Some("default".to_string()),
+            created_at,
+            cli_session_id: None,
+            spawn_id: None,
+        }
+    }
+
+    #[test]
+    fn col_pads_and_truncates() {
+        assert_eq!(col("hi", 5), "hi   ");
+        assert_eq!(col("exactly", 7), "exactly");
+        // longer than width: cut to width-1 chars plus an ellipsis
+        assert_eq!(col("toolongword", 5), "tool…");
+    }
+
+    #[test]
+    fn relative_time_buckets() {
+        assert_eq!(relative_time(100, 100), "0s ago");
+        assert_eq!(relative_time(100, 90), "10s ago");
+        assert_eq!(relative_time(60, 0), "1m ago");
+        assert_eq!(relative_time(3600, 0), "1h ago");
+        assert_eq!(relative_time(90_000, 0), "1d ago");
+        // 'then' in the future clamps rather than underflows.
+        assert_eq!(relative_time(0, 100), "0s ago");
+    }
+
+    #[test]
+    fn abbreviate_home_replaces_prefix() {
+        assert_eq!(abbreviate_home("/home/u/proj", "/home/u"), "~/proj");
+        assert_eq!(abbreviate_home("/other/x", "/home/u"), "/other/x");
+        assert_eq!(abbreviate_home("/home/u/proj", ""), "/home/u/proj");
+    }
+
+    #[test]
+    fn display_title_prefers_nonempty_custom() {
+        let mut s = session("h", "derived", "idle", 0);
+        assert_eq!(display_title(&s), "derived");
+        s.custom_title = Some("Custom".into());
+        assert_eq!(display_title(&s), "Custom");
+        s.custom_title = Some(String::new());
+        assert_eq!(display_title(&s), "derived");
+    }
+
+    #[test]
+    fn status_style_known_and_unknown() {
+        let (g, l, c) = status_style("needs_input");
+        assert_eq!((g, l.as_str(), c), ("◆", "Needs Input", SGR_NEEDS_INPUT));
+        let (g, l, c) = status_style("weird");
+        assert_eq!((g, l.as_str(), c), ("?", "weird", "0"));
+    }
+
+    #[test]
+    fn paint_gates_on_flag() {
+        assert_eq!(paint(false, "32", "x"), "x");
+        assert_eq!(paint(true, "32", "x"), "\x1b[32mx\x1b[0m");
+    }
+
+    #[test]
+    fn group_by_host_orders_by_recency() {
+        let sessions = vec![
+            session("mac", "old", "idle", 100),
+            session("linux", "newest", "working", 300),
+            session("mac", "new", "idle", 200),
+        ];
+        let groups = group_by_host(sessions);
+        // linux first: it holds the single newest session (300).
+        assert_eq!(groups[0].0, "linux");
+        assert_eq!(groups[1].0, "mac");
+        // within mac, newest-first.
+        let mac: Vec<_> = groups[1].1.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(mac, vec!["new", "old"]);
+    }
+
+    #[test]
+    fn group_by_host_buckets_empty_hostname() {
+        let groups = group_by_host(vec![session("", "x", "idle", 1)]);
+        assert_eq!(groups[0].0, "(unknown host)");
+    }
+
+    #[test]
+    fn filters_match_case_insensitively() {
+        let s = session("MacBook", "t", "working", 0);
+        let f = |host, status, cwd, backend| ListFilters {
+            host,
+            status,
+            cwd,
+            backend,
+        };
+        // host is a case-insensitive substring.
+        assert!(f(Some("mac".into()), None, None, None).matches(&s));
+        assert!(!f(Some("linux".into()), None, None, None).matches(&s));
+        // status is an exact (case-insensitive) token, not a substring.
+        assert!(f(None, Some("WORKING".into()), None, None).matches(&s));
+        assert!(!f(None, Some("work".into()), None, None).matches(&s));
+        // backend is a substring; empty filters match everything.
+        assert!(f(None, None, None, Some("clau".into())).matches(&s));
+        assert!(f(None, None, None, None).matches(&s));
+    }
+
+    #[test]
+    fn session_row_plain_is_uncolored_and_complete() {
+        let s = session("mac", "Hello", "working", 0);
+        let row = session_row(&s, 60, false);
+        assert!(!row.contains('\x1b'), "no ANSI when color=false: {row:?}");
+        assert!(row.contains("● Working"));
+        assert!(row.contains("Hello"));
+        assert!(row.contains("~/proj")); // cwd home-abbreviated
+        assert!(row.contains("claude"));
+        assert!(row.contains("default"));
+        assert!(row.contains("1m ago")); // 60s since created_at 0
+    }
 }

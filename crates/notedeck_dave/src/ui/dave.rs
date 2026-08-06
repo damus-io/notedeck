@@ -1137,7 +1137,7 @@ impl<'a> DaveUi<'a> {
             let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(is_small));
 
             let header_resp = ui
-                .horizontal(|ui| {
+                .horizontal_wrapped(|ui| {
                     let arrow = if expanded { "▼" } else { "▶" };
                     ui.add(egui::Label::new(
                         egui::RichText::new(arrow)
@@ -1171,8 +1171,11 @@ impl<'a> DaveUi<'a> {
                 diff::file_update_ui(file_update, false, ui);
             }
         } else {
-            // Compact single-line display with subdued styling
-            ui.horizontal(|ui| {
+            // Subdued tool-name + summary. `horizontal_wrapped` so a long summary
+            // wraps to the full column instead of being clipped off the right
+            // edge in the narrow, clipped scene cell (the enclosing `StripBuilder`
+            // cell stamps a shrunk clip rect on its descendants).
+            ui.horizontal_wrapped(|ui| {
                 ui.add(egui::Label::new(
                     egui::RichText::new(&result.tool_name)
                         .size(11.0)
@@ -1215,7 +1218,9 @@ impl<'a> DaveUi<'a> {
         // Compute expand ID from outer ui, before horizontal changes the id scope
         let expand_id = ui.id().with("subagent_expand").with(&info.task_id);
 
-        ui.horizontal(|ui| {
+        // `horizontal_wrapped` so a long subagent description wraps to the column
+        // rather than being clipped off the right edge in the scene cell.
+        ui.horizontal_wrapped(|ui| {
             // Status badge with color based on status
             let variant = match info.status {
                 SubagentStatus::Running => BadgeVariant::Warning,
@@ -2893,5 +2898,85 @@ mod tests {
         }
         harness.run();
         harness.snapshot("responded_permission_widgets_expanded");
+    }
+
+    /// Regression guard for dave#leaf-ozone-arctic: a tool-execution summary must
+    /// wrap to the full column instead of being clipped off the right edge.
+    ///
+    /// Mirrors the compact/scene container that made the bug visible: the chat
+    /// sits in an `egui_extras::StripBuilder` cell with `.clip(true)`, which
+    /// stamps a shrunk clip rect *and* `wrap_mode = Some(Truncate)` on its
+    /// descendants; `DaveUi::ui` then forces `Some(Wrap)` over that (dave.rs:400).
+    /// Under that ambient wrap, a summary trailing the tool name in a plain
+    /// non-wrapping `ui.horizontal` could only use the sliver of row left after
+    /// the name — so it either overran the cell (hard clip) or wrapped into that
+    /// sliver. `executed_tool_ui` now uses `horizontal_wrapped`, so the summary
+    /// wraps to the whole cell; this test pins that.
+    #[test]
+    fn executed_tool_summary_wraps_to_full_column() {
+        use crate::messages::ExecutedTool;
+        use egui_extras::{Size, StripBuilder};
+
+        // Left scene column is 0.25 of the width; the remainder chat cell spans
+        // x in roughly [90, 360].
+        const NARROW_W: f32 = 360.0;
+        const CELL_RIGHT: f64 = 360.0;
+        const CELL_LEFT: f64 = 90.0;
+
+        // A long summary with a distinctive, unbroken tail to query by.
+        const SUMMARY_TAIL: &str = "wrap-regression-tail";
+        let summary =
+            format!("`git log --oneline --graph --decorate --all -n 200` ({SUMMARY_TAIL})");
+
+        let tool = ExecutedTool {
+            tool_name: "Bash".to_string(),
+            summary,
+            parent_task_id: None,
+            file_update: None,
+        };
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(NARROW_W, 400.0))
+            .build_ui(move |ui| {
+                StripBuilder::new(ui)
+                    .size(Size::relative(0.25))
+                    .size(Size::remainder())
+                    .clip(true)
+                    .horizontal(|mut strip| {
+                        strip.cell(|_ui| {});
+                        strip.cell(|ui| {
+                            // Replay DaveUi::ui's ambient wrap override.
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                            DaveUi::executed_tool_ui(&tool, ui);
+                        });
+                    });
+            });
+        // Static content (no spinner): a plain run settles without a repaint burst.
+        let _ = harness.run_ok();
+
+        let bounds = harness
+            .query_by_label_contains(SUMMARY_TAIL)
+            .expect("summary should be present, not elided away")
+            .raw_bounds()
+            .expect("summary bounds");
+        let height = bounds.y1 - bounds.y0;
+
+        assert!(
+            bounds.x1 <= CELL_RIGHT + 1.0,
+            "summary must stay within the cell, not clip off the right edge (x1={})",
+            bounds.x1
+        );
+        assert!(
+            height > 20.0,
+            "a long summary must wrap across multiple rows (height={height})"
+        );
+        // Wrapping to the full column means a later row starts back at the cell's
+        // left margin — the plain-`horizontal` sliver-wrap never reaches it.
+        assert!(
+            bounds.x0 < CELL_LEFT + 40.0,
+            "wrapped summary should reach the cell's left margin, not a sliver \
+             after the tool name (x0={})",
+            bounds.x0
+        );
     }
 }
