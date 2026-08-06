@@ -725,7 +725,7 @@ impl Engine {
             session_id,
         );
         if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-            threading.seed(root, last, loaded.next_seq);
+            threading.seed(root, last);
         }
         threading
     }

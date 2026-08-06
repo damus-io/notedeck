@@ -159,37 +159,24 @@ impl ThreadingState {
     /// Seed threading state from existing events (e.g. loaded from ndb).
     ///
     /// Sets root and last note IDs so that subsequent live events thread
-    /// correctly as replies to the existing conversation.
+    /// correctly (NIP-10) as replies to the existing conversation. This is now
+    /// purely about the reply chain — display order is keyed on wall-clock time
+    /// (see [`crate::session_loader::EventOrder`]), so the seeded `seq` no
+    /// longer needs to be globally coherent and the counter simply increments
+    /// from wherever it is via [`record`](Self::record).
     ///
-    /// `next_seq` is the `seq` the next emitted event should carry — one past
-    /// the highest `seq` already assigned to this conversation (see
-    /// [`LoadedSession::next_seq`](crate::session_loader::LoadedSession::next_seq)).
-    /// It is deliberately *not* a raw note count: some events carry no `seq`, so
-    /// counting notes would seed the counter ahead of the turn's own events.
-    ///
-    /// Seeding is **monotonic**: it only ever advances `seq` (and the `last`
-    /// note it threads onto), never regresses it. This matters because a seed
-    /// can run against a *partial* ndb snapshot — during a fresh resync the
-    /// negentropy backfill streams a session's kind-1988 history in over several
-    /// rounds, so a mid-sync load reports a short `next_seq`. If that short value
-    /// clobbered `seq`, the next event this host emits (often a
-    /// `permission_request`, which pauses the turn) would be stamped with a low
-    /// sequence number and float among later events on every seq-ordered
-    /// rebuild. Re-seeding from a fuller snapshot advances `seq`; re-seeding from
-    /// a staler one is a no-op. It also guards against a re-seed racing just
-    /// behind live [`record`](Self::record) emits whose ndb indexing has not
-    /// been counted yet.
-    ///
-    /// The conversation root is the thread's first event and never changes once
-    /// known, so it is set only while still unset.
-    pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32], next_seq: u32) {
+    /// Safe to call repeatedly, including against a *partial* ndb snapshot
+    /// during a fresh resync: `last_note_id` is the loader's most-recent event
+    /// by time, and any event this host has already emitted carries a `now`
+    /// timestamp that dominates the backfilled history — so a re-seed can never
+    /// regress the reply target below a live emit. The conversation root is the
+    /// thread's first event and never changes once known, so it is set only
+    /// while still unset.
+    pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32]) {
         if self.root_note_id.is_none() {
             self.root_note_id = Some(root_note_id);
         }
-        if next_seq > self.seq {
-            self.seq = next_seq;
-            self.last_note_id = Some(last_note_id);
-        }
+        self.last_note_id = Some(last_note_id);
     }
 
     /// Record a built event's note ID, associated with a JSONL uuid.
@@ -1512,36 +1499,34 @@ mod tests {
         assert_eq!(threading.seq(), 6);
     }
 
-    /// Seeding is monotonic: a partial (shorter) snapshot must never regress
-    /// `seq` or the threaded `last` note, but a fuller snapshot advances both.
+    /// Seeding sets the reply chain, not `seq`: the root is pinned once and the
+    /// `last` note follows the latest seed, while the `seq` counter is left to
+    /// advance only via `record`. Display order no longer depends on the seeded
+    /// `seq`, so seeding does not touch it (see [`super::EventOrder`]).
     #[test]
-    fn seed_is_monotonic() {
+    fn seed_sets_reply_chain_not_seq() {
         let root = [1u8; 32];
-        let last_full = [2u8; 32];
-        let last_partial = [3u8; 32];
+        let last_a = [2u8; 32];
+        let last_b = [3u8; 32];
 
         let mut threading = ThreadingState::new();
 
-        // First (full) seed sets the baseline.
-        threading.seed(root, last_full, 8);
-        assert_eq!(threading.seq(), 8);
+        // First seed pins the root and threads onto `last_a`; `seq` is untouched.
+        threading.seed(root, last_a);
+        assert_eq!(threading.seq(), 0);
         assert_eq!(threading.root_note_id, Some(root));
-        assert_eq!(threading.last_note_id, Some(last_full));
+        assert_eq!(threading.last_note_id, Some(last_a));
 
-        // A later partial snapshot (mid-resync) must not regress seq or last,
-        // otherwise the next emitted event would collide/float below existing
-        // events.
-        threading.seed(root, last_partial, 3);
-        assert_eq!(threading.seq(), 8);
-        assert_eq!(threading.last_note_id, Some(last_full));
-
-        // A fuller snapshot advances both.
-        threading.seed(root, last_partial, 12);
-        assert_eq!(threading.seq(), 12);
-        assert_eq!(threading.last_note_id, Some(last_partial));
+        // A re-seed updates the reply target to the loader's latest note. This
+        // is safe against a partial snapshot because a live emit's `now`
+        // timestamp dominates backfilled history, so the loader's `last` is
+        // never older than an already-emitted event.
+        threading.seed(root, last_b);
+        assert_eq!(threading.last_note_id, Some(last_b));
+        assert_eq!(threading.seq(), 0);
 
         // Root is set once and never changes.
-        threading.seed([9u8; 32], last_partial, 20);
+        threading.seed([9u8; 32], last_b);
         assert_eq!(threading.root_note_id, Some(root));
     }
 

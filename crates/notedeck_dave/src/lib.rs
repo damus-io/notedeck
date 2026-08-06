@@ -2194,7 +2194,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.next_seq);
+                        agentic.live_threading.seed(root, last);
                     }
                     // Load permission state and dedup set from events
                     agentic.permissions.merge_loaded(
@@ -2493,7 +2493,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.next_seq);
+                        agentic.live_threading.seed(root, last);
                     }
                     // Load permission state and dedup set
                     agentic.permissions.merge_loaded(
@@ -3577,7 +3577,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 if let Some(agentic) = &mut session.agentic {
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.next_seq);
+                        agentic.live_threading.seed(root, last);
                     }
                     agentic
                         .permissions
@@ -3655,7 +3655,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             if let Some(agentic) = &mut session.agentic {
                 if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                    agentic.live_threading.seed(root, last, loaded.next_seq);
+                    agentic.live_threading.seed(root, last);
                 }
                 agentic
                     .permissions
@@ -3769,8 +3769,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///   sessions from the snapshot resurrects already-deleted ones.
     ///
     /// Until both hold, the view is mid-sync: acting on it can materialize a
-    /// session whose `deleted` event has not arrived yet, or seed live threading
-    /// from a short event count. Consumers gate that work on this latch.
+    /// session whose `deleted` event has not arrived yet. Consumers gate that
+    /// work on this latch.
     ///
     /// Cheap to call every frame: it short-circuits once latched, and each query
     /// is a small hashmap lookup over tracked-relay / tracked-sub state.
@@ -3787,49 +3787,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         if live_eosed && scoped.full_history_settled(identity) {
             self.discovery_settled = true;
             tracing::info!("dave discovery subscription settled (live EOSE + history reconciled)");
-            self.reseed_hosted_threading(ctx);
-        }
-    }
-
-    /// Re-seed every locally-hosted session's live threading from the now-fully
-    /// -synced ndb, called once when the discovery subscription settles.
-    ///
-    /// Startup restore ([`Dave::restore_sessions_from_ndb`]) seeds each session's
-    /// [`live_threading`](crate::session::AgenticSessionData::live_threading)
-    /// from whatever conversation history happened to be in ndb at boot. On a
-    /// fresh resync that snapshot is *partial* — the negentropy backfill is still
-    /// streaming the kind-1988 history in — so the seed lands with a short event
-    /// count. If the user resumes such a session before the backfill lands, the
-    /// backend's next event (often a `permission_request`) is stamped with a low
-    /// `seq` and floats above later events.
-    ///
-    /// [`ThreadingState::seed`](agentium_core::session_events::ThreadingState::seed)
-    /// is monotonic, so re-seeding from the settled (complete) snapshot advances
-    /// `seq` to the true event count without ever regressing a session that has
-    /// already emitted past it. Only locally-hosted sessions emit through
-    /// `live_threading` (remote controller sends derive threading from ndb per
-    /// message), so remote sessions are skipped.
-    fn reseed_hosted_threading(&mut self, ctx: &AppContext<'_>) {
-        let account = *ctx.accounts.selected_account_pubkey();
-        let Ok(txn) = Transaction::new(ctx.ndb) else {
-            return;
-        };
-        for session in self.session_manager.iter_mut() {
-            if session.is_remote() {
-                continue;
-            }
-            let Some(agentic) = session.agentic.as_mut() else {
-                continue;
-            };
-            let loaded = session_loader::load_session_messages_for_author(
-                ctx.ndb,
-                &txn,
-                &account,
-                &agentic.event_id,
-            );
-            if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                agentic.live_threading.seed(root, last, loaded.next_seq);
-            }
         }
     }
 
