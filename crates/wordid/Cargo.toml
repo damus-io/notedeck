@@ -1,0 +1,9 @@
+[package]
+name = "wordid"
+edition = "2021"
+version.workspace = true
+description = "Human-friendly BIP-39 word-id rendering of nostr ids, shared across notedeck ref systems"
+
+[dependencies]
+bip39 = { workspace = true }
+sha2 = { workspace = true }
