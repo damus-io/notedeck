@@ -2244,6 +2244,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         };
 
+        // Defer materializing discovered sessions until the discovery
+        // subscription has settled (see `poll_discovery_settled`). Negentropy
+        // history reconciliation streams events in over several rounds, so a
+        // mid-sync snapshot can hold a session's `create` revision while its
+        // newer `deleted` revision is still pending — draining now would
+        // materialize an already-deleted "litter" session that vanishes a few
+        // frames later. We return *before* `poll_for_notes` so the notes stay
+        // queued on the subscription; once settled, the drain sees the netted
+        // head (ndb has collapsed each replaceable session-state event to its
+        // latest revision, and the creation path re-queries that latest
+        // revision, so deleted sessions never surface).
+        //
+        // Only gate when a remote discovery sync is actually pending: with no
+        // remote subscription (local-only) there is nothing to reconcile and
+        // `discovery_settled` never latches, so processing immediately is
+        // correct.
+        if self.discovery_sync_pending() {
+            return;
+        }
+
         let note_keys = ctx.ndb.poll_for_notes(sub, 32);
         if note_keys.is_empty() {
             return;
@@ -3718,6 +3738,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.discovery_settled = false;
     }
 
+    /// Whether the remote discovery sync is still pending: a remote discovery
+    /// subscription is declared but its synced view has not
+    /// [settled](Dave::discovery_settled) yet.
+    ///
+    /// This is the single "is the ndb view still mid-sync?" predicate that
+    /// consumers gate on. It is `false` when there is no remote subscription
+    /// (local-only — nothing to reconcile) and once the sync has settled, and
+    /// `true` only in the window between (re)declaring the subscription and its
+    /// settle. [`Dave::poll_discovery_settled`] runs while this holds; snapshot
+    /// consumers defer while this holds.
+    fn discovery_sync_pending(&self) -> bool {
+        self.pns_remote_sub_state.is_some() && !self.discovery_settled
+    }
+
     /// Latch [`Dave::discovery_settled`] once the PNS discovery subscription's
     /// synced view has stopped churning.
     ///
@@ -3741,7 +3775,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Cheap to call every frame: it short-circuits once latched, and each query
     /// is a small hashmap lookup over tracked-relay / tracked-sub state.
     fn poll_discovery_settled(&mut self, ctx: &mut AppContext<'_>) {
-        if self.discovery_settled || self.pns_remote_sub_state.is_none() {
+        if !self.discovery_sync_pending() {
             return;
         }
         let identity = scoped_identity(&pns_remote_sub_id());
