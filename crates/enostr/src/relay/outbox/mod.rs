@@ -923,6 +923,18 @@ impl OutboxPool {
         self.eose_tracker.is_fully_eosed(&self.subs, id)
     }
 
+    /// Whether the full-history (NIP-77 negentropy) reconciliation for `id` has
+    /// settled: at least one round has run and no reconciliation work remains in
+    /// flight. See [`FullHistoryTracker::sub_settled`].
+    ///
+    /// This is a separate lifecycle from live-subscription EOSE
+    /// ([`Self::all_have_eose`]): EOSE reports the live REQ's stored-event
+    /// replay, whereas this reports negentropy convergence over the sub's
+    /// history window.
+    pub fn full_history_settled(&self, id: FullHistorySubId) -> bool {
+        self.full_history.sub_settled(id)
+    }
+
     /// Returns a clone of the filters for the given subscription ID.
     pub fn filters(&self, id: &OutboxSubId) -> Option<&Vec<Filter>> {
         self.subs.view(id).map(|v| v.filters.get_filters())

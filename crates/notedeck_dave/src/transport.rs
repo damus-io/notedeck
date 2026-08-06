@@ -33,7 +33,12 @@ impl<'o, 'a> RemoteApiTransport<'o, 'a> {
 }
 
 /// Resolve an engine [`SubscriptionId`] to notedeck's account-scoped identity.
-fn scoped_identity(id: &SubscriptionId) -> ScopedSubIdentity {
+///
+/// Shared with the discovery-settle poll in `lib.rs` so the
+/// `SubscriptionId -> ScopedSubIdentity` mapping has a single source of truth:
+/// the settle check must query EOSE for the *same* scoped identity this
+/// transport declared the subscription under.
+pub(crate) fn scoped_identity(id: &SubscriptionId) -> ScopedSubIdentity {
     ScopedSubIdentity::account(SubOwnerKey::new(id.owner), SubKey::new(id.key))
 }
 

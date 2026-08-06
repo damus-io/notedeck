@@ -1129,4 +1129,27 @@ impl FullHistoryTracker {
             .values()
             .any(TrackedFullHistorySub::has_pending_work)
     }
+
+    /// Whether the full-history sub `id` has settled: at least one negentropy
+    /// round has started and no reconciliation work remains in flight.
+    ///
+    /// The `rounds_started >= 1` guard is essential: a freshly tracked sub has
+    /// no work staged yet, so a bare `!has_pending_work()` would report
+    /// "settled" *before* the first reconciliation even begins. Requiring a
+    /// started round means "settled" only holds once a round has run and
+    /// drained.
+    ///
+    /// An untracked `id` (never declared, or already torn down) counts as
+    /// settled — there is nothing to wait for. Likewise, if no negentropy
+    /// backend is wired up (`neg_set_provider` is `None`) full-history can never
+    /// run, so callers should not block on it.
+    pub(in crate::relay::outbox) fn sub_settled(&self, id: FullHistorySubId) -> bool {
+        if self.neg_set_provider.is_none() {
+            return true;
+        }
+        let Some(tracked) = self.tracked_subs.get(&id) else {
+            return true;
+        };
+        tracked.rounds_started >= 1 && !tracked.has_pending_work()
+    }
 }

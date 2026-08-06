@@ -3199,3 +3199,60 @@ async fn stale_pong_during_neg_open_clears_session_and_retries_after_reconnect()
         "expected reconnect to retry NEG-OPEN after stale-pong disconnect"
     );
 }
+
+#[tokio::test]
+async fn full_history_settled_tracks_reconciliation_lifecycle() {
+    let relay = relay_url("settle-lifecycle");
+    let mut pool = ready_pool();
+    let history_id = subscribe_unbounded(&mut pool, MockWakeup::default(), [relay]);
+
+    // A freshly subscribed sub has started its first round and staged a pending
+    // neg-set, so work is in flight and it is NOT settled yet.
+    assert_eq!(tracked_sub(&pool, history_id).rounds_started, 1);
+    assert!(
+        !pool.full_history_settled(history_id),
+        "a sub with reconciliation work in flight is not settled"
+    );
+
+    // Drain the in-flight work: a round has now run and nothing remains.
+    clear_pending_neg_sets(&mut pool, history_id);
+    assert!(
+        pool.full_history_settled(history_id),
+        "round started and no pending work -> settled"
+    );
+}
+
+#[tokio::test]
+async fn full_history_not_settled_before_first_round() {
+    let relay = relay_url("pre-first-round");
+    let mut pool = ready_pool();
+    let history_id = subscribe_unbounded(&mut pool, MockWakeup::default(), [relay]);
+
+    // Force the "no round has run yet, and nothing is staged" state: without the
+    // rounds_started guard this would read as settled before reconciliation even
+    // begins.
+    clear_pending_neg_sets(&mut pool, history_id);
+    tracked_sub_mut(&mut pool, history_id).rounds_started = 0;
+    assert!(
+        !pool.full_history_settled(history_id),
+        "no negentropy round has run yet -> not settled, even with no pending work"
+    );
+}
+
+#[tokio::test]
+async fn full_history_settled_when_no_negentropy_backend() {
+    let relay = relay_url("no-backend");
+    // OutboxPool::default() has no neg_set_provider, so full history can never
+    // run — callers must not block on it.
+    let mut pool = OutboxPool::default();
+    let history_id = subscribe_unbounded(&mut pool, MockWakeup::default(), [relay]);
+    assert_eq!(
+        tracked_sub(&pool, history_id).rounds_started,
+        0,
+        "no round can start without a negentropy backend"
+    );
+    assert!(
+        pool.full_history_settled(history_id),
+        "without a negentropy backend there is nothing to reconcile -> settled"
+    );
+}
