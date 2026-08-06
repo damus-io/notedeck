@@ -143,12 +143,32 @@ impl ThreadingState {
 
     /// Seed threading state from existing events (e.g. loaded from ndb).
     ///
-    /// Sets root and last note IDs so that subsequent live events
-    /// thread correctly as replies to the existing conversation.
+    /// Sets root and last note IDs so that subsequent live events thread
+    /// correctly as replies to the existing conversation.
+    ///
+    /// Seeding is **monotonic**: it only ever advances `seq` (and the `last`
+    /// note it threads onto), never regresses it. This matters because a seed
+    /// can run against a *partial* ndb snapshot — during a fresh resync the
+    /// negentropy backfill streams a session's kind-1988 history in over several
+    /// rounds, so a mid-sync `load_session_messages_for_author` reports a short
+    /// `event_count`. If that short count clobbered `seq`, the next event this
+    /// host emits (often a `permission_request`, which pauses the turn) would be
+    /// stamped with a low sequence number and float above later events on every
+    /// seq-ordered rebuild. Re-seeding from a fuller snapshot advances `seq`;
+    /// re-seeding from a staler one is a no-op. It also guards against a re-seed
+    /// racing just behind live [`record`](Self::record) emits whose ndb
+    /// indexing has not been counted yet.
+    ///
+    /// The conversation root is the thread's first event and never changes once
+    /// known, so it is set only while still unset.
     pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32], event_count: u32) {
-        self.root_note_id = Some(root_note_id);
-        self.last_note_id = Some(last_note_id);
-        self.seq = event_count;
+        if self.root_note_id.is_none() {
+            self.root_note_id = Some(root_note_id);
+        }
+        if event_count > self.seq {
+            self.seq = event_count;
+            self.last_note_id = Some(last_note_id);
+        }
     }
 
     /// Record a built event's note ID, associated with a JSONL uuid.
@@ -1403,6 +1423,39 @@ mod tests {
         assert!(json.contains("rm -rf"));
         // Threading state should have advanced
         assert_eq!(threading.seq(), 6);
+    }
+
+    /// Seeding is monotonic: a partial (shorter) snapshot must never regress
+    /// `seq` or the threaded `last` note, but a fuller snapshot advances both.
+    #[test]
+    fn seed_is_monotonic() {
+        let root = [1u8; 32];
+        let last_full = [2u8; 32];
+        let last_partial = [3u8; 32];
+
+        let mut threading = ThreadingState::new();
+
+        // First (full) seed sets the baseline.
+        threading.seed(root, last_full, 8);
+        assert_eq!(threading.seq(), 8);
+        assert_eq!(threading.root_note_id, Some(root));
+        assert_eq!(threading.last_note_id, Some(last_full));
+
+        // A later partial snapshot (mid-resync) must not regress seq or last,
+        // otherwise the next emitted event would collide/float below existing
+        // events.
+        threading.seed(root, last_partial, 3);
+        assert_eq!(threading.seq(), 8);
+        assert_eq!(threading.last_note_id, Some(last_full));
+
+        // A fuller snapshot advances both.
+        threading.seed(root, last_partial, 12);
+        assert_eq!(threading.seq(), 12);
+        assert_eq!(threading.last_note_id, Some(last_partial));
+
+        // Root is set once and never changes.
+        threading.seed([9u8; 32], last_partial, 20);
+        assert_eq!(threading.root_note_id, Some(root));
     }
 
     #[test]
