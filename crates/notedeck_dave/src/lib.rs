@@ -4537,18 +4537,21 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
     let mut needs_reorder = false;
 
-    // Sort this batch by `seq` (the per-session monotonic counter), falling
-    // back to `created_at` only for events with no `seq` tag. Live events are
-    // all stamped with the same second-resolution `created_at` within a turn,
-    // so `seq` is the authoritative order — see `session_loader`. NOTE: this
-    // only orders within a single poll batch; events that arrive in a later
-    // batch are still appended after earlier ones (see process_conversation_notes
-    // docs), so out-of-order delivery across polls can still misorder the chat.
+    // Sort this batch by `created_at`, using `seq` only as a same-second
+    // tiebreaker — the same ordering the loader uses (see `session_loader`).
+    // `created_at` is the authoritative wall-clock order; `seq` disambiguates
+    // the burst of events a turn stamps into a single second. Sorting by `seq`
+    // first is wrong once a session mixes the live and convert seq counters,
+    // whose ranges diverge. Events with no `seq` tiebreak last (`u32::MAX`).
+    // NOTE: this only orders within a single poll batch; events that arrive in
+    // a later batch are still appended after earlier ones (see
+    // process_conversation_notes docs), so out-of-order delivery across polls
+    // can still misorder the chat.
     notes.sort_by_key(|n| {
         let seq = session_events::get_tag_value(n, "seq")
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(u32::MAX);
-        (seq, n.created_at())
+        (n.created_at(), seq)
     });
 
     for note in &notes {

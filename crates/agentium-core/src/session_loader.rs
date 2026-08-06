@@ -89,22 +89,28 @@ fn load_session_messages_with_author(
         .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
         .collect();
 
-    // Sort by `seq` first, falling back to `created_at` as a tiebreaker.
+    // Sort by `created_at` first, using `seq` only as a same-second tiebreaker.
     //
-    // This query is scoped to a single session (`d` tag), and within one
-    // session `seq` is a unique, monotonic counter assigned in event order —
-    // it is the authoritative ordering (see `session_reconstructor`, which
-    // rebuilds JSONL purely by `seq`). `created_at` is only second-resolution
-    // and mixes backfilled JSONL timestamps with live `now_secs()` values, so
-    // sorting by it first scrambles events when many arrive in the same second
-    // (e.g. a synced backlog), which would float late events like a pending
-    // permission request to the wrong position. Only fall back to `created_at`
-    // for events missing a `seq` tag.
+    // `created_at` is the authoritative order: every event carries real
+    // wall-clock time — convert preserves the original JSONL timestamp, live
+    // events use `now_secs()` — and a live event is always emitted at or after
+    // the conversation it follows, so `created_at` never inverts logical order
+    // across seconds. `seq` is NOT reliable as the primary key: a session mixes
+    // events from two independent counters (the live `ThreadingState` seeded
+    // from ndb, and `convert_session_to_events`, which restarts at 0), so their
+    // `seq` ranges diverge and live-typed user messages float to the bottom
+    // when sorted by `seq`. `created_at` has no such split.
+    //
+    // `seq` still matters within a single second: `created_at` is only
+    // second-resolution, so a turn's burst of events (or a synced backlog) can
+    // share one timestamp, and there `seq` — the per-turn monotonic counter —
+    // orders them (e.g. keeps a pending permission request after the assistant
+    // text it follows). Events missing a `seq` tag tiebreak last (`u32::MAX`).
     notes.sort_by_key(|note| {
         let seq = get_tag_value(note, "seq")
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(u32::MAX);
-        (seq, note.created_at())
+        (note.created_at(), seq)
     });
 
     // The next event's `seq` is one past the highest `seq` actually assigned,
@@ -530,72 +536,85 @@ mod tests {
         key
     }
 
-    /// A pending permission request must stay at the end of the conversation
-    /// even when its `created_at` is *earlier* than surrounding events.
-    ///
-    /// This reproduces the remote-sync bug: conversation events carry their
-    /// original JSONL timestamps while a live permission request is stamped
-    /// with `now_secs()`. When a backlog syncs with future-dated (or simply
-    /// out-of-second) timestamps, sorting by `created_at` first floated the
-    /// "needs input" permission request to the top. Sorting by `seq` keeps it
-    /// in its true position regardless of timestamp skew.
+    /// Hand-build a signed kind-1988 event JSON with an explicit `created_at`
+    /// and `seq`, bypassing the live builders so tests control both axes
+    /// independently. `content` is the raw note content (JSON for a
+    /// permission_request, plain text otherwise); `extra` adds trailing
+    /// `(key, value)` tags (e.g. `perm-id`).
+    fn build_1988_event_json(
+        sk: &[u8; 32],
+        session_id: &str,
+        role: &str,
+        content: &str,
+        created_at: u64,
+        seq: u32,
+        extra: &[(&str, &str)],
+    ) -> String {
+        let seq_str = seq.to_string();
+        let mut builder = NoteBuilder::new()
+            .kind(AI_CONVERSATION_KIND)
+            .content(content)
+            .options(NoteBuildOptions::default())
+            .created_at(created_at)
+            .start_tag()
+            .tag_str("d")
+            .tag_str(session_id)
+            .start_tag()
+            .tag_str("role")
+            .tag_str(role)
+            .start_tag()
+            .tag_str("seq")
+            .tag_str(&seq_str);
+        for (k, v) in extra {
+            builder = builder.start_tag().tag_str(k).tag_str(v);
+        }
+        let note = builder.sign(sk).build().unwrap();
+        format!("[\"EVENT\", {}]", note.json().unwrap())
+    }
+
+    async fn ingest_all(ndb: &Ndb, filter: &Filter, events: &[String]) {
+        for event in events {
+            let sub_id = ndb.subscribe(std::slice::from_ref(filter)).unwrap();
+            ndb.process_event_with(event, IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub_id, 1).await.unwrap();
+        }
+    }
+
+    /// Within a single wall-clock second, `seq` breaks the tie so a pending
+    /// permission request stays after the assistant text it follows and does
+    /// not float to the top (regression for the remote-sync "NeedsInput floats
+    /// to top" bug, dave#pledge-grief-close). `created_at` is second-resolution,
+    /// so a turn's burst of events shares one timestamp; only `seq` can order
+    /// them, and the loader uses it as the same-second tiebreaker.
     #[tokio::test]
-    async fn permission_request_orders_by_seq_not_created_at() {
+    async fn same_second_events_order_by_seq() {
         let sk = test_secret_key();
-        let mut threading = ThreadingState::new();
-        let session_id = "seq-ordering-test";
+        let session_id = "same-second-test";
+        let t = 1_770_000_000; // one shared second for every event
 
-        // Conversation events are far-future dated so their created_at exceeds
-        // the permission request's now_secs() stamp.
-        let user_line = JsonlLine::parse(&format!(
-            r#"{{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"{session_id}","timestamp":"2099-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{{"role":"user","content":"run a command"}}}}"#,
-        ))
-        .unwrap();
-        let user_events = build_events(&user_line, &mut threading, &sk).unwrap();
-
-        let assistant_line = JsonlLine::parse(&format!(
-            r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"{session_id}","timestamp":"2099-02-09T20:00:02Z","cwd":"/tmp","version":"2.0.64","message":{{"role":"assistant","model":"claude-opus-4-5-20251101","content":[{{"type":"text","text":"sure, running it"}}]}}}}"#,
-        ))
-        .unwrap();
-        let assistant_events = build_events(&assistant_line, &mut threading, &sk).unwrap();
-
-        // Live permission request, stamped with now_secs() (much earlier than 2099).
-        let perm_id = uuid::Uuid::new_v4();
-        let tool_input = serde_json::json!({"command": "rm -rf /tmp/test"});
-        let perm_event = build_permission_request_event(
-            &perm_id,
-            "Bash",
-            &tool_input,
-            session_id,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
-
-        // Ingest in reverse to mimic out-of-order relay delivery.
-        let mut all_events: Vec<_> = Vec::new();
-        all_events.extend(
-            user_events
-                .iter()
-                .filter(|e| e.kind == AI_CONVERSATION_KIND),
-        );
-        all_events.extend(
-            assistant_events
-                .iter()
-                .filter(|e| e.kind == AI_CONVERSATION_KIND),
-        );
-        all_events.push(&perm_event);
+        let perm_content = r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/test"}}"#;
+        let perm_id = uuid::Uuid::new_v4().to_string();
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "run a command", t, 0, &[]),
+            build_1988_event_json(&sk, session_id, "assistant", "sure, running it", t, 1, &[]),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "permission_request",
+                perm_content,
+                t,
+                2,
+                &[("perm-id", &perm_id)],
+            ),
+        ];
 
         let tmp_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
         let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
-
-        for event in all_events.iter().rev() {
-            let sub_id = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
-            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
-                .expect("ingest failed");
-            let _ = ndb.wait_for_notes(sub_id, 1).await.unwrap();
-        }
+        // Ingest in reverse to mimic out-of-order relay delivery.
+        let reversed: Vec<String> = events.iter().rev().cloned().collect();
+        ingest_all(&ndb, &filter, &reversed).await;
 
         let txn = Transaction::new(&ndb).unwrap();
         let loaded = load_session_messages(&ndb, &txn, session_id);
@@ -603,12 +622,53 @@ mod tests {
         assert_eq!(loaded.messages.len(), 3);
         assert!(
             matches!(loaded.messages[0], Message::User(_)),
-            "first message should be the user prompt, got {:?}",
-            loaded.messages[0]
+            "user prompt must sort first (seq 0): {:?}",
+            loaded.messages
         );
         assert!(
             matches!(loaded.messages.last(), Some(Message::PermissionRequest(_))),
-            "permission request must sort last (by seq), not float to the top: {:?}",
+            "permission request must stay last (seq 2), not float to the top: {:?}",
+            loaded.messages
+        );
+    }
+
+    /// Across different seconds, `created_at` wins over `seq`. A session mixes
+    /// two independent seq counters — the live `ThreadingState` (seeded from
+    /// ndb) and `convert_session_to_events` (restarts at 0) — so a live-typed
+    /// user message can carry a much *higher* `seq` than the events that
+    /// chronologically follow it. Sorting by `seq` sank those user messages to
+    /// the very bottom of the chat; sorting by `created_at` keeps them in place.
+    #[tokio::test]
+    async fn divergent_seq_orders_by_created_at() {
+        let sk = test_secret_key();
+        let session_id = "divergent-seq-test";
+
+        // The user message is EARLIER in wall-clock time but carries an
+        // inflated seq (490, the live counter); the assistant reply is LATER
+        // but carries a low seq (360, the convert counter). created_at must win.
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "/compact reorder", 1_000, 490, &[]),
+            build_1988_event_json(&sk, session_id, "assistant", "on it", 1_001, 360, &[]),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        assert_eq!(loaded.messages.len(), 2);
+        assert!(
+            matches!(loaded.messages[0], Message::User(_)),
+            "earlier user message must sort first by created_at despite its \
+             higher seq (490 vs 360) — sorting by seq sinks it to the bottom: {:?}",
+            loaded.messages
+        );
+        assert!(
+            matches!(loaded.messages[1], Message::Assistant(_)),
+            "later assistant reply must sort second: {:?}",
             loaded.messages
         );
     }

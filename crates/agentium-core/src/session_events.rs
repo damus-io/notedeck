@@ -1893,7 +1893,7 @@ mod tests {
             let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();
         }
 
-        // Query and sort the same way session_loader does: (seq, created_at)
+        // Query and sort the same way session_loader does: (created_at, seq)
         let txn = Transaction::new(&ndb).unwrap();
         let results = ndb.query(&txn, &[filter], 100).unwrap();
         let mut notes: Vec<_> = results
@@ -1905,7 +1905,7 @@ mod tests {
             let seq = get_tag_value(note, "seq")
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(u32::MAX);
-            (seq, note.created_at())
+            (note.created_at(), seq)
         });
 
         // Extract roles in sorted order
