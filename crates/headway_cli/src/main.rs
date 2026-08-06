@@ -14,7 +14,9 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView, CommentView, Container, Date, Priority};
+use headway::event::{
+    self, BoardView, CardView, CommentView, Container, Date, Priority, resolve_card,
+};
 use headway::store::{self, BoardAction, Publisher};
 use headway::{traversal, wordid};
 
@@ -697,35 +699,6 @@ fn resolve_col(view: &BoardView, sel: &str) -> Result<usize> {
         })
 }
 
-/// Resolve a card argument, accepting (in order): a full 64-char hex id; a word
-/// id like `headway#maple-river-canyon` (the `<board>#` prefix is optional, and a
-/// bare leading `#` is fine too, so `#maple-river-canyon` and
-/// `maple-river-canyon` both work); or a unique hex prefix. Word ids and hex
-/// prefixes are matched against every card on the board, archived ones included.
-fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId> {
-    if let Ok(id) = NoteId::from_hex(sel) {
-        return Ok(id);
-    }
-    let sel = sel.to_lowercase();
-
-    // Word id: drop an optional `<board>#` prefix (or a bare leading `#`), then
-    // match by re-encoding each card — exactly how a git short hash is resolved.
-    let words = sel
-        .strip_prefix(&format!("{}#", view.id.to_lowercase()))
-        .or_else(|| sel.strip_prefix('#'))
-        .unwrap_or(&sel);
-    if let Some(id) = event::resolve_card_by_wordid(view, words) {
-        return Ok(id);
-    }
-
-    let mut hits = event::all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
-    match (hits.next(), hits.next()) {
-        (Some(c), None) => Ok(c.id),
-        (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'").into()),
-        _ => Err(format!("no card matching '{sel}'").into()),
-    }
-}
-
 /// Resolve an `--in` container selector: a card ref names that card's container
 /// (its subissues); anything else must be the board's own slug, naming the
 /// board-root work-order.
@@ -733,7 +706,7 @@ fn resolve_container(view: &BoardView, sel: &str) -> Result<Container> {
     match resolve_card(view, sel) {
         Ok(id) => Ok(Container::Card(*id.bytes())),
         Err(_) if sel.eq_ignore_ascii_case(&view.id) => Ok(Container::BoardRoot(view.id.clone())),
-        Err(e) => Err(e),
+        Err(e) => Err(e.into()),
     }
 }
 

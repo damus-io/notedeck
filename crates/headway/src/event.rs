@@ -2384,6 +2384,40 @@ pub fn resolve_card_by_wordid(view: &BoardView, words: &str) -> Option<NoteId> {
         .map(|c| c.id)
 }
 
+/// Resolve a card ref on `view` to its note id, accepting (in order): a full
+/// 64-char hex id; a word id like `board#maple-river-canyon` (the `<board>#`
+/// prefix is optional, and a bare leading `#` works too, so `#maple-river-canyon`
+/// and `maple-river-canyon` both resolve); or a unique hex prefix. Word ids and
+/// hex prefixes are matched against every card on the board, archived ones
+/// included.
+///
+/// This is the single card-addressing entry point shared by the CLI and the
+/// in-app agent tools ([`notedeck_headway`](../../notedeck_headway)), so both
+/// frontends resolve a user's card ref identically.
+pub fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId, String> {
+    if let Ok(id) = NoteId::from_hex(sel) {
+        return Ok(id);
+    }
+    let sel = sel.to_lowercase();
+
+    // Word id: drop an optional `<board>#` prefix (or a bare leading `#`), then
+    // match by re-encoding each card — exactly how a git short hash resolves.
+    let words = sel
+        .strip_prefix(&format!("{}#", view.id.to_lowercase()))
+        .or_else(|| sel.strip_prefix('#'))
+        .unwrap_or(&sel);
+    if let Some(id) = resolve_card_by_wordid(view, words) {
+        return Ok(id);
+    }
+
+    let mut hits = all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
+    match (hits.next(), hits.next()) {
+        (Some(c), None) => Ok(c.id),
+        (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'")),
+        _ => Err(format!("no card matching '{sel}'")),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fractional ranking
 // ---------------------------------------------------------------------------

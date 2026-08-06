@@ -7,10 +7,9 @@
 //! same curated schema the CLI emits with `--json`. Boards are folded for the
 //! currently-selected account — the pubkey that authors this user's boards.
 
-use enostr::{NoteId, RelayId};
-use headway::event::{self, BoardView, CardView, Priority};
+use enostr::RelayId;
+use headway::event::{self, BoardView, CardView, Priority, resolve_card};
 use headway::store::{self, BoardAction};
-use headway::wordid;
 use nostrdb::Transaction;
 use notedeck::{
     AppTool, ExplicitPublishApi, RegisteredTool, ToolArg, ToolArgType, ToolContext, ToolSpec,
@@ -39,31 +38,6 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(DeleteCard),
         RegisteredTool::new(RenameBoard),
     ]
-}
-
-/// Resolve a card ref — a hex id, a unique hex prefix, or a word-id (optionally
-/// carrying a `<board>#` or bare `#` prefix) — to its note id within `view`,
-/// mirroring the CLI's addressing.
-fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId, String> {
-    if let Ok(id) = NoteId::from_hex(sel) {
-        return Ok(id);
-    }
-    let sel = sel.to_lowercase();
-
-    let words = sel
-        .strip_prefix(&format!("{}#", view.id.to_lowercase()))
-        .or_else(|| sel.strip_prefix('#'))
-        .unwrap_or(&sel);
-    if let Some(card) = all_cards(view).find(|c| wordid::encode(c.id.bytes()) == words) {
-        return Ok(card.id);
-    }
-
-    let mut hits = all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
-    match (hits.next(), hits.next()) {
-        (Some(card), None) => Ok(card.id),
-        (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'")),
-        _ => Err(format!("no card matching '{sel}'")),
-    }
 }
 
 /// Every card on `view`: the live column cards followed by the archived ones.
@@ -823,6 +797,7 @@ fn board_arg() -> ToolArg {
 mod tests {
     use super::*;
     use enostr::FullKeypair;
+    use headway::wordid;
     use nostrdb::{Config, Ndb};
     use notedeck::{Accounts, NoteCache, UnknownIds};
     use serde_json::json;
