@@ -585,6 +585,7 @@ impl Engine {
             return Err(EngineError::UnknownPermission);
         };
 
+        let mut threading = self.session_threading(session_id);
         crate::session_events::build_permission_response_event(
             &perm_uuid,
             &request_note_id,
@@ -592,6 +593,7 @@ impl Engine {
             message,
             cancel_turn,
             session_id,
+            &mut threading,
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))
@@ -645,6 +647,7 @@ impl Engine {
             )
         };
 
+        let mut threading = self.session_threading(session_id);
         let built = crate::session_events::build_permission_response_event(
             &perm_uuid,
             &request_note_id,
@@ -652,6 +655,7 @@ impl Engine {
             Some(&payload),
             false,
             session_id,
+            &mut threading,
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
@@ -691,8 +695,14 @@ impl Engine {
         session_id: &str,
         mode: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        crate::session_events::build_set_permission_mode_event(mode, session_id, &self.seckey())
-            .map_err(|e| EngineError::Build(e.to_string()))
+        let mut threading = self.session_threading(session_id);
+        crate::session_events::build_set_permission_mode_event(
+            mode,
+            session_id,
+            &mut threading,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))
     }
 
     /// The 32-byte account secret that signs inner session events.
@@ -715,7 +725,7 @@ impl Engine {
             session_id,
         );
         if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-            threading.seed(root, last, loaded.event_count);
+            threading.seed(root, last, loaded.next_seq);
         }
         threading
     }

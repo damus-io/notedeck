@@ -24,7 +24,13 @@ pub struct LoadedSession {
     pub messages: Vec<Message>,
     pub root_note_id: Option<[u8; 32]>,
     pub last_note_id: Option<[u8; 32]>,
-    pub event_count: u32,
+    /// The `seq` the next emitted event should carry: the highest `seq` among
+    /// loaded events plus one (0 for an empty session). This is deliberately
+    /// **not** the note count — some conversation events (`permission_response`,
+    /// `set_permission_mode`) carry no `seq` tag, so counting notes overshoots
+    /// the real sequence space and would seed the live counter ahead of the
+    /// turn's own events, floating user messages below the turn they trigger.
+    pub next_seq: u32,
     /// Permission state loaded from events (responded set + request note IDs).
     pub permissions: PermissionTracker,
     /// All note IDs found, for seeding dedup in live polling.
@@ -70,7 +76,7 @@ fn load_session_messages_with_author(
                 messages: vec![],
                 root_note_id: None,
                 last_note_id: None,
-                event_count: 0,
+                next_seq: 0,
                 permissions: PermissionTracker::new(),
                 note_ids: HashSet::new(),
             };
@@ -101,7 +107,15 @@ fn load_session_messages_with_author(
         (seq, note.created_at())
     });
 
-    let event_count = notes.len() as u32;
+    // The next event's `seq` is one past the highest `seq` actually assigned,
+    // ignoring seq-less events (see `LoadedSession::next_seq`). Using the note
+    // count instead would overshoot by the number of seq-less events.
+    let next_seq = notes
+        .iter()
+        .filter_map(|n| get_tag_value(n, "seq").and_then(|s| s.parse::<u32>().ok()))
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
     let note_ids: HashSet<[u8; 32]> = notes.iter().map(|n| *n.id()).collect();
 
     // Find the first conversation note (skip metadata like queue-operation)
@@ -196,7 +210,7 @@ fn load_session_messages_with_author(
         messages,
         root_note_id,
         last_note_id,
-        event_count,
+        next_seq,
         permissions,
         note_ids,
     }
@@ -499,7 +513,7 @@ mod tests {
     use super::*;
     use crate::session_events::{build_events, build_permission_request_event, ThreadingState};
     use crate::session_jsonl::JsonlLine;
-    use nostrdb::{Config, IngestMetadata, Ndb};
+    use nostrdb::{Config, IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder};
     use tempfile::TempDir;
 
     fn test_config() -> Config {
@@ -596,6 +610,79 @@ mod tests {
             matches!(loaded.messages.last(), Some(Message::PermissionRequest(_))),
             "permission request must sort last (by seq), not float to the top: {:?}",
             loaded.messages
+        );
+    }
+
+    /// `next_seq` must be one past the highest assigned `seq`, ignoring any
+    /// event that carries no `seq` tag. Current builders always stamp `seq`
+    /// (see `no_conversation_event_is_seqless`), but sessions synced before that
+    /// fix still hold seq-less notes in ndb. Counting notes instead of taking
+    /// `max(seq) + 1` would overshoot by those legacy events and seed the live
+    /// counter ahead of the next turn, floating a user message below the turn it
+    /// triggers — the long-standing "resume drift" bug.
+    #[tokio::test]
+    async fn next_seq_ignores_seqless_events() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id = "next-seq-test";
+
+        let user_line = JsonlLine::parse(&format!(
+            r#"{{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"{session_id}","timestamp":"2024-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{{"role":"user","content":"run a command"}}}}"#,
+        ))
+        .unwrap();
+        let user_events = build_events(&user_line, &mut threading, &sk).unwrap(); // seq 0
+
+        let perm_id = uuid::Uuid::new_v4();
+        let perm_event = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({"command": "ls"}),
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap(); // seq 1
+
+        // A legacy seq-less note (as emitted before the seq invariant landed).
+        // Hand-built to bypass the current builders, which always stamp `seq`.
+        let legacy_note = NoteBuilder::new()
+            .kind(AI_CONVERSATION_KIND)
+            .content("legacy response with no seq tag")
+            .options(NoteBuildOptions::default())
+            .start_tag()
+            .tag_str("d")
+            .tag_str(session_id)
+            .start_tag()
+            .tag_str("role")
+            .tag_str("permission_response")
+            .sign(&sk)
+            .build()
+            .unwrap();
+        let legacy_event_json = format!("[\"EVENT\", {}]", legacy_note.json().unwrap());
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        for event_json in [
+            user_events[0].to_event_json(),
+            perm_event.to_event_json(),
+            legacy_event_json,
+        ] {
+            let sub_id = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&event_json, IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub_id, 1).await.unwrap();
+        }
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        // Three notes ingested (user=0, request=1, legacy=none). The highest
+        // assigned seq is 1, so the next event must be seq 2 — not the note
+        // count (3), which the seq-less legacy note would inflate.
+        assert_eq!(
+            loaded.next_seq, 2,
+            "next_seq must be max-seq + 1 (2), not the note count (3)"
         );
     }
 }

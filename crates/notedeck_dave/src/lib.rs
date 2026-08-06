@@ -2194,7 +2194,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.event_count);
+                        agentic.live_threading.seed(root, last, loaded.next_seq);
                     }
                     // Load permission state and dedup set from events
                     agentic.permissions.merge_loaded(
@@ -2493,7 +2493,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.event_count);
+                        agentic.live_threading.seed(root, last, loaded.next_seq);
                     }
                     // Load permission state and dedup set
                     agentic.permissions.merge_loaded(
@@ -3577,7 +3577,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 if let Some(agentic) = &mut session.agentic {
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.event_count);
+                        agentic.live_threading.seed(root, last, loaded.next_seq);
                     }
                     agentic
                         .permissions
@@ -3655,7 +3655,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             if let Some(agentic) = &mut session.agentic {
                 if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                    agentic.live_threading.seed(root, last, loaded.event_count);
+                    agentic.live_threading.seed(root, last, loaded.next_seq);
                 }
                 agentic
                     .permissions
@@ -3828,7 +3828,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 &agentic.event_id,
             );
             if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                agentic.live_threading.seed(root, last, loaded.event_count);
+                agentic.live_threading.seed(root, last, loaded.next_seq);
             }
         }
     }
@@ -4762,14 +4762,15 @@ fn handle_remote_permission_request(
             .responded
             .insert(perm_id, crate::messages::PermissionResponseType::Allowed);
         if let Some(sk) = secret_key {
-            let sid = agentic.event_session_id();
+            let sid = agentic.event_session_id().to_string();
             if let Ok(evt) = session_events::build_permission_response_event(
                 &perm_id,
                 note.id(),
                 true,
                 None,
                 false,
-                sid,
+                &sid,
+                &mut agentic.live_threading,
                 sk,
             ) {
                 events_to_publish.push(evt);
@@ -5516,6 +5517,7 @@ mod tests {
             Some("too dangerous"),
             false,
             session_id_str,
+            &mut threading,
             &sk,
         )
         .unwrap();
@@ -5639,6 +5641,7 @@ mod tests {
             Some("too dangerous"),
             false,
             session_id_str,
+            &mut threading,
             &sk,
         )
         .unwrap();

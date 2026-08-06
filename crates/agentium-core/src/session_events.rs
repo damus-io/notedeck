@@ -146,27 +146,33 @@ impl ThreadingState {
     /// Sets root and last note IDs so that subsequent live events thread
     /// correctly as replies to the existing conversation.
     ///
+    /// `next_seq` is the `seq` the next emitted event should carry — one past
+    /// the highest `seq` already assigned to this conversation (see
+    /// [`LoadedSession::next_seq`](crate::session_loader::LoadedSession::next_seq)).
+    /// It is deliberately *not* a raw note count: some events carry no `seq`, so
+    /// counting notes would seed the counter ahead of the turn's own events.
+    ///
     /// Seeding is **monotonic**: it only ever advances `seq` (and the `last`
     /// note it threads onto), never regresses it. This matters because a seed
     /// can run against a *partial* ndb snapshot — during a fresh resync the
     /// negentropy backfill streams a session's kind-1988 history in over several
-    /// rounds, so a mid-sync `load_session_messages_for_author` reports a short
-    /// `event_count`. If that short count clobbered `seq`, the next event this
-    /// host emits (often a `permission_request`, which pauses the turn) would be
-    /// stamped with a low sequence number and float above later events on every
-    /// seq-ordered rebuild. Re-seeding from a fuller snapshot advances `seq`;
-    /// re-seeding from a staler one is a no-op. It also guards against a re-seed
-    /// racing just behind live [`record`](Self::record) emits whose ndb
-    /// indexing has not been counted yet.
+    /// rounds, so a mid-sync load reports a short `next_seq`. If that short value
+    /// clobbered `seq`, the next event this host emits (often a
+    /// `permission_request`, which pauses the turn) would be stamped with a low
+    /// sequence number and float among later events on every seq-ordered
+    /// rebuild. Re-seeding from a fuller snapshot advances `seq`; re-seeding from
+    /// a staler one is a no-op. It also guards against a re-seed racing just
+    /// behind live [`record`](Self::record) emits whose ndb indexing has not
+    /// been counted yet.
     ///
     /// The conversation root is the thread's first event and never changes once
     /// known, so it is set only while still unset.
-    pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32], event_count: u32) {
+    pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32], next_seq: u32) {
         if self.root_note_id.is_none() {
             self.root_note_id = Some(root_note_id);
         }
-        if event_count > self.seq {
-            self.seq = event_count;
+        if next_seq > self.seq {
+            self.seq = next_seq;
             self.last_note_id = Some(last_note_id);
         }
     }
@@ -716,6 +722,7 @@ pub fn build_permission_request_event(
 ///
 /// Tags include `perm-id` (matching the request), `e` tag linking to the
 /// request event, and `t: ai-permission` for filtering.
+#[allow(clippy::too_many_arguments)]
 pub fn build_permission_response_event(
     perm_id: &uuid::Uuid,
     request_note_id: &[u8; 32],
@@ -723,6 +730,7 @@ pub fn build_permission_response_event(
     message: Option<&str>,
     cancel_turn: bool,
     session_id: &str,
+    threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     // Keep the legacy `interrupt` key on the wire for compatibility with
@@ -740,6 +748,12 @@ pub fn build_permission_response_event(
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Sequence number (monotonic, for unambiguous ordering). Every kind-1988
+    // conversation event carries one — see the `no_conversation_event_is_seqless`
+    // invariant test.
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
     // Link to the request event
     builder = builder.start_tag().tag_str("e").tag_id(request_note_id);
@@ -759,7 +773,9 @@ pub fn build_permission_response_event(
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
     builder = builder.start_tag().tag_str("t").tag_str("ai-permission");
 
-    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
 }
 
 /// Decode a permission response from its JSON content string.
@@ -1002,6 +1018,7 @@ pub fn is_run_config_deleted(note: &nostrdb::Note) -> bool {
 pub fn build_set_permission_mode_event(
     mode: &str,
     session_id: &str,
+    threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let content = serde_json::json!({
@@ -1012,6 +1029,13 @@ pub fn build_set_permission_mode_event(
     let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
 
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Sequence number (monotonic, for unambiguous ordering). Every kind-1988
+    // conversation event carries one — see the `no_conversation_event_is_seqless`
+    // invariant test.
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
+
     builder = builder
         .start_tag()
         .tag_str("role")
@@ -1023,7 +1047,9 @@ pub fn build_set_permission_mode_event(
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
     builder = builder.start_tag().tag_str("t").tag_str("ai-command");
 
-    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
 }
 
 #[cfg(test)]
@@ -1519,6 +1545,8 @@ mod tests {
         let sk = test_secret_key();
 
         // Test allow response
+        let mut threading = ThreadingState::new();
+        threading.seq = 7; // prior events in the conversation
         let event = build_permission_response_event(
             &perm_id,
             &request_note_id,
@@ -1526,6 +1554,7 @@ mod tests {
             Some("looks safe"),
             false,
             "sess-perm-test",
+            &mut threading,
             &sk,
         )
         .unwrap();
@@ -1540,6 +1569,9 @@ mod tests {
         assert!(json.contains("looks safe"));
         // Has e tag linking to request
         assert!(json.contains(r#""e""#));
+        // Carries a seq and advances the counter — no seq-less events.
+        assert!(json.contains(r#""seq","7"#));
+        assert_eq!(threading.seq(), 8);
     }
 
     #[test]
@@ -1548,6 +1580,7 @@ mod tests {
         let request_note_id = [42u8; 32];
         let sk = test_secret_key();
 
+        let mut threading = ThreadingState::new();
         let event = build_permission_response_event(
             &perm_id,
             &request_note_id,
@@ -1555,6 +1588,7 @@ mod tests {
             Some("too dangerous"),
             true,
             "sess-perm-test",
+            &mut threading,
             &sk,
         )
         .unwrap();
@@ -1567,6 +1601,85 @@ mod tests {
             .as_str()
             .expect("event content should be a string");
         assert!(content.contains(r#""interrupt":true"#));
+    }
+
+    /// INVARIANT: every kind-1988 conversation event carries a `seq` tag.
+    ///
+    /// A seq-less event sorts by the `u32::MAX` fallback and — worse — inflates
+    /// the ndb note count that seeds the live sequence counter, seeding it ahead
+    /// of the next turn and floating messages out of order. That was the root of
+    /// the long-standing conversation-ordering drift. This test exercises every
+    /// kind-1988 builder; if you add a new one, it MUST stamp a `seq` through
+    /// [`ThreadingState`] and be listed here.
+    #[test]
+    fn no_conversation_event_is_seqless() {
+        let sk = test_secret_key();
+        let session_id = "seq-invariant";
+        let assert_has_seq = |json: &str| {
+            assert!(
+                json.contains(r#"["seq","#),
+                "kind-1988 event is missing its seq tag: {json}"
+            );
+        };
+
+        let mut threading = ThreadingState::new();
+
+        // Live conversation roles (assistant, tool, error, compaction, …).
+        for role in ["user", "assistant", "tool_call", "tool_result", "error"] {
+            let ev = build_live_event(
+                "hi",
+                role,
+                session_id,
+                None,
+                None,
+                None,
+                &mut threading,
+                &sk,
+            )
+            .unwrap();
+            assert_has_seq(&ev.note_json);
+        }
+
+        // Permission request and its response.
+        let perm_id = uuid::Uuid::new_v4();
+        let req = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({"command": "ls"}),
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert_has_seq(&req.note_json);
+        let resp = build_permission_response_event(
+            &perm_id,
+            &req.note_id,
+            true,
+            None,
+            false,
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert_has_seq(&resp.note_json);
+
+        // Set-permission-mode command.
+        let mode =
+            build_set_permission_mode_event("plan", session_id, &mut threading, &sk).unwrap();
+        assert_has_seq(&mode.note_json);
+
+        // JSONL-derived conversation events (build_events → build_single_event).
+        let line = JsonlLine::parse(&format!(
+            r#"{{"type":"user","uuid":"x1","parentUuid":null,"sessionId":"{session_id}","timestamp":"2024-01-01T00:00:00Z","cwd":"/tmp","version":"2.0.0","message":{{"role":"user","content":"hello"}}}}"#,
+        ))
+        .unwrap();
+        for ev in build_events(&line, &mut threading, &sk).unwrap() {
+            if ev.kind == AI_CONVERSATION_KIND {
+                assert_has_seq(&ev.note_json);
+            }
+        }
     }
 
     #[test]
