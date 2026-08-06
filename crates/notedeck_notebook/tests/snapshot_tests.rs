@@ -32,7 +32,15 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
     // seed a canvas).
     if !state.setup_done {
         state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
+        ctx.style_mut(|s| {
+            s.animation_time = 0.0;
+            // Steady (non-blinking) text caret so a focused field — the inline
+            // vault rename — renders identically regardless of how much virtual
+            // time elapsed before the snapshot. The blink phase otherwise tracks
+            // `input.time`, which the variable-length seed barrier makes
+            // nondeterministic across machines (it flaked only on CI).
+            s.visuals.text_cursor.blink = false;
+        });
 
         let secret = state.account.secret_key.clone();
         let pubkey = state.account.pubkey;
