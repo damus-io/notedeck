@@ -1130,11 +1130,11 @@ mod tests {
             .map(|c| c.id)
     }
 
-    #[test]
-    fn reorder_subissues_promotes_unsequenced_children_into_exact_order() {
+    #[tokio::test]
+    async fn reorder_subissues_promotes_unsequenced_children_into_exact_order() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
 
         // A parent with three children, all left unsequenced (creation order).
         t.apply(
@@ -1146,10 +1146,10 @@ mod tests {
                 parent: None,
             },
         );
-        let view = t.wait(|v| card_id_by_title(v, "epic").is_some());
+        let view = t.wait(|v| card_id_by_title(v, "epic").is_some()).await;
         let epic = card_id_by_title(&view, "epic").unwrap();
         for title in ["a", "b", "c"] {
-            let v = t.wait(|v| card_id_by_title(v, "epic").is_some());
+            let v = t.wait(|v| card_id_by_title(v, "epic").is_some()).await;
             t.apply(
                 &v,
                 BoardAction::AddCard {
@@ -1160,7 +1160,9 @@ mod tests {
                 },
             );
         }
-        let view = t.wait(|v| find_card(v, epic).is_some_and(|c| c.subissues.len() == 3));
+        let view = t
+            .wait(|v| find_card(v, epic).is_some_and(|c| c.subissues.len() == 3))
+            .await;
         let id = |title: &str| card_id_by_title(&view, title).unwrap();
         let (a, b, c) = (id("a"), id("b"), id("c"));
 
@@ -1176,9 +1178,12 @@ mod tests {
         // Every child is now sequenced, in exactly the requested order — the
         // proof a drop into an all-unsequenced list lands where dropped rather
         // than snapping to the top.
-        let view = t.wait(|v| {
-            find_card(v, epic).is_some_and(|card| card.subissues.iter().all(|s| s.seq.is_some()))
-        });
+        let view = t
+            .wait(|v| {
+                find_card(v, epic)
+                    .is_some_and(|card| card.subissues.iter().all(|s| s.seq.is_some()))
+            })
+            .await;
         let order: Vec<NoteId> = find_card(&view, epic)
             .unwrap()
             .subissues
