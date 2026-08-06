@@ -389,15 +389,14 @@ impl<'a> DaveUi<'a> {
 
     /// The main render function. Call this to render Dave
     pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        // Override the Truncate the enclosing `StripBuilder` cell sets when
-        // clip=true (`egui_extras`: "better to truncate than hard clip"). Force
-        // `Wrap` so chat text wraps to fit the column instead of being clipped
-        // off the right edge. `None` would leave the inherited Truncate in place.
-        //
-        // This is safe for inline reference chips: `notedeck_ui::inline_chip`
-        // names its own wrap mode and self-breaks rows, so this ambient override
-        // can no longer reach inside it (see `inline_chip`'s docs).
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        // Clear the Truncate the enclosing `StripBuilder` cell sets when
+        // clip=true (`egui_extras`: "better to truncate than hard clip"). `None`
+        // rather than `Some(Wrap)`: what we want back is egui's default — each
+        // `Ui` derives wrapping from its own layout — not a blanket rule that
+        // outranks it. A style override reaches *inside* every descendant
+        // widget, so forcing `Wrap` here made labels wrap in non-wrapping
+        // horizontal rows, folding inline chips into tall blocks.
+        ui.style_mut().wrap_mode = None;
 
         let is_compact = self.flags.contains(DaveUiFlags::Compact);
 
