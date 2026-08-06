@@ -544,6 +544,34 @@ impl ScopedSubRuntime {
         }
     }
 
+    /// Whether the full-history (NIP-77 negentropy) reconciliation for one
+    /// scoped subscription has settled, using the selected account scope.
+    pub(crate) fn full_history_settled(
+        &self,
+        pool: &Outbox<'_>,
+        accounts: &Accounts,
+        slot: SubSlotId,
+        key: SubKey,
+        scope: SubScope,
+    ) -> bool {
+        let selected_account_pubkey = *accounts.selected_account_pubkey();
+        let resolved_scope = resolve_scope(&scope, selected_account_pubkey);
+        let scoped = Self::scoped_key(resolved_scope, key);
+
+        // A slot that doesn't own this key, or a key with no full-history sub
+        // declared, has nothing to reconcile — treat it as settled.
+        let Some(slot_entries) = self.subs_by_slot.get(&slot) else {
+            return true;
+        };
+        if !slot_entries.contains(&scoped) {
+            return true;
+        }
+        match self.full_history.get(&scoped).copied() {
+            Some(history_id) => pool.full_history_settled(history_id),
+            None => true,
+        }
+    }
+
     /// Drop all ownership links attached to one slot.
     pub(crate) fn drop_slot(&mut self, pool: &mut Outbox<'_>, slot: SubSlotId) -> DropSlotResult {
         let Some(scoped_keys) = self.subs_by_slot.remove(&slot) else {

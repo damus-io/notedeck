@@ -41,14 +41,14 @@ use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType,
+    DataPathType, ScopedSubEoseStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
-use transport::RemoteApiTransport;
+use transport::{scoped_identity, RemoteApiTransport};
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
@@ -385,6 +385,13 @@ pub struct Dave {
     pns_relay_url: Option<String>,
     /// Last selected account/relay/PNS-author tuple declared through scoped subscriptions.
     pns_remote_sub_state: Option<PnsRemoteSubState>,
+    /// Whether the PNS discovery subscription has reached EOSE on every tracked
+    /// relay, i.e. the relay has replayed its stored head (including the latest
+    /// replaceable session-state revisions, so deletions are present) and the
+    /// synced view has settled. Gates acting on a mid-sync ndb snapshot — see
+    /// [`Dave::poll_discovery_settled`]. Reset to `false` whenever the discovery
+    /// subscription is (re)declared (e.g. account/relay switch).
+    discovery_settled: bool,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
@@ -822,6 +829,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             hostname,
             pns_relay_url,
             pns_remote_sub_state: None,
+            discovery_settled: false,
             pns_local_state: None,
             pns_local_runtimes: HashMap::new(),
             settings_serializer,
@@ -2235,6 +2243,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return;
         };
+
+        // Defer materializing discovered sessions until the discovery
+        // subscription has settled (see `poll_discovery_settled`). Negentropy
+        // history reconciliation streams events in over several rounds, so a
+        // mid-sync snapshot can hold a session's `create` revision while its
+        // newer `deleted` revision is still pending — draining now would
+        // materialize an already-deleted "litter" session that vanishes a few
+        // frames later. We return *before* `poll_for_notes` so the notes stay
+        // queued on the subscription; once settled, the drain sees the netted
+        // head (ndb has collapsed each replaceable session-state event to its
+        // latest revision, and the creation path re-queries that latest
+        // revision, so deleted sessions never surface).
+        //
+        // Only gate when a remote discovery sync is actually pending: with no
+        // remote subscription (local-only) there is nothing to reconcile and
+        // `discovery_settled` never latches, so processing immediately is
+        // correct.
+        if self.discovery_sync_pending() {
+            return;
+        }
 
         let note_keys = ctx.ndb.poll_for_notes(sub, 32);
         if note_keys.is_empty() {
@@ -3693,6 +3721,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         RemoteApiTransport::new(&mut ctx.remote, ctx.accounts).set_subscription(spec);
         self.pns_remote_sub_state = Some(next_state);
+        // Fresh subscription: its EOSE has not been observed yet, so the synced
+        // view is once again mid-sync until `poll_discovery_settled` sees EOSE.
+        self.discovery_settled = false;
     }
 
     /// Remove Dave's PNS discovery subscription via the engine [`Transport`].
@@ -3704,6 +3735,59 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         RemoteApiTransport::new(&mut ctx.remote, ctx.accounts)
             .drop_subscription(&pns_remote_sub_id());
         self.pns_remote_sub_state = None;
+        self.discovery_settled = false;
+    }
+
+    /// Whether the remote discovery sync is still pending: a remote discovery
+    /// subscription is declared but its synced view has not
+    /// [settled](Dave::discovery_settled) yet.
+    ///
+    /// This is the single "is the ndb view still mid-sync?" predicate that
+    /// consumers gate on. It is `false` when there is no remote subscription
+    /// (local-only — nothing to reconcile) and once the sync has settled, and
+    /// `true` only in the window between (re)declaring the subscription and its
+    /// settle. [`Dave::poll_discovery_settled`] runs while this holds; snapshot
+    /// consumers defer while this holds.
+    fn discovery_sync_pending(&self) -> bool {
+        self.pns_remote_sub_state.is_some() && !self.discovery_settled
+    }
+
+    /// Latch [`Dave::discovery_settled`] once the PNS discovery subscription's
+    /// synced view has stopped churning.
+    ///
+    /// The discovery subscription has two independent lifecycles, and both must
+    /// quiesce before the ndb view is trustworthy:
+    ///
+    /// - **live EOSE** — the relay has replayed all stored events matching the
+    ///   live filter (the recent head, including the latest replaceable
+    ///   session-state revisions).
+    /// - **full-history settle** — the NIP-77 negentropy backfill over the
+    ///   history window has finished reconciling. This is the one that matters
+    ///   for litter: negentropy converges over *multiple rounds*, and a
+    ///   session's `create` can arrive in an early round with its `deleted`
+    ///   revision only in a later one. Until the rounds drain, materializing
+    ///   sessions from the snapshot resurrects already-deleted ones.
+    ///
+    /// Until both hold, the view is mid-sync: acting on it can materialize a
+    /// session whose `deleted` event has not arrived yet, or seed live threading
+    /// from a short event count. Consumers gate that work on this latch.
+    ///
+    /// Cheap to call every frame: it short-circuits once latched, and each query
+    /// is a small hashmap lookup over tracked-relay / tracked-sub state.
+    fn poll_discovery_settled(&mut self, ctx: &mut AppContext<'_>) {
+        if !self.discovery_sync_pending() {
+            return;
+        }
+        let identity = scoped_identity(&pns_remote_sub_id());
+        let scoped = ctx.remote.scoped_subs(ctx.accounts);
+        let live_eosed = matches!(
+            scoped.sub_eose_status(identity),
+            ScopedSubEoseStatus::Live(s) if s.all_eosed
+        );
+        if live_eosed && scoped.full_history_settled(identity) {
+            self.discovery_settled = true;
+            tracing::info!("dave discovery subscription settled (live EOSE + history reconciled)");
+        }
     }
 
     /// Keep the selected account's PNS session state (workspace + ndb
@@ -3941,6 +4025,9 @@ impl notedeck::App for Dave {
         self.refresh_pns_relay_url(ctx);
         self.ensure_pns_local_state(ctx);
         self.ensure_pns_remote_subscription(ctx);
+        // Track whether the discovery sub's synced view has settled, so
+        // downstream polls can avoid acting on a mid-sync ndb snapshot.
+        self.poll_discovery_settled(ctx);
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();

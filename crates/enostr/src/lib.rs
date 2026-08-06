@@ -8,6 +8,7 @@ mod profile;
 mod pubkey;
 mod relay;
 mod replaceable;
+pub mod sns;
 
 pub use client::{ClientMessage, EventClientMessage};
 pub use error::Error;

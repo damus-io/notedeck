@@ -189,6 +189,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentium_cli"
+version = "0.10.0-beta.4"
+dependencies = [
+ "agentium-core",
+ "bech32",
+ "enostr",
+ "nostrdb",
+ "nostrdb_relay",
+ "relay_sync",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
