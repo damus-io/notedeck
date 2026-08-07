@@ -7425,23 +7425,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "relay_sync"
-version = "0.10.0-beta.4"
-dependencies = [
- "bech32",
- "dirs",
- "enostr",
- "futures-util",
- "hex",
- "libc",
- "negentropy 0.5.0",
- "nostrdb",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.24.0",
-]
-
-[[package]]
 name = "rend"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
