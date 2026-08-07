@@ -1543,6 +1543,23 @@ mod tests {
         )
     }
 
+    #[test]
+    fn mark_activity_keeps_the_newest() {
+        let mut session = test_session();
+        assert_eq!(session.last_activity, None);
+
+        session.mark_activity(1_000);
+        assert_eq!(session.last_activity, Some(1_000));
+
+        // A newer timestamp advances it.
+        session.mark_activity(2_000);
+        assert_eq!(session.last_activity, Some(2_000));
+
+        // An older (out-of-order) timestamp does not move it backwards.
+        session.mark_activity(1_500);
+        assert_eq!(session.last_activity, Some(2_000));
+    }
+
     fn create_grouped_session(
         mgr: &mut SessionManager,
         hostname: &str,
