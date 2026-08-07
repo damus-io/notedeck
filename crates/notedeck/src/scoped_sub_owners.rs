@@ -107,6 +107,23 @@ impl ScopedSubOwners {
         runtime.sub_eose_status(pool, accounts, slot, identity.key, identity.scope)
     }
 
+    /// Whether the full-history reconciliation for one scoped subscription
+    /// binding owned by `owner` has settled. An owner with no slot has nothing
+    /// to reconcile, so it counts as settled.
+    pub fn full_history_settled(
+        &self,
+        runtime: &ScopedSubRuntime,
+        pool: &Outbox<'_>,
+        accounts: &Accounts,
+        identity: ScopedSubIdentity,
+    ) -> bool {
+        let Some(slot) = self.slots_by_owner.get(&identity.owner).copied() else {
+            return true;
+        };
+
+        runtime.full_history_settled(pool, accounts, slot, identity.key, identity.scope)
+    }
+
     /// Drop one owner lifecycle and release all its scoped subscriptions.
     pub fn drop_owner(
         &mut self,

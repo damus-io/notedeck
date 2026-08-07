@@ -7,7 +7,8 @@ pub mod wordid;
 
 use crate::convert::view_to_canvas;
 use crate::editor::{
-    EditorAction, LongformEditor, SavedLongform, VaultAction, VaultState, editor_ui, vault_ui,
+    EditorAction, LongformEditor, SavedLongform, VaultAction, VaultRow, VaultState, editor_ui,
+    vault_rows, vault_ui,
 };
 use crate::event::{CanvasReducer, CanvasView};
 use crate::store::CanvasAction;
@@ -106,6 +107,10 @@ pub struct Notebook {
     /// progress, or a delete awaiting confirmation). Driven by [`vault_ui`], which
     /// surfaces each completed interaction as a [`VaultAction`].
     vault: VaultState,
+    /// The vault rows to render, projected from [`NotebookSync::notes`] whenever
+    /// the sync reports a change (see [`vault_rows`]). Precomputed off the render
+    /// loop so the per-row "edited …" subtitle is never formatted per frame.
+    vault_rows: Vec<VaultRow>,
 }
 
 /// Inline text-editing state for the notebook canvas. Nodes are tracked by their
@@ -498,8 +503,14 @@ impl Notebook {
         action: VaultAction,
     ) -> bool {
         match action {
-            VaultAction::Open(i) => {
-                let Some(editor) = self.sync.notes().get(i).map(LongformEditor::open) else {
+            VaultAction::Open { d } => {
+                let Some(editor) = self
+                    .sync
+                    .notes()
+                    .iter()
+                    .find(|n| n.d == d)
+                    .map(LongformEditor::open)
+                else {
                     return false;
                 };
                 self.editor = Some(editor);
@@ -602,6 +613,7 @@ impl Default for Notebook {
             repaint_frames: 0,
             editor: None,
             vault: VaultState::default(),
+            vault_rows: Vec::new(),
         }
     }
 }
@@ -626,7 +638,7 @@ impl notedeck::App for Notebook {
         // outbound publish targets. Empty => local-only.
         let private_relays = self
             .private_sync
-            .update(ctx, event::notebook_filter(&author));
+            .update(ctx, vec![event::notebook_filter(&author)]);
 
         // Keep a live subscription and re-fold only when something changed (first
         // load, account switch, or an async ingest landing — including CLI
@@ -638,6 +650,9 @@ impl notedeck::App for Notebook {
             if let Some(view) = self.sync.view() {
                 self.canvas = view_to_canvas(view);
             }
+            // Re-project the vault rows off the render loop, formatting each
+            // "edited …" subtitle once here rather than every frame in `vault_ui`.
+            self.vault_rows = vault_rows(ctx.i18n, self.sync.notes());
             self.live.clear();
             self.wake();
         }
@@ -734,7 +749,7 @@ impl notedeck::App for Notebook {
         // the full width. A row can be opened, renamed, or deleted; opening takes
         // over with the editor from the next frame.
         let mut vault_action = None;
-        if !self.sync.notes().is_empty() {
+        if !self.vault_rows.is_empty() {
             egui::SidePanel::left("notebook-vault")
                 .resizable(true)
                 .default_width(230.0)
@@ -747,7 +762,7 @@ impl notedeck::App for Notebook {
                         )),
                 )
                 .show_inside(ui, |ui| {
-                    vault_action = vault_ui(self.sync.notes(), &mut self.vault, ui);
+                    vault_action = vault_ui(&self.vault_rows, &mut self.vault, ui);
                 });
         }
         // Only Open takes over the view; Rename/Delete persist in place and let

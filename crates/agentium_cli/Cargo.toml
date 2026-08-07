@@ -1,19 +1,19 @@
 [package]
-name = "notebook_cli"
+name = "agentium_cli"
 edition = "2024"
 version.workspace = true
 
 [[bin]]
-name = "notebook"
+name = "agentium"
 path = "src/main.rs"
 
 [dependencies]
-notedeck_notebook = { workspace = true }
+agentium-core = { workspace = true }
 nostrdb_net = { workspace = true }
 enostr = { workspace = true }
 nostrdb = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
 nostrdb_relay = { workspace = true }

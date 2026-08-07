@@ -145,6 +145,24 @@ impl<'o, 'a> ScopedSubApi<'o, 'a> {
             .sub_eose_status(self.runtime, self.pool, self.accounts, identity)
     }
 
+    /// Whether the full-history (NIP-77 negentropy) reconciliation for one
+    /// scoped subscription has settled: at least one negentropy round has run
+    /// and no reconciliation work remains in flight.
+    ///
+    /// This is a *separate* lifecycle from [`Self::sub_eose_status`]: live EOSE
+    /// reports the live REQ's stored-event replay, whereas this reports whether
+    /// the sub's history window has finished reconciling. A sub that declares no
+    /// full-history config (or an unknown identity) has nothing to reconcile and
+    /// reports settled.
+    ///
+    /// Callers waiting for a synced view to stop churning (e.g. before
+    /// materializing derived state from a mid-sync ndb snapshot) typically gate
+    /// on both this and `sub_eose_status(..).all_eosed`.
+    pub fn full_history_settled(&self, identity: ScopedSubIdentity) -> bool {
+        self.owners
+            .full_history_settled(self.runtime, self.pool, self.accounts, identity)
+    }
+
     /// Drop one owner lifecycle and release all scoped subscriptions declared by it.
     ///
     /// Thread example:

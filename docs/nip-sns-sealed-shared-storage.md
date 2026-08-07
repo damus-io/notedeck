@@ -229,6 +229,55 @@ Multiple registered `team_root`s (post-rotation) are matched independently — t
 is the trial-decrypt behaviour, realised as multiple matched pubkeys rather than a
 linear scan.
 
+The SNS ingest path reuses the existing seal machinery rather than reimplementing
+it: the inner peel is the same routine the gift-wrap path already runs (kind-13
+check, signature verify, ECDH-decrypt, rumor stored attributed to `seal.pubkey`).
+SNS adds only the *outer* layer — a PNS-shaped match on the derived team pubkey
+plus a symmetric envelope decrypt with `team_nip44_key` — then hands the seal to
+that shared routine with `team_keypair` as the recipient.
+
+### Registration is a mechanism; membership is app policy
+
+nostrdb exposes **only a mechanism** — register a `team_root` (it derives the
+keys and starts matching), and reprocess envelopes that arrived before the root
+was known:
+
+```
+ndb_add_team_root(ndb, root)   // mirror of ndb_add_key
+ndb_process_sns(ndb, txn)      // mirror of ndb_process_pns — late-arrival catch-up
+```
+
+nostrdb does **not** auto-register a `team_root` when it unwraps a key-share
+(`1082`), even though that event passes through its gift-wrap path. Joining a
+channel is an application decision, kept out of the storage engine, for three
+reasons:
+
+- **Consent boundary.** Anyone who knows a member's real pubkey can gift-wrap
+  them a `1082` bearing any `team_root`. Auto-registering would make nostrdb
+  start ingesting *every* `1081` under that team pubkey — an unbounded,
+  sender-controlled stream — with no user consent. A DM gift wrap is bounded to
+  one event; a team root is a faucet.
+- **Durability.** Registered keys live on the ingester threads, not in the
+  database; the app already re-registers account keys from storage every boot
+  (as it does with `ndb_add_key`). An auto-add on `1082` unwrap fires only on
+  *live* arrival — after restart the key-share is already ingested and flagged
+  unwrapped, so it never re-triggers. Durable auto-add would require a new
+  persistent key table inside nostrdb; live-only auto-add would be a second,
+  divergent key source that evaporates on restart. Either way the app still owns
+  a re-registration path, so auto-add only adds a redundant mechanism beside it.
+- **Layer separation.** nostrdb decrypts and stores; it has no notion of
+  accounts, board selection, or a join prompt. `add_team_root` is a clean "here
+  is a root, decrypt with it" primitive; *whether* to register one is policy that
+  already lives in the app (which owns the `1082` subscription, the account
+  store, and any UI).
+
+The seamless "receive a share → the board appears" experience is therefore an
+**app-side auto-accept policy**, not a nostrdb behaviour: the app subscribes to
+`1082`, and may auto-accept from a trusted contact (zero friction) while still
+being able to gate a root that arrives from a stranger. This keeps the
+convenience *and* the consent boundary, and matches the PNS / gift-wrap split
+already in the codebase.
+
 ## Security considerations
 
 - **`team_root` compromise exposes the whole channel** (read and write) until the

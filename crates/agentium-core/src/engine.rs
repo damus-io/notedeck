@@ -81,27 +81,23 @@
 //! drop its parsed `Filter` before awaiting, so its future is `Send` too.)
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use enostr::pns::PNS_KIND;
 use enostr::NormRelayUrl;
 use futures_util::StreamExt;
-use negentropy::{Id, NegentropyStorageVector};
 use nostrdb::{Filter, Ndb, SendFilter, SubscriptionStream, Transaction};
 use nostrdb_net::relay::sync;
 use nostrdb_net::{ClientMessage, RelayPool, RelayStatus, WsEvent, WsMessage};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::time::interval;
 
 use crate::messages::Message;
 use crate::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
 use crate::session_loader::SessionState;
 use crate::transport::{SubscriptionId, SubscriptionSpec, Transport};
-
-/// How many event ids to pull per `REQ` when fetching reconciled events, kept
-/// under the relay's single-`REQ` replay cap (mirrors nostrdb_net's sync).
-const ID_FETCH_CHUNK: usize = 300;
 
 /// An error from constructing or driving the [`Engine`].
 #[derive(Debug, thiserror::Error)]
@@ -154,6 +150,56 @@ enum EngineCmd {
         note_json: String,
         relays: Vec<String>,
     },
+    /// A settle barrier (see [`Engine::wait_for_sync`]). Because this rides the
+    /// same FIFO command channel, by the time the loop handles it every
+    /// previously-enqueued [`SetSubscription`](EngineCmd::SetSubscription) has
+    /// already spawned its backfill and bumped the started count — so the loop
+    /// can hand back a [`SyncSettle`] that resolves once exactly those backfills
+    /// have completed.
+    WaitForSync(oneshot::Sender<SyncSettle>),
+}
+
+/// Shared backfill-completion tracker owned by the [`engine_loop`] and observed
+/// by [`SyncSettle`] waiters.
+///
+/// `done` counts every backfill task that has *finished* — success, error, or
+/// panic all count, via a drop guard — so a settle wait can never hang on a task
+/// that died. `notify` wakes waiters on each completion. The started count is
+/// held loop-locally (only the loop spawns backfills), so it needs no atomic.
+#[derive(Default)]
+struct BackfillProgress {
+    done: AtomicU64,
+    notify: Notify,
+}
+
+/// A one-shot handle that resolves once the initial history backfill(s) have
+/// settled, returned by [`Engine::wait_for_sync`].
+///
+/// It captures a `target` snapshot of how many backfills had been started when
+/// the settle barrier reached the loop, and resolves once that many have
+/// completed. Deterministic because each backfill's `sync_into` returns only
+/// after its received events are queryable — so "settled" means the reconciled
+/// history is actually readable, not merely that a timer elapsed.
+pub struct SyncSettle {
+    progress: Arc<BackfillProgress>,
+    target: u64,
+}
+
+impl SyncSettle {
+    /// Resolve once the tracked backfills have completed. Returns immediately if
+    /// none were in flight at the barrier (e.g. a connect with no history
+    /// filters, or a relay that never got a subscription).
+    pub async fn settled(self) {
+        loop {
+            // Register for the wakeup *before* re-checking, so a completion that
+            // lands between the check and the await is not lost.
+            let notified = self.progress.notify.notified();
+            if self.progress.done.load(Ordering::Acquire) >= self.target {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 /// The agentium engine.
@@ -334,6 +380,37 @@ impl Engine {
     /// The relay the engine is currently connected to, if any.
     pub fn connected_relay(&self) -> Option<String> {
         self.pns_relay.as_ref().map(|r| r.to_string())
+    }
+
+    /// Await the initial history reconcile settling — the deterministic
+    /// replacement for a caller guessing with a quiet-timer heuristic.
+    ///
+    /// Call it right after [`Engine::connect`]: the connect installs the PNS
+    /// discovery subscription whose history filters spawn a NIP-77 negentropy
+    /// [`backfill`], and the returned future resolves once that backfill (and any
+    /// other in flight when this is called) has completed — meaning the
+    /// reconciled events are actually queryable, since each `sync_into` returns
+    /// only after its received events are ingested. Read the session snapshot
+    /// once this resolves and you see the whole synced batch, not a race with it.
+    ///
+    /// Ordering is exact, not best-effort: the settle barrier rides the same FIFO
+    /// command channel as `connect`'s subscription, so by the time the loop
+    /// handles it the backfill has already been counted. Resolves immediately for
+    /// a connect that requested no history, or once the relay's history is in.
+    ///
+    /// Returns `None` for an [`embedded`](Engine::embedded) engine — it has no
+    /// self-driving loop, so its host owns sync and observes settle its own way.
+    /// Standalone callers should still bound the wait with a timeout, since a
+    /// reachable-but-silent relay could otherwise stall the reconcile.
+    pub async fn wait_for_sync(&self) -> Option<()> {
+        let cmd_tx = self.cmd_tx.as_ref()?;
+        let (tx, rx) = oneshot::channel();
+        // A send error means the loop is gone (engine torn down); a recv error
+        // means it dropped the reply before answering. Either way there is
+        // nothing to wait on, so treat both as "no settle signal available".
+        cmd_tx.send(EngineCmd::WaitForSync(tx)).ok()?;
+        rx.await.ok()?.settled().await;
+        Some(())
     }
 
     /// List the remote sessions known to this identity, newest revision of each
@@ -585,6 +662,7 @@ impl Engine {
             return Err(EngineError::UnknownPermission);
         };
 
+        let mut threading = self.session_threading(session_id);
         crate::session_events::build_permission_response_event(
             &perm_uuid,
             &request_note_id,
@@ -592,6 +670,7 @@ impl Engine {
             message,
             cancel_turn,
             session_id,
+            &mut threading,
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))
@@ -641,10 +720,11 @@ impl Engine {
             });
             (
                 request_note_id,
-                format_question_answers(questions, &answers),
+                crate::messages::format_question_answers(questions, &answers),
             )
         };
 
+        let mut threading = self.session_threading(session_id);
         let built = crate::session_events::build_permission_response_event(
             &perm_uuid,
             &request_note_id,
@@ -652,6 +732,7 @@ impl Engine {
             Some(&payload),
             false,
             session_id,
+            &mut threading,
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
@@ -691,8 +772,14 @@ impl Engine {
         session_id: &str,
         mode: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        crate::session_events::build_set_permission_mode_event(mode, session_id, &self.seckey())
-            .map_err(|e| EngineError::Build(e.to_string()))
+        let mut threading = self.session_threading(session_id);
+        crate::session_events::build_set_permission_mode_event(
+            mode,
+            session_id,
+            &mut threading,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))
     }
 
     /// The 32-byte account secret that signs inner session events.
@@ -715,7 +802,7 @@ impl Engine {
             session_id,
         );
         if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-            threading.seed(root, last, loaded.event_count);
+            threading.seed(root, last);
         }
         threading
     }
@@ -793,55 +880,6 @@ impl SessionWatch {
 /// The stable transport subscription id for the PNS discovery subscription.
 fn pns_discovery_sub_id() -> SubscriptionId {
     SubscriptionId::new("agentium/pns", "discovery")
-}
-
-/// Format question-set answers into the `{"answers": {header: {selected:[…],
-/// other:…}}}` payload the host decodes as the tool result.
-///
-/// Each answer's selected option *indices* are mapped back to their option
-/// *labels* using `questions`, keyed by the question's header (falling back to
-/// `question_{i}` when a header is empty). When the request's option labels
-/// aren't available (`questions` is `None`), the raw answers are serialized
-/// directly as a best-effort fallback.
-fn format_question_answers(
-    questions: Option<&crate::messages::QuestionSetInput>,
-    answers: &[crate::messages::QuestionAnswer],
-) -> String {
-    let Some(questions) = questions else {
-        return serde_json::to_string(answers).unwrap_or_else(|_| "{}".to_string());
-    };
-
-    let mut answers_obj = serde_json::Map::new();
-    for (q_idx, (question, answer)) in questions.questions.iter().zip(answers.iter()).enumerate() {
-        let mut answer_obj = serde_json::Map::new();
-
-        let selected_labels: Vec<serde_json::Value> = answer
-            .selected
-            .iter()
-            .filter_map(|&idx| question.options.get(idx))
-            .map(|opt| serde_json::Value::String(opt.label.clone()))
-            .collect();
-        answer_obj.insert(
-            "selected".to_string(),
-            serde_json::Value::Array(selected_labels),
-        );
-
-        if let Some(other) = answer.other_text.as_ref().filter(|other| !other.is_empty()) {
-            answer_obj.insert(
-                "other".to_string(),
-                serde_json::Value::String(other.clone()),
-            );
-        }
-
-        let key = if question.header.is_empty() {
-            format!("question_{q_idx}")
-        } else {
-            question.header.clone()
-        };
-        answers_obj.insert(key, serde_json::Value::Object(answer_obj));
-    }
-
-    serde_json::json!({ "answers": answers_obj }).to_string()
 }
 
 /// The current Unix time in seconds.
@@ -925,28 +963,25 @@ async fn engine_loop(ndb: Ndb, mut cmd_rx: mpsc::UnboundedReceiver<EngineCmd>) {
         move || notify.notify_one()
     };
 
-    let mut pool = RelayPool::new();
-    // Desired live subscriptions per relay url (subid -> filters), re-sent
-    // whenever a relay (re)connects.
-    let mut desired: HashMap<String, HashMap<String, Vec<SendFilter>>> = HashMap::new();
-    // Publish frames queued until their target relay is connected.
-    let mut pending: HashMap<String, Vec<String>> = HashMap::new();
+    let mut state = LoopState::default();
     let mut keepalive = interval(KEEPALIVE_INTERVAL);
 
     loop {
         // Drain everything the pool has ready: ingest events, and flush desired
         // subs / queued publishes to relays as they come up.
-        while let Some(ev) = pool.try_recv().map(|e| e.into_owned()) {
+        while let Some(ev) = state.pool.try_recv().map(|e| e.into_owned()) {
             match ev.event {
                 WsEvent::Opened => {
-                    if let Some(subs) = desired.get(&ev.relay) {
+                    if let Some(subs) = state.desired.get(&ev.relay) {
                         for (sid, filters) in subs {
-                            pool.send_to(&req_message(sid.clone(), filters), &ev.relay);
+                            state
+                                .pool
+                                .send_to(&req_message(sid.clone(), filters), &ev.relay);
                         }
                     }
-                    if let Some(frames) = pending.remove(&ev.relay) {
+                    if let Some(frames) = state.pending.remove(&ev.relay) {
                         for frame in frames {
-                            pool.send_to(&ClientMessage::raw(frame), &ev.relay);
+                            state.pool.send_to(&ClientMessage::raw(frame), &ev.relay);
                         }
                     }
                 }
@@ -964,21 +999,39 @@ async fn engine_loop(ndb: Ndb, mut cmd_rx: mpsc::UnboundedReceiver<EngineCmd>) {
         tokio::select! {
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { break }; // engine dropped
-                apply_cmd(&ndb, &mut pool, &mut desired, &mut pending, &wakeup, cmd);
+                apply_cmd(&ndb, &mut state, &wakeup, cmd);
             }
             // The pool signalled new data; loop back around to drain it.
             _ = notify.notified() => {}
-            _ = keepalive.tick() => pool.keepalive_ping(wakeup.clone()),
+            _ = keepalive.tick() => state.pool.keepalive_ping(wakeup.clone()),
         }
     }
 }
 
-/// Apply one [`EngineCmd`] against the loop's pool and desired/pending state.
+/// The mutable state the [`engine_loop`] threads through each [`apply_cmd`]:
+/// the relay pool, the desired-subscription and pending-publish maps, and the
+/// backfill settle tracker. Bundled into one struct so commands are applied by
+/// `&mut LoopState` rather than a long argument list.
+#[derive(Default)]
+struct LoopState {
+    pool: RelayPool,
+    /// Desired live subscriptions per relay url (subid -> filters), re-sent
+    /// whenever a relay (re)connects.
+    desired: HashMap<String, HashMap<String, Vec<SendFilter>>>,
+    /// Publish frames queued until their target relay is connected.
+    pending: HashMap<String, Vec<String>>,
+    /// Backfill settle tracking (see [`Engine::wait_for_sync`]): the shared
+    /// done-counter the detached backfill tasks bump, paired with `started`.
+    progress: Arc<BackfillProgress>,
+    /// Count of backfills spawned so far, snapshotted by a `WaitForSync` barrier
+    /// as its settle target (against `progress.done`).
+    started: u64,
+}
+
+/// Apply one [`EngineCmd`] against the loop's [`LoopState`].
 fn apply_cmd(
     ndb: &Ndb,
-    pool: &mut RelayPool,
-    desired: &mut HashMap<String, HashMap<String, Vec<SendFilter>>>,
-    pending: &mut HashMap<String, Vec<String>>,
+    state: &mut LoopState,
     wakeup: &(impl Fn() + Send + Sync + Clone + 'static),
     cmd: EngineCmd,
 ) {
@@ -990,36 +1043,72 @@ fn apply_cmd(
             history,
         } => {
             let sid = subid(&id);
-            let _ = pool.add_url(url.clone(), wakeup.clone());
+            let _ = state.pool.add_url(url.clone(), wakeup.clone());
             // Send the live REQ now if the relay is already up; otherwise it is
             // flushed from `desired` on the relay's `Opened` event.
-            if relay_connected(pool, &url) {
-                pool.send_to(&req_message(sid.clone(), &live), &url);
+            if relay_connected(&state.pool, &url) {
+                state.pool.send_to(&req_message(sid.clone(), &live), &url);
             }
-            desired.entry(url.clone()).or_default().insert(sid, live);
+            state
+                .desired
+                .entry(url.clone())
+                .or_default()
+                .insert(sid, live);
             // NIP-77 negentropy history backfill, off the loop on its own task.
+            // Track its completion (via a drop guard so a panic still counts)
+            // so a `WaitForSync` barrier can observe when history has settled.
             if !history.is_empty() {
-                tokio::spawn(backfill(ndb.clone(), url, history));
+                state.started += 1;
+                let ndb = ndb.clone();
+                let progress = state.progress.clone();
+                tokio::spawn(async move {
+                    let _guard = BackfillDoneGuard(progress);
+                    backfill(ndb, url, history).await;
+                });
             }
         }
         EngineCmd::DropSubscription(id) => {
             let sid = subid(&id);
-            for subs in desired.values_mut() {
+            for subs in state.desired.values_mut() {
                 subs.remove(&sid);
             }
-            pool.unsubscribe(sid);
+            state.pool.unsubscribe(sid);
         }
         EngineCmd::Publish { note_json, relays } => {
             let frame = format!(r#"["EVENT",{note_json}]"#);
             for url in relays {
-                let _ = pool.add_url(url.clone(), wakeup.clone());
-                if relay_connected(pool, &url) {
-                    pool.send_to(&ClientMessage::raw(frame.clone()), &url);
+                let _ = state.pool.add_url(url.clone(), wakeup.clone());
+                if relay_connected(&state.pool, &url) {
+                    state.pool.send_to(&ClientMessage::raw(frame.clone()), &url);
                 } else {
-                    pending.entry(url).or_default().push(frame.clone());
+                    state.pending.entry(url).or_default().push(frame.clone());
                 }
             }
         }
+        EngineCmd::WaitForSync(reply) => {
+            // Snapshot how many backfills have been started by now; the returned
+            // handle resolves once that many have completed. Because this command
+            // rode the FIFO channel behind every prior `SetSubscription`, that
+            // snapshot already includes their backfills. A dropped `reply` (the
+            // waiter went away) is harmless.
+            let _ = reply.send(SyncSettle {
+                progress: state.progress.clone(),
+                target: state.started,
+            });
+        }
+    }
+}
+
+/// Drop guard that records a backfill task's completion on the shared
+/// [`BackfillProgress`]. Using `Drop` (rather than a bump at the end of the
+/// task body) means an error return or a panic unwinding through the task still
+/// counts as done, so a [`SyncSettle`] wait can never hang on a dead backfill.
+struct BackfillDoneGuard(Arc<BackfillProgress>);
+
+impl Drop for BackfillDoneGuard {
+    fn drop(&mut self) {
+        self.0.done.fetch_add(1, Ordering::Release);
+        self.0.notify.notify_waiters();
     }
 }
 
@@ -1040,71 +1129,25 @@ async fn backfill(ndb: Ndb, url: String, filters: Vec<SendFilter>) {
 
     // Consume by value: an owned `SendFilter` is `Send` and may cross the awaits
     // below, whereas a `&SendFilter` would require `SendFilter: Sync` (it isn't).
+    // Reduce each filter to its wire JSON and sealed local set *synchronously* —
+    // the transient `nostrdb::Filter` from `as_filter()` drops at each `;`, so it
+    // never crosses an await — then hand both to `pull_reconcile`, whose future
+    // stays `Send` precisely because it takes no `Filter`.
     for filter in filters {
         let Ok(filter_json) = filter.as_filter().json() else {
             continue;
         };
-        let storage = match local_negentropy_set(&ndb, filter.as_filter()) {
-            Ok(storage) => storage,
+        let local = match sync::local_set(&ndb, filter.as_filter()) {
+            Ok(local) => local,
             Err(e) => {
                 tracing::warn!("engine backfill: local set failed: {e}");
                 continue;
             }
         };
-
-        // Collapse the reconcile `Result` (whose `Box<dyn Error>` is !Send) into
-        // a `Send` `Option` *before* any further await — otherwise the `match`
-        // scrutinee temporary keeps the `Box` slot alive across the `sync_into`
-        // awaits below and the whole future becomes !Send. `None` means the relay
-        // couldn't reconcile, so fall back to a plain NIP-01 `REQ`.
-        let need = match relay.reconcile(&filter_json, storage).await {
-            Ok(diff) => Some(diff.need),
-            Err(e) => {
-                tracing::debug!("engine backfill: reconcile unavailable ({e}); REQ fallback");
-                None
-            }
-        };
-        match need {
-            Some(need) => {
-                for chunk in need.chunks(ID_FETCH_CHUNK) {
-                    let ids: Vec<String> = chunk.iter().map(hex::encode).collect();
-                    let req = serde_json::json!({ "ids": ids }).to_string();
-                    if let Err(e) = relay.sync_into(&ndb, &req).await {
-                        tracing::warn!("engine backfill: fetch failed: {e}");
-                        break;
-                    }
-                }
-            }
-            None => {
-                if let Err(e) = relay.sync_into(&ndb, &filter_json).await {
-                    tracing::warn!("engine backfill: REQ fallback failed: {e}");
-                }
-            }
+        if let Err(e) = sync::pull_reconcile(&mut relay, &ndb, &filter_json, local).await {
+            tracing::warn!("engine backfill: {url}: {e}");
         }
     }
-}
-
-/// The sealed negentropy set of the cached events matching `filter`, keyed by
-/// `(created_at, id)` — the local side handed to [`sync::Relay::reconcile`].
-///
-/// Opens the transaction inline and drops it before returning, so no non-`Send`
-/// value escapes into the async caller.
-fn local_negentropy_set(ndb: &Ndb, filter: &Filter) -> Result<NegentropyStorageVector, String> {
-    let txn = Transaction::new(ndb).map_err(|e| format!("txn: {e}"))?;
-    let mut storage = NegentropyStorageVector::new();
-    ndb.fold(
-        &txn,
-        std::slice::from_ref(filter),
-        &mut storage,
-        |acc, note| {
-            // insert only fails on a bad id length, impossible for a stored note.
-            let _ = acc.insert(note.created_at(), Id::from_byte_array(*note.id()));
-            acc
-        },
-    )
-    .map_err(|e| format!("fold: {e}"))?;
-    storage.seal().map_err(|e| format!("seal: {e}"))?;
-    Ok(storage)
 }
 
 #[cfg(test)]
@@ -1565,8 +1608,9 @@ mod tests {
     }
 
     /// Seeding an `AskUserQuestion` request and answering it publishes an
-    /// approving response whose message carries the answers keyed by question
-    /// header, with selected *indices* resolved to option *labels*.
+    /// approving response whose message carries the answers as plain prose —
+    /// `Header: label, label, other` — with selected *indices* resolved to
+    /// option *labels*, and with no JSON escaped inside `message`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn respond_question_formats_selected_labels_by_header() {
         use crate::messages::QuestionAnswer;
@@ -1656,15 +1700,67 @@ mod tests {
         })
         .await
         .expect("a permission_response should have been published");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&payload).expect("message is answers json");
-        let answer = &parsed["answers"]["Languages"];
-        assert_eq!(
-            answer["selected"],
-            serde_json::json!(["Rust", "Zig"]),
-            "selected indices resolve to their option labels"
+        // Plain prose, not a JSON blob: the header labels the line and the
+        // selected indices are resolved to their option labels, with the
+        // free-text "other" appended.
+        assert_eq!(payload, "Languages: Rust, Zig, Haskell");
+        assert!(
+            !payload.contains('{') && !payload.contains('\\'),
+            "the answers must not be JSON escaped into the message: {payload:?}"
         );
-        assert_eq!(answer["other"], serde_json::json!("Haskell"));
+    }
+
+    /// `format_question_answers` renders one `Header: …` prose line per
+    /// question, joins multiple with newlines, resolves labels, and degrades
+    /// gracefully when a header or the whole question metadata is missing.
+    #[test]
+    fn format_question_answers_renders_prose() {
+        use crate::messages::{
+            format_question_answers, QuestionAnswer, QuestionOption, QuestionSetInput, UserQuestion,
+        };
+
+        let question = |header: &str, question: &str, labels: &[&str]| UserQuestion {
+            question: question.to_string(),
+            header: header.to_string(),
+            multi_select: true,
+            options: labels
+                .iter()
+                .map(|l| QuestionOption {
+                    label: l.to_string(),
+                    description: String::new(),
+                })
+                .collect(),
+        };
+
+        // Two questions: a multi-select with an "other", and a single-select
+        // whose header is empty (falls back to the question text).
+        let set = QuestionSetInput {
+            questions: vec![
+                question("Languages", "Which?", &["Rust", "Swift", "Zig"]),
+                question("", "Pick a theme", &["Light", "Dark"]),
+            ],
+        };
+        let answers = vec![
+            QuestionAnswer {
+                selected: vec![0, 2],
+                other_text: Some("Haskell".into()),
+            },
+            QuestionAnswer {
+                selected: vec![1],
+                other_text: None,
+            },
+        ];
+        assert_eq!(
+            format_question_answers(Some(&set), &answers),
+            "Languages: Rust, Zig, Haskell\nPick a theme: Dark",
+        );
+
+        // No question metadata: indices can't resolve to labels, so fall back to
+        // the raw index and a numbered header — still prose, never JSON.
+        assert_eq!(
+            format_question_answers(None, &answers),
+            "Question 1: 0, 2, Haskell\nQuestion 2: 1",
+        );
     }
 
     #[tokio::test]
@@ -1890,5 +1986,64 @@ mod tests {
             "the historical event should arrive via the negentropy backfill"
         );
         relay.shutdown();
+    }
+
+    /// The settle signal is deterministic: once [`Engine::wait_for_sync`]
+    /// resolves, the reconciled history is already queryable — so a read taken
+    /// immediately afterward, with *no* polling, sees it. This is exactly what
+    /// lets a caller replace a quiet-timer drain heuristic with a single read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_sync_settles_after_history_is_queryable() {
+        let (_relay_dir, relay_ndb) = temp_ndb();
+        let (note_json, id) = signed_note(1, "settled history");
+        relay_ndb
+            .process_client_event(&event_frame(&note_json))
+            .expect("seed relay");
+        let relay = spawn_relay(relay_ndb.clone());
+        let url = relay.url();
+        assert!(await_note(&relay_ndb, id, 1, Duration::from_secs(5)).await);
+
+        let eng_dir = TempDir::new().expect("tmp dir");
+        let engine =
+            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut tx = engine.transport_handle().expect("transport");
+        // History-only (live filter matches nothing) so the event can arrive
+        // solely through the tracked backfill, then settle on it.
+        tx.set_subscription(spec(
+            &url,
+            vec![Filter::new().kinds([9999]).build()],
+            vec![Filter::new().kinds([1]).build()],
+        ));
+
+        // The barrier is enqueued after the subscription on the same FIFO
+        // channel, so it waits for that backfill specifically. Bound it so a
+        // regression can't hang the suite.
+        let settled = tokio::time::timeout(Duration::from_secs(10), engine.wait_for_sync())
+            .await
+            .expect("wait_for_sync should not time out");
+        assert_eq!(
+            settled,
+            Some(()),
+            "standalone engine yields a settle signal"
+        );
+
+        // Deterministic: no await/poll between settle and read — the note must
+        // already be present, proving settle means "history is queryable".
+        let txn = Transaction::new(engine.ndb()).expect("txn");
+        assert!(
+            engine.ndb().get_note_by_id(&txn, &id).is_ok(),
+            "reconciled history must be queryable the instant wait_for_sync resolves"
+        );
+        drop(txn);
+        relay.shutdown();
+    }
+
+    /// An embedded engine has no self-driving loop, so it exposes no settle
+    /// signal — the host owns sync and observes settle its own way.
+    #[tokio::test]
+    async fn wait_for_sync_is_none_for_embedded_engine() {
+        let (_dir, ndb) = temp_ndb();
+        let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
+        assert_eq!(engine.wait_for_sync().await, None);
     }
 }

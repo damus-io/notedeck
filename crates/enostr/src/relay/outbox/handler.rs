@@ -126,6 +126,12 @@ where
         staged_status(task, committed, committed_filters)
     }
 
+    /// Whether the full-history (NIP-77 negentropy) reconciliation for `id` has
+    /// settled. See [`OutboxPool::full_history_settled`].
+    pub fn full_history_settled(&self, id: FullHistorySubId) -> bool {
+        self.outbox.full_history_settled(id)
+    }
+
     /// Snapshot websocket relay statuses for display/debug UI.
     pub fn websocket_statuses(&self) -> BTreeMap<&NormRelayUrl, RelayStatus> {
         self.outbox.websocket_statuses()

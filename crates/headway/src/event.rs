@@ -2113,20 +2113,183 @@ pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Board
     .ok()
 }
 
+/// The board-anchored half of the shared-board read fan-out: the filters that
+/// pull the board *definition* and every member's board-anchored events (issues
+/// and placements) regardless of who authored them.
+///
+/// `headway_filter` scopes by a single author, which only ever sees one member's
+/// events. Genuine multi-writer boards ([NIP-SNS](../../../docs)) need to gather
+/// every member's contributions, so the read path keys off the board's
+/// *coordinate* instead of any one author:
+///
+/// - `{kinds:[BOARD], authors:[owner], #d:[board_id]}` — the single owner-authored
+///   board definition (columns, title). Authored only by the owner by
+///   construction, so this stays author-scoped.
+/// - `{kinds:[ISSUE, PLACEMENT], #a:[board_addr]}` — every member's cards and
+///   card placements, which carry the board coordinate in their `a` tag
+///   ([`build_issue`], [`build_placement`]) rather than being owner-authored.
+///
+/// Returns `None` if `board_addr` isn't a well-formed board coordinate. This is
+/// "phase A" of [`fold_shared_board`]; the card ids it surfaces drive the
+/// card-anchored "phase B" ([`card_meta_filter`]).
+pub fn board_scoped_filters(board_addr: &str) -> Option<Vec<Filter>> {
+    let (owner, board_id) = parse_board_address(board_addr)?;
+    let def = Filter::new()
+        .kinds([KIND_BOARD as u64])
+        .authors([&owner])
+        .tags([board_id.as_str()], 'd')
+        .limit(1)
+        .build();
+    let anchored = Filter::new()
+        .kinds([KIND_ISSUE as u64, KIND_PLACEMENT as u64])
+        .tags([board_addr], 'a')
+        .limit(5000)
+        .build();
+    Some(vec![def, anchored])
+}
+
+/// The card-anchored half of the shared-board read fan-out: a filter for every
+/// member's per-card metadata (subject/label edits, cover notes, relations,
+/// sequences and comments), keyed by the `e` tag pointing at each card.
+///
+/// These overlays name their card by `e` tag and carry no board reference, so
+/// they can't be reached by the board coordinate — they're gathered by the set
+/// of card ids surfaced in [`board_scoped_filters`]' phase-A walk. "Phase B" of
+/// [`fold_shared_board`]. `card_ids` are raw 32-byte note ids; the `#e` tag is an
+/// *id* tag, so it's matched with [`Filter::events`] rather than a string tag.
+///
+/// Comments are gathered separately by [`comment_filter`]: a *reply*'s lowercase
+/// `e` points at its parent comment, not the issue, so an `#e:[issue_ids]` filter
+/// would miss threaded replies — they're reached by their uppercase root `E`
+/// instead.
+pub fn card_meta_filter(card_ids: &[[u8; 32]]) -> Filter {
+    Filter::new()
+        .kinds([
+            KIND_LABEL as u64,
+            KIND_RELATION as u64,
+            KIND_SEQUENCE as u64,
+            KIND_COVER_NOTE as u64,
+        ])
+        .events(card_ids.iter())
+        .limit(5000)
+        .build()
+}
+
+/// The comment half of the shared-board card-anchored fan-out: a filter for every
+/// member's comments (kind 1111) on the given cards, keyed by the NIP-22 root `E`
+/// tag rather than the parent `e` tag.
+///
+/// Every comment — top-level *and* threaded reply — carries the uppercase root
+/// `E` = the issue id ([`build_comment`]), whereas the lowercase parent `e` is the
+/// issue only for a top-level comment and the *parent comment* for a reply. So
+/// matching on `#e:[issue_ids]` (as [`card_meta_filter`] does for other overlays)
+/// would silently drop replies; matching on the root `#E` captures the whole
+/// comment tree for each card. `E` is an *id* tag, so it's matched with id
+/// elements ([`Filter::add_id_element`]), not a string tag — `Filter` has no
+/// char-parameterised id-tag helper, so this drives the tag field directly.
+pub fn comment_filter(card_ids: &[[u8; 32]]) -> Filter {
+    let mut b = Filter::new().kinds([KIND_COMMENT as u64]).limit(5000);
+    b.start_tag_field('E').unwrap();
+    for id in card_ids {
+        b.add_id_element(id).unwrap();
+    }
+    b.end_field();
+    b.build()
+}
+
+/// Fold a *shared* board — one written by many members — out of `ndb` into a
+/// fresh reducer, gathering every author's events rather than a single author's.
+///
+/// This is the multi-writer counterpart of [`fold_board`], and the read-path
+/// prerequisite that makes concurrent edits observable at all: without it, other
+/// members' overlays never reach the reducer, so nothing converges. It runs the
+/// two-phase fan-out into one [`BoardReducer`]:
+///
+/// 1. **Phase A** ([`board_scoped_filters`]): fold the board definition and every
+///    member's issues and placements, collecting the card ids off the issues as
+///    we walk.
+/// 2. **Phase B** ([`card_meta_filter`] + [`comment_filter`]): fold every member's
+///    card-anchored overlays for exactly those cards — labels, cover notes,
+///    relations and sequences by their `#e` issue tag, and comments (including
+///    threaded replies) by their `#E` root tag.
+///
+/// Both phases feed the *same* reducer; because [`BoardReducer::ingest`] is
+/// commutative and idempotent, folding one filter set after another yields the
+/// same state as a single combined walk. The reducer still resolves
+/// latest-authorised-wins, so a member can only edit cards they're authorised for
+/// (their own, or — for the owner — any); the authority *roster* is a separate
+/// concern layered on top.
+///
+/// Returns `None` if `board_addr` isn't a well-formed board coordinate or the
+/// index walk fails. A board with no cards yields an empty (phase-A-only) reducer
+/// rather than `None`.
+#[profiling::function]
+pub fn fold_shared_board(ndb: &Ndb, txn: &Transaction, board_addr: &str) -> Option<BoardReducer> {
+    let phase_a = board_scoped_filters(board_addr)?;
+    let mut card_ids: Vec<[u8; 32]> = Vec::new();
+    let acc = ndb
+        .fold(txn, &phase_a, BoardReducer::default(), |mut acc, note| {
+            if note.kind() == KIND_ISSUE {
+                card_ids.push(*note.id());
+            }
+            if let Some(event) = parse(&note) {
+                acc.ingest(event);
+            }
+            acc
+        })
+        .ok()?;
+
+    // No cards means no card-anchored overlays to gather; the `#e`/`#E` filters
+    // would be empty, so skip phase B and return the board as-is.
+    if card_ids.is_empty() {
+        return Some(acc);
+    }
+
+    let phase_b = [card_meta_filter(&card_ids), comment_filter(&card_ids)];
+    ndb.fold(txn, &phase_b, acc, |mut acc, note| {
+        if let Some(event) = parse(&note) {
+            acc.ingest(event);
+        }
+        acc
+    })
+    .ok()
+}
+
 /// Fold a batch of freshly-arrived notes (identified by `keys`) into an existing
 /// reducer. Sound because the fold is commutative and idempotent: applying a
 /// delta to an up-to-date reducer yields the same state as a full re-fold, so
 /// the app can subscribe-then-poll instead of walking the history every frame.
 /// Notes that aren't recognised headway events are skipped.
+///
+/// Returns the keys that couldn't be read under `txn`. A subscription drains a
+/// key the instant its note is committed, but a read `txn` is a snapshot fixed
+/// at *open* time: a note committed after the caller opened `txn` isn't visible
+/// to it yet, so [`get_note_by_key`](Ndb::get_note_by_key) fails even though the
+/// note exists. Because polling already removed the key from the subscription
+/// inbox, silently skipping it would drop the note until the next full re-seed.
+/// Instead we hand those keys back so the caller can retry them on a later
+/// advance with that frame's fresher snapshot — the re-fold is idempotent, so a
+/// key that turns out to have been visible all along costs nothing to replay.
+#[must_use = "keys that couldn't be read must be retried with a fresher txn, not dropped"]
 #[profiling::function]
-pub fn reduce_delta(reducer: &mut BoardReducer, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) {
+pub fn reduce_delta(
+    reducer: &mut BoardReducer,
+    ndb: &Ndb,
+    txn: &Transaction,
+    keys: &[NoteKey],
+) -> Vec<NoteKey> {
+    let mut deferred = Vec::new();
     for key in keys {
-        if let Ok(note) = ndb.get_note_by_key(txn, *key)
-            && let Some(event) = parse(&note)
-        {
+        let Ok(note) = ndb.get_note_by_key(txn, *key) else {
+            // Committed after `txn`'s snapshot — retry next advance.
+            deferred.push(*key);
+            continue;
+        };
+        if let Some(event) = parse(&note) {
             reducer.ingest(event);
         }
     }
+    deferred
 }
 
 /// Find the board with `board_id` authored by `author` in an *already-finalized*
@@ -2240,6 +2403,92 @@ pub fn card_with_column_in_board(view: &BoardView, issue_id: &[u8; 32]) -> Optio
         .map(|card| ResolvedCard { card, column: None })
 }
 
+/// A card resolved for inline display together with the board it currently lives
+/// on. For a card that was moved across boards this is the *destination* board —
+/// where [`finalize`](BoardReducer::finalize) actually places it — not the origin
+/// board recorded in the card's `a` tag. See [`locate_card`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocatedCard {
+    /// The board the card is live on — the [`BoardView`] this resolution came
+    /// from, and the board a click on the card should open.
+    pub board_id: String,
+    /// The card's resolved state (latest subject, labels and cover applied).
+    pub card: CardView,
+    /// The card's live [`ColumnPos`], or `None` when it is archived (off the live
+    /// columns).
+    pub column: Option<ColumnPos>,
+}
+
+/// Resolve a card for inline display across *every* board `author` owns, rather
+/// than assuming the board recorded in the card's `a` tag.
+///
+/// A card's `a` tag records its *origin* board, but a cross-board move deletes it
+/// there and places it on the destination — membership follows the live placement
+/// ([`finalize`](BoardReducer::finalize) is placement-driven). Resolving against
+/// the stale `a`-tag board would find the card deleted (or absent) and render an
+/// "invalid" chip that opens the wrong board, so we scan the finalized boards and
+/// return the card where it is actually shown.
+///
+/// A live column placement is preferred over an archived one, and among live
+/// boards the newest placement (by [`CardView::placed_at`]) wins — a card is
+/// normally placed on exactly one board, so a move is unambiguous; a genuine
+/// multi-board placement resolves to its most-recently-touched board. `None` when
+/// the card is on no board of this author (deleted everywhere, or its board isn't
+/// folded — the caller falls back to the card's creation-time snapshot).
+pub fn locate_card(
+    reducer: &BoardReducer,
+    author: &Pubkey,
+    issue_id: &[u8; 32],
+) -> Option<LocatedCard> {
+    locate_card_in_boards(&reducer.finalize(), author, issue_id)
+}
+
+/// Resolve a card across an *already-finalized* board set, preferring a live
+/// column placement over an archived one and the newest placement among live
+/// boards. The re-finalize-free core of [`locate_card`]: the inline render path
+/// finalizes once per frame (memoized) and locates each referenced card through
+/// this, mirroring [`card_with_column_in_board`]'s split from [`pick_card_with_column`].
+pub fn locate_card_in_boards(
+    boards: &[BoardView],
+    author: &Pubkey,
+    issue_id: &[u8; 32],
+) -> Option<LocatedCard> {
+    let want = NoteId::new(*issue_id);
+    boards
+        .iter()
+        .filter(|board| &board.author == author.bytes())
+        .filter_map(|board| {
+            let count = board.columns.len();
+            // A live column hit resolves to a status; prefer it over archived.
+            for (index, col) in board.columns.iter().enumerate() {
+                if let Some(card) = col.cards.iter().find(|c| c.id == want) {
+                    return Some(LocatedCard {
+                        board_id: board.id.clone(),
+                        card: card.clone(),
+                        column: Some(ColumnPos { index, count }),
+                    });
+                }
+            }
+            board
+                .archived
+                .iter()
+                .map(|a| &a.card)
+                .find(|c| c.id == want)
+                .cloned()
+                .map(|card| LocatedCard {
+                    board_id: board.id.clone(),
+                    card,
+                    column: None,
+                })
+        })
+        .max_by(|a, b| {
+            a.column
+                .is_some()
+                .cmp(&b.column.is_some())
+                .then(a.card.placed_at.cmp(&b.card.placed_at))
+        })
+}
+
 /// Fold `author`'s headway events out of `ndb` and reduce them into the board
 /// with the given `board_id`, if it exists. A one-shot [`fold_board`] +
 /// [`pick_board`] for callers that don't keep the reducer around.
@@ -2275,6 +2524,40 @@ pub fn resolve_card_by_wordid(view: &BoardView, words: &str) -> Option<NoteId> {
     all_cards(view)
         .find(|c| crate::wordid::encode(c.id.bytes()) == words)
         .map(|c| c.id)
+}
+
+/// Resolve a card ref on `view` to its note id, accepting (in order): a full
+/// 64-char hex id; a word id like `board#maple-river-canyon` (the `<board>#`
+/// prefix is optional, and a bare leading `#` works too, so `#maple-river-canyon`
+/// and `maple-river-canyon` both resolve); or a unique hex prefix. Word ids and
+/// hex prefixes are matched against every card on the board, archived ones
+/// included.
+///
+/// This is the single card-addressing entry point shared by the CLI and the
+/// in-app agent tools ([`notedeck_headway`](../../notedeck_headway)), so both
+/// frontends resolve a user's card ref identically.
+pub fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId, String> {
+    if let Ok(id) = NoteId::from_hex(sel) {
+        return Ok(id);
+    }
+    let sel = sel.to_lowercase();
+
+    // Word id: drop an optional `<board>#` prefix (or a bare leading `#`), then
+    // match by re-encoding each card — exactly how a git short hash resolves.
+    let words = sel
+        .strip_prefix(&format!("{}#", view.id.to_lowercase()))
+        .or_else(|| sel.strip_prefix('#'))
+        .unwrap_or(&sel);
+    if let Some(id) = resolve_card_by_wordid(view, words) {
+        return Ok(id);
+    }
+
+    let mut hits = all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
+    match (hits.next(), hits.next()) {
+        (Some(c), None) => Ok(c.id),
+        (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'")),
+        _ => Err(format!("no card matching '{sel}'")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3181,6 +3464,121 @@ mod tests {
         assert_eq!(view.columns[1].cards[0].title, "Card B");
     }
 
+    /// A board written by two different members converges through
+    /// [`fold_shared_board`]: the owner-authored card and a *different* member's
+    /// card (with that member's own placement and subject edit) both land in one
+    /// board — the multi-writer read fan-out. The single-author [`fold_board`]
+    /// misses the second member entirely, which is the gap this closes.
+    #[test]
+    fn fold_shared_board_gathers_all_members() {
+        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+
+        let owner = FullKeypair::generate();
+        let member = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "headway");
+
+        // Ingest a builder signed by an arbitrary member, returning the note id.
+        let ingest = |b: NoteBuilder, kp: &FullKeypair| -> NoteId {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            let id = NoteId::new(*note.id());
+            let json = enostr::ClientMessage::event(&note)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            ndb.process_event_with(&json, IngestMetadata::new().client(true))
+                .unwrap();
+            id
+        };
+
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+        // Owner defines the board and authors one card.
+        ingest(build_board("headway", "Headway", "", &cols), &owner);
+        let a = ingest(build_issue(&addr, "Owner card", ""), &owner);
+        ingest(build_placement("headway", &addr, &a, "todo", "g"), &owner);
+
+        // A *different* member authors their own card, places it, and renames it.
+        let b = ingest(build_issue(&addr, "Member card", ""), &member);
+        ingest(build_placement("headway", &addr, &b, "done", "m"), &member);
+        ingest(build_subject_edit(&b, "Member card (renamed)"), &member);
+
+        // ...then comments on it, including a threaded reply. A reply's lowercase
+        // `e` points at its parent comment (not the issue), so it's only reachable
+        // via the `#E` root tag — the case comment_filter exists to cover.
+        let c1 = ingest(
+            build_comment(&b, &member.pubkey, None, "member comment"),
+            &member,
+        );
+        ingest(
+            build_comment(
+                &b,
+                &member.pubkey,
+                Some((&c1, &member.pubkey)),
+                "member reply",
+            ),
+            &member,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let view = loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            if let Some(reducer) = fold_shared_board(&ndb, &txn, &addr)
+                && let Some(view) = pick_board(&reducer, &owner.pubkey, "headway")
+                && view.columns[0].cards.len() == 1
+                && view.columns[1].cards.len() == 1
+                // Wait on the member's subject edit and both comments (ingested
+                // last) so the assertions don't race them into view.
+                && view.columns[1].cards[0].title == "Member card (renamed)"
+                && view.columns[1].cards[0].comments.len() == 2
+            {
+                break view;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shared board did not materialise in ndb"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        // Both members' cards converge into one board, with the member's own
+        // subject edit applied.
+        assert_eq!(view.columns[0].cards[0].title, "Owner card");
+        assert_eq!(view.columns[1].cards[0].title, "Member card (renamed)");
+
+        // The whole comment thread folds in: the top-level comment and the reply
+        // threaded under it. The reply is the regression guard — matching card
+        // comments on `#e:[issue_ids]` alone would drop it. Find by body rather
+        // than index: the two are stamped in the same wall-clock second, so their
+        // (created_at, id) sort order isn't insertion order.
+        let comments = &view.columns[1].cards[0].comments;
+        let root = comments
+            .iter()
+            .find(|c| c.body == "member comment")
+            .expect("top-level comment folded in");
+        let reply = comments
+            .iter()
+            .find(|c| c.body == "member reply")
+            .expect("threaded reply folded in");
+        assert_eq!(root.parent, None);
+        assert_eq!(reply.parent, Some(c1));
+
+        // The single-author fold sees only the owner's card: exactly the gap
+        // fold_shared_board closes.
+        let txn = Transaction::new(&ndb).unwrap();
+        let owner_only = fold_board(&ndb, &txn, &owner.pubkey)
+            .and_then(|r| pick_board(&r, &owner.pubkey, "headway"))
+            .unwrap();
+        assert_eq!(owner_only.columns[0].cards.len(), 1);
+        assert_eq!(owner_only.columns[1].cards.len(), 0);
+        assert_eq!(owner_only.columns[0].cards[0].title, "Owner card");
+    }
+
     #[test]
     fn relation_roundtrips_set_and_detach() {
         let kp = FullKeypair::generate();
@@ -3639,5 +4037,80 @@ mod tests {
 
         // Unknown card id -> None.
         assert!(pick_card_with_column(&reducer, &owner.pubkey, "b1", &[0u8; 32]).is_none());
+    }
+
+    /// A card moved across boards keeps its origin board in its `a` tag but lives
+    /// on the destination via its placement. [`locate_card`] resolves it on the
+    /// destination (where it's actually shown), not the stale origin — the board
+    /// an inline chip must read for its status and a click must open.
+    #[test]
+    fn locate_card_resolves_cross_board_move() {
+        let owner = FullKeypair::generate();
+        // The card's `a` tag anchors it to "notedeck" (its origin board).
+        let origin = board_address(&owner.pubkey, "notedeck");
+        let dest = board_address(&owner.pubkey, "dave");
+        let cols = vec![
+            ColumnDef::new("backlog", "Backlog"),
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("in-progress", "In Progress"),
+            ColumnDef::new("in-review", "In Review"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder| {
+            let note = b.sign(&owner.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        // Moved card: created on notedeck, deleted there, placed live on dave.
+        let moved = note_id(&owner, build_issue(&origin, "Moved", "body"));
+        // Orphan: anchored to notedeck by its `a` tag, never placed anywhere.
+        let orphan = note_id(&owner, build_issue(&origin, "Orphan", "body"));
+
+        let events = vec![
+            parse_owned(build_board("notedeck", "Notedeck", "", &cols)),
+            parse_owned(build_board("dave", "Dave", "", &cols)),
+            parse_owned(build_issue(&origin, "Moved", "body")),
+            parse_owned(build_issue(&origin, "Orphan", "body")),
+            // Origin history: placed then deleted (the cross-board move's origin half).
+            parse_owned(
+                build_placement("notedeck", &origin, &moved, "todo", "m").created_at(1_000),
+            ),
+            parse_owned(
+                build_placement("notedeck", &origin, &moved, COL_DELETED, "m").created_at(2_000),
+            ),
+            // Destination: live in In Progress (index 2 of 5).
+            parse_owned(
+                build_placement("dave", &dest, &moved, "in-progress", "m").created_at(3_000),
+            ),
+        ];
+
+        let mut reducer = BoardReducer::default();
+        for event in &events {
+            reducer.ingest(event.clone());
+        }
+
+        // The moved card resolves on dave (the live placement), not its `a`-tag
+        // origin — with its real column position.
+        let located = locate_card(&reducer, &owner.pubkey, moved.bytes()).unwrap();
+        assert_eq!(located.board_id, "dave");
+        assert_eq!(located.card.title, "Moved");
+        assert_eq!(located.column, Some(ColumnPos { index: 2, count: 5 }));
+
+        // The bug this guards: the board-scoped resolver keyed on the origin `a`-tag
+        // board finds the card deleted there and returns nothing.
+        assert!(
+            pick_card_with_column(&reducer, &owner.pubkey, "notedeck", moved.bytes()).is_none(),
+            "card is deleted on its origin board"
+        );
+
+        // An orphan (no placement anywhere) still resolves on its origin board via
+        // the finalize fallback — first column.
+        let located = locate_card(&reducer, &owner.pubkey, orphan.bytes()).unwrap();
+        assert_eq!(located.board_id, "notedeck");
+        assert_eq!(located.column, Some(ColumnPos { index: 0, count: 5 }));
+
+        // Unknown card id -> None.
+        assert!(locate_card(&reducer, &owner.pubkey, &[0u8; 32]).is_none());
     }
 }

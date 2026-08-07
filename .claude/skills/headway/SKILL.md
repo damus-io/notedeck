@@ -116,10 +116,15 @@ readable; pass `--archived` to list them (e.g. to find an id for `restore`).
 word-id muted at the end of the line.
 
 **Which form to use:** when talking to a human about a card (chat, a commit
-message, a PR), refer to it by its **word-id** (`headway#maple-river-canyon`) —
-it's sayable and they'll recognise it. When *you* edit the board (move, label,
-archive, …), pass the canonical **hex id** from `show --json` instead, so an
-automated edit can never hit the wrong card.
+message, a PR, a board comment), refer to it by its **word-id** — and **always
+fully qualify it with the board prefix** (`headway#maple-river-canyon`,
+`notebook#mango-sibling-false`), never the bare `#word-id` or sigil-less form.
+The full `<board>#<word-id>` is self-routing and unambiguous no matter which
+board is current when it's read; a bare word-id only resolves against the
+current board and reads wrong from anywhere else. This applies to every ref in a
+comment, not just the first. When *you* edit the board (move, label, archive,
+…), pass the canonical **hex id** from `show --json` instead, so an automated
+edit can never hit the wrong card.
 
 All of these resolve as a `<card>` argument, to the same card every time:
 

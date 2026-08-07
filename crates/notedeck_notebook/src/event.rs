@@ -1199,7 +1199,8 @@ pub fn list_longform(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<Longf
 /// Whether `kind` is one of the notebook's addressable (latest-wins, keyed per
 /// `(kind, d-tag)`) kinds. Everything but the immutable node-creation event is
 /// addressable. Used by the CLI sync to push only the winning revision of each
-/// addressable element rather than every stale one (see [`relay_sync::frames_where`]).
+/// addressable element rather than every stale one (see
+/// `nostrdb_net::relay::sync::frames_where`).
 pub fn is_addressable(kind: u32) -> bool {
     matches!(
         kind,

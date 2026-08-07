@@ -41,14 +41,14 @@ use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType,
+    DataPathType, ScopedSubEoseStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
-use transport::RemoteApiTransport;
+use transport::{scoped_identity, RemoteApiTransport};
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
@@ -114,6 +114,37 @@ fn embedded_engine(ndb: &nostrdb::Ndb, secret_key: &[u8; 32]) -> Option<agentium
             tracing::error!("failed to build embedded engine: {:?}", e);
             None
         }
+    }
+}
+
+/// Where a "new session" request should route, given local AI capability and
+/// whether any remote agentic hosts are known. Pure so the decision can be
+/// unit-tested without constructing a full [`Dave`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewSessionRoute {
+    /// Start a local chat session directly.
+    Chat,
+    /// Ask whether to start a local chat or a remote agentic session.
+    ChooseKind,
+    /// Pick a remote host to spawn an agentic session on.
+    HostPicker,
+    /// Pick a local working directory for an agentic session.
+    LocalDirectoryPicker,
+}
+
+/// Decide how a new-session request routes.
+///
+/// Remote agentic sessions are only offered once remote hosts are known (i.e.
+/// remote sessions already exist). A thin client with no local agentic backend
+/// (`AiMode::Chat`, e.g. Android) then asks which kind to start, rather than
+/// silently creating a local chat — the bug this addresses. A locally-agentic
+/// client goes straight to host selection.
+fn route_new_session(ai_mode: AiMode, has_remote_hosts: bool) -> NewSessionRoute {
+    match (ai_mode, has_remote_hosts) {
+        (AiMode::Chat, true) => NewSessionRoute::ChooseKind,
+        (AiMode::Chat, false) => NewSessionRoute::Chat,
+        (AiMode::Agentic, true) => NewSessionRoute::HostPicker,
+        (AiMode::Agentic, false) => NewSessionRoute::LocalDirectoryPicker,
     }
 }
 
@@ -270,6 +301,10 @@ pub enum DaveOverlay {
     #[default]
     None,
     Settings,
+    /// Choosing between a local chat and a remote agentic session (shown on
+    /// thin clients that have no local agentic backend but know of remote
+    /// hosts).
+    NewSessionKind,
     HostPicker,
     DirectoryPicker,
     /// Backend has been chosen; showing resumable-session list.
@@ -385,6 +420,13 @@ pub struct Dave {
     pns_relay_url: Option<String>,
     /// Last selected account/relay/PNS-author tuple declared through scoped subscriptions.
     pns_remote_sub_state: Option<PnsRemoteSubState>,
+    /// Whether the PNS discovery subscription has reached EOSE on every tracked
+    /// relay, i.e. the relay has replayed its stored head (including the latest
+    /// replaceable session-state revisions, so deletions are present) and the
+    /// synced view has settled. Gates acting on a mid-sync ndb snapshot — see
+    /// [`Dave::poll_discovery_settled`]. Reset to `false` whenever the discovery
+    /// subscription is (re)declared (e.g. account/relay switch).
+    discovery_settled: bool,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
@@ -822,6 +864,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             hostname,
             pns_relay_url,
             pns_remote_sub_state: None,
+            discovery_settled: false,
             pns_local_state: None,
             pns_local_runtimes: HashMap::new(),
             settings_serializer,
@@ -1186,6 +1229,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     OverlayResult::Close => {}
                     _ => {
                         self.active_overlay = DaveOverlay::Settings;
+                    }
+                }
+                return DaveResponse::default();
+            }
+            DaveOverlay::NewSessionKind => {
+                let has_sessions = !self.session_manager.is_empty();
+                match ui::session_kind_picker_overlay_ui(ui, has_sessions) {
+                    OverlayResult::NewSessionChat => {
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        self.create_session_with_cwd(
+                            cwd,
+                            self.model_config.backend,
+                            Model::Default,
+                        );
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                    OverlayResult::NewSessionAgentic => {
+                        self.active_overlay = DaveOverlay::HostPicker;
+                    }
+                    OverlayResult::Close => {}
+                    _ => {
+                        self.active_overlay = DaveOverlay::NewSessionKind;
                     }
                 }
                 return DaveResponse::default();
@@ -1602,20 +1667,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn handle_new_chat(&mut self) {
-        match self.ai_mode {
-            AiMode::Chat => {
-                // In chat mode, create a session directly without the directory picker
+        match route_new_session(self.ai_mode, !self.known_remote_hosts().is_empty()) {
+            NewSessionRoute::Chat => {
+                // In chat mode, create a session directly without any picker.
                 let cwd = std::env::current_dir().unwrap_or_default();
                 self.create_session_with_cwd(cwd, self.model_config.backend, Model::Default);
             }
-            AiMode::Agentic => {
-                // If remote hosts are known, show host picker first
-                if !self.known_remote_hosts().is_empty() {
-                    self.active_overlay = DaveOverlay::HostPicker;
-                } else {
-                    self.directory_picker.target_host = None;
-                    self.active_overlay = DaveOverlay::DirectoryPicker;
-                }
+            NewSessionRoute::ChooseKind => {
+                self.active_overlay = DaveOverlay::NewSessionKind;
+            }
+            NewSessionRoute::HostPicker => {
+                self.active_overlay = DaveOverlay::HostPicker;
+            }
+            NewSessionRoute::LocalDirectoryPicker => {
+                self.directory_picker.target_host = None;
+                self.active_overlay = DaveOverlay::DirectoryPicker;
             }
         }
     }
@@ -2173,6 +2239,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.details.home_dir = state.home_dir.clone();
                 }
 
+                // A state event is a "host is alive" signal; feed the
+                // status-bar last-activity indicator (before borrowing agentic).
+                session.mark_activity(state.created_at);
+
                 if let Some(agentic) = &mut session.agentic {
                     // Restore the event_id from the d-tag so published
                     // state events keep using the same Nostr identity.
@@ -2186,7 +2256,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.event_count);
+                        agentic.live_threading.seed(root, last);
                     }
                     // Load permission state and dedup set from events
                     agentic.permissions.merge_loaded(
@@ -2235,6 +2305,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return;
         };
+
+        // Defer materializing discovered sessions until the discovery
+        // subscription has settled (see `poll_discovery_settled`). Negentropy
+        // history reconciliation streams events in over several rounds, so a
+        // mid-sync snapshot can hold a session's `create` revision while its
+        // newer `deleted` revision is still pending — draining now would
+        // materialize an already-deleted "litter" session that vanishes a few
+        // frames later. We return *before* `poll_for_notes` so the notes stay
+        // queued on the subscription; once settled, the drain sees the netted
+        // head (ndb has collapsed each replaceable session-state event to its
+        // latest revision, and the creation path re-queries that latest
+        // revision, so deleted sessions never surface).
+        //
+        // Only gate when a remote discovery sync is actually pending: with no
+        // remote subscription (local-only) there is nothing to reconcile and
+        // `discovery_settled` never latches, so processing immediately is
+        // correct.
+        if self.discovery_sync_pending() {
+            return;
+        }
 
         let note_keys = ctx.ndb.poll_for_notes(sub, 32);
         if note_keys.is_empty() {
@@ -2316,6 +2406,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         if agentic.event_session_id() == claude_sid && ts > agentic.remote_status_ts
                         {
                             agentic.remote_status_ts = ts;
+                            // A state event is a "host is alive" signal; feed
+                            // the status-bar last-activity indicator. Set the
+                            // field directly (keeping the newest) since
+                            // `agentic` is borrowed and `mark_activity` would
+                            // reborrow the whole session.
+                            session.last_activity =
+                                Some(session.last_activity.map_or(ts, |c| c.max(ts)));
                             // custom_title syncs for both local and remote
                             if new_custom_title.is_some() {
                                 session.details.custom_title = new_custom_title.clone();
@@ -2449,6 +2546,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     ));
                 }
 
+                // A state event is a "host is alive" signal; feed the
+                // status-bar last-activity indicator (before borrowing agentic).
+                session.mark_activity(state.created_at);
+
                 if let Some(agentic) = &mut session.agentic {
                     // Restore the event_id from the d-tag
                     agentic.event_id = claude_sid.to_string();
@@ -2465,7 +2566,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.event_count);
+                        agentic.live_threading.seed(root, last);
                     }
                     // Load permission state and dedup set
                     agentic.permissions.merge_loaded(
@@ -3549,7 +3650,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 if let Some(agentic) = &mut session.agentic {
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.event_count);
+                        agentic.live_threading.seed(root, last);
                     }
                     agentic
                         .permissions
@@ -3627,7 +3728,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             if let Some(agentic) = &mut session.agentic {
                 if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                    agentic.live_threading.seed(root, last, loaded.event_count);
+                    agentic.live_threading.seed(root, last);
                 }
                 agentic
                     .permissions
@@ -3693,6 +3794,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         RemoteApiTransport::new(&mut ctx.remote, ctx.accounts).set_subscription(spec);
         self.pns_remote_sub_state = Some(next_state);
+        // Fresh subscription: its EOSE has not been observed yet, so the synced
+        // view is once again mid-sync until `poll_discovery_settled` sees EOSE.
+        self.discovery_settled = false;
     }
 
     /// Remove Dave's PNS discovery subscription via the engine [`Transport`].
@@ -3704,6 +3808,59 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         RemoteApiTransport::new(&mut ctx.remote, ctx.accounts)
             .drop_subscription(&pns_remote_sub_id());
         self.pns_remote_sub_state = None;
+        self.discovery_settled = false;
+    }
+
+    /// Whether the remote discovery sync is still pending: a remote discovery
+    /// subscription is declared but its synced view has not
+    /// [settled](Dave::discovery_settled) yet.
+    ///
+    /// This is the single "is the ndb view still mid-sync?" predicate that
+    /// consumers gate on. It is `false` when there is no remote subscription
+    /// (local-only — nothing to reconcile) and once the sync has settled, and
+    /// `true` only in the window between (re)declaring the subscription and its
+    /// settle. [`Dave::poll_discovery_settled`] runs while this holds; snapshot
+    /// consumers defer while this holds.
+    fn discovery_sync_pending(&self) -> bool {
+        self.pns_remote_sub_state.is_some() && !self.discovery_settled
+    }
+
+    /// Latch [`Dave::discovery_settled`] once the PNS discovery subscription's
+    /// synced view has stopped churning.
+    ///
+    /// The discovery subscription has two independent lifecycles, and both must
+    /// quiesce before the ndb view is trustworthy:
+    ///
+    /// - **live EOSE** — the relay has replayed all stored events matching the
+    ///   live filter (the recent head, including the latest replaceable
+    ///   session-state revisions).
+    /// - **full-history settle** — the NIP-77 negentropy backfill over the
+    ///   history window has finished reconciling. This is the one that matters
+    ///   for litter: negentropy converges over *multiple rounds*, and a
+    ///   session's `create` can arrive in an early round with its `deleted`
+    ///   revision only in a later one. Until the rounds drain, materializing
+    ///   sessions from the snapshot resurrects already-deleted ones.
+    ///
+    /// Until both hold, the view is mid-sync: acting on it can materialize a
+    /// session whose `deleted` event has not arrived yet. Consumers gate that
+    /// work on this latch.
+    ///
+    /// Cheap to call every frame: it short-circuits once latched, and each query
+    /// is a small hashmap lookup over tracked-relay / tracked-sub state.
+    fn poll_discovery_settled(&mut self, ctx: &mut AppContext<'_>) {
+        if !self.discovery_sync_pending() {
+            return;
+        }
+        let identity = scoped_identity(&pns_remote_sub_id());
+        let scoped = ctx.remote.scoped_subs(ctx.accounts);
+        let live_eosed = matches!(
+            scoped.sub_eose_status(identity),
+            ScopedSubEoseStatus::Live(s) if s.all_eosed
+        );
+        if live_eosed && scoped.full_history_settled(identity) {
+            self.discovery_settled = true;
+            tracing::info!("dave discovery subscription settled (live EOSE + history reconciled)");
+        }
     }
 
     /// Keep the selected account's PNS session state (workspace + ndb
@@ -3941,6 +4098,9 @@ impl notedeck::App for Dave {
         self.refresh_pns_relay_url(ctx);
         self.ensure_pns_local_state(ctx);
         self.ensure_pns_remote_subscription(ctx);
+        // Track whether the discovery sub's synced view has settled, so
+        // downstream polls can avoid acting on a mid-sync ndb snapshot.
+        self.poll_discovery_settled(ctx);
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
@@ -4324,8 +4484,7 @@ fn handle_permission_request(
             let _ = pending
                 .response_tx
                 .send(PermissionResponse::Allow { message: None });
-            let mut request = pending.request;
-            request.response = Some(crate::messages::PermissionResponseType::Allowed);
+            let request = pending.request.auto_accept();
             session.chat.push(Message::PermissionRequest(request));
             return;
         }
@@ -4407,20 +4566,18 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
     let mut needs_reorder = false;
+    // Newest `created_at` of a displayable remote note in this batch, applied
+    // to `last_activity` after the loop (can't call `session.mark_activity`
+    // inside — `session.agentic` is mutably borrowed below).
+    let mut latest_activity: Option<u64> = None;
 
-    // Sort this batch by `seq` (the per-session monotonic counter), falling
-    // back to `created_at` only for events with no `seq` tag. Live events are
-    // all stamped with the same second-resolution `created_at` within a turn,
-    // so `seq` is the authoritative order — see `session_loader`. NOTE: this
-    // only orders within a single poll batch; events that arrive in a later
-    // batch are still appended after earlier ones (see process_conversation_notes
-    // docs), so out-of-order delivery across polls can still misorder the chat.
-    notes.sort_by_key(|n| {
-        let seq = session_events::get_tag_value(n, "seq")
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(u32::MAX);
-        (seq, n.created_at())
-    });
+    // Sort this batch by wall-clock time at millisecond resolution, keyed off
+    // the same `EventOrder` the loader uses so the two can never drift apart.
+    // NOTE: this only orders within a single poll batch; events that arrive in
+    // a later batch are still appended after earlier ones (see
+    // process_conversation_notes docs), so out-of-order delivery across polls
+    // can still misorder the chat.
+    notes.sort_by_key(|n| session_loader::EventOrder::from_note(n));
 
     for note in &notes {
         // Skip events we've already processed (dedup)
@@ -4453,9 +4610,9 @@ pub(crate) fn process_conversation_notes<'a>(
         };
 
         // Track conversation ordering. Live events are appended in arrival
-        // order, so a displayable note whose `seq` is below the highest seen
-        // means relay delivery was out of order; flag a rebuild from ndb in
-        // `seq` order. Only newly-seen notes reach here (deduped above).
+        // order, so a displayable note whose ordering key is below the highest
+        // seen means relay delivery was out of order; flag a rebuild from ndb in
+        // sorted order. Only newly-seen notes reach here (deduped above).
         let displayable = matches!(
             role,
             Some("user")
@@ -4466,14 +4623,13 @@ pub(crate) fn process_conversation_notes<'a>(
                 | Some("compaction_complete")
         );
         if displayable {
-            if let Some(seq) =
-                session_events::get_tag_value(note, "seq").and_then(|s| s.parse::<u32>().ok())
-            {
-                if matches!(agentic.max_seen_seq, Some(prev) if seq < prev) {
-                    needs_reorder = true;
-                }
-                agentic.max_seen_seq = Some(agentic.max_seen_seq.map_or(seq, |p| p.max(seq)));
+            let created_at = note.created_at();
+            latest_activity = Some(latest_activity.map_or(created_at, |p| p.max(created_at)));
+            let order = session_loader::EventOrder::from_note(note);
+            if matches!(agentic.max_seen_order, Some(prev) if order < prev) {
+                needs_reorder = true;
             }
+            agentic.max_seen_order = Some(agentic.max_seen_order.map_or(order, |p| p.max(order)));
         }
 
         match role {
@@ -4584,6 +4740,12 @@ pub(crate) fn process_conversation_notes<'a>(
         }
     }
 
+    // Remote sessions never hit the local `append_token` path, so drive the
+    // status-bar "last activity" indicator off the newest ingested note.
+    if let Some(ts) = latest_activity {
+        session.mark_activity(ts);
+    }
+
     ProcessedNotes {
         remote_user_messages,
         events_to_publish,
@@ -4633,29 +4795,23 @@ fn handle_remote_permission_request(
             .responded
             .insert(perm_id, crate::messages::PermissionResponseType::Allowed);
         if let Some(sk) = secret_key {
-            let sid = agentic.event_session_id();
+            let sid = agentic.event_session_id().to_string();
             if let Ok(evt) = session_events::build_permission_response_event(
                 &perm_id,
                 note.id(),
                 true,
                 None,
                 false,
-                sid,
+                &sid,
+                &mut agentic.live_threading,
                 sk,
             ) {
                 events_to_publish.push(evt);
             }
         }
-        chat.push(Message::PermissionRequest(
-            crate::messages::PermissionRequest::new(
-                perm_id,
-                tool_name,
-                tool_input,
-                None,
-                Some(crate::messages::PermissionResponseType::Allowed),
-                None,
-            ),
-        ));
+        let request = crate::messages::PermissionRequest::pending(perm_id, tool_name, tool_input)
+            .auto_accept();
+        chat.push(Message::PermissionRequest(request));
         return;
     }
 
@@ -4996,6 +5152,31 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
+    #[test]
+    fn new_session_routes_by_capability_and_hosts() {
+        // Thin client (no local agentic backend, AiMode::Chat): start a local
+        // chat directly until remote hosts exist, then ask which kind — this is
+        // the Android bug, which previously always created a local chat.
+        assert_eq!(
+            route_new_session(AiMode::Chat, false),
+            NewSessionRoute::Chat
+        );
+        assert_eq!(
+            route_new_session(AiMode::Chat, true),
+            NewSessionRoute::ChooseKind
+        );
+        // Locally agentic (desktop): local directory picker until remote hosts
+        // exist, then the host picker. Unchanged by this fix.
+        assert_eq!(
+            route_new_session(AiMode::Agentic, false),
+            NewSessionRoute::LocalDirectoryPicker
+        );
+        assert_eq!(
+            route_new_session(AiMode::Agentic, true),
+            NewSessionRoute::HostPicker
+        );
+    }
+
     fn test_config() -> Config {
         if cfg!(target_os = "windows") {
             Config::new().set_mapsize(32 * 1024 * 1024)
@@ -5178,6 +5359,11 @@ mod tests {
                 .collect();
             assert_eq!(notes.len(), 3, "should have 3 events in ndb");
 
+            // Remote sessions never hit `append_token`, so last_activity must be
+            // driven off the newest ingested note's wall-clock `created_at`.
+            let newest_created_at = notes.iter().map(|n| n.created_at()).max();
+            assert_eq!(session.last_activity, None, "starts unset");
+
             let result = process_conversation_notes(
                 notes,
                 &mut session,
@@ -5188,6 +5374,10 @@ mod tests {
             );
 
             assert!(result.remote_user_messages.is_empty());
+            assert_eq!(
+                session.last_activity, newest_created_at,
+                "last_activity should track the newest ingested note's created_at"
+            );
         }
 
         // Assert correct ordering in chat
@@ -5394,6 +5584,7 @@ mod tests {
             Some("too dangerous"),
             false,
             session_id_str,
+            &mut threading,
             &sk,
         )
         .unwrap();
@@ -5517,6 +5708,7 @@ mod tests {
             Some("too dangerous"),
             false,
             session_id_str,
+            &mut threading,
             &sk,
         )
         .unwrap();

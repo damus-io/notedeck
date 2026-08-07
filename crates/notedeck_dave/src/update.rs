@@ -455,73 +455,46 @@ pub fn handle_question_response(
         }
     });
 
-    // Format answers as JSON for the tool response, and build summary for display
-    let (formatted_response, answer_summary) = if let Some(questions) = questions_input {
-        let mut answers_obj = serde_json::Map::new();
-        let mut summary_entries = Vec::with_capacity(questions.questions.len());
+    // The model-facing payload is plain prose (`Header: label, …` per line), not
+    // JSON: it is injected verbatim as user text and never re-parsed, so it must
+    // read as prose. Produce it via the shared agentium_core formatter so this
+    // local answer path agrees byte-for-byte with the engine's remote
+    // `respond_question`. See `crate::messages::format_question_answers`.
+    let formatted_response = crate::messages::format_question_answers(questions_input, &answers);
 
-        for (q_idx, (question, answer)) in
-            questions.questions.iter().zip(answers.iter()).enumerate()
-        {
-            let mut answer_obj = serde_json::Map::new();
-
-            // Map selected indices to option labels
-            let selected_labels: Vec<String> = answer
-                .selected
-                .iter()
-                .filter_map(|&idx| question.options.get(idx).map(|o| o.label.clone()))
-                .collect();
-
-            answer_obj.insert(
-                "selected".to_string(),
-                serde_json::Value::Array(
-                    selected_labels
-                        .iter()
-                        .cloned()
-                        .map(serde_json::Value::String)
-                        .collect(),
-                ),
-            );
-
-            // Build display text for summary
-            let mut display_parts = selected_labels;
-            if let Some(ref other) = answer.other_text {
-                if !other.is_empty() {
-                    answer_obj.insert(
-                        "other".to_string(),
-                        serde_json::Value::String(other.clone()),
-                    );
+    // The display summary (one collapsible `Header: answer` entry per question)
+    // is UI-only and needs the option labels, so it's built here where the
+    // question metadata is in hand rather than in the shared formatter.
+    let answer_summary = questions_input.map(|questions| {
+        let entries = questions
+            .questions
+            .iter()
+            .zip(answers.iter())
+            .enumerate()
+            .map(|(q_idx, (question, answer))| {
+                let mut display_parts: Vec<String> = answer
+                    .selected
+                    .iter()
+                    .filter_map(|&idx| question.options.get(idx).map(|o| o.label.clone()))
+                    .collect();
+                if let Some(other) = answer.other_text.as_ref().filter(|other| !other.is_empty()) {
                     display_parts.push(format!("Other: {}", other));
                 }
-            }
 
-            // Use header as the key, fall back to question index
-            let key = if !question.header.is_empty() {
-                question.header.clone()
-            } else {
-                format!("question_{}", q_idx)
-            };
-            answers_obj.insert(key.clone(), serde_json::Value::Object(answer_obj));
+                let header = if !question.header.is_empty() {
+                    question.header.clone()
+                } else {
+                    format!("question_{}", q_idx)
+                };
 
-            summary_entries.push(AnswerSummaryEntry {
-                header: key,
-                answer: display_parts.join(", "),
-            });
-        }
-
-        (
-            serde_json::json!({ "answers": answers_obj }).to_string(),
-            Some(AnswerSummary {
-                entries: summary_entries,
-            }),
-        )
-    } else {
-        // Fallback: just serialize the answers directly
-        (
-            serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string()),
-            None,
-        )
-    };
+                AnswerSummaryEntry {
+                    header,
+                    answer: display_parts.join(", "),
+                }
+            })
+            .collect();
+        AnswerSummary { entries }
+    });
 
     // Clean up transient answer state
     if let Some(agentic) = &mut session.agentic {
@@ -2068,20 +2041,16 @@ mod tests {
         assert!(publish.allowed);
         assert!(!publish.cancel_turn);
 
+        // The payload is plain prose (`Header: label`), not JSON: it's injected
+        // to the model verbatim and never re-parsed. Selected index 0 resolves
+        // to option label "A" under the "choice" header.
         let payload = publish
             .message
             .expect("question response should have payload");
-        let value: serde_json::Value =
-            serde_json::from_str(&payload).expect("payload should be valid json");
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "answers": {
-                    "choice": {
-                        "selected": ["A"]
-                    }
-                }
-            })
+        assert_eq!(payload, "choice: A");
+        assert!(
+            !payload.contains('{') && !payload.contains('\\'),
+            "answers must be prose, not JSON escaped into the message: {payload:?}"
         );
 
         let session = sm.get(id).expect("session should exist");

@@ -78,8 +78,8 @@ pub struct DaveUi<'a> {
     backend_type: BackendType,
     /// Current permission mode (Default, Plan, AcceptEdits)
     permission_mode: PermissionMode,
-    /// When the last AI response token was received
-    last_activity: Option<std::time::Instant>,
+    /// When the last activity was seen, as wall-clock unix seconds
+    last_activity: Option<u64>,
     /// Focus queue info for mobile NEXT badge: (position, total, priority)
     focus_queue_info: Option<(usize, usize, FocusPriority)>,
     /// Named run configs for this session's CWD
@@ -253,8 +253,8 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn last_activity(mut self, instant: Option<std::time::Instant>) -> Self {
-        self.last_activity = instant;
+    pub fn last_activity(mut self, ts: Option<u64>) -> Self {
+        self.last_activity = ts;
         self
     }
 
@@ -1856,10 +1856,13 @@ fn responded_permission_ui(
         .corner_radius(corner_radius)
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                // Persisted disclosure state, keyed by request id.
+                // Persisted disclosure state, keyed by request id. Auto-accepted
+                // rows (runtime allowlist / Auto Accept All) start expanded so
+                // the user can review what they never approved up front; manually
+                // approved rows start collapsed. A user toggle overrides either.
                 let expand_id = ui.id().with(("responded_perm", request.id));
-                let mut expanded =
-                    expandable && ui.data(|d| d.get_temp(expand_id).unwrap_or(false));
+                let mut expanded = expandable
+                    && ui.data(|d| d.get_temp(expand_id).unwrap_or(request.auto_accepted));
 
                 let header = responded_permission_header_ui(
                     request,
@@ -1997,9 +2000,11 @@ fn add_msg_link(ui: &mut egui::Ui, shift_held: bool, action: &mut Option<DaveAct
     }
 }
 
-/// Format an Instant as a relative time string (e.g. "just now", "3m ago").
-fn format_relative_time(instant: std::time::Instant) -> String {
-    let elapsed = instant.elapsed().as_secs();
+/// Format a wall-clock unix-seconds timestamp as a relative time string
+/// (e.g. "just now", "3m ago"). `saturating_sub` renders a future-dated
+/// timestamp (clock skew) as "just now" rather than underflowing.
+fn format_relative_time(unix_secs: u64) -> String {
+    let elapsed = crate::session::now_unix().saturating_sub(unix_secs);
     if elapsed < 60 {
         "just now".to_string()
     } else if elapsed < 3600 {
@@ -2059,9 +2064,9 @@ impl DaveUi<'_> {
                                 None
                             };
                             if is_agentic {
-                                if let Some(instant) = self.last_activity {
+                                if let Some(ts) = self.last_activity {
                                     ui.label(
-                                        egui::RichText::new(format_relative_time(instant))
+                                        egui::RichText::new(format_relative_time(ts))
                                             .size(10.0)
                                             .color(ui.visuals().weak_text_color()),
                                     );
@@ -2493,7 +2498,7 @@ mod tests {
     #[test]
     fn approval_prompt_ui_allows_request() {
         let expected_request_id = Uuid::new_v4();
-        let request = PermissionRequest::new(
+        let request = PermissionRequest::pending(
             expected_request_id,
             "SaveIssue".to_string(),
             json!({
@@ -2502,9 +2507,6 @@ mod tests {
                     "question": "Allow this action?"
                 }]
             }),
-            None,
-            None,
-            None,
         );
 
         let mut harness = Harness::new_ui_state(
@@ -2548,15 +2550,12 @@ mod tests {
     #[test]
     fn permission_request_ui_exit_button_emits_exit_tool_call_action() {
         let expected_request_id = Uuid::new_v4();
-        let request = PermissionRequest::new(
+        let request = PermissionRequest::pending(
             expected_request_id,
             "Bash".to_string(),
             json!({
                 "command": "rm -rf /tmp/scratch"
             }),
-            None,
-            None,
-            None,
         );
 
         let mut harness = Harness::new_ui_state(
@@ -2591,7 +2590,7 @@ mod tests {
     #[test]
     fn question_set_prompt_ui_submits_selected_answer() {
         let expected_request_id = Uuid::new_v4();
-        let request = PermissionRequest::new(
+        let request = PermissionRequest::pending(
             expected_request_id,
             "AskUserQuestion".to_string(),
             json!({
@@ -2605,9 +2604,6 @@ mod tests {
                     }]
                 }]
             }),
-            None,
-            None,
-            None,
         );
 
         let mut harness = Harness::new_ui_state(
@@ -2757,6 +2753,27 @@ mod tests {
         click_label(&mut harness, "Denied");
         harness.run();
         harness.get_by_label("crates/notedeck_dave/src/lib.rs");
+    }
+
+    #[test]
+    fn auto_accepted_widget_starts_expanded() {
+        // An auto-accepted row (runtime allowlist / Auto Accept All) was never
+        // reviewed up front, so it starts EXPANDED — the command is visible
+        // without any click.
+        let request = PermissionRequest::pending(
+            Uuid::new_v4(),
+            "Bash".to_string(),
+            json!({ "command": "cargo test --all" }),
+        )
+        .auto_accept();
+        assert!(request.auto_accepted);
+        let mut harness = responded_permission_harness(request);
+        harness.run();
+
+        harness.get_by_label("Allowed");
+        harness.get_by_label("Bash");
+        // Expanded by default: the command is shown without clicking.
+        harness.get_by_label("cargo test --all");
     }
 
     /// Visualize the responded permission widgets. Ignored by default; render

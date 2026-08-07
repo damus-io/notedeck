@@ -3,9 +3,9 @@
 //!
 //! The cache/sync/relay plumbing — keeping the CLI's own nostrdb, reconciling it
 //! against the app's relay with NIP-77 negentropy, and the stored signing key —
-//! lives in the shared [`relay_sync`] crate (see [`notebook_cli`] for the other
-//! consumer). This file is just the board's command surface: parsing, resolving
-//! card/column arguments against the folded board, and rendering.
+//! lives in `nostrdb_net`'s `relay::sync` module (see [`notebook_cli`] for the
+//! other consumer). This file is just the board's command surface: parsing,
+//! resolving card/column arguments against the folded board, and rendering.
 
 use std::env;
 use std::process::ExitCode;
@@ -14,11 +14,13 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView, CommentView, Container, Date, Priority};
+use headway::event::{
+    self, BoardView, CardView, CommentView, Container, Date, Priority, resolve_card,
+};
 use headway::store::{self, BoardAction, Publisher};
 use headway::{traversal, wordid};
 
-use relay_sync::Result;
+use nostrdb_net::relay::sync::Result;
 
 /// The CLI's cache/key directory under the platform data dir (e.g.
 /// `~/.local/share/headway-cli` on Linux).
@@ -28,7 +30,7 @@ const APP: &str = "headway-cli";
 async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`headway show | head`) instead of
     // panicking in println! on EPIPE.
-    relay_sync::reset_sigpipe();
+    nostrdb_net::relay::sync::reset_sigpipe();
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -283,8 +285,8 @@ async fn run() -> Result<()> {
     // `login`/`logout` manage the stored key and touch neither the cache nor a
     // relay, so handle them before any of that machinery spins up.
     match &cli.command {
-        Command::Login { nsec } => return relay_sync::login(nsec, APP),
-        Command::Logout => return relay_sync::logout(APP),
+        Command::Login { nsec } => return nostrdb_net::relay::sync::login(nsec, APP),
+        Command::Logout => return nostrdb_net::relay::sync::logout(APP),
         _ => {}
     }
 
@@ -296,17 +298,20 @@ async fn run() -> Result<()> {
         (None, None) => return Err("need --nsec to sign, or --author to read a board".into()),
     };
 
-    let ndb = relay_sync::open_ndb(cli.db.as_deref(), APP)?;
+    let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
 
     // Reconcile the local cache against the relay both ways so the cache and the
     // app converge regardless of which side an edit happened on. Best-effort: an
     // unreachable relay leaves us working offline against the cache.
     let filter = event::headway_filter(&author);
     let is_addressable = |kind: u32| kind == event::KIND_BOARD || kind == event::KIND_PLACEMENT;
-    let mut relay = relay_sync::connect_and_sync(
+    // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert our enostr author
+    // across the boundary (both are `[u8; 32]` newtypes).
+    let author_nn = nostrdb_net::Pubkey::new(*author.bytes());
+    let mut relay = nostrdb_net::relay::sync::connect_and_sync(
         &cli.relay,
         &ndb,
-        &author,
+        &author_nn,
         &event::HEADWAY_KINDS,
         &filter,
         &is_addressable,
@@ -346,10 +351,10 @@ async fn run() -> Result<()> {
             let mut sink = Collect::default();
             store::seed_default_board(&ndb, &author, &secret, &board, &mut sink);
             let n = sink.0.len();
-            relay_sync::publish(&mut relay, &sink.0).await?;
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
                 "seeded board '{board}' ({n} events){}",
-                relay_sync::offline_note(&relay)
+                nostrdb_net::relay::sync::offline_note(&relay)
             );
         }
 
@@ -357,7 +362,7 @@ async fn run() -> Result<()> {
             // Switch: persist the new current board, then report whether it
             // already exists so the next step (seed vs. use) is obvious.
             Some(id) => {
-                relay_sync::write_config(APP, "board", &id)?;
+                nostrdb_net::relay::sync::write_config(APP, "board", &id)?;
                 match load_board(&ndb, &author, &id) {
                     Some(view) => {
                         println!("switched to board '{id}' ({} cards)", card_count(&view))
@@ -394,15 +399,15 @@ async fn run() -> Result<()> {
                     view: &target,
                 },
                 &author,
-                &secret,
+                &store::Signer::new(&secret, None),
                 card_id,
                 &mut sink,
             );
             let n = sink.0.len();
-            relay_sync::publish(&mut relay, &sink.0).await?;
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
                 "linked to '{to_board}' ({n} events){}",
-                relay_sync::offline_note(&relay)
+                nostrdb_net::relay::sync::offline_note(&relay)
             );
         }
 
@@ -427,15 +432,15 @@ async fn run() -> Result<()> {
                     view: &target,
                 },
                 &author,
-                &secret,
+                &store::Signer::new(&secret, None),
                 card_id,
                 &mut sink,
             );
             let n = sink.0.len();
-            relay_sync::publish(&mut relay, &sink.0).await?;
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
                 "moved to '{to_board}' ({n} events){}",
-                relay_sync::offline_note(&relay)
+                nostrdb_net::relay::sync::offline_note(&relay)
             );
         }
 
@@ -470,13 +475,24 @@ async fn run() -> Result<()> {
             let action = build_action(&view, edit)?;
 
             let mut sink = Collect::default();
-            store::apply(&ndb, &board, &view, &author, &secret, action, &mut sink);
+            store::apply(
+                &ndb,
+                &board,
+                &view,
+                &author,
+                &store::Signer::new(&secret, None),
+                action,
+                &mut sink,
+            );
             if sink.0.is_empty() {
                 return Err("action produced no events (unknown card or column?)".into());
             }
             let n = sink.0.len();
-            relay_sync::publish(&mut relay, &sink.0).await?;
-            println!("ok ({n} events){}", relay_sync::offline_note(&relay));
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
+            println!(
+                "ok ({n} events){}",
+                nostrdb_net::relay::sync::offline_note(&relay)
+            );
         }
     }
 
@@ -661,13 +677,14 @@ fn print_boards(boards: &[BoardView], current: &str) {
     }
     for view in boards {
         let mark = if view.id == current { "*" } else { " " };
-        let detail = relay_sync::dim(&format!("{} · {} cards", view.title, card_count(view)));
+        let detail =
+            nostrdb_net::relay::sync::dim(&format!("{} · {} cards", view.title, card_count(view)));
         println!("{mark} {}  {detail}", view.id);
     }
     if !boards.iter().any(|v| v.id == current) {
         println!(
             "* {current}  {}",
-            relay_sync::dim("(not created yet — run `headway seed`)")
+            nostrdb_net::relay::sync::dim("(not created yet — run `headway seed`)")
         );
     }
 }
@@ -697,35 +714,6 @@ fn resolve_col(view: &BoardView, sel: &str) -> Result<usize> {
         })
 }
 
-/// Resolve a card argument, accepting (in order): a full 64-char hex id; a word
-/// id like `headway#maple-river-canyon` (the `<board>#` prefix is optional, and a
-/// bare leading `#` is fine too, so `#maple-river-canyon` and
-/// `maple-river-canyon` both work); or a unique hex prefix. Word ids and hex
-/// prefixes are matched against every card on the board, archived ones included.
-fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId> {
-    if let Ok(id) = NoteId::from_hex(sel) {
-        return Ok(id);
-    }
-    let sel = sel.to_lowercase();
-
-    // Word id: drop an optional `<board>#` prefix (or a bare leading `#`), then
-    // match by re-encoding each card — exactly how a git short hash is resolved.
-    let words = sel
-        .strip_prefix(&format!("{}#", view.id.to_lowercase()))
-        .or_else(|| sel.strip_prefix('#'))
-        .unwrap_or(&sel);
-    if let Some(id) = event::resolve_card_by_wordid(view, words) {
-        return Ok(id);
-    }
-
-    let mut hits = event::all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
-    match (hits.next(), hits.next()) {
-        (Some(c), None) => Ok(c.id),
-        (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'").into()),
-        _ => Err(format!("no card matching '{sel}'").into()),
-    }
-}
-
 /// Resolve an `--in` container selector: a card ref names that card's container
 /// (its subissues); anything else must be the board's own slug, naming the
 /// board-root work-order.
@@ -733,7 +721,7 @@ fn resolve_container(view: &BoardView, sel: &str) -> Result<Container> {
     match resolve_card(view, sel) {
         Ok(id) => Ok(Container::Card(*id.bytes())),
         Err(_) if sel.eq_ignore_ascii_case(&view.id) => Ok(Container::BoardRoot(view.id.clone())),
-        Err(e) => Err(e),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -835,7 +823,7 @@ fn print_all_boards(boards: &[BoardView], as_json: bool, show_archived: bool) {
         // Lead with the addressable slug: board titles can collide (two boards
         // both titled "Headway"), and the slug is what `--board`/`board <id>`
         // take, so it's the anchor for the human-readable title that follows.
-        println!("{}", relay_sync::dim(&view.id));
+        println!("{}", nostrdb_net::relay::sync::dim(&view.id));
         print_board(view, false, show_archived);
     }
 }
@@ -919,12 +907,18 @@ fn print_next(
     let mut any = false;
     for c in picked {
         any = true;
-        println!("{}  {}", plain_ref(view, &c.id), relay_sync::dim(&c.title));
+        println!(
+            "{}  {}",
+            plain_ref(view, &c.id),
+            nostrdb_net::relay::sync::dim(&c.title)
+        );
     }
     if !any {
         eprintln!(
             "{}",
-            relay_sync::dim("nothing ready — the work-order is empty or everything is done")
+            nostrdb_net::relay::sync::dim(
+                "nothing ready — the work-order is empty or everything is done"
+            )
         );
     }
 }
@@ -987,7 +981,7 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
                 s.column.clone()
             };
             let place = place.map_or(String::new(), |p| {
-                format!("  {}", relay_sync::dim(&format!("({p})")))
+                format!("  {}", nostrdb_net::relay::sync::dim(&format!("({p})")))
             });
             println!("    [{mark}] {}{place}  {}", s.title, card_ref(view, &s.id));
         }
@@ -1008,11 +1002,11 @@ fn print_comment(c: &CommentView) {
     let mut header = format!(
         "    {}  {}  {}",
         headway::fmt::short_author(&c.author),
-        relay_sync::dim(&headway::fmt::rel_time(c.created_at)),
-        relay_sync::dim(&format!("#{}", wordid::encode(c.id.bytes()))),
+        nostrdb_net::relay::sync::dim(&headway::fmt::rel_time(c.created_at)),
+        nostrdb_net::relay::sync::dim(&format!("#{}", wordid::encode(c.id.bytes()))),
     );
     if let Some(parent) = &c.parent {
-        header.push_str(&relay_sync::dim(&format!(
+        header.push_str(&nostrdb_net::relay::sync::dim(&format!(
             "  ↳ reply to #{}",
             wordid::encode(parent.bytes())
         )));
@@ -1055,9 +1049,9 @@ fn labels_suffix(labels: &[String]) -> String {
 fn priority_prefix(priority: Priority) -> String {
     match priority {
         Priority::None => String::new(),
-        Priority::Low => relay_sync::dim("↓ "),
-        Priority::Medium => relay_sync::dim("= "),
-        Priority::High => relay_sync::dim("↑ "),
+        Priority::Low => nostrdb_net::relay::sync::dim("↓ "),
+        Priority::Medium => nostrdb_net::relay::sync::dim("= "),
+        Priority::High => nostrdb_net::relay::sync::dim("↑ "),
         Priority::Urgent => "! ".to_string(),
     }
 }
@@ -1071,7 +1065,7 @@ fn progress_suffix(card: &CardView) -> String {
     let done = card.subissues.iter().filter(|s| s.done).count();
     format!(
         "  {}",
-        relay_sync::dim(&format!("{done}/{}", card.subissues.len()))
+        nostrdb_net::relay::sync::dim(&format!("{done}/{}", card.subissues.len()))
     )
 }
 
@@ -1081,7 +1075,7 @@ fn progress_suffix(card: &CardView) -> String {
 /// rendering of the event id — see [`headway::wordid`]. Rendered muted so the
 /// title stays the eye's anchor.
 fn card_ref(view: &BoardView, id: &NoteId) -> String {
-    relay_sync::dim(&format!("{}#{}", view.id, wordid::encode(id.bytes())))
+    nostrdb_net::relay::sync::dim(&format!("{}#{}", view.id, wordid::encode(id.bytes())))
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,10 +1109,10 @@ impl Cli {
         // which overrides the key stored by `login`.
         let mut nsec = env::var("HEADWAY_NSEC")
             .ok()
-            .or_else(|| relay_sync::stored_nsec(APP));
+            .or_else(|| nostrdb_net::relay::sync::stored_nsec(APP));
         let mut relay = env::var("HEADWAY_RELAY")
             .ok()
-            .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string());
+            .unwrap_or_else(|| nostrdb_net::relay::sync::DEFAULT_RELAY.to_string());
         let mut db = None;
         // Resolved after the command is parsed: `--board` overrides the board
         // named by a `<board>#<word-id>` card ref, which overrides
@@ -1224,15 +1218,22 @@ impl Cli {
         let board_explicit = board.is_some();
         let board = board
             .or_else(|| env::var("HEADWAY_BOARD").ok())
-            .or_else(|| relay_sync::read_config(APP, "board"))
+            .or_else(|| nostrdb_net::relay::sync::read_config(APP, "board"))
             .unwrap_or_else(|| store::BOARD_ID.to_string());
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured — that would
         // keep `login` from replacing a stale or malformed stored key.
+        // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
+        // (and the `headway` store/event layer) speaks `enostr::Pubkey`. Both are
+        // `[u8; 32]` newtypes, so bridge at this boundary and keep everything
+        // downstream in enostr terms.
         let secret = match (&command, nsec) {
             (Command::Login { .. } | Command::Logout, _) => None,
-            (_, Some(nsec)) => Some(relay_sync::parse_nsec(&nsec)?),
+            (_, Some(nsec)) => {
+                let (sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec)?;
+                Some((sk, Pubkey::new(*pk.bytes())))
+            }
             (_, None) => None,
         };
 
@@ -1442,7 +1443,7 @@ OPTIONS:
     --archived        List archived cards in full (show)
     --all             Show every board in the cache, not just the current (show)
     -h, --help        Print this help",
-        DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
+        DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
         board = store::BOARD_ID,
     );
 }

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
@@ -15,6 +15,15 @@ use claude_agent_sdk_rs::PermissionMode;
 use uuid::Uuid;
 
 pub type SessionId = u32;
+
+/// Current wall-clock time as unix seconds, matching the resolution of nostr
+/// `created_at`. Used to stamp and age `ChatSession::last_activity`.
+pub(crate) fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 /// Convert PermissionMode to a stable string for nostr tags.
 pub fn permission_mode_to_str(mode: PermissionMode) -> &'static str {
@@ -201,11 +210,12 @@ pub struct AgenticSessionData {
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
     pub seen_note_ids: HashSet<[u8; 32]>,
-    /// Highest conversation `seq` appended via live polling. Live events are
-    /// appended in arrival order, so when a note arrives with a lower `seq`
-    /// than this (out-of-order relay delivery), the chat is rebuilt from ndb
-    /// in `seq` order. `None` until the first conversation note is seen.
-    pub max_seen_seq: Option<u32>,
+    /// Highest conversation ordering key `(ms, seq)` appended via live polling.
+    /// Live events are appended in arrival order, so when a note arrives with a
+    /// lower key than this (out-of-order relay delivery), the chat is rebuilt
+    /// from ndb in sorted order. Mirrors the loader's ordering (see
+    /// `session_loader`). `None` until the first conversation note is seen.
+    pub max_seen_order: Option<agentium_core::session_loader::EventOrder>,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
     /// Runtime allowlist for auto-accepting permissions this session.
@@ -250,7 +260,7 @@ impl AgenticSessionData {
             remote_status: None,
             remote_status_ts: 0,
             seen_note_ids: HashSet::new(),
-            max_seen_seq: None,
+            max_seen_order: None,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
             auto_accept_all: false,
@@ -466,8 +476,11 @@ pub struct ChatSession {
     pub details: SessionDetails,
     /// Which backend this session uses (Claude, Codex, etc.)
     pub backend_type: BackendType,
-    /// When the last AI response token was received (for "5m ago" display)
-    pub last_activity: Option<Instant>,
+    /// When the last activity was seen, as wall-clock unix seconds (for
+    /// "5m ago" display). Set from the local token stream for local sessions
+    /// and from ingested note/state `created_at` for remote sessions, so a
+    /// wall-clock value is required rather than a monotonic `Instant`.
+    pub last_activity: Option<u64>,
     /// Focus indicator dot state (persisted in kind-31988 note).
     /// Set on status transitions, cleared when user dismisses it.
     pub indicator: Option<FocusPriority>,
@@ -620,6 +633,15 @@ impl ChatSession {
         self.source == SessionSource::Remote
     }
 
+    /// Record host/agent activity at `created_at` (wall-clock unix seconds),
+    /// keeping the newest so out-of-order remote notes never move it backwards.
+    pub fn mark_activity(&mut self, created_at: u64) {
+        self.last_activity = Some(
+            self.last_activity
+                .map_or(created_at, |cur| cur.max(created_at)),
+        );
+    }
+
     /// Check if session has pending permission requests that genuinely
     /// need user input (i.e. would NOT be auto-accepted by the runtime
     /// allowlist).
@@ -685,6 +707,16 @@ impl ChatSession {
 
         if to_resolve.is_empty() {
             return 0;
+        }
+
+        // The allowlist accepted these without a user click, so flag them as
+        // auto-accepted — their responded rows start expanded for review.
+        for msg in self.chat.iter_mut() {
+            if let Message::PermissionRequest(req) = msg {
+                if to_resolve.contains(&req.id) {
+                    req.auto_accepted = true;
+                }
+            }
         }
 
         // Resolve each: send Allow on the oneshot and mark in chat
@@ -1333,7 +1365,7 @@ impl ChatSession {
     pub fn append_token(&mut self, token: &str) {
         // Content arrived — transition AwaitingResponse → Streaming.
         self.dispatch_state.backend_responded();
-        self.last_activity = Some(Instant::now());
+        self.mark_activity(now_unix());
 
         // Fast path: last message is the ACTIVE (still-streaming) assistant
         // response. A finalized assistant must NOT be extended — e.g. when a
@@ -1520,6 +1552,23 @@ mod tests {
             AiMode::Agentic,
             BackendType::Claude,
         )
+    }
+
+    #[test]
+    fn mark_activity_keeps_the_newest() {
+        let mut session = test_session();
+        assert_eq!(session.last_activity, None);
+
+        session.mark_activity(1_000);
+        assert_eq!(session.last_activity, Some(1_000));
+
+        // A newer timestamp advances it.
+        session.mark_activity(2_000);
+        assert_eq!(session.last_activity, Some(2_000));
+
+        // An older (out-of-order) timestamp does not move it backwards.
+        session.mark_activity(1_500);
+        assert_eq!(session.last_activity, Some(2_000));
     }
 
     fn create_grouped_session(

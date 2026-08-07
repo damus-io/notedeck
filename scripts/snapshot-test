@@ -93,7 +93,7 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 suites=(
     "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests"
     "notedeck_ui|--test widget_tests"
-    "notedeck_dave|--lib --test dave_button_tests"
+    "notedeck_dave|--lib --test dave_button_tests --test ask_question_wrap_tests"
     "notedeck_nostrverse|--test snapshot_tests"
     "notedeck_headway|--features snapshot-testing --test snapshot_tests"
     "notedeck_notebook|--test snapshot_tests"

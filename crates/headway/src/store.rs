@@ -125,22 +125,101 @@ impl Publisher for NoPublish {
     fn publish(&mut self, _event_frame: &str) {}
 }
 
-/// Sign `builder` with `secret` and ingest the resulting note into the local
-/// nostrdb, then hand its `["EVENT", {...}]` frame to `publisher`. Returns the
-/// note id, or `None` if building/ingesting failed (in which case nothing is
-/// published).
+/// The SNS channel a shared board's edits are sealed into: the team keys derived
+/// from the board's `team_root`. Held by a [`Signer`] to switch [`ingest_signed`]
+/// from publishing plaintext events to publishing kind-1081 SNS envelopes.
+///
+/// Only the keys live here — the authoring member is the [`Signer`]'s own secret,
+/// so the seal inside each envelope attributes the edit to the real author while
+/// the envelope is signed by (and addressed to) the shared team keypair.
+pub struct SnsChannel {
+    /// Team keypair + envelope key, from [`enostr::sns::derive_sns_keys`].
+    pub keys: enostr::sns::SnsKeys,
+}
+
+/// Who is writing an edit, and how it reaches the wire: the signing `secret`
+/// (which also identifies the author) plus, for a shared board, the [`SnsChannel`]
+/// to seal edits into. A `None` channel publishes plaintext — the single-writer
+/// path every board used before SNS.
+pub struct Signer<'a> {
+    secret: &'a [u8; 32],
+    channel: Option<&'a SnsChannel>,
+}
+
+impl<'a> Signer<'a> {
+    /// A plaintext single-writer signer: events are ingested and published as-is.
+    pub fn plain(secret: &'a [u8; 32]) -> Self {
+        Self {
+            secret,
+            channel: None,
+        }
+    }
+
+    /// A shared-board signer: each event is sealed into an SNS envelope for
+    /// `channel` before it is ingested and published.
+    pub fn shared(secret: &'a [u8; 32], channel: &'a SnsChannel) -> Self {
+        Self {
+            secret,
+            channel: Some(channel),
+        }
+    }
+
+    /// A signer that seals into `channel` when present and publishes plaintext
+    /// otherwise — the form the app uses, where a board is shared or not.
+    pub fn new(secret: &'a [u8; 32], channel: Option<&'a SnsChannel>) -> Self {
+        Self { secret, channel }
+    }
+}
+
+/// Sign `builder` with `secret` and ingest+publish the resulting note as
+/// plaintext — the single-writer path. Shared boards go through
+/// [`ingest_signed`] with a [`Signer::shared`] instead.
 pub fn ingest(
     ndb: &Ndb,
     builder: NoteBuilder,
     secret: &[u8; 32],
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let note = builder.sign(secret).build()?;
+    ingest_signed(ndb, builder, &Signer::plain(secret), publisher)
+}
+
+/// Sign `builder`, ingest the resulting note into the local nostrdb, and hand its
+/// `["EVENT", {...}]` frame to `publisher`. Returns the note id, or `None` if
+/// building/ingesting failed (in which case nothing is published).
+///
+/// For a plaintext [`Signer`] the note itself is ingested and published. For a
+/// [`Signer::shared`] the signed note is the *rumor*: it is sealed into a
+/// kind-1081 SNS envelope ([`enostr::sns::wrap_rumor`]), and that envelope is what
+/// gets ingested (nostrdb auto-unwraps it back to the rumor, since the team_root
+/// is registered) and published. Either way the returned id is the rumor's, which
+/// nostrdb recomputes identically on unwrap — so a card's id is stable whether the
+/// board is shared or not. The rumor must be a complete signed note (nostrdb
+/// re-parses it on the seal peel and requires every field but the sig/pubkey,
+/// including the id), which `builder.sign(...).build()` guarantees.
+pub fn ingest_signed(
+    ndb: &Ndb,
+    builder: NoteBuilder,
+    signer: &Signer,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let note = builder.sign(signer.secret).build()?;
     let id = NoteId::new(*note.id());
-    let json = enostr::ClientMessage::event(&note).ok()?.to_json().ok()?;
-    ndb.process_event_with(&json, IngestMetadata::new().client(true))
+    let frame = match signer.channel {
+        None => enostr::ClientMessage::event(&note).ok()?.to_json().ok()?,
+        Some(channel) => {
+            let member = enostr::FullKeypair::from_secret_bytes(signer.secret)?;
+            let rumor_json = note.json().ok()?;
+            let envelope =
+                enostr::sns::wrap_rumor(&channel.keys, &member, &rumor_json, note.created_at())?;
+            enostr::ClientMessage::event(&envelope)
+                .ok()?
+                .to_json()
+                .ok()?
+        }
+    };
+    ndb.process_event_with(&frame, IngestMetadata::new().client(true))
         .ok()?;
-    publisher.publish(&json);
+    publisher.publish(&frame);
     Some(id)
 }
 
@@ -375,7 +454,7 @@ pub fn apply(
     board_id: &str,
     view: &BoardView,
     author: &Pubkey,
-    secret: &[u8; 32],
+    signer: &Signer,
     action: BoardAction,
     publisher: &mut dyn Publisher,
 ) {
@@ -398,11 +477,11 @@ pub fn apply(
                 to_row,
             );
             let after = find_card(view, card).map_or(0, |c| c.placed_at);
-            ingest(
+            ingest_signed(
                 ndb,
                 build_placement(board_id, &addr, &card, &col.id, &rank)
                     .created_at(next_after(after)),
-                secret,
+                signer,
                 publisher,
             );
         }
@@ -418,55 +497,56 @@ pub fn apply(
             // A brand-new card can't be anyone's ancestor, so parenting it needs
             // no cycle check — just that the parent actually exists.
             let parent = parent.filter(|p| find_card_any(view, *p).is_some());
-            let Some(id) = ingest(ndb, build_issue(&addr, &title, ""), secret, publisher) else {
+            let Some(id) = ingest_signed(ndb, build_issue(&addr, &title, ""), signer, publisher)
+            else {
                 return;
             };
             let rank =
                 rank_for_insert(&c.cards, |c| c.id, |c| c.rank.as_str(), None, c.cards.len());
-            ingest(
+            ingest_signed(
                 ndb,
                 build_placement(board_id, &addr, &id, &c.id, &rank),
-                secret,
+                signer,
                 publisher,
             );
             if !labels.is_empty() {
-                ingest(ndb, build_labels(&id, &labels), secret, publisher);
+                ingest_signed(ndb, build_labels(&id, &labels), signer, publisher);
             }
             if let Some(parent) = parent {
-                ingest(ndb, build_relation(&id, Some(&parent)), secret, publisher);
+                ingest_signed(ndb, build_relation(&id, Some(&parent)), signer, publisher);
             }
         }
         BoardAction::EditTitle { card, title } => {
-            ingest(ndb, build_subject_edit(&card, &title), secret, publisher);
+            ingest_signed(ndb, build_subject_edit(&card, &title), signer, publisher);
         }
         BoardAction::EditDescription { card, description } => {
-            ingest(
+            ingest_signed(
                 ndb,
                 build_cover_note(&card, author, &description),
-                secret,
+                signer,
                 publisher,
             );
         }
         BoardAction::SetLabels { card, labels } => {
-            ingest(ndb, build_labels(&card, &labels), secret, publisher);
+            ingest_signed(ndb, build_labels(&card, &labels), signer, publisher);
         }
         BoardAction::SetPriority { card, priority } => {
             let f = build_field(&card, Field::Priority, priority.as_str());
-            ingest(ndb, f, secret, publisher);
+            ingest_signed(ndb, f, signer, publisher);
         }
         BoardAction::SetDue { card, due } => {
             let value = due.map(|d| d.to_string()).unwrap_or_default();
-            ingest(
+            ingest_signed(
                 ndb,
                 build_field(&card, Field::Due, &value),
-                secret,
+                signer,
                 publisher,
             );
         }
         BoardAction::SetEstimate { card, estimate } => {
             let value = estimate.map(|e| e.to_string()).unwrap_or_default();
             let f = build_field(&card, Field::Estimate, &value);
-            ingest(ndb, f, secret, publisher);
+            ingest_signed(ndb, f, signer, publisher);
         }
         BoardAction::SetSequence {
             card,
@@ -476,10 +556,10 @@ pub fn apply(
             // Board-agnostic overlay: keyed by (container, card), no board `a`
             // tag, so it needs no board context here. The caller precomputes
             // `rank` via `seq_rank` against the container's current members.
-            ingest(
+            ingest_signed(
                 ndb,
                 build_sequence(&container, &card, &rank),
-                secret,
+                signer,
                 publisher,
             );
         }
@@ -493,10 +573,10 @@ pub fn apply(
             let mut prev: Option<String> = None;
             for card in &order {
                 let rank = rank_between(prev.as_deref(), None);
-                ingest(
+                ingest_signed(
                     ndb,
                     build_sequence(&container, card, &rank),
-                    secret,
+                    signer,
                     publisher,
                 );
                 prev = Some(rank);
@@ -507,9 +587,9 @@ pub fn apply(
                 if would_cycle(view, card, parent) {
                     return;
                 }
-                ingest(ndb, build_relation(&card, Some(&parent)), secret, publisher);
+                ingest_signed(ndb, build_relation(&card, Some(&parent)), signer, publisher);
             } else {
-                ingest(ndb, build_relation(&card, None), secret, publisher);
+                ingest_signed(ndb, build_relation(&card, None), signer, publisher);
             }
         }
         BoardAction::AddComment {
@@ -546,10 +626,10 @@ pub fn apply(
             // past the newest comment already on the card so order stays causal
             // (mirrors [`next_after`]).
             let latest = c.comments.iter().map(|c| c.created_at).max().unwrap_or(0);
-            ingest(
+            ingest_signed(
                 ndb,
                 build_comment(&card, &issue_author, reply, &body).created_at(next_after(latest)),
-                secret,
+                signer,
                 publisher,
             );
         }
@@ -559,11 +639,11 @@ pub fn apply(
             let c = find_card(view, card);
             let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
             let after = c.map_or(0, |c| c.placed_at);
-            ingest(
+            ingest_signed(
                 ndb,
                 build_placement(board_id, &addr, &card, COL_DELETED, &rank)
                     .created_at(next_after(after)),
-                secret,
+                signer,
                 publisher,
             );
         }
@@ -573,11 +653,11 @@ pub fn apply(
                 return;
             };
             let rank = non_empty_rank(&c.rank);
-            ingest(
+            ingest_signed(
                 ndb,
                 build_archive_placement(board_id, &addr, &card, from_col, &rank)
                     .created_at(next_after(c.placed_at)),
-                secret,
+                signer,
                 publisher,
             );
         }
@@ -596,18 +676,18 @@ pub fn apply(
                 return;
             };
             let rank = non_empty_rank(&entry.card.rank);
-            ingest(
+            ingest_signed(
                 ndb,
                 build_placement(board_id, &addr, &card, to_col, &rank)
                     .created_at(next_after(entry.card.placed_at)),
-                secret,
+                signer,
                 publisher,
             );
         }
         BoardAction::AddColumn { name } => {
             let mut cols = column_defs(view);
             cols.push(ColumnDef::new(unique_col_id(&cols, &name), name));
-            republish_board(ndb, board_id, view, secret, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::RenameColumn { col, name } => {
             let mut cols = column_defs(view);
@@ -615,7 +695,7 @@ pub fn apply(
                 return;
             };
             def.name = name;
-            republish_board(ndb, board_id, view, secret, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::RemoveColumn { col } => {
             let mut cols = column_defs(view);
@@ -623,7 +703,7 @@ pub fn apply(
                 return;
             }
             cols.remove(col);
-            republish_board(ndb, board_id, view, secret, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::MoveColumn { from, to } => {
             let mut cols = column_defs(view);
@@ -632,7 +712,7 @@ pub fn apply(
             }
             let def = cols.remove(from);
             cols.insert(to, def);
-            republish_board(ndb, board_id, view, secret, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::RenameBoard { title } => {
             // Same addressable-event republish as `republish_board`, but swapping
@@ -640,10 +720,10 @@ pub fn apply(
             // board so the reducer keeps the renamed version (see `republish_board`).
             let cols = column_defs(view);
             let created_at = now_secs().max(view.created_at + 1);
-            ingest(
+            ingest_signed(
                 ndb,
                 build_board(board_id, &title, &view.description, &cols).created_at(created_at),
-                secret,
+                signer,
                 publisher,
             );
         }
@@ -667,7 +747,7 @@ fn place_card(
     target: BoardRef,
     prefer_col: Option<&str>,
     author: &Pubkey,
-    secret: &[u8; 32],
+    signer: &Signer,
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
@@ -683,10 +763,10 @@ fn place_card(
         col.cards.len(),
     );
     let after = find_card(target.view, card).map_or(0, |c| c.placed_at);
-    ingest(
+    ingest_signed(
         ndb,
         build_placement(target.id, &addr, &card, &col.id, &rank).created_at(next_after(after)),
-        secret,
+        signer,
         publisher,
     )
 }
@@ -704,12 +784,12 @@ pub fn link_card(
     source: BoardRef,
     target: BoardRef,
     author: &Pubkey,
-    secret: &[u8; 32],
+    signer: &Signer,
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
     let from_col = find_card_col(source.view, card).map(|(col, _)| col);
-    place_card(ndb, target, from_col, author, secret, card, publisher)
+    place_card(ndb, target, from_col, author, signer, card, publisher)
 }
 
 /// Move `card` from the `source` board to the `target` board: link it onto
@@ -721,22 +801,22 @@ pub fn move_card_between_boards(
     source: BoardRef,
     target: BoardRef,
     author: &Pubkey,
-    secret: &[u8; 32],
+    signer: &Signer,
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let placed = link_card(ndb, source, target, author, secret, card, publisher)?;
+    let placed = link_card(ndb, source, target, author, signer, card, publisher)?;
     // Placement-driven membership: a tombstone on the source removes it from
     // `source` only, leaving the freshly-linked placement on `target`.
     let src_addr = board_address(author, source.id);
     let c = find_card(source.view, card);
     let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
     let after = c.map_or(0, |c| c.placed_at);
-    ingest(
+    ingest_signed(
         ndb,
         build_placement(source.id, &src_addr, &card, COL_DELETED, &rank)
             .created_at(next_after(after)),
-        secret,
+        signer,
         publisher,
     );
     Some(placed)
@@ -753,15 +833,15 @@ fn republish_board(
     ndb: &Ndb,
     board_id: &str,
     view: &BoardView,
-    secret: &[u8; 32],
+    signer: &Signer,
     columns: &[ColumnDef],
     publisher: &mut dyn Publisher,
 ) {
     let created_at = now_secs().max(view.created_at + 1);
-    ingest(
+    ingest_signed(
         ndb,
         build_board(board_id, &view.title, &view.description, columns).created_at(created_at),
-        secret,
+        signer,
         publisher,
     );
 }
@@ -1070,7 +1150,7 @@ mod tests {
                 BOARD_ID,
                 view,
                 &self.kp.pubkey,
-                &self.secret(),
+                &Signer::new(&self.secret(), None),
                 action,
                 &mut NoPublish,
             );
@@ -1309,7 +1389,7 @@ mod tests {
             BOARD_ID,
             &view,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::AddCard {
                 col: 1,
                 title: "Tracked".to_string(),
@@ -1625,7 +1705,7 @@ mod tests {
             "src",
             &src,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::AddCard {
                 col: 0,
                 title: "Roamer".to_string(),
@@ -1659,7 +1739,7 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
         );
@@ -1693,7 +1773,7 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
         );
@@ -1717,7 +1797,7 @@ mod tests {
             "src",
             &src,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::MoveCard {
                 card,
                 to_col: 2, // in-progress
@@ -1739,7 +1819,7 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
         );
@@ -1779,7 +1859,7 @@ mod tests {
             "src",
             &src,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::AddCard {
                 col: 2, // in-progress
                 title: "Homeless".to_string(),
@@ -1803,7 +1883,7 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
         );
@@ -1812,5 +1892,80 @@ mod tests {
         let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1).await;
         assert_eq!(dst.columns[0].id, "inbox");
         assert_eq!(dst.columns[0].cards[0].id, card);
+    }
+
+    /// An edit applied with a [`Signer::shared`] channel is sealed into a kind-1081
+    /// SNS envelope before it is ingested and published: nostrdb auto-unwraps it
+    /// (the team_root is registered), so the card surfaces through the *shared*
+    /// multi-writer read fold and the stored issue is an unwrapped rumor — the
+    /// proof it went out sealed rather than as a plaintext event.
+    #[tokio::test]
+    async fn shared_board_edit_round_trips_as_sns() {
+        let t = TestNdb::new();
+        // Register the team root so ndb peels our own envelopes on local ingest.
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x22;
+        assert!(t.ndb.add_team_root(&root));
+        let channel = SnsChannel {
+            keys: enostr::sns::derive_sns_keys(&root).expect("keys"),
+        };
+
+        // Seed the board plaintext (owner-authored definition), then add a card
+        // over the SNS channel.
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        let view = t.wait(|v| v.id == BOARD_ID).await;
+        super::apply(
+            &t.ndb,
+            BOARD_ID,
+            &view,
+            &t.kp.pubkey,
+            &Signer::new(&t.secret(), Some(&channel)),
+            BoardAction::AddCard {
+                col: 0,
+                title: "Sealed card".to_string(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+
+        // The card only surfaces if the envelope unwrapped and the shared fold
+        // gathered the resulting rumor.
+        let addr = board_address(&t.kp.pubkey, BOARD_ID);
+        let card_id = wait_shared_card(&t.ndb, &t.kp.pubkey, &addr, "Sealed card").await;
+
+        let txn = Transaction::new(&t.ndb).unwrap();
+        let issue = t.ndb.get_note_by_id(&txn, card_id.bytes()).unwrap();
+        assert!(
+            issue.is_rumor(),
+            "a shared-board edit must be stored as an unwrapped rumor, not plaintext"
+        );
+    }
+
+    /// Fold the *shared* board (multi-writer) until a card titled `title` appears,
+    /// returning its id. Mirrors [`TestNdb::wait`] but over
+    /// [`event::fold_shared_board`], awaiting the writer's ingest notification
+    /// between folds rather than sleeping.
+    async fn wait_shared_card(ndb: &Ndb, author: &Pubkey, addr: &str, title: &str) -> NoteId {
+        let mut stream = ingest_stream(ndb, author);
+        loop {
+            {
+                let txn = Transaction::new(ndb).unwrap();
+                if let Some(reducer) = event::fold_shared_board(ndb, &txn, addr) {
+                    let found = reducer
+                        .finalize()
+                        .iter()
+                        .flat_map(|b| b.columns.iter())
+                        .flat_map(|c| c.cards.iter())
+                        .find(|c| c.title == title)
+                        .map(|c| c.id);
+                    if let Some(id) = found {
+                        return id;
+                    }
+                }
+            }
+            await_ingest(&mut stream).await;
+        }
     }
 }

@@ -94,6 +94,11 @@ pub struct ThreadingState {
     session_id: Option<String>,
     /// Last seen timestamp in seconds (carried forward for lines that lack it).
     last_timestamp: Option<u64>,
+    /// Last seen timestamp in milliseconds (carried forward for lines that lack
+    /// it). Kept alongside [`last_timestamp`](Self::last_timestamp) so the
+    /// sub-second ordering tag stays consistent with the second-resolution
+    /// `created_at`.
+    last_timestamp_millis: Option<u64>,
 }
 
 impl Default for ThreadingState {
@@ -111,6 +116,7 @@ impl ThreadingState {
             seq: 0,
             session_id: None,
             last_timestamp: None,
+            last_timestamp_millis: None,
         }
     }
 
@@ -127,6 +133,9 @@ impl ThreadingState {
         if let Some(ts) = line.timestamp_secs() {
             self.last_timestamp = Some(ts);
         }
+        if let Some(ms) = line.timestamp_millis() {
+            self.last_timestamp_millis = Some(ms);
+        }
     }
 
     /// Get the session ID for the current line, falling back to the last seen.
@@ -141,14 +150,33 @@ impl ThreadingState {
         line.timestamp_secs().or(self.last_timestamp)
     }
 
+    /// Get the millisecond timestamp for the current line, falling back to the
+    /// last seen. Used to stamp the sub-second ordering tag.
+    fn timestamp_millis_for(&self, line: &JsonlLine) -> Option<u64> {
+        line.timestamp_millis().or(self.last_timestamp_millis)
+    }
+
     /// Seed threading state from existing events (e.g. loaded from ndb).
     ///
-    /// Sets root and last note IDs so that subsequent live events
-    /// thread correctly as replies to the existing conversation.
-    pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32], event_count: u32) {
-        self.root_note_id = Some(root_note_id);
+    /// Sets root and last note IDs so that subsequent live events thread
+    /// correctly (NIP-10) as replies to the existing conversation. This is now
+    /// purely about the reply chain — display order is keyed on wall-clock time
+    /// (see [`crate::session_loader::EventOrder`]), so the seeded `seq` no
+    /// longer needs to be globally coherent and the counter simply increments
+    /// from wherever it is via [`record`](Self::record).
+    ///
+    /// Safe to call repeatedly, including against a *partial* ndb snapshot
+    /// during a fresh resync: `last_note_id` is the loader's most-recent event
+    /// by time, and any event this host has already emitted carries a `now`
+    /// timestamp that dominates the backfilled history — so a re-seed can never
+    /// regress the reply target below a live emit. The conversation root is the
+    /// thread's first event and never changes once known, so it is set only
+    /// while still unset.
+    pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32]) {
+        if self.root_note_id.is_none() {
+            self.root_note_id = Some(root_note_id);
+        }
         self.last_note_id = Some(last_note_id);
-        self.seq = event_count;
     }
 
     /// Record a built event's note ID, associated with a JSONL uuid.
@@ -174,6 +202,33 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Get the current Unix timestamp in milliseconds.
+///
+/// Live events stamp this into the `ms` ordering tag so a turn's burst of
+/// events — all sharing one `created_at` second — orders sub-second without
+/// leaning on the `seq` counter (see [`crate::session_loader`]).
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Stamp the `ms` sub-second ordering tag (unix milliseconds) when the event's
+/// millisecond timestamp is known.
+///
+/// `created_at` is only second-resolution, so it cannot order the several
+/// events a single turn emits within one second. `ms` carries the full
+/// millisecond timestamp and is the loader's primary same-second tiebreak,
+/// consistent across the archive (`convert`) and live paths because both derive
+/// it from the same instant as `created_at`.
+fn stamp_ms_tag(builder: NoteBuilder<'_>, timestamp_ms: Option<u64>) -> NoteBuilder<'_> {
+    match timestamp_ms {
+        Some(ms) => builder.start_tag().tag_str("ms").tag_str(&ms.to_string()),
+        None => builder,
+    }
 }
 
 /// Initialize a NoteBuilder with kind, content, and optional timestamp.
@@ -234,6 +289,7 @@ pub fn build_events(
     // then update context for subsequent lines.
     let session_id = threading.session_id_for(line);
     let timestamp = threading.timestamp_for(line);
+    let timestamp_ms = threading.timestamp_millis_for(line);
     threading.update_context(line);
 
     let msg = line.message();
@@ -290,6 +346,7 @@ pub fn build_events(
                 session_id.as_deref(),
                 None,
                 timestamp,
+                timestamp_ms,
                 threading,
                 secret_key,
             )?;
@@ -334,6 +391,7 @@ pub fn build_events(
             session_id.as_deref(),
             None,
             timestamp,
+            timestamp_ms,
             threading,
             secret_key,
         )?;
@@ -434,6 +492,7 @@ fn build_single_event(
     session_id: Option<&str>,
     cwd: Option<&str>,
     timestamp: Option<u64>,
+    timestamp_ms: Option<u64>,
     threading: &ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
@@ -465,7 +524,11 @@ fn build_single_event(
             .tag_str("reply");
     }
 
-    // -- Sequence number (monotonic, for unambiguous ordering) --
+    // -- Ordering tags --
+    // `ms` (sub-second wall-clock) is the primary same-second tiebreak the
+    // loader uses; `seq` is retained as a per-session monotonic index for the
+    // JSONL reconstructor and out-of-order detection (see `session_loader`).
+    builder = stamp_ms_tag(builder, timestamp_ms);
     let seq_str = threading.seq.to_string();
     builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
@@ -535,6 +598,9 @@ pub fn build_live_event(
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
+    // One instant for both `created_at` (seconds) and the `ms` ordering tag so
+    // they never straddle a second boundary.
+    let now_ms = now_millis();
     let event = build_single_event(
         None,
         content,
@@ -545,7 +611,8 @@ pub fn build_live_event(
         tool_name,
         Some(session_id),
         cwd,
-        Some(now_secs()),
+        Some(now_ms / 1000),
+        Some(now_ms),
         threading,
         secret_key,
     )?;
@@ -658,12 +725,14 @@ pub fn build_permission_request_event(
 
     let perm_id_str = perm_id.to_string();
 
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
 
-    // Sequence number (monotonic, for unambiguous ordering)
+    // Ordering tags: `ms` sub-second (primary tiebreak), `seq` monotonic index.
+    builder = stamp_ms_tag(builder, Some(now_ms));
     let seq_str = threading.seq.to_string();
     builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
@@ -696,6 +765,7 @@ pub fn build_permission_request_event(
 ///
 /// Tags include `perm-id` (matching the request), `e` tag linking to the
 /// request event, and `t: ai-permission` for filtering.
+#[allow(clippy::too_many_arguments)]
 pub fn build_permission_response_event(
     perm_id: &uuid::Uuid,
     request_note_id: &[u8; 32],
@@ -703,6 +773,7 @@ pub fn build_permission_response_event(
     message: Option<&str>,
     cancel_turn: bool,
     session_id: &str,
+    threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     // Keep the legacy `interrupt` key on the wire for compatibility with
@@ -716,10 +787,19 @@ pub fn build_permission_response_event(
 
     let perm_id_str = perm_id.to_string();
 
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Ordering tags. `ms` (sub-second wall-clock) is the loader's primary
+    // same-second tiebreak; `seq` remains a per-session monotonic index. Every
+    // kind-1988 conversation event carries a `seq` — see the
+    // `no_conversation_event_is_seqless` invariant test.
+    builder = stamp_ms_tag(builder, Some(now_ms));
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
     // Link to the request event
     builder = builder.start_tag().tag_str("e").tag_id(request_note_id);
@@ -739,7 +819,9 @@ pub fn build_permission_response_event(
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
     builder = builder.start_tag().tag_str("t").tag_str("ai-permission");
 
-    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
 }
 
 /// Decode a permission response from its JSON content string.
@@ -982,6 +1064,7 @@ pub fn is_run_config_deleted(note: &nostrdb::Note) -> bool {
 pub fn build_set_permission_mode_event(
     mode: &str,
     session_id: &str,
+    threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let content = serde_json::json!({
@@ -989,9 +1072,18 @@ pub fn build_set_permission_mode_event(
     })
     .to_string();
 
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
 
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Ordering tags: `ms` sub-second (primary tiebreak), `seq` monotonic index.
+    // Every kind-1988 conversation event carries a `seq` — see the
+    // `no_conversation_event_is_seqless` invariant test.
+    builder = stamp_ms_tag(builder, Some(now_ms));
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
+
     builder = builder
         .start_tag()
         .tag_str("role")
@@ -1003,7 +1095,9 @@ pub fn build_set_permission_mode_event(
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
     builder = builder.start_tag().tag_str("t").tag_str("ai-command");
 
-    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
 }
 
 #[cfg(test)]
@@ -1405,6 +1499,37 @@ mod tests {
         assert_eq!(threading.seq(), 6);
     }
 
+    /// Seeding sets the reply chain, not `seq`: the root is pinned once and the
+    /// `last` note follows the latest seed, while the `seq` counter is left to
+    /// advance only via `record`. Display order no longer depends on the seeded
+    /// `seq`, so seeding does not touch it (see [`super::EventOrder`]).
+    #[test]
+    fn seed_sets_reply_chain_not_seq() {
+        let root = [1u8; 32];
+        let last_a = [2u8; 32];
+        let last_b = [3u8; 32];
+
+        let mut threading = ThreadingState::new();
+
+        // First seed pins the root and threads onto `last_a`; `seq` is untouched.
+        threading.seed(root, last_a);
+        assert_eq!(threading.seq(), 0);
+        assert_eq!(threading.root_note_id, Some(root));
+        assert_eq!(threading.last_note_id, Some(last_a));
+
+        // A re-seed updates the reply target to the loader's latest note. This
+        // is safe against a partial snapshot because a live emit's `now`
+        // timestamp dominates backfilled history, so the loader's `last` is
+        // never older than an already-emitted event.
+        threading.seed(root, last_b);
+        assert_eq!(threading.last_note_id, Some(last_b));
+        assert_eq!(threading.seq(), 0);
+
+        // Root is set once and never changes.
+        threading.seed([9u8; 32], last_b);
+        assert_eq!(threading.root_note_id, Some(root));
+    }
+
     #[test]
     fn test_truncate_tool_input_small() {
         // Small input should pass through unchanged
@@ -1466,6 +1591,8 @@ mod tests {
         let sk = test_secret_key();
 
         // Test allow response
+        let mut threading = ThreadingState::new();
+        threading.seq = 7; // prior events in the conversation
         let event = build_permission_response_event(
             &perm_id,
             &request_note_id,
@@ -1473,6 +1600,7 @@ mod tests {
             Some("looks safe"),
             false,
             "sess-perm-test",
+            &mut threading,
             &sk,
         )
         .unwrap();
@@ -1487,6 +1615,9 @@ mod tests {
         assert!(json.contains("looks safe"));
         // Has e tag linking to request
         assert!(json.contains(r#""e""#));
+        // Carries a seq and advances the counter — no seq-less events.
+        assert!(json.contains(r#""seq","7"#));
+        assert_eq!(threading.seq(), 8);
     }
 
     #[test]
@@ -1495,6 +1626,7 @@ mod tests {
         let request_note_id = [42u8; 32];
         let sk = test_secret_key();
 
+        let mut threading = ThreadingState::new();
         let event = build_permission_response_event(
             &perm_id,
             &request_note_id,
@@ -1502,6 +1634,7 @@ mod tests {
             Some("too dangerous"),
             true,
             "sess-perm-test",
+            &mut threading,
             &sk,
         )
         .unwrap();
@@ -1516,6 +1649,85 @@ mod tests {
         assert!(content.contains(r#""interrupt":true"#));
     }
 
+    /// INVARIANT: every kind-1988 conversation event carries a `seq` tag.
+    ///
+    /// A seq-less event sorts by the `u32::MAX` fallback and — worse — inflates
+    /// the ndb note count that seeds the live sequence counter, seeding it ahead
+    /// of the next turn and floating messages out of order. That was the root of
+    /// the long-standing conversation-ordering drift. This test exercises every
+    /// kind-1988 builder; if you add a new one, it MUST stamp a `seq` through
+    /// [`ThreadingState`] and be listed here.
+    #[test]
+    fn no_conversation_event_is_seqless() {
+        let sk = test_secret_key();
+        let session_id = "seq-invariant";
+        let assert_has_seq = |json: &str| {
+            assert!(
+                json.contains(r#"["seq","#),
+                "kind-1988 event is missing its seq tag: {json}"
+            );
+        };
+
+        let mut threading = ThreadingState::new();
+
+        // Live conversation roles (assistant, tool, error, compaction, …).
+        for role in ["user", "assistant", "tool_call", "tool_result", "error"] {
+            let ev = build_live_event(
+                "hi",
+                role,
+                session_id,
+                None,
+                None,
+                None,
+                &mut threading,
+                &sk,
+            )
+            .unwrap();
+            assert_has_seq(&ev.note_json);
+        }
+
+        // Permission request and its response.
+        let perm_id = uuid::Uuid::new_v4();
+        let req = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({"command": "ls"}),
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert_has_seq(&req.note_json);
+        let resp = build_permission_response_event(
+            &perm_id,
+            &req.note_id,
+            true,
+            None,
+            false,
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert_has_seq(&resp.note_json);
+
+        // Set-permission-mode command.
+        let mode =
+            build_set_permission_mode_event("plan", session_id, &mut threading, &sk).unwrap();
+        assert_has_seq(&mode.note_json);
+
+        // JSONL-derived conversation events (build_events → build_single_event).
+        let line = JsonlLine::parse(&format!(
+            r#"{{"type":"user","uuid":"x1","parentUuid":null,"sessionId":"{session_id}","timestamp":"2024-01-01T00:00:00Z","cwd":"/tmp","version":"2.0.0","message":{{"role":"user","content":"hello"}}}}"#,
+        ))
+        .unwrap();
+        for ev in build_events(&line, &mut threading, &sk).unwrap() {
+            if ev.kind == AI_CONVERSATION_KIND {
+                assert_has_seq(&ev.note_json);
+            }
+        }
+    }
+
     #[test]
     fn test_decode_permission_response_interrupt() {
         let (response_type, message, cancel_turn) = decode_permission_response(
@@ -1528,6 +1740,28 @@ mod tests {
         );
         assert_eq!(message.as_deref(), Some("stop here"));
         assert!(cancel_turn);
+    }
+
+    /// Backward compat: a legacy question-set response, where the answers were
+    /// serialized to JSON and escaped *inside* `message` (the old
+    /// double-encoding), must still decode. The decoder treats `message` as
+    /// opaque text, so the escaped JSON round-trips back out as-is — old events
+    /// already stored in nostrdb keep working after the encode switched to prose.
+    #[test]
+    fn test_decode_permission_response_legacy_answers_json() {
+        let legacy = r#"{"decision":"allow","message":"{\"answers\":{\"Languages\":{\"selected\":[\"Rust\"]}}}","interrupt":false}"#;
+        let (response_type, message, cancel_turn) = decode_permission_response(legacy);
+
+        assert_eq!(
+            response_type,
+            crate::messages::PermissionResponseType::Allowed
+        );
+        assert_eq!(
+            message.as_deref(),
+            Some(r#"{"answers":{"Languages":{"selected":["Rust"]}}}"#),
+            "the legacy escaped-JSON message decodes back intact"
+        );
+        assert!(!cancel_turn);
     }
 
     #[test]
@@ -1705,7 +1939,7 @@ mod tests {
             let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();
         }
 
-        // Query and sort the same way session_loader does: (seq, created_at)
+        // Query and sort the same way session_loader does: (created_at, seq)
         let txn = Transaction::new(&ndb).unwrap();
         let results = ndb.query(&txn, &[filter], 100).unwrap();
         let mut notes: Vec<_> = results
@@ -1717,7 +1951,7 @@ mod tests {
             let seq = get_tag_value(note, "seq")
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(u32::MAX);
-            (seq, note.created_at())
+            (note.created_at(), seq)
         });
 
         // Extract roles in sorted order
