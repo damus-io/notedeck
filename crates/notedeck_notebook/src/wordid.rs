@@ -1,93 +1,70 @@
-//! Human-friendly node references.
+//! Human-friendly node references over the shared [`wordid`] crate.
 //!
-//! A node's real identity is its 32-byte nostr event id: secure and
-//! decentralized, but not something a human can say while arranging a canvas. We
-//! can't mint a dense sequential number (`node-42`) instead, because that needs a
-//! single coordinator to hand numbers out — and the notebook is offline-first, so
-//! two of your own devices editing while partitioned would both mint the same
-//! number. That's Zooko's triangle: a name can be at most two of
-//! {human-meaningful, secure, decentralized}, and without global consensus we
-//! can't have all three.
+//! The 33-bit BIP-39 encoding is identical across notebook nodes, headway cards,
+//! and agentium sessions, so it lives once in the `wordid` crate. This module adds
+//! the notebook-specific URI scheme on top: a full node reference is
+//! `notebook:<word-id>`, e.g. `notebook:maple-river-canyon`.
 //!
-//! So rather than make the id sequential, we make the *hash* sayable: encode the
-//! leading 33 bits of the event id as three BIP-39 words. The CLI prefixes the
-//! canvas id and an `@` sigil, giving ids like `notebook@maple-river-canyon`.
+//! Single-segment, like agentium sessions and unlike headway's two-segment
+//! `headway:<board>/<word-id>`. A node's identity is its 32-byte event id; the
+//! word-id is a global rendering of it, and the canvas a node currently lives on
+//! is *not* part of that identity — node resolution ignores it, the CLI scopes by
+//! `--canvas`, and longform notes aren't canvas-scoped at all. So the `notebook:`
+//! scheme is the whole reference marker; a bare word-id is never a reference.
 //!
-//! This is deliberately the *same* encoding as [`headway::wordid`] — same
-//! wordlist, same 33-bit slice — so the implementations stay easy to reason about
-//! side by side. The two are kept apart not by the words but by the sigil at the
-//! render layer: headway renders `<board>#<words>`, the notebook renders
-//! `<canvas>@<words>`, so a reference is never mistaken for the other system's.
-//!
-//! 3 words × 11 bits = 33 bits (~8.5 billion), collision-free well past any
-//! realistic canvas (the birthday bound puts even-odds past ~109,000 nodes).
-//! Resolution is by re-encoding each node and matching, exactly like a git short
-//! hash; a full hex id always resolves too, so a reference written down today
-//! never becomes invalid.
+//! A URI scheme rather than the old `@` sigil: consistent with the sibling
+//! schemes (`nostr:`, `headway:`) so the reference registry dispatches by scheme,
+//! and — like them — surviving nostrdb's tokenizer whole inside note content.
 
-use bip39::Language;
+pub use wordid::{SEP, encode};
 
-/// Separator between words in a rendered id.
-const SEP: char = '-';
+/// The URI scheme that precedes a node word-id in a full reference.
+pub const SCHEME: &str = "notebook";
 
-/// Render the leading 33 bits of an event id as three BIP-39 words joined by
-/// `-`, e.g. `maple-river-canyon`. The canvas id and `@` sigil are *not*
-/// included; the CLI prefixes them when rendering for a human.
-pub fn encode(id: &[u8; 32]) -> String {
-    let words = Language::English.word_list();
-    let [a, b, c] = indices(id);
-    format!("{}{SEP}{}{SEP}{}", words[a], words[b], words[c])
+/// The full, sayable node reference: `notebook:<word-id>`, e.g.
+/// `notebook:maple-river-canyon`. What copy/paste surfaces render and what
+/// [`parse_ref`] accepts back.
+pub fn node_ref(id: &[u8; 32]) -> String {
+    format!("{SCHEME}:{}", encode(id))
 }
 
-/// The three 11-bit word indices for an id: the 33 most-significant bits.
-fn indices(id: &[u8; 32]) -> [usize; 3] {
-    // Pull the first 5 bytes (40 bits) into the low end of a u64, then keep the
-    // top 33 and slice them into three 11-bit groups.
-    let bits = u64::from_be_bytes([0, 0, 0, id[0], id[1], id[2], id[3], id[4]]) >> 7;
-    [
-        ((bits >> 22) & 0x7ff) as usize,
-        ((bits >> 11) & 0x7ff) as usize,
-        (bits & 0x7ff) as usize,
-    ]
+/// The word-id out of a node reference: strips the required `notebook:` scheme and
+/// returns the trailing word-id. `None` for a bare word-id or a hex id — the
+/// scheme is what distinguishes a reference from a plain selector, so it is
+/// mandatory (there is no board/canvas segment to serve that role, as there is in
+/// headway's scheme-less `board/word-id` shorthand).
+///
+/// The word-id shape is *not* validated here; resolution re-encodes each candidate
+/// and matches. The returned slice borrows from `sel`.
+pub fn parse_ref(sel: &str) -> Option<&str> {
+    let words = sel.strip_prefix(SCHEME)?.strip_prefix(':')?;
+    (!words.is_empty()).then_some(words)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// All-zero id → word index 0 thrice; 0xff first bytes → index 2047.
     #[test]
-    fn known_vectors() {
-        assert_eq!(encode(&[0u8; 32]), "abandon-abandon-abandon");
-        assert_eq!(encode(&[0xffu8; 32]), "zoo-zoo-zoo");
+    fn node_ref_round_trips_through_parse_ref() {
+        let id = [0x34u8; 32];
+        let words = encode(&id);
+        let r = node_ref(&id);
+        assert_eq!(r, format!("notebook:{words}"));
+        assert_eq!(parse_ref(&r), Some(words.as_str()));
     }
 
     #[test]
-    fn shape_and_determinism() {
-        let id: [u8; 32] = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0]
-            .iter()
-            .copied()
-            .cycle()
-            .take(32)
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-        let a = encode(&id);
-        assert_eq!(a, encode(&id), "encoding is deterministic");
-        assert_eq!(a.split(SEP).count(), 3, "three words");
-    }
-
-    /// The encoding only looks at the first 33 bits, so two ids that differ only
-    /// after byte 5 collide — verify that's the *only* thing that matters.
-    #[test]
-    fn uses_leading_33_bits_only() {
-        let mut a = [0u8; 32];
-        let mut b = [0u8; 32];
-        a[5] = 0xff; // byte 5 onwards is ignored
-        b[31] = 0x07;
-        assert_eq!(encode(&a), encode(&b));
-
-        b[0] = 0x80; // a difference inside the first 33 bits must change it
-        assert_ne!(encode(&a), encode(&b));
+    fn parse_ref_requires_the_scheme() {
+        assert_eq!(
+            parse_ref("notebook:maple-river-canyon"),
+            Some("maple-river-canyon")
+        );
+        // A bare word-id is not a reference — no scheme.
+        assert_eq!(parse_ref("maple-river-canyon"), None);
+        // A hex id has no scheme either.
+        assert_eq!(parse_ref("deadbeef"), None);
+        // An empty word-id after the scheme is not a reference.
+        assert_eq!(parse_ref("notebook:"), None);
     }
 }

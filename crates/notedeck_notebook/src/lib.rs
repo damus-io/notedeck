@@ -448,7 +448,7 @@ impl Notebook {
     /// PNS-wrapped, and the canvas fan-out path ([`fan_out_unseen_notes`]) fans
     /// *unwrapped* notes, so routing longform through it would leak the plaintext
     /// article. Cross-device longform sync (fanning the kind-1080 wrapper, plus an
-    /// inbound 1080 subscription) is tracked as `notebook#merry-patch-boost`.
+    /// inbound 1080 subscription) is tracked as `headway:notebook/merry-patch-boost`.
     fn save_editor(&mut self, ctx: &mut AppContext, author: &Pubkey, signer: &Option<[u8; 32]>) {
         let Some(secret) = signer else { return };
         let Some(editor) = self.editor.as_ref() else {
@@ -879,7 +879,7 @@ struct PollResponse {
     /// [`notedeck::fan_out_unseen_notes`]). Empty on a full reload (historical
     /// notes, not new ingests) and on a no-op. Deliberately excludes longform
     /// keys: those are PNS-wrapped and must never be published in the clear (see
-    /// [`Notebook::save_editor`] / `notebook#merry-patch-boost`).
+    /// [`Notebook::save_editor`] / `headway:notebook/merry-patch-boost`).
     fresh: Vec<NoteKey>,
 }
 

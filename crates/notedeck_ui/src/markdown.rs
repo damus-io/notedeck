@@ -208,12 +208,13 @@ struct WholeRef<'a> {
 /// reference.
 ///
 /// This is the whole-span rule shared by the inline-code and emphasis arms of
-/// [`render_inlines`]: models habitually decorate a reference — `` `board#a-b-c` ``,
-/// `**board#a-b-c**`, and (since emphasis content is *not* re-parsed for inline
-/// code) the doubly-wrapped ``**`board#a-b-c`**`` — so a span whose *whole*
-/// content is one reference is drawn as its chip rather than as literal text.
-/// Requiring the match to span the stripped content keeps genuine code — a
-/// `#define`, a `board#word-word-word` buried in a longer snippet — untouched.
+/// [`render_inlines`]: models habitually decorate a reference —
+/// `` `headway:b/a-b-c` ``, `**headway:b/a-b-c**`, and (since emphasis content is
+/// *not* re-parsed for inline code) the doubly-wrapped ``**`headway:b/a-b-c`**`` —
+/// so a span whose *whole* content is one reference is drawn as its chip rather
+/// than as literal text. Requiring the match to span the stripped content keeps
+/// genuine code — a `headway:board/word-word-word` buried in a longer snippet —
+/// untouched.
 fn whole_reference<'a>(
     text: &'a str,
     parsers: &notedeck::ReferenceParserRegistry,
@@ -553,8 +554,8 @@ fn append_text_with_refs(
 ///
 /// The note-content renderer's counterpart to [`render_markdown_with_refs`] for a
 /// single nostrdb text block: it reuses the exact reference seam without markdown
-/// parsing, so a `board#word-word-word` in a plain kind-1 note renders the same
-/// chip it does in Dave's chat. `text` is drawn as one flushed [`egui::Label`]
+/// parsing, so a `headway:board/word-word-word` in a plain kind-1 note renders the
+/// same chip it does in Dave's chat. `text` is drawn as one flushed [`egui::Label`]
 /// (like every ref-bearing run), so the caller keeps its own selectable-text fast
 /// path for the common reference-free block.
 #[profiling::function]
@@ -647,7 +648,7 @@ fn render_inlines(
 
             InlineElement::Code(span) => {
                 // A code span whose whole content is one reference is a
-                // backtick-wrapped ref (models love `board#word-word-word`);
+                // backtick-wrapped ref (models love `headway:board/word-word-word`);
                 // draw it as its chip. Anything else stays literal code.
                 let text = span.resolve(buffer);
                 let mut drawn = false;
@@ -665,9 +666,9 @@ fn render_inlines(
                 let text = content.resolve(buffer);
 
                 // A styled run whose whole content is one reference is an
-                // emphasized ref (models love `**board#word-word-word**`, and
-                // just as often ``**`board#word-word-word`**``); draw it as its
-                // chip, same whole-content rule as inline code. The emphasis is
+                // emphasized ref (models love `**headway:board/word-word-word**`,
+                // and just as often ``**`headway:board/word-word-word`**``); draw it
+                // as its chip, same whole-content rule as inline code. The emphasis is
                 // dropped — a chip has its own styling — but the ref resolves
                 // instead of rendering as bold/italic literal text.
                 if let Some(ctx) = ctx.as_deref_mut() {

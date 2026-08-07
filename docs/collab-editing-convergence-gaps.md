@@ -6,7 +6,7 @@
 > model the Notedeck apps already implement breaks (or is merely unspecified)
 > under genuine multi-writer concurrency, so the eventual cross-app
 > collaborative-editing spec can target real problems. Feeds
-> `headway#way-buzz-raven` ("Figure out collaborative editing spec").
+> `headway:headway/way-buzz-raven` ("Figure out collaborative editing spec").
 
 ## Two layers
 

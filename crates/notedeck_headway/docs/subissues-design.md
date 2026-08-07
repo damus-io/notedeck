@@ -159,13 +159,13 @@ headway show <epic>                # detail gains: parent line, subissues sectio
 
 ```
 subissues (2/4 done)
-    [x] route media loads through imgproxy      headway#mushroom-include-wolf
-    [x] request only the resolution each view…  headway#scheme-ask-exercise
-    [ ] fetch media lazily / on-demand          headway#demise-deny-glass
-    [ ] cap media cache size with eviction      headway#extend-decrease-visit
+    [x] route media loads through imgproxy      headway:headway/mushroom-include-wolf
+    [x] request only the resolution each view…  headway:headway/scheme-ask-exercise
+    [ ] fetch media lazily / on-demand          headway:headway/demise-deny-glass
+    [ ] cap media cache size with eviction      headway:headway/extend-decrease-visit
 ```
 
-`--json` gains `parent`, `parent_words` and `subissues` on each card.
+`--json` gains `parent`, `parent_ref` and `subissues` on each card.
 
 ## GUI
 

@@ -2,10 +2,10 @@
 //! text and resolving it to a nostr entity.
 //!
 //! A surface (a notebook note, a chat message, …) can mention an entity inline —
-//! `nostr:nevent1…`, or a headway card as a bare `board#maple-river-canyon`.
-//! There is **no shared syntax**: a nostr reference carries a `nostr:` scheme, a
-//! headway reference is a bare `slug#word-word-word` with no prefix at all, and a
-//! future scheme might use `@handle` or `#tag`. So a [`ReferenceParser`] owns its
+//! `nostr:nevent1…`, or a headway card as `headway:board/maple-river-canyon`.
+//! There is **no shared syntax**: each reference carries its own scheme
+//! (`nostr:`, `headway:`) and its own grammar after it, and a future scheme might
+//! match `@handle` or `#tag` differently still. So a [`ReferenceParser`] owns its
 //! *whole* grammar — it [`find`](ReferenceParser::find)s its own references in
 //! text and [`resolve`](ReferenceParser::resolve)s a match to a concrete note
 //! ([`ResolvedRef`]). The *back* half — the
@@ -79,18 +79,20 @@ pub trait ReferenceParser {
     /// per-parser default is stored under in settings. Must be unique across
     /// registered parsers; `"nostr"` is reserved for the [built-in](NostrRefParser).
     ///
-    /// This is *not* a syntax marker: unlike a URI scheme it never has to appear
-    /// in the referenced text (a headway reference is a bare
-    /// `board#word-word-word`). The grammar lives entirely in [`find`](Self::find).
+    /// This is a registry key, not inherently a syntax marker — the trait never
+    /// requires it to appear in the referenced text. In practice the built-in
+    /// schemes make it coincide with their URI scheme (`"nostr"` ↔ `nostr:`,
+    /// `"headway"` ↔ `headway:`), but the grammar lives entirely in
+    /// [`find`](Self::find), which is free to match anything.
     fn id(&self) -> &'static str;
 
     /// Find the next reference this parser recognizes in `text`, as a byte range
     /// into `text`, or `None` if `text` holds none.
     ///
-    /// The parser owns its entire grammar — there is no shared `scheme:` prefix,
-    /// so `nostr` matches its scheme plus a bech32 run while `headway` matches a
-    /// bare `slug#word-word-word`. The returned range must be non-empty and fall
-    /// on char boundaries.
+    /// The parser owns its entire grammar — there is no *shared* delimiter, so
+    /// `nostr` matches `nostr:` plus a bech32 run while `headway` matches
+    /// `headway:<slug>/<word-word-word>`. The returned range must be non-empty and
+    /// fall on char boundaries.
     ///
     /// `find` may match **loosely** — a cheap syntactic filter — because a match
     /// that [`resolve`](Self::resolve) then rejects is drawn as ordinary text, so

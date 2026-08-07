@@ -70,7 +70,7 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
 }
 
 /// Render `note_id` (a kind-1 note) through `NoteView`, the surface the
-/// note-renderer inline-reference feature lights up: a `board#word-word-word` in
+/// note-renderer inline-reference feature lights up: a `headway:board/word-word-word` in
 /// the note's content resolves to the card's live status chip via the registered
 /// reference parser + issue renderer, with no note→headway dependency.
 fn render_ref_note(ctx: &egui::Context, app_ctx: &mut AppContext, note_id: NoteId) {
@@ -148,7 +148,7 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     // Chrome registers every app's inline-reference contributions at startup
     // (`setup_app_registries`); mirror that here, off *this* Headway instance,
     // so the parser and renderers share its board cache and a
-    // `board#word-word-word` reference in a card description resolves.
+    // `headway:board/word-word-word` reference in a card description resolves.
     let headway = Headway::new();
     for renderer in headway.kind_renderers() {
         notedeck.register_kind_renderer(renderer);
@@ -318,14 +318,10 @@ fn demo_card_id(ndb: &Ndb, author: &Pubkey, title: &str) -> NoteId {
         .id
 }
 
-/// The canonical `board#word-word-word` reference for `card` — the same string
-/// the detail pane shows in its topbar and the CLI prints.
+/// The canonical `headway:<board>/<word-word-word>` reference for `card` — the
+/// same string the detail pane shows in its topbar and the CLI prints.
 fn card_ref(card: NoteId) -> String {
-    format!(
-        "{}#{}",
-        store::BOARD_ID,
-        headway::wordid::encode(card.bytes())
-    )
+    headway::wordid::card_ref(store::BOARD_ID, card.bytes())
 }
 
 /// A card description that mentions another card by word-id renders it as a live
@@ -388,7 +384,7 @@ fn snapshot_headway_detail_inline_ref() {
     harness.snapshot("headway_detail_inline_ref");
 }
 
-/// A plain kind-1 nostr note that mentions a card by its `board#word-word-word`
+/// A plain kind-1 nostr note that mentions a card by its `headway:board/word-word-word`
 /// id renders that reference as the card's live status chip in NoteView — the
 /// note-renderer counterpart to the detail-pane test above. Proves the browser's
 /// reference parser fires on note *content* (nostrdb shatters `#`-anchored ids

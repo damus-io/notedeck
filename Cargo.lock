@@ -185,6 +185,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wordid",
 ]
 
 [[package]]
@@ -3612,7 +3613,6 @@ dependencies = [
 name = "headway"
 version = "0.10.0-beta.4"
 dependencies = [
- "bip39",
  "enostr",
  "futures-util",
  "nostrdb",
@@ -3620,6 +3620,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "wordid",
 ]
 
 [[package]]
@@ -5696,7 +5697,6 @@ dependencies = [
 name = "notedeck_notebook"
 version = "0.10.0-beta.4"
 dependencies = [
- "bip39",
  "egui",
  "egui_kittest",
  "enostr",
@@ -5711,6 +5711,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "wordid",
 ]
 
 [[package]]
@@ -10979,6 +10980,14 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.244.0",
+]
+
+[[package]]
+name = "wordid"
+version = "0.10.0-beta.4"
+dependencies = [
+ "bip39",
+ "sha2 0.10.9",
 ]
 
 [[package]]

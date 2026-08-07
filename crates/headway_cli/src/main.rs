@@ -198,10 +198,11 @@ fn seq_spec(flags: &SeqFlags) -> Result<SeqSpec> {
 }
 
 impl Command {
-    /// The board named by this command's card selectors, when any of them
-    /// carries a `<board>#<word-id>` prefix (see [`ref_board`]). Used to
-    /// self-route the command to that board. Errors when two selectors name
-    /// different boards — cards are resolved against a single board per run.
+    /// The board named by this command's card selectors, when any of them is a
+    /// `headway:<board>/<word-id>` reference (or the scheme-less shorthand — see
+    /// [`ref_board`]). Used to self-route the command to that board. Errors when
+    /// two selectors name different boards — cards are resolved against a single
+    /// board per run.
     fn selector_board(&self) -> Result<Option<String>> {
         let mut selectors: Vec<&str> = Vec::new();
         match self {
@@ -258,19 +259,12 @@ impl Command {
     }
 }
 
-/// The `<board>` prefix of a full `<board>#<word-id>` card reference, lowercased
-/// (board slugs are lowercase). `None` for anything that isn't one: bare
-/// `#word-id` refs, plain word ids, hex ids/prefixes, and prefixes that aren't
-/// slug-shaped (slugs are ascii alphanumerics and `-`, see `store::board_slug`).
+/// The `<board>` segment of a card reference — `headway:<board>/<word-id>` or its
+/// scheme-less `<board>/<word-id>` shorthand — lowercased (board slugs are
+/// lowercase). `None` for anything that isn't a reference: plain word ids, hex
+/// ids/prefixes, and segments that aren't slug-shaped (see [`headway::wordid::parse_ref`]).
 fn ref_board(sel: &str) -> Option<String> {
-    let (slug, words) = sel.split_once('#')?;
-    if slug.is_empty()
-        || words.is_empty()
-        || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return None;
-    }
-    Some(slug.to_lowercase())
+    headway::wordid::parse_ref(sel).map(|(board, _)| board.to_lowercase())
 }
 
 async fn run() -> Result<()> {
@@ -455,7 +449,7 @@ async fn run() -> Result<()> {
             if !board_explicit {
                 return Err(
                     "next never uses the persisted current board — pass --board <id>, \
-                     or an --in <board#word-id> card ref that names its own board"
+                     or an --in <headway:board/word-id> card ref that names its own board"
                         .into(),
                 );
             }
@@ -726,8 +720,9 @@ fn resolve_container(view: &BoardView, sel: &str) -> Result<Container> {
 }
 
 /// Resolve a `--reply-to` selector against the comments on `card`, accepting a
-/// full hex id, a unique hex prefix, or a comment word-id — the same forms
-/// [`resolve_card`] accepts, but scoped to one card's thread.
+/// full hex id, a unique hex prefix, or a comment word-id. Comments render as a
+/// bare word-id in a card's thread (not a `headway:<board>/…` card ref), so the
+/// bare word-id is the selector here.
 fn resolve_comment(view: &BoardView, card: &NoteId, sel: &str) -> Result<NoteId> {
     let comments = event::all_cards(view)
         .find(|c| c.id == *card)
@@ -738,10 +733,9 @@ fn resolve_comment(view: &BoardView, card: &NoteId, sel: &str) -> Result<NoteId>
         return Ok(id);
     }
     let sel = sel.to_lowercase();
-    let words = sel.strip_prefix('#').unwrap_or(&sel);
     if let Some(c) = comments
         .iter()
-        .find(|c| wordid::encode(c.id.bytes()) == words)
+        .find(|c| wordid::encode(c.id.bytes()) == sel)
     {
         return Ok(c.id);
     }
@@ -846,7 +840,7 @@ fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
         let out: Vec<_> = cards
             .iter()
             .map(|(card, col)| {
-                let mut j = event::card_json(card);
+                let mut j = event::card_json(&view.id, card);
                 j["column"] = json!(col);
                 j
             })
@@ -867,7 +861,7 @@ fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
 }
 
 /// Print the work-order frontier for `next`: the ready cards of `container`, each
-/// as a `board#word-id` ref an agent can paste straight into `move`/`show`.
+/// as a `headway:board/word-id` ref an agent can paste straight into `move`/`show`.
 ///
 /// How many: `-n <k>` caps to `k`; otherwise `--ready` prints the whole ready set
 /// (the parallel-dispatch frontier) and the default prints just the single next
@@ -923,10 +917,11 @@ fn print_next(
     }
 }
 
-/// A card's `board#word-id` ref, undimmed — unlike [`card_ref`], `next` output is
-/// the thing an agent copies, so the ref itself must stay plain text.
+/// A card's `headway:<board>/<word-id>` ref, undimmed — unlike [`card_ref`],
+/// `next` output is the thing an agent copies, so the ref itself must stay plain
+/// text.
 fn plain_ref(view: &BoardView, id: &NoteId) -> String {
-    format!("{}#{}", view.id, wordid::encode(id.bytes()))
+    wordid::card_ref(&view.id, id.bytes())
 }
 
 /// Print a single card in `git show` style: a header block of metadata, then the
@@ -1003,11 +998,11 @@ fn print_comment(c: &CommentView) {
         "    {}  {}  {}",
         headway::fmt::short_author(&c.author),
         nostrdb_net::relay::sync::dim(&headway::fmt::rel_time(c.created_at)),
-        nostrdb_net::relay::sync::dim(&format!("#{}", wordid::encode(c.id.bytes()))),
+        nostrdb_net::relay::sync::dim(&wordid::encode(c.id.bytes())),
     );
     if let Some(parent) = &c.parent {
         header.push_str(&nostrdb_net::relay::sync::dim(&format!(
-            "  ↳ reply to #{}",
+            "  ↳ reply to {}",
             wordid::encode(parent.bytes())
         )));
     }
@@ -1069,13 +1064,13 @@ fn progress_suffix(card: &CardView) -> String {
     )
 }
 
-/// A card's human-friendly reference: the board slug, a `#`, then three words,
-/// e.g. `headway#maple-river-canyon` — GitHub's `repo#id` shape, so it reads as a
-/// reference inline (`Fixes: headway#maple-river-canyon`) and in chat. Just a
-/// rendering of the event id — see [`headway::wordid`]. Rendered muted so the
-/// title stays the eye's anchor.
+/// A card's human-friendly reference: `headway:<board>/<word-id>`, e.g.
+/// `headway:dave/maple-river-canyon` — a URI scheme so it reads as a reference
+/// inline (`Fixes: headway:dave/maple-river-canyon`) and in chat, survives
+/// nostrdb tokenization, and needs no shell quoting. Just a rendering of the event
+/// id — see [`headway::wordid`]. Rendered muted so the title stays the eye's anchor.
 fn card_ref(view: &BoardView, id: &NoteId) -> String {
-    nostrdb_net::relay::sync::dim(&format!("{}#{}", view.id, wordid::encode(id.bytes())))
+    nostrdb_net::relay::sync::dim(&wordid::card_ref(&view.id, id.bytes()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1197,8 +1192,8 @@ impl Cli {
             name, rest, col, row, to, reply_to, parent, labels, seq, ready, count,
         )?;
 
-        // A card selector like `commerce#purse-metal-toilet` already names its
-        // board, so the command self-routes there — the display id `show`
+        // A card selector like `headway:commerce/purse-metal-toilet` already names
+        // its board, so the command self-routes there — the display id `show`
         // prints is a working address wherever it's pasted, with no `--board`
         // needed. An explicit `--board` must agree with it rather than being
         // silently ignored (or silently winning and then failing "no card
@@ -1396,9 +1391,9 @@ COMMANDS:
                                --before <card>; --in is a card ref (its
                                subissues) or the board slug (board root)
     next [--in <c>]            Print what to work on next: the ready frontier of
-                               a container's work-order, each a board#word-id ref.
-                               --ready prints the whole set, -n <k> caps it. Needs
-                               --board or an --in <board#word-id> ref (never the
+                               a container's work-order, each a headway:board/word-id
+                               ref. --ready prints the whole set, -n <k> caps it. Needs
+                               --board or an --in <headway:board/word-id> ref (never the
                                persisted current board).
     parent <card> [parent]     Make a card a subissue of [parent] (omit to
                                detach)
@@ -1458,22 +1453,21 @@ mod tests {
             .expect("a command")
     }
 
-    /// A full `<board>#<word-id>` selector routes the run to that board; the
-    /// forms `show` prints for other addressing (bare `#words`, plain words,
-    /// hex prefixes) don't.
+    /// A `headway:<board>/<word-id>` selector (or the scheme-less shorthand)
+    /// routes the run to that board; a bare word-id or hex prefix doesn't.
     #[test]
     fn card_ref_routes_to_its_board() {
         assert_eq!(
-            parse(&["show", "commerce#purse-metal-toilet"]).board,
+            parse(&["show", "headway:commerce/purse-metal-toilet"]).board,
             "commerce"
         );
         assert_eq!(
-            parse(&["move", "dave#stage-injury-surprise", "--col", "done"]).board,
+            parse(&["move", "dave/stage-injury-surprise", "--col", "done"]).board,
             "dave"
         );
         // Case-normalised like the slugs themselves.
         assert_eq!(
-            parse(&["show", "Commerce#purse-metal-toilet"]).board,
+            parse(&["show", "headway:Commerce/purse-metal-toilet"]).board,
             "commerce"
         );
     }
@@ -1482,11 +1476,11 @@ mod tests {
     /// card ref self-routes it to that card's board.
     #[test]
     fn priority_command_parses_and_routes() {
-        let cli = parse(&["priority", "commerce#purse-metal-toilet", "high"]);
+        let cli = parse(&["priority", "headway:commerce/purse-metal-toilet", "high"]);
         assert_eq!(cli.board, "commerce");
         match cli.command {
             Command::Priority { card, level } => {
-                assert_eq!(card, "commerce#purse-metal-toilet");
+                assert_eq!(card, "headway:commerce/purse-metal-toilet");
                 assert_eq!(level, "high");
             }
             _ => panic!("expected a Priority command"),
@@ -1505,9 +1499,9 @@ mod tests {
         // These fall through to the usual precedence; with no env/config in a
         // test environment that may be the stored board, so only assert the
         // selector itself didn't force one by checking against a routed run.
-        let routed = parse(&["show", "commerce#purse-metal-toilet"]).board;
+        let routed = parse(&["show", "headway:commerce/purse-metal-toilet"]).board;
         assert_eq!(routed, "commerce");
-        for sel in ["#purse-metal-toilet", "purse-metal-toilet", "2716e5db"] {
+        for sel in ["purse-metal-toilet", "2716e5db"] {
             let cli = parse(&["show", sel]);
             // Whatever board was picked, it wasn't derived from the selector.
             assert_eq!(cli.command.selector_board().unwrap(), None);
@@ -1524,10 +1518,10 @@ mod tests {
 
     #[test]
     fn conflicting_refs_error() {
-        let err = parse_err(&["show", "commerce#a-b-c", "dave#d-e-f"]);
+        let err = parse_err(&["show", "commerce/a-b-c", "dave/d-e-f"]);
         assert!(err.contains("different boards"), "{err}");
 
-        let err = parse_err(&["--board", "headway", "show", "commerce#a-b-c"]);
+        let err = parse_err(&["--board", "headway", "show", "commerce/a-b-c"]);
         assert!(err.contains("conflicts"), "{err}");
     }
 
@@ -1536,23 +1530,23 @@ mod tests {
     #[test]
     fn agreeing_refs_are_fine() {
         assert_eq!(
-            parse(&["--board", "commerce", "show", "commerce#a-b-c"]).board,
+            parse(&["--board", "commerce", "show", "commerce/a-b-c"]).board,
             "commerce"
         );
         assert_eq!(
-            parse(&["show", "commerce#a-b-c", "commerce#d-e-f"]).board,
+            parse(&["show", "commerce/a-b-c", "commerce/d-e-f"]).board,
             "commerce"
         );
     }
 
-    /// `next --in <board#word-id>` self-routes to the ref's board and marks the
-    /// board explicit, and `--ready`/`-n` parse into the command.
+    /// `next --in <headway:board/word-id>` self-routes to the ref's board and marks
+    /// the board explicit, and `--ready`/`-n` parse into the command.
     #[test]
     fn next_parses_and_routes() {
         let cli = parse(&[
             "next",
             "--in",
-            "notedeck#saddle-because-liquid",
+            "headway:notedeck/saddle-because-liquid",
             "--ready",
             "-n",
             "3",
@@ -1565,7 +1559,10 @@ mod tests {
                 ready,
                 limit,
             } => {
-                assert_eq!(container.as_deref(), Some("notedeck#saddle-because-liquid"));
+                assert_eq!(
+                    container.as_deref(),
+                    Some("headway:notedeck/saddle-because-liquid")
+                );
                 assert!(ready);
                 assert_eq!(limit, Some(3));
             }
@@ -1584,11 +1581,14 @@ mod tests {
 
     #[test]
     fn ref_board_shapes() {
-        assert_eq!(ref_board("commerce#a-b-c"), Some("commerce".into()));
-        assert_eq!(ref_board("ios-port#a-b-c"), Some("ios-port".into()));
-        assert_eq!(ref_board("#a-b-c"), None);
+        // Full scheme form and scheme-less shorthand both name their board.
+        assert_eq!(ref_board("headway:commerce/a-b-c"), Some("commerce".into()));
+        assert_eq!(ref_board("commerce/a-b-c"), Some("commerce".into()));
+        assert_eq!(ref_board("ios-port/a-b-c"), Some("ios-port".into()));
+        // A bare word-id, hex, or empty segment is not a reference.
         assert_eq!(ref_board("a-b-c"), None);
-        assert_eq!(ref_board("commerce#"), None);
-        assert_eq!(ref_board("not a slug#a-b-c"), None);
+        assert_eq!(ref_board("/a-b-c"), None);
+        assert_eq!(ref_board("commerce/"), None);
+        assert_eq!(ref_board("not a slug/a-b-c"), None);
     }
 }

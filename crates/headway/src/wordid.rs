@@ -1,88 +1,89 @@
-//! Human-friendly card references.
+//! Human-friendly card references over the shared [`wordid`] crate.
 //!
-//! A card's real identity is its 32-byte nostr event id: secure and
-//! decentralized, but not something a human can say in a commit message or
-//! chat. We can't mint a dense sequential number (`HEADWAY-42`) instead, because
-//! that needs a single coordinator to hand numbers out — and headway is
-//! offline-first, so two of your own devices editing while partitioned would
-//! both mint the same number. That's Zooko's triangle: a name can be at most two
-//! of {human-meaningful, secure, decentralized}, and without global consensus we
-//! can't have all three.
+//! The 33-bit BIP-39 encoding is identical across headway cards, notebook nodes,
+//! and agentium sessions, so it lives once in the `wordid` crate. This module adds
+//! the headway-specific URI scheme on top: a full card reference is
+//! `headway:<board>/<word-id>`, e.g. `headway:dave/maple-river-canyon`.
 //!
-//! So rather than make the id sequential, we make the *hash* sayable: encode the
-//! leading 33 bits of the event id as three BIP-39 words. The caller prefixes
-//! the board slug, giving ids like `headway-maple-river-canyon`. This keeps the
-//! secure + decentralized corners (it's just a rendering of the event id) and
-//! claws back most of the human-meaningful one.
-//!
-//! 3 words × 11 bits = 33 bits (~8.5 billion), collision-free well past any
-//! realistic board. Resolution is by re-encoding each card and matching, exactly
-//! like a git short hash; a full hex id always resolves too, so a reference
-//! written down today never becomes invalid.
+//! A URI scheme (not the old `#` sigil) so the ref survives nostrdb's tokenizer
+//! intact — where a mid-word `#` would be split off as a hashtag, shattering the
+//! ref across content blocks — and needs no shell quoting. The board segment
+//! scopes the fold and self-routes (see [`headway_cli`'s `ref_board`] and
+//! [`crate::event::resolve_card`]); a card is always board-scoped, so the segment
+//! is mandatory and a bare word-id is never a reference.
 
-use bip39::Language;
+pub use wordid::{SEP, encode};
 
-/// Separator between words in a rendered id.
-const SEP: char = '-';
+/// The URI scheme that precedes a full card reference. Aligned with the inline
+/// parser's id (`notedeck_headway::HeadwayRefParser::id()` returns `"headway"`).
+pub const SCHEME: &str = "headway";
 
-/// Render the leading 33 bits of an event id as three BIP-39 words joined by
-/// `-`, e.g. `maple-river-canyon`. The board slug is *not* included; callers
-/// prefix it themselves (the board crate is board-agnostic).
-pub fn encode(id: &[u8; 32]) -> String {
-    let words = Language::English.word_list();
-    let [a, b, c] = indices(id);
-    format!("{}{SEP}{}{SEP}{}", words[a], words[b], words[c])
+/// The full, self-routing card reference: `headway:<board>/<word-id>`, e.g.
+/// `headway:dave/maple-river-canyon`. This is what copy/paste surfaces render and
+/// what [`parse_ref`] / [`crate::event::resolve_card`] accept back.
+pub fn card_ref(board: &str, id: &[u8; 32]) -> String {
+    format!("{SCHEME}:{board}/{}", encode(id))
 }
 
-/// The three 11-bit word indices for an id: the 33 most-significant bits.
-fn indices(id: &[u8; 32]) -> [usize; 3] {
-    // Pull the first 5 bytes (40 bits) into the low end of a u64, then keep the
-    // top 33 and slice them into three 11-bit groups.
-    let bits = u64::from_be_bytes([0, 0, 0, id[0], id[1], id[2], id[3], id[4]]) >> 7;
-    [
-        ((bits >> 22) & 0x7ff) as usize,
-        ((bits >> 11) & 0x7ff) as usize,
-        (bits & 0x7ff) as usize,
-    ]
+/// Split the board slug and word-id out of a card reference, accepting the full
+/// `headway:<board>/<word-id>` form or the scheme-less `<board>/<word-id>`
+/// shorthand (for interactive resolver input where the app is implied). Returns
+/// `None` for a bare word-id, a hex id, or a non-slug board — the board segment
+/// is what distinguishes a reference from a plain search term.
+///
+/// The word-id shape is *not* validated here; resolution re-encodes each candidate
+/// and matches (see [`crate::event::resolve_card_by_wordid`]). Returned slices
+/// borrow from `sel`.
+pub fn parse_ref(sel: &str) -> Option<(&str, &str)> {
+    let rest = sel
+        .strip_prefix(SCHEME)
+        .and_then(|r| r.strip_prefix(':'))
+        .unwrap_or(sel);
+    let (board, words) = rest.split_once('/')?;
+    let slug_ok = !board.is_empty() && board.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    (slug_ok && !words.is_empty()).then_some((board, words))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// All-zero id → word index 0 thrice; 0xff first bytes → index 2047.
     #[test]
-    fn known_vectors() {
-        assert_eq!(encode(&[0u8; 32]), "abandon-abandon-abandon");
-        assert_eq!(encode(&[0xffu8; 32]), "zoo-zoo-zoo");
+    fn card_ref_round_trips_through_parse_ref() {
+        let id = [0x12u8; 32];
+        let words = encode(&id);
+        let r = card_ref("dave", &id);
+        assert_eq!(r, format!("headway:dave/{words}"));
+        assert_eq!(parse_ref(&r), Some(("dave", words.as_str())));
     }
 
     #[test]
-    fn shape_and_determinism() {
-        let id: [u8; 32] = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0]
-            .iter()
-            .copied()
-            .cycle()
-            .take(32)
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-        let a = encode(&id);
-        assert_eq!(a, encode(&id), "encoding is deterministic");
-        assert_eq!(a.split(SEP).count(), 3, "three words");
+    fn parse_ref_accepts_scheme_and_scheme_less() {
+        assert_eq!(
+            parse_ref("headway:commerce/maple-river-canyon"),
+            Some(("commerce", "maple-river-canyon"))
+        );
+        assert_eq!(
+            parse_ref("commerce/maple-river-canyon"),
+            Some(("commerce", "maple-river-canyon"))
+        );
+        // A hyphenated board slug (e.g. a year-prefixed board) is a valid segment.
+        assert_eq!(
+            parse_ref("2024-goals/maple-river-canyon"),
+            Some(("2024-goals", "maple-river-canyon"))
+        );
     }
 
-    /// The encoding only looks at the first 33 bits, so two ids that differ only
-    /// after byte 5 collide — verify that's the *only* thing that matters.
     #[test]
-    fn uses_leading_33_bits_only() {
-        let mut a = [0u8; 32];
-        let mut b = [0u8; 32];
-        a[5] = 0xff; // byte 5 onwards is ignored
-        b[31] = 0x07;
-        assert_eq!(encode(&a), encode(&b));
-
-        b[0] = 0x80; // a difference inside the first 33 bits must change it
-        assert_ne!(encode(&a), encode(&b));
+    fn parse_ref_rejects_non_references() {
+        // A bare word-id is never a reference — no board segment.
+        assert_eq!(parse_ref("maple-river-canyon"), None);
+        // A hex id has no `/`.
+        assert_eq!(parse_ref("deadbeef"), None);
+        // Empty segments.
+        assert_eq!(parse_ref("/maple-river-canyon"), None);
+        assert_eq!(parse_ref("dave/"), None);
+        // A board slug with a space isn't a slug.
+        assert_eq!(parse_ref("not a slug/a-b-c"), None);
     }
 }

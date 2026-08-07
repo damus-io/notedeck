@@ -8,7 +8,7 @@
 > [gap analysis](./collab-editing-convergence-gaps.md) (which mapped where the
 > current fold breaks) and the companion to
 > [NIP-SNS](./nip-sns-sealed-shared-storage.md) (which carries the edits). Feeds
-> `headway#way-buzz-raven`.
+> `headway:headway/way-buzz-raven`.
 
 ## Layering
 

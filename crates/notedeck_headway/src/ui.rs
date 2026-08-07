@@ -260,12 +260,13 @@ struct SubissueDropGap {
 /// is free text matched against a card's title, description, labels and its
 /// word-id (`maple-river-canyon`), so a card can be pulled up by any of its id
 /// words. A pasted reference to a card on *this* board
-/// (`headway#maple-river-canyon`, or `#maple-river-canyon` as rendered on the
-/// card) matches by its id words — the board prefix carries no signal within a
-/// single board. Other `#` terms are plain text: a card citing an issue on
-/// another board stays searchable by that citation. (Pasting another *known*
-/// board's reference switches to it — see [`filter_ref_jump`].) All matching is
-/// case-insensitive substring; an empty filter matches everything.
+/// (`headway:headway/maple-river-canyon`, or the scheme-less
+/// `headway/maple-river-canyon`) matches by its id words — the board segment
+/// carries no signal within a single board. Other references are plain text: a
+/// card citing an issue on another board stays searchable by that citation.
+/// (Pasting another *known* board's reference switches to it — see
+/// [`filter_ref_jump`].) All matching is case-insensitive substring; an empty
+/// filter matches everything.
 #[derive(Default)]
 struct CardFilter {
     /// Free-text terms (lowercased); each must appear somewhere in the card.
@@ -288,21 +289,17 @@ impl CardFilter {
                 Some(value) if !value.is_empty() => filter.labels.push(value.to_lowercase()),
                 // A bare `label:` with no value isn't a constraint; ignore it.
                 Some(_) => {}
-                None => match term.split_once('#') {
+                None => match headway::wordid::parse_ref(term) {
                     // A reference to a card on *this* board — pasted in full
-                    // (`headway#maple-river-canyon`) or as rendered on the card
-                    // (`#maple-river-canyon`): the prefix is redundant here, so
-                    // match on the id words alone. A term that ends at the `#`
-                    // has nothing left to match; ignore it.
-                    Some((prefix, words))
-                        if prefix.is_empty() || prefix.eq_ignore_ascii_case(board) =>
-                    {
-                        if !words.is_empty() {
-                            filter.text.push(words.to_lowercase());
-                        }
+                    // (`headway:board/maple-river-canyon`) or as the scheme-less
+                    // `board/maple-river-canyon` shorthand: the board segment is
+                    // redundant here, so match on the id words alone.
+                    Some((b, words)) if b.eq_ignore_ascii_case(board) => {
+                        filter.text.push(words.to_lowercase());
                     }
-                    // Any other `#` term is plain text — cards can cite issues
-                    // on other boards, and those citations stay searchable.
+                    // Anything else — a reference to another board, or plain text
+                    // (including a bare word-id, which stays searchable via the
+                    // haystack) — is search text.
                     _ => filter.text.push(term.to_lowercase()),
                 },
             }
@@ -346,20 +343,22 @@ impl CardFilter {
 }
 
 /// A full reference to a card on *another* board found in the filter query:
-/// the raw term as typed, the id words after the `#`, and the referenced
-/// board's slug. Borrowed from the query and the board list.
+/// the raw term as typed, the id words after the board segment, and the
+/// referenced board's slug. Borrowed from the query and the board list.
 struct CrossBoardRef<'a> {
-    /// The whole term as it appears in the query (`otherboard#maple-river-canyon`).
+    /// The whole term as it appears in the query
+    /// (`headway:otherboard/maple-river-canyon` or `otherboard/maple-river-canyon`).
     term: &'a str,
-    /// The id words after the `#`; may be empty (`otherboard#` alone).
+    /// The id words after the board segment (`maple-river-canyon`).
     words: &'a str,
     /// The referenced board's slug, in its canonical casing from the board list.
     board: &'a str,
 }
 
 /// Find the first term in `query` that is a reference to a card on another
-/// known board (`otherboard#maple-river-canyon`). Terms referencing `board`
-/// itself are the filter's business ([`CardFilter::parse`]), and prefixes that
+/// known board (`headway:otherboard/maple-river-canyon`, or the scheme-less
+/// `otherboard/maple-river-canyon` shorthand). Terms referencing `board` itself
+/// are the filter's business ([`CardFilter::parse`]), and board segments that
 /// aren't a known board slug are plain search text; both return `None` here.
 fn cross_board_ref<'a>(
     query: &'a str,
@@ -367,7 +366,7 @@ fn cross_board_ref<'a>(
     boards: &'a [BoardSummary],
 ) -> Option<CrossBoardRef<'a>> {
     query.split_whitespace().find_map(|term| {
-        let (prefix, words) = term.split_once('#')?;
+        let (prefix, words) = headway::wordid::parse_ref(term)?;
         if prefix.eq_ignore_ascii_case(board) {
             return None;
         }
@@ -381,8 +380,8 @@ fn cross_board_ref<'a>(
 }
 
 /// React to a full cross-board reference pasted into the filter field: a
-/// `otherboard#maple-river-canyon` term addresses a card on another board, so
-/// the intuitive read is "take me there" — raise a switch to that board and
+/// `headway:otherboard/maple-river-canyon` term addresses a card on another
+/// board, so the intuitive read is "take me there" — raise a switch to that board and
 /// reduce the term to its id words, which then filter the target board down to
 /// the referenced card. Runs only on an edit of the field, not per frame.
 fn filter_ref_jump(view: &BoardView, boards: &[BoardSummary], state: &mut BoardUiState) {
@@ -1098,10 +1097,10 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
                 ui.add_space(SPACING_XS);
             }
             // Title, with the word-id appended muted and small so a card's
-            // reference is legible at a glance. A bare `#word-id` — the `#` marks
-            // it as a reference, GitHub-style; the `<board>#` prefix is dropped
-            // since it's identical on every card, and the detail sheet shows the
-            // full `board#word-id` for copy-paste (see [`headway::wordid`]).
+            // reference is legible at a glance. Just the bare `word-id` — the
+            // `headway:<board>/` prefix is dropped since it's identical on every
+            // card, and the detail sheet shows the full `headway:<board>/<word-id>`
+            // for copy-paste (see [`headway::wordid`]).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = SPACING_XS;
                 // The priority glyph leads the row, matching the CLI's board
@@ -1117,7 +1116,7 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
                 }
                 ui.label(egui::RichText::new(&card.title).color(theme.text_primary));
                 ui.label(
-                    egui::RichText::new(format!("#{}", headway::wordid::encode(card.id.bytes())))
+                    egui::RichText::new(headway::wordid::encode(card.id.bytes()))
                         .small()
                         .color(theme.text_muted.gamma_multiply(0.6)),
                 );
@@ -1566,7 +1565,7 @@ fn card_detail_pane_ui(
 
     let ctx = DetailCtx {
         card_id,
-        card_ref: format!("{}#{}", view.id, headway::wordid::encode(card_id.bytes())),
+        card_ref: headway::wordid::card_ref(&view.id, card_id.bytes()),
         current_col,
         title: card.title.clone(),
         desc: card.description.clone(),
@@ -2038,7 +2037,7 @@ fn detail_title_section_ui(
 /// editor. Edits commit as a [`BoardAction::EditDescription`] when the editor
 /// loses focus, which also returns the section to its rendered view.
 ///
-/// Rendered through the ref-aware markdown path, so a `board#word-word-word`
+/// Rendered through the ref-aware markdown path, so a `headway:board/word-word-word`
 /// mention of another card draws as that card's live status chip (resolved by
 /// our own [`HeadwayRefParser`](crate::HeadwayRefParser)) and opens it on click —
 /// descriptions cross-reference constantly, so this is the surface the inline
@@ -2070,7 +2069,7 @@ fn detail_description_section_ui(
             // Render with interactive task-list checkboxes; a click flips the
             // box in `detail_desc` in place and we persist it like any edit.
             // The detail pane holds no transaction; open one here and pass it in
-            // so a `board#word-word-word` in the description resolves to its chip.
+            // so a `headway:board/word-word-word` in the description resolves to its chip.
             let mut note_ctx = app_ctx.note_context();
             let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("detail txn");
             let scope = ui.scope(|ui| {
@@ -2162,7 +2161,7 @@ fn detail_parent_breadcrumb_ui(
             // reference since it can't be opened from here.
             None => {
                 ui.label(
-                    egui::RichText::new(format!("#{}", headway::wordid::encode(parent.id.bytes())))
+                    egui::RichText::new(headway::wordid::encode(parent.id.bytes()))
                         .small()
                         .color(theme.text_muted),
                 );
@@ -2314,7 +2313,7 @@ fn subissue_row_ui(
             );
         }
         ui.label(
-            egui::RichText::new(format!("#{}", headway::wordid::encode(sub.id.bytes())))
+            egui::RichText::new(headway::wordid::encode(sub.id.bytes()))
                 .small()
                 .color(theme.text_muted.gamma_multiply(0.6)),
         );
@@ -2730,7 +2729,7 @@ fn activity_row_ui(
                 muted(ui, "set the parent to");
                 match title {
                     Some(title) => strong(ui, title),
-                    None => strong(ui, &format!("#{}", headway::wordid::encode(parent.bytes()))),
+                    None => strong(ui, &headway::wordid::encode(parent.bytes())),
                 }
             }
             ActivityKind::FieldChanged { field, to } => {
@@ -2793,7 +2792,7 @@ fn comment_note_ui(
     if let Some(parent) = &comment.parent {
         ui.label(
             egui::RichText::new(format!(
-                "↳ reply to #{}",
+                "↳ reply to {}",
                 headway::wordid::encode(parent.bytes())
             ))
             .small()
@@ -2835,17 +2834,14 @@ fn comment_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, comment: &CommentView) 
                         .color(theme.text_muted),
                 );
                 ui.label(
-                    egui::RichText::new(format!(
-                        "#{}",
-                        headway::wordid::encode(comment.id.bytes())
-                    ))
-                    .small()
-                    .color(theme.text_muted.gamma_multiply(0.6)),
+                    egui::RichText::new(headway::wordid::encode(comment.id.bytes()))
+                        .small()
+                        .color(theme.text_muted.gamma_multiply(0.6)),
                 );
                 if let Some(parent) = &comment.parent {
                     ui.label(
                         egui::RichText::new(format!(
-                            "↳ reply to #{}",
+                            "↳ reply to {}",
                             headway::wordid::encode(parent.bytes())
                         ))
                         .small()
@@ -3727,28 +3723,28 @@ mod tests {
     }
 
     /// A pasted reference to a card on this board matches by its id words,
-    /// whether it carries the board prefix (`headway#…`, any casing) or just
-    /// the on-card `#…` form.
+    /// whether it carries the `headway:` scheme (any casing) or is the scheme-less
+    /// `board/word-id` shorthand. A bare word-id is plain search text, not a
+    /// reference, but still matches via the haystack.
     #[test]
     fn own_board_reference_matches_by_id_words() {
         let c = card("Fix the bar", "", &[]);
-        assert!(CardFilter::parse("headway#abandon-abandon-abandon", BOARD).matches(&c));
-        assert!(CardFilter::parse("HEADWAY#abandon", BOARD).matches(&c));
-        assert!(CardFilter::parse("#abandon", BOARD).matches(&c));
-        assert!(!CardFilter::parse("headway#zoo", BOARD).matches(&c));
-        // The stripped prefix alone isn't a constraint.
-        let f = CardFilter::parse("headway#", BOARD);
-        assert!(!f.is_active());
+        assert!(CardFilter::parse("headway:headway/abandon-abandon-abandon", BOARD).matches(&c));
+        assert!(CardFilter::parse("headway/abandon-abandon-abandon", BOARD).matches(&c));
+        assert!(CardFilter::parse("HEADWAY/abandon-abandon-abandon", BOARD).matches(&c));
+        assert!(!CardFilter::parse("headway/zoo-zoo-zoo", BOARD).matches(&c));
+        // A bare word-id is search text, and matches this card's id words.
+        assert!(CardFilter::parse("abandon-abandon-abandon", BOARD).matches(&c));
     }
 
-    /// A `#` term whose prefix isn't this board is plain search text: it finds
+    /// A reference whose board isn't this board is plain search text: it finds
     /// cards that cite that reference, not this board's ids.
     #[test]
     fn foreign_reference_is_plain_text() {
-        let citing = card("dup", "see other#abandon-abandon-abandon", &[]);
+        let citing = card("dup", "see other/abandon-abandon-abandon", &[]);
         let plain = card("dup", "", &[]);
-        assert!(CardFilter::parse("other#abandon", BOARD).matches(&citing));
-        assert!(!CardFilter::parse("other#abandon", BOARD).matches(&plain));
+        assert!(CardFilter::parse("other/abandon-abandon-abandon", BOARD).matches(&citing));
+        assert!(!CardFilter::parse("other/abandon-abandon-abandon", BOARD).matches(&plain));
     }
 
     #[test]
@@ -3764,14 +3760,21 @@ mod tests {
             },
         ];
         // A known foreign board's reference is found, slug in canonical casing.
-        let r = cross_board_ref("bug NOTEBOOK#maple-river-canyon", "headway", &boards)
+        let r = cross_board_ref("bug NOTEBOOK/maple-river-canyon", "headway", &boards)
             .expect("foreign ref");
-        assert_eq!(r.term, "NOTEBOOK#maple-river-canyon");
+        assert_eq!(r.term, "NOTEBOOK/maple-river-canyon");
         assert_eq!(r.words, "maple-river-canyon");
         assert_eq!(r.board, "notebook");
-        // Own-board and unknown-prefix terms are not jumps.
-        assert!(cross_board_ref("headway#maple", "headway", &boards).is_none());
-        assert!(cross_board_ref("other#maple c#", "headway", &boards).is_none());
+        // The full scheme form is found too.
+        assert_eq!(
+            cross_board_ref("headway:notebook/maple-river-canyon", "headway", &boards)
+                .expect("scheme ref")
+                .board,
+            "notebook"
+        );
+        // Own-board and unknown-board terms are not jumps.
+        assert!(cross_board_ref("headway/maple-river-canyon", "headway", &boards).is_none());
+        assert!(cross_board_ref("other/maple-river-canyon c/x", "headway", &boards).is_none());
         assert!(cross_board_ref("no refs here", "headway", &boards).is_none());
     }
 

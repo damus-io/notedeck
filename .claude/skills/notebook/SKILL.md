@@ -42,20 +42,22 @@ the key yourself.
 
 ## The golden rule: `show` before you edit
 
-Each node has a friendly **word-id** — the canvas id, an `@`, then three BIP-39
+Each node has a friendly **reference** — the `notebook:` scheme then three BIP-39
 words encoding the leading bits of its event id, e.g.
-`notebook@maple-river-canyon`. It's a sayable rendering of the node's real
+`notebook:maple-river-canyon`. It's a sayable rendering of the node's real
 identity (its 64-char nostr event id), the notebook sibling of headway's
-`headway#…` cards — distinguished by the `@` sigil so the two never get confused.
-`show` prints it muted at the end of each node line; quote it in chat or commits,
-and pass it back to any command that takes a `<node>`.
+`headway:<board>/…` cards — single-segment (no canvas), because a node's identity
+is its event id, not the canvas it happens to sit on. `show` prints it muted at
+the end of each node line; quote it in chat or commits, and pass it back to any
+command that takes a `<node>`.
 
 A `<node>` argument resolves, in order, as:
 
 - the full 64-char **hex id**, or any unique **hex prefix** — canonical, best for
   scripted edits where you've pulled the id from `show --json`
-- a **word-id**: `notebook@maple-river-canyon`, the bare `@maple-river-canyon`,
-  or just `maple-river-canyon` — all resolve to the same node
+- a **`notebook:<word-id>` reference**, e.g. `notebook:maple-river-canyon`. The
+  `notebook:` scheme is required — a bare `maple-river-canyon` is not a reference
+  and won't resolve.
 
 Edges are addressed by their **edge id** (`<from-hex>-<to-hex>`, shown muted by
 `show`) or a unique prefix. Always run `show` first to read the current ids, then
@@ -64,26 +66,27 @@ expect.
 
 ```bash
 notebook show              # human-readable: title, nodes, edges, pending
-notebook show --json       # machine-readable, for parsing (each node has `id` + `word_id`)
-notebook show <node>...    # print only the given nodes (hex id, word-id, or prefix)
+notebook show --json       # machine-readable, for parsing (each node has `id` + `ref`)
+notebook show <node>...    # print only the given nodes (hex id, notebook:<word-id>, or prefix)
 notebook show <node> --json
 ```
 
 `show` prints the canvas title (with `[open]` if open), then each node as
-`<first line of text>  (x,y w×h)  <canvas>@<word-id>` with the geometry and
-word-id muted, then edges as `<from-word-id> → <to-word-id>  <edge-id>`, then any
+`<first line of text>  (x,y w×h)  notebook:<word-id>` with the geometry and
+reference muted, then edges as `<from-ref> → <to-ref>  <edge-id>`, then any
 **pending** nodes (proposals on a closed canvas). If there's no canvas yet it
 tells you to run `notebook seed`; with `--json` it prints `null`.
 
 If a selector doesn't resolve, errors are explicit: an ambiguous prefix says
 `ambiguous node prefix` / `ambiguous edge prefix`, an unknown one `no node
 matching` / `no edge matching` — re-read `show` and retry with a longer prefix,
-the word-id, or the full id.
+the `notebook:<word-id>` reference, or the full id.
 
-**Which form to use:** refer to a node by its **word-id** when talking to a human
-(it's sayable and they'll recognise it). When *you* script an edit, the hex id
-from `show --json` is canonical and can never be ambiguous; the word-id resolves
-too and is fine for one-offs.
+**Which form to use:** refer to a node by its **`notebook:<word-id>` reference**
+when talking to a human (it's sayable, they'll recognise it, and it renders as a
+live inline chip in notes/chat). When *you* script an edit, the hex id from `show
+--json` is canonical and can never be ambiguous; the reference resolves too and is
+fine for one-offs.
 
 ## Commands
 

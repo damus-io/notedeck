@@ -60,20 +60,22 @@ card "vanishes"). The `--board` flag is scoped to one run and can't be changed
 underneath you, so a multi-step edit always hits the board you meant.
 
 Board selection precedence, highest first: the `--board <id>` flag (one run
-only) → the board named by a full `<board>#<word-id>` card ref (see below) →
+only) → the board named by a `headway:<board>/<word-id>` card ref (see below) →
 `$HEADWAY_BOARD` → the board stored by `headway board <id>` → the default
 `headway`. If you're acting on many boards in one session, prefer `--board`; only
 fall back to `$HEADWAY_BOARD` (an env var, also stable for the session) when you
 truly want every command to default to the same non-default board.
 
-**Full card refs self-route.** A selector like `commerce#purse-metal-toilet`
-already names its board, so `headway show commerce#purse-metal-toilet` (and
-`move`, `comment`, …) targets `commerce` automatically — no `--board` needed.
-The `<board>#<word-id>` that `show` prints is a working address wherever you
+**Full card refs self-route.** A selector like `headway:commerce/purse-metal-toilet`
+already names its board, so `headway show headway:commerce/purse-metal-toilet` (and
+`move`, `comment`, …) targets `commerce` automatically — no `--board` needed. The
+`headway:<board>/<word-id>` that `show` prints is a working address wherever you
 paste it, which gives you the same self-contained, un-raceable targeting that
-`--board` does — prefer either over relying on the stateful switch. Bare
-`#word-id`, plain word-ids, and hex prefixes still resolve against the current
-board (so they still need `--board` to reach another one). Two refs naming
+`--board` does — prefer either over relying on the stateful switch. The
+scheme-less shorthand `commerce/purse-metal-toilet` self-routes too, and hex
+prefixes resolve against the current board (so they still need `--board` to reach
+another one). A **bare word-id** (`purse-metal-toilet`, no board segment) is no
+longer a card ref — it won't resolve; always include the board. Two refs naming
 different boards in one command — or a ref that disagrees with an explicit
 `--board` — are an error, not a silent resolution on the wrong board.
 
@@ -91,8 +93,8 @@ a **16-char (8-byte) prefix** is plenty for a board with a handful of cards, and
 even an 8-char prefix is usually unambiguous. Use a short prefix for automated
 edits; just lengthen it (or fall back to the full id) if you ever hit an
 "ambiguous card prefix" error. The human-readable
-`show` instead displays a muted **word-id** like `headway#maple-river-canyon` (a
-friendly rendering of that same event id, for quoting in commits/chat); it also
+`show` instead displays a muted **reference** like `headway:headway/maple-river-canyon`
+(a friendly rendering of that same event id, for quoting in commits/chat); it also
 resolves as a `<card>` argument, but prefer the hex id for automated edits.
 Always run `show` first to read the current ids and column names, then act on what
 you actually see — never assume an id or that a card is where you expect.
@@ -112,28 +114,28 @@ headway show <card>...  # print the given cards (word-id or hex) in full
 By default `show` collapses archived cards to a one-line count to keep the board
 readable; pass `--archived` to list them (e.g. to find an id for `restore`).
 
-`show` prints each card as `<title>  [labels]  <board>#<word-id>`, with the
-word-id muted at the end of the line.
+`show` prints each card as `<title>  [labels]  headway:<board>/<word-id>`, with
+the reference muted at the end of the line.
 
 **Which form to use:** when talking to a human about a card (chat, a commit
-message, a PR, a board comment), refer to it by its **word-id** — and **always
-fully qualify it with the board prefix** (`headway#maple-river-canyon`,
-`notebook#mango-sibling-false`), never the bare `#word-id` or sigil-less form.
-The full `<board>#<word-id>` is self-routing and unambiguous no matter which
-board is current when it's read; a bare word-id only resolves against the
-current board and reads wrong from anywhere else. This applies to every ref in a
-comment, not just the first. When *you* edit the board (move, label, archive,
-…), pass the canonical **hex id** from `show --json` instead, so an automated
-edit can never hit the wrong card.
+message, a PR, a board comment), refer to it by its **full reference** — scheme
+and board included (`headway:dave/maple-river-canyon`, and a notebook node as
+`notebook:mango-sibling-false`). Always include the scheme and the board; never a
+bare word-id. The full
+`headway:<board>/<word-id>` is self-routing and unambiguous no matter which board
+is current when it's read, and it renders as a live inline chip inside notes/chat;
+a bare word-id doesn't resolve at all. This applies to every ref in a comment, not
+just the first. When *you* edit the board (move, label, archive, …), pass the
+canonical **hex id** from `show --json` instead, so an automated edit can never
+hit the wrong card.
 
 All of these resolve as a `<card>` argument, to the same card every time:
 
 - a hex event id, full or any unique prefix (a 16-char prefix is plenty) — preferred for editing
-- `headway#maple-river-canyon` — the full word-id; it names its board, so it
-  self-routes there without `--board` (see Multiple boards)
-- `#maple-river-canyon` — bare; quote it in a shell so `#` isn't read as a
-  comment. Resolves against the current board only (no self-routing)
-- `maple-river-canyon` — the bare words, no sigil; current board only
+- `headway:dave/maple-river-canyon` — the full reference; it names its board, so
+  it self-routes there without `--board` (see Multiple boards)
+- `dave/maple-river-canyon` — the scheme-less shorthand; self-routes too. A bare
+  `maple-river-canyon` with no board segment is **not** a card ref and won't resolve.
 
 Default board columns: **Backlog**, **Todo**, **In Progress** (`in-progress`),
 **In Review** (`in-review`), **Done** (`done`). A column argument matches an id
@@ -201,11 +203,12 @@ How it renders:
 
   ```
   subissues (2/4 done)
-      [x] route media loads through imgproxy   headway#mushroom-include-wolf
-      [ ] cap media cache size with eviction   headway#extend-decrease-visit
+      [x] route media loads through imgproxy   headway:headway/mushroom-include-wolf
+      [ ] cap media cache size with eviction   headway:headway/extend-decrease-visit
   ```
 
-- `show --json` gains `parent`, `parent_words`, and `subissues` per card.
+- `show --json` gains `parent` (hex), `parent_ref` (a full
+  `headway:<board>/<word-id>`), and `subissues` per card.
 
 Notes: re-parenting that would create a cycle is refused; children may live on
 a different board than the parent; nesting works (a child can itself be a

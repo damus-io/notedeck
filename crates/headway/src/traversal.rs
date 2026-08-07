@@ -132,7 +132,7 @@ fn has_open_subissue(card: &CardView) -> bool {
 
 /// Blocking seam: is `card` held back by an unfinished blocker? A single, well
 /// named hook that returns false until blocking relations exist
-/// (notedeck#bronze-walk-until). When they land this becomes the "every
+/// (headway:notedeck/bronze-walk-until). When they land this becomes the "every
 /// effective blocker done" test — a card's own blockers unioned with those it
 /// inherits from ancestor containers — so [`ready`] needs no other change.
 fn is_blocked(_view: &BoardView, _card: &CardView) -> bool {
