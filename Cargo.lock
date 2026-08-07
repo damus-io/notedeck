@@ -5707,6 +5707,7 @@ dependencies = [
  "notedeck",
  "notedeck_ui",
  "pollster",
+ "profiling",
  "serde_json",
  "tempfile",
  "tokio",

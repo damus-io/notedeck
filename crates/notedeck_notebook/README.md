@@ -236,9 +236,11 @@ creation time.
 - `src/store.rs` — the action/persistence layer: `CanvasAction` + `apply`, which
   sign and ingest the `event.rs` builders into nostrdb (mirrors `headway::store`,
   with the same `Publisher`/`NoPublish` seam). Egui-free.
-- `src/lib.rs` — the `Notebook` Notedeck `App` plus `CanvasSync`, the live
-  subscription-backed reducer that folds once then feeds in only freshly-arrived
-  notes. Maps UI intents to `CanvasAction`s.
+- `src/lib.rs` — the `Notebook` Notedeck `App` plus its realtime caches:
+  `NotebookCache` (a `notedeck::RealtimeCache` over the `NotebookReducer` adapter,
+  shared with the app's inline widgets so a chip reads the same live canvas as the
+  foreground) and `VaultSync` (the longform vault's own subscription + list). Folds
+  once then feeds in only freshly-arrived notes. Maps UI intents to `CanvasAction`s.
 - `src/convert.rs` — `CanvasView → jsoncanvas::JsonCanvas` for rendering.
 - `src/ui.rs` — the egui canvas renderer (draggable/selectable/editable nodes,
   drag-from-side-handle to connect nodes), reporting committed edits back as a

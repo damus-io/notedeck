@@ -16,9 +16,11 @@ use crate::ui::{node_rect, notebook_ui, side_str};
 use egui::{Pos2, Rect};
 use enostr::{NoteId, Pubkey};
 use jsoncanvas::{JsonCanvas, NodeId, edge::Side};
-use nostrdb::{Ndb, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use notedeck::{AppContext, AppResponse, PrivateRelaySync, fan_out_unseen_notes};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// A node's in-progress geometry override during a live drag or resize. Each
 /// axis is independently optional: a plain body drag sets only [`pos`]; a resize
@@ -42,17 +44,29 @@ pub(crate) struct LiveGeometry {
 }
 
 /// An Obsidian-style infinite canvas, backed by nostr events in the local
-/// nostrdb. [`NotebookSync`] keeps a long-lived reducer over the account's events
-/// and the [`CanvasView`] folded from them, folding only freshly-arrived notes
-/// in as an ndb subscription reports them. Every edit is turned into a signed
-/// event ingested locally (see [`store`]); there is deliberately no relay
-/// publishing yet.
+/// nostrdb. A shared [`NotebookCache`] keeps a long-lived reducer over the
+/// account's canvas events and folds only freshly-arrived notes in as an ndb
+/// subscription reports them; the foreground canvas and every inline widget read
+/// that same realtime state. Every edit is turned into a signed event ingested
+/// locally (see [`store`]) and fanned out to the account's private relays.
 pub struct Notebook {
     /// Which canvas this instance manages (single canvas for now).
     canvas_id: String,
-    /// Subscription-backed cache of the reduced canvas and the vault note list
-    /// (egui-free), driven by one [`NotebookSync`].
-    sync: NotebookSync,
+    /// The one canvas-data engine (see [`NotebookCache`]): the account's folded
+    /// canvas reducer behind a per-frame-pumped [`notedeck::RealtimeCache`], shared
+    /// (behind `Rc<RefCell<…>>`) with the inline widgets this app registers so a
+    /// chip drawn elsewhere reads the same realtime canvas as the open surface.
+    cache: Rc<RefCell<NotebookCache>>,
+    /// The account's longform vault (a separate subscription + list). Kept apart
+    /// from [`cache`](Self::cache) because longform notes stand alone and must
+    /// never fold into a canvas (see [`event::KIND_LONGFORM`]); only the foreground
+    /// reads the vault, so — unlike the canvas cache — it isn't shared out.
+    vault_sync: VaultSync,
+    /// The active canvas ([`canvas_id`](Self::canvas_id)) projected from
+    /// [`cache`](Self::cache) on the last change — the [`CanvasView`] the foreground
+    /// render and edit path read without re-folding. `None` until the first fold,
+    /// or when no canvas with this id exists yet.
+    view: Option<CanvasView>,
     /// Inbound cross-device sync: declares a live + full-history subscription to
     /// the account's private relays each frame, and resolves the outbound
     /// publish targets.
@@ -107,7 +121,7 @@ pub struct Notebook {
     /// progress, or a delete awaiting confirmation). Driven by [`vault_ui`], which
     /// surfaces each completed interaction as a [`VaultAction`].
     vault: VaultState,
-    /// The vault rows to render, projected from [`NotebookSync::notes`] whenever
+    /// The vault rows to render, projected from [`VaultSync::notes`] whenever
     /// the sync reports a change (see [`vault_rows`]). Precomputed off the render
     /// loop so the per-row "edited …" subtitle is never formatted per frame.
     vault_rows: Vec<VaultRow>,
@@ -263,7 +277,7 @@ impl Notebook {
     /// tests/introspection so a seed barrier can wait for every longform note to
     /// fold in before snapshotting.
     pub fn notes(&self) -> &[event::LongformNote] {
-        self.sync.notes()
+        self.vault_sync.notes()
     }
 
     /// Whether the full-screen longform editor is open (the canvas is hidden
@@ -505,7 +519,7 @@ impl Notebook {
         match action {
             VaultAction::Open { d } => {
                 let Some(editor) = self
-                    .sync
+                    .vault_sync
                     .notes()
                     .iter()
                     .find(|n| n.d == d)
@@ -540,9 +554,9 @@ impl Notebook {
         title: String,
     ) {
         let Some(secret) = signer else { return };
-        // Copy out what the edit needs so the `sync` borrow ends before `wake`.
+        // Copy out what the edit needs so the vault borrow ends before `wake`.
         let Some((content, prev)) = self
-            .sync
+            .vault_sync
             .notes()
             .iter()
             .find(|n| n.d == d)
@@ -580,7 +594,7 @@ impl Notebook {
     ) {
         let Some(secret) = signer else { return };
         let Some(prev) = self
-            .sync
+            .vault_sync
             .notes()
             .iter()
             .find(|n| n.d == d)
@@ -597,7 +611,9 @@ impl Default for Notebook {
     fn default() -> Self {
         Notebook {
             canvas_id: store::CANVAS_ID.to_string(),
-            sync: NotebookSync::default(),
+            cache: Rc::new(RefCell::new(NotebookCache::default())),
+            vault_sync: VaultSync::default(),
+            view: None,
             private_sync: PrivateRelaySync::new("notebook"),
             canvas: JsonCanvas::default(),
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
@@ -640,20 +656,44 @@ impl notedeck::App for Notebook {
             .private_sync
             .update(ctx, vec![event::notebook_filter(&author)]);
 
-        // Keep a live subscription and re-fold only when something changed (first
-        // load, account switch, or an async ingest landing — including CLI
-        // ingests into the embedded relay). On a fresh fold, rebuild the
-        // renderable canvas and drop now-stale drag overrides (the new fold
-        // carries the committed positions).
-        let poll = self.sync.poll(ctx.ndb, &author, &self.canvas_id);
-        if poll.changed {
-            if let Some(view) = self.sync.view() {
-                self.canvas = view_to_canvas(view);
+        // Advance the longform vault first (its own subscription + list): it may
+        // resubscribe on an account switch, which needs `&mut Ndb`, so it must run
+        // before we open the canvas read txn below. Runs every frame but only
+        // re-lists when the subscription reports new longform.
+        let vault_changed = self.vault_sync.poll(ctx.ndb, &author);
+
+        // Pump the shared canvas cache under one read txn: advance this account's
+        // reducer, folding in any freshly-arrived notes — our own async ingests,
+        // `notebook` CLI moves into the embedded relay, remote sync. Inline widgets
+        // read this same cache, so a chip drawn in another app stays as live as the
+        // open canvas. On a change, re-project the active canvas (no separate
+        // one-shot fold). Keep waking while edits stream in.
+        let poll = Transaction::new(ctx.ndb)
+            .ok()
+            .map(|txn| {
+                let mut cache = self.cache.borrow_mut();
+                let poll = cache.poll(ctx.ndb, &txn, &author);
+                if poll.changed {
+                    self.view = cache.canvas(ctx.ndb, &txn, &author, &self.canvas_id);
+                }
+                poll
+            })
+            .unwrap_or_default();
+
+        // On a fresh canvas fold, rebuild the renderable canvas and drop now-stale
+        // drag overrides (the new fold carries the committed positions). Re-project
+        // the vault rows off the render loop only when longform changed, formatting
+        // each "edited …" subtitle once here rather than every frame in `vault_ui`.
+        if poll.changed || vault_changed {
+            if poll.changed {
+                if let Some(view) = &self.view {
+                    self.canvas = view_to_canvas(view);
+                }
+                self.live.clear();
             }
-            // Re-project the vault rows off the render loop, formatting each
-            // "edited …" subtitle once here rather than every frame in `vault_ui`.
-            self.vault_rows = vault_rows(ctx.i18n, self.sync.notes());
-            self.live.clear();
+            if vault_changed {
+                self.vault_rows = vault_rows(ctx.i18n, self.vault_sync.notes());
+            }
             self.wake();
         }
 
@@ -672,7 +712,7 @@ impl notedeck::App for Notebook {
         // No canvas yet: auto-seed one for an account that can sign. The seeded
         // events fan out via the same poll path on a following frame. (The UI
         // feedback for this state is drawn in `render`.)
-        if self.sync.view().is_none()
+        if self.view.is_none()
             && let Some(secret) = &signer
             && !self.seeded
         {
@@ -774,7 +814,7 @@ impl notedeck::App for Notebook {
             return AppResponse::default();
         }
 
-        if self.sync.view().is_none() {
+        if self.view.is_none() {
             // No canvas yet. `update` auto-seeds one for a signing account; a
             // watch-only account can't create one.
             let msg = if signer.is_some() {
@@ -800,7 +840,7 @@ impl notedeck::App for Notebook {
         if let (Some(intent), Some(secret)) = (intent, &signer)
             && let Some(action) = self.intent_to_action(intent)
         {
-            let view = self.sync.view().expect("view present");
+            let view = self.view.as_ref().expect("view present");
             store::apply(
                 ctx.ndb,
                 &self.canvas_id,
@@ -824,174 +864,167 @@ fn empty_state(ui: &mut egui::Ui, message: &str) {
     });
 }
 
-/// Subscription-backed, *online* view of one account's notebook state — both the
-/// reduced canvas and the vault note list — behind a single nostrdb subscription.
+/// notedeck_notebook's [`notedeck::Reducer`] adapter over the pure-data
+/// [`CanvasReducer`], so a generic [`notedeck::RealtimeCache`] can drive the canvas
+/// fold. A newtype rather than a direct `impl notedeck::Reducer for CanvasReducer`
+/// so the reducer layer ([`event`]) stays free of any `notedeck` dependency and
+/// egui-testable in isolation; the app layer supplies the framework glue. Its trait
+/// methods forward straight to the existing free functions ([`event::fold_canvas`]
+/// / [`event::reduce_delta`]) and [`CanvasReducer::finalize`].
 ///
-/// Holds a live subscription to all the account's notebook notes (canvas events
-/// **and** longform, [`event::notebook_filter`] + [`event::longform_filter`]) and
-/// a long-lived [`CanvasReducer`] across frames. The first poll folds the whole
-/// history once to seed the reducer; every later poll feeds it only the
-/// freshly-arrived notes ([`event::reduce_delta`]) — an incremental step, not a
-/// re-walk. The reducer is rebuilt from scratch only on a first load or an
-/// account switch. The vault list is re-derived ([`event::list_longform`])
-/// alongside, only when the subscription reports a change.
-///
-/// The canvas fold is commutative and idempotent, so applying a delta to an
-/// up-to-date reducer matches a full re-fold. Deliberately free of any egui
-/// dependency so it can be unit-tested against a bare `Ndb`.
-#[derive(Default)]
-struct NotebookSync {
-    /// The last reduced canvas. `None` means "no such canvas" (or not loaded).
-    view: Option<CanvasView>,
-    /// The account's browsable notes, newest-edited first (the vault list).
-    notes: Vec<event::LongformNote>,
-    /// The accumulator, kept alive across polls so new notes fold in
-    /// incrementally. `None` until the first full fold (and again after an
-    /// account switch), which is the signal to re-fold from scratch.
-    reducer: Option<CanvasReducer>,
-    /// Live subscription to `sub_author`'s **canvas** notes. Its freshly-polled
-    /// keys drive the incremental fold *and* are the fan-out set — all canvas
-    /// kinds, safe to publish in the clear.
-    sub: Option<Subscription>,
-    /// Live subscription to `sub_author`'s **longform** notes, kept apart from
-    /// [`Self::sub`] so its keys never enter the fan-out set (longform is
-    /// PNS-wrapped). Its only job is to signal that the vault list may have
-    /// changed, prompting a re-list.
-    vault_sub: Option<Subscription>,
-    /// The account the subscriptions/caches belong to, so we resubscribe and
-    /// re-derive on an account switch.
-    sub_author: Option<Pubkey>,
-    /// Test-only count of full-history re-folds, to assert an ordinary change
-    /// folds in as a delta rather than re-walking the whole log.
-    #[cfg(test)]
-    full_reloads: u32,
-}
+/// The reducer holds *all* of the author's canvases ([`event::fold_canvas`] folds
+/// an account's whole notebook history), so one cache entry backs the foreground
+/// canvas and every inline reference to any of that author's canvases.
+struct NotebookReducer(CanvasReducer);
 
-/// The result of a [`NotebookSync::poll`].
-#[derive(Default)]
-struct PollResponse {
-    /// The cached canvas or vault list was (re)derived this call — a first load,
-    /// an account switch, or new notes folding in — so the caller rebuilds the
-    /// renderable canvas and schedules follow-up repaints.
-    changed: bool,
-    /// **Canvas** note keys folded in *incrementally* this call, for the caller
-    /// to fan out to the account's private relays (see
-    /// [`notedeck::fan_out_unseen_notes`]). Empty on a full reload (historical
-    /// notes, not new ingests) and on a no-op. Deliberately excludes longform
-    /// keys: those are PNS-wrapped and must never be published in the clear (see
-    /// [`Notebook::save_editor`] / `headway:notebook/merry-patch-boost`).
-    fresh: Vec<NoteKey>,
-}
+impl notedeck::Reducer for NotebookReducer {
+    type View = CanvasView;
 
-impl NotebookSync {
-    /// Ensure a live subscription to `author`, drain it, and update both the
-    /// cached canvas and the vault list. See [`PollResponse`] for the returned
-    /// change flag and freshly-arrived (canvas-only) keys.
-    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, canvas_id: &str) -> PollResponse {
-        self.sync_subscription(ndb, author);
-
-        let Some(canvas_sub) = self.sub else {
-            // Subscribe failed: degrade to a full reload each frame so edits show.
-            self.reload(ndb, author, canvas_id);
-            return PollResponse {
-                changed: true,
-                fresh: Vec::new(),
-            };
-        };
-
-        // Drain both subscriptions each poll. The canvas keys are the fold delta
-        // and the fan-out set; the longform sub only tells us whether the vault
-        // list needs re-listing (its keys never fan out — see the field docs).
-        let canvas_keys = ndb.poll_for_notes(canvas_sub, 64);
-        let vault_changed = self
-            .vault_sub
-            .map(|s| !ndb.poll_for_notes(s, 64).is_empty())
-            .unwrap_or(false);
-
-        // First load (or just resubscribed): fold the whole history once to seed
-        // the reducer and list the vault. The keys drained above are historical,
-        // so they're deliberately dropped rather than fanned out.
-        if self.reducer.is_none() {
-            self.reload(ndb, author, canvas_id);
-            return PollResponse {
-                changed: true,
-                fresh: Vec::new(),
-            };
-        }
-
-        // Nothing new since the last poll: the caches stand, no re-derive.
-        if canvas_keys.is_empty() && !vault_changed {
-            return PollResponse::default();
-        }
-
-        // Incremental: fold the freshly-arrived canvas notes into the live reducer
-        // (commutative/idempotent, so this matches a full re-fold without walking
-        // the whole history), and re-list the vault only when longform changed.
-        if let Ok(txn) = Transaction::new(ndb) {
-            if !canvas_keys.is_empty() {
-                let reducer = self.reducer.as_mut().expect("reducer present");
-                event::reduce_delta(reducer, ndb, &txn, &canvas_keys);
-                self.view = event::pick_canvas(reducer, author, canvas_id);
-            }
-            if vault_changed {
-                self.notes = event::list_longform(ndb, &txn, author);
-            }
-        }
-        PollResponse {
-            changed: true,
-            fresh: canvas_keys,
-        }
+    fn filter(author: &Pubkey) -> Filter {
+        event::notebook_filter(author)
     }
 
-    /// The cached canvas, if one has been folded.
-    fn view(&self) -> Option<&CanvasView> {
-        self.view.as_ref()
+    fn fold(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Self> {
+        event::fold_canvas(ndb, txn, author).map(NotebookReducer)
+    }
+
+    fn reduce_delta(&mut self, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) -> Vec<NoteKey> {
+        event::reduce_delta(&mut self.0, ndb, txn, keys)
+    }
+
+    fn finalize(&self) -> Vec<CanvasView> {
+        self.0.finalize()
+    }
+}
+
+/// The canvas-data engine for the Notebook app: a per-account
+/// [`notedeck::RealtimeCache`] over the [`NotebookReducer`]. Shared (behind
+/// `Rc<RefCell<…>>`) between the app and everything it registers for inline
+/// display, so the foreground canvas and every inline chip read the *same*
+/// reducer — a realtime edit (a CLI move, a remote sync) that [`update`]'s
+/// per-frame [`poll`](Self::poll) folds in is immediately visible to a chip drawn
+/// in another app, not just to the open canvas.
+///
+/// A thin wrapper: the seed-once fold, the post-snapshot deferral (the freshness
+/// guarantee — see [`event::reduce_delta`]), the memoized finalize and the pump
+/// all live in the generic cache; this only adds notebook-specific convenience
+/// reads. The longform vault is deliberately *not* here (see [`VaultSync`]): it's a
+/// standalone kind on its own subscription, and only the foreground reads it.
+///
+/// [`update`]: notedeck::App::update
+#[derive(Default)]
+struct NotebookCache {
+    authors: notedeck::RealtimeCache<NotebookReducer>,
+}
+
+impl NotebookCache {
+    /// Advance `author`'s reducer and report the change — the per-frame pump called
+    /// from [`update`](notedeck::App::update). Fan out
+    /// [`fresh`](notedeck::PollResponse::fresh) and wake on
+    /// [`changed`](notedeck::PollResponse::changed). Thin delegate to the generic
+    /// [`RealtimeCache`](notedeck::RealtimeCache), which owns the
+    /// subscribe/seed/delta/pending discipline; a chip's lazy fold-on-render goes
+    /// through [`canvas`](Self::canvas).
+    fn poll(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> notedeck::PollResponse {
+        self.authors.poll(ndb, txn, author)
+    }
+
+    /// Advance `author`'s reducer, (re)finalize it *at most once per fold*, and run
+    /// `read` against the memoized [`CanvasView`]s. `None` only when the reducer
+    /// hasn't seeded yet. Delegates to
+    /// [`RealtimeCache::with_views`](notedeck::RealtimeCache::with_views): the
+    /// foreground canvas and every inline widget resolve through it, so on a steady
+    /// frame the first read finalizes and the rest reuse the memo. `read` extracts
+    /// owned data from the borrowed slice so the cache borrow drops before drawing.
+    fn with_canvases<R>(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        author: &Pubkey,
+        read: impl FnOnce(&[CanvasView]) -> R,
+    ) -> Option<R> {
+        self.authors.with_views(ndb, txn, author, read)
+    }
+
+    /// Fold and pick a single canvas (`canvas_id`) authored by `author`, seeding the
+    /// reducer on first touch. `None` before the first fold or when no such canvas
+    /// exists. The foreground canvas and every inline canvas widget resolve through
+    /// this (via the memoized [`with_canvases`](Self::with_canvases)), rather than a
+    /// separate one-shot fold.
+    #[profiling::function]
+    fn canvas(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        author: &Pubkey,
+        canvas_id: &str,
+    ) -> Option<CanvasView> {
+        self.with_canvases(ndb, txn, author, |canvases| {
+            event::find_canvas(canvases, author, canvas_id).cloned()
+        })
+        .flatten()
+    }
+}
+
+/// The account's longform (NIP-23) vault: a live subscription to its kind-30023
+/// notes and the newest-edited-first list folded from them. Kept apart from
+/// [`NotebookCache`] on purpose — longform notes stand alone (never folded into a
+/// canvas, see [`event::KIND_LONGFORM`]) and are PNS-wrapped, so their keys must
+/// never enter the canvas fan-out set. Only the foreground reads the vault, so it's
+/// app-owned rather than shared out to the inline widgets.
+///
+/// The list is a full re-query ([`event::list_longform`], which resolves the
+/// latest revision per `d`) rather than an accumulate-fold, so — unlike the canvas
+/// cache — there's no incremental reducer to keep; the subscription is only a
+/// change signal telling us when to re-list. Deliberately egui-free so it can be
+/// unit-tested against a bare `Ndb`.
+#[derive(Default)]
+struct VaultSync {
+    /// The account's browsable notes, newest-edited first.
+    notes: Vec<event::LongformNote>,
+    /// Live subscription to `author`'s longform notes; drained each poll only to
+    /// learn whether the list changed (its keys never fan out — longform is
+    /// PNS-wrapped, see the struct docs).
+    sub: Option<Subscription>,
+    /// The account the subscription belongs to, so we resubscribe and re-list on an
+    /// account switch.
+    author: Option<Pubkey>,
+}
+
+impl VaultSync {
+    /// Ensure a live subscription to `author`'s longform notes and re-list when it
+    /// reports a change, returning whether the list was (re)derived this call.
+    /// Resubscribes (needs `&mut Ndb`) and re-lists once on first run or an account
+    /// switch — a fresh subscription reports only *future* ingests, so we catch up
+    /// on what's already there right away.
+    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey) -> bool {
+        // First run or account switch: (re)subscribe and seed the list once.
+        if self.sub.is_none() || self.author.as_ref() != Some(author) {
+            if let Some(old) = self.sub.take() {
+                let _ = ndb.unsubscribe(old);
+            }
+            self.sub = ndb.subscribe(&[event::longform_filter(author)]).ok();
+            self.author = Some(*author);
+            if let Ok(txn) = Transaction::new(ndb) {
+                self.notes = event::list_longform(ndb, &txn, author);
+            }
+            return true;
+        }
+
+        // Steady state: re-list only when the subscription reports new longform.
+        let changed = self
+            .sub
+            .map(|s| !ndb.poll_for_notes(s, 64).is_empty())
+            .unwrap_or(false);
+        if changed && let Ok(txn) = Transaction::new(ndb) {
+            self.notes = event::list_longform(ndb, &txn, author);
+        }
+        changed
     }
 
     /// The cached vault note list (newest-edited first).
     fn notes(&self) -> &[event::LongformNote] {
         &self.notes
-    }
-
-    /// Re-derive everything from the whole event history into a fresh reducer
-    /// (seeding or after an account switch): the canvas view and the vault list.
-    fn reload(&mut self, ndb: &Ndb, author: &Pubkey, canvas_id: &str) {
-        let Ok(txn) = Transaction::new(ndb) else {
-            return;
-        };
-        let reducer = event::fold_canvas(ndb, &txn, author);
-        self.view = reducer
-            .as_ref()
-            .and_then(|r| event::pick_canvas(r, author, canvas_id));
-        self.reducer = reducer;
-        self.notes = event::list_longform(ndb, &txn, author);
-        #[cfg(test)]
-        {
-            self.full_reloads += 1;
-        }
-    }
-
-    /// Ensure live subscriptions to `author`'s canvas and longform notes,
-    /// resubscribing (and dropping the caches) on an account switch. A fresh
-    /// subscription only reports *future* ingests, so the next poll does a
-    /// one-off full re-derive to pick up what's already there.
-    fn sync_subscription(&mut self, ndb: &mut Ndb, author: &Pubkey) {
-        if self.sub.is_some() && self.sub_author.as_ref() == Some(author) {
-            return;
-        }
-        for old in [self.sub.take(), self.vault_sub.take()]
-            .into_iter()
-            .flatten()
-        {
-            let _ = ndb.unsubscribe(old);
-        }
-        self.sub = ndb.subscribe(&[event::notebook_filter(author)]).ok();
-        self.vault_sub = ndb.subscribe(&[event::longform_filter(author)]).ok();
-        self.sub_author = Some(*author);
-        // New account (or first run): drop the caches so the next poll re-derives.
-        self.view = None;
-        self.reducer = None;
-        self.notes.clear();
     }
 }
 
@@ -1003,24 +1036,24 @@ mod tests {
     use futures_util::StreamExt;
     use nostrdb::{Config, SubscriptionStream};
 
-    /// A headless harness driving a [`NotebookSync`] against a bare `Ndb` — the
-    /// subscription / poll / refold logic with no egui in sight. Mirrors
-    /// headway's `TestSync`.
-    struct TestSync {
+    /// A headless harness driving a [`NotebookCache`] against a bare `Ndb` — the
+    /// subscribe / poll / fold logic with no egui in sight. Mirrors headway's
+    /// `TestSync`; each read opens its own short-lived txn, as the app does.
+    struct TestCache {
         ndb: Ndb,
         _dir: tempfile::TempDir,
         kp: FullKeypair,
-        sync: NotebookSync,
+        cache: NotebookCache,
         stream: SubscriptionStream,
     }
 
-    impl TestSync {
+    impl TestCache {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
             let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
             let kp = FullKeypair::generate();
             // A separate subscription we can await on to know when ingests commit
-            // (the sync's own subscription is polled, not awaited).
+            // (the cache's own subscription is polled, not awaited).
             let sub = ndb
                 .subscribe(&[event::notebook_filter(&kp.pubkey)])
                 .unwrap();
@@ -1029,7 +1062,7 @@ mod tests {
                 ndb,
                 _dir: dir,
                 kp,
-                sync: NotebookSync::default(),
+                cache: NotebookCache::default(),
                 stream,
             }
         }
@@ -1048,21 +1081,40 @@ mod tests {
             });
         }
 
-        fn poll(&mut self) -> bool {
-            self.sync
-                .poll(&mut self.ndb, &self.kp.pubkey, CANVAS_ID)
-                .changed
+        /// Pump the cache under a fresh read txn, returning the poll response.
+        fn poll(&mut self) -> notedeck::PollResponse {
+            let txn = Transaction::new(&self.ndb).unwrap();
+            self.cache.poll(&self.ndb, &txn, &self.kp.pubkey)
         }
 
-        fn apply(&mut self, action: CanvasAction) {
-            let view = self.sync.view().expect("view present").clone();
+        /// Resolve the managed canvas under a fresh read txn.
+        fn canvas(&mut self) -> Option<CanvasView> {
+            let txn = Transaction::new(&self.ndb).unwrap();
+            self.cache
+                .canvas(&self.ndb, &txn, &self.kp.pubkey, CANVAS_ID)
+        }
+
+        fn full_reloads(&self) -> u32 {
+            self.cache.authors.stats().full_reloads
+        }
+
+        fn add_node(&mut self, view: &CanvasView, label: &str) {
             store::apply(
                 &self.ndb,
                 CANVAS_ID,
-                &view,
+                view,
                 &self.kp.pubkey,
                 &self.secret(),
-                action,
+                CanvasAction::AddNode {
+                    kind: event::NodeKind::Text,
+                    geo: event::Geometry {
+                        x: 0,
+                        y: 0,
+                        w: 200,
+                        h: 80,
+                    },
+                    content: text(label),
+                },
                 &mut NoPublish,
             );
         }
@@ -1076,10 +1128,12 @@ mod tests {
     }
 
     /// An ordinary edit folds in as a delta — the whole history is re-walked only
-    /// on the first load, not on every change.
+    /// on the first load, not on every change. The cache seeds once and thereafter
+    /// only folds deltas (the generic [`notedeck::RealtimeCache`] invariant,
+    /// observed here through the notebook adapter).
     #[test]
-    fn sync_folds_incrementally() {
-        let mut t = TestSync::new();
+    fn cache_seeds_once_then_folds_deltas() {
+        let mut t = TestCache::new();
         store::seed_canvas(
             &t.ndb,
             &t.kp.pubkey,
@@ -1090,31 +1144,72 @@ mod tests {
         );
         t.await_notes(1);
 
-        // First poll seeds the reducer with a full fold.
-        assert!(t.poll());
-        assert_eq!(t.sync.full_reloads, 1);
-        assert!(t.sync.view().is_some());
-        assert_eq!(t.sync.view().unwrap().title, "Canvas");
+        // First poll seeds the reducer with a full fold; the canvas materialises.
+        assert!(t.poll().changed);
+        assert_eq!(t.full_reloads(), 1);
+        let view = t.canvas().expect("canvas seeded");
+        assert_eq!(view.title, "Canvas");
 
         // Add a node; its two events fold in as a delta, no extra full reload.
-        t.apply(CanvasAction::AddNode {
-            kind: event::NodeKind::Text,
-            geo: event::Geometry {
-                x: 0,
-                y: 0,
-                w: 200,
-                h: 80,
-            },
-            content: text("hello"),
-        });
+        t.add_node(&view, "hello");
         t.await_notes(2);
-        assert!(t.poll());
-        assert_eq!(t.sync.full_reloads, 1, "delta fold, not a re-walk");
-        let view = t.sync.view().unwrap();
-        assert_eq!(view.nodes.len(), 1);
-        assert_eq!(view.nodes[0].content.text, "hello");
 
-        // A poll with nothing new doesn't reduce.
-        assert!(!t.poll());
+        let node = loop {
+            t.poll();
+            if let Some(v) = t.canvas()
+                && !v.nodes.is_empty()
+            {
+                break v.nodes[0].content.text.clone();
+            }
+        };
+        assert_eq!(node, "hello");
+        assert_eq!(t.full_reloads(), 1, "delta fold, not a re-walk");
+    }
+
+    /// The freshness fix this cache exists to spread: a canvas note committed
+    /// *after* the read txn a delta was polled with must be retained and retried,
+    /// not silently dropped (the bug when `event::reduce_delta` returned `()`).
+    /// Recovers by folding the deferred key as a delta, not by re-seeding.
+    #[test]
+    fn cache_retries_deltas_committed_after_read_txn() {
+        let mut t = TestCache::new();
+        store::seed_canvas(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            CANVAS_ID,
+            "Canvas",
+            &mut NoPublish,
+        );
+        t.await_notes(1);
+
+        // Seed the cache (opens its own subscription) and grab the seeded canvas.
+        t.poll();
+        let view = t.canvas().expect("canvas seeded");
+
+        // Open a stale snapshot, *then* commit a node's events after it: they enter
+        // the cache's subscription inbox but are invisible to this older txn.
+        let stale = Transaction::new(&t.ndb).unwrap();
+        t.add_node(&view, "late");
+        t.await_notes(2);
+
+        let resp = t.cache.poll(&t.ndb, &stale, &t.kp.pubkey);
+        drop(stale);
+        assert!(!resp.changed, "a deferred-only advance reads as a no-op");
+        assert!(
+            t.cache.authors.pending_len(&t.kp.pubkey) >= 1,
+            "the undrained keys are retained for retry, not dropped"
+        );
+
+        // A fresh snapshot resolves the retained keys as a delta.
+        let canvas = t.canvas().expect("canvas present");
+        assert_eq!(canvas.nodes.len(), 1, "the retained delta folded in");
+        assert_eq!(canvas.nodes[0].content.text, "late");
+        assert_eq!(t.cache.authors.pending_len(&t.kp.pubkey), 0);
+        assert_eq!(
+            t.full_reloads(),
+            1,
+            "recovered by folding a delta, not by re-seeding"
+        );
     }
 }

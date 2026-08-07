@@ -1095,16 +1095,58 @@ pub fn fold_canvas(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Canv
     .ok()
 }
 
-/// Fold a batch of freshly-arrived notes (by `keys`) into an existing reducer.
-/// Sound because the fold is commutative and idempotent.
-pub fn reduce_delta(reducer: &mut CanvasReducer, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) {
+/// Fold a batch of freshly-arrived notes (by `keys`) into an existing reducer,
+/// returning the keys that couldn't be read under `txn`. Sound because the fold
+/// is commutative and idempotent: applying a delta to an up-to-date reducer yields
+/// the same state as a full re-fold, so the app can subscribe-then-poll instead of
+/// walking the history every frame. Notes that aren't recognised canvas events are
+/// skipped.
+///
+/// A subscription drains a key the instant its note is committed, but a read `txn`
+/// is a snapshot fixed at *open* time: a note committed after the caller opened
+/// `txn` isn't visible to it yet, so [`get_note_by_key`](Ndb::get_note_by_key)
+/// fails even though the note exists. Because polling already removed the key from
+/// the subscription inbox, silently skipping it would drop the note until the next
+/// full re-seed — the cross-device-edit-lands-mid-frame freshness bug. Instead we
+/// hand those keys back so the caller (the app's realtime cache) can retry them on
+/// a later advance with that frame's fresher snapshot; the re-fold is idempotent,
+/// so a key that turns out to have been visible all along costs nothing to replay.
+#[must_use = "keys that couldn't be read must be retried with a fresher txn, not dropped"]
+#[profiling::function]
+pub fn reduce_delta(
+    reducer: &mut CanvasReducer,
+    ndb: &Ndb,
+    txn: &Transaction,
+    keys: &[NoteKey],
+) -> Vec<NoteKey> {
+    let mut deferred = Vec::new();
     for key in keys {
-        if let Ok(note) = ndb.get_note_by_key(txn, *key)
-            && let Some(event) = parse(&note)
-        {
+        let Ok(note) = ndb.get_note_by_key(txn, *key) else {
+            // Committed after `txn`'s snapshot — retry next advance.
+            deferred.push(*key);
+            continue;
+        };
+        if let Some(event) = parse(&note) {
             reducer.ingest(event);
         }
     }
+    deferred
+}
+
+/// Find the canvas with `canvas_id` authored by `author` in an *already-finalized*
+/// canvas set, without re-finalizing. The steady-state inline path finalizes a
+/// reducer once per frame (memoized by the app's realtime cache) and then
+/// resolves every reference against that one `&[CanvasView]` through this, rather
+/// than re-walking the reducer per reference (see [`pick_canvas`], which finalizes
+/// on each call).
+pub fn find_canvas<'a>(
+    canvases: &'a [CanvasView],
+    author: &Pubkey,
+    canvas_id: &str,
+) -> Option<&'a CanvasView> {
+    canvases
+        .iter()
+        .find(|v| v.id == canvas_id && &v.author == author.bytes())
 }
 
 /// Pick the canvas with `canvas_id` authored by `author` out of a reducer.
