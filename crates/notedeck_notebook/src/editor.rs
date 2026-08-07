@@ -217,8 +217,9 @@ fn source_column_ui(
 /// middle-click paste) is attached via the shared
 /// [`input_context`](notedeck_ui::context_menu::input_context) helper — the same
 /// one the rest of notedeck's text inputs use — so editing the note's text works
-/// the same everywhere. Paste appends to the buffer
-/// ([`PasteBehavior::Append`]) rather than clearing it.
+/// the same everywhere. It's selection-aware: Copy/Cut act on the highlighted
+/// span and Paste ([`PasteBehavior::Append`]) drops the clipboard over the
+/// selection or at the caret (never clearing the whole note).
 fn source_panel_ui(
     ui: &mut egui::Ui,
     content: &mut String,

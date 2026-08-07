@@ -1,4 +1,5 @@
 /// Context menu helpers (paste, etc)
+use egui::text::{CCursor, CCursorRange};
 use egui_winit::clipboard::Clipboard;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -7,15 +8,98 @@ pub enum PasteBehavior {
     Append,
 }
 
-fn handle_paste(clipboard: &mut Clipboard, input: &mut String, paste_behavior: PasteBehavior) {
-    if let Some(text) = clipboard.get() {
-        // if called with clearing_input_context, then we clear before
-        // we paste. Useful for certain fields like passwords, etc
-        match paste_behavior {
-            PasteBehavior::Clear => input.clear(),
-            PasteBehavior::Append => {}
-        }
+/// The live text selection inside a text widget, read back from its stored
+/// [`egui::TextEditState`]: the widget's id plus the selected span as an ordered
+/// char range (empty when it's just a caret, not a highlighted span).
+struct TextSelection {
+    id: egui::Id,
+    range: std::ops::Range<usize>,
+}
+
+impl TextSelection {
+    /// Read the current selection/caret out of the text widget behind `response`,
+    /// or `None` if it has no stored cursor (e.g. never focused, or `response`
+    /// isn't a `TextEdit`). A `None` here makes every action below fall back to
+    /// the pre-selection, whole-buffer behaviour, so non-`TextEdit` callers keep
+    /// working unchanged.
+    fn load(ctx: &egui::Context, response: &egui::Response) -> Option<Self> {
+        let range = egui::TextEdit::load_state(ctx, response.id)?
+            .cursor
+            .char_range()?;
+        let (a, b) = (range.primary.index, range.secondary.index);
+        Some(TextSelection {
+            id: response.id,
+            range: a.min(b)..a.max(b),
+        })
+    }
+
+    /// Whether a non-empty span is highlighted (as opposed to a bare caret).
+    fn has_span(&self) -> bool {
+        !self.range.is_empty()
+    }
+}
+
+/// Byte range spanned by an ordered char `range` in `text`; an endpoint at or
+/// past the char count clamps to `text.len()`, so an end-of-buffer or
+/// empty-buffer edit yields a valid splice point rather than panicking.
+fn char_range_to_bytes(text: &str, range: &std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let byte = |i: usize| text.char_indices().nth(i).map_or(text.len(), |(b, _)| b);
+    byte(range.start)..byte(range.end)
+}
+
+/// The text a Copy/Cut acts on: the highlighted span if there is one, otherwise
+/// the whole buffer — preserving the earlier behaviour where a right-click Copy
+/// with nothing selected grabbed the entire field.
+fn copy_target<'a>(input: &'a str, selection: Option<&TextSelection>) -> &'a str {
+    match selection {
+        Some(sel) if sel.has_span() => &input[char_range_to_bytes(input, &sel.range)],
+        _ => input,
+    }
+}
+
+/// Move text widget `id`'s caret to char index `caret` and refocus it, so after
+/// we've spliced its buffer out-of-band (cut/paste) the cursor lands sensibly on
+/// the next frame instead of snapping to a stale offset.
+fn place_caret(ctx: &egui::Context, id: egui::Id, caret: usize) {
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else {
+        return;
+    };
+    state
+        .cursor
+        .set_char_range(Some(CCursorRange::one(CCursor::new(caret))));
+    egui::TextEdit::store_state(ctx, id, state);
+    ctx.memory_mut(|mem| mem.request_focus(id));
+}
+
+fn handle_paste(
+    ctx: &egui::Context,
+    clipboard: &mut Clipboard,
+    input: &mut String,
+    paste_behavior: PasteBehavior,
+    selection: Option<&TextSelection>,
+) {
+    let Some(text) = clipboard.get() else {
+        return;
+    };
+
+    // Clear-mode fields (passwords, single-value url pickers, etc.) always
+    // replace the whole buffer on paste, ignoring any selection.
+    if paste_behavior == PasteBehavior::Clear {
+        input.clear();
         input.push_str(&text);
+        return;
+    }
+
+    // Append mode: drop the pasted text over the highlighted span, or at the
+    // caret; with no cursor at all, fall back to appending at the very end.
+    let range = selection.map(|s| s.range.clone()).unwrap_or_else(|| {
+        let end = input.chars().count();
+        end..end
+    });
+    let caret = range.start + text.chars().count();
+    input.replace_range(char_range_to_bytes(input, &range), &text);
+    if let Some(sel) = selection {
+        place_caret(ctx, sel.id, caret);
     }
 }
 
@@ -26,26 +110,50 @@ pub fn input_context(
     input: &mut String,
     paste_behavior: PasteBehavior,
 ) {
+    // The selection is stored on the egui Context, so it's the same whether read
+    // here (for the menu) or below (for a middle-click paste).
+    let selection = TextSelection::load(ui.ctx(), response);
+
     context_menu(response, |ui| {
         if ui.button("Paste").clicked() {
-            handle_paste(clipboard, input, paste_behavior);
+            handle_paste(
+                ui.ctx(),
+                clipboard,
+                input,
+                paste_behavior,
+                selection.as_ref(),
+            );
             ui.close_menu();
         }
 
         if ui.button("Copy").clicked() {
-            clipboard.set_text(input.to_owned());
+            clipboard.set_text(copy_target(input, selection.as_ref()).to_owned());
             ui.close_menu();
         }
 
         if ui.button("Cut").clicked() {
-            clipboard.set_text(input.to_owned());
-            input.clear();
+            clipboard.set_text(copy_target(input, selection.as_ref()).to_owned());
+            match selection.as_ref().filter(|s| s.has_span()) {
+                // Excise just the highlighted span and drop the caret where it was.
+                Some(sel) => {
+                    input.replace_range(char_range_to_bytes(input, &sel.range), "");
+                    place_caret(ui.ctx(), sel.id, sel.range.start);
+                }
+                // No span selected: cut the whole field, as before.
+                None => input.clear(),
+            }
             ui.close_menu();
         }
     });
 
     if response.middle_clicked() {
-        handle_paste(clipboard, input, paste_behavior)
+        handle_paste(
+            ui.ctx(),
+            clipboard,
+            input,
+            paste_behavior,
+            selection.as_ref(),
+        );
     }
 
     // for keyboard visibility
@@ -154,4 +262,56 @@ pub fn context_button(ui: &mut egui::Ui, id: egui::Id, put_at: egui::Rect) -> eg
     painter.circle_filled(right_circle_center, translated_radius, color);
 
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn selection(range: std::ops::Range<usize>) -> TextSelection {
+        TextSelection {
+            id: egui::Id::new("test"),
+            range,
+        }
+    }
+
+    /// The char→byte mapping the selection-aware edits splice on: ASCII maps 1:1,
+    /// multibyte chars advance by their UTF-8 width, and an endpoint at (or past)
+    /// the char count clamps to the byte length so an end-of-buffer or empty-buffer
+    /// splice point stays valid instead of panicking.
+    #[test]
+    fn char_range_to_bytes_maps_and_clamps() {
+        // ASCII: char indices equal byte offsets.
+        assert_eq!(char_range_to_bytes("hello", &(1..4)), 1..4);
+        // A bare caret (empty range) is a zero-width byte range at that offset.
+        assert_eq!(char_range_to_bytes("hello", &(2..2)), 2..2);
+        // End-of-string endpoint clamps to the byte length (an insertion point).
+        assert_eq!(char_range_to_bytes("hello", &(5..5)), 5..5);
+        // Empty buffer: any endpoint clamps to 0, the only valid splice point.
+        assert_eq!(char_range_to_bytes("", &(0..0)), 0..0);
+        // Multibyte: "héllo" is h(1) é(2) l(1) l(1) o(1); chars 1..3 = bytes 1..4.
+        assert_eq!(char_range_to_bytes("héllo", &(1..3)), 1..4);
+        // Selecting through the end of a multibyte string clamps correctly.
+        assert_eq!(char_range_to_bytes("héllo", &(4..5)), 5..6);
+    }
+
+    /// Copy/Cut act on the highlighted span when there is one, and fall back to the
+    /// whole buffer otherwise (no selection at all, or a bare caret) — preserving
+    /// the pre-selection behaviour where right-click Copy grabbed the entire field.
+    #[test]
+    fn copy_target_prefers_span_else_whole_buffer() {
+        // A real span copies just that slice.
+        assert_eq!(copy_target("hello world", Some(&selection(6..11))), "world");
+        // A reversed selection (primary/secondary swapped) is already ordered here.
+        assert_eq!(copy_target("hello world", Some(&selection(0..5))), "hello");
+        // A bare caret (empty range) falls back to the whole buffer.
+        assert_eq!(
+            copy_target("hello world", Some(&selection(3..3))),
+            "hello world"
+        );
+        // No selection info at all also falls back to the whole buffer.
+        assert_eq!(copy_target("hello world", None), "hello world");
+        // Multibyte span slices on char boundaries.
+        assert_eq!(copy_target("héllo", Some(&selection(0..2))), "hé");
+    }
 }
