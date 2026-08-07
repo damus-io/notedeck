@@ -5594,6 +5594,7 @@ dependencies = [
  "enostr",
  "futures-util",
  "headway",
+ "hex",
  "nostr 0.37.0",
  "nostrdb",
  "notedeck",

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use enostr::{NoteId, Pubkey, RelayId, RelayStatus};
-use nostrdb::{Ndb, NoteKey, Subscription, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use notedeck::{
     App, AppContext, AppResponse, ColorTheme, DataPath, DataPathType, PrivateRelaySync,
     fan_out_unseen_notes,
@@ -11,6 +11,7 @@ use notedeck::{
 
 pub use headway::{event, store};
 
+mod teams;
 mod tools;
 mod ui;
 
@@ -55,6 +56,13 @@ pub struct Headway {
     /// [`process_pending_open`](Headway::process_pending_open) on the next render:
     /// switch to the owning board and, for a card, open its detail.
     pending_open: Option<NoteId>,
+    /// The shared boards the selected account has joined (SNS `team_root`s),
+    /// loaded from disk and re-registered with nostrdb on each account switch (see
+    /// [`teams`]). Grown live as incoming kind-1082 key-shares are auto-accepted.
+    teams: Vec<teams::Team>,
+    /// Subscription to unwrapped kind-1082 key-share rumors, so a share that
+    /// arrives while Headway is open is detected and accepted without a restart.
+    keyshare_sub: Option<Subscription>,
     /// The one board-data engine (see [`BoardCache`]): the account's folded board
     /// reducer, pumped in [`update`](App::update) and read by both the foreground
     /// UI here and everything this app registers for inline display — the
@@ -75,6 +83,8 @@ impl Default for Headway {
             seeded: false,
             repaint_frames: 0,
             pending_open: None,
+            teams: Vec::new(),
+            keyshare_sub: None,
             board_cache: Rc::new(RefCell::new(BoardCache::default())),
         }
     }
@@ -99,6 +109,75 @@ impl Headway {
             self.repaint_frames -= 1;
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
+    }
+
+    /// Poll the live key-share subscription (creating it on first use), returning
+    /// the note keys of any kind-1082 rumors that arrived since the last poll.
+    /// Keyed on the rumor kind alone — nostrdb only unwraps a `1059` gift-wrap to
+    /// its `1082` when it was addressed to one of our registered account keys, so
+    /// every `1082` in our db was meant for some local account; [`accept_keyshares`]
+    /// filters to the selected one by receiver pubkey.
+    fn poll_keyshare_sub(&mut self, ctx: &mut AppContext) -> Vec<NoteKey> {
+        if self.keyshare_sub.is_none() {
+            self.keyshare_sub = ctx.ndb.subscribe(&[keyshare_filter()]).ok();
+        }
+        match self.keyshare_sub {
+            Some(sub) => ctx.ndb.poll_for_notes(sub, 32),
+            None => Vec::new(),
+        }
+    }
+
+    /// Query every key-share rumor already in the db — the account-switch catch-up
+    /// the subscription (future-only) can't provide.
+    fn keyshare_keys(&self, ctx: &AppContext) -> Vec<NoteKey> {
+        let Ok(txn) = Transaction::new(ctx.ndb) else {
+            return Vec::new();
+        };
+        ctx.ndb
+            .query(&txn, &[keyshare_filter()], 500)
+            .map(|res| res.into_iter().map(|r| r.note_key).collect())
+            .unwrap_or_default()
+    }
+
+    /// Accept the key-shares among `keys` that were gift-wrapped to `author`,
+    /// registering and persisting each new team_root (see
+    /// [`teams::accept_keyshare`]). Returns whether a new board was joined.
+    ///
+    /// Shares are collected under one read txn and accepted after it drops, since
+    /// [`teams::accept_keyshare`] opens its own txn for the catch-up peel.
+    fn accept_keyshares(
+        &mut self,
+        ctx: &mut AppContext,
+        author: &Pubkey,
+        keys: &[NoteKey],
+    ) -> bool {
+        if keys.is_empty() {
+            return false;
+        }
+        let shares: Vec<enostr::sns::KeyShare> = {
+            let Ok(txn) = Transaction::new(ctx.ndb) else {
+                return false;
+            };
+            keys.iter()
+                .filter_map(|key| {
+                    let note = ctx.ndb.get_note_by_key(&txn, *key).ok()?;
+                    // Only accept shares addressed to the selected account (a
+                    // 1082 for another local account isn't ours to join).
+                    if note.rumor_receiver_pubkey() != Some(author.bytes()) {
+                        return None;
+                    }
+                    enostr::sns::parse_keyshare(&note)
+                })
+                .collect()
+        };
+        let mut joined = false;
+        for share in &shares {
+            if let Some(team) = teams::accept_keyshare(ctx.path, author, ctx.ndb, share) {
+                self.teams.push(team);
+                joined = true;
+            }
+        }
+        joined
     }
 
     /// Navigate to a headway entity referenced from elsewhere in the app — raised
@@ -212,6 +291,15 @@ pub fn is_headway_kind(kind: u32) -> bool {
     matches!(kind, event::KIND_BOARD | event::KIND_ISSUE)
 }
 
+/// Filter for unwrapped SNS key-share rumors (kind-1082) — the shares nostrdb has
+/// peeled out of gift-wraps addressed to one of our account keys.
+fn keyshare_filter() -> Filter {
+    Filter::new()
+        .kinds([enostr::sns::KEYSHARE_KIND as u64])
+        .limit(500)
+        .build()
+}
+
 /// One entry in the board switcher: a board's stable `id` (slug) and its display
 /// `title`. Folded from the account's events by [`BoardCache::boards`].
 pub struct BoardSummary {
@@ -267,6 +355,18 @@ impl App for Headway {
                 load_board_pref(ctx.path, &author).unwrap_or_else(|| store::BOARD_ID.to_string());
             self.board_account = Some(author);
             self.seeded = false;
+
+            // Restore this account's joined shared boards and re-register their
+            // team_roots with nostrdb so it unwraps their envelopes (registered
+            // keys don't survive a restart — same reason `add_key` re-runs on
+            // boot). Then catch up on any key-share already ingested for this
+            // account: a subscription only reports *future* arrivals.
+            self.teams = teams::load_teams(ctx.path, &author);
+            teams::register_teams(ctx.ndb, &self.teams);
+            let existing = self.keyshare_keys(ctx);
+            if self.accept_keyshares(ctx, &author, &existing) {
+                self.wake();
+            }
         }
 
         // Declare the inbound cross-device subscription (catch-up + realtime)
@@ -286,6 +386,14 @@ impl App for Headway {
             .map(|txn| self.board_cache.borrow_mut().poll(ctx.ndb, &txn, &author))
             .unwrap_or_default();
         if poll.changed {
+            self.wake();
+        }
+
+        // Detect and auto-accept any SNS key-share (kind-1082) that arrived this
+        // frame — a member sharing a board with us. Accepting registers + persists
+        // the team_root (see [`teams`]); wake so the newly-joined board folds in.
+        let fresh_shares = self.poll_keyshare_sub(ctx);
+        if self.accept_keyshares(ctx, &author, &fresh_shares) {
             self.wake();
         }
 
