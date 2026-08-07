@@ -12,6 +12,7 @@
 use crate::event::LongformNote;
 use egui::{Layout, RichText, ScrollArea, TextEdit};
 use notedeck::{AppContext, ColorTheme, Localization};
+use notedeck_ui::context_menu::{PasteBehavior, input_context};
 
 /// Minimum visible rows the source editor requests before it scrolls, so a fresh
 /// note still opens with a roomy typing area.
@@ -176,7 +177,7 @@ fn body_ui(
             .id_salt("notebook-editor-narrow")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                source_panel_ui(ui, &mut editor.content, theme, SOURCE_MIN_ROWS);
+                source_panel_ui(ui, &mut editor.content, ctx, theme, SOURCE_MIN_ROWS);
                 ui.add_space(notedeck::tokens::SPACING_MD);
                 preview_body_ui(ui, ctx, &editor.content);
             });
@@ -185,14 +186,20 @@ fn body_ui(
 
     // Wide: source | preview, each its own vertically-scrolling column.
     ui.columns(2, |cols| {
-        source_column_ui(&mut cols[0], &mut editor.content, height, theme);
+        source_column_ui(&mut cols[0], &mut editor.content, ctx, height, theme);
         preview_column_ui(&mut cols[1], ctx, &editor.content, height);
     });
 }
 
 /// The left column: a monospace markdown source editor in a subtle rounded panel
 /// that fills the column height and scrolls when the note outgrows it.
-fn source_column_ui(ui: &mut egui::Ui, content: &mut String, height: f32, theme: &ColorTheme) {
+fn source_column_ui(
+    ui: &mut egui::Ui,
+    content: &mut String,
+    ctx: &mut AppContext,
+    height: f32,
+    theme: &ColorTheme,
+) {
     let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
     let rows = ((height / row_h) as usize).max(SOURCE_MIN_ROWS);
     ScrollArea::vertical()
@@ -200,26 +207,38 @@ fn source_column_ui(ui: &mut egui::Ui, content: &mut String, height: f32, theme:
         .max_height(height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            source_panel_ui(ui, content, theme, rows);
+            source_panel_ui(ui, content, ctx, theme, rows);
         });
 }
 
 /// The monospace source editor itself: a frameless code editor inside a rounded
 /// `surface_secondary` panel, so the raw markdown reads as a distinct "source"
-/// pane against the rendered preview.
-fn source_panel_ui(ui: &mut egui::Ui, content: &mut String, theme: &ColorTheme, rows: usize) {
+/// pane against the rendered preview. A right-click Paste/Copy/Cut menu (plus
+/// middle-click paste) is attached via the shared
+/// [`input_context`](notedeck_ui::context_menu::input_context) helper — the same
+/// one the rest of notedeck's text inputs use — so editing the note's text works
+/// the same everywhere. Paste appends to the buffer
+/// ([`PasteBehavior::Append`]) rather than clearing it.
+fn source_panel_ui(
+    ui: &mut egui::Ui,
+    content: &mut String,
+    ctx: &mut AppContext,
+    theme: &ColorTheme,
+    rows: usize,
+) {
     egui::Frame::new()
         .fill(theme.surface_secondary)
         .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
         .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
         .show(ui, |ui| {
-            ui.add(
+            let resp = ui.add(
                 TextEdit::multiline(content)
                     .code_editor()
                     .frame(false)
                     .desired_width(f32::INFINITY)
                     .desired_rows(rows),
             );
+            input_context(ui, &resp, ctx.clipboard, content, PasteBehavior::Append);
         });
 }
 
