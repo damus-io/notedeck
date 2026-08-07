@@ -320,15 +320,16 @@ fn all_nodes(view: &CanvasView) -> impl Iterator<Item = &NodeView> {
     view.nodes.iter().chain(view.pending.iter())
 }
 
-/// Resolve a node argument: a full 64-char hex id, a word-id, or a unique hex
-/// prefix matched against every node on the canvas (pending ones included).
+/// Resolve a node argument: a full 64-char hex id, a `notebook:<word-id>`
+/// reference, or a unique hex prefix matched against every node on the canvas
+/// (pending ones included).
 fn resolve_node(view: &CanvasView, sel: &str) -> Result<NoteId> {
     find_node(view, sel).map(|n| n.id)
 }
 
 /// Resolve a node selector, accepting (in order): a full 64-char hex id; a
-/// word-id like `notebook@maple-river-canyon` (the `<canvas>@` prefix is
-/// optional, and a bare leading `@` is fine too); or a unique hex prefix.
+/// `notebook:<word-id>` reference (the `notebook:` scheme is required — a bare
+/// word-id is not a reference); or a unique hex prefix.
 fn find_node<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a NodeView> {
     if let Ok(id) = NoteId::from_hex(sel) {
         return all_nodes(view)
@@ -336,13 +337,11 @@ fn find_node<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a NodeView> {
             .ok_or_else(|| format!("no node matching '{sel}'").into());
     }
 
-    // Word-id: drop an optional `<canvas>@` prefix (or a bare leading `@`), then
-    // match by re-encoding each node — exactly how a git short hash is resolved.
-    let words = sel
-        .strip_prefix(&format!("{}@", view.id.to_lowercase()))
-        .or_else(|| sel.strip_prefix('@'))
-        .unwrap_or(sel);
-    if let Some(n) = all_nodes(view).find(|n| wordid::encode(n.id.bytes()) == words) {
+    // A `notebook:<word-id>` reference: match by re-encoding each node — exactly
+    // how a git short hash is resolved.
+    if let Some(words) = wordid::parse_ref(sel)
+        && let Some(n) = all_nodes(view).find(|n| wordid::encode(n.id.bytes()) == words)
+    {
         return Ok(n);
     }
 
@@ -372,11 +371,11 @@ fn resolve_edge<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a EdgeView> {
 // output
 // ---------------------------------------------------------------------------
 
-/// A node's human-friendly reference for display/addressing: the canvas id, an
-/// `@`, then the node's word-id, e.g. `notebook@maple-river-canyon`, muted. This
-/// is what a human quotes; it resolves back via [`find_node`].
-fn word_ref(canvas: &str, id: &NoteId) -> String {
-    relay_sync::dim(&format!("{canvas}@{}", wordid::encode(id.bytes())))
+/// A node's human-friendly reference for display/addressing: `notebook:<word-id>`,
+/// e.g. `notebook:maple-river-canyon`, muted. This is what a human quotes; it
+/// resolves back via [`find_node`].
+fn word_ref(id: &NoteId) -> String {
+    relay_sync::dim(&wordid::node_ref(id.bytes()))
 }
 
 /// The first line of a node's text, trimmed and truncated, for one-line listings.
@@ -406,15 +405,15 @@ fn print_canvas(view: &CanvasView, as_json: bool) {
 
     println!("\nNodes ({})", view.nodes.len());
     for n in &view.nodes {
-        print_node_line(&view.id, n);
+        print_node_line(n);
     }
     if !view.edges.is_empty() {
         println!("\nEdges ({})", view.edges.len());
         for e in &view.edges {
             println!(
                 "  {} → {}  {}",
-                word_ref(&view.id, &e.from),
-                word_ref(&view.id, &e.to),
+                word_ref(&e.from),
+                word_ref(&e.to),
                 relay_sync::dim(&e.id),
             );
         }
@@ -425,12 +424,12 @@ fn print_canvas(view: &CanvasView, as_json: bool) {
             view.pending.len()
         );
         for n in &view.pending {
-            print_node_line(&view.id, n);
+            print_node_line(n);
         }
     }
 }
 
-fn print_node_line(canvas: &str, n: &NodeView) {
+fn print_node_line(n: &NodeView) {
     let geo = relay_sync::dim(&format!(
         "({},{} {}×{})",
         n.geo.x, n.geo.y, n.geo.w, n.geo.h
@@ -439,7 +438,7 @@ fn print_node_line(canvas: &str, n: &NodeView) {
         "  {}  {}  {}",
         one_line(&n.content.text),
         geo,
-        word_ref(canvas, &n.id),
+        word_ref(&n.id),
     );
 }
 
@@ -460,7 +459,7 @@ fn print_nodes(view: &CanvasView, sels: &[String], as_json: bool) -> Result<()> 
         );
     } else {
         for n in &nodes {
-            print_node_line(&view.id, n);
+            print_node_line(n);
         }
     }
     Ok(())
@@ -670,7 +669,7 @@ COMMANDS:
     login <nsec>              Store a signing key for later runs
     logout                    Forget the stored signing key
 
-    <node> is a node id, a word-id like notebook@maple-river-canyon, or a
+    <node> is a node id, a reference like notebook:maple-river-canyon, or a
     unique short prefix (see `show`).
 
 OPTIONS:
