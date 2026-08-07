@@ -1,5 +1,5 @@
-use enostr::Pubkey;
 use nostrdb::Note;
+use nostrdb_net::Pubkey;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::thread;
 use std::time::{Duration, Instant};

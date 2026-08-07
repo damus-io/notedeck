@@ -5541,6 +5541,7 @@ dependencies = [
  "egui_kittest",
  "enostr",
  "nostrdb",
+ "nostrdb_net",
  "notedeck",
  "notedeck_testing",
  "notedeck_ui",
