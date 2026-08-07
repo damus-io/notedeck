@@ -2504,6 +2504,22 @@ pub fn load_board(
     pick_board(&fold_board(ndb, txn, author)?, author, board_id)
 }
 
+/// Fold a joined shared board by its `board_addr` coordinate
+/// (`30619:<owner>:<slug>`) and return its single [`BoardView`], gathering every
+/// member's events. The multi-writer analogue of [`load_board`]: a one-shot
+/// [`fold_shared_board`] + finalize for callers that don't keep the reducer
+/// around (`BoardCache::shared_board` is the memoized in-app path). `None` until
+/// the board's definition has folded in.
+#[profiling::function]
+pub fn load_shared_board(ndb: &Ndb, txn: &Transaction, board_addr: &str) -> Option<BoardView> {
+    // fold_shared_board folds a single coordinate, so its finalize yields the one
+    // board (empty until the board definition has arrived).
+    fold_shared_board(ndb, txn, board_addr)?
+        .finalize()
+        .into_iter()
+        .next()
+}
+
 /// Every card on `view` in a stable order — the live columns' cards, in column
 /// then rank order, followed by the archived cards. Shared by callers that
 /// resolve a card by re-encoding each one (word ids, hex prefixes).

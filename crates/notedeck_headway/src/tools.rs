@@ -7,15 +7,17 @@
 //! same curated schema the CLI emits with `--json`. Boards are folded for the
 //! currently-selected account — the pubkey that authors this user's boards.
 
-use enostr::RelayId;
+use enostr::{Pubkey, RelayId};
 use headway::event::{self, BoardView, CardView, Priority, resolve_card};
 use headway::store::{self, BoardAction};
-use nostrdb::Transaction;
+use nostrdb::{Ndb, Transaction};
 use notedeck::{
     AppTool, ExplicitPublishApi, RegisteredTool, ToolArg, ToolArgType, ToolContext, ToolSpec,
     fan_out_event_frame,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::teams;
 
 /// Every agent tool the Headway app contributes, ready to register.
 pub fn tools() -> Vec<RegisteredTool> {
@@ -249,13 +251,52 @@ fn split_labels(csv: &str) -> Vec<String> {
         .collect()
 }
 
+/// Resolve a mutation's target board and the SNS channel to seal its edits into.
+///
+/// Own boards win on a slug collision, mirroring the app's [`render`](crate) rule:
+/// if `author` authors `board_id` it's edited as our own board (plaintext, channel
+/// `None`); otherwise, if it's a joined shared board in `teams`, fold it by
+/// coordinate and seal every edit into that channel — so an AI-tool edit to a
+/// shared board is sealed exactly like the GUI path and never leaks a plaintext
+/// rumor onto the relay. A shared board whose channel can't be derived, or that
+/// hasn't synced yet, is *refused* rather than edited unsealed.
+fn resolve_target(
+    ndb: &Ndb,
+    author: &Pubkey,
+    board_id: &str,
+    teams: &[teams::Team],
+) -> Result<(BoardView, Option<store::SnsChannel>), String> {
+    let txn = Transaction::new(ndb).map_err(|e| format!("failed to open db: {e}"))?;
+    // Own board wins on a slug collision, so this is checked first.
+    if let Some(view) = event::load_board(ndb, &txn, author, board_id) {
+        return Ok((view, None));
+    }
+    // Not ours: only a joined shared board is editable, and only sealed.
+    let team = teams
+        .iter()
+        .find(|t| t.board_slug() == Some(board_id))
+        .ok_or_else(|| format!("no board '{board_id}'"))?;
+    let channel = team
+        .sns_keys()
+        .map(|keys| store::SnsChannel { keys })
+        .ok_or_else(|| {
+            format!(
+                "shared board '{board_id}' has an unusable team key; refusing to publish unsealed"
+            )
+        })?;
+    let view = event::load_shared_board(ndb, &txn, &team.board_addr)
+        .ok_or_else(|| format!("shared board '{board_id}' has not synced yet"))?;
+    Ok((view, Some(channel)))
+}
+
 /// Apply a board mutation for the selected account and fan the resulting events
 /// out to its private relays.
 ///
-/// Folds `board_id` so `build` can resolve card/column refs against the live
-/// view, then signs, ingests, and publishes the action. Errors when the account
-/// is watch-only or the context has no publisher (a read-only context), so a
-/// change is never silently dropped.
+/// Resolves `board_id` (own or joined-shared, see [`resolve_target`]) so `build`
+/// can resolve card/column refs against the live view, then signs, ingests, and
+/// publishes the action — sealing into the board's SNS channel when it's shared.
+/// Errors when the account is watch-only or the context has no publisher (a
+/// read-only context), so a change is never silently dropped.
 fn mutate(
     cx: &mut ToolContext,
     board_id: &str,
@@ -264,13 +305,11 @@ fn mutate(
     let author = *cx.accounts.selected_account_pubkey();
     let relays = cx.accounts.selected_account_private_relays();
 
-    // Fold + resolve first, so a bad card/column ref reports the specific
-    // resolution error rather than a generic capability error.
-    let view = {
-        let txn = Transaction::new(cx.ndb).map_err(|e| format!("failed to open db: {e}"))?;
-        event::load_board(cx.ndb, &txn, &author, board_id)
-            .ok_or_else(|| format!("no board '{board_id}'"))?
-    };
+    // Resolve the board and its channel first, so a bad card/column ref reports the
+    // specific resolution error rather than a generic capability error. The roster
+    // is read straight from nostrdb (see [`teams::teams_from_ndb`]).
+    let teams = teams::teams_from_ndb(cx.ndb, &author);
+    let (view, channel) = resolve_target(cx.ndb, &author, board_id, &teams)?;
     let action = build(&view)?;
 
     let secret = cx
@@ -288,7 +327,7 @@ fn mutate(
         board_id,
         &view,
         &author,
-        &store::Signer::new(&secret, None),
+        &store::Signer::new(&secret, channel.as_ref()),
         action,
         &mut publisher,
     );
@@ -868,6 +907,85 @@ mod tests {
             accounts,
             publish: None,
         }
+    }
+
+    /// Seed `owner`'s demo board into `ndb` and wait for its 7 cards to fold in.
+    fn seed_board_for(ndb: &Ndb, owner: &FullKeypair) {
+        store::seed_demo_board(
+            ndb,
+            &owner.pubkey,
+            &owner.secret_key.secret_bytes(),
+            store::BOARD_ID,
+            1_700_000_000,
+            &mut store::NoPublish,
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = Transaction::new(ndb).expect("txn");
+            let ready = event::load_board(ndb, &txn, &owner.pubkey, store::BOARD_ID)
+                .map(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7)
+                .unwrap_or(false);
+            drop(txn);
+            if ready {
+                return;
+            }
+            assert!(Instant::now() < deadline, "seeded board never materialised");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A joined shared board (one this account doesn't own) resolves *with* a
+    /// sealing channel — the anti-leak contract: an AI-tool edit to a shared board
+    /// seals into its SNS channel rather than publishing a plaintext rumor.
+    #[test]
+    fn resolve_target_seals_a_joined_shared_board() {
+        let dir = TempDir::new().expect("tmp dir");
+        let ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let owner = FullKeypair::generate();
+        let member = FullKeypair::generate();
+        seed_board_for(&ndb, &owner);
+
+        // The member joined the owner's board over an SNS channel.
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x22;
+        let team = teams::Team {
+            team_root: hex::encode(root),
+            board_addr: event::board_address(&owner.pubkey, store::BOARD_ID),
+            epoch: None,
+        };
+        let teams = [team];
+
+        // The member doesn't own the board, so it folds by coordinate and seals.
+        let (view, channel) =
+            resolve_target(&ndb, &member.pubkey, store::BOARD_ID, &teams).expect("resolves");
+        assert_eq!(view.id, store::BOARD_ID);
+        assert!(
+            channel.is_some(),
+            "a joined shared board must resolve a sealing channel, never plaintext"
+        );
+
+        // The owner editing their own board stays plaintext even though a team for
+        // the same coordinate exists (own wins on a slug collision).
+        let (_own_view, own_channel) =
+            resolve_target(&ndb, &owner.pubkey, store::BOARD_ID, &teams).expect("resolves");
+        assert!(
+            own_channel.is_none(),
+            "own-board edits stay plaintext (own wins over a shared team)"
+        );
+    }
+
+    /// A board that is neither owned nor a joined shared board is a clean error,
+    /// not a plaintext edit.
+    #[test]
+    fn resolve_target_unknown_board_errors() {
+        let (_dir, ndb, accounts, _nc) = seeded_env();
+        let author = *accounts.selected_account_pubkey();
+        // `SnsChannel` isn't `Debug`, so match the error rather than `unwrap_err`.
+        let Err(err) = resolve_target(&ndb, &author, "nope", &[]) else {
+            panic!("an unknown board must not resolve");
+        };
+        assert!(err.contains("no board 'nope'"), "{err}");
     }
 
     #[test]
