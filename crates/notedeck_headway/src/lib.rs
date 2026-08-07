@@ -674,9 +674,8 @@ impl App for Headway {
                         source,
                         target,
                         &author,
-                        secret,
+                        &store::Signer::new(secret, channel.as_ref()),
                         mv.card,
-                        channel.as_ref(),
                         &mut store::NoPublish,
                     );
                 }
@@ -686,9 +685,8 @@ impl App for Headway {
                         source,
                         target,
                         &author,
-                        secret,
+                        &store::Signer::new(secret, channel.as_ref()),
                         mv.card,
-                        channel.as_ref(),
                         &mut store::NoPublish,
                     );
                 }
@@ -705,9 +703,8 @@ impl App for Headway {
                 &self.board_id,
                 &view,
                 &author,
-                secret,
+                &store::Signer::new(secret, channel.as_ref()),
                 action,
-                channel.as_ref(),
                 &mut store::NoPublish,
             );
             self.wake();
@@ -1579,14 +1576,13 @@ mod tests {
                 store::BOARD_ID,
                 &view,
                 &t.kp.pubkey,
-                &t.secret(),
+                &store::Signer::new(&t.secret(), None),
                 store::BoardAction::AddCard {
                     col: 1,
                     title: "Fresh card".to_string(),
                     labels: vec![],
                     parent: None,
                 },
-                None,
                 &mut store::NoPublish,
             );
         }
@@ -1686,14 +1682,13 @@ mod tests {
                 store::BOARD_ID,
                 &view,
                 &t.kp.pubkey,
-                &t.secret(),
+                &store::Signer::new(&t.secret(), None),
                 store::BoardAction::AddCard {
                     col: 1,
                     title: "Delta card".to_string(),
                     labels: vec![],
                     parent: None,
                 },
-                None,
                 &mut store::NoPublish,
             );
         }
@@ -2045,14 +2040,13 @@ mod tests {
             store::BOARD_ID,
             &view,
             &t.kp.pubkey,
-            &t.secret(),
+            &store::Signer::new(&t.secret(), Some(&channel)),
             store::BoardAction::AddCard {
                 col: 0,
                 title: "Sealed".to_string(),
                 labels: vec![],
                 parent: None,
             },
-            Some(&channel),
             &mut store::NoPublish,
         );
 

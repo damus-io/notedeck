@@ -106,10 +106,8 @@ pub fn register_teams(ndb: &Ndb, teams: &[Team]) {
         }
     }
     // Only pay the catch-up walk when a root was actually (re-)registered.
-    if registered {
-        if let Ok(txn) = Transaction::new(ndb) {
-            ndb.process_sns(&txn);
-        }
+    if registered && let Ok(txn) = Transaction::new(ndb) {
+        ndb.process_sns(&txn);
     }
 }
 

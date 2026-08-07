@@ -163,6 +163,12 @@ impl<'a> Signer<'a> {
             channel: Some(channel),
         }
     }
+
+    /// A signer that seals into `channel` when present and publishes plaintext
+    /// otherwise — the form the app uses, where a board is shared or not.
+    pub fn new(secret: &'a [u8; 32], channel: Option<&'a SnsChannel>) -> Self {
+        Self { secret, channel }
+    }
 }
 
 /// Sign `builder` with `secret` and ingest+publish the resulting note as
@@ -461,15 +467,11 @@ pub fn apply(
     board_id: &str,
     view: &BoardView,
     author: &Pubkey,
-    secret: &[u8; 32],
+    signer: &Signer,
     action: BoardAction,
-    channel: Option<&SnsChannel>,
     publisher: &mut dyn Publisher,
 ) {
     let addr = board_address(author, board_id);
-    // Bundle the signer once: a shared board seals every event it emits into an
-    // SNS envelope, a plaintext board publishes them as-is (see `ingest_signed`).
-    let signer = Signer { secret, channel };
 
     match action {
         BoardAction::MoveCard {
@@ -492,7 +494,7 @@ pub fn apply(
                 ndb,
                 build_placement(board_id, &addr, &card, &col.id, &rank)
                     .created_at(next_after(after)),
-                &signer,
+                signer,
                 publisher,
             );
         }
@@ -508,7 +510,7 @@ pub fn apply(
             // A brand-new card can't be anyone's ancestor, so parenting it needs
             // no cycle check — just that the parent actually exists.
             let parent = parent.filter(|p| find_card_any(view, *p).is_some());
-            let Some(id) = ingest_signed(ndb, build_issue(&addr, &title, ""), &signer, publisher)
+            let Some(id) = ingest_signed(ndb, build_issue(&addr, &title, ""), signer, publisher)
             else {
                 return;
             };
@@ -517,47 +519,47 @@ pub fn apply(
             ingest_signed(
                 ndb,
                 build_placement(board_id, &addr, &id, &c.id, &rank),
-                &signer,
+                signer,
                 publisher,
             );
             if !labels.is_empty() {
-                ingest_signed(ndb, build_labels(&id, &labels), &signer, publisher);
+                ingest_signed(ndb, build_labels(&id, &labels), signer, publisher);
             }
             if let Some(parent) = parent {
-                ingest_signed(ndb, build_relation(&id, Some(&parent)), &signer, publisher);
+                ingest_signed(ndb, build_relation(&id, Some(&parent)), signer, publisher);
             }
         }
         BoardAction::EditTitle { card, title } => {
-            ingest_signed(ndb, build_subject_edit(&card, &title), &signer, publisher);
+            ingest_signed(ndb, build_subject_edit(&card, &title), signer, publisher);
         }
         BoardAction::EditDescription { card, description } => {
             ingest_signed(
                 ndb,
                 build_cover_note(&card, author, &description),
-                &signer,
+                signer,
                 publisher,
             );
         }
         BoardAction::SetLabels { card, labels } => {
-            ingest_signed(ndb, build_labels(&card, &labels), &signer, publisher);
+            ingest_signed(ndb, build_labels(&card, &labels), signer, publisher);
         }
         BoardAction::SetPriority { card, priority } => {
             let f = build_field(&card, Field::Priority, priority.as_str());
-            ingest_signed(ndb, f, &signer, publisher);
+            ingest_signed(ndb, f, signer, publisher);
         }
         BoardAction::SetDue { card, due } => {
             let value = due.map(|d| d.to_string()).unwrap_or_default();
             ingest_signed(
                 ndb,
                 build_field(&card, Field::Due, &value),
-                &signer,
+                signer,
                 publisher,
             );
         }
         BoardAction::SetEstimate { card, estimate } => {
             let value = estimate.map(|e| e.to_string()).unwrap_or_default();
             let f = build_field(&card, Field::Estimate, &value);
-            ingest_signed(ndb, f, &signer, publisher);
+            ingest_signed(ndb, f, signer, publisher);
         }
         BoardAction::SetSequence {
             card,
@@ -570,7 +572,7 @@ pub fn apply(
             ingest_signed(
                 ndb,
                 build_sequence(&container, &card, &rank),
-                &signer,
+                signer,
                 publisher,
             );
         }
@@ -587,7 +589,7 @@ pub fn apply(
                 ingest_signed(
                     ndb,
                     build_sequence(&container, card, &rank),
-                    &signer,
+                    signer,
                     publisher,
                 );
                 prev = Some(rank);
@@ -598,14 +600,9 @@ pub fn apply(
                 if would_cycle(view, card, parent) {
                     return;
                 }
-                ingest_signed(
-                    ndb,
-                    build_relation(&card, Some(&parent)),
-                    &signer,
-                    publisher,
-                );
+                ingest_signed(ndb, build_relation(&card, Some(&parent)), signer, publisher);
             } else {
-                ingest_signed(ndb, build_relation(&card, None), &signer, publisher);
+                ingest_signed(ndb, build_relation(&card, None), signer, publisher);
             }
         }
         BoardAction::AddComment {
@@ -645,7 +642,7 @@ pub fn apply(
             ingest_signed(
                 ndb,
                 build_comment(&card, &issue_author, reply, &body).created_at(next_after(latest)),
-                &signer,
+                signer,
                 publisher,
             );
         }
@@ -659,7 +656,7 @@ pub fn apply(
                 ndb,
                 build_placement(board_id, &addr, &card, COL_DELETED, &rank)
                     .created_at(next_after(after)),
-                &signer,
+                signer,
                 publisher,
             );
         }
@@ -673,7 +670,7 @@ pub fn apply(
                 ndb,
                 build_archive_placement(board_id, &addr, &card, from_col, &rank)
                     .created_at(next_after(c.placed_at)),
-                &signer,
+                signer,
                 publisher,
             );
         }
@@ -696,14 +693,14 @@ pub fn apply(
                 ndb,
                 build_placement(board_id, &addr, &card, to_col, &rank)
                     .created_at(next_after(entry.card.placed_at)),
-                &signer,
+                signer,
                 publisher,
             );
         }
         BoardAction::AddColumn { name } => {
             let mut cols = column_defs(view);
             cols.push(ColumnDef::new(unique_col_id(&cols, &name), name));
-            republish_board(ndb, board_id, view, &signer, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::RenameColumn { col, name } => {
             let mut cols = column_defs(view);
@@ -711,7 +708,7 @@ pub fn apply(
                 return;
             };
             def.name = name;
-            republish_board(ndb, board_id, view, &signer, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::RemoveColumn { col } => {
             let mut cols = column_defs(view);
@@ -719,7 +716,7 @@ pub fn apply(
                 return;
             }
             cols.remove(col);
-            republish_board(ndb, board_id, view, &signer, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::MoveColumn { from, to } => {
             let mut cols = column_defs(view);
@@ -728,7 +725,7 @@ pub fn apply(
             }
             let def = cols.remove(from);
             cols.insert(to, def);
-            republish_board(ndb, board_id, view, &signer, &cols, publisher);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::RenameBoard { title } => {
             // Same addressable-event republish as `republish_board`, but swapping
@@ -739,7 +736,7 @@ pub fn apply(
             ingest_signed(
                 ndb,
                 build_board(board_id, &title, &view.description, &cols).created_at(created_at),
-                &signer,
+                signer,
                 publisher,
             );
         }
@@ -800,14 +797,12 @@ pub fn link_card(
     source: BoardRef,
     target: BoardRef,
     author: &Pubkey,
-    secret: &[u8; 32],
+    signer: &Signer,
     card: NoteId,
-    channel: Option<&SnsChannel>,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let signer = Signer { secret, channel };
     let from_col = find_card_col(source.view, card).map(|(col, _)| col);
-    place_card(ndb, target, from_col, author, &signer, card, publisher)
+    place_card(ndb, target, from_col, author, signer, card, publisher)
 }
 
 /// Move `card` from the `source` board to the `target` board: link it onto
@@ -819,17 +814,13 @@ pub fn move_card_between_boards(
     source: BoardRef,
     target: BoardRef,
     author: &Pubkey,
-    secret: &[u8; 32],
+    signer: &Signer,
     card: NoteId,
-    channel: Option<&SnsChannel>,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let placed = link_card(
-        ndb, source, target, author, secret, card, channel, publisher,
-    )?;
+    let placed = link_card(ndb, source, target, author, signer, card, publisher)?;
     // Placement-driven membership: a tombstone on the source removes it from
     // `source` only, leaving the freshly-linked placement on `target`.
-    let signer = Signer { secret, channel };
     let src_addr = board_address(author, source.id);
     let c = find_card(source.view, card);
     let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
@@ -838,7 +829,7 @@ pub fn move_card_between_boards(
         ndb,
         build_placement(source.id, &src_addr, &card, COL_DELETED, &rank)
             .created_at(next_after(after)),
-        &signer,
+        signer,
         publisher,
     );
     Some(placed)
@@ -1172,9 +1163,8 @@ mod tests {
                 BOARD_ID,
                 view,
                 &self.kp.pubkey,
-                &self.secret(),
+                &Signer::new(&self.secret(), None),
                 action,
-                None,
                 &mut NoPublish,
             );
         }
@@ -1412,14 +1402,13 @@ mod tests {
             BOARD_ID,
             &view,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::AddCard {
                 col: 1,
                 title: "Tracked".to_string(),
                 labels: vec![],
                 parent: None,
             },
-            None,
             &mut sink,
         );
 
@@ -1729,14 +1718,13 @@ mod tests {
             "src",
             &src,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::AddCard {
                 col: 0,
                 title: "Roamer".to_string(),
                 labels: vec!["wandering".to_string()],
                 parent: None,
             },
-            None,
             &mut NoPublish,
         );
         poll_board(t, "src", |v| v.columns[0].cards.len() == 1)
@@ -1764,9 +1752,8 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
-            None,
             &mut NoPublish,
         );
 
@@ -1799,9 +1786,8 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
-            None,
             &mut NoPublish,
         );
 
@@ -1824,13 +1810,12 @@ mod tests {
             "src",
             &src,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::MoveCard {
                 card,
                 to_col: 2, // in-progress
                 to_row: 0,
             },
-            None,
             &mut NoPublish,
         );
 
@@ -1847,9 +1832,8 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
-            None,
             &mut NoPublish,
         );
 
@@ -1888,14 +1872,13 @@ mod tests {
             "src",
             &src,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             BoardAction::AddCard {
                 col: 2, // in-progress
                 title: "Homeless".to_string(),
                 labels: vec![],
                 parent: None,
             },
-            None,
             &mut NoPublish,
         );
 
@@ -1913,9 +1896,8 @@ mod tests {
                 view: &dst,
             },
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), None),
             card,
-            None,
             &mut NoPublish,
         );
 
@@ -1951,14 +1933,13 @@ mod tests {
             BOARD_ID,
             &view,
             &t.kp.pubkey,
-            &t.secret(),
+            &Signer::new(&t.secret(), Some(&channel)),
             BoardAction::AddCard {
                 col: 0,
                 title: "Sealed card".to_string(),
                 labels: vec![],
                 parent: None,
             },
-            Some(&channel),
             &mut NoPublish,
         );
 

@@ -394,9 +394,8 @@ async fn run() -> Result<()> {
                     view: &target,
                 },
                 &author,
-                &secret,
+                &store::Signer::new(&secret, None),
                 card_id,
-                None,
                 &mut sink,
             );
             let n = sink.0.len();
@@ -428,9 +427,8 @@ async fn run() -> Result<()> {
                     view: &target,
                 },
                 &author,
-                &secret,
+                &store::Signer::new(&secret, None),
                 card_id,
-                None,
                 &mut sink,
             );
             let n = sink.0.len();
@@ -473,7 +471,13 @@ async fn run() -> Result<()> {
 
             let mut sink = Collect::default();
             store::apply(
-                &ndb, &board, &view, &author, &secret, action, None, &mut sink,
+                &ndb,
+                &board,
+                &view,
+                &author,
+                &store::Signer::new(&secret, None),
+                action,
+                &mut sink,
             );
             if sink.0.is_empty() {
                 return Err("action produced no events (unknown card or column?)".into());

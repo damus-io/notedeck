@@ -313,9 +313,8 @@ fn mutate(
         board_id,
         &view,
         &author,
-        &secret,
+        &store::Signer::new(&secret, None),
         action,
-        None,
         &mut publisher,
     );
     Ok(Applied::ok())
