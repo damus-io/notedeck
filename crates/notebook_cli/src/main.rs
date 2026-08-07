@@ -3,9 +3,10 @@
 //!
 //! A sibling to [`headway_cli`]: the cache/sync/relay plumbing — keeping the
 //! CLI's own nostrdb, reconciling it against the app's relay with NIP-77
-//! negentropy, and the stored signing key — lives in the shared [`relay_sync`]
-//! crate. This file is just the canvas's command surface: parsing, resolving node
-//! and edge arguments against the folded canvas, and rendering. The canvas itself
+//! negentropy, and the stored signing key — lives in `nostrdb_net`'s
+//! `relay::sync` module. This file is just the canvas's command surface: parsing,
+//! resolving node and edge arguments against the folded canvas, and rendering.
+//! The canvas itself
 //! is folded by the same reducer the egui app uses ([`notedeck_notebook::event`]),
 //! and edits are produced by the same store ([`notedeck_notebook::store`]).
 
@@ -21,7 +22,7 @@ use notedeck_notebook::event::{
 use notedeck_notebook::store::{self, CanvasAction, Publisher};
 use notedeck_notebook::wordid;
 
-use relay_sync::Result;
+use nostrdb_net::relay::sync::Result;
 
 /// The CLI's cache/key directory under the platform data dir (e.g.
 /// `~/.local/share/notebook-cli` on Linux).
@@ -36,7 +37,7 @@ const NEW_H: u64 = 120;
 async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`notebook show | head`) instead of
     // panicking in println! on EPIPE.
-    relay_sync::reset_sigpipe();
+    nostrdb_net::relay::sync::reset_sigpipe();
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -131,8 +132,8 @@ async fn run() -> Result<()> {
     // `login`/`logout` manage the stored key and touch neither the cache nor a
     // relay, so handle them before any of that machinery spins up.
     match &cli.command {
-        Command::Login { nsec } => return relay_sync::login(nsec, APP),
-        Command::Logout => return relay_sync::logout(APP),
+        Command::Login { nsec } => return nostrdb_net::relay::sync::login(nsec, APP),
+        Command::Logout => return nostrdb_net::relay::sync::logout(APP),
         _ => {}
     }
 
@@ -144,16 +145,19 @@ async fn run() -> Result<()> {
         (None, None) => return Err("need --nsec to sign, or --author to read a canvas".into()),
     };
 
-    let ndb = relay_sync::open_ndb(cli.db.as_deref(), APP)?;
+    let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
 
     // Reconcile the local cache against the relay both ways so the cache and the
     // app converge regardless of which side an edit happened on. Best-effort: an
     // unreachable relay leaves us working offline against the cache.
     let filter = event::notebook_filter(&author);
-    let mut relay = relay_sync::connect_and_sync(
+    // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert our enostr author
+    // across the boundary (both are `[u8; 32]` newtypes).
+    let author_nn = nostrdb_net::Pubkey::new(*author.bytes());
+    let mut relay = nostrdb_net::relay::sync::connect_and_sync(
         &cli.relay,
         &ndb,
-        &author,
+        &author_nn,
         &event::NOTEBOOK_KINDS,
         &filter,
         &event::is_addressable,
@@ -184,10 +188,10 @@ async fn run() -> Result<()> {
             let mut sink = Collect::default();
             store::seed_canvas(&ndb, &author, &secret, &canvas, &title, &mut sink);
             let n = sink.0.len();
-            relay_sync::publish(&mut relay, &sink.0).await?;
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
                 "seeded canvas '{canvas}' ({n} events){}",
-                relay_sync::offline_note(&relay)
+                nostrdb_net::relay::sync::offline_note(&relay)
             );
         }
 
@@ -203,8 +207,11 @@ async fn run() -> Result<()> {
                 return Err("action produced no events (unknown node or edge?)".into());
             }
             let n = sink.0.len();
-            relay_sync::publish(&mut relay, &sink.0).await?;
-            println!("ok ({n} events){}", relay_sync::offline_note(&relay));
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
+            println!(
+                "ok ({n} events){}",
+                nostrdb_net::relay::sync::offline_note(&relay)
+            );
         }
     }
 
@@ -376,7 +383,7 @@ fn resolve_edge<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a EdgeView> {
 /// `@`, then the node's word-id, e.g. `notebook@maple-river-canyon`, muted. This
 /// is what a human quotes; it resolves back via [`find_node`].
 fn word_ref(canvas: &str, id: &NoteId) -> String {
-    relay_sync::dim(&format!("{canvas}@{}", wordid::encode(id.bytes())))
+    nostrdb_net::relay::sync::dim(&format!("{canvas}@{}", wordid::encode(id.bytes())))
 }
 
 /// The first line of a node's text, trimmed and truncated, for one-line listings.
@@ -415,7 +422,7 @@ fn print_canvas(view: &CanvasView, as_json: bool) {
                 "  {} → {}  {}",
                 word_ref(&view.id, &e.from),
                 word_ref(&view.id, &e.to),
-                relay_sync::dim(&e.id),
+                nostrdb_net::relay::sync::dim(&e.id),
             );
         }
     }
@@ -431,7 +438,7 @@ fn print_canvas(view: &CanvasView, as_json: bool) {
 }
 
 fn print_node_line(canvas: &str, n: &NodeView) {
-    let geo = relay_sync::dim(&format!(
+    let geo = nostrdb_net::relay::sync::dim(&format!(
         "({},{} {}×{})",
         n.geo.x, n.geo.y, n.geo.w, n.geo.h
     ));
@@ -488,10 +495,10 @@ impl Cli {
         // overrides the key stored by `login`.
         let mut nsec = env::var("NOTEBOOK_NSEC")
             .ok()
-            .or_else(|| relay_sync::stored_nsec(APP));
+            .or_else(|| nostrdb_net::relay::sync::stored_nsec(APP));
         let mut relay = env::var("NOTEBOOK_RELAY")
             .ok()
-            .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string());
+            .unwrap_or_else(|| nostrdb_net::relay::sync::DEFAULT_RELAY.to_string());
         let mut db = None;
         let mut canvas = store::CANVAS_ID.to_string();
         let mut author = None;
@@ -546,9 +553,16 @@ impl Cli {
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
+        // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
+        // (and the `notedeck_notebook` store/event layer) speaks `enostr::Pubkey`.
+        // Both are `[u8; 32]` newtypes, so bridge at this boundary and keep
+        // everything downstream in enostr terms.
         let secret = match (&command, nsec) {
             (Command::Login { .. } | Command::Logout, _) => None,
-            (_, Some(nsec)) => Some(relay_sync::parse_nsec(&nsec)?),
+            (_, Some(nsec)) => {
+                let (sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec)?;
+                Some((sk, Pubkey::new(*pk.bytes())))
+            }
             (_, None) => None,
         };
 
@@ -686,7 +700,7 @@ OPTIONS:
     --color <c>       Color for `color`
     --json            Machine-readable output (show)
     -h, --help        Print this help",
-        DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
+        DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
         canvas = store::CANVAS_ID,
     );
 }
