@@ -78,8 +78,8 @@ pub struct DaveUi<'a> {
     backend_type: BackendType,
     /// Current permission mode (Default, Plan, AcceptEdits)
     permission_mode: PermissionMode,
-    /// When the last AI response token was received
-    last_activity: Option<std::time::Instant>,
+    /// When the last activity was seen, as wall-clock unix seconds
+    last_activity: Option<u64>,
     /// Focus queue info for mobile NEXT badge: (position, total, priority)
     focus_queue_info: Option<(usize, usize, FocusPriority)>,
     /// Named run configs for this session's CWD
@@ -253,8 +253,8 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn last_activity(mut self, instant: Option<std::time::Instant>) -> Self {
-        self.last_activity = instant;
+    pub fn last_activity(mut self, ts: Option<u64>) -> Self {
+        self.last_activity = ts;
         self
     }
 
@@ -1997,9 +1997,11 @@ fn add_msg_link(ui: &mut egui::Ui, shift_held: bool, action: &mut Option<DaveAct
     }
 }
 
-/// Format an Instant as a relative time string (e.g. "just now", "3m ago").
-fn format_relative_time(instant: std::time::Instant) -> String {
-    let elapsed = instant.elapsed().as_secs();
+/// Format a wall-clock unix-seconds timestamp as a relative time string
+/// (e.g. "just now", "3m ago"). `saturating_sub` renders a future-dated
+/// timestamp (clock skew) as "just now" rather than underflowing.
+fn format_relative_time(unix_secs: u64) -> String {
+    let elapsed = crate::session::now_unix().saturating_sub(unix_secs);
     if elapsed < 60 {
         "just now".to_string()
     } else if elapsed < 3600 {
@@ -2059,9 +2061,9 @@ impl DaveUi<'_> {
                                 None
                             };
                             if is_agentic {
-                                if let Some(instant) = self.last_activity {
+                                if let Some(ts) = self.last_activity {
                                     ui.label(
-                                        egui::RichText::new(format_relative_time(instant))
+                                        egui::RichText::new(format_relative_time(ts))
                                             .size(10.0)
                                             .color(ui.visuals().weak_text_color()),
                                     );
