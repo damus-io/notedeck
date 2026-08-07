@@ -399,7 +399,7 @@ async fn run() -> Result<()> {
                     view: &target,
                 },
                 &author,
-                &secret,
+                &store::Signer::new(&secret, None),
                 card_id,
                 &mut sink,
             );
@@ -432,7 +432,7 @@ async fn run() -> Result<()> {
                     view: &target,
                 },
                 &author,
-                &secret,
+                &store::Signer::new(&secret, None),
                 card_id,
                 &mut sink,
             );
@@ -475,7 +475,15 @@ async fn run() -> Result<()> {
             let action = build_action(&view, edit)?;
 
             let mut sink = Collect::default();
-            store::apply(&ndb, &board, &view, &author, &secret, action, &mut sink);
+            store::apply(
+                &ndb,
+                &board,
+                &view,
+                &author,
+                &store::Signer::new(&secret, None),
+                action,
+                &mut sink,
+            );
             if sink.0.is_empty() {
                 return Err("action produced no events (unknown card or column?)".into());
             }

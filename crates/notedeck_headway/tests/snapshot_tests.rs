@@ -366,7 +366,7 @@ fn snapshot_headway_detail_inline_ref() {
             store::BOARD_ID,
             view,
             &author,
-            &secret,
+            &store::Signer::new(&secret, None),
             store::BoardAction::EditDescription {
                 card: host,
                 description: description.clone(),

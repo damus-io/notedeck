@@ -287,7 +287,7 @@ fn mutate(
         board_id,
         &view,
         &author,
-        &secret,
+        &store::Signer::new(&secret, None),
         action,
         &mut publisher,
     );

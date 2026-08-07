@@ -2113,6 +2113,148 @@ pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Board
     .ok()
 }
 
+/// The board-anchored half of the shared-board read fan-out: the filters that
+/// pull the board *definition* and every member's board-anchored events (issues
+/// and placements) regardless of who authored them.
+///
+/// `headway_filter` scopes by a single author, which only ever sees one member's
+/// events. Genuine multi-writer boards ([NIP-SNS](../../../docs)) need to gather
+/// every member's contributions, so the read path keys off the board's
+/// *coordinate* instead of any one author:
+///
+/// - `{kinds:[BOARD], authors:[owner], #d:[board_id]}` — the single owner-authored
+///   board definition (columns, title). Authored only by the owner by
+///   construction, so this stays author-scoped.
+/// - `{kinds:[ISSUE, PLACEMENT], #a:[board_addr]}` — every member's cards and
+///   card placements, which carry the board coordinate in their `a` tag
+///   ([`build_issue`], [`build_placement`]) rather than being owner-authored.
+///
+/// Returns `None` if `board_addr` isn't a well-formed board coordinate. This is
+/// "phase A" of [`fold_shared_board`]; the card ids it surfaces drive the
+/// card-anchored "phase B" ([`card_meta_filter`]).
+pub fn board_scoped_filters(board_addr: &str) -> Option<Vec<Filter>> {
+    let (owner, board_id) = parse_board_address(board_addr)?;
+    let def = Filter::new()
+        .kinds([KIND_BOARD as u64])
+        .authors([&owner])
+        .tags([board_id.as_str()], 'd')
+        .limit(1)
+        .build();
+    let anchored = Filter::new()
+        .kinds([KIND_ISSUE as u64, KIND_PLACEMENT as u64])
+        .tags([board_addr], 'a')
+        .limit(5000)
+        .build();
+    Some(vec![def, anchored])
+}
+
+/// The card-anchored half of the shared-board read fan-out: a filter for every
+/// member's per-card metadata (subject/label edits, cover notes, relations,
+/// sequences and comments), keyed by the `e` tag pointing at each card.
+///
+/// These overlays name their card by `e` tag and carry no board reference, so
+/// they can't be reached by the board coordinate — they're gathered by the set
+/// of card ids surfaced in [`board_scoped_filters`]' phase-A walk. "Phase B" of
+/// [`fold_shared_board`]. `card_ids` are raw 32-byte note ids; the `#e` tag is an
+/// *id* tag, so it's matched with [`Filter::events`] rather than a string tag.
+///
+/// Comments are gathered separately by [`comment_filter`]: a *reply*'s lowercase
+/// `e` points at its parent comment, not the issue, so an `#e:[issue_ids]` filter
+/// would miss threaded replies — they're reached by their uppercase root `E`
+/// instead.
+pub fn card_meta_filter(card_ids: &[[u8; 32]]) -> Filter {
+    Filter::new()
+        .kinds([
+            KIND_LABEL as u64,
+            KIND_RELATION as u64,
+            KIND_SEQUENCE as u64,
+            KIND_COVER_NOTE as u64,
+        ])
+        .events(card_ids.iter())
+        .limit(5000)
+        .build()
+}
+
+/// The comment half of the shared-board card-anchored fan-out: a filter for every
+/// member's comments (kind 1111) on the given cards, keyed by the NIP-22 root `E`
+/// tag rather than the parent `e` tag.
+///
+/// Every comment — top-level *and* threaded reply — carries the uppercase root
+/// `E` = the issue id ([`build_comment`]), whereas the lowercase parent `e` is the
+/// issue only for a top-level comment and the *parent comment* for a reply. So
+/// matching on `#e:[issue_ids]` (as [`card_meta_filter`] does for other overlays)
+/// would silently drop replies; matching on the root `#E` captures the whole
+/// comment tree for each card. `E` is an *id* tag, so it's matched with id
+/// elements ([`Filter::add_id_element`]), not a string tag — `Filter` has no
+/// char-parameterised id-tag helper, so this drives the tag field directly.
+pub fn comment_filter(card_ids: &[[u8; 32]]) -> Filter {
+    let mut b = Filter::new().kinds([KIND_COMMENT as u64]).limit(5000);
+    b.start_tag_field('E').unwrap();
+    for id in card_ids {
+        b.add_id_element(id).unwrap();
+    }
+    b.end_field();
+    b.build()
+}
+
+/// Fold a *shared* board — one written by many members — out of `ndb` into a
+/// fresh reducer, gathering every author's events rather than a single author's.
+///
+/// This is the multi-writer counterpart of [`fold_board`], and the read-path
+/// prerequisite that makes concurrent edits observable at all: without it, other
+/// members' overlays never reach the reducer, so nothing converges. It runs the
+/// two-phase fan-out into one [`BoardReducer`]:
+///
+/// 1. **Phase A** ([`board_scoped_filters`]): fold the board definition and every
+///    member's issues and placements, collecting the card ids off the issues as
+///    we walk.
+/// 2. **Phase B** ([`card_meta_filter`] + [`comment_filter`]): fold every member's
+///    card-anchored overlays for exactly those cards — labels, cover notes,
+///    relations and sequences by their `#e` issue tag, and comments (including
+///    threaded replies) by their `#E` root tag.
+///
+/// Both phases feed the *same* reducer; because [`BoardReducer::ingest`] is
+/// commutative and idempotent, folding one filter set after another yields the
+/// same state as a single combined walk. The reducer still resolves
+/// latest-authorised-wins, so a member can only edit cards they're authorised for
+/// (their own, or — for the owner — any); the authority *roster* is a separate
+/// concern layered on top.
+///
+/// Returns `None` if `board_addr` isn't a well-formed board coordinate or the
+/// index walk fails. A board with no cards yields an empty (phase-A-only) reducer
+/// rather than `None`.
+#[profiling::function]
+pub fn fold_shared_board(ndb: &Ndb, txn: &Transaction, board_addr: &str) -> Option<BoardReducer> {
+    let phase_a = board_scoped_filters(board_addr)?;
+    let mut card_ids: Vec<[u8; 32]> = Vec::new();
+    let acc = ndb
+        .fold(txn, &phase_a, BoardReducer::default(), |mut acc, note| {
+            if note.kind() == KIND_ISSUE {
+                card_ids.push(*note.id());
+            }
+            if let Some(event) = parse(&note) {
+                acc.ingest(event);
+            }
+            acc
+        })
+        .ok()?;
+
+    // No cards means no card-anchored overlays to gather; the `#e`/`#E` filters
+    // would be empty, so skip phase B and return the board as-is.
+    if card_ids.is_empty() {
+        return Some(acc);
+    }
+
+    let phase_b = [card_meta_filter(&card_ids), comment_filter(&card_ids)];
+    ndb.fold(txn, &phase_b, acc, |mut acc, note| {
+        if let Some(event) = parse(&note) {
+            acc.ingest(event);
+        }
+        acc
+    })
+    .ok()
+}
+
 /// Fold a batch of freshly-arrived notes (identified by `keys`) into an existing
 /// reducer. Sound because the fold is commutative and idempotent: applying a
 /// delta to an up-to-date reducer yields the same state as a full re-fold, so
@@ -3320,6 +3462,121 @@ mod tests {
         assert_eq!(view.columns[0].name, "Todo");
         assert_eq!(view.columns[0].cards[0].title, "Card A (renamed)");
         assert_eq!(view.columns[1].cards[0].title, "Card B");
+    }
+
+    /// A board written by two different members converges through
+    /// [`fold_shared_board`]: the owner-authored card and a *different* member's
+    /// card (with that member's own placement and subject edit) both land in one
+    /// board — the multi-writer read fan-out. The single-author [`fold_board`]
+    /// misses the second member entirely, which is the gap this closes.
+    #[test]
+    fn fold_shared_board_gathers_all_members() {
+        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+
+        let owner = FullKeypair::generate();
+        let member = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "headway");
+
+        // Ingest a builder signed by an arbitrary member, returning the note id.
+        let ingest = |b: NoteBuilder, kp: &FullKeypair| -> NoteId {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            let id = NoteId::new(*note.id());
+            let json = enostr::ClientMessage::event(&note)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            ndb.process_event_with(&json, IngestMetadata::new().client(true))
+                .unwrap();
+            id
+        };
+
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+        // Owner defines the board and authors one card.
+        ingest(build_board("headway", "Headway", "", &cols), &owner);
+        let a = ingest(build_issue(&addr, "Owner card", ""), &owner);
+        ingest(build_placement("headway", &addr, &a, "todo", "g"), &owner);
+
+        // A *different* member authors their own card, places it, and renames it.
+        let b = ingest(build_issue(&addr, "Member card", ""), &member);
+        ingest(build_placement("headway", &addr, &b, "done", "m"), &member);
+        ingest(build_subject_edit(&b, "Member card (renamed)"), &member);
+
+        // ...then comments on it, including a threaded reply. A reply's lowercase
+        // `e` points at its parent comment (not the issue), so it's only reachable
+        // via the `#E` root tag — the case comment_filter exists to cover.
+        let c1 = ingest(
+            build_comment(&b, &member.pubkey, None, "member comment"),
+            &member,
+        );
+        ingest(
+            build_comment(
+                &b,
+                &member.pubkey,
+                Some((&c1, &member.pubkey)),
+                "member reply",
+            ),
+            &member,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let view = loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            if let Some(reducer) = fold_shared_board(&ndb, &txn, &addr)
+                && let Some(view) = pick_board(&reducer, &owner.pubkey, "headway")
+                && view.columns[0].cards.len() == 1
+                && view.columns[1].cards.len() == 1
+                // Wait on the member's subject edit and both comments (ingested
+                // last) so the assertions don't race them into view.
+                && view.columns[1].cards[0].title == "Member card (renamed)"
+                && view.columns[1].cards[0].comments.len() == 2
+            {
+                break view;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shared board did not materialise in ndb"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        // Both members' cards converge into one board, with the member's own
+        // subject edit applied.
+        assert_eq!(view.columns[0].cards[0].title, "Owner card");
+        assert_eq!(view.columns[1].cards[0].title, "Member card (renamed)");
+
+        // The whole comment thread folds in: the top-level comment and the reply
+        // threaded under it. The reply is the regression guard — matching card
+        // comments on `#e:[issue_ids]` alone would drop it. Find by body rather
+        // than index: the two are stamped in the same wall-clock second, so their
+        // (created_at, id) sort order isn't insertion order.
+        let comments = &view.columns[1].cards[0].comments;
+        let root = comments
+            .iter()
+            .find(|c| c.body == "member comment")
+            .expect("top-level comment folded in");
+        let reply = comments
+            .iter()
+            .find(|c| c.body == "member reply")
+            .expect("threaded reply folded in");
+        assert_eq!(root.parent, None);
+        assert_eq!(reply.parent, Some(c1));
+
+        // The single-author fold sees only the owner's card: exactly the gap
+        // fold_shared_board closes.
+        let txn = Transaction::new(&ndb).unwrap();
+        let owner_only = fold_board(&ndb, &txn, &owner.pubkey)
+            .and_then(|r| pick_board(&r, &owner.pubkey, "headway"))
+            .unwrap();
+        assert_eq!(owner_only.columns[0].cards.len(), 1);
+        assert_eq!(owner_only.columns[1].cards.len(), 0);
+        assert_eq!(owner_only.columns[0].cards[0].title, "Owner card");
     }
 
     #[test]

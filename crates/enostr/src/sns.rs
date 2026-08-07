@@ -24,6 +24,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use hkdf::Hkdf;
 use nostr::key::PublicKey;
+use nostr::nips::nip19::FromBech32;
 use nostr::nips::nip44;
 use nostr::nips::nip44::v2::{self, ConversationKey};
 use nostrdb::{Note, NoteBuilder};
@@ -109,6 +110,75 @@ pub fn wrap_rumor(
         .build()
 }
 
+/// A parsed kind-1082 key-share rumor: the shared `team_root` secret plus which
+/// board/channel it unlocks. This is the *inbound* half of membership — a member
+/// gift-wraps one of these to a new member, nostrdb auto-unwraps the `1059` to the
+/// `1082` rumor (the recipient's key is registered via `ndb.add_key`), and the app
+/// reads it here to decide whether to register the root (an app-owned accept
+/// policy — see `docs/nip-sns-sealed-shared-storage.md`).
+pub struct KeyShare {
+    /// The 32-byte shared channel secret to register with `ndb.add_team_root`.
+    pub team_root: [u8; 32],
+    /// The board coordinate this root unlocks (`30619:<owner-hex>:<board-id>`), if
+    /// the share names one. A key-share always should, but it's a wire value so a
+    /// missing/blank `a` tag is tolerated rather than failing the whole parse.
+    pub board_addr: Option<String>,
+    /// The rotation generation, if the share names one (see *Rotation* in the SNS
+    /// doc). `None` for a first-generation share.
+    pub epoch: Option<u32>,
+}
+
+/// Parse a kind-1082 key-share rumor into its [`KeyShare`]. Returns `None` if the
+/// note isn't a `1082` or carries no decodable `team_root` — the one field the
+/// caller can't proceed without.
+///
+/// The `team_root` tag is a hex or bech32 encoding of the 32-byte secret (per the
+/// SNS doc); both are accepted. The `a` (board coordinate) and `epoch` tags are
+/// optional and surfaced verbatim for the app's registration policy.
+pub fn parse_keyshare(note: &Note) -> Option<KeyShare> {
+    if note.kind() != KEYSHARE_KIND {
+        return None;
+    }
+    let mut team_root = None;
+    let mut board_addr = None;
+    let mut epoch = None;
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            // A 64-char hex root is stored by nostrdb as a binary *id* element, not
+            // a string, so read `get_id` first; a bech32 (`nsec…`) root stays a
+            // string and falls through to [`parse_team_root`].
+            Some("team_root") => {
+                team_root = tag
+                    .get_id(1)
+                    .copied()
+                    .or_else(|| tag.get_str(1).and_then(parse_team_root))
+            }
+            Some("a") => board_addr = tag.get_str(1).filter(|s| !s.is_empty()).map(str::to_owned),
+            Some("epoch") => epoch = tag.get_str(1).and_then(|s| s.parse().ok()),
+            _ => {}
+        }
+    }
+    Some(KeyShare {
+        team_root: team_root?,
+        board_addr,
+        epoch,
+    })
+}
+
+/// Decode a `team_root` tag value (hex or bech32) into the raw 32-byte secret.
+/// Tries hex first (the canonical form the SNS builders emit), then a bech32
+/// secret key (e.g. `nsec…`) so a human-pasted share still resolves.
+fn parse_team_root(s: &str) -> Option<[u8; 32]> {
+    if let Ok(bytes) = hex::decode(s) {
+        if let Ok(root) = <[u8; 32]>::try_from(bytes.as_slice()) {
+            return Some(root);
+        }
+    }
+    crate::SecretKey::from_bech32(s)
+        .ok()
+        .map(|sk| sk.secret_bytes())
+}
+
 /// HMAC-SHA256(key=salt, msg=ikm) → 32-byte key (HKDF-Extract only, matching the
 /// nostrdb C derivation). Shared with [`crate::pns`]'s scheme.
 fn hkdf_extract(ikm: &[u8; 32], salt: &[u8]) -> [u8; 32] {
@@ -126,6 +196,7 @@ fn nostrcrate_pk(pk: &Pubkey) -> Option<PublicKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::nips::nip19::ToBech32;
     use nostr::util::JsonUtil;
     use nostr::{Event, Kind};
 
@@ -210,5 +281,71 @@ mod tests {
         other[0] = 0x33;
         let other_keys = derive_sns_keys(&other).expect("keys");
         assert!(unwrap_envelope(&other_keys, &envelope).is_none());
+    }
+
+    /// Build a kind-1082 key-share rumor with the given `team_root` encoding,
+    /// signed by a throwaway sharer key (the signature is irrelevant to parsing —
+    /// nostrdb strips it on gift-wrap unwrap).
+    fn keyshare_note(team_root_tag: &str, board_addr: &str, epoch: Option<&str>) -> Note<'static> {
+        let sharer = FullKeypair::generate();
+        let mut b = NoteBuilder::new()
+            .kind(KEYSHARE_KIND)
+            .content("")
+            .start_tag()
+            .tag_str("team_root")
+            .tag_str(team_root_tag)
+            .start_tag()
+            .tag_str("a")
+            .tag_str(board_addr);
+        if let Some(epoch) = epoch {
+            b = b.start_tag().tag_str("epoch").tag_str(epoch);
+        }
+        b.sign(&sharer.secret_key.secret_bytes())
+            .build()
+            .expect("keyshare note")
+    }
+
+    #[test]
+    fn parse_keyshare_reads_hex_root_board_and_epoch() {
+        let root = test_root();
+        let board =
+            "30619:d6623502bcf67f6758e25080111ad9221181c33cfcba14d74dc9e3784ecfe1f7:headway";
+        let note = keyshare_note(&hex::encode(root), board, Some("2"));
+
+        let share = parse_keyshare(&note).expect("parses");
+        assert_eq!(share.team_root, root);
+        assert_eq!(share.board_addr.as_deref(), Some(board));
+        assert_eq!(share.epoch, Some(2));
+    }
+
+    /// A bech32 (`nsec…`) `team_root` decodes to the same 32 bytes as its hex form,
+    /// so a human-pasted share resolves identically.
+    #[test]
+    fn parse_keyshare_reads_bech32_root() {
+        let root = test_root();
+        let nsec = crate::SecretKey::from_slice(&root)
+            .expect("secret")
+            .to_bech32()
+            .expect("bech32");
+        let note = keyshare_note(&nsec, "30619:owner:board", None);
+
+        let share = parse_keyshare(&note).expect("parses");
+        assert_eq!(share.team_root, root);
+        assert_eq!(share.epoch, None);
+    }
+
+    /// A note of the wrong kind, or one missing a decodable `team_root`, is not a
+    /// key-share.
+    #[test]
+    fn parse_keyshare_rejects_non_keyshare() {
+        // Wrong kind (an envelope, not a share).
+        let keys = derive_sns_keys(&test_root()).expect("keys");
+        let member = FullKeypair::generate();
+        let envelope = wrap_rumor(&keys, &member, r#"{"kind":1}"#, 1).expect("envelope");
+        assert!(parse_keyshare(&envelope).is_none());
+
+        // Right kind but an undecodable root.
+        let note = keyshare_note("not-a-key", "30619:owner:board", None);
+        assert!(parse_keyshare(&note).is_none());
     }
 }

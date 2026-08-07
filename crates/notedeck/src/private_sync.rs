@@ -77,6 +77,16 @@ pub fn fan_out_unseen_notes(
         let Ok(note) = ndb.get_note_by_key(txn, key) else {
             continue;
         };
+        // Never fan out an unwrapped rumor in the clear. A rumor reaches nostrdb
+        // sealed inside a PNS/SNS/giftwrap envelope; the *envelope* is the sync
+        // unit, and nostrdb attributes the envelope's relay to the inner rumor, so
+        // without this guard a sealed shared-board edit would be rebroadcast in
+        // plaintext to every *other* private relay it hasn't been seen on. The
+        // envelope itself is published by the app that authored it (see the SNS
+        // publish path); this fan-out only carries plaintext app events.
+        if note.is_rumor() {
+            continue;
+        }
         // Target each private relay the note hasn't been seen on yet. Both the
         // private set and a note's seen-on set are tiny (1-2 relays each), so a
         // nested linear scan beats allocating a lookup set per note. The seen-on
@@ -124,11 +134,14 @@ pub struct PrivateRelaySync {
     owner: SubOwnerKey,
     /// Logical sub key under that owner.
     key: SubKey,
-    /// Last resolved (selected account, private relay set), so we only
-    /// re-declare (and log) on a change rather than every frame. The account is
-    /// part of the key so switching accounts still re-declares even if the two
-    /// accounts happen to share a private relay set.
-    last: Option<(Pubkey, Vec<NormRelayUrl>)>,
+    /// Last resolved (selected account, private relay set, filter fingerprint),
+    /// so we only re-declare (and log) on a change rather than every frame. The
+    /// account is part of the key so switching accounts still re-declares even if
+    /// the two accounts happen to share a private relay set; the filter
+    /// fingerprint (each filter's JSON) is part of it so that a caller widening its
+    /// filter set — e.g. headway accepting a new shared board and adding its
+    /// envelope filter — re-declares even when the relay set is unchanged.
+    last: Option<(Pubkey, Vec<NormRelayUrl>, Vec<String>)>,
 }
 
 impl PrivateRelaySync {
@@ -144,10 +157,15 @@ impl PrivateRelaySync {
     }
 
     /// Bring the inbound subscription in line with the selected account's
-    /// private relays, declaring a live + full-history scoped sub for `filter`
+    /// private relays, declaring a live + full-history scoped sub for `filters`
     /// against them (or dropping it when none are marked). Returns the resolved
     /// private relays for use as outbound publish targets.
-    pub fn update(&mut self, ctx: &mut AppContext, filter: Filter) -> Vec<RelayId> {
+    ///
+    /// `filters` is the full set to sync — a plaintext-app filter usually passes a
+    /// single one, but a shared-note app passes one per channel (e.g. headway's
+    /// own-board filter plus a kind-1081 envelope filter per accepted shared
+    /// board). An empty set drops the subscription, same as no private relay.
+    pub fn update(&mut self, ctx: &mut AppContext, filters: Vec<Filter>) -> Vec<RelayId> {
         let relays = ctx.accounts.selected_account_private_relays();
         let urls: Vec<NormRelayUrl> = relays
             .iter()
@@ -157,31 +175,36 @@ impl PrivateRelaySync {
             })
             .collect();
 
-        // Nothing to do unless the account or its private relay set changed.
-        // set_sub/drop_owner each re-resolve the account's read relays (a hot,
-        // log-emitting path), so calling them every frame spams the logs and
-        // wastes work — dedup before touching the outbox at all.
+        // Fingerprint the filter set (each filter's canonical JSON) so a widened
+        // set re-declares even when the relay set is unchanged.
+        let filter_fp: Vec<String> = filters.iter().filter_map(|f| f.json().ok()).collect();
+
+        // Nothing to do unless the account, its private relay set, or the filter
+        // set changed. set_sub/drop_owner each re-resolve the account's read
+        // relays (a hot, log-emitting path), so calling them every frame spams the
+        // logs and wastes work — dedup before touching the outbox at all.
         let pubkey = *ctx.accounts.selected_account_pubkey();
-        if self
-            .last
-            .as_ref()
-            .is_some_and(|(pk, last)| *pk == pubkey && last.as_slice() == urls.as_slice())
-        {
+        if self.last.as_ref().is_some_and(|(pk, last_urls, last_fp)| {
+            *pk == pubkey
+                && last_urls.as_slice() == urls.as_slice()
+                && last_fp.as_slice() == filter_fp.as_slice()
+        }) {
             return relays;
         }
         self.log_change(ctx, &urls);
-        self.last = Some((pubkey, urls.clone()));
+        self.last = Some((pubkey, urls.clone(), filter_fp));
 
         let mut scoped = ctx.remote.scoped_subs(ctx.accounts);
-        if urls.is_empty() {
-            // No private relay marked: local-only. Drop any prior declaration.
+        if urls.is_empty() || filters.is_empty() {
+            // No private relay marked (or nothing to sync): local-only. Drop any
+            // prior declaration.
             scoped.drop_owner(self.owner);
             return relays;
         }
 
-        let config = SubConfig::live(vec![filter.clone()])
+        let config = SubConfig::live(filters.clone())
             .explicit_relays(urls.into_iter().collect::<HashSet<_>>())
-            .full_history(FullHistoryConfig::new(vec![filter]))
+            .full_history(FullHistoryConfig::new(filters))
             .build();
         let _ = scoped.set_sub(ScopedSubIdentity::account(self.owner, self.key), config);
 
@@ -360,6 +383,74 @@ mod tests {
         let private = NormRelayUrl::new("wss://private.example.com").expect("relay");
         let opened = relays_fanned_for(&ndb, &keys, vec![RelayId::Websocket(private)]);
         assert!(opened.is_empty());
+    }
+
+    /// An unwrapped rumor — the plaintext inner note nostrdb produces from an SNS
+    /// envelope — is never fanned out, even to a private relay it hasn't been seen
+    /// on. The sealed envelope is the sync unit; leaking the cleartext rumor would
+    /// defeat sealed sharing entirely.
+    #[tokio::test]
+    async fn unwrapped_rumor_is_not_fanned_out() {
+        let (_tmp, ndb) = test_ndb();
+        // Register the team root so ndb auto-unwraps the envelope on ingest.
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x22;
+        assert!(ndb.add_team_root(&root));
+        let keys = enostr::sns::derive_sns_keys(&root).expect("keys");
+        let member = FullKeypair::generate();
+        // The rumor must be a complete signed note — nostrdb re-parses it on the
+        // seal peel and requires every field but the sig/pubkey (including the id),
+        // which is exactly what the SNS publish path feeds wrap_rumor.
+        let rumor = NoteBuilder::new()
+            .kind(1)
+            .content("secret")
+            .created_at(1_700_000_000)
+            .sign(&member.secret_key.secret_bytes())
+            .build()
+            .expect("rumor")
+            .json()
+            .expect("rumor json");
+        let envelope =
+            enostr::sns::wrap_rumor(&keys, &member, &rumor, 1_700_000_000).expect("envelope");
+
+        // Ingest the envelope; ndb peels it to the rumor. No relay is attributed,
+        // so the rumor's seen-on set is empty — it *would* be fanned to the private
+        // relay if not for the is_rumor guard, which is exactly what this asserts.
+        let event: serde_json::Value =
+            serde_json::from_str(&envelope.json().expect("json")).expect("value");
+        let frame = serde_json::json!(["EVENT", "team", event]).to_string();
+        ndb.process_event(&frame).expect("ingest");
+
+        // Ingest is async on a writer thread. Poll (bounded) for the unwrapped
+        // rumor to commit, nudging the late-arrival peel each round, rather than
+        // awaiting a subscription — keeps the test from hanging if the peel fails.
+        let rumor_key = {
+            let mut found = None;
+            for _ in 0..100 {
+                {
+                    let txn = Transaction::new(&ndb).expect("txn");
+                    ndb.process_sns(&txn);
+                }
+                let txn = Transaction::new(&ndb).expect("txn");
+                if let Ok(res) = ndb.query(&txn, &[Filter::new().kinds([1]).build()], 1) {
+                    if let Some(hit) = res.first() {
+                        assert!(hit.note.is_rumor(), "unwrapped note should be a rumor");
+                        found = Some(hit.note_key);
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            found.expect("SNS envelope should unwrap into the inner rumor")
+        };
+
+        let private = NormRelayUrl::new("wss://private.example.com").expect("relay");
+        let opened = relays_fanned_for(&ndb, &[rumor_key], vec![RelayId::Websocket(private)]);
+        assert!(
+            opened.is_empty(),
+            "a sealed rumor must not be fanned out in the clear"
+        );
     }
 
     /// An empty private relay set is a no-op even with fresh notes to consider.
