@@ -117,6 +117,37 @@ fn embedded_engine(ndb: &nostrdb::Ndb, secret_key: &[u8; 32]) -> Option<agentium
     }
 }
 
+/// Where a "new session" request should route, given local AI capability and
+/// whether any remote agentic hosts are known. Pure so the decision can be
+/// unit-tested without constructing a full [`Dave`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewSessionRoute {
+    /// Start a local chat session directly.
+    Chat,
+    /// Ask whether to start a local chat or a remote agentic session.
+    ChooseKind,
+    /// Pick a remote host to spawn an agentic session on.
+    HostPicker,
+    /// Pick a local working directory for an agentic session.
+    LocalDirectoryPicker,
+}
+
+/// Decide how a new-session request routes.
+///
+/// Remote agentic sessions are only offered once remote hosts are known (i.e.
+/// remote sessions already exist). A thin client with no local agentic backend
+/// (`AiMode::Chat`, e.g. Android) then asks which kind to start, rather than
+/// silently creating a local chat — the bug this addresses. A locally-agentic
+/// client goes straight to host selection.
+fn route_new_session(ai_mode: AiMode, has_remote_hosts: bool) -> NewSessionRoute {
+    match (ai_mode, has_remote_hosts) {
+        (AiMode::Chat, true) => NewSessionRoute::ChooseKind,
+        (AiMode::Chat, false) => NewSessionRoute::Chat,
+        (AiMode::Agentic, true) => NewSessionRoute::HostPicker,
+        (AiMode::Agentic, false) => NewSessionRoute::LocalDirectoryPicker,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PnsRemoteSubState {
     account: enostr::Pubkey,
@@ -270,6 +301,10 @@ pub enum DaveOverlay {
     #[default]
     None,
     Settings,
+    /// Choosing between a local chat and a remote agentic session (shown on
+    /// thin clients that have no local agentic backend but know of remote
+    /// hosts).
+    NewSessionKind,
     HostPicker,
     DirectoryPicker,
     /// Backend has been chosen; showing resumable-session list.
@@ -1198,6 +1233,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 return DaveResponse::default();
             }
+            DaveOverlay::NewSessionKind => {
+                let has_sessions = !self.session_manager.is_empty();
+                match ui::session_kind_picker_overlay_ui(ui, has_sessions) {
+                    OverlayResult::NewSessionChat => {
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        self.create_session_with_cwd(
+                            cwd,
+                            self.model_config.backend,
+                            Model::Default,
+                        );
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                    OverlayResult::NewSessionAgentic => {
+                        self.active_overlay = DaveOverlay::HostPicker;
+                    }
+                    OverlayResult::Close => {}
+                    _ => {
+                        self.active_overlay = DaveOverlay::NewSessionKind;
+                    }
+                }
+                return DaveResponse::default();
+            }
             DaveOverlay::HostPicker => {
                 let has_sessions = !self.session_manager.is_empty();
                 let known_hosts = self.known_remote_hosts();
@@ -1610,20 +1667,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn handle_new_chat(&mut self) {
-        match self.ai_mode {
-            AiMode::Chat => {
-                // In chat mode, create a session directly without the directory picker
+        match route_new_session(self.ai_mode, !self.known_remote_hosts().is_empty()) {
+            NewSessionRoute::Chat => {
+                // In chat mode, create a session directly without any picker.
                 let cwd = std::env::current_dir().unwrap_or_default();
                 self.create_session_with_cwd(cwd, self.model_config.backend, Model::Default);
             }
-            AiMode::Agentic => {
-                // If remote hosts are known, show host picker first
-                if !self.known_remote_hosts().is_empty() {
-                    self.active_overlay = DaveOverlay::HostPicker;
-                } else {
-                    self.directory_picker.target_host = None;
-                    self.active_overlay = DaveOverlay::DirectoryPicker;
-                }
+            NewSessionRoute::ChooseKind => {
+                self.active_overlay = DaveOverlay::NewSessionKind;
+            }
+            NewSessionRoute::HostPicker => {
+                self.active_overlay = DaveOverlay::HostPicker;
+            }
+            NewSessionRoute::LocalDirectoryPicker => {
+                self.directory_picker.target_host = None;
+                self.active_overlay = DaveOverlay::DirectoryPicker;
             }
         }
     }
@@ -5066,6 +5124,31 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[test]
+    fn new_session_routes_by_capability_and_hosts() {
+        // Thin client (no local agentic backend, AiMode::Chat): start a local
+        // chat directly until remote hosts exist, then ask which kind — this is
+        // the Android bug, which previously always created a local chat.
+        assert_eq!(
+            route_new_session(AiMode::Chat, false),
+            NewSessionRoute::Chat
+        );
+        assert_eq!(
+            route_new_session(AiMode::Chat, true),
+            NewSessionRoute::ChooseKind
+        );
+        // Locally agentic (desktop): local directory picker until remote hosts
+        // exist, then the host picker. Unchanged by this fix.
+        assert_eq!(
+            route_new_session(AiMode::Agentic, false),
+            NewSessionRoute::LocalDirectoryPicker
+        );
+        assert_eq!(
+            route_new_session(AiMode::Agentic, true),
+            NewSessionRoute::HostPicker
+        );
+    }
 
     fn test_config() -> Config {
         if cfg!(target_os = "windows") {

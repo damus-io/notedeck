@@ -13,6 +13,7 @@ mod query_ui;
 pub(crate) mod run_config_editor;
 pub(crate) mod run_ui;
 pub mod scene;
+pub mod session_kind_picker;
 pub mod session_list;
 pub mod session_picker;
 mod settings;
@@ -29,6 +30,7 @@ pub use keybind_hint::{keybind_hint, paint_keybind_hint};
 pub use keybindings::check_keybindings;
 pub(crate) use run_config_editor::{run_config_editor_overlay_ui, RunConfigChange};
 pub use scene::{AgentScene, SceneAction, SceneResponse};
+pub use session_kind_picker::SessionKindAction;
 pub use session_list::{SessionListAction, SessionListUi};
 pub use session_picker::{SessionPicker, SessionPickerAction};
 pub use settings::{DaveSettingsPanel, SettingsPanelAction};
@@ -152,6 +154,10 @@ pub enum OverlayResult {
     ApplySettings(DaveSettings),
     /// Host was selected. `None` = local, `Some(hostname)` = remote.
     HostSelected(Option<String>),
+    /// New-session chooser: start a local chat.
+    NewSessionChat,
+    /// New-session chooser: start an agentic (remote) session.
+    NewSessionAgentic,
 }
 
 /// Render the settings overlay UI.
@@ -246,6 +252,16 @@ pub fn host_picker_overlay_ui(
         }
     }
     OverlayResult::None
+}
+
+/// Render the new-session-kind chooser overlay UI.
+pub fn session_kind_picker_overlay_ui(ui: &mut egui::Ui, has_sessions: bool) -> OverlayResult {
+    match session_kind_picker::session_kind_picker_overlay_ui(ui, has_sessions) {
+        Some(SessionKindAction::Chat) => OverlayResult::NewSessionChat,
+        Some(SessionKindAction::Agentic) => OverlayResult::NewSessionAgentic,
+        Some(SessionKindAction::Cancelled) => OverlayResult::Close,
+        None => OverlayResult::None,
+    }
 }
 
 /// Render the worktree creator overlay UI.

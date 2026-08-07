@@ -5,8 +5,8 @@
 //! inverted: rather than folding events itself, this CLI drives the
 //! platform-neutral [`agentium_core`] engine, which owns its own nostrdb cache
 //! and a background relay connect/sync loop that streams this identity's
-//! PNS-encrypted session corpus into that cache. The shared [`relay_sync`] crate
-//! still owns the incidental plumbing — the stored signing key, the cache
+//! PNS-encrypted session corpus into that cache. `nostrdb_net`'s `relay::sync`
+//! module still owns the incidental plumbing — the stored signing key, the cache
 //! directory convention, and `login`/`logout`. This file is the command surface:
 //! argument parsing, config resolution, and rendering the session list.
 
@@ -20,7 +20,7 @@ use agentium_core::session_loader::SessionState;
 use enostr::Pubkey;
 use nostrdb::Transaction;
 
-use relay_sync::Result;
+use nostrdb_net::relay::sync::Result;
 
 /// The CLI's cache/key directory under the platform data dir (e.g.
 /// `~/.local/share/agentium-cli` on Linux).
@@ -34,7 +34,7 @@ const SYNC_MAX: Duration = Duration::from_secs(6);
 async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`agentium list | head`) instead of
     // panicking in println! on EPIPE.
-    relay_sync::reset_sigpipe();
+    nostrdb_net::relay::sync::reset_sigpipe();
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -65,8 +65,8 @@ async fn run() -> Result<()> {
     // `login`/`logout` manage the stored key and touch neither the cache nor a
     // relay, so handle them before any of that machinery spins up.
     match &cli.command {
-        Command::Login { nsec } => return relay_sync::login(nsec, APP),
-        Command::Logout => return relay_sync::logout(APP),
+        Command::Login { nsec } => return nostrdb_net::relay::sync::login(nsec, APP),
+        Command::Logout => return nostrdb_net::relay::sync::logout(APP),
         _ => {}
     }
 
@@ -84,11 +84,12 @@ async fn run() -> Result<()> {
     let db = resolve_db(cli.db)?;
 
     // The engine owns its own nostrdb cache and a self-driving relay loop. Open
-    // it over the cache dir relay_sync manages so co-located tools share one
-    // cache; the engine takes a clone and drives sync itself. Opening also
-    // registers the device key with ndb so its ingest threads can decrypt this
-    // identity's inbound kind-1080 PNS envelopes into queryable inner events.
-    let ndb = relay_sync::open_ndb(db.as_deref(), APP)?;
+    // it over the cache dir nostrdb_net's relay::sync manages so co-located
+    // tools share one cache; the engine takes a clone and drives sync itself.
+    // Opening also registers the device key with ndb so its ingest threads can
+    // decrypt this identity's inbound kind-1080 PNS envelopes into queryable
+    // inner events.
+    let ndb = nostrdb_net::relay::sync::open_ndb(db.as_deref(), APP)?;
     let mut engine = Engine::with_ndb(ndb, secret)?;
     let mut transport = engine
         .transport_handle()
@@ -336,13 +337,13 @@ impl ListFilters {
 /// current-selection would.
 fn resolve_relay(flag: Option<String>) -> Result<String> {
     if let Some(url) = flag {
-        relay_sync::write_config(APP, "relay", &url)?;
+        nostrdb_net::relay::sync::write_config(APP, "relay", &url)?;
         return Ok(url);
     }
     Ok(env::var("AGENTIUM_RELAY")
         .ok()
-        .or_else(|| relay_sync::read_config(APP, "relay"))
-        .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string()))
+        .or_else(|| nostrdb_net::relay::sync::read_config(APP, "relay"))
+        .unwrap_or_else(|| nostrdb_net::relay::sync::DEFAULT_RELAY.to_string()))
 }
 
 /// Resolve the nostrdb cache dir. Precedence: `--db > stored config > default`
@@ -350,10 +351,10 @@ fn resolve_relay(flag: Option<String>) -> Result<String> {
 /// `--relay`; `None` lets `open_ndb` pick the default.
 fn resolve_db(flag: Option<String>) -> Result<Option<String>> {
     if let Some(path) = flag {
-        relay_sync::write_config(APP, "db", &path)?;
+        nostrdb_net::relay::sync::write_config(APP, "db", &path)?;
         return Ok(Some(path));
     }
-    Ok(relay_sync::read_config(APP, "db"))
+    Ok(nostrdb_net::relay::sync::read_config(APP, "db"))
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +387,7 @@ impl Cli {
         // `resolve_relay`/`resolve_db`).
         let mut nsec = env::var("AGENTIUM_NSEC")
             .ok()
-            .or_else(|| relay_sync::stored_nsec(APP));
+            .or_else(|| nostrdb_net::relay::sync::stored_nsec(APP));
         let mut relay = None;
         let mut db = None;
         let mut author = None;
@@ -429,9 +430,16 @@ impl Cli {
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
+        // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
+        // (and the `agentium_core` engine) speaks `enostr::Pubkey`. Both are
+        // `[u8; 32]` newtypes, so bridge at this boundary and keep everything
+        // downstream in enostr terms.
         let secret = match (&command, nsec) {
             (Command::Login { .. } | Command::Logout, _) => None,
-            (_, Some(nsec)) => Some(relay_sync::parse_nsec(&nsec)?),
+            (_, Some(nsec)) => {
+                let (sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec)?;
+                Some((sk, Pubkey::new(*pk.bytes())))
+            }
             (_, None) => None,
         };
 
@@ -505,7 +513,7 @@ OPTIONS:
     --backend <b>     Only sessions whose backend contains <b>
 
     -h, --help        Print this help",
-        DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
+        DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
     );
 }
 
