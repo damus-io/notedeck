@@ -217,7 +217,7 @@ fn focused_text_input<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> No
 fn wait_for_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if harness.query_by_label(label).is_some() {
             return;
         }
@@ -230,7 +230,7 @@ fn wait_for_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str)
 fn wait_for_absent(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if harness.query_by_label(label).is_none() {
             return;
         }
@@ -276,7 +276,7 @@ fn snapshot_headway_detail() {
     harness
         .get_by_label("Define nostr event model for boards")
         .simulate_click();
-    harness.run();
+    harness.run_ok();
 
     for &(name, w, h) in &[
         ("headway_detail_desktop", 1200.0, 800.0),
@@ -438,7 +438,7 @@ fn add_subissue_flow() {
     harness
         .get_by_label("Define nostr event model for boards")
         .simulate_click();
-    harness.run();
+    harness.run_ok();
 
     // The fixture rollup: one of the two children sits in Done.
     harness.get_by_label("1/2");
@@ -446,9 +446,9 @@ fn add_subissue_flow() {
     // The composer is collapsed behind "+ Add sub-issue" (Linear-style);
     // opening it focuses the field, so typing can start immediately.
     harness.get_by_label("+ Add sub-issue").simulate_click();
-    harness.run();
+    harness.run_ok();
     focused_text_input(&harness).type_text("Write a relay conformance suite");
-    harness.run();
+    harness.run_ok();
     focused_text_input(&harness).key_press(Key::Enter);
 
     // The new child lands in the checklist (in Backlog, so not done).
@@ -506,7 +506,7 @@ fn snapshot_inline_card() {
             ui.put(rect, |ui: &mut egui::Ui| card_inline_ui(ui, &theme, &card));
         });
 
-    harness.run();
+    harness.run_ok();
     harness.snapshot("inline_card");
 }
 
@@ -578,7 +578,7 @@ fn snapshot_inline_chip_row_wrapping() {
             );
         });
 
-    harness.run();
+    harness.run_ok();
     harness.snapshot("inline_chip_row_wrapping");
 }
 
@@ -639,7 +639,7 @@ fn snapshot_inline_chip() {
             });
         });
 
-    harness.run();
+    harness.run_ok();
     harness.snapshot("inline_chip");
 }
 
@@ -651,7 +651,7 @@ fn open_first_column_menu(harness: &mut Harness<'static, HeadwayTestState>) {
         .next()
         .expect("at least one column menu")
         .simulate_click();
-    harness.run();
+    harness.run_ok();
 }
 
 /// Drive the add-column flow through the real UI: open the composer, type a
@@ -671,12 +671,12 @@ fn add_column_flow() {
 
     // Open the add-column composer.
     harness.get_by_label("+ Add column").simulate_click();
-    harness.run();
+    harness.run_ok();
 
     // Type into the (auto-focused) composer field, then commit via "Add". The
     // field has no label, so target it by focus.
     focused_text_input(&harness).type_text("Ideas");
-    harness.run();
+    harness.run_ok();
     harness.get_by_label("Add").simulate_click();
 
     // A sixth column now exists (asserted via the always-visible board summary,
@@ -700,14 +700,14 @@ fn rename_column_flow() {
 
     open_first_column_menu(&mut harness);
     harness.get_by_label("Rename").simulate_click();
-    harness.run();
+    harness.run_ok();
 
     // The header is now an inline field seeded with "Backlog". Select all
     // (Command+A maps to egui's select-all), replace it, and commit with Enter.
     focused_text_input(&harness).key_combination(&[Key::Command, Key::A]);
-    harness.run();
+    harness.run_ok();
     focused_text_input(&harness).type_text("Inbox");
-    harness.run();
+    harness.run_ok();
     focused_text_input(&harness).key_press(Key::Enter);
 
     wait_for_label(&mut harness, "Inbox");
@@ -731,7 +731,7 @@ fn reorder_column_flow() {
     // Wait for the reordered board to materialise (Backlog moves right of Todo).
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         let backlog_x = harness.get_by_label("Backlog").bounding_box().unwrap().x0;
         let todo_x = harness.get_by_label("Todo").bounding_box().unwrap().x0;
         if backlog_x > todo_x {
@@ -781,7 +781,7 @@ fn add_card_flow() {
         .next()
         .expect("an add-card affordance")
         .simulate_click();
-    harness.run();
+    harness.run_ok();
 
     // Enter (not the "Add" button) must commit the card — the composer is a
     // multiline field, which swallows Enter into a newline, so this is the path
@@ -790,7 +790,7 @@ fn add_card_flow() {
         // The card composer is multiline, so it has the MultilineTextInput role.
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("Write integration tests");
-    harness.run();
+    harness.run_ok();
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .key_press(Key::Enter);
@@ -803,7 +803,7 @@ fn add_card_flow() {
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("Ship the feature");
-    harness.run();
+    harness.run_ok();
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .key_press(Key::Enter);
@@ -838,7 +838,7 @@ fn add_card_reachable_when_column_overflows() {
             delta: egui::vec2(0.0, -120.0),
             modifiers: egui::Modifiers::default(),
         });
-        harness.run();
+        harness.run_ok();
     }
 
     // The add-card button, fully scrolled, must land inside the board's padded

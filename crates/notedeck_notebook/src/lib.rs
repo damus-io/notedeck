@@ -254,6 +254,13 @@ impl Notebook {
         &self.canvas
     }
 
+    /// The cached vault note list (newest-edited first). Exposed for
+    /// tests/introspection so a seed barrier can wait for every longform note to
+    /// fold in before snapshotting.
+    pub fn notes(&self) -> &[event::LongformNote] {
+        self.sync.notes()
+    }
+
     /// Whether the full-screen longform editor is open (the canvas is hidden
     /// while it is). Exposed for tests/introspection.
     pub fn editor_is_open(&self) -> bool {

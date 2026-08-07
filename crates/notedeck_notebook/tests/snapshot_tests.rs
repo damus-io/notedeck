@@ -8,7 +8,7 @@ use notedeck::{App, Notedeck};
 use notedeck_notebook::Notebook;
 use notedeck_notebook::event::{
     self, EdgeEnds, Geometry, LongformInput, NodeContent, NodeKind, build_canvas, build_edge,
-    build_node, build_transform, canvas_address,
+    build_longform, build_node, build_transform, canvas_address,
 };
 use notedeck_notebook::store::{
     CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_longform, load_longform,
@@ -32,7 +32,15 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
     // seed a canvas).
     if !state.setup_done {
         state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
+        ctx.style_mut(|s| {
+            s.animation_time = 0.0;
+            // Steady (non-blinking) text caret so a focused field — the inline
+            // vault rename — renders identically regardless of how much virtual
+            // time elapsed before the snapshot. The blink phase otherwise tracks
+            // `input.time`, which the variable-length seed barrier makes
+            // nondeterministic across machines (it flaked only on CI).
+            s.visuals.text_cursor.blink = false;
+        });
 
         let secret = state.account.secret_key.clone();
         let pubkey = state.account.pubkey;
@@ -191,7 +199,7 @@ fn build_harness(
 fn wait_for_label(harness: &mut Harness<'static, NotebookTestState>, label: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if harness.query_by_label(label).is_some() {
             return;
         }
@@ -200,12 +208,74 @@ fn wait_for_label(harness: &mut Harness<'static, NotebookTestState>, label: &str
     }
 }
 
+/// Pump frames until the whole colored demo seed has folded in (all 8 nodes and
+/// both edges), or panic after a deadline. The seed's ~19 events ingest
+/// asynchronously and fold across one or more polls, so waiting for a single
+/// node's label (`wait_for_label`) doesn't guarantee the rest are in — a test
+/// that clicks or drags a node right after would race the stragglers. Use this
+/// as the setup barrier for any test that interacts with the seeded canvas.
+fn wait_for_seed(harness: &mut Harness<'static, NotebookTestState>) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        let canvas = harness.state().notebook.canvas();
+        if canvas.get_nodes().len() >= 8 && canvas.get_edges().len() >= 2 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the demo seed never fully folded"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Pump frames until all `expected` seeded longform notes have folded into the
+/// vault list, or panic after a deadline. Each seed ingests asynchronously, so
+/// waiting for a single row's label doesn't guarantee the rest are in — a
+/// snapshot taken too early would render a nondeterministic subset (and, with
+/// them, a nondeterministic row order). Use this as the vault setup barrier.
+fn wait_for_vault(harness: &mut Harness<'static, NotebookTestState>, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness.state().notebook.notes().len() >= expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "only {} of {expected} vault notes folded in",
+            harness.state().notebook.notes().len()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Seed one longform note per title with a deterministic `d` and `created_at`,
+/// so the vault renders the same rows in the same order every run. Production's
+/// `create_longform` stamps wall-clock `now_secs()`, which in a slow debug build
+/// spreads a seeded batch across whole-second boundaries and shuffles the
+/// newest-first order — the snapshot flake. Here `created_at` is `base + i`
+/// (later titles are newer), so the primary sort key is fixed run-to-run.
+fn seed_vault(ndb: &Ndb, secret: &[u8; 32], titles: &[&str]) {
+    for (i, title) in titles.iter().enumerate() {
+        let input = LongformInput {
+            title: title.to_string(),
+            content: format!("# {title}\n\nbody"),
+            ..Default::default()
+        };
+        let builder =
+            build_longform(&format!("seed-{i:02}"), &input).created_at(1_700_000_000 + i as u64);
+        ingest(ndb, builder, secret, &mut NoPublish).expect("seed longform");
+    }
+}
+
 /// Render the colored demo canvas at a desktop viewport and snapshot it.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook() {
     let mut harness = build_harness(egui::Vec2::new(1200.0, 800.0), true, true);
-    wait_for_label(&mut harness, "Red");
+    wait_for_seed(&mut harness);
     harness.run_steps(3);
     harness.snapshot("notebook_demo");
 }
@@ -216,7 +286,7 @@ fn snapshot_notebook() {
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_colors() {
     let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, true);
-    wait_for_label(&mut harness, "Red");
+    wait_for_seed(&mut harness);
     harness.run_steps(3);
     harness.snapshot("notebook_colors");
 }
@@ -240,35 +310,30 @@ fn snapshot_notebook_vault() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
 
     let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in [
-            "Meeting notes — Q3 planning",
-            "Reading list",
-            "nostr protocol ideas",
-            "Untitled",
-            "Groceries",
-        ] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
+        seed_vault(
+            app_ctx.ndb,
+            &secret,
+            &[
+                "Meeting notes — Q3 planning",
+                "Reading list",
+                "nostr protocol ideas",
+                "Untitled",
+                "Groceries",
+            ],
+        );
     }
 
-    wait_for_label(&mut harness, "Reading list");
+    wait_for_vault(&mut harness, 5);
     harness.run_steps(3);
     // Hover a row so the snapshot also shows the row hover highlight.
     harness
         .input_mut()
         .events
         .push(egui::Event::PointerMoved(egui::pos2(120.0, 120.0)));
-    harness.run();
+    harness.run_ok();
     harness.snapshot("notebook_vault");
 }
 
@@ -280,22 +345,17 @@ fn snapshot_notebook_vault_delete() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
 
     let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
+        seed_vault(
+            app_ctx.ndb,
+            &secret,
+            &["Meeting notes — Q3 planning", "Reading list", "Groceries"],
+        );
     }
 
-    wait_for_label(&mut harness, "Reading list");
+    wait_for_vault(&mut harness, 3);
     harness.run_steps(3);
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
     harness.get_by_label("Delete").simulate_click();
@@ -312,22 +372,17 @@ fn snapshot_notebook_vault_rename() {
     let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
 
     let secret = harness.state().account.secret_key.secret_bytes();
-    let pubkey = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        for title in ["Meeting notes — Q3 planning", "Reading list", "Groceries"] {
-            let input = LongformInput {
-                title: title.to_string(),
-                content: format!("# {title}\n\nbody"),
-                ..Default::default()
-            };
-            create_longform(app_ctx.ndb, &pubkey, &secret, &input, None, &mut NoPublish)
-                .expect("seed longform");
-        }
+        seed_vault(
+            app_ctx.ndb,
+            &secret,
+            &["Meeting notes — Q3 planning", "Reading list", "Groceries"],
+        );
     }
 
-    wait_for_label(&mut harness, "Reading list");
+    wait_for_vault(&mut harness, 3);
     harness.run_steps(3);
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
     harness.get_by_label("Rename").simulate_click();
@@ -374,7 +429,7 @@ fn snapshot_notebook_editor() {
     harness.get_by_label("Q3 Planning").simulate_click();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if harness.state().notebook.editor_is_open() {
             break;
         }
@@ -394,7 +449,7 @@ fn snapshot_notebook_editor() {
 #[test]
 fn drag_and_select_nodes() {
     let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
-    wait_for_label(&mut harness, "Red");
+    wait_for_seed(&mut harness);
 
     // Nothing selected to start.
     assert_eq!(harness.state().notebook.selected(), None);
@@ -430,7 +485,7 @@ fn drag_and_select_nodes() {
     let target = egui::pos2(190.0, 120.0);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if let Some(p) = harness.state().notebook.node_position(&id)
             && (p - target).length() < 2.0
         {
@@ -451,7 +506,7 @@ fn drag_and_select_nodes() {
 #[test]
 fn connect_nodes_with_edge() {
     let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
-    wait_for_label(&mut harness, "Red");
+    wait_for_seed(&mut harness);
 
     // Capture the ids of the two nodes we'll connect (clicking a node selects
     // it). Use `click_at` (single-frame press+release) rather than
@@ -490,7 +545,7 @@ fn connect_nodes_with_edge() {
     // The edge is ingested asynchronously and folds back in; wait for it.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         let canvas = harness.state().notebook.canvas();
         let connected = canvas.get_edges().len() > before
             && canvas.get_edges().values().any(|e| {
@@ -515,7 +570,7 @@ fn connect_nodes_with_edge() {
 #[test]
 fn connect_from_hovered_node() {
     let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
-    wait_for_label(&mut harness, "Red");
+    wait_for_seed(&mut harness);
 
     // Find Red and Orange by position, without selecting anything.
     let node_id_at = |h: &Harness<'static, NotebookTestState>, pos: egui::Pos2| {
@@ -537,7 +592,7 @@ fn connect_from_hovered_node() {
         .input_mut()
         .events
         .push(egui::Event::PointerMoved(egui::pos2(140.0, 115.0)));
-    harness.run();
+    harness.run_ok();
     assert_eq!(
         harness.state().notebook.selected(),
         None,
@@ -554,7 +609,7 @@ fn connect_from_hovered_node() {
     // The edge is ingested asynchronously and folds back in; wait for it.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         let canvas = harness.state().notebook.canvas();
         let connected = canvas.get_edges().len() > before
             && canvas.get_edges().values().any(|e| {
@@ -578,7 +633,7 @@ fn connect_from_hovered_node() {
 #[test]
 fn delete_edge_via_handle() {
     let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
-    wait_for_label(&mut harness, "Red");
+    wait_for_seed(&mut harness);
 
     // The demo seeds two edges; e1 connects Red -> Green.
     let edge_count =
@@ -593,7 +648,7 @@ fn delete_edge_via_handle() {
     // The delete is ingested asynchronously and folds back in; wait for it.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if edge_count(&harness) < before {
             break;
         }
@@ -613,7 +668,7 @@ fn wait_for_longform(
 ) -> LongformNote {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         let pubkey = harness.state().account.pubkey;
         let ctx = harness.ctx.clone();
         let found = {
@@ -655,11 +710,11 @@ fn create_and_edit_longform_via_editor() {
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
         .type_text("My first note");
-    harness.run();
+    harness.run_ok();
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("# Hello\n\nthis is **markdown**");
-    harness.run();
+    harness.run_ok();
 
     // Save. create_longform runs synchronously, so the editor records its
     // (d, created_at) within a frame or two.
@@ -667,7 +722,7 @@ fn create_and_edit_longform_via_editor() {
     let (d, created_at) = {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            harness.run();
+            harness.run_ok();
             if let Some((d, ca)) = harness.state().notebook.editor_saved() {
                 break (d.to_string(), ca);
             }
@@ -690,12 +745,12 @@ fn create_and_edit_longform_via_editor() {
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("\n\nmore");
-    harness.run();
+    harness.run_ok();
     harness.get_by_label("Save").simulate_click();
     {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            harness.run();
+            harness.run_ok();
             if let Some((d2, ca2)) = harness.state().notebook.editor_saved()
                 && d2 == d
                 && ca2 > created_at
@@ -711,7 +766,7 @@ fn create_and_edit_longform_via_editor() {
 
     // Close returns to the canvas.
     harness.get_by_label("← Canvas").simulate_click();
-    harness.run();
+    harness.run_ok();
     assert!(!harness.state().notebook.editor_is_open());
 
     // Back on the canvas, the saved note now shows in the vault sidebar; clicking
@@ -720,7 +775,7 @@ fn create_and_edit_longform_via_editor() {
     harness.get_by_label("My first note").simulate_click();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if harness.state().notebook.editor_is_open()
             && harness
                 .state()
@@ -760,7 +815,7 @@ fn key_press(harness: &mut Harness<'static, NotebookTestState>, key: egui::Key) 
             modifiers: egui::Modifiers::default(),
         });
     }
-    harness.run();
+    harness.run_ok();
 }
 
 /// The titles of the account's live vault notes, read through the app's own ndb.
@@ -809,19 +864,19 @@ fn rename_note_via_vault_context_menu() {
     // Right-click a row and choose Rename, arming the inline field.
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
     harness.get_by_label("Rename").simulate_click();
-    harness.run();
+    harness.run_ok();
 
     // Type into the field (appending to the seeded title) and commit with Enter.
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
         .type_text(" v2");
-    harness.run();
+    harness.run_ok();
     key_press(&mut harness, egui::Key::Enter);
 
     // The rename supersedes the note in place: both notes remain, one now edited.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         let titles = vault_titles(&mut harness);
         if titles.len() == 2 && titles.iter().any(|t| t.contains("v2")) {
             break;
@@ -864,7 +919,7 @@ fn delete_note_via_vault_context_menu() {
     // vault snapshot hovers) to open the context menu, then choose Delete.
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
     harness.get_by_label("Delete").simulate_click();
-    harness.run();
+    harness.run_ok();
 
     // The confirmation modal appears; its Delete button fires the tombstone.
     wait_for_label(&mut harness, "Delete note?");
@@ -874,7 +929,7 @@ fn delete_note_via_vault_context_menu() {
     // to a single note.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        harness.run();
+        harness.run_ok();
         if vault_len(&mut harness) == 1 {
             break;
         }
@@ -903,7 +958,7 @@ fn click_at(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) 
         pressed: false,
         modifiers: egui::Modifiers::default(),
     });
-    harness.run();
+    harness.run_ok();
 }
 
 /// A secondary (right) click delivered as press+release in one frame, to open a
@@ -921,7 +976,7 @@ fn secondary_click_at(harness: &mut Harness<'static, NotebookTestState>, pos: eg
             modifiers: egui::Modifiers::default(),
         });
     }
-    harness.run();
+    harness.run_ok();
 }
 
 fn press(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {
@@ -935,7 +990,7 @@ fn press(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {
         pressed: true,
         modifiers: egui::Modifiers::default(),
     });
-    harness.run();
+    harness.run_ok();
 }
 
 fn drag_to(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {
@@ -943,7 +998,7 @@ fn drag_to(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {
         .input_mut()
         .events
         .push(egui::Event::PointerMoved(pos));
-    harness.run();
+    harness.run_ok();
 }
 
 fn release(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {
@@ -953,5 +1008,5 @@ fn release(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {
         pressed: false,
         modifiers: egui::Modifiers::default(),
     });
-    harness.run();
+    harness.run_ok();
 }

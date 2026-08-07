@@ -17,6 +17,12 @@
 
 set -euo pipefail
 
+# Pin the timezone so timezone-dependent renders (e.g. Horizon's event inspector
+# prints the local UTC offset via chrono `Local`) are identical on every machine
+# and match CI's UTC runners. Without this, a snapshot generated on a dev box in
+# a non-UTC zone differs from CI by exactly that offset label.
+export TZ=UTC
+
 # macOS can't render snapshots natively; when *updating* them, re-exec this
 # script inside a lavapipe container bound to this checkout.
 if [[ "$(uname -s)" == "Darwin" && " $* " == *" --update "* ]]; then
