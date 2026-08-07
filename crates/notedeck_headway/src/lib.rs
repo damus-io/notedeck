@@ -901,18 +901,23 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
     }
 }
 
-/// The inline reference parser for a bare headway card id —
-/// `<board-slug>#<word>-<word>-<word>` (e.g. `commerce#purse-metal-toilet`) — the
-/// same canonical form a human or the CLI writes. Registered via
-/// [`App::reference_parsers`]; the browser's markdown scanner recognises the ref
-/// in a run of text ([`find`](notedeck::ReferenceParser::find)),
+/// The inline reference parser for a headway card id —
+/// `headway:<board-slug>/<word>-<word>-<word>` (e.g.
+/// `headway:commerce/purse-metal-toilet`) — the same canonical form a human or the
+/// CLI writes. Registered via [`App::reference_parsers`]; the browser's markdown
+/// scanner recognises the ref in a run of text
+/// ([`find`](notedeck::ReferenceParser::find)),
 /// [`resolve`](notedeck::ReferenceParser::resolve)s it to the card's kind-1621
 /// issue note, and draws it with the already-registered [`HeadwayIssueRenderer`].
 ///
-/// There is no `scheme:` prefix — a headway ref is bare — so [`find`] recognises
-/// the shape directly and cheaply (slug, `#`, three dash-joined words) while
-/// [`resolve`] is the authority: a candidate that doesn't fold to a real card is
-/// re-rendered as plain text, so a loose match is invisible, not a broken chip.
+/// The `headway:` scheme is **required** in free text: the scheme-less
+/// `<board>/<word-id>` shorthand accepted at interactive resolver input (the CLI,
+/// the board filter) is too ambiguous against ordinary `word/word` prose to scan
+/// for here. [`find`] recognises the shape cheaply (scheme, slug, `/`, three
+/// dash-joined words); [`resolve`] is the authority — a candidate that doesn't
+/// fold to a real card is re-rendered as plain text, so a loose match is
+/// invisible, not a broken chip. Unlike the old `#` sigil, `:` and `/` survive
+/// nostrdb's tokenizer, so the ref stays whole inside note content.
 ///
 /// **Author gap.** A headway ref carries no pubkey, but folding a board needs
 /// one. We resolve against [`ReferenceResolveCtx::selected_account`], so a ref
@@ -973,25 +978,33 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
 
     #[profiling::function]
     fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
+        const SCHEME: &str = "headway:";
         let bytes = text.as_bytes();
         let mut search = 0;
-        while let Some(rel) = text[search..].find('#') {
-            let hash = search + rel;
-            // Continue past this `#` on the next iteration regardless of outcome.
-            search = hash + 1;
+        while let Some(rel) = text[search..].find(SCHEME) {
+            let start = search + rel;
+            // Continue past this scheme on the next iteration regardless of outcome.
+            search = start + SCHEME.len();
 
-            // Slug: the run of slug bytes ending immediately before the `#`.
-            let mut slug_start = hash;
-            while slug_start > 0 && Self::is_slug_byte(bytes[slug_start - 1]) {
-                slug_start -= 1;
-            }
-            if slug_start == hash {
-                continue; // no slug (e.g. a markdown heading `# ...`)
+            // The scheme must begin at a slug boundary, so `myheadway:` isn't a
+            // match latched onto the tail of a longer word.
+            if start > 0 && Self::is_slug_byte(bytes[start - 1]) {
+                continue;
             }
 
-            // Three dash-joined words right after the `#`.
-            if let Some(end) = Self::three_words_end(bytes, hash + 1) {
-                return Some(slug_start..end);
+            // Board slug: a run of slug bytes after the scheme, then a single `/`.
+            let slug_start = search;
+            let mut i = slug_start;
+            while i < bytes.len() && Self::is_slug_byte(bytes[i]) {
+                i += 1;
+            }
+            if i == slug_start || i >= bytes.len() || bytes[i] != b'/' {
+                continue;
+            }
+
+            // Three dash-joined words right after the `/`.
+            if let Some(end) = Self::three_words_end(bytes, i + 1) {
+                return Some(start..end);
             }
         }
         None
@@ -1003,7 +1016,7 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
         matched: &str,
         ctx: &notedeck::ReferenceResolveCtx,
     ) -> Option<notedeck::ResolvedRef> {
-        let (slug, words) = matched.split_once('#')?;
+        let (slug, words) = headway::wordid::parse_ref(matched)?;
         // Author gap: no pubkey in the ref, so fold the current account's boards.
         let author = ctx.selected_account?;
         let board_id = slug.to_lowercase();
@@ -1596,49 +1609,54 @@ mod tests {
     }
 
     /// [`HeadwayRefParser::find`] is a purely syntactic filter: it recognises the
-    /// bare `slug#word-word-word` shape (no scheme prefix) and rejects near-misses
-    /// — markdown headings, non-three-word runs — leaving the rest to `resolve`.
+    /// scheme-prefixed `headway:<slug>/<word-word-word>` shape and rejects
+    /// near-misses — a bare `slug/word-id` with no scheme, non-three-word runs —
+    /// leaving the rest to `resolve`.
     #[test]
-    fn ref_parser_find_recognises_bare_word_ids() {
+    fn ref_parser_find_recognises_scheme_refs() {
         use notedeck::ReferenceParser;
         let p = ref_parser();
         let hit = |s: &str| p.find(s).map(|r| s[r].to_string());
 
-        // A bare canonical ref, standalone and embedded in prose.
+        // A canonical ref, standalone and embedded in prose.
         assert_eq!(
-            hit("commerce#purse-metal-toilet").as_deref(),
-            Some("commerce#purse-metal-toilet")
+            hit("headway:commerce/purse-metal-toilet").as_deref(),
+            Some("headway:commerce/purse-metal-toilet")
         );
         assert_eq!(
-            hit("see commerce#purse-metal-toilet here").as_deref(),
-            Some("commerce#purse-metal-toilet")
+            hit("see headway:commerce/purse-metal-toilet here").as_deref(),
+            Some("headway:commerce/purse-metal-toilet")
         );
         // Slugs may carry digits and dashes (see `store::board_slug`).
         assert_eq!(
-            hit("2024-goals#maple-river-canyon").as_deref(),
-            Some("2024-goals#maple-river-canyon")
+            hit("headway:2024-goals/maple-river-canyon").as_deref(),
+            Some("headway:2024-goals/maple-river-canyon")
         );
         // A trailing period (or any non-letter) ends the third word.
         assert_eq!(
-            hit("done: commerce#purse-metal-toilet.").as_deref(),
-            Some("commerce#purse-metal-toilet")
+            hit("done: headway:commerce/purse-metal-toilet.").as_deref(),
+            Some("headway:commerce/purse-metal-toilet")
         );
 
-        // Markdown headings have no slug before the `#`.
-        assert!(hit("# Heading here").is_none());
-        assert!(hit("## purse-metal-toilet").is_none());
+        // The `headway:` scheme is required — a bare `slug/word-id` is not matched.
+        assert!(hit("commerce/purse-metal-toilet").is_none());
+        // The scheme must sit on a word boundary, not the tail of a longer word.
+        assert!(hit("myheadway:commerce/purse-metal-toilet").is_none());
+        // A scheme with no slug, or no `/`, is not a ref.
+        assert!(hit("headway:/purse-metal-toilet").is_none());
+        assert!(hit("headway:commerce-purse-metal-toilet").is_none());
         // Fewer or more than three words is not a word id.
-        assert!(hit("board#one-two").is_none());
-        assert!(hit("board#one-two-three-four").is_none());
+        assert!(hit("headway:board/one-two").is_none());
+        assert!(hit("headway:board/one-two-three-four").is_none());
         // Uppercase words aren't BIP-39 words.
-        assert!(hit("board#One-Two-Three").is_none());
+        assert!(hit("headway:board/One-Two-Three").is_none());
         // Plain prose yields nothing.
         assert!(hit("just a sentence, nothing here").is_none());
 
         // A rejected candidate doesn't swallow a later valid ref.
         assert_eq!(
-            hit("board#one-two then b#red-green-blue").as_deref(),
-            Some("b#red-green-blue")
+            hit("headway:board/one-two then headway:b/red-green-blue").as_deref(),
+            Some("headway:b/red-green-blue")
         );
     }
 
@@ -1661,7 +1679,7 @@ mod tests {
             let card = board.columns.iter().flat_map(|c| &c.cards).next().unwrap();
             (card.id, headway::wordid::encode(card.id.bytes()))
         };
-        let matched = format!("{}#{}", store::BOARD_ID, words);
+        let matched = format!("headway:{}/{}", store::BOARD_ID, words);
 
         let p = ref_parser();
         let txn = Transaction::new(&t.ndb).unwrap();
@@ -1673,7 +1691,7 @@ mod tests {
         // The canonical ref resolves to that card's issue note.
         assert_eq!(p.resolve(&matched, &ctx).unwrap().note_id, card_id);
         // A well-formed word id that encodes no card doesn't resolve.
-        let bogus = format!("{}#zoo-zoo-zoo", store::BOARD_ID);
+        let bogus = format!("headway:{}/zoo-zoo-zoo", store::BOARD_ID);
         assert!(p.resolve(&bogus, &ctx).is_none());
         // Without a selected account the author gap can't be filled.
         let ctx_no_acct = ReferenceResolveCtx {

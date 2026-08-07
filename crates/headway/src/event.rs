@@ -1142,9 +1142,9 @@ impl BoardView {
 }
 
 /// Render `view` as a stable, machine-readable JSON value: a curated schema for
-/// external tooling (e.g. the CLI's `--json`) with hex ids plus the `words`
-/// word-id used to address cards/comments, independent of the internal view
-/// types.
+/// external tooling (e.g. the CLI's `--json`) with hex ids plus the full
+/// `headway:<board>/<word-id>` `ref` used to address cards/comments, independent
+/// of the internal view types.
 pub fn board_json(view: &BoardView) -> serde_json::Value {
     serde_json::json!({
         "id": view.id,
@@ -1153,21 +1153,23 @@ pub fn board_json(view: &BoardView) -> serde_json::Value {
         "columns": view.columns.iter().map(|c| serde_json::json!({
             "id": c.id,
             "name": c.name,
-            "cards": c.cards.iter().map(card_json).collect::<Vec<_>>(),
+            "cards": c.cards.iter().map(|card| card_json(&view.id, card)).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "archived": view.archived.iter().map(|a| {
-            let mut card = card_json(&a.card);
+            let mut card = card_json(&view.id, &a.card);
             card["from"] = serde_json::json!(a.from);
             card
         }).collect::<Vec<_>>(),
     })
 }
 
-/// Render a single card as JSON. See [`board_json`].
-pub fn card_json(card: &CardView) -> serde_json::Value {
+/// Render a single card on `board` as JSON. The `ref` fields are full
+/// `headway:<board>/<word-id>` references (same-board children and comments share
+/// `board`). See [`board_json`].
+pub fn card_json(board: &str, card: &CardView) -> serde_json::Value {
     serde_json::json!({
         "id": card.id.hex(),
-        "words": crate::wordid::encode(card.id.bytes()),
+        "ref": crate::wordid::card_ref(board, card.id.bytes()),
         "author": Pubkey::new(card.author).hex(),
         "title": card.title,
         "description": card.description,
@@ -1180,24 +1182,24 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
         "created_at": card.created_at,
         "updated_at": card.updated_at,
         "parent": card.parent.map(|p| p.hex()),
-        "parent_words": card.parent.map(|p| crate::wordid::encode(p.bytes())),
+        "parent_ref": card.parent.map(|p| crate::wordid::card_ref(board, p.bytes())),
         "subissues": card.subissues.iter().map(|s| serde_json::json!({
             "id": s.id.hex(),
-            "words": crate::wordid::encode(s.id.bytes()),
+            "ref": crate::wordid::card_ref(board, s.id.bytes()),
             "title": s.title,
             "column": s.column,
             "done": s.done,
             "archived": s.archived,
             "seq": s.seq,
         })).collect::<Vec<_>>(),
-        "comments": card.comments.iter().map(comment_json).collect::<Vec<_>>(),
-        "activity": card.activity.iter().map(activity_json).collect::<Vec<_>>(),
+        "comments": card.comments.iter().map(|c| comment_json(board, c)).collect::<Vec<_>>(),
+        "activity": card.activity.iter().map(|a| activity_json(board, a)).collect::<Vec<_>>(),
     })
 }
 
-/// Render one activity-timeline entry as JSON: a `type` discriminant plus that
-/// variant's fields, flattened. See [`card_json`].
-pub fn activity_json(activity: &ActivityView) -> serde_json::Value {
+/// Render one activity-timeline entry on `board` as JSON: a `type` discriminant
+/// plus that variant's fields, flattened. See [`card_json`].
+pub fn activity_json(board: &str, activity: &ActivityView) -> serde_json::Value {
     let mut v = match &activity.kind {
         ActivityKind::Created => serde_json::json!({"type": "created"}),
         ActivityKind::Moved { from, to, .. } => {
@@ -1216,7 +1218,7 @@ pub fn activity_json(activity: &ActivityView) -> serde_json::Value {
         ActivityKind::ParentSet { parent, title } => serde_json::json!({
             "type": "parent_set",
             "parent": parent.hex(),
-            "parent_words": crate::wordid::encode(parent.bytes()),
+            "parent_ref": crate::wordid::card_ref(board, parent.bytes()),
             "parent_title": title,
         }),
         ActivityKind::ParentRemoved => serde_json::json!({"type": "parent_removed"}),
@@ -1226,11 +1228,11 @@ pub fn activity_json(activity: &ActivityView) -> serde_json::Value {
     v
 }
 
-/// Render a single comment as JSON. See [`card_json`].
-pub fn comment_json(comment: &CommentView) -> serde_json::Value {
+/// Render a single comment on `board` as JSON. See [`card_json`].
+pub fn comment_json(board: &str, comment: &CommentView) -> serde_json::Value {
     serde_json::json!({
         "id": comment.id.hex(),
-        "words": crate::wordid::encode(comment.id.bytes()),
+        "ref": crate::wordid::card_ref(board, comment.id.bytes()),
         "author": Pubkey::new(comment.author).hex(),
         "parent": comment.parent.map(|p| p.hex()),
         "body": comment.body,
@@ -2385,11 +2387,11 @@ pub fn resolve_card_by_wordid(view: &BoardView, words: &str) -> Option<NoteId> {
 }
 
 /// Resolve a card ref on `view` to its note id, accepting (in order): a full
-/// 64-char hex id; a word id like `board#maple-river-canyon` (the `<board>#`
-/// prefix is optional, and a bare leading `#` works too, so `#maple-river-canyon`
-/// and `maple-river-canyon` both resolve); or a unique hex prefix. Word ids and
-/// hex prefixes are matched against every card on the board, archived ones
-/// included.
+/// 64-char hex id; a reference `headway:<board>/<word-id>` or its scheme-less
+/// `<board>/<word-id>` shorthand (the board segment is required — a bare word-id
+/// is never a reference); or a unique hex prefix. The word-id is matched against
+/// every card on the board, archived ones included; the board segment is
+/// informational here (the caller already routed to `view`).
 ///
 /// This is the single card-addressing entry point shared by the CLI and the
 /// in-app agent tools ([`notedeck_headway`](../../notedeck_headway)), so both
@@ -2400,13 +2402,12 @@ pub fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId, String> {
     }
     let sel = sel.to_lowercase();
 
-    // Word id: drop an optional `<board>#` prefix (or a bare leading `#`), then
-    // match by re-encoding each card — exactly how a git short hash resolves.
-    let words = sel
-        .strip_prefix(&format!("{}#", view.id.to_lowercase()))
-        .or_else(|| sel.strip_prefix('#'))
-        .unwrap_or(&sel);
-    if let Some(id) = resolve_card_by_wordid(view, words) {
+    // A `headway:<board>/<word-id>` reference (or its scheme-less shorthand):
+    // match the word-id by re-encoding each card, exactly how a git short hash
+    // resolves.
+    if let Some((_board, words)) = crate::wordid::parse_ref(&sel)
+        && let Some(id) = resolve_card_by_wordid(view, words)
+    {
         return Ok(id);
     }
 

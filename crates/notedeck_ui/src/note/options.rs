@@ -54,7 +54,7 @@ bitflags! {
         /// Splice inline reference widgets into note text: a text run mentioning
         /// an app-native identifier a registered
         /// [`ReferenceParser`](notedeck::ReferenceParser) recognizes (e.g.
-        /// `headway#word-word-word`) renders the referenced entity's live widget
+        /// `headway:board/word-word-word`) renders the referenced entity's live widget
         /// inline, the same seam Dave's chat uses. Gates the per-block reference
         /// scan, so surfaces that don't want it (or the cost) leave it clear.
         const InlineReferences = 1 << 22;

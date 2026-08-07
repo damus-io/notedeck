@@ -147,7 +147,8 @@ struct ShowCard;
 /// Arguments for [`ShowCard`].
 #[derive(Deserialize)]
 struct ShowCardArgs {
-    /// The card ref: a word-id (e.g. `swift-blue-fox`) or a hex id prefix.
+    /// The card ref: `headway:<board>/<word-id>` (or `<board>/<word-id>`) or a hex
+    /// id prefix.
     card: String,
     /// The board to resolve the card on; the primary board when omitted.
     #[serde(default)]
@@ -161,12 +162,12 @@ impl AppTool for ShowCard {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_show_card",
-            "Show a single headway card in full — description, labels, priority, comments, activity, and subissues — as JSON. Address the card by its word-id (e.g. `swift-blue-fox`) or a hex id prefix.",
+            "Show a single headway card in full — description, labels, priority, comments, activity, and subissues — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
             vec![
                 ToolArg::new(
                     "card",
                     ToolArgType::String,
-                    "The card ref: a word-id or a hex id prefix.",
+                    "The card ref: `headway:<board>/<word-id>` (or `<board>/<word-id>`) or a hex id prefix.",
                 )
                 .required(true),
                 ToolArg::new(
@@ -189,7 +190,7 @@ impl AppTool for ShowCard {
         };
         let id = resolve_card(&view, &args.card)?;
         match all_cards(&view).find(|c| c.id == id) {
-            Some(card) => Ok(event::card_json(card)),
+            Some(card) => Ok(event::card_json(&view.id, card)),
             None => Err(format!("no card matching '{}'", args.card)),
         }
     }
@@ -342,7 +343,7 @@ impl AppTool for AddCard {
                 ToolArg::new(
                     "parent",
                     ToolArgType::String,
-                    "Optional card ref to parent the new card under (make it a subissue).",
+                    "Optional card ref (`headway:<board>/<word-id>` or `<board>/<word-id>`) to parent the new card under (make it a subissue).",
                 ),
                 board_arg(),
             ],
@@ -601,7 +602,7 @@ impl AppTool for SetParent {
                 ToolArg::new(
                     "parent",
                     ToolArgType::String,
-                    "The parent card ref. Omit to detach the card from its parent.",
+                    "The parent card ref (`headway:<board>/<word-id>` or `<board>/<word-id>`). Omit to detach the card from its parent.",
                 ),
                 board_arg(),
             ],
@@ -779,7 +780,9 @@ fn card_arg() -> ToolArg {
     ToolArg::new(
         "card",
         ToolArgType::String,
-        "The card ref: a word-id or a hex id prefix.",
+        "The card ref, as printed by list/show tools: `headway:<board>/<word-id>` \
+         (or the scheme-less `<board>/<word-id>`), or a hex id prefix. A bare \
+         word-id alone is not a card ref.",
     )
     .required(true)
 }
@@ -924,17 +927,20 @@ mod tests {
             wordid::encode(card.id.bytes())
         };
 
+        // Address the card by a full `headway:<board>/<word-id>` reference — a
+        // bare word-id is no longer accepted as a card ref.
+        let card_ref = format!("{}:{}/{}", wordid::SCHEME, store::BOARD_ID, words);
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
         let out = ShowCard
             .call(
                 &mut cx,
                 ShowCardArgs {
-                    card: words.clone(),
+                    card: card_ref.clone(),
                     board: None,
                 },
             )
             .unwrap();
-        assert_eq!(out["words"], json!(words));
+        assert_eq!(out["ref"], json!(card_ref));
         assert!(out["title"].is_string());
     }
 
@@ -955,7 +961,9 @@ mod tests {
         assert!(err.contains("no card matching"));
     }
 
-    fn first_card_words(ndb: &Ndb, accounts: &Accounts) -> String {
+    /// The full `headway:<board>/<word-id>` reference for the board's first card —
+    /// what a tool's `card` arg accepts (a bare word-id is no longer a ref).
+    fn first_card_ref(ndb: &Ndb, accounts: &Accounts) -> String {
         let txn = Transaction::new(ndb).expect("txn");
         let author = *accounts.selected_account_pubkey();
         let view = event::load_board(ndb, &txn, &author, store::BOARD_ID).expect("board");
@@ -965,7 +973,7 @@ mod tests {
             .flat_map(|c| &c.cards)
             .next()
             .expect("card");
-        wordid::encode(card.id.bytes())
+        wordid::card_ref(store::BOARD_ID, card.id.bytes())
     }
 
     #[test]
@@ -992,7 +1000,7 @@ mod tests {
     fn move_card_unknown_column_errors() {
         // The card resolves, so the error is specifically the column miss.
         let (_dir, ndb, accounts, mut nc) = seeded_env();
-        let card = first_card_words(&ndb, &accounts);
+        let card = first_card_ref(&ndb, &accounts);
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
         let err = MoveCard
@@ -1031,7 +1039,7 @@ mod tests {
         // The seeded account is pubkey-only. A valid mutation folds and resolves
         // but must refuse to sign rather than silently drop the change.
         let (_dir, ndb, accounts, mut nc) = seeded_env();
-        let card = first_card_words(&ndb, &accounts);
+        let card = first_card_ref(&ndb, &accounts);
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
         let err = SetPriority

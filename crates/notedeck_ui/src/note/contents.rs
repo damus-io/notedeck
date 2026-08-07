@@ -187,14 +187,17 @@ fn render_undecorated_note_contents<'a>(
             return;
         };
 
-        // Reference mode is decided on the note's whole content, not per block:
-        // nostrdb claims `#` for hashtags and so shatters `board#word-word-word`
-        // into Text+Hashtag+Text, which no single block sees whole. It's the
-        // browser's reference parsers — never nostrdb — that detect a reference,
-        // so gate on a cheap scan of `note.content()` and, when it hits, hand each
-        // run of adjacent text/hashtag blocks (the `#` restored) to the browser's
-        // ref-aware renderer below. The common reference-free note skips all of
-        // this and keeps its per-block fast path.
+        // Reference mode is decided on the note's whole content, not per block.
+        // The reference schemes (`nostr:`, `headway:<board>/…`) use `:` and `/`,
+        // which nostrdb leaves inside one Text block, so a reference is never split
+        // — but a note may still carry a *genuine* `#hashtag` alongside it, which
+        // nostrdb does pull into its own Hashtag block. It's the browser's
+        // reference parsers — never nostrdb — that detect a reference, so gate on a
+        // cheap scan of `note.content()` and, when it hits, hand each run of
+        // adjacent text/hashtag blocks (the `#` restored) to the browser's
+        // ref-aware renderer below, keeping a co-located hashtag from breaking the
+        // run. The common reference-free note skips all of this and keeps its
+        // per-block fast path.
         let ref_mode = options.contains(NoteOptions::InlineReferences)
             && crate::markdown::contains_reference(
                 note.content(),
@@ -206,9 +209,10 @@ fn render_undecorated_note_contents<'a>(
 
         for block in blocks.iter(note) {
             // In reference mode, text and hashtag blocks accumulate into the
-            // current run (restoring the `#` nostrdb dropped) so a reference split
-            // across them is scanned whole; any other block flushes the run first
-            // — drawing its chips in place — so order is preserved.
+            // current run (restoring the `#` on a genuine co-located hashtag) so
+            // the scan sees the reference and its surrounding prose whole; any
+            // other block flushes the run first — drawing its chips in place — so
+            // order is preserved.
             if ref_mode {
                 match block.blocktype() {
                     BlockType::Text => {
