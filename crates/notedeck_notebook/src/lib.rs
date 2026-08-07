@@ -1,6 +1,7 @@
 pub mod convert;
 mod editor;
 pub mod event;
+pub mod render;
 pub mod store;
 mod ui;
 pub mod wordid;
@@ -619,6 +620,15 @@ impl Default for Notebook {
 }
 
 impl notedeck::App for Notebook {
+    /// Contribute the longform (kind 30023) renderer so a `nostr:naddr…`
+    /// reference — inline in a text node, or as a note-embed node — draws a
+    /// preview of the note. Kind-1 (`nevent`/`note`) references are already
+    /// covered by the columns app's `NoteKindRenderer`; longform is the
+    /// notebook's own document type and had no renderer, so it registers one.
+    fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
+        vec![Box::new(render::LongformKindRenderer)]
+    }
+
     /// Background sync, run every frame for all *opened* apps (not just the
     /// foreground one) — which is what lets edits ingested by the `notebook` CLI
     /// while the user is on another tab still sync out. Polls the account's canvas

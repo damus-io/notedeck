@@ -676,8 +676,14 @@ fn note_row_ui(
 
 /// A small monochrome document glyph — a rounded page with three ruled text lines
 /// — for a vault row's leading gutter. Painter-drawn rather than an image asset so
-/// it inherits the row's muted theme color and scales with `size`.
-fn document_icon(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
+/// it inherits the row's muted theme color and scales with `size`. Also the
+/// leading icon of a longform reference chip (see [`crate::render`]).
+pub(crate) fn document_icon(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    size: f32,
+    color: egui::Color32,
+) {
     let stroke = egui::Stroke::new((size * 0.08).max(1.0), color);
     let page = egui::Rect::from_center_size(center, egui::vec2(size * 0.68, size * 0.86));
     painter.rect_stroke(
