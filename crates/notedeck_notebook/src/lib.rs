@@ -185,6 +185,19 @@ pub(crate) const NEW_NODE_SIZE: egui::Vec2 = egui::vec2(250.0, 120.0);
 /// so a new node settles onto its content, not the editor's typing height.
 const NEW_NODE_HEIGHT: f32 = 40.0;
 
+/// `text` (trimmed) as a single whole `nostr:` reference, or `None` when it's
+/// anything more than a lone reference. Used to promote a composed body that is
+/// exactly one reference into a note-embed [`Link`](event::NodeKind::Link) node,
+/// so it renders as a full note rather than an inline chip in a one-line text
+/// node. Reuses the built-in [`NostrRefParser`](notedeck::NostrRefParser) so the
+/// match rule stays identical to inline rendering.
+fn whole_nostr_reference(text: &str) -> Option<&str> {
+    use notedeck::{NostrRefParser, ReferenceParser};
+    let trimmed = text.trim();
+    let range = NostrRefParser.find(trimmed)?;
+    (range.start == 0 && range.end == trimmed.len()).then_some(trimmed)
+}
+
 /// How long a node's slide-to-new-position animation runs, in seconds. Matches
 /// headway's card-move feel.
 const MOVE_ANIM_SECS: f32 = 0.28;
@@ -327,19 +340,36 @@ impl Notebook {
             UiIntent::Delete { node } => Some(CanvasAction::DeleteNode {
                 node: NoteId::from_hex(node.as_str()).ok()?,
             }),
-            UiIntent::Create { pos, text } => Some(CanvasAction::AddNode {
-                kind: NodeKind::Text,
-                geo: Geometry {
+            UiIntent::Create { pos, text } => {
+                let geo = Geometry {
                     x: pos.x as i64,
                     y: pos.y as i64,
                     w: NEW_NODE_SIZE.x as u64,
                     h: NEW_NODE_HEIGHT as u64,
-                },
-                content: NodeContent {
-                    text,
-                    ..Default::default()
-                },
-            }),
+                };
+                // A composed body that is *exactly* one `nostr:` reference
+                // becomes a note-embed node — a Link carrying the reference,
+                // drawn full-node by its kind renderer — rather than a text node
+                // that would only render it as an inline chip on one line.
+                Some(match whole_nostr_reference(&text) {
+                    Some(reference) => CanvasAction::AddNode {
+                        kind: NodeKind::Link,
+                        geo,
+                        content: NodeContent {
+                            url: Some(reference.to_owned()),
+                            ..Default::default()
+                        },
+                    },
+                    None => CanvasAction::AddNode {
+                        kind: NodeKind::Text,
+                        geo,
+                        content: NodeContent {
+                            text,
+                            ..Default::default()
+                        },
+                    },
+                })
+            }
             UiIntent::Connect {
                 from,
                 from_side,
@@ -1012,6 +1042,27 @@ mod tests {
     use enostr::FullKeypair;
     use futures_util::StreamExt;
     use nostrdb::{Config, SubscriptionStream};
+
+    /// Only a body that is *exactly* one `nostr:` reference (whitespace aside)
+    /// promotes to a note-embed node; a reference mixed with other text, or plain
+    /// prose, stays a text node.
+    #[test]
+    fn whole_nostr_reference_gates_on_the_lone_reference() {
+        let reference = "nostr:nevent1qqs0000000000000000000000000000000000000000000000000000";
+        assert_eq!(whole_nostr_reference(reference), Some(reference));
+        // Surrounding whitespace is trimmed but the match must still span it all.
+        assert_eq!(
+            whole_nostr_reference(&format!("  {reference}\n")),
+            Some(reference)
+        );
+        // A reference with trailing prose is a text node (renders inline instead).
+        assert_eq!(
+            whole_nostr_reference(&format!("{reference} see this")),
+            None
+        );
+        assert_eq!(whole_nostr_reference("just some notes"), None);
+        assert_eq!(whole_nostr_reference(""), None);
+    }
 
     /// A headless harness driving a [`NotebookSync`] against a bare `Ndb` — the
     /// subscription / poll / refold logic with no egui in sight. Mirrors
