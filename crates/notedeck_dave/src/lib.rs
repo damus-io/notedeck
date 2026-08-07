@@ -2194,7 +2194,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.next_seq);
+                        agentic.live_threading.seed(root, last);
                     }
                     // Load permission state and dedup set from events
                     agentic.permissions.merge_loaded(
@@ -2493,7 +2493,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.next_seq);
+                        agentic.live_threading.seed(root, last);
                     }
                     // Load permission state and dedup set
                     agentic.permissions.merge_loaded(
@@ -3577,7 +3577,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 if let Some(agentic) = &mut session.agentic {
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last, loaded.next_seq);
+                        agentic.live_threading.seed(root, last);
                     }
                     agentic
                         .permissions
@@ -3655,7 +3655,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             if let Some(agentic) = &mut session.agentic {
                 if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                    agentic.live_threading.seed(root, last, loaded.next_seq);
+                    agentic.live_threading.seed(root, last);
                 }
                 agentic
                     .permissions
@@ -3769,8 +3769,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///   sessions from the snapshot resurrects already-deleted ones.
     ///
     /// Until both hold, the view is mid-sync: acting on it can materialize a
-    /// session whose `deleted` event has not arrived yet, or seed live threading
-    /// from a short event count. Consumers gate that work on this latch.
+    /// session whose `deleted` event has not arrived yet. Consumers gate that
+    /// work on this latch.
     ///
     /// Cheap to call every frame: it short-circuits once latched, and each query
     /// is a small hashmap lookup over tracked-relay / tracked-sub state.
@@ -3787,49 +3787,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         if live_eosed && scoped.full_history_settled(identity) {
             self.discovery_settled = true;
             tracing::info!("dave discovery subscription settled (live EOSE + history reconciled)");
-            self.reseed_hosted_threading(ctx);
-        }
-    }
-
-    /// Re-seed every locally-hosted session's live threading from the now-fully
-    /// -synced ndb, called once when the discovery subscription settles.
-    ///
-    /// Startup restore ([`Dave::restore_sessions_from_ndb`]) seeds each session's
-    /// [`live_threading`](crate::session::AgenticSessionData::live_threading)
-    /// from whatever conversation history happened to be in ndb at boot. On a
-    /// fresh resync that snapshot is *partial* — the negentropy backfill is still
-    /// streaming the kind-1988 history in — so the seed lands with a short event
-    /// count. If the user resumes such a session before the backfill lands, the
-    /// backend's next event (often a `permission_request`) is stamped with a low
-    /// `seq` and floats above later events.
-    ///
-    /// [`ThreadingState::seed`](agentium_core::session_events::ThreadingState::seed)
-    /// is monotonic, so re-seeding from the settled (complete) snapshot advances
-    /// `seq` to the true event count without ever regressing a session that has
-    /// already emitted past it. Only locally-hosted sessions emit through
-    /// `live_threading` (remote controller sends derive threading from ndb per
-    /// message), so remote sessions are skipped.
-    fn reseed_hosted_threading(&mut self, ctx: &AppContext<'_>) {
-        let account = *ctx.accounts.selected_account_pubkey();
-        let Ok(txn) = Transaction::new(ctx.ndb) else {
-            return;
-        };
-        for session in self.session_manager.iter_mut() {
-            if session.is_remote() {
-                continue;
-            }
-            let Some(agentic) = session.agentic.as_mut() else {
-                continue;
-            };
-            let loaded = session_loader::load_session_messages_for_author(
-                ctx.ndb,
-                &txn,
-                &account,
-                &agentic.event_id,
-            );
-            if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                agentic.live_threading.seed(root, last, loaded.next_seq);
-            }
         }
     }
 
@@ -4537,22 +4494,13 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
     let mut needs_reorder = false;
 
-    // Sort this batch by `created_at`, using `seq` only as a same-second
-    // tiebreaker — the same ordering the loader uses (see `session_loader`).
-    // `created_at` is the authoritative wall-clock order; `seq` disambiguates
-    // the burst of events a turn stamps into a single second. Sorting by `seq`
-    // first is wrong once a session mixes the live and convert seq counters,
-    // whose ranges diverge. Events with no `seq` tiebreak last (`u32::MAX`).
+    // Sort this batch by wall-clock time at millisecond resolution, keyed off
+    // the same `EventOrder` the loader uses so the two can never drift apart.
     // NOTE: this only orders within a single poll batch; events that arrive in
     // a later batch are still appended after earlier ones (see
     // process_conversation_notes docs), so out-of-order delivery across polls
     // can still misorder the chat.
-    notes.sort_by_key(|n| {
-        let seq = session_events::get_tag_value(n, "seq")
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(u32::MAX);
-        (n.created_at(), seq)
-    });
+    notes.sort_by_key(|n| session_loader::EventOrder::from_note(n));
 
     for note in &notes {
         // Skip events we've already processed (dedup)
@@ -4585,9 +4533,9 @@ pub(crate) fn process_conversation_notes<'a>(
         };
 
         // Track conversation ordering. Live events are appended in arrival
-        // order, so a displayable note whose `seq` is below the highest seen
-        // means relay delivery was out of order; flag a rebuild from ndb in
-        // `seq` order. Only newly-seen notes reach here (deduped above).
+        // order, so a displayable note whose ordering key is below the highest
+        // seen means relay delivery was out of order; flag a rebuild from ndb in
+        // sorted order. Only newly-seen notes reach here (deduped above).
         let displayable = matches!(
             role,
             Some("user")
@@ -4598,14 +4546,11 @@ pub(crate) fn process_conversation_notes<'a>(
                 | Some("compaction_complete")
         );
         if displayable {
-            if let Some(seq) =
-                session_events::get_tag_value(note, "seq").and_then(|s| s.parse::<u32>().ok())
-            {
-                if matches!(agentic.max_seen_seq, Some(prev) if seq < prev) {
-                    needs_reorder = true;
-                }
-                agentic.max_seen_seq = Some(agentic.max_seen_seq.map_or(seq, |p| p.max(seq)));
+            let order = session_loader::EventOrder::from_note(note);
+            if matches!(agentic.max_seen_order, Some(prev) if order < prev) {
+                needs_reorder = true;
             }
+            agentic.max_seen_order = Some(agentic.max_seen_order.map_or(order, |p| p.max(order)));
         }
 
         match role {
