@@ -318,6 +318,43 @@ fn draw_reference(
     parser_id: &str,
     matched: &str,
 ) -> bool {
+    // Inline within flowing text: draw the compact shape and, at the moment we
+    // commit to drawing, flush the pending text run so the widget breaks out of
+    // its paragraph (only after the reference resolves, so a `find` false
+    // positive stays invisible — see `draw_resolved_reference`).
+    draw_resolved_reference(
+        ui,
+        ctx,
+        txn,
+        parser_id,
+        matched,
+        notedeck::RenderContext::Inline,
+        |ui| flush_job(job, ui),
+    )
+}
+
+/// Resolve `matched` via the parser registered under `parser_id`, then draw the
+/// resolved note with the [`KindRenderer`](notedeck::KindRenderer) for its kind
+/// in `render_context`, pushing any action it raises (e.g. a click asking to
+/// open the entity) onto [`app_actions`](notedeck::AppContext::app_actions).
+///
+/// `before_draw` runs exactly once, immediately before the widget is drawn and
+/// only after the reference resolved to a note with a renderer — the inline
+/// caller uses it to flush its pending text run so a false-positive `find` never
+/// disturbs the layout, while a block caller (a canvas embed) passes a no-op.
+///
+/// Returns `true` after drawing, or `false` *without running `before_draw`* when
+/// the reference can't be resolved or its kind has no renderer, so the caller can
+/// fall back (render `matched` as plain text, or a placeholder).
+fn draw_resolved_reference(
+    ui: &mut Ui,
+    ctx: &mut NoteContext,
+    txn: &Transaction,
+    parser_id: &str,
+    matched: &str,
+    render_context: notedeck::RenderContext,
+    before_draw: impl FnOnce(&mut Ui),
+) -> bool {
     // `ndb` and `registries` are shared `&'d` references; copy them out so the
     // note, parser, and renderer borrowed from them outlive the `&mut ctx`
     // reborrow the kind renderer takes below (the same copy-out pattern
@@ -346,20 +383,57 @@ fn draw_reference(
     let Some(renderer) = registries.kind_renderers.default_for(note.kind(), None) else {
         return false;
     };
-    // Committed to drawing: flush the pending text run so the widget breaks out
-    // of it, then draw. The renderer mut-borrows `ctx`, so scope it and pull the
-    // owned action out before pushing onto `ctx.app_actions`.
-    flush_job(job, ui);
+    // Committed to drawing. The renderer mut-borrows `ctx`, so scope it and pull
+    // the owned action out before pushing onto `ctx.app_actions`.
+    before_draw(ui);
     let req = notedeck::KindRenderRequest {
         txn,
         note: &note,
-        context: notedeck::RenderContext::default(),
+        context: render_context,
     };
     let action = renderer.render(ui, ctx, &req).action;
     if let Some(action) = action {
         ctx.app_actions.push(action);
     }
     true
+}
+
+/// Resolve a whole `scheme:token` reference string (e.g. `nostr:naddr1…`) and
+/// draw the resolved note as a standalone widget via the registered
+/// [`KindRenderer`](notedeck::KindRenderer) for its kind, in `render_context`.
+/// Any action the renderer raises is pushed onto
+/// [`app_actions`](notedeck::AppContext::app_actions).
+///
+/// Unlike the inline markdown path this takes a bare reference (surrounding
+/// whitespace ignored) rather than a pre-scanned match, so it finds the matching
+/// parser itself. It's for surfaces whose whole content is one reference — a
+/// canvas note-embed node, say — rather than references flowing inside prose;
+/// pass [`RenderContext::Embed`](notedeck::RenderContext::Embed) to ask for the
+/// richest shape.
+///
+/// Returns `true` if a widget was drawn, or `false` when `reference` isn't a
+/// resolvable reference or its kind has no renderer (the caller draws its own
+/// fallback).
+pub fn render_reference(
+    ui: &mut Ui,
+    note: &mut NoteContext,
+    txn: &Transaction,
+    reference: &str,
+    render_context: notedeck::RenderContext,
+) -> bool {
+    let reference = reference.trim();
+    let Some(m) = next_reference(reference, &note.registries.reference_parsers) else {
+        return false;
+    };
+    draw_resolved_reference(
+        ui,
+        note,
+        txn,
+        m.parser,
+        &reference[m.range],
+        render_context,
+        |_| {},
+    )
 }
 
 /// Render already-parsed markdown `elements` plus any streaming `partial` tail.
