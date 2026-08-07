@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
@@ -15,6 +15,15 @@ use claude_agent_sdk_rs::PermissionMode;
 use uuid::Uuid;
 
 pub type SessionId = u32;
+
+/// Current wall-clock time as unix seconds, matching the resolution of nostr
+/// `created_at`. Used to stamp and age `ChatSession::last_activity`.
+pub(crate) fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 /// Convert PermissionMode to a stable string for nostr tags.
 pub fn permission_mode_to_str(mode: PermissionMode) -> &'static str {
@@ -467,8 +476,11 @@ pub struct ChatSession {
     pub details: SessionDetails,
     /// Which backend this session uses (Claude, Codex, etc.)
     pub backend_type: BackendType,
-    /// When the last AI response token was received (for "5m ago" display)
-    pub last_activity: Option<Instant>,
+    /// When the last activity was seen, as wall-clock unix seconds (for
+    /// "5m ago" display). Set from the local token stream for local sessions
+    /// and from ingested note/state `created_at` for remote sessions, so a
+    /// wall-clock value is required rather than a monotonic `Instant`.
+    pub last_activity: Option<u64>,
     /// Focus indicator dot state (persisted in kind-31988 note).
     /// Set on status transitions, cleared when user dismisses it.
     pub indicator: Option<FocusPriority>,
@@ -619,6 +631,15 @@ impl ChatSession {
     /// Check if this is a remote session (observed via relay, no local process)
     pub fn is_remote(&self) -> bool {
         self.source == SessionSource::Remote
+    }
+
+    /// Record host/agent activity at `created_at` (wall-clock unix seconds),
+    /// keeping the newest so out-of-order remote notes never move it backwards.
+    pub fn mark_activity(&mut self, created_at: u64) {
+        self.last_activity = Some(
+            self.last_activity
+                .map_or(created_at, |cur| cur.max(created_at)),
+        );
     }
 
     /// Check if session has pending permission requests that genuinely
@@ -1344,7 +1365,7 @@ impl ChatSession {
     pub fn append_token(&mut self, token: &str) {
         // Content arrived — transition AwaitingResponse → Streaming.
         self.dispatch_state.backend_responded();
-        self.last_activity = Some(Instant::now());
+        self.mark_activity(now_unix());
 
         // Fast path: last message is the ACTIVE (still-streaming) assistant
         // response. A finalized assistant must NOT be extended — e.g. when a
@@ -1531,6 +1552,23 @@ mod tests {
             AiMode::Agentic,
             BackendType::Claude,
         )
+    }
+
+    #[test]
+    fn mark_activity_keeps_the_newest() {
+        let mut session = test_session();
+        assert_eq!(session.last_activity, None);
+
+        session.mark_activity(1_000);
+        assert_eq!(session.last_activity, Some(1_000));
+
+        // A newer timestamp advances it.
+        session.mark_activity(2_000);
+        assert_eq!(session.last_activity, Some(2_000));
+
+        // An older (out-of-order) timestamp does not move it backwards.
+        session.mark_activity(1_500);
+        assert_eq!(session.last_activity, Some(2_000));
     }
 
     fn create_grouped_session(

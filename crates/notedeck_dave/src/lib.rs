@@ -2239,6 +2239,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.details.home_dir = state.home_dir.clone();
                 }
 
+                // A state event is a "host is alive" signal; feed the
+                // status-bar last-activity indicator (before borrowing agentic).
+                session.mark_activity(state.created_at);
+
                 if let Some(agentic) = &mut session.agentic {
                     // Restore the event_id from the d-tag so published
                     // state events keep using the same Nostr identity.
@@ -2402,6 +2406,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         if agentic.event_session_id() == claude_sid && ts > agentic.remote_status_ts
                         {
                             agentic.remote_status_ts = ts;
+                            // A state event is a "host is alive" signal; feed
+                            // the status-bar last-activity indicator. Set the
+                            // field directly (keeping the newest) since
+                            // `agentic` is borrowed and `mark_activity` would
+                            // reborrow the whole session.
+                            session.last_activity =
+                                Some(session.last_activity.map_or(ts, |c| c.max(ts)));
                             // custom_title syncs for both local and remote
                             if new_custom_title.is_some() {
                                 session.details.custom_title = new_custom_title.clone();
@@ -2534,6 +2545,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         PathBuf::from(&state.cwd),
                     ));
                 }
+
+                // A state event is a "host is alive" signal; feed the
+                // status-bar last-activity indicator (before borrowing agentic).
+                session.mark_activity(state.created_at);
 
                 if let Some(agentic) = &mut session.agentic {
                     // Restore the event_id from the d-tag
@@ -4551,6 +4566,10 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
     let mut needs_reorder = false;
+    // Newest `created_at` of a displayable remote note in this batch, applied
+    // to `last_activity` after the loop (can't call `session.mark_activity`
+    // inside — `session.agentic` is mutably borrowed below).
+    let mut latest_activity: Option<u64> = None;
 
     // Sort this batch by wall-clock time at millisecond resolution, keyed off
     // the same `EventOrder` the loader uses so the two can never drift apart.
@@ -4604,6 +4623,8 @@ pub(crate) fn process_conversation_notes<'a>(
                 | Some("compaction_complete")
         );
         if displayable {
+            let created_at = note.created_at();
+            latest_activity = Some(latest_activity.map_or(created_at, |p| p.max(created_at)));
             let order = session_loader::EventOrder::from_note(note);
             if matches!(agentic.max_seen_order, Some(prev) if order < prev) {
                 needs_reorder = true;
@@ -4717,6 +4738,12 @@ pub(crate) fn process_conversation_notes<'a>(
                 }
             }
         }
+    }
+
+    // Remote sessions never hit the local `append_token` path, so drive the
+    // status-bar "last activity" indicator off the newest ingested note.
+    if let Some(ts) = latest_activity {
+        session.mark_activity(ts);
     }
 
     ProcessedNotes {
@@ -5332,6 +5359,11 @@ mod tests {
                 .collect();
             assert_eq!(notes.len(), 3, "should have 3 events in ndb");
 
+            // Remote sessions never hit `append_token`, so last_activity must be
+            // driven off the newest ingested note's wall-clock `created_at`.
+            let newest_created_at = notes.iter().map(|n| n.created_at()).max();
+            assert_eq!(session.last_activity, None, "starts unset");
+
             let result = process_conversation_notes(
                 notes,
                 &mut session,
@@ -5342,6 +5374,10 @@ mod tests {
             );
 
             assert!(result.remote_user_messages.is_empty());
+            assert_eq!(
+                session.last_activity, newest_created_at,
+                "last_activity should track the newest ingested note's created_at"
+            );
         }
 
         // Assert correct ordering in chat
