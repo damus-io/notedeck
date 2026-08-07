@@ -178,25 +178,26 @@ impl SerializableKeypair {
     }
 }
 
-impl TokenSerializable for Pubkey {
-    fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
-        parser.parse_token(PUBKEY_TOKEN)?;
-        let raw = parser.pull_token()?;
-        let pubkey =
-            Pubkey::try_from_bech32_string(raw, true).map_err(|_| ParseError::DecodeFailed)?;
-        Ok(pubkey)
-    }
+/// Token codec for a bare [`Pubkey`], as free functions rather than a
+/// `TokenSerializable for Pubkey` impl: with the nostrdb-net convergence
+/// `Pubkey` is re-exported from `nostrdb_net`, and the orphan rule forbids
+/// enostr from implementing tokenator's trait for that foreign type. The only
+/// caller is enostr's own `Keypair` codec below, so free functions suffice.
+fn parse_pubkey_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Pubkey, ParseError<'a>> {
+    parser.parse_token(PUBKEY_TOKEN)?;
+    let raw = parser.pull_token()?;
+    Pubkey::try_from_bech32_string(raw, true).map_err(|_| ParseError::DecodeFailed)
+}
 
-    fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
-        writer.write_token(PUBKEY_TOKEN);
+fn serialize_pubkey_tokens(pubkey: &Pubkey, writer: &mut tokenator::TokenWriter) {
+    writer.write_token(PUBKEY_TOKEN);
 
-        let Some(bech) = self.npub() else {
-            tracing::error!("Could not convert pubkey to bech: {}", self.hex());
-            return;
-        };
+    let Some(bech) = pubkey.npub() else {
+        tracing::error!("Could not convert pubkey to bech: {}", pubkey.hex());
+        return;
+    };
 
-        writer.write_token(&bech);
-    }
+    writer.write_token(&bech);
 }
 
 impl TokenSerializable for Keypair {
@@ -204,7 +205,7 @@ impl TokenSerializable for Keypair {
         TokenParser::alt(
             parser,
             &[
-                |p| Ok(Keypair::only_pubkey(Pubkey::parse_from_tokens(p)?)),
+                |p| Ok(Keypair::only_pubkey(parse_pubkey_from_tokens(p)?)),
                 |p| Ok(Keypair::from_secret(parse_seckey(p)?)),
             ],
         )
@@ -231,7 +232,7 @@ impl TokenSerializable for Keypair {
 
             writer.write_token(&serialized);
         } else {
-            self.pubkey.serialize_tokens(writer);
+            serialize_pubkey_tokens(&self.pubkey, writer);
         }
     }
 }

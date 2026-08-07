@@ -2600,6 +2600,7 @@ dependencies = [
  "nostr-database 0.37.0",
  "nostr-relay-builder",
  "nostrdb",
+ "nostrdb_net",
  "profiling",
  "serde",
  "serde_derive",

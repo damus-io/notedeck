@@ -121,8 +121,8 @@ pub struct LNUrlPayResponseRaw {
 
 impl From<LNUrlPayResponseRaw> for LNUrlPayResponse {
     fn from(value: LNUrlPayResponseRaw) -> Self {
-        let nostr_pubkey = Pubkey::from_hex(&value.nostr_pubkey)
-            .map_err(|e: enostr::Error| EndpointError(e.to_string()));
+        let nostr_pubkey =
+            Pubkey::from_hex(&value.nostr_pubkey).map_err(|e| EndpointError(e.to_string()));
 
         let callback_url = Url::parse(&value.callback_url)
             .map_err(|e| EndpointError(format!("invalid callback url: {e}")));
