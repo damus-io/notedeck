@@ -10,11 +10,11 @@
 //! can't have all three.
 //!
 //! So rather than make the id sequential, we make the *hash* sayable: encode the
-//! leading 33 bits of the id as three BIP-39 words. Callers prefix their own
-//! slug/sigil (`board#…`, `canvas@…`, `agentium#…`), giving ids like
-//! `headway#maple-river-canyon`. This keeps the secure + decentralized corners
-//! (it's just a rendering of the id) and claws back most of the human-meaningful
-//! one.
+//! leading 33 bits of the id as three BIP-39 words. Callers wrap their own URI
+//! scheme around it (`headway:<board>/…`, `notebook:…`, `agentium:…`), giving
+//! references like `headway:dave/maple-river-canyon`. This keeps the secure +
+//! decentralized corners (it's just a rendering of the id) and claws back most of
+//! the human-meaningful one.
 //!
 //! 3 words × 11 bits = 33 bits (~8.5 billion), collision-free well past any
 //! realistic number of cards/nodes/sessions. Resolution is by re-encoding each
