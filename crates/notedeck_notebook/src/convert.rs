@@ -132,3 +132,58 @@ fn to_bg_style(s: &str) -> Option<BackgroundStyle> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Geometry, NodeContent};
+
+    fn link_view(url: &str) -> NodeView {
+        NodeView {
+            id: enostr::NoteId::new([1; 32]),
+            author: [2; 32],
+            kind: NodeKind::Link,
+            geo: Geometry {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 40,
+            },
+            z: "a0".to_string(),
+            color: None,
+            content: NodeContent {
+                url: Some(url.to_string()),
+                ..Default::default()
+            },
+            created_at: 0,
+            placed_at: 0,
+            edited_at: 0,
+        }
+    }
+
+    /// A note-embed node is a Link carrying a `nostr:` URI. The `url` crate must
+    /// parse that opaque scheme so [`to_node`] yields a `LinkNode` (which the UI
+    /// renders as an embed) rather than falling back to a text node — the whole
+    /// note-embed feature rides on this.
+    #[test]
+    fn nostr_link_stays_a_link_node() {
+        let reference = "nostr:naddr1qqxnzdesxqmnxvpexqunzvpcqy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz";
+        match to_node(&link_view(reference)) {
+            Some(Node::Link(link)) => {
+                assert_eq!(link.url().scheme(), "nostr");
+                assert_eq!(link.url().as_str(), reference);
+            }
+            other => panic!("expected a LinkNode for a nostr: url, got {other:?}"),
+        }
+    }
+
+    /// A malformed URL still can't crash conversion — it degrades to a text node
+    /// showing the raw value (the pre-existing [`to_node`] Link fallback).
+    #[test]
+    fn unparseable_link_falls_back_to_text() {
+        assert!(matches!(
+            to_node(&link_view("not a url")),
+            Some(Node::Text(_))
+        ));
+    }
+}

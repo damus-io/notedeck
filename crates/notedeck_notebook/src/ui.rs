@@ -1112,7 +1112,7 @@ pub(crate) fn node_ui(
     match node {
         Node::Text(text_node) => text_node_ui(ui, ctx, text_node, rect, selected),
         Node::File(file_node) => file_node_ui(ui, file_node, rect, selected).map(|()| None),
-        Node::Link(link_node) => link_node_ui(ui, link_node, rect, selected).map(|()| None),
+        Node::Link(link_node) => link_node_ui(ui, ctx, link_node, rect, selected).map(|()| None),
         Node::Group(group_node) => group_node_ui(ui, group_node, rect, selected).map(|()| None),
     }
 }
@@ -1149,10 +1149,45 @@ fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) 
     })
 }
 
-fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode, rect: Rect, selected: bool) -> NodeRender<()> {
+/// Render a link node. A `nostr:` link is a **note-embed** node: resolve the
+/// reference and draw the referenced note as the node's body via its registered
+/// kind renderer (an `Embed`), so the same note referenced from several canvases
+/// stays in sync because it's one nostr event. Any other URL is a plain web link.
+fn link_node_ui(
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext,
+    node: &LinkNode,
+    rect: Rect,
+    selected: bool,
+) -> NodeRender<()> {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
-        ui.label("link node");
+        let url = node.url();
+        if url.scheme() == "nostr" {
+            embed_node_ui(ui, ctx, url.as_str());
+        } else {
+            ui.hyperlink_to(url.as_str(), url.as_str());
+        }
     })
+}
+
+/// Draw a `nostr:` reference as a full note embed (the body of a note-embed
+/// node). Canvas rendering holds no transaction, so open a short-lived one here
+/// and resolve + draw the note via its kind renderer. An unresolved reference
+/// (not synced yet, or no renderer for its kind) falls back to its raw text so
+/// the node still reads as a reference.
+fn embed_node_ui(ui: &mut egui::Ui, ctx: &mut AppContext, reference: &str) {
+    let mut note_ctx = ctx.note_context();
+    let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("embed node txn");
+    let drawn = notedeck_ui::markdown::render_reference(
+        ui,
+        &mut note_ctx,
+        &txn,
+        reference,
+        notedeck::RenderContext::Embed,
+    );
+    if !drawn {
+        ui.weak(reference);
+    }
 }
 
 fn group_node_ui(

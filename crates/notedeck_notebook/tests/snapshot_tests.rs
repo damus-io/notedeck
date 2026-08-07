@@ -171,11 +171,19 @@ fn build_harness(
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+
+    let notebook = Notebook::new();
+    // Mirror chrome: register the app's kind renderers into the host so a
+    // `nostr:` reference (inline in a text node, or a note-embed node) resolves
+    // to its kind widget instead of falling back to raw text.
+    for renderer in notebook.kind_renderers() {
+        notedeck.register_kind_renderer(renderer);
+    }
 
     let state = NotebookTestState {
         notedeck,
-        notebook: Notebook::new(),
+        notebook,
         account: FullKeypair::generate(),
         seed_colors,
         _tmpdir: tmpdir,
@@ -441,6 +449,108 @@ fn snapshot_notebook_editor() {
     }
     harness.run_steps(3);
     harness.snapshot("notebook_editor");
+}
+
+/// Seed one longform note with a title, summary and body under a deterministic
+/// `d`, for a note-embed to reference. Distinct from [`seed_vault`] because the
+/// embed shows the note's own `summary` (a real NIP-23 note keeps its title in
+/// the tag, not repeated as a body heading), so the seed sets one.
+fn seed_embed_note(ndb: &Ndb, secret: &[u8; 32], d: &str, title: &str, summary: &str, body: &str) {
+    let input = LongformInput {
+        title: title.to_string(),
+        summary: Some(summary.to_string()),
+        content: body.to_string(),
+        ..Default::default()
+    };
+    let builder = build_longform(d, &input).created_at(1_700_000_000);
+    ingest(ndb, builder, secret, &mut NoPublish).expect("seed embed longform");
+}
+
+/// `nostr:naddr…` reference for one of `author`'s longform notes, given its `d`.
+/// The bech32 coordinate a note-embed Link node carries; the built-in nostr
+/// parser decodes it back to the note when the embed renders.
+fn longform_naddr(author: &Pubkey, d: &str) -> String {
+    use nostr::nips::nip19::ToBech32;
+    let pk = nostr::PublicKey::from_slice(author.bytes()).expect("pubkey");
+    let mut coord = nostr::nips::nip01::Coordinate::new(nostr::Kind::from(30023_u16), pk);
+    coord.identifier = d.to_string();
+    format!("nostr:{}", coord.to_bech32().expect("naddr"))
+}
+
+/// Seed a canvas holding a single note-embed (Link) node whose url is `reference`
+/// (a `nostr:naddr…`). Placed clear of the vault sidebar (which appears once the
+/// referenced longform note folds in) so the whole embed is visible.
+fn seed_embed_canvas(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], reference: &str) {
+    let addr = canvas_address(author, CANVAS_ID);
+    let mut publisher = NoPublish;
+    ingest(
+        ndb,
+        build_canvas(CANVAS_ID, "Embed", &[], false),
+        secret,
+        &mut publisher,
+    );
+    let geo = Geometry {
+        x: 280,
+        y: 40,
+        w: 380,
+        h: 220,
+    };
+    let content = NodeContent {
+        url: Some(reference.to_string()),
+        ..Default::default()
+    };
+    let id = ingest(
+        ndb,
+        build_node(&addr, NodeKind::Link, &geo, &content),
+        secret,
+        &mut publisher,
+    )
+    .expect("embed node ingested");
+    let z = event::rank_between(None, None);
+    ingest(
+        ndb,
+        build_transform(CANVAS_ID, &addr, &id, &geo, &z, None),
+        secret,
+        &mut publisher,
+    );
+}
+
+/// Seed a longform note and a canvas holding a single note-embed node that
+/// references it by naddr, then snapshot the rendered embed — the note's title
+/// and body preview drawn full-node via the longform kind renderer.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_note_embed() {
+    let mut harness = build_harness(egui::Vec2::new(700.0, 380.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let author = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    let reference = longform_naddr(&author, "embed-00");
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        seed_embed_note(
+            app_ctx.ndb,
+            &secret,
+            "embed-00",
+            "Q3 planning notes",
+            "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review.",
+            "# Milestones\n\nShip the notebook vault and the longform editor.",
+        );
+        seed_embed_canvas(app_ctx.ndb, &author, &secret, &reference);
+    }
+
+    // The longform note must fold in before the embed can resolve it.
+    wait_for_vault(&mut harness, 1);
+    // And the embed node must fold into the canvas.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while harness.state().notebook.canvas().get_nodes().is_empty() {
+        harness.run_ok();
+        assert!(Instant::now() < deadline, "embed node never folded");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_steps(3);
+    harness.snapshot("notebook_note_embed");
 }
 
 /// Drag the "Red" node and confirm its position moves; clicking a node selects
