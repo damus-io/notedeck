@@ -442,6 +442,7 @@ impl App for Headway {
                         &author,
                         secret,
                         mv.card,
+                        None,
                         &mut store::NoPublish,
                     );
                 }
@@ -453,6 +454,7 @@ impl App for Headway {
                         &author,
                         secret,
                         mv.card,
+                        None,
                         &mut store::NoPublish,
                     );
                 }
@@ -471,6 +473,7 @@ impl App for Headway {
                 &author,
                 secret,
                 action,
+                None,
                 &mut store::NoPublish,
             );
             self.wake();
@@ -1274,6 +1277,7 @@ mod tests {
                     labels: vec![],
                     parent: None,
                 },
+                None,
                 &mut store::NoPublish,
             );
         }
@@ -1380,6 +1384,7 @@ mod tests {
                     labels: vec![],
                     parent: None,
                 },
+                None,
                 &mut store::NoPublish,
             );
         }

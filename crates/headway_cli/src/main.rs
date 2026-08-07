@@ -396,6 +396,7 @@ async fn run() -> Result<()> {
                 &author,
                 &secret,
                 card_id,
+                None,
                 &mut sink,
             );
             let n = sink.0.len();
@@ -429,6 +430,7 @@ async fn run() -> Result<()> {
                 &author,
                 &secret,
                 card_id,
+                None,
                 &mut sink,
             );
             let n = sink.0.len();
@@ -470,7 +472,9 @@ async fn run() -> Result<()> {
             let action = build_action(&view, edit)?;
 
             let mut sink = Collect::default();
-            store::apply(&ndb, &board, &view, &author, &secret, action, &mut sink);
+            store::apply(
+                &ndb, &board, &view, &author, &secret, action, None, &mut sink,
+            );
             if sink.0.is_empty() {
                 return Err("action produced no events (unknown card or column?)".into());
             }

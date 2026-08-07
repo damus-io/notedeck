@@ -371,6 +371,7 @@ fn snapshot_headway_detail_inline_ref() {
                 card: host,
                 description: description.clone(),
             },
+            None,
             &mut store::NoPublish,
         );
         description

@@ -315,6 +315,7 @@ fn mutate(
         &author,
         &secret,
         action,
+        None,
         &mut publisher,
     );
     Ok(Applied::ok())
