@@ -45,6 +45,20 @@ impl Team {
         let bytes = hex::decode(&self.team_root).ok()?;
         <[u8; 32]>::try_from(bytes.as_slice()).ok()
     }
+
+    /// The board's slug (its `d`-tag id) — the trailing segment of
+    /// [`board_addr`](Self::board_addr) (`30619:<owner>:<slug>`). Used to match a
+    /// joined shared board against the app's active-board selection.
+    pub fn board_slug(&self) -> Option<&str> {
+        self.board_addr.rsplit(':').next().filter(|s| !s.is_empty())
+    }
+
+    /// Derive this team's SNS channel keys from its root, or `None` if the root is
+    /// unusable. The keys are what seal an edit ([`enostr::sns::wrap_rumor`]) and
+    /// name the channel to subscribe to (the team keypair's pubkey).
+    pub fn sns_keys(&self) -> Option<enostr::sns::SnsKeys> {
+        enostr::sns::derive_sns_keys(&self.root_bytes()?)
+    }
 }
 
 /// The file holding each account's joined shared boards: a JSON map of pubkey-hex

@@ -180,6 +180,41 @@ impl Headway {
         joined
     }
 
+    /// The switcher list: the account's own boards plus every joined shared board
+    /// (own boards win on a slug collision, matching the active-board rule). A
+    /// shared board's title comes from its folded view, falling back to its slug
+    /// until the definition arrives.
+    fn board_summaries_with_shared(
+        &self,
+        ctx: &AppContext,
+        own: &[BoardView],
+    ) -> Vec<BoardSummary> {
+        let mut boards = board_summaries(own);
+        for team in &self.teams {
+            let Some(slug) = team.board_slug() else {
+                continue;
+            };
+            if boards.iter().any(|b| b.id == slug) {
+                continue;
+            }
+            let title = Transaction::new(ctx.ndb)
+                .ok()
+                .and_then(|txn| {
+                    self.board_cache
+                        .borrow_mut()
+                        .shared_board(ctx.ndb, &txn, &team.board_addr)
+                })
+                .map(|v| v.title)
+                .unwrap_or_else(|| slug.to_string());
+            boards.push(BoardSummary {
+                id: slug.to_string(),
+                title,
+            });
+        }
+        boards.sort_by(|a, b| a.id.cmp(&b.id));
+        boards
+    }
+
     /// Navigate to a headway entity referenced from elsewhere in the app — raised
     /// when an inline board/issue widget (drawn by our [`KindRenderer`]) is clicked
     /// in another app like the notebook. `note` is the board or issue event; the
@@ -300,6 +335,18 @@ fn keyshare_filter() -> Filter {
         .build()
 }
 
+/// Filter for a shared channel's kind-1081 envelopes, authored by `team_pk` (the
+/// team keypair whose pubkey *is* the channel). Every shared-board edit is one
+/// such envelope, so this is both the inbound sync filter and the local
+/// re-fold trigger.
+fn sns_envelope_filter(team_pk: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+        .authors([team_pk.bytes()])
+        .limit(5000)
+        .build()
+}
+
 /// One entry in the board switcher: a board's stable `id` (slug) and its display
 /// `title`. Folded from the account's events by [`BoardCache::boards`].
 pub struct BoardSummary {
@@ -371,10 +418,17 @@ impl App for Headway {
 
         // Declare the inbound cross-device subscription (catch-up + realtime)
         // against the account's private relays, and resolve the same set as our
-        // outbound publish targets. Empty => local-only.
-        let private_relays = self
-            .private_sync
-            .update(ctx, vec![event::headway_filter(&author)]);
+        // outbound publish targets. Empty => local-only. Alongside our own board
+        // events we pull each joined shared board's kind-1081 envelope stream, so a
+        // co-member's sealed edits reach us (nostrdb unwraps them once the root is
+        // registered — see [`teams`]).
+        let mut inbound = vec![event::headway_filter(&author)];
+        for team in &self.teams {
+            if let Some(keys) = team.sns_keys() {
+                inbound.push(sns_envelope_filter(&keys.team_keypair.pubkey));
+            }
+        }
+        let private_relays = self.private_sync.update(ctx, inbound);
 
         // Pump the shared board cache: advance this account's reducer, folding in
         // any freshly-arrived notes — our own async ingests, CLI moves into the
@@ -409,12 +463,49 @@ impl App for Headway {
             fan_out_unseen_notes(&mut api, ctx.ndb, &txn, &poll.fresh, &private_relays);
         }
 
+        // Advance joined shared boards (multi-writer fold, driven by each channel's
+        // kind-1081 envelope stream), and fan those fresh envelopes out to the
+        // private relays. The envelope — not the plaintext rumor nostrdb unwraps
+        // from it — is the sync unit; the rumor is skipped by fan_out_unseen_notes'
+        // is_rumor guard, so publishing here is what actually propagates our sealed
+        // edits to co-members (and re-propagates theirs).
+        if !self.teams.is_empty()
+            && let Ok(txn) = Transaction::new(ctx.ndb)
+        {
+            let fresh_envelopes =
+                self.board_cache
+                    .borrow_mut()
+                    .poll_shared(ctx.ndb, &txn, &self.teams);
+            if !fresh_envelopes.is_empty() {
+                self.wake();
+                if !private_relays.is_empty() {
+                    let mut api = ctx.remote.publisher_explicit();
+                    fan_out_unseen_notes(
+                        &mut api,
+                        ctx.ndb,
+                        &txn,
+                        &fresh_envelopes,
+                        &private_relays,
+                    );
+                }
+            }
+        }
+
         // No board yet: auto-seed one for an account that can sign. Guarded by
         // `seeded` so the board-existence check (a finalize) only runs until we've
         // confirmed or created one — not every frame. The seeded events fan out via
         // the same poll path on a following frame. (The UI feedback for this state
         // is drawn in `render`.)
+        //
+        // Never auto-seed when the active slug is a joined *shared* board: it's
+        // owned by a co-member, so seeding would mint a conflicting own board of
+        // the same slug instead of waiting for the shared one to fold in.
+        let active_is_shared = self
+            .teams
+            .iter()
+            .any(|t| t.board_slug() == Some(self.board_id.as_str()));
         if !self.seeded
+            && !active_is_shared
             && let Some(secret) = &signer
         {
             let has_board = Transaction::new(ctx.ndb).ok().is_some_and(|txn| {
@@ -461,7 +552,7 @@ impl App for Headway {
         // in `update` this frame; read the folded boards off the same shared cache
         // (a cold, Headway-never-opened session seeds it lazily on this read). One
         // finalize backs both the active board and the switcher list.
-        let all_boards = Transaction::new(ctx.ndb)
+        let own_boards = Transaction::new(ctx.ndb)
             .ok()
             .map(|txn| {
                 self.board_cache
@@ -469,10 +560,41 @@ impl App for Headway {
                     .all_boards(ctx.ndb, &txn, &author)
             })
             .unwrap_or_default();
-        let Some(view) = all_boards.iter().find(|v| v.id == self.board_id).cloned() else {
+
+        // Is the active board a joined shared board rather than one we own? Own
+        // boards win on a slug collision (an unambiguous, stable rule until refs
+        // carry an explicit owner).
+        let active_team: Option<teams::Team> = if own_boards.iter().any(|v| v.id == self.board_id) {
+            None
+        } else {
+            self.teams
+                .iter()
+                .find(|t| t.board_slug() == Some(self.board_id.as_str()))
+                .cloned()
+        };
+        // The SNS channel to seal edits into when the active board is shared.
+        let channel: Option<store::SnsChannel> = active_team
+            .as_ref()
+            .and_then(|t| t.sns_keys())
+            .map(|keys| store::SnsChannel { keys });
+
+        // Resolve the active board's view: a shared board folds by coordinate
+        // (multi-writer), an own board off the per-account reducer.
+        let view = match &active_team {
+            Some(team) => Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                self.board_cache
+                    .borrow_mut()
+                    .shared_board(ctx.ndb, &txn, &team.board_addr)
+            }),
+            None => own_boards.iter().find(|v| v.id == self.board_id).cloned(),
+        };
+        let Some(view) = view else {
             // No board yet. `update` auto-seeds one for a signing account; a
-            // watch-only account can't create one.
-            let msg = if signer.is_some() {
+            // watch-only account can't create one; a joined shared board is still
+            // folding in from its co-members.
+            let msg = if active_team.is_some() {
+                "Loading shared board…"
+            } else if signer.is_some() {
                 "Setting up your board…"
             } else {
                 "Sign in with a key to create your Headway board."
@@ -485,7 +607,7 @@ impl App for Headway {
         // already dropped — which matters here: a description that references
         // another card resolves through `self.board_cache` *during* `board_ui`,
         // so holding a borrow across the render would panic the `RefCell`).
-        let boards = board_summaries(&all_boards);
+        let boards = self.board_summaries_with_shared(ctx, &own_boards);
         // Header sync indicator: are we reaching a private relay right now?
         let sync = sync_status(ctx);
         let action = board_ui(ui, &theme, ctx, &view, &boards, sync, &mut self.state);
@@ -542,6 +664,10 @@ impl App for Headway {
             // Ingest locally only; `update`'s poll fans the new events out to the
             // private relays next frame (see `wake`).
             match mv.op {
+                // Seal with the active (source) board's channel when it's shared,
+                // so a cross-board move off a shared board doesn't leak plaintext.
+                // Mixed-sharing moves (source and target on different channels)
+                // are an edge to refine once boards carry per-board channels.
                 CardBoardOp::Move => {
                     store::move_card_between_boards(
                         ctx.ndb,
@@ -550,7 +676,7 @@ impl App for Headway {
                         &author,
                         secret,
                         mv.card,
-                        None,
+                        channel.as_ref(),
                         &mut store::NoPublish,
                     );
                 }
@@ -562,7 +688,7 @@ impl App for Headway {
                         &author,
                         secret,
                         mv.card,
-                        None,
+                        channel.as_ref(),
                         &mut store::NoPublish,
                     );
                 }
@@ -581,7 +707,7 @@ impl App for Headway {
                 &author,
                 secret,
                 action,
-                None,
+                channel.as_ref(),
                 &mut store::NoPublish,
             );
             self.wake();
@@ -711,6 +837,12 @@ struct CachedAuthor {
 #[derive(Default)]
 struct BoardCache {
     authors: HashMap<Pubkey, CachedAuthor>,
+    /// Joined shared boards, keyed by board coordinate (`30619:owner:slug`). Unlike
+    /// [`authors`](Self::authors) these are multi-writer, folded by *coordinate*
+    /// via [`event::fold_shared_board`] so every member's events are gathered, and
+    /// re-folded whenever a new kind-1081 envelope for the channel arrives (every
+    /// shared edit is one, so the envelope stream is the universal change signal).
+    shared: HashMap<String, SharedBoard>,
     /// Test-only count of full-history folds, to assert later frames fold deltas
     /// rather than re-walking the whole log.
     #[cfg(test)]
@@ -719,6 +851,20 @@ struct BoardCache {
     /// reads within a frame reuse the memoized boards rather than re-finalizing.
     #[cfg(test)]
     finalizes: u32,
+}
+
+/// One joined shared board within [`BoardCache`]: the multi-writer reducer folded
+/// by board coordinate, plus a subscription to the channel's kind-1081 envelopes
+/// that signals when to re-fold.
+#[derive(Default)]
+struct SharedBoard {
+    reducer: Option<BoardReducer>,
+    /// Memoized finalize of `reducer` (see [`CachedAuthor::finalized`]).
+    finalized: Option<Vec<BoardView>>,
+    /// Subscription to `{kinds:[1081], authors:[team_pubkey]}` — every edit to the
+    /// board is published as one such envelope, so a poll reporting new notes means
+    /// the board changed (a member's edit unwrapped) and we re-fold.
+    sub: Option<Subscription>,
 }
 
 /// The outcome of advancing an author's reducer one step (see
@@ -864,6 +1010,61 @@ impl BoardCache {
     fn all_boards(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<BoardView> {
         self.with_boards(ndb, txn, author, |boards| boards.to_vec())
             .unwrap_or_default()
+    }
+
+    /// Advance every joined shared board: ensure a kind-1081 envelope subscription
+    /// per channel and re-fold (by coordinate, gathering all members) any whose
+    /// subscription reports new envelopes or that hasn't folded yet. Returns the
+    /// fresh envelope keys, which the caller fans out to the channel's relays — the
+    /// envelope, not the unwrapped rumor, is the sync unit (the rumor is skipped by
+    /// [`notedeck::fan_out_unseen_notes`]'s `is_rumor` guard).
+    ///
+    /// Re-fold is full each time rather than incremental: shared boards are few and
+    /// only re-fold when a member actually edits (every edit is one 1081 envelope).
+    fn poll_shared(&mut self, ndb: &Ndb, txn: &Transaction, teams: &[teams::Team]) -> Vec<NoteKey> {
+        let mut fresh = Vec::new();
+        for team in teams {
+            let Some(keys) = team.sns_keys() else {
+                continue;
+            };
+            let entry = self.shared.entry(team.board_addr.clone()).or_default();
+            if entry.sub.is_none() {
+                entry.sub = ndb
+                    .subscribe(&[sns_envelope_filter(&keys.team_keypair.pubkey)])
+                    .ok();
+            }
+            let polled = match entry.sub {
+                Some(sub) => ndb.poll_for_notes(sub, 64),
+                None => Vec::new(),
+            };
+            if !polled.is_empty() || entry.reducer.is_none() {
+                entry.reducer = event::fold_shared_board(ndb, txn, &team.board_addr);
+                entry.finalized = None;
+            }
+            fresh.extend(polled);
+        }
+        fresh
+    }
+
+    /// Fold (memoized) a joined shared board by coordinate and return its view.
+    /// `None` until its definition has folded in. Seeds the fold lazily so a render
+    /// before the next [`poll_shared`] still resolves.
+    fn shared_board(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        board_addr: &str,
+    ) -> Option<BoardView> {
+        let entry = self.shared.entry(board_addr.to_string()).or_default();
+        if entry.reducer.is_none() {
+            entry.reducer = event::fold_shared_board(ndb, txn, board_addr);
+        }
+        if entry.finalized.is_none() {
+            entry.finalized = Some(entry.reducer.as_ref()?.finalize());
+        }
+        // fold_shared_board folds a single coordinate, so its finalize yields the
+        // one board (empty until the board definition has arrived).
+        entry.finalized.as_ref()?.first().cloned()
     }
 }
 
@@ -1795,5 +1996,91 @@ mod tests {
             selected_account: None,
         };
         assert!(p.resolve(&matched, &ctx_no_acct).is_none());
+    }
+
+    /// The shared-board read path: an edit applied over an SNS channel is folded
+    /// by the cache's multi-writer `poll_shared`/`shared_board` (by coordinate),
+    /// and the stored issue is an unwrapped rumor — the same envelope the 1081
+    /// subscription reports for fan-out. Exercises the read half of the shared
+    /// wiring against a bare ndb.
+    #[tokio::test]
+    async fn shared_board_folds_via_cache() {
+        let mut t = TestSync::new();
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x22;
+        assert!(t.ndb.add_team_root(&root));
+        let channel = store::SnsChannel {
+            keys: enostr::sns::derive_sns_keys(&root).expect("keys"),
+        };
+        let team = teams::Team {
+            team_root: hex::encode(root),
+            board_addr: event::board_address(&t.kp.pubkey, store::BOARD_ID),
+            epoch: None,
+        };
+        let teams = vec![team.clone()];
+
+        // Seed the board plaintext, then establish the shared 1081 subscription
+        // *before* editing so it reports our own envelope when it lands.
+        store::seed_default_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            store::BOARD_ID,
+            &mut store::NoPublish,
+        );
+        t.poll();
+        t.wait(|v| v.id == store::BOARD_ID).await;
+        {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            t.cache.poll_shared(&t.ndb, &txn, &teams);
+        }
+
+        // Add a card over the SNS channel — wrapped into a 1081 envelope, ingested
+        // (and unwrapped) locally.
+        let view = t.view().expect("board");
+        let mut author_stream = ingest_stream(&t.ndb, &t.kp.pubkey);
+        store::apply(
+            &t.ndb,
+            store::BOARD_ID,
+            &view,
+            &t.kp.pubkey,
+            &t.secret(),
+            store::BoardAction::AddCard {
+                col: 0,
+                title: "Sealed".to_string(),
+                labels: vec![],
+                parent: None,
+            },
+            Some(&channel),
+            &mut store::NoPublish,
+        );
+
+        // Re-fold the shared board (multi-writer) until the sealed card surfaces.
+        let card = loop {
+            let found = {
+                let txn = Transaction::new(&t.ndb).unwrap();
+                t.cache.poll_shared(&t.ndb, &txn, &teams);
+                t.cache
+                    .shared_board(&t.ndb, &txn, &team.board_addr)
+                    .and_then(|v| {
+                        v.columns
+                            .iter()
+                            .flat_map(|c| c.cards.iter())
+                            .find(|c| c.title == "Sealed")
+                            .map(|c| c.id)
+                    })
+            };
+            if let Some(id) = found {
+                break id;
+            }
+            await_ingest(&mut author_stream).await;
+        };
+
+        let txn = Transaction::new(&t.ndb).unwrap();
+        assert!(
+            t.ndb.get_note_by_id(&txn, card.bytes()).unwrap().is_rumor(),
+            "a shared-board edit must be stored as an unwrapped rumor"
+        );
     }
 }
