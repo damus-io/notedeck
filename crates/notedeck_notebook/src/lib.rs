@@ -619,7 +619,7 @@ impl notedeck::App for Notebook {
         // outbound publish targets. Empty => local-only.
         let private_relays = self
             .private_sync
-            .update(ctx, event::notebook_filter(&author));
+            .update(ctx, vec![event::notebook_filter(&author)]);
 
         // Keep a live subscription and re-fold only when something changed (first
         // load, account switch, or an async ingest landing — including CLI

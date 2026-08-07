@@ -274,7 +274,7 @@ impl App for Headway {
         // outbound publish targets. Empty => local-only.
         let private_relays = self
             .private_sync
-            .update(ctx, event::headway_filter(&author));
+            .update(ctx, vec![event::headway_filter(&author)]);
 
         // Pump the shared board cache: advance this account's reducer, folding in
         // any freshly-arrived notes — our own async ingests, CLI moves into the

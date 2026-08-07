@@ -277,7 +277,9 @@ impl notedeck::App for Horizon {
         // Sync this account's own calendar events across its devices over the
         // private relays, and remember the resolved set as our publish targets.
         let author = *ctx.accounts.selected_account_pubkey();
-        self.publish_relays = self.private_sync.update(ctx, calendar_sync_filter(&author));
+        self.publish_relays = self
+            .private_sync
+            .update(ctx, vec![calendar_sync_filter(&author)]);
 
         // Start mirroring the platform calendar into nostrdb once we have an
         // account to sign the imported events with. The worker writes the same
