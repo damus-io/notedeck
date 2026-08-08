@@ -16,7 +16,7 @@
 //! schemes (`nostr:`, `headway:`) so the reference registry dispatches by scheme,
 //! and — like them — surviving nostrdb's tokenizer whole inside note content.
 
-pub use wordid::{SEP, encode};
+pub use wordid::{SEP, encode, three_words_end};
 
 /// The URI scheme that precedes a node word-id in a full reference.
 pub const SCHEME: &str = "notebook";

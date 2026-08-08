@@ -1,6 +1,7 @@
 pub mod convert;
 mod editor;
 pub mod event;
+mod reference;
 pub mod render;
 pub mod store;
 mod ui;
@@ -673,6 +674,18 @@ impl notedeck::App for Notebook {
     /// notebook's own document type and had no renderer, so it registers one.
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
         vec![Box::new(render::LongformKindRenderer)]
+    }
+
+    /// Contribute the `notebook:<word-id>` reference parser so a node reference
+    /// written inline in any note/comment/chat resolves to the node's kind-1606
+    /// creation event (drawn by the node renderer). Shares the app's one
+    /// [`NotebookCache`] (see [`Self::cache`]) — cloning the `Rc` in — so a node
+    /// referenced by word id resolves off the same realtime-pumped canvas fold the
+    /// foreground UI reads, and a realtime edit is reflected in the resolution.
+    fn reference_parsers(&self) -> Vec<Box<dyn notedeck::ReferenceParser>> {
+        vec![Box::new(reference::NotebookRefParser::new(
+            self.cache.clone(),
+        ))]
     }
 
     /// Background sync, run every frame for all *opened* apps (not just the
