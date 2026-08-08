@@ -24,6 +24,40 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// Whether `kind` is a notebook event that the app draws an inline widget for, so
+/// a click on that widget (raised as an [`notedeck::AppAction::Note`]) routes into
+/// the Notebook app rather than the timeline. Only kind-1606 nodes qualify today —
+/// that's the one kind [`render::NotebookNodeRenderer`] handles. [`event::KIND_CANVAS`]
+/// is deliberately excluded: there's no canvas renderer to click, so nothing emits
+/// a canvas open, and routing one would have no node to focus.
+pub fn is_notebook_kind(kind: u32) -> bool {
+    kind == event::KIND_NODE
+}
+
+/// Where a clicked notebook node should land, resolved from its kind-1606 event by
+/// [`resolve_open_target`].
+struct NotebookOpenTarget {
+    /// The canvas the node lives on (its `d` id).
+    canvas_id: String,
+    /// The node to focus, keyed by its `jsoncanvas` id (the hex of its creation
+    /// event id — see [`convert`] and `Notebook::intent_to_action`).
+    node: NodeId,
+}
+
+/// Resolve a kind-1606 node note into the [`NotebookOpenTarget`] for
+/// [`Notebook::open`]. `None` for anything that isn't a well-formed node event.
+fn resolve_open_target(ndb: &Ndb, note_id: NoteId) -> Option<NotebookOpenTarget> {
+    let txn = Transaction::new(ndb).ok()?;
+    let note = ndb.get_note_by_id(&txn, note_id.bytes()).ok()?;
+    let event::NotebookEvent::Node(node) = event::parse(&note)? else {
+        return None;
+    };
+    Some(NotebookOpenTarget {
+        canvas_id: node.canvas_id,
+        node: NoteId::new(node.id).hex().parse().ok()?,
+    })
+}
+
 /// A node's in-progress geometry override during a live drag or resize. Each
 /// axis is independently optional: a plain body drag sets only [`pos`]; a resize
 /// sets whichever of [`pos`]/[`width`]/[`height`] its handle controls. Held in
@@ -99,6 +133,11 @@ pub struct Notebook {
     rendered_heights: HashMap<NodeId, f32>,
     /// Currently selected node, if any.
     selected: Option<NodeId>,
+    /// A node to focus, set by [`open`](Notebook::open) when its inline widget is
+    /// clicked elsewhere in the app (e.g. a `notebook:<word-id>` chip in a note or
+    /// Dave chat). Resolved by [`process_pending_open`](Notebook::process_pending_open)
+    /// on the next render: select the node once its canvas has folded in.
+    pending_open: Option<NoteId>,
     /// The node an edge is currently being dragged from, if any. Persisted across
     /// frames so its side handles stay alive (and the egui drag keeps its id)
     /// even once the pointer leaves the source node.
@@ -311,6 +350,48 @@ impl Notebook {
     /// The currently selected node, if any.
     pub fn selected(&self) -> Option<&NodeId> {
         self.selected.as_ref()
+    }
+
+    /// Focus a node referenced from elsewhere in the app — raised when its inline
+    /// widget (drawn by [`render::NotebookNodeRenderer`]) is clicked in another app
+    /// like a note or Dave chat. `note` is the kind-1606 node event; the focus
+    /// happens on the next render (see [`process_pending_open`](Self::process_pending_open)).
+    pub fn open(&mut self, note: NoteId) {
+        self.pending_open = Some(note);
+        // Wake so the focus is processed even if nothing else is repainting.
+        self.wake();
+    }
+
+    /// Act on a pending [`open`](Self::open): resolve the node's canvas and select
+    /// it once that canvas has folded in. Runs early each render.
+    ///
+    /// The notebook is single-canvas for now, so a node on a different canvas is a
+    /// no-op (multi-canvas switching isn't built yet). A node on the open canvas is
+    /// selected as soon as it folds; until then the request stays pending and
+    /// [`open`](Self::open)'s repaint burst keeps us ticking until it does.
+    #[profiling::function]
+    fn process_pending_open(&mut self, ndb: &Ndb) {
+        let Some(note_id) = self.pending_open else {
+            return;
+        };
+        let Some(target) = resolve_open_target(ndb, note_id) else {
+            // Not a notebook node we can route to (unresolved / unexpected kind).
+            self.pending_open = None;
+            return;
+        };
+        if target.canvas_id != self.canvas_id {
+            // A node on a canvas this instance doesn't manage. TODO: multi-canvas
+            // switching — for now there's nowhere to focus it, so drop the request.
+            self.pending_open = None;
+            return;
+        }
+        if !self.canvas.get_nodes().contains_key(&target.node) {
+            // The canvas hasn't folded this node in yet; retry on the next repaint.
+            return;
+        }
+        self.selected = Some(target.node);
+        self.pending_open = None;
+        self.wake();
     }
 
     /// The currently rendered canvas (folded view converted to `jsoncanvas`).
@@ -684,6 +765,7 @@ impl Default for Notebook {
             anim_pos: HashMap::new(),
             rendered_heights: HashMap::new(),
             selected: None,
+            pending_open: None,
             connecting: None,
             edit: NodeEdit::Idle,
             confirm_delete: None,
@@ -831,6 +913,10 @@ impl notedeck::App for Notebook {
             .accounts
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
+
+        // Focus a node a click elsewhere asked us to open (see `open`). Runs after
+        // `update`, so `self.canvas` already reflects this frame's fold.
+        self.process_pending_open(ctx.ndb);
 
         // Full-screen editor mode takes over the whole area; the canvas is hidden.
         // Background sync still runs in `update`, which also pumps the post-save
