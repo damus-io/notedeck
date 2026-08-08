@@ -59,3 +59,23 @@ impl From<hex::FromHexError> for Error {
         Error::HexDecodeFailed
     }
 }
+
+// nostrdb-net convergence: enostr re-exports nostrdb_net's primitives, whose
+// fallible methods (e.g. `Pubkey::from_hex`) yield `nostrdb_net::Error`. Bridge
+// it into enostr's error so `?` still works at enostr call sites during the
+// migration. Variants map 1:1 where they exist; the rest stringify.
+impl From<nostrdb_net::Error> for Error {
+    fn from(e: nostrdb_net::Error) -> Self {
+        use nostrdb_net::Error as NnErr;
+        match e {
+            NnErr::Empty => Error::Empty,
+            NnErr::HexDecodeFailed => Error::HexDecodeFailed,
+            NnErr::InvalidBech32 => Error::InvalidBech32,
+            NnErr::InvalidByteSize => Error::InvalidByteSize,
+            NnErr::InvalidSignature => Error::InvalidSignature,
+            NnErr::InvalidPublicKey => Error::InvalidPublicKey,
+            NnErr::Nostrdb(err) => Error::Nostrdb(err),
+            other => Error::Generic(other.to_string()),
+        }
+    }
+}

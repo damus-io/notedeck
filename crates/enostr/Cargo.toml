@@ -19,6 +19,10 @@ serde_json = { workspace = true }
 nostr = { workspace = true }
 bech32 = { workspace = true }
 nostrdb = { workspace = true }
+# nostrdb-net convergence (phase 4): enostr re-exports nostrdb_net's primitives
+# during the migration so there is ONE Pubkey/Keypair/… type workspace-wide.
+# This transitional dependency is removed when enostr is finally deleted.
+nostrdb_net = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

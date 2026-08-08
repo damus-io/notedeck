@@ -117,17 +117,30 @@ readable; pass `--archived` to list them (e.g. to find an id for `restore`).
 `show` prints each card as `<title>  [labels]  headway:<board>/<word-id>`, with
 the reference muted at the end of the line.
 
-**Which form to use:** when talking to a human about a card (chat, a commit
-message, a PR, a board comment), refer to it by its **full reference** — scheme
-and board included (`headway:dave/maple-river-canyon`, and a notebook node as
-`notebook:mango-sibling-false`). Always include the scheme and the board; never a
-bare word-id. The full
-`headway:<board>/<word-id>` is self-routing and unambiguous no matter which board
-is current when it's read, and it renders as a live inline chip inside notes/chat;
-a bare word-id doesn't resolve at all. This applies to every ref in a comment, not
-just the first. When *you* edit the board (move, label, archive, …), pass the
-canonical **hex id** from `show --json` instead, so an automated edit can never
-hit the wrong card.
+**Which form to use — MANDATORY when talking to a human** (chat, a commit
+message, a PR, a board comment): refer to every card by its **full scheme
+reference**, `headway:<board>/<word-id>` — the exact string `show` prints, scheme
+*and* board included (`headway:dave/maple-river-canyon`; a notebook node is
+`notebook:mango-sibling-false`). This is the **only** form the user's client
+parses into a live link/chip. Any other form renders as dead text, so it is
+never acceptable in human-facing prose.
+
+Do **not** use, ever, when addressing a human:
+
+- `headway#maple-river-canyon` or `dave#maple-river-canyon` — the `#`/hash form
+  does **not** linkify. This is the most common mistake; there is no `#` in a
+  Headway reference.
+- a bare `maple-river-canyon` (no scheme, no board) — doesn't resolve at all.
+- the scheme-less `dave/maple-river-canyon` — fine as a CLI argument, but it does
+  **not** linkify in prose; always add the `headway:`/`notebook:` scheme when
+  writing for a human.
+
+The full `headway:<board>/<word-id>` is also self-routing and unambiguous no
+matter which board is current when it's read. Apply this to **every** ref in a
+message, not just the first — a comment that names five cards writes all five as
+full scheme references. When *you* edit the board (move, label, archive, …), pass
+the canonical **hex id** from `show --json` instead, so an automated edit can
+never hit the wrong card.
 
 All of these resolve as a `<card>` argument, to the same card every time:
 

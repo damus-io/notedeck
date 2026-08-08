@@ -4,8 +4,8 @@ use egui::Sense;
 
 use std::time::Instant;
 
-use enostr::Pubkey;
 use nostrdb::Transaction;
+use nostrdb_net::Pubkey;
 use notedeck::{
     AppContext, NoteAction, abbrev::floor_char_boundary, name::get_display_name,
     profile::get_profile_url, theme::ColorTheme, tokens,
@@ -578,7 +578,7 @@ struct ClientStats {
 
 fn top_clients_over(cache: &RollingCache, limit: usize) -> Vec<ClientStats> {
     let mut event_agg: FxHashMap<String, u64> = FxHashMap::default();
-    let mut pubkey_agg: FxHashMap<String, rustc_hash::FxHashSet<enostr::Pubkey>> =
+    let mut pubkey_agg: FxHashMap<String, rustc_hash::FxHashSet<nostrdb_net::Pubkey>> =
         FxHashMap::default();
 
     for b in &cache.buckets {

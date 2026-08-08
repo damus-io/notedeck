@@ -3,29 +3,25 @@
 //! Possession of a `team_root` is membership in a shared board's channel (see
 //! `docs/nip-sns-sealed-shared-storage.md`). nostrdb is only the *mechanism* —
 //! register a root with [`Ndb::add_team_root`] and it auto-unwraps that channel's
-//! kind-1081 envelopes — while *joining* (which roots to register, persisting
-//! them, and re-registering on boot) is app **policy**, which lives here.
+//! kind-1081 envelopes — while *joining* (which roots to register, and re-register
+//! on boot) is app **policy**, which lives here.
 //!
-//! Roots are persisted per account (registered keys don't survive a restart, so
-//! the app re-registers them each boot, mirroring `add_key` for account keys) and
-//! accepted from incoming kind-1082 key-shares. A new member is added by
-//! gift-wrapping them a `1082`; nostrdb unwraps the `1059` to the `1082` rumor and
-//! the app reads it with [`enostr::sns::parse_keyshare`], then — per the current
-//! auto-accept policy — registers and persists the root.
-
-use std::collections::HashMap;
-use std::path::PathBuf;
+//! The roster is not stored on disk: it *already* lives in nostrdb. A member is
+//! added by gift-wrapping them a kind-1082 key-share, and nostrdb unwraps the
+//! `1059` into a durable, queryable `1082` rumor. [`teams_from_ndb`] reads those
+//! rumors back — so joined boards survive a restart (the rumors persist) and ride
+//! the account's NIP-59 inbox across devices, with no per-device config file. The
+//! `team_root`s themselves are ephemeral in nostrdb (registered keys don't survive
+//! a restart), so [`register_teams`] re-registers the derived roster each boot,
+//! mirroring `add_key` for account keys.
 
 use enostr::Pubkey;
-use enostr::sns::KeyShare;
-use nostrdb::{Ndb, Transaction};
-use notedeck::{DataPath, DataPathType};
-use serde::{Deserialize, Serialize};
+use nostrdb::{Filter, Ndb, Transaction};
 
 /// One shared board the account has joined: the channel secret plus which board
-/// coordinate it unlocks. Persisted in `headway-teams.json` and re-registered
-/// with nostrdb on boot.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// coordinate it unlocks. Derived from the account's kind-1082 key-share rumors
+/// (see [`teams_from_ndb`]) and re-registered with nostrdb on boot.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Team {
     /// Hex of the 32-byte `team_root` secret — the shared channel key every
     /// member holds.
@@ -34,7 +30,6 @@ pub struct Team {
     pub board_addr: String,
     /// Rotation generation, if the key-share named one (see *Rotation* in the SNS
     /// doc). `None` for a first-generation share.
-    #[serde(default)]
     pub epoch: Option<u32>,
 }
 
@@ -61,37 +56,69 @@ impl Team {
     }
 }
 
-/// The file holding each account's joined shared boards: a JSON map of pubkey-hex
-/// → the account's [`Team`]s, under the app's settings dir. One file for all
-/// accounts, mirroring `headway-boards.json`.
-fn teams_path(path: &DataPath) -> PathBuf {
-    path.path(DataPathType::Setting).join("headway-teams.json")
+/// Filter for unwrapped SNS key-share rumors (kind-1082) — the shares nostrdb has
+/// peeled out of gift-wraps addressed to one of our account keys. The roster is
+/// derived from these (see [`teams_from_ndb`]) and the app subscribes to the same
+/// filter to notice new joins live.
+pub fn keyshare_filter() -> Filter {
+    Filter::new()
+        .kinds([enostr::sns::KEYSHARE_KIND as u64])
+        .limit(500)
+        .build()
 }
 
-/// The shared boards `author` has joined, if any were saved.
-pub fn load_teams(path: &DataPath, author: &Pubkey) -> Vec<Team> {
-    let Ok(data) = std::fs::read_to_string(teams_path(path)) else {
+/// The shared boards `author` has joined, reconstructed from nostrdb.
+///
+/// The roster lives in the db, not on disk: every joined board arrived as a
+/// kind-1082 key-share gift-wrapped to the account, and nostrdb unwrapped it into
+/// a durable `1082` rumor. We query those rumors, keep the ones addressed to
+/// `author` (nostrdb records the gift-wrap recipient on the rumor), and read each
+/// one's `team_root` / `a` / `epoch` tags via [`enostr::sns::parse_keyshare`] — the
+/// same tag parser the app's live accept path uses, so both agree on the 1082 wire
+/// format (notably that a 64-hex `team_root` is an id element, not a string). Thus
+/// membership survives restarts and rides the account's NIP-59 inbox across devices
+/// with no config file. Shares that name no board are dropped (unfoldable); exact
+/// `(team_root, board_addr)` duplicates are collapsed.
+///
+/// **Accept policy.** Returning a share here *is* accepting it. Today that's
+/// auto-accept: any `1082` nostrdb unwrapped for us joins its board (the SNS doc
+/// lists auto-accept as a valid policy, and there is no join UI yet). A future
+/// user-prompt / spam-guard policy (headway#fox-allow-violin) filters exactly
+/// here; everything downstream (registration, re-register-on-boot, sealing) is
+/// unchanged whether the accept was automatic or confirmed.
+pub fn teams_from_ndb(ndb: &Ndb, author: &Pubkey) -> Vec<Team> {
+    let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
-    let map: HashMap<String, Vec<Team>> = serde_json::from_str(&data).unwrap_or_default();
-    map.get(&author.hex()).cloned().unwrap_or_default()
-}
-
-/// Persist `author`'s joined boards, merging into the existing map so other
-/// accounts' memberships are preserved. Best-effort: a write failure is non-fatal.
-fn save_teams(path: &DataPath, author: &Pubkey, teams: &[Team]) {
-    let file = teams_path(path);
-    let mut map: HashMap<String, Vec<Team>> = std::fs::read_to_string(&file)
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default();
-    map.insert(author.hex(), teams.to_vec());
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    let Ok(results) = ndb.query(&txn, &[keyshare_filter()], 500) else {
+        return Vec::new();
+    };
+    let mut teams: Vec<Team> = Vec::new();
+    for res in results {
+        // A `1082` unwrapped for another local account isn't ours to join.
+        if res.note.rumor_receiver_pubkey() != Some(author.bytes()) {
+            continue;
+        }
+        let Some(share) = enostr::sns::parse_keyshare(&res.note) else {
+            continue;
+        };
+        // A share must name the board its root unlocks, or we can't fold it later.
+        let Some(board_addr) = share.board_addr else {
+            continue;
+        };
+        let team = Team {
+            team_root: hex::encode(share.team_root),
+            board_addr,
+            epoch: share.epoch,
+        };
+        if !teams
+            .iter()
+            .any(|t| t.team_root == team.team_root && t.board_addr == team.board_addr)
+        {
+            teams.push(team);
+        }
     }
-    if let Ok(json) = serde_json::to_string_pretty(&map) {
-        let _ = std::fs::write(&file, json);
-    }
+    teams
 }
 
 /// Register every joined `team_root` with nostrdb so it auto-unwraps that
@@ -111,130 +138,193 @@ pub fn register_teams(ndb: &Ndb, teams: &[Team]) {
     }
 }
 
-/// Accept an incoming kind-1082 key-share under the current policy, returning the
-/// [`Team`] if it was newly joined (`None` if it names no board, is already
-/// joined, or its root is unusable).
-///
-/// **Policy.** This auto-accepts: any `1082` nostrdb unwrapped for us (it was
-/// gift-wrapped to our key) registers and persists its root with no prompt. The
-/// SNS doc lists auto-accept as a valid app policy, and there is no join UI yet.
-/// A future update will gate acceptance on a user prompt ("join shared board from
-/// <sharer>?"); that decision belongs exactly here, before [`Ndb::add_team_root`]
-/// and [`save_teams`] — everything downstream (registration, persistence,
-/// re-register-on-boot) is unchanged whether the accept was automatic or
-/// confirmed.
-pub fn accept_keyshare(
-    path: &DataPath,
-    author: &Pubkey,
-    ndb: &Ndb,
-    share: &KeyShare,
-) -> Option<Team> {
-    // A share must name the board its root unlocks, or we can't fold it later.
-    let board_addr = share.board_addr.clone()?;
-    let team = Team {
-        team_root: hex::encode(share.team_root),
-        board_addr,
-        epoch: share.epoch,
-    };
-
-    let mut teams = load_teams(path, author);
-    if teams
-        .iter()
-        .any(|t| t.team_root == team.team_root && t.board_addr == team.board_addr)
-    {
-        return None; // already joined
-    }
-
-    // (Future accept-policy prompt gates here — see the doc comment.)
-    ndb.add_team_root(&share.team_root);
-    if let Ok(txn) = Transaction::new(ndb) {
-        ndb.process_sns(&txn);
-    }
-    teams.push(team.clone());
-    save_teams(path, author, &teams);
-    Some(team)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use enostr::FullKeypair;
-    use enostr::sns::KeyShare;
-    use nostrdb::Config;
+    use nostr::key::PublicKey;
+    use nostr::nips::nip44;
+    use nostr::secp256k1::rand::rngs::OsRng;
+    use nostrdb::{Config, NoteBuilder};
+    use std::time::{Duration, Instant};
 
-    fn tmp_datapath() -> (tempfile::TempDir, DataPath) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = DataPath::new(dir.path());
-        (dir, path)
-    }
-
-    fn test_root() -> [u8; 32] {
+    fn test_root(seed: u8) -> [u8; 32] {
         let mut root = [0u8; 32];
         root[0] = 0x11;
-        root[31] = 0x22;
+        root[31] = seed;
         root
     }
 
+    fn ndb() -> (tempfile::TempDir, Ndb) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        (dir, ndb)
+    }
+
+    /// Build a kind-1082 key-share rumor (all notes via nostrdb [`NoteBuilder`]),
+    /// NIP-59 seal + gift-wrap it to `recipient`, and return the kind-1059 giftwrap
+    /// JSON — what a sharer publishes and nostrdb unwraps back into a queryable
+    /// `1082` rumor. Mirrors the app's real inbound path so the receiver filter and
+    /// tag parsing are exercised end to end. Pass `board_addr = None` for a
+    /// (malformed) share that names no board.
+    fn gift_wrapped_keyshare(
+        sender: &FullKeypair,
+        recipient: &Pubkey,
+        root: &[u8; 32],
+        board_addr: Option<&str>,
+        epoch: Option<u32>,
+    ) -> String {
+        let mut rumor = NoteBuilder::new()
+            .kind(enostr::sns::KEYSHARE_KIND)
+            .content("")
+            .start_tag()
+            .tag_str("team_root")
+            .tag_str(&hex::encode(root));
+        if let Some(addr) = board_addr {
+            rumor = rumor.start_tag().tag_str("a").tag_str(addr);
+        }
+        if let Some(epoch) = epoch {
+            rumor = rumor
+                .start_tag()
+                .tag_str("epoch")
+                .tag_str(&epoch.to_string());
+        }
+        let rumor_json = rumor
+            .sign(&sender.secret_key.secret_bytes())
+            .build()
+            .expect("rumor")
+            .json()
+            .expect("rumor json");
+
+        let recipient_pk = PublicKey::from_slice(recipient.bytes()).expect("recipient pk");
+        let mut rng = OsRng;
+        // NIP-44 seals the rumor to the recipient, then a random wrap key seals the
+        // kind-13 seal into the 1059 (encryption only — the notes are NoteBuilder).
+        let encrypted_rumor = nip44::encrypt_with_rng(
+            &mut rng,
+            &sender.secret_key,
+            &recipient_pk,
+            &rumor_json,
+            nip44::Version::V2,
+        )
+        .expect("encrypt rumor");
+        let seal_json = NoteBuilder::new()
+            .kind(13)
+            .content(&encrypted_rumor)
+            .sign(&sender.secret_key.secret_bytes())
+            .build()
+            .expect("seal")
+            .json()
+            .expect("seal json");
+        let wrap_keys = FullKeypair::generate();
+        let encrypted_seal = nip44::encrypt_with_rng(
+            &mut rng,
+            &wrap_keys.secret_key,
+            &recipient_pk,
+            &seal_json,
+            nip44::Version::V2,
+        )
+        .expect("encrypt seal");
+        NoteBuilder::new()
+            .kind(1059)
+            .content(&encrypted_seal)
+            .start_tag()
+            .tag_str("p")
+            .tag_str(&recipient.hex())
+            .sign(&wrap_keys.secret_key.secret_bytes())
+            .build()
+            .expect("giftwrap")
+            .json()
+            .expect("giftwrap json")
+    }
+
+    fn ingest(ndb: &Ndb, giftwrap_json: &str) {
+        ndb.process_event(&format!("[\"EVENT\",\"_gw\",{giftwrap_json}]"))
+            .expect("ingest giftwrap");
+    }
+
+    /// Poll the (async) roster until it has at least `n` teams, or time out.
+    fn wait_teams(ndb: &Ndb, author: &Pubkey, n: usize) -> Vec<Team> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let teams = teams_from_ndb(ndb, author);
+            if teams.len() >= n {
+                return teams;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "roster never reached {n} team(s)"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
-    fn accept_persists_and_dedupes() {
-        let (_dir, path) = tmp_datapath();
-        let ndb_dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &Config::new()).unwrap();
-        let author = FullKeypair::generate().pubkey;
+    fn reads_gift_wrapped_share_for_recipient_only() {
+        let (_dir, ndb) = ndb();
+        let author = FullKeypair::generate();
+        let other = FullKeypair::generate();
+        let sender = FullKeypair::generate();
+        // nostrdb only unwraps a 1059 addressed to a *registered* account key.
+        ndb.add_key(&author.secret_key.secret_bytes());
 
-        let share = KeyShare {
-            team_root: test_root(),
-            board_addr: Some("30619:owner:headway".to_string()),
-            epoch: Some(1),
-        };
+        let root = test_root(0x22);
+        let board_addr = "30619:owner:headway";
+        ingest(
+            &ndb,
+            &gift_wrapped_keyshare(&sender, &author.pubkey, &root, Some(board_addr), Some(2)),
+        );
 
-        // First accept joins and persists.
-        let joined = accept_keyshare(&path, &author, &ndb, &share).expect("joined");
-        assert_eq!(joined.board_addr, "30619:owner:headway");
-        assert_eq!(joined.root_bytes(), Some(test_root()));
-        let teams = load_teams(&path, &author);
+        // The roster is reconstructed from the unwrapped 1082 rumor — no disk.
+        let teams = wait_teams(&ndb, &author.pubkey, 1);
         assert_eq!(teams.len(), 1);
-        assert_eq!(teams[0], joined);
+        assert_eq!(teams[0].board_addr, board_addr);
+        assert_eq!(teams[0].root_bytes(), Some(root));
+        assert_eq!(teams[0].epoch, Some(2));
 
-        // Re-accepting the same share is a no-op (already joined).
-        assert!(accept_keyshare(&path, &author, &ndb, &share).is_none());
-        assert_eq!(load_teams(&path, &author).len(), 1);
+        // The share was gift-wrapped to `author`; it never counts as `other`'s.
+        assert!(teams_from_ndb(&ndb, &other.pubkey).is_empty());
     }
 
     #[test]
-    fn accept_requires_a_board() {
-        let (_dir, path) = tmp_datapath();
-        let ndb_dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &Config::new()).unwrap();
-        let author = FullKeypair::generate().pubkey;
+    fn requires_a_board_and_lists_each_joined_board() {
+        let (_dir, ndb) = ndb();
+        let author = FullKeypair::generate();
+        let sender = FullKeypair::generate();
+        ndb.add_key(&author.secret_key.secret_bytes());
 
-        // A share that names no board can't be folded later, so it isn't joined.
-        let share = KeyShare {
-            team_root: test_root(),
-            board_addr: None,
-            epoch: None,
-        };
-        assert!(accept_keyshare(&path, &author, &ndb, &share).is_none());
-        assert!(load_teams(&path, &author).is_empty());
-    }
+        // A share naming no board can't be folded later, so it's dropped.
+        ingest(
+            &ndb,
+            &gift_wrapped_keyshare(&sender, &author.pubkey, &test_root(0x01), None, None),
+        );
+        // Two distinct boards each join.
+        ingest(
+            &ndb,
+            &gift_wrapped_keyshare(
+                &sender,
+                &author.pubkey,
+                &test_root(0x02),
+                Some("30619:owner:alpha"),
+                None,
+            ),
+        );
+        ingest(
+            &ndb,
+            &gift_wrapped_keyshare(
+                &sender,
+                &author.pubkey,
+                &test_root(0x03),
+                Some("30619:owner:beta"),
+                None,
+            ),
+        );
 
-    #[test]
-    fn teams_are_per_account() {
-        let (_dir, path) = tmp_datapath();
-        let ndb_dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &Config::new()).unwrap();
-        let alice = FullKeypair::generate().pubkey;
-        let bob = FullKeypair::generate().pubkey;
-
-        let share = KeyShare {
-            team_root: test_root(),
-            board_addr: Some("30619:owner:headway".to_string()),
-            epoch: None,
-        };
-        accept_keyshare(&path, &alice, &ndb, &share).expect("alice joins");
-
-        // Bob's membership list is independent and empty.
-        assert_eq!(load_teams(&path, &alice).len(), 1);
-        assert!(load_teams(&path, &bob).is_empty());
+        let teams = wait_teams(&ndb, &author.pubkey, 2);
+        // Exactly the two board-bearing shares — the board-less one is excluded.
+        assert_eq!(teams.len(), 2);
+        let mut boards: Vec<&str> = teams.iter().map(|t| t.board_addr.as_str()).collect();
+        boards.sort();
+        assert_eq!(boards, vec!["30619:owner:alpha", "30619:owner:beta"]);
     }
 }

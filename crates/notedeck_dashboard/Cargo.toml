@@ -7,7 +7,7 @@ version.workspace = true
 rustc-hash = "2.1.1"
 
 egui = { workspace = true }
-enostr = { workspace = true }
+nostrdb_net = { workspace = true }
 nostrdb = { workspace = true }
 chrono = { workspace = true }
 crossbeam-channel = { workspace = true }
@@ -19,6 +19,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 chrono = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
+# Tests still use enostr::FullKeypair (Keypair family not yet collapsed onto
+# nostrdb_net; that's a later phase-4 sub-unit). Library code is fully off enostr.
 enostr = { workspace = true }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
 notedeck_testing = { workspace = true }
