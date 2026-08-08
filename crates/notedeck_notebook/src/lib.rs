@@ -667,13 +667,22 @@ impl Default for Notebook {
 }
 
 impl notedeck::App for Notebook {
-    /// Contribute the longform (kind 30023) renderer so a `nostr:naddr…`
-    /// reference — inline in a text node, or as a note-embed node — draws a
-    /// preview of the note. Kind-1 (`nevent`/`note`) references are already
-    /// covered by the columns app's `NoteKindRenderer`; longform is the
-    /// notebook's own document type and had no renderer, so it registers one.
+    /// Contribute the notebook's inline renderers:
+    /// - the **longform** (kind 30023) renderer, so a `nostr:naddr…` reference —
+    ///   inline in a text node, or as a note-embed node — previews the note.
+    ///   Kind-1 (`nevent`/`note`) references are already covered by the columns
+    ///   app's `NoteKindRenderer`; longform is the notebook's own document type.
+    /// - the **node** (kind 1606) renderer, so a `notebook:<word-id>` (or `nostr:`)
+    ///   reference to a canvas node draws a live chip/card of its current content.
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
-        vec![Box::new(render::LongformKindRenderer)]
+        // The node renderer shares the app's one canvas cache (cloned in, like
+        // headway's issue renderer), so a node referenced by word id or `nostr:`
+        // ref folds the same realtime canvas the foreground UI and the reference
+        // parser read — a live edit shows on the chip, not just the open canvas.
+        vec![
+            Box::new(render::LongformKindRenderer),
+            Box::new(render::NotebookNodeRenderer::new(self.cache.clone())),
+        ]
     }
 
     /// Contribute the `notebook:<word-id>` reference parser so a node reference
