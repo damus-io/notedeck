@@ -786,34 +786,43 @@ fn save_board_pref(path: &DataPath, author: &Pubkey, board_id: &str) {
 // registry. These are read-only and self-contained, unlike the editable board.
 // ---------------------------------------------------------------------------
 
-/// One account's cached headway state within [`BoardCache`]: a live subscription
-/// to that author's events plus the long-lived [`BoardReducer`] they fold into.
+/// notedeck_headway's [`notedeck::Reducer`] adapter over the pure-data
+/// [`BoardReducer`], so a generic [`notedeck::RealtimeCache`] can drive the board
+/// fold without the `headway` data crate depending on the `notedeck` app
+/// framework (the orphan rule forbids impl'ing a notedeck trait for a headway
+/// type here, and the layering shouldn't invert anyway). A newtype whose trait
+/// methods forward straight to the existing free functions ([`event::fold_board`]
+/// / [`event::reduce_delta`]) and [`BoardReducer::finalize`].
+///
 /// The reducer holds *all* of the author's boards ([`event::fold_board`] folds an
-/// account's whole history), so one entry backs the foreground board and every
-/// inline reference to any of that author's boards.
-#[derive(Default)]
-struct CachedAuthor {
-    reducer: Option<BoardReducer>,
-    sub: Option<Subscription>,
-    /// Memoized [`BoardReducer::finalize`] of `reducer`, rebuilt lazily on the
-    /// next read after a fold changed the reducer (see [`BoardCache::advance`]).
-    /// `finalize` walks every placement into an owned `Vec<BoardView>` (cloning
-    /// each card); without this every inline reference re-walked it *twice* a
-    /// frame — once to resolve the ref, once to render the chip — so N on-screen
-    /// references cost 2·N finalizes per frame. Reads borrow this and extract just
-    /// the owned data they need ([`BoardCache::with_boards`]).
-    finalized: Option<Vec<BoardView>>,
-    /// Keys the subscription drained but that weren't yet visible under the
-    /// read txn they were polled with (their note committed after that txn's
-    /// snapshot — see [`event::reduce_delta`]). Retried on the next advance with
-    /// a fresher snapshot; without this they'd be lost until a full re-seed,
-    /// which is why a cross-device edit could go missing until an app restart.
-    pending: Vec<NoteKey>,
+/// account's whole history), so one cache entry backs the foreground board and
+/// every inline reference to any of that author's boards.
+struct HeadwayReducer(BoardReducer);
+
+impl notedeck::Reducer for HeadwayReducer {
+    type View = BoardView;
+
+    fn filter(author: &Pubkey) -> Filter {
+        event::headway_filter(author)
+    }
+
+    fn fold(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Self> {
+        event::fold_board(ndb, txn, author).map(HeadwayReducer)
+    }
+
+    fn reduce_delta(&mut self, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) -> Vec<NoteKey> {
+        event::reduce_delta(&mut self.0, ndb, txn, keys)
+    }
+
+    fn finalize(&self) -> Vec<BoardView> {
+        self.0.finalize()
+    }
 }
 
-/// The single board-data engine for the Headway app: one subscription + folded
-/// [`BoardReducer`] per account, shared (behind `Rc<RefCell<…>>`) between the app
-/// and everything it registers for inline display.
+/// The single board-data engine for the Headway app: a per-account
+/// [`notedeck::RealtimeCache`] over the [`HeadwayReducer`], plus the
+/// headway-specific shared-board leg. Shared (behind `Rc<RefCell<…>>`) between the
+/// app and everything it registers for inline display.
 ///
 /// The foreground board and every inline widget — the
 /// [`KindRenderer`](notedeck::KindRenderer)s and the
@@ -822,32 +831,24 @@ struct CachedAuthor {
 /// per-frame [`poll`](Self::poll) folds in is immediately visible to an inline
 /// chip drawn in another app, not just to the open board.
 ///
-/// Keyed by author, not by board: [`event::fold_board`] folds an account's whole
-/// board history into one reducer, so a single entry serves all of that author's
-/// boards with no per-board refold. Driven by `&Ndb` (the
-/// [`KindRenderer`](notedeck::KindRenderer) render path has no `&mut Ndb`), so a
-/// chip seeds and folds on render even when Headway isn't the foreground surface.
-/// First touch folds the history once to seed; later touches fold in only the
-/// freshly-arrived notes ([`event::reduce_delta`]) — an incremental step, sound
-/// because the fold is commutative and idempotent. Subscriptions live for the
-/// app's lifetime; the touched-account set is tiny, so there's no eviction.
+/// The author-keyed leg ([`authors`](Self::authors)) is the reusable
+/// subscribe/seed/delta/memoize skeleton, generic in notedeck; the shared-board
+/// leg ([`shared`](Self::shared)) stays here because it folds by board
+/// *coordinate* (multi-writer), not by author.
 #[derive(Default)]
 struct BoardCache {
-    authors: HashMap<Pubkey, CachedAuthor>,
+    /// Per-account board fold: [`event::fold_board`] folds an account's whole
+    /// board history into one reducer, so a single entry serves all of that
+    /// author's boards with no per-board refold. Seed-once + delta, the memoized
+    /// finalize, and the post-snapshot deferral are all owned by the generic
+    /// cache; [`HeadwayReducer`] supplies only the fold itself.
+    authors: notedeck::RealtimeCache<HeadwayReducer>,
     /// Joined shared boards, keyed by board coordinate (`30619:owner:slug`). Unlike
     /// [`authors`](Self::authors) these are multi-writer, folded by *coordinate*
     /// via [`event::fold_shared_board`] so every member's events are gathered, and
     /// re-folded whenever a new kind-1081 envelope for the channel arrives (every
     /// shared edit is one, so the envelope stream is the universal change signal).
     shared: HashMap<String, SharedBoard>,
-    /// Test-only count of full-history folds, to assert later frames fold deltas
-    /// rather than re-walking the whole log.
-    #[cfg(test)]
-    full_reloads: u32,
-    /// Test-only count of [`BoardReducer::finalize`] calls, to assert repeated
-    /// reads within a frame reuse the memoized boards rather than re-finalizing.
-    #[cfg(test)]
-    finalizes: u32,
 }
 
 /// One joined shared board within [`BoardCache`]: the multi-writer reducer folded
@@ -856,7 +857,9 @@ struct BoardCache {
 #[derive(Default)]
 struct SharedBoard {
     reducer: Option<BoardReducer>,
-    /// Memoized finalize of `reducer` (see [`CachedAuthor::finalized`]).
+    /// Memoized finalize of `reducer` — the shared-board analogue of the memo the
+    /// generic [`RealtimeCache`](notedeck::RealtimeCache) keeps for the per-author
+    /// leg, rebuilt lazily after a re-fold.
     finalized: Option<Vec<BoardView>>,
     /// Subscription to `{kinds:[1081], authors:[team_pubkey]}` — every edit to the
     /// board is published as one such envelope, so a poll reporting new notes means
@@ -864,101 +867,25 @@ struct SharedBoard {
     sub: Option<Subscription>,
 }
 
-/// The outcome of advancing an author's reducer one step (see
-/// [`BoardCache::poll`]).
-#[derive(Default)]
-struct PollResponse {
-    /// The reducer was seeded or had new notes folded in this call, so the caller
-    /// schedules follow-up repaints (keep waking while edits stream in).
-    changed: bool,
-    /// Note keys folded in *incrementally* this call — empty on a seed (those are
-    /// historical, not new ingests) and on a no-op. The caller fans these out to
-    /// the account's private relays (see [`notedeck::fan_out_unseen_notes`]).
-    fresh: Vec<NoteKey>,
-}
-
 impl BoardCache {
-    /// Ensure a live subscription + seeded reducer for `author` and fold in any
-    /// freshly-arrived notes, reporting what changed. The shared primitive behind
-    /// [`poll`](Self::poll) and [`reducer`](Self::reducer): the app's per-frame
-    /// pump and a chip's lazy fold-on-render both flow through it, so a board is
-    /// seeded once and thereafter only ever folds deltas.
-    #[profiling::function]
-    fn advance(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> PollResponse {
-        let entry = self.authors.entry(*author).or_default();
-        if entry.sub.is_none() {
-            entry.sub = ndb.subscribe(&[event::headway_filter(author)]).ok();
-        }
-        let (changed, fresh) = match entry.sub {
-            // No subscription: fold the whole history each frame so edits still show.
-            None => {
-                entry.reducer = event::fold_board(ndb, txn, author);
-                (true, Vec::new())
-            }
-            Some(sub) => {
-                let polled = ndb.poll_for_notes(sub, 64);
-                if entry.reducer.is_none() {
-                    // First touch (a fresh subscription only reports *future*
-                    // ingests): fold the existing history once to seed. Notes
-                    // just drained by `polled` may postdate this seed's snapshot,
-                    // so carry them into `pending` to fold in next advance rather
-                    // than lose them.
-                    entry.reducer = event::fold_board(ndb, txn, author);
-                    entry.pending = polled;
-                    (true, Vec::new())
-                } else if polled.is_empty() && entry.pending.is_empty() {
-                    (false, Vec::new())
-                } else if let Some(reducer) = entry.reducer.as_mut() {
-                    // Incremental: fold the new notes (plus any that a staler
-                    // snapshot couldn't yet see) into the live reducer, and carry
-                    // forward the ones still not visible under this txn.
-                    let mut batch = std::mem::take(&mut entry.pending);
-                    batch.extend_from_slice(&polled);
-                    let deferred = event::reduce_delta(reducer, ndb, txn, &batch);
-                    let fresh: Vec<NoteKey> = batch
-                        .into_iter()
-                        .filter(|k| !deferred.contains(k))
-                        .collect();
-                    entry.pending = deferred;
-                    // Everything deferred (nothing folded) reads as a no-op: keep
-                    // waiting, and crucially don't count it as a full re-seed.
-                    (!fresh.is_empty(), fresh)
-                } else {
-                    (false, Vec::new())
-                }
-            }
-        };
-        // A fold happened (seed or delta), so the memoized finalize is stale; drop
-        // it and let the next read rebuild it once (see `with_boards`).
-        if changed {
-            entry.finalized = None;
-        }
-        #[cfg(test)]
-        if changed && fresh.is_empty() {
-            // A full seed fold, as opposed to an incremental delta (non-empty
-            // `fresh`) or a no-op (`!changed`).
-            self.full_reloads += 1;
-        }
-        PollResponse { changed, fresh }
-    }
-
     /// Advance `author`'s reducer and report the change — the per-frame pump
-    /// called from [`update`](App::update). Fan out [`fresh`](PollResponse::fresh)
-    /// and wake on [`changed`](PollResponse::changed).
-    fn poll(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> PollResponse {
-        self.advance(ndb, txn, author)
+    /// called from [`update`](App::update). Fan out
+    /// [`fresh`](notedeck::PollResponse::fresh) and wake on
+    /// [`changed`](notedeck::PollResponse::changed). Thin delegate to the generic
+    /// [`RealtimeCache`](notedeck::RealtimeCache), which owns the
+    /// subscribe/seed/delta/pending discipline; a chip's lazy fold-on-render goes
+    /// through [`with_boards`](Self::with_boards).
+    fn poll(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> notedeck::PollResponse {
+        self.authors.poll(ndb, txn, author)
     }
 
     /// Advance `author`'s reducer, (re)finalize it *at most once per fold*, and run
-    /// `read` against the memoized [`BoardView`]s — the single place a finalize is
-    /// spent. Returns `None` only when the reducer hasn't seeded yet.
-    ///
-    /// Every per-frame inline read (resolve a ref, render a chip) flows through
-    /// here, so on a steady-state frame the first read finalizes and the rest reuse
-    /// the cached [`finalized`](CachedAuthor::finalized) vec. `read` extracts owned
-    /// data from the borrowed slice so the caller's cache borrow can drop before it
-    /// draws.
-    #[profiling::function]
+    /// `read` against the memoized [`BoardView`]s. `None` only when the reducer
+    /// hasn't seeded yet. Delegates to
+    /// [`RealtimeCache::with_views`](notedeck::RealtimeCache::with_views): the
+    /// foreground board and every inline widget resolve through it, so on a steady
+    /// frame the first read finalizes and the rest reuse the memo. `read` extracts
+    /// owned data from the borrowed slice so the cache borrow drops before drawing.
     fn with_boards<R>(
         &mut self,
         ndb: &Ndb,
@@ -966,17 +893,7 @@ impl BoardCache {
         author: &Pubkey,
         read: impl FnOnce(&[BoardView]) -> R,
     ) -> Option<R> {
-        self.advance(ndb, txn, author);
-        let entry = self.authors.get_mut(author)?;
-        if entry.finalized.is_none() {
-            entry.finalized = Some(entry.reducer.as_ref()?.finalize());
-            #[cfg(test)]
-            {
-                self.finalizes += 1;
-            }
-        }
-        let entry = self.authors.get(author)?;
-        Some(read(entry.finalized.as_ref()?))
+        self.authors.with_views(ndb, txn, author, read)
     }
 
     /// Fold and pick a single board (`board_id`) authored by `author`, seeding the
@@ -1651,7 +1568,7 @@ mod tests {
         // the last one ingested: waiting for it to appear means every demo event
         // has folded in too, with no quiescence guess.
         t.wait_boards(|bs| bs.iter().any(|b| b.id == "work")).await;
-        let folds = t.cache.full_reloads;
+        let folds = t.cache.authors.stats().full_reloads;
 
         // Both boards are discoverable from the one reducer.
         let boards = t.boards();
@@ -1669,7 +1586,8 @@ mod tests {
         assert_eq!(view.title, "Work");
         assert_eq!(total_cards(&view), 0, "fresh board has no cards");
         assert_eq!(
-            t.cache.full_reloads, folds,
+            t.cache.authors.stats().full_reloads,
+            folds,
             "reading another board must not trigger a full re-fold"
         );
     }
@@ -1699,7 +1617,8 @@ mod tests {
 
         // Seeding does exactly one full fold; everything since is incremental.
         assert_eq!(
-            t.cache.full_reloads, 1,
+            t.cache.authors.stats().full_reloads,
+            1,
             "seeding should fold the history once"
         );
 
@@ -1723,7 +1642,8 @@ mod tests {
         t.wait(|v| v.columns[1].cards.len() == 3).await;
 
         assert_eq!(
-            t.cache.full_reloads, 1,
+            t.cache.authors.stats().full_reloads,
+            1,
             "the edit triggered a full re-fold instead of a delta"
         );
     }
@@ -1761,7 +1681,8 @@ mod tests {
         // Exactly one full fold — the initial empty seed; every event since
         // (the whole seeded board) folded in incrementally as deltas.
         assert_eq!(
-            cache.full_reloads, 1,
+            cache.authors.stats().full_reloads,
+            1,
             "board cache re-walked the history instead of folding deltas"
         );
     }
@@ -1801,7 +1722,7 @@ mod tests {
         // A steady frame with no new notes: many reads (what N inline references
         // cost — resolve then render each) reuse the memo built while materialising,
         // finalizing zero more times.
-        let steady = cache.finalizes;
+        let steady = cache.authors.stats().finalizes;
         let txn = Transaction::new(&ndb).unwrap();
         for _ in 0..20 {
             cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
@@ -1809,16 +1730,16 @@ mod tests {
         }
         drop(txn);
         assert_eq!(
-            cache.finalizes - steady,
+            cache.authors.stats().finalizes - steady,
             0,
             "reads with no intervening fold re-finalized instead of reusing the memo"
         );
 
-        // A fold invalidates the memo (see `advance`); the next frame's many reads
-        // then share *exactly one* finalize. Simulate the invalidation a freshly
-        // ingested note performs, then read many times.
-        cache.authors.get_mut(&kp.pubkey).unwrap().finalized = None;
-        let after_fold = cache.finalizes;
+        // A fold invalidates the memo (see `RealtimeCache::advance`); the next
+        // frame's many reads then share *exactly one* finalize. Simulate the
+        // invalidation a freshly ingested note performs, then read many times.
+        cache.authors.invalidate(&kp.pubkey);
+        let after_fold = cache.authors.stats().finalizes;
         let txn = Transaction::new(&ndb).unwrap();
         for _ in 0..20 {
             cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
@@ -1826,7 +1747,7 @@ mod tests {
         }
         drop(txn);
         assert_eq!(
-            cache.finalizes - after_fold,
+            cache.authors.stats().finalizes - after_fold,
             1,
             "reads after a fold didn't share a single finalize"
         );
@@ -1857,9 +1778,8 @@ mod tests {
         let has_board = |cache: &BoardCache, id: &str| {
             cache
                 .authors
-                .get(&kp.pubkey)
-                .and_then(|a| a.reducer.as_ref())
-                .is_some_and(|r| r.finalize().iter().any(|b| b.id == id))
+                .reducer(&kp.pubkey)
+                .is_some_and(|r| r.0.finalize().iter().any(|b| b.id == id))
         };
         let seed = |id: &str, title: &str| {
             store::seed_board(
@@ -1899,7 +1819,7 @@ mod tests {
             "beta isn't visible under the stale snapshot yet"
         );
         assert!(
-            !cache.authors[&kp.pubkey].pending.is_empty(),
+            cache.authors.pending_len(&kp.pubkey) > 0,
             "the undrained key is retained for retry, not dropped"
         );
 
@@ -1912,9 +1832,10 @@ mod tests {
             has_board(&cache, "beta"),
             "the retained delta folds in on the next, fresher advance"
         );
-        assert!(cache.authors[&kp.pubkey].pending.is_empty());
+        assert_eq!(cache.authors.pending_len(&kp.pubkey), 0);
         assert_eq!(
-            cache.full_reloads, 1,
+            cache.authors.stats().full_reloads,
+            1,
             "recovered by folding a delta, not by re-seeding the whole history"
         );
     }
