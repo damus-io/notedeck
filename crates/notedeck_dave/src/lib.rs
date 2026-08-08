@@ -12,6 +12,7 @@ mod notifications;
 mod path_normalize;
 pub(crate) mod path_utils;
 mod quaternion;
+pub mod reference;
 pub mod session;
 pub mod session_cache;
 pub mod session_discovery;
@@ -4404,6 +4405,19 @@ impl notedeck::App for Dave {
 
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> notedeck::TabNotifications {
         notedeck::TabNotifications::count(self.focus_queue.needs_input_count() as u32)
+    }
+
+    /// Contribute the `agentium:<word-id>` reference parser so a session reference
+    /// written inline in any note/comment/Dave-chat resolves to the session's
+    /// current kind-31988 state event (drawn by the session renderer). Shares the
+    /// app's one [`AgentiumSessionCache`](session_cache::AgentiumSessionCache) — cloning
+    /// the `Rc` in — so a session referenced by word id resolves off the same
+    /// realtime-pumped session fold the foreground reads, and a live update is
+    /// reflected in the resolution.
+    fn reference_parsers(&self) -> Vec<Box<dyn notedeck::ReferenceParser>> {
+        vec![Box::new(reference::AgentiumRefParser::new(
+            self.session_cache.clone(),
+        ))]
     }
 }
 
