@@ -13,6 +13,7 @@ mod path_normalize;
 pub(crate) mod path_utils;
 mod quaternion;
 pub mod session;
+pub mod session_cache;
 pub mod session_discovery;
 mod transport;
 
@@ -332,6 +333,11 @@ pub struct Dave {
     ai_mode: AiMode,
     /// Manages multiple chat sessions
     session_manager: SessionManager,
+    /// Realtime fold of the account's kind-31988 session state, shared (behind
+    /// `Rc<RefCell<…>>`) with the inline `agentium:` reference parser and session
+    /// renderer this app registers, so a chip drawn in a note/Dave-chat reads the
+    /// same live state as the open surface. Pumped every frame in [`Self::update`].
+    session_cache: std::rc::Rc<std::cell::RefCell<session_cache::AgentiumSessionCache>>,
     /// A 3d representation of dave.
     avatar: Option<DaveAvatar>,
     /// Shared tools available to all sessions
@@ -829,6 +835,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             available_backends,
             avatar,
             session_manager,
+            session_cache: std::rc::Rc::new(std::cell::RefCell::new(
+                session_cache::AgentiumSessionCache::default(),
+            )),
             tools: Arc::new(tools),
             model_config,
             show_session_list: false,
@@ -2292,6 +2301,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Skip the directory picker since we restored sessions
         self.active_overlay = DaveOverlay::None;
+    }
+
+    /// Advance the shared inline-session cache for the selected account so
+    /// `agentium:<word-id>` chips drawn in notes/Dave-chat read the latest folded
+    /// session state, requesting a repaint while state streams in.
+    ///
+    /// Read-only: Dave's PNS publish path (see [`Self::update`]) already syncs and
+    /// fans out session-state events, so this only *advances* the fold — it never
+    /// re-publishes, which would double-write. The cache is shared (cloned `Rc`)
+    /// into the reference parser and renderer, so the fold happens once per account.
+    #[profiling::function]
+    fn pump_session_cache(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        let author = *ctx.accounts.selected_account_pubkey();
+        let Ok(txn) = Transaction::new(ctx.ndb) else {
+            return;
+        };
+        let changed = self
+            .session_cache
+            .borrow_mut()
+            .poll(ctx.ndb, &txn, &author)
+            .changed;
+        if changed {
+            egui_ctx.request_repaint();
+        }
     }
 
     /// Poll for new kind-31988 session state events from the ndb subscription.
@@ -4121,6 +4154,9 @@ impl notedeck::App for Dave {
 
         // Poll for new session states from PNS-unwrapped relay events
         self.poll_session_state_events(ctx);
+
+        // Advance the shared inline-session cache backing `agentium:` chips.
+        self.pump_session_cache(ctx, egui_ctx);
 
         // Poll for spawn commands targeting this host
         self.poll_session_command_events(ctx);

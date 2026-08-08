@@ -219,9 +219,9 @@ fn load_session_messages_with_author(
                 // match it so a rebuild-from-ndb yields the identical transcript
                 // (see `process_conversation_notes` in notedeck_dave).
                 let pre_tokens = content.parse::<u64>().unwrap_or(0);
-                Some(Message::CompactionComplete(crate::messages::CompactionInfo {
-                    pre_tokens,
-                }))
+                Some(Message::CompactionComplete(
+                    crate::messages::CompactionInfo { pre_tokens },
+                ))
             }
             // Skip permission_response, progress, queue-operation, etc.
             _ => None,
@@ -242,7 +242,7 @@ fn load_session_messages_with_author(
 }
 
 /// A persisted session state from a kind-31988 event.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionState {
     pub claude_session_id: String,
     pub title: String,
@@ -843,9 +843,7 @@ mod tests {
                 Message::User(c) => ("user".to_string(), c.as_str().to_string()),
                 Message::Assistant(a) => ("assistant".to_string(), a.text().to_string()),
                 Message::ToolResponse(_) => ("tool".to_string(), String::new()),
-                Message::PermissionRequest(p) => {
-                    ("permission".to_string(), p.tool_name.clone())
-                }
+                Message::PermissionRequest(p) => ("permission".to_string(), p.tool_name.clone()),
                 Message::CompactionComplete(info) => {
                     ("compaction".to_string(), info.pre_tokens.to_string())
                 }
@@ -894,7 +892,15 @@ mod tests {
                 7,
                 &[("ms", &collide_ms)],
             ),
-            build_1988_event_json(&sk, session_id, "user", "and more", t, 3, &[("ms", &ms(900))]),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "user",
+                "and more",
+                t,
+                3,
+                &[("ms", &ms(900))],
+            ),
             // A compaction event must render (loader is a superset of the live
             // merge path) and stay permutation-invariant.
             build_1988_event_json(
