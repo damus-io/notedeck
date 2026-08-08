@@ -466,6 +466,16 @@ async fn run() -> Result<()> {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
             let view = load_board(&ndb, &author, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            // `add` mints a new card whose id we only learn by re-folding the
+            // board and finding the id that wasn't there before; snapshot the
+            // existing ids first so we can pick it out. Other edits act on a card
+            // the caller already named, so there's nothing new to surface.
+            let added = matches!(edit, Command::Add { .. });
+            let before: std::collections::HashSet<String> = if added {
+                event::all_cards(&view).map(|c| c.id.hex()).collect()
+            } else {
+                std::collections::HashSet::new()
+            };
             let action = build_action(&view, edit)?;
 
             let mut sink = Collect::default();
@@ -483,10 +493,36 @@ async fn run() -> Result<()> {
             }
             let n = sink.0.len();
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
-            println!(
-                "ok ({n} events){}",
-                nostrdb_net::relay::sync::offline_note(&relay)
-            );
+
+            // Surface the created card's ref so a scripted follow-up edit doesn't
+            // have to re-`show` to recover it. `apply` ingested locally, so a
+            // re-fold sees the new card — the one id absent from `before`.
+            let new_card = added
+                .then(|| load_board(&ndb, &author, &board))
+                .flatten()
+                .and_then(|after| {
+                    event::all_cards(&after)
+                        .find(|c| !before.contains(&c.id.hex()))
+                        .map(|c| (c.id.hex(), plain_ref(&after, &c.id)))
+                });
+
+            if as_json {
+                let mut obj = serde_json::json!({ "ok": true, "events": n });
+                if let Some((hex, card_ref)) = &new_card {
+                    obj["card"] = serde_json::Value::String(hex.clone());
+                    obj["ref"] = serde_json::Value::String(card_ref.clone());
+                }
+                println!("{obj}");
+            } else {
+                let ref_suffix = new_card
+                    .as_ref()
+                    .map(|(_, card_ref)| format!(" — {}", nostrdb_net::relay::sync::dim(card_ref)))
+                    .unwrap_or_default();
+                println!(
+                    "ok ({n} events){ref_suffix}{}",
+                    nostrdb_net::relay::sync::offline_note(&relay)
+                );
+            }
         }
     }
 
