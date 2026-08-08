@@ -3,7 +3,9 @@ mod error;
 mod filter;
 mod keypair;
 mod note;
-pub mod pns;
+// The NIP-PNS module now lives in `nostrdb_net`; re-export it so `enostr::pns`
+// still resolves for consumers (collapse-via-reexport).
+pub use nostrdb_net::pns;
 mod profile;
 mod pubkey;
 mod relay;
