@@ -11,6 +11,7 @@
 
 use crate::event::LongformNote;
 use egui::{Layout, RichText, ScrollArea, TextEdit};
+use enostr::Pubkey;
 use notedeck::{AppContext, ColorTheme, Localization};
 use notedeck_ui::context_menu::{PasteBehavior, input_context};
 
@@ -277,6 +278,9 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
 /// The full [`LongformNote`] stays in the sync cache; the app resolves it by
 /// [`d`](Self::d) only when a row is actually opened/renamed/deleted.
 pub(crate) struct VaultRow {
+    /// The note's author, half of the `(author, d)` coordinate a drag carries so
+    /// the drop can build the note's `nostr:naddr` (see [`VaultDrag`]).
+    pub author: Pubkey,
     /// The note's stable addressable `d`, the identity carried in every
     /// [`VaultAction`] so the app can look the full note back up.
     pub d: String,
@@ -285,6 +289,16 @@ pub(crate) struct VaultRow {
     pub title: String,
     /// The muted "edited …" subtitle, e.g. "edited 2h ago" (empty if unavailable).
     pub subtitle: String,
+}
+
+/// The payload a vault row carries while being dragged onto the canvas: the
+/// dragged note's coordinate, enough to build its `nostr:naddr` and drop a
+/// note-embed node on release. Stored via egui's typed drag-and-drop; the canvas
+/// drop target ([`crate::ui`]) reads it back out.
+#[derive(Clone)]
+pub(crate) struct VaultDrag {
+    pub author: Pubkey,
+    pub d: String,
 }
 
 /// Project the sync cache's notes into renderable [`VaultRow`]s, formatting each
@@ -296,6 +310,7 @@ pub(crate) fn vault_rows(i18n: &mut Localization, notes: &[LongformNote]) -> Vec
     notes
         .iter()
         .map(|note| VaultRow {
+            author: Pubkey::new(note.author),
             d: note.d.clone(),
             title: note.title.trim().to_owned(),
             subtitle: edited_subtitle(i18n, note.created_at, now),
@@ -471,6 +486,18 @@ fn note_menu_row_ui(
         &row.title
     };
     let resp = note_row_ui(ui, theme, label, &row.subtitle);
+
+    // Dragging a row onto the canvas drops a note-embed node referencing it: set
+    // the drag payload and trail a document chip from the cursor. Only the
+    // actively-dragged row clones its `d`, never the whole list per frame.
+    if resp.dragged() {
+        resp.dnd_set_drag_payload(VaultDrag {
+            author: row.author,
+            d: row.d.clone(),
+        });
+        drag_chip_ui(ui, theme, label);
+    }
+
     let action = resp
         .clicked()
         .then(|| VaultAction::Open { d: row.d.clone() });
@@ -602,6 +629,27 @@ fn note_delete_confirm_ui(ui: &egui::Ui, title: &str) -> DeleteConfirm {
     }
 }
 
+/// While a vault row is dragged onto the canvas, paint a compact document chip
+/// (icon + title) trailing the cursor, so the drag reads as carrying that note.
+/// Drawn in a foreground tooltip layer at the pointer; non-interactive so it never
+/// eats the drop.
+fn drag_chip_ui(ui: &egui::Ui, theme: &ColorTheme, title: &str) {
+    let Some(pos) = ui.ctx().pointer_interact_pos() else {
+        return;
+    };
+    egui::Area::new(egui::Id::new("notebook-vault-drag-chip"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(pos + egui::vec2(12.0, 8.0))
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            notedeck_ui::inline_chip(ui, theme, title, |ui, size| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                document_icon(ui.painter(), rect.center(), size, theme.text_muted);
+            });
+        });
+}
+
 /// One vault row: a full-width, left-aligned, rounded surface that highlights on
 /// hover, with a leading document icon, the title on top and a muted `subtitle`
 /// beneath (omitted when empty). Both lines elide to a single line. Painted with
@@ -624,7 +672,7 @@ fn note_row_ui(
     };
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), title_h + subtitle_h + pad.y * 2.0),
-        egui::Sense::click(),
+        egui::Sense::click_and_drag(),
     );
 
     if resp.hovered() {

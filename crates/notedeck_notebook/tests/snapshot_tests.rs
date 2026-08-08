@@ -542,6 +542,51 @@ fn snapshot_notebook_note_embed() {
     harness.snapshot("notebook_note_embed");
 }
 
+/// Simulate the vault → canvas drag-drop end to end: seed a longform note, drag
+/// its vault row onto the canvas, and snapshot the note-embed node the drop
+/// creates — the note's title and body preview drawn full-node by the longform
+/// renderer, the same shape [`snapshot_notebook_note_embed`] seeds by hand.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_note_embed_drag() {
+    let mut harness = build_harness(egui::Vec2::new(900.0, 560.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        seed_embed_note(
+            app_ctx.ndb,
+            &secret,
+            "drag-00",
+            "Q3 planning notes",
+            "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review.",
+            "# Milestones\n\nShip the notebook vault and the longform editor.",
+        );
+    }
+
+    // The row must render (and the note fold in, so the embed resolves) before we
+    // drag it.
+    wait_for_vault(&mut harness, 1);
+    wait_for_label(&mut harness, "Q3 planning notes");
+    harness.run_steps(3);
+
+    drag_first_vault_row(&mut harness, egui::pos2(560.0, 250.0));
+
+    // The dropped embed node folds in asynchronously; wait for it before snapshotting.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while harness.state().notebook.canvas().get_nodes().is_empty() {
+        harness.run_ok();
+        assert!(
+            Instant::now() < deadline,
+            "the dropped embed node never folded"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_steps(3);
+    harness.snapshot("notebook_note_embed_drag");
+}
+
 /// Drag the "Red" node and confirm its position moves; clicking a node selects
 /// it and clicking empty canvas clears the selection. The scene loads with a
 /// 1:1 mapping (scene_rect == viewport), so screen coords equal canvas coords.
@@ -752,6 +797,57 @@ fn delete_edge_via_handle() {
             break;
         }
         assert!(Instant::now() < deadline, "edge was never deleted");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Dragging a vault row onto the canvas drops a note-embed Link node referencing
+/// that note by naddr — the drag-drop counterpart to pasting a lone `nostr:naddr`.
+/// The scene loads 1:1 (screen coords == canvas coords).
+#[test]
+fn drag_vault_note_creates_embed_node() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, false);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let author = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        seed_embed_note(
+            app_ctx.ndb,
+            &secret,
+            "drag-00",
+            "Draggable note",
+            "A note to drag onto the canvas.",
+            "# Body\n\ncontent",
+        );
+    }
+
+    // The row must render before it can be dragged.
+    wait_for_vault(&mut harness, 1);
+    wait_for_label(&mut harness, "Draggable note");
+    harness.run_steps(3);
+    let before = harness.state().notebook.canvas().get_nodes().len();
+
+    drag_first_vault_row(&mut harness, egui::pos2(600.0, 320.0));
+
+    // The drop ingests a note-embed Link node (async) referencing the note by naddr.
+    let reference = event::longform_naddr(&author, "drag-00").expect("naddr");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        let canvas = harness.state().notebook.canvas();
+        let embedded = canvas
+            .get_nodes()
+            .values()
+            .any(|n| matches!(n, jsoncanvas::Node::Link(link) if link.url().as_str() == reference));
+        if canvas.get_nodes().len() > before && embedded {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the dropped note-embed node never appeared"
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
@@ -1076,6 +1172,18 @@ fn secondary_click_at(harness: &mut Harness<'static, NotebookTestState>, pos: eg
         });
     }
     harness.run_ok();
+}
+
+/// Drag the first vault row (its on-screen spot, ~(120,120) — the same row the
+/// vault tests target) onto the canvas and release at `onto`, so the drop lands a
+/// note-embed node there. Mirrors the node-drag tests' press → drag → drag →
+/// release, with intermediate moves to cross egui's drag threshold.
+fn drag_first_vault_row(harness: &mut Harness<'static, NotebookTestState>, onto: egui::Pos2) {
+    let from = egui::pos2(120.0, 120.0);
+    press(harness, from);
+    drag_to(harness, egui::pos2(300.0, 200.0));
+    drag_to(harness, onto);
+    release(harness, onto);
 }
 
 fn press(harness: &mut Harness<'static, NotebookTestState>, pos: egui::Pos2) {

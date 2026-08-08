@@ -172,6 +172,15 @@ pub(crate) enum UiIntent {
     EditText { node: NodeId, text: String },
     /// A new text node was composed at `pos`.
     Create { pos: Pos2, text: String },
+    /// A vault note was dragged onto the canvas and dropped at `pos` — drops a
+    /// note-embed [`Link`](event::NodeKind::Link) node referencing that note by
+    /// naddr, the same node paste-aware [`Create`](Self::Create) builds from a lone
+    /// `nostr:` reference.
+    DropNoteEmbed {
+        author: Pubkey,
+        d: String,
+        pos: Pos2,
+    },
     /// A node was deleted (its text was blanked).
     Delete { node: NodeId },
     /// An edge was drawn from one node's side to another node's side.
@@ -211,6 +220,28 @@ fn whole_nostr_reference(text: &str) -> Option<&str> {
     let trimmed = text.trim();
     let range = NostrRefParser.find(trimmed)?;
     (range.start == 0 && range.end == trimmed.len()).then_some(trimmed)
+}
+
+/// The [`CanvasAction`] that drops a note-embed node at `pos`: a `Link` carrying
+/// the lone `nostr:` reference, drawn full-node by its kind renderer rather than as
+/// an inline chip. Shared by paste-aware create and vault drag-drop so both promote
+/// a reference identically. Sized like a freshly-created node; the embed grows the
+/// box to its content height (see [`Notebook::node_rect`]).
+fn embed_node_action(reference: String, pos: Pos2) -> CanvasAction {
+    use crate::event::{Geometry, NodeContent, NodeKind};
+    CanvasAction::AddNode {
+        kind: NodeKind::Link,
+        geo: Geometry {
+            x: pos.x as i64,
+            y: pos.y as i64,
+            w: NEW_NODE_SIZE.x as u64,
+            h: NEW_NODE_HEIGHT as u64,
+        },
+        content: NodeContent {
+            url: Some(reference),
+            ..Default::default()
+        },
+    }
 }
 
 /// How long a node's slide-to-new-position animation runs, in seconds. Matches
@@ -367,14 +398,7 @@ impl Notebook {
                 // drawn full-node by its kind renderer — rather than a text node
                 // that would only render it as an inline chip on one line.
                 Some(match whole_nostr_reference(&text) {
-                    Some(reference) => CanvasAction::AddNode {
-                        kind: NodeKind::Link,
-                        geo,
-                        content: NodeContent {
-                            url: Some(reference.to_owned()),
-                            ..Default::default()
-                        },
-                    },
+                    Some(reference) => embed_node_action(reference.to_owned(), pos),
                     None => CanvasAction::AddNode {
                         kind: NodeKind::Text,
                         geo,
@@ -384,6 +408,12 @@ impl Notebook {
                         },
                     },
                 })
+            }
+            // A vault note dragged onto the canvas drops the same note-embed node
+            // paste-aware create builds, but from the note's coordinate: resolve its
+            // `nostr:naddr` and place the node at the drop position.
+            UiIntent::DropNoteEmbed { author, d, pos } => {
+                Some(embed_node_action(event::longform_naddr(&author, &d)?, pos))
             }
             UiIntent::Connect {
                 from,

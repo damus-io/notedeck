@@ -1,3 +1,4 @@
+use crate::editor::VaultDrag;
 use crate::{LiveGeometry, NEW_NODE_SIZE, NodeEdit, Notebook, UiIntent};
 use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
 use jsoncanvas::{
@@ -87,6 +88,13 @@ enum Gesture {
     BgClick,
     /// Empty canvas double-clicked here (drops a fresh node to compose).
     CreateAt(Pos2),
+    /// A vault note was dropped on empty canvas at this canvas position (creates a
+    /// note-embed node referencing it).
+    DropNote {
+        author: enostr::Pubkey,
+        d: String,
+        pos: Pos2,
+    },
     /// A node double-clicked to edit its text.
     StartEdit(NodeId),
     /// A task-list checkbox toggled in a rendered text node, with rewritten text.
@@ -260,6 +268,18 @@ pub fn notebook_ui(
             && let Some(pos) = bg.interact_pointer_pos()
         {
             out.gesture = Some(Gesture::CreateAt(pos));
+        }
+        // Dropping a dragged vault note (see the vault sidebar's `dnd_set_drag_payload`)
+        // on empty canvas creates a note-embed node under the cursor. The pointer is
+        // global; map it into scene space (the scene is 1:1 today) for the node's pos.
+        if let Some(drag) = bg.dnd_release_payload::<VaultDrag>()
+            && let Some(pos) = scene_pointer_pos(ui)
+        {
+            out.gesture = Some(Gesture::DropNote {
+                author: drag.author,
+                d: drag.d.clone(),
+                pos,
+            });
         }
 
         // Edges next, then nodes on top so node drag handles win interaction.
@@ -531,6 +551,7 @@ pub fn notebook_ui(
     let mut create_at: Option<Pos2> = None;
     let mut request_delete: Option<NodeId> = None;
     let mut checkbox_intent: Option<UiIntent> = None;
+    let mut drop_intent: Option<UiIntent> = None;
     let mut intent: Option<UiIntent> = None;
     match out.gesture {
         None | Some(Gesture::Connect(Connect::Dragging { .. })) => {}
@@ -595,6 +616,9 @@ pub fn notebook_ui(
         }
         Some(Gesture::StartEdit(id)) => start_edit = Some(id),
         Some(Gesture::CreateAt(pos)) => create_at = Some(pos),
+        Some(Gesture::DropNote { author, d, pos }) => {
+            drop_intent = Some(UiIntent::DropNoteEmbed { author, d, pos })
+        }
         Some(Gesture::RequestDelete(id)) => request_delete = Some(id),
     }
 
@@ -637,6 +661,12 @@ pub fn notebook_ui(
     // have coincided with (clicking the checkbox blurs an editor on another node).
     if let Some(checkbox) = checkbox_intent {
         intent = Some(checkbox);
+    }
+
+    // A dropped vault note creates its note-embed node, likewise winning over an
+    // editor commit it coincided with (the drag's press blurs an open node editor).
+    if let Some(drop) = drop_intent {
+        intent = Some(drop);
     }
 
     if let Some(id) = start_edit {
@@ -822,6 +852,19 @@ pub fn node_rect(node: &GenericNode) -> Rect {
     let max = Pos2::new(x + width, y + height);
 
     Rect::from_min_max(min, max)
+}
+
+/// The pointer's position in scene-local (canvas) coordinates, or `None` when the
+/// pointer is off-window. The [`egui::Scene`] applies a layer transform, so the
+/// global pointer is mapped back through it — 1:1 today, but this stays correct if
+/// the scene ever pans or zooms. Mirrors the projection the connection handles use.
+fn scene_pointer_pos(ui: &egui::Ui) -> Option<Pos2> {
+    let p = ui.ctx().pointer_interact_pos()?;
+    Some(
+        ui.ctx()
+            .layer_transform_from_global(ui.layer_id())
+            .map_or(p, |t| t * p),
+    )
 }
 
 fn side_point(side: &Side, rect: Rect) -> Pos2 {
