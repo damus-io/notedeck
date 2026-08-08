@@ -649,14 +649,27 @@ fn snapshot_notebook_note_embed_drag() {
     harness.snapshot("notebook_note_embed_drag");
 }
 
-/// Seed a canvas with a single text node titled `title`, returning the node's
-/// creation event id — the 32-byte identity a `notebook:<word-id>` reference
-/// encodes (see [`wordid::node_ref`]).
+/// Seed a canvas with a single text node titled `title` near the origin,
+/// returning the node's creation event id — the 32-byte identity a
+/// `notebook:<word-id>` reference encodes (see [`wordid::node_ref`]).
 fn seed_ref_node(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
     title: &str,
+) -> notedeck::enostr::NoteId {
+    seed_ref_node_at(ndb, author, secret, title, 40, 40)
+}
+
+/// Like [`seed_ref_node`] but places the node at canvas position `(x, y)`, so a
+/// test can seed a node deliberately outside the initial viewport.
+fn seed_ref_node_at(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    title: &str,
+    x: i64,
+    y: i64,
 ) -> notedeck::enostr::NoteId {
     let addr = canvas_address(author, CANVAS_ID);
     let mut publisher = NoPublish;
@@ -667,8 +680,8 @@ fn seed_ref_node(
         &mut publisher,
     );
     let geo = Geometry {
-        x: 40,
-        y: 40,
+        x,
+        y,
         w: 240,
         h: 100,
     };
@@ -736,6 +749,89 @@ fn snapshot_notebook_reference_chip() {
     }
     harness.run_steps(3);
     harness.snapshot("notebook_reference_chip");
+}
+
+/// Opening a node whose reference was clicked elsewhere must not just select it
+/// but pan the canvas to it — otherwise a node far from the current viewport stays
+/// offscreen and the user sees nothing. Seed a node well outside the initial view,
+/// drive `Notebook::open` (as chrome does for a clicked chip), and assert the node
+/// moves from *outside* `scene_rect` to *inside* it, at the same zoom.
+#[test]
+fn open_pans_the_canvas_to_an_offscreen_node() {
+    let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), false, false);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let author = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+
+    // Seed a node far outside the initial viewport (which loads at the origin,
+    // ~820x500). `open` takes the kind-1606 note id the seed returns.
+    let node_note = {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        seed_ref_node_at(app_ctx.ndb, &author, &secret, "Far away node", 4000, 4000)
+    };
+    // The canvas keys nodes by the hex of their creation event id.
+    let jc_id: jsoncanvas::NodeId = node_note.hex().parse().expect("node id");
+
+    // Wait until the node folds into the canvas, then let `notebook_ui` lay out
+    // the scene (`scene_rect`) at least once.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness
+            .state()
+            .notebook
+            .canvas()
+            .get_nodes()
+            .contains_key(&jc_id)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the far node never folded");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_steps(3);
+
+    // Precondition: nothing selected, and the node starts offscreen.
+    assert_eq!(harness.state().notebook.selected(), None);
+    let before = harness.state().notebook.scene_rect();
+    let node_pos = harness
+        .state()
+        .notebook
+        .node_position(&jc_id)
+        .expect("node position");
+    assert!(
+        !before.contains(node_pos),
+        "test setup: node should start offscreen (scene {before:?} vs node {node_pos:?})"
+    );
+
+    // Open it, exactly as chrome does when its inline chip is clicked.
+    harness.state_mut().notebook.open(node_note);
+
+    // Pump until the open resolves (the node becomes selected).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness.state().notebook.selected() == Some(&jc_id) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "open never selected the node");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // The canvas panned to reveal the node: it's now within the viewport...
+    let after = harness.state().notebook.scene_rect();
+    let node_pos = harness
+        .state()
+        .notebook
+        .node_position(&jc_id)
+        .expect("node position");
+    assert!(
+        after.contains(node_pos),
+        "node should be revealed in the viewport after open (scene {after:?} vs node {node_pos:?})"
+    );
+    // ...by a pan only — the viewport size (zoom) is unchanged.
+    assert_eq!(after.size(), before.size());
 }
 
 /// Drag the "Red" node and confirm its position moves; clicking a node selects

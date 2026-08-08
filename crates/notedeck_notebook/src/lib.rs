@@ -362,13 +362,18 @@ impl Notebook {
         self.wake();
     }
 
-    /// Act on a pending [`open`](Self::open): resolve the node's canvas and select
-    /// it once that canvas has folded in. Runs early each render.
+    /// Act on a pending [`open`](Self::open): resolve the node's canvas and reveal
+    /// it — select it *and* pan the canvas to it — once that canvas has folded in.
+    /// Runs early each render.
     ///
     /// The notebook is single-canvas for now, so a node on a different canvas is a
     /// no-op (multi-canvas switching isn't built yet). A node on the open canvas is
-    /// selected as soon as it folds; until then the request stays pending and
-    /// [`open`](Self::open)'s repaint burst keeps us ticking until it does.
+    /// revealed as soon as it folds *and* the scene has been laid out; until then
+    /// the request stays pending and [`open`](Self::open)'s repaint burst keeps us
+    /// ticking. The scene wait matters on the very first render after switching to
+    /// the app: [`notebook_ui`](crate::ui::notebook_ui) initialises `scene_rect`
+    /// from the viewport (clearing `loaded`), and it runs *after* this — so panning
+    /// before that first layout would just be overwritten.
     #[profiling::function]
     fn process_pending_open(&mut self, ndb: &Ndb) {
         let Some(note_id) = self.pending_open else {
@@ -385,19 +390,50 @@ impl Notebook {
             self.pending_open = None;
             return;
         }
-        if !self.canvas.get_nodes().contains_key(&target.node) {
-            // The canvas hasn't folded this node in yet; retry on the next repaint.
+        // The node's rect this frame, or `None` if the canvas hasn't folded it in
+        // yet — retry on the next repaint. Computed before any `&mut self` so the
+        // canvas borrow is released before `reveal_node` moves the view.
+        let Some(center) = self
+            .canvas
+            .get_nodes()
+            .get(&target.node)
+            .map(|node| self.node_rect(&target.node, node).center())
+        else {
+            return;
+        };
+        if !self.loaded {
+            // The scene hasn't been laid out this session, so `scene_rect` isn't a
+            // real viewport yet (and `notebook_ui` would overwrite our pan this
+            // frame). Wait for the first canvas render; the wake burst keeps us
+            // ticking until `loaded` flips.
             return;
         }
-        self.selected = Some(target.node);
+        self.reveal_node(target.node, center);
         self.pending_open = None;
         self.wake();
+    }
+
+    /// Select `node` and pan the scene so it sits at the centre of the viewport.
+    /// `center` is the node's centre in canvas coords. A pan only — `scene_rect`'s
+    /// size is preserved, so the current zoom (and aspect) is untouched; we just
+    /// translate the visible region. Used by [`process_pending_open`] to reveal a
+    /// node opened from elsewhere, which may sit anywhere on the canvas.
+    fn reveal_node(&mut self, node: NodeId, center: Pos2) {
+        self.selected = Some(node);
+        self.scene_rect = Rect::from_center_size(center, self.scene_rect.size());
     }
 
     /// The currently rendered canvas (folded view converted to `jsoncanvas`).
     /// Exposed for tests/introspection.
     pub fn canvas(&self) -> &JsonCanvas {
         &self.canvas
+    }
+
+    /// The visible region of the canvas in canvas coordinates — what the Scene
+    /// maps onto the viewport (its size encodes the zoom). Exposed for
+    /// tests/introspection so a test can assert a revealed node lands in view.
+    pub fn scene_rect(&self) -> Rect {
+        self.scene_rect
     }
 
     /// The cached vault note list (newest-edited first). Exposed for
