@@ -122,6 +122,12 @@ pub enum RenderContext {
     /// A block embed that owns its own line/box: draw the richest useful preview
     /// (e.g. a full card).
     Embed,
+    /// The surface is dedicated entirely to this one entity: draw its *complete*
+    /// content (a full document render), not a preview. Distinct from
+    /// [`Embed`](Self::Embed), which previews a reference sitting inside another
+    /// document's flow — here the reference *is* the whole surface (a canvas
+    /// note-embed node, say), so there is nothing to truncate for.
+    Full,
 }
 
 /// The inputs for one [`KindRenderer::render`] call: the resolved note, a
