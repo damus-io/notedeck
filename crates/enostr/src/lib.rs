@@ -8,7 +8,9 @@ mod profile;
 mod pubkey;
 mod relay;
 mod replaceable;
-pub mod sns;
+// The NIP-SNS module now lives in `nostrdb_net`; re-export it so `enostr::sns`
+// still resolves for consumers (collapse-via-reexport).
+pub use nostrdb_net::sns;
 
 pub use client::{ClientMessage, EventClientMessage};
 pub use error::Error;
