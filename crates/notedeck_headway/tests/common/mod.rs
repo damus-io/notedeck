@@ -21,7 +21,7 @@
 
 use std::time::{Duration, Instant};
 
-use enostr::{FullKeypair, Pubkey};
+use enostr::{FullKeypair, NoteId, Pubkey};
 use nostr::key::PublicKey;
 use nostr::nips::nip44;
 use nostr::secp256k1::rand::rngs::OsRng;
@@ -262,6 +262,19 @@ pub fn shared_card_titles(device: &mut DeviceHarness, board_addr: &str) -> Vec<S
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The id of the card titled `title` on a device's view of the shared board at
+/// `board_addr`, if present. Lets a test address an existing shared card (e.g. to
+/// edit or move a co-member's card) without hard-coding note ids.
+pub fn shared_card_id(device: &mut DeviceHarness, board_addr: &str, title: &str) -> Option<NoteId> {
+    shared_board(device, board_addr).and_then(|v| {
+        v.columns
+            .iter()
+            .flat_map(|c| c.cards.iter())
+            .find(|c| c.title == title)
+            .map(|c| c.id)
+    })
 }
 
 /// Count local notes of `kind` in a device's nostrdb — used to assert that a

@@ -458,7 +458,14 @@ pub fn apply(
     action: BoardAction,
     publisher: &mut dyn Publisher,
 ) {
-    let addr = board_address(author, board_id);
+    // The board `#a` coordinate is the *owner's*, not the signer's. On a shared
+    // board the signer is a member, but the board (and every edit anchored to it)
+    // lives under `30619:<owner>:<slug>`, which the folded `view` carries as
+    // `view.author`. Anchoring at the member's own key would tag the edit at a
+    // phantom coordinate `fold_shared_board(owner)` never gathers. On an own board
+    // `view.author == author`, so this is a no-op there. `author`/`signer` stay the
+    // acting editor, preserving authorship and seal attribution.
+    let addr = board_address(&Pubkey::new(view.author), board_id);
 
     match action {
         BoardAction::MoveCard {
@@ -746,12 +753,13 @@ fn place_card(
     ndb: &Ndb,
     target: BoardRef,
     prefer_col: Option<&str>,
-    author: &Pubkey,
     signer: &Signer,
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let addr = board_address(author, target.id);
+    // Anchor the placement at the target board's *owner* coordinate (see `apply`),
+    // which the folded `target.view` carries — not the signing member's own key.
+    let addr = board_address(&Pubkey::new(target.view.author), target.id);
     let col = prefer_col
         .and_then(|id| target.view.columns.iter().find(|c| c.id == id))
         .or_else(|| target.view.columns.first())?;
@@ -783,13 +791,12 @@ pub fn link_card(
     ndb: &Ndb,
     source: BoardRef,
     target: BoardRef,
-    author: &Pubkey,
     signer: &Signer,
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
     let from_col = find_card_col(source.view, card).map(|(col, _)| col);
-    place_card(ndb, target, from_col, author, signer, card, publisher)
+    place_card(ndb, target, from_col, signer, card, publisher)
 }
 
 /// Move `card` from the `source` board to the `target` board: link it onto
@@ -800,15 +807,16 @@ pub fn move_card_between_boards(
     ndb: &Ndb,
     source: BoardRef,
     target: BoardRef,
-    author: &Pubkey,
     signer: &Signer,
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let placed = link_card(ndb, source, target, author, signer, card, publisher)?;
+    let placed = link_card(ndb, source, target, signer, card, publisher)?;
     // Placement-driven membership: a tombstone on the source removes it from
-    // `source` only, leaving the freshly-linked placement on `target`.
-    let src_addr = board_address(author, source.id);
+    // `source` only, leaving the freshly-linked placement on `target`. The
+    // tombstone must land on the source *owner's* coordinate (see `apply`), which
+    // `source.view.author` carries — not the signing member's own key.
+    let src_addr = board_address(&Pubkey::new(source.view.author), source.id);
     let c = find_card(source.view, card);
     let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
     let after = c.map_or(0, |c| c.placed_at);
@@ -1738,7 +1746,6 @@ mod tests {
                 id: "dst",
                 view: &dst,
             },
-            &t.kp.pubkey,
             &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
@@ -1772,7 +1779,6 @@ mod tests {
                 id: "dst",
                 view: &dst,
             },
-            &t.kp.pubkey,
             &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
@@ -1818,7 +1824,6 @@ mod tests {
                 id: "dst",
                 view: &dst,
             },
-            &t.kp.pubkey,
             &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
@@ -1882,7 +1887,6 @@ mod tests {
                 id: "dst",
                 view: &dst,
             },
-            &t.kp.pubkey,
             &Signer::new(&t.secret(), None),
             card,
             &mut NoPublish,
