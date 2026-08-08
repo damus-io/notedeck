@@ -51,6 +51,48 @@ pub fn encode_str(id: &str) -> String {
     encode(&bytes)
 }
 
+/// The end index of a `word-word-word` run of *exactly three* lowercase-letter
+/// (BIP-39-shaped) words beginning at `start` in `bytes`, or `None` if there isn't
+/// one. Each word is a non-empty run of ASCII lowercase letters (`[a-z]+`) and the
+/// three are joined by a single [`SEP`]; a fourth separated word is rejected, so a
+/// longer hyphenated run isn't mistaken for a word id.
+///
+/// This is the `find`-half scanner every scheme parser (`headway:`, `notebook:`,
+/// `agentium:`) shares to recognise a rendered id inside a run of prose: it works
+/// on raw bytes with a `start` offset so a parser can scan right past its own
+/// scheme/slug, and it allocates nothing (it runs on the per-frame render path).
+///
+/// It recognises the *shape* only — three word-shaped tokens — not that they are
+/// valid BIP-39 or resolve to a real entity; a caller re-encodes candidates to
+/// confirm (see [`encode`]).
+pub fn three_words_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let sep = SEP as u8;
+    let mut pos = start;
+    for word in 0..3 {
+        let word_start = pos;
+        while pos < bytes.len() && bytes[pos].is_ascii_lowercase() {
+            pos += 1;
+        }
+        if pos == word_start {
+            return None; // empty word (leading/double/trailing separator)
+        }
+        if word < 2 {
+            // Require a single separator before each of the next two words.
+            if pos < bytes.len() && bytes[pos] == sep {
+                pos += 1;
+            } else {
+                return None; // fewer than three words
+            }
+        }
+    }
+    // A separator right after the third word means a fourth is coming: not a bare
+    // three-word id.
+    if pos < bytes.len() && bytes[pos] == sep {
+        return None;
+    }
+    Some(pos)
+}
+
 /// The three 11-bit word indices for an id: the 33 most-significant bits.
 fn indices(id: &[u8; 32]) -> [usize; 3] {
     // Pull the first 5 bytes (40 bits) into the low end of a u64, then keep the
@@ -110,5 +152,27 @@ mod tests {
         assert_eq!(encode_str("session-abc"), encode_str("session-abc"));
         assert_ne!(encode_str("session-abc"), encode_str("session-xyz"));
         assert_eq!(encode_str("x").split(SEP).count(), 3);
+    }
+
+    /// The shared `find`-half scanner matches exactly three dash-joined lowercase
+    /// words, honours a start offset, and rejects the near-misses.
+    #[test]
+    fn three_words_end_matches_exactly_three() {
+        let end = |s: &str| three_words_end(s.as_bytes(), 0);
+        assert_eq!(end("maple-river-canyon"), Some(18));
+        // Stops at the first non-word byte, returning the run's end.
+        let s = "maple-river-canyon rest";
+        assert_eq!(three_words_end(s.as_bytes(), 0), Some(18));
+        // Honours the start offset, so a parser can scan right past its scheme.
+        let s = "notebook:maple-river-canyon";
+        assert_eq!(three_words_end(s.as_bytes(), 9), Some(s.len()));
+
+        assert_eq!(end("maple-river"), None); // only two words
+        assert_eq!(end("maple-river-canyon-extra"), None); // a fourth word
+        assert_eq!(end("maple--river-canyon"), None); // empty middle word
+        assert_eq!(end("-maple-river-canyon"), None); // leading separator
+        assert_eq!(end("maple-river-canyon-"), None); // trailing separator
+        assert_eq!(end("Maple-river-canyon"), None); // uppercase isn't a word byte
+        assert_eq!(end(""), None);
     }
 }
