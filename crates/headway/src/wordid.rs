@@ -34,14 +34,16 @@ pub fn card_ref(board: &str, id: &[u8; 32]) -> String {
 /// The word-id shape is *not* validated here; resolution re-encodes each candidate
 /// and matches (see [`crate::event::resolve_card_by_wordid`]). Returned slices
 /// borrow from `sel`.
+///
+/// A thin adapter over the shared [`wordid::WordIdRef`] grammar: a headway card is
+/// always board-scoped, so only a [`Scoped`](wordid::WordIdRef::Scoped) body is a
+/// card reference — a bare word-id resolves to `None`.
 pub fn parse_ref(sel: &str) -> Option<(&str, &str)> {
-    let rest = sel
-        .strip_prefix(SCHEME)
-        .and_then(|r| r.strip_prefix(':'))
-        .unwrap_or(sel);
-    let (board, words) = rest.split_once('/')?;
-    let slug_ok = !board.is_empty() && board.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-    (slug_ok && !words.is_empty()).then_some((board, words))
+    match wordid::WordIdRef::parse_uri_or_body(sel, SCHEME)? {
+        wordid::WordIdRef::Scoped { scope, words } => Some((scope, words)),
+        // A bare word-id carries no board segment, so it's never a card reference.
+        wordid::WordIdRef::Bare { .. } => None,
+    }
 }
 
 #[cfg(test)]
