@@ -27,8 +27,17 @@ pub use enostr::{query_replaceable, query_replaceable_filtered};
 /// alone because a session mixes two independent `seq` counters whose ranges
 /// diverge (the live `ThreadingState` and `convert_session_to_events`), so
 /// `seq`-first ordering floats live-typed user messages to the bottom. `seq` is
-/// kept only as the final tiebreak for legacy same-second events that also
-/// predate `ms`. Field order (millis, then seq) is the comparison order.
+/// kept as a same-second tiebreak for legacy events that predate `ms`.
+///
+/// `id` is the final tiebreak, making this a **total order**: two distinct
+/// events can collide on both `ms` and `seq` (a session mixes two independent
+/// `seq` counters — live and convert — that both restart at 0, so the same
+/// `seq` recurs, and their `ms` can coincide), and without a deterministic last
+/// key the tie falls through the stable `sort_by_key` to nostrdb's
+/// ingestion/query order, which differs machine-to-machine (the fresh-machine
+/// backfill regression). Ordering on the note id — intrinsic to the event, not
+/// a stateful counter — is identical everywhere the same event set is loaded.
+/// Field order (millis, then seq, then id) is the comparison order.
 ///
 /// This is the single source of truth for conversation ordering: the loader,
 /// the live poll-batch sorter, and out-of-order delivery detection all key off
@@ -37,10 +46,12 @@ pub use enostr::{query_replaceable, query_replaceable_filtered};
 pub struct EventOrder {
     millis: u64,
     seq: u32,
+    id: [u8; 32],
 }
 
 impl EventOrder {
-    /// Derive the ordering key from a conversation note's `ms` and `seq` tags.
+    /// Derive the ordering key from a conversation note's `ms` and `seq` tags,
+    /// falling back to the note id as the final total-order tiebreak.
     pub fn from_note(note: &nostrdb::Note) -> Self {
         let millis = get_tag_value(note, "ms")
             .and_then(|s| s.parse::<u64>().ok())
@@ -48,7 +59,11 @@ impl EventOrder {
         let seq = get_tag_value(note, "seq")
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(u32::MAX);
-        EventOrder { millis, seq }
+        EventOrder {
+            millis,
+            seq,
+            id: *note.id(),
+        }
     }
 }
 
@@ -198,6 +213,15 @@ fn load_session_messages_with_author(
                 } else {
                     None
                 }
+            }
+            Some("compaction_complete") => {
+                // The live poll-merge path renders this too; the loader must
+                // match it so a rebuild-from-ndb yields the identical transcript
+                // (see `process_conversation_notes` in notedeck_dave).
+                let pre_tokens = content.parse::<u64>().unwrap_or(0);
+                Some(Message::CompactionComplete(crate::messages::CompactionInfo {
+                    pre_tokens,
+                }))
             }
             // Skip permission_response, progress, queue-operation, etc.
             _ => None,
@@ -807,6 +831,101 @@ mod tests {
             matches!(loaded.messages[1], Message::Assistant(_)),
             "later-ms event must sort second despite its lower seq: {:?}",
             loaded.messages
+        );
+    }
+
+    /// Render a loaded transcript to comparable `(role, content)` strings so two
+    /// loads can be asserted equal regardless of how the events were ingested.
+    fn transcript(messages: &[Message]) -> Vec<(String, String)> {
+        messages
+            .iter()
+            .map(|m| match m {
+                Message::User(c) => ("user".to_string(), c.as_str().to_string()),
+                Message::Assistant(a) => ("assistant".to_string(), a.text().to_string()),
+                Message::ToolResponse(_) => ("tool".to_string(), String::new()),
+                Message::PermissionRequest(p) => {
+                    ("permission".to_string(), p.tool_name.clone())
+                }
+                Message::CompactionComplete(info) => {
+                    ("compaction".to_string(), info.pre_tokens.to_string())
+                }
+                other => (format!("{other:?}"), String::new()),
+            })
+            .collect()
+    }
+
+    /// INGESTION-PERMUTATION INVARIANCE: the displayed order must be a pure
+    /// function of the event SET, independent of the order events are ingested
+    /// into ndb (the fresh-machine negentropy-backfill case). This includes two
+    /// events that collide on BOTH `ms` and `seq` — a real possibility because a
+    /// session mixes two independent `seq` counters (live vs convert) that both
+    /// restart at 0, so the same `seq` can recur, and their `ms` can coincide.
+    /// Such a `(ms, seq)` tie has no ordering signal left, so a stable
+    /// `sort_by_key` falls through to nostrdb's ingestion/query order, which
+    /// differs machine-to-machine. `EventOrder` must break the tie on the note
+    /// id so both ingestion orders yield the identical transcript.
+    #[tokio::test]
+    async fn ingestion_permutation_invariance() {
+        let sk = test_secret_key();
+        let session_id = "permutation-test";
+        let t = 1_770_000_000u64;
+        let ms = |off: u64| (t * 1000 + off).to_string();
+
+        // A realistic post-Aug-6 burst, all carrying `ms`. The two `collide-*`
+        // events share the SAME (ms, seq) — the tie only the note-id can break.
+        let collide_ms = ms(500);
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "hello", t, 0, &[("ms", &ms(100))]),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "assistant",
+                "collide-A",
+                t,
+                7,
+                &[("ms", &collide_ms)],
+            ),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "assistant",
+                "collide-B",
+                t,
+                7,
+                &[("ms", &collide_ms)],
+            ),
+            build_1988_event_json(&sk, session_id, "user", "and more", t, 3, &[("ms", &ms(900))]),
+            // A compaction event must render (loader is a superset of the live
+            // merge path) and stay permutation-invariant.
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "compaction_complete",
+                "12345",
+                t,
+                4,
+                &[("ms", &ms(950))],
+            ),
+        ];
+
+        // Load the same set from two fresh ndbs: one ingested in authored order,
+        // one reversed. Both transcripts must be identical.
+        let load_order = |order: Vec<String>| async move {
+            let tmp = TempDir::new().unwrap();
+            let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+            let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+            ingest_all(&ndb, &filter, &order).await;
+            let txn = Transaction::new(&ndb).unwrap();
+            transcript(&load_session_messages(&ndb, &txn, session_id).messages)
+        };
+
+        let authored = load_order(events.to_vec()).await;
+        let reversed = load_order(events.iter().rev().cloned().collect()).await;
+
+        assert_eq!(
+            authored, reversed,
+            "displayed order must be independent of ingestion order, even for a \
+             (ms, seq) collision: authored={authored:?} reversed={reversed:?}"
         );
     }
 

@@ -506,6 +506,25 @@ impl Chrome {
         }
     }
 
+    #[cfg(feature = "notebook")]
+    fn get_notebook_app(&mut self) -> Option<&mut notedeck_notebook::Notebook> {
+        for app in &mut self.apps {
+            if let NotedeckApp::Notebook(notebook) = app {
+                return Some(notebook);
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "notebook")]
+    fn switch_to_notebook(&mut self) {
+        for i in 0..self.apps.len() {
+            if let NotedeckApp::Notebook(_) = self.apps[i] {
+                self.set_active(i as i32);
+            }
+        }
+    }
+
     fn process_toolbar_action(&mut self, action: ChromeToolbarAction, ctx: &mut AppContext) {
         match action {
             ChromeToolbarAction::Home => {
@@ -1513,6 +1532,19 @@ fn is_headway_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> b
         .unwrap_or(false)
 }
 
+/// Whether `note_id` refers to a notebook node event, so a click on its inline
+/// widget routes to the Notebook app instead of the timeline.
+#[cfg(feature = "notebook")]
+fn is_notebook_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> bool {
+    let Ok(txn) = Transaction::new(ctx.ndb) else {
+        return false;
+    };
+    ctx.ndb
+        .get_note_by_id(&txn, note_id.bytes())
+        .map(|note| notedeck_notebook::is_notebook_kind(note.kind()))
+        .unwrap_or(false)
+}
+
 fn chrome_handle_app_action(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
@@ -1532,6 +1564,19 @@ fn chrome_handle_app_action(
                     chrome.switch_to_dave();
                     if let Some(dave) = chrome.get_dave_app() {
                         dave.summarize_thread(note_id);
+                    }
+                    return;
+                }
+            }
+
+            // Intercept a click on an inline notebook node widget — open it in the
+            // Notebook app rather than the timeline (see `is_notebook_kind`).
+            #[cfg(feature = "notebook")]
+            if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
+                if is_notebook_note(ctx, *note_id) {
+                    chrome.switch_to_notebook();
+                    if let Some(notebook) = chrome.get_notebook_app() {
+                        notebook.open(*note_id);
                     }
                     return;
                 }

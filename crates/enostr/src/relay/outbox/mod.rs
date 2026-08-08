@@ -925,14 +925,26 @@ impl OutboxPool {
 
     /// Whether the full-history (NIP-77 negentropy) reconciliation for `id` has
     /// settled: at least one round has run and no reconciliation work remains in
-    /// flight. See [`FullHistoryTracker::sub_settled`].
+    /// flight, on either the local (tracker) or relay side.
+    /// See [`FullHistoryTracker::sub_settled`].
     ///
     /// This is a separate lifecycle from live-subscription EOSE
     /// ([`Self::all_have_eose`]): EOSE reports the live REQ's stored-event
     /// replay, whereas this reports negentropy convergence over the sub's
     /// history window.
+    ///
+    /// The relay-side check is load-bearing: the tracker's `progress` goes quiet
+    /// the instant a neg-set is dispatched to a relay (moving the exchange into
+    /// that relay's [`NegentropyData`]), *before* the relay surfaces any ids to
+    /// fetch. Consulting only the tracker would report "settled" mid-exchange,
+    /// so a consumer gating on this would act on a snapshot that is still missing
+    /// events reconciliation is about to pull.
     pub fn full_history_settled(&self, id: FullHistorySubId) -> bool {
         self.full_history.sub_settled(id)
+            && !self
+                .relays
+                .values()
+                .any(|relay| relay.negentropy_data.has_pending_work_for_owner(id))
     }
 
     /// Returns a clone of the filters for the given subscription ID.

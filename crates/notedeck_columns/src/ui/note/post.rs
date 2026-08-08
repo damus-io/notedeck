@@ -91,7 +91,10 @@ impl NewPostAction {
             }
         };
 
-        let event = enostr::ClientMessage::event(&note)?;
+        // `ClientMessage` now lives in nostrdb_net, so its error is
+        // `nostrdb_net::Error`; bridge it through `enostr::Error` (which our
+        // `Error::Nostr` variant already accepts) so `?` has a single hop.
+        let event = enostr::ClientMessage::event(&note).map_err(enostr::Error::from)?;
 
         // Ingest locally so the note appears immediately, even when offline
         if let Ok(json) = event.to_json() {
