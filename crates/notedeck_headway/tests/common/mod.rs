@@ -226,8 +226,13 @@ pub fn apply_sealed(
     let egui_ctx = device.ctx.clone();
     let app_ctx = &mut device.state_mut().notedeck.app_context(&egui_ctx);
     let txn = Transaction::new(app_ctx.ndb).expect("txn");
-    let view = event::load_shared_board(app_ctx.ndb, &txn, shared_addr)
-        .expect("shared board folds before an edit is applied to it");
+    let view = event::load_shared_board(
+        app_ctx.ndb,
+        &txn,
+        shared_addr,
+        &channel.keys.team_keypair.pubkey,
+    )
+    .expect("shared board folds before an edit is applied to it");
     store::apply(
         app_ctx.ndb,
         board_id,
@@ -243,17 +248,25 @@ pub fn apply_sealed(
 /// definition has arrived. The read half of convergence — every member resolves a
 /// shared board through [`event::fold_shared_board`], gathering all authors'
 /// events by coordinate.
-pub fn shared_board(device: &mut DeviceHarness, board_addr: &str) -> Option<BoardView> {
+pub fn shared_board(
+    device: &mut DeviceHarness,
+    board_addr: &str,
+    team_pubkey: &Pubkey,
+) -> Option<BoardView> {
     let egui_ctx = device.ctx.clone();
     let app_ctx = &mut device.state_mut().notedeck.app_context(&egui_ctx);
     let txn = Transaction::new(app_ctx.ndb).expect("txn");
-    event::load_shared_board(app_ctx.ndb, &txn, board_addr)
+    event::load_shared_board(app_ctx.ndb, &txn, board_addr, team_pubkey)
 }
 
 /// The titles of every card on a device's view of the shared board at
 /// `board_addr`, across all live columns (empty if the board hasn't folded yet).
-pub fn shared_card_titles(device: &mut DeviceHarness, board_addr: &str) -> Vec<String> {
-    shared_board(device, board_addr)
+pub fn shared_card_titles(
+    device: &mut DeviceHarness,
+    board_addr: &str,
+    team_pubkey: &Pubkey,
+) -> Vec<String> {
+    shared_board(device, board_addr, team_pubkey)
         .map(|v| {
             v.columns
                 .iter()
@@ -267,8 +280,13 @@ pub fn shared_card_titles(device: &mut DeviceHarness, board_addr: &str) -> Vec<S
 /// The id of the card titled `title` on a device's view of the shared board at
 /// `board_addr`, if present. Lets a test address an existing shared card (e.g. to
 /// edit or move a co-member's card) without hard-coding note ids.
-pub fn shared_card_id(device: &mut DeviceHarness, board_addr: &str, title: &str) -> Option<NoteId> {
-    shared_board(device, board_addr).and_then(|v| {
+pub fn shared_card_id(
+    device: &mut DeviceHarness,
+    board_addr: &str,
+    team_pubkey: &Pubkey,
+    title: &str,
+) -> Option<NoteId> {
+    shared_board(device, board_addr, team_pubkey).and_then(|v| {
         v.columns
             .iter()
             .flat_map(|c| c.cards.iter())
@@ -311,13 +329,14 @@ pub fn wait_for_shared_board_ready(
     publisher: &mut DeviceHarness,
     receiver: &mut DeviceHarness,
     board_addr: &str,
+    team_pubkey: &Pubkey,
     context: &str,
 ) {
     let deadline = Instant::now() + CONVERGE_TIMEOUT;
     loop {
         publisher.run_ok();
         receiver.run_ok();
-        if shared_board(receiver, board_addr).is_some() {
+        if shared_board(receiver, board_addr, team_pubkey).is_some() {
             return;
         }
         assert!(Instant::now() < deadline, "timed out waiting for {context}");
@@ -332,6 +351,7 @@ pub fn wait_for_convergence(
     publisher: &mut DeviceHarness,
     receiver: &mut DeviceHarness,
     board_addr: &str,
+    team_pubkey: &Pubkey,
     context: &str,
     done: impl Fn(&[String]) -> bool,
 ) {
@@ -340,7 +360,7 @@ pub fn wait_for_convergence(
         publisher.run_ok();
         receiver.run_ok();
 
-        let titles = shared_card_titles(receiver, board_addr);
+        let titles = shared_card_titles(receiver, board_addr, team_pubkey);
         if done(&titles) {
             return;
         }

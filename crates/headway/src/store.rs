@@ -1915,9 +1915,15 @@ mod tests {
             keys: enostr::sns::derive_sns_keys(&root).expect("keys"),
         };
 
-        // Seed the board plaintext (owner-authored definition), then add a card
-        // over the SNS channel.
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        // A shared board's definition travels sealed too — members subscribe to no
+        // plaintext leg, and the shared fold only gathers team-sealed rumors — so
+        // seal the definition into the channel rather than seeding it plaintext.
+        ingest_signed(
+            &t.ndb,
+            build_board(BOARD_ID, "Headway", "", &default_columns()),
+            &Signer::shared(&t.secret(), &channel),
+            &mut NoPublish,
+        );
         let view = t.wait(|v| v.id == BOARD_ID).await;
         super::apply(
             &t.ndb,
@@ -1937,7 +1943,14 @@ mod tests {
         // The card only surfaces if the envelope unwrapped and the shared fold
         // gathered the resulting rumor.
         let addr = board_address(&t.kp.pubkey, BOARD_ID);
-        let card_id = wait_shared_card(&t.ndb, &t.kp.pubkey, &addr, "Sealed card").await;
+        let card_id = wait_shared_card(
+            &t.ndb,
+            &t.kp.pubkey,
+            &addr,
+            &channel.keys.team_keypair.pubkey,
+            "Sealed card",
+        )
+        .await;
 
         let txn = Transaction::new(&t.ndb).unwrap();
         let issue = t.ndb.get_note_by_id(&txn, card_id.bytes()).unwrap();
@@ -1951,12 +1964,18 @@ mod tests {
     /// returning its id. Mirrors [`TestNdb::wait`] but over
     /// [`event::fold_shared_board`], awaiting the writer's ingest notification
     /// between folds rather than sleeping.
-    async fn wait_shared_card(ndb: &Ndb, author: &Pubkey, addr: &str, title: &str) -> NoteId {
+    async fn wait_shared_card(
+        ndb: &Ndb,
+        author: &Pubkey,
+        addr: &str,
+        team_pubkey: &Pubkey,
+        title: &str,
+    ) -> NoteId {
         let mut stream = ingest_stream(ndb, author);
         loop {
             {
                 let txn = Transaction::new(ndb).unwrap();
-                if let Some(reducer) = event::fold_shared_board(ndb, &txn, addr) {
+                if let Some(reducer) = event::fold_shared_board(ndb, &txn, addr, team_pubkey) {
                     let found = reducer
                         .finalize()
                         .iter()

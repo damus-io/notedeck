@@ -1285,8 +1285,28 @@ impl ActivityRecord {
     }
 }
 
+/// Who may amend a card in a folded board — the axis the reducer's validity gate
+/// keys off.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Authority {
+    /// Own (single-writer) board: only the card's author or the board owner may
+    /// amend a card. This is [`fold_board`]'s model.
+    #[default]
+    Owner,
+    /// Shared (team) board: every holder of the team key may amend any card, so
+    /// the author-identity gate is bypassed. Sound only because
+    /// [`fold_shared_board`] pre-filters the walk to team-sealed rumors (see
+    /// [`team_sealed`]) — reaching the reducer already proves the editor held the
+    /// team key. Per-member edit *permissions* (an admin-signed roster) are the
+    /// separate G6 gate, tracked at `headway:headway/purchase-arch-since`.
+    TeamKey,
+}
+
 #[derive(Default)]
 pub struct BoardReducer {
+    /// The validity gate applied to overlays/placements at resolve time — see
+    /// [`Authority`] and [`BoardReducer::trusts_all`].
+    authority: Authority,
     /// Latest board event per (author, board_id).
     boards: HashMap<(Vec<u8>, String), BoardEvent>,
     /// Issues by id (immutable, but a relay may hand us duplicates).
@@ -1327,6 +1347,25 @@ pub struct BoardReducer {
 }
 
 impl BoardReducer {
+    /// A reducer for a shared (team) board: every folded editor is trusted, so
+    /// authority follows team-key possession rather than card/board authorship.
+    /// Only sound when fed a team-sealed-only walk — see [`Authority::TeamKey`]
+    /// and [`fold_shared_board`].
+    fn team_authored() -> Self {
+        Self {
+            authority: Authority::TeamKey,
+            ..Default::default()
+        }
+    }
+
+    /// Whether the author-identity validity gate is bypassed because authority is
+    /// delegated to team-key possession (a shared board). Every per-overlay and
+    /// per-placement gate short-circuits through this: on a shared board the fold
+    /// already proved the editor held the team key, so any of them may amend.
+    fn trusts_all(&self) -> bool {
+        self.authority == Authority::TeamKey
+    }
+
     /// Fold a single event into the accumulator.
     pub fn ingest(&mut self, event: HeadwayEvent) {
         match event {
@@ -1454,7 +1493,8 @@ impl BoardReducer {
         board_author: &[u8; 32],
         board_id: &str,
     ) -> Vec<ActivityView> {
-        let authorised = |who: &[u8; 32]| who == &issue.author || who == board_author;
+        let authorised =
+            |who: &[u8; 32]| self.trusts_all() || who == &issue.author || who == board_author;
         let mut out = vec![ActivityView {
             author: issue.author,
             created_at: issue.created_at,
@@ -1630,7 +1670,8 @@ impl BoardReducer {
     /// naming other cards inside activity rows. `None` if the issue is unknown.
     fn card_title(&self, issue_id: &[u8; 32], board_author: &[u8; 32]) -> Option<String> {
         let issue = self.issues.get(issue_id)?;
-        let authorised = |who: &[u8; 32]| who == &issue.author || who == board_author;
+        let authorised =
+            |who: &[u8; 32]| self.trusts_all() || who == &issue.author || who == board_author;
         Some(
             self.subjects
                 .get(issue_id)
@@ -1644,7 +1685,7 @@ impl BoardReducer {
     /// parent's author, or the board author — the authorised set of the other
     /// overlays extended to both endpoints of the edge.
     fn relation_authorised(&self, r: &RelationEvent, board_author: &[u8; 32]) -> bool {
-        if &r.author == board_author {
+        if self.trusts_all() || &r.author == board_author {
             return true;
         }
         if self
@@ -1673,7 +1714,8 @@ impl BoardReducer {
         seq: Option<String>,
     ) -> Option<SubissueView> {
         let child = self.issues.get(child_id)?;
-        let authorised = |who: &[u8; 32]| who == &child.author || who == board_author;
+        let authorised =
+            |who: &[u8; 32]| self.trusts_all() || who == &child.author || who == board_author;
 
         let title = self
             .subjects
@@ -1700,7 +1742,7 @@ impl BoardReducer {
 
         for (key, p) in &self.placements {
             if &key.issue_id != child_id
-                || (p.author != child.author && p.author != key.board_author)
+                || (!self.trusts_all() && p.author != child.author && p.author != key.board_author)
             {
                 continue;
             }
@@ -1769,8 +1811,10 @@ impl BoardReducer {
         rank: String,
         placed_at: u64,
     ) -> CardView {
-        // Authority: the card author or the board author may amend the card.
-        let authorised = |who: &[u8; 32]| who == &issue.author || who == board_author;
+        // Authority: the card author or the board author may amend the card (or,
+        // on a shared board, any team-key holder — see `BoardReducer::trusts_all`).
+        let authorised =
+            |who: &[u8; 32]| self.trusts_all() || who == &issue.author || who == board_author;
 
         let subject = self
             .subjects
@@ -1866,7 +1910,8 @@ impl BoardReducer {
         let child_seq = |child_id: &[u8; 32]| -> Option<String> {
             let entry = self.seqs.get(&(Container::Card(issue.id), *child_id))?;
             let child_author = self.issues.get(child_id).map(|c| c.author);
-            let ok = &entry.author == board_author
+            let ok = self.trusts_all()
+                || &entry.author == board_author
                 || child_author == Some(entry.author)
                 || entry.author == issue.author;
             ok.then(|| entry.rank.clone())
@@ -1958,8 +2003,12 @@ impl BoardReducer {
                 let Some(issue) = self.issues.get(&key.issue_id) else {
                     continue;
                 };
-                // Only the card author or the board author may place a card.
-                if placement.author != issue.author && placement.author != board.author {
+                // Only the card author or the board author may place a card (or,
+                // on a shared board, any team-key holder — see `trusts_all`).
+                if !self.trusts_all()
+                    && placement.author != issue.author
+                    && placement.author != board.author
+                {
                     continue;
                 }
 
@@ -2217,28 +2266,51 @@ pub fn comment_filter(card_ids: &[[u8; 32]]) -> Filter {
 ///
 /// Both phases feed the *same* reducer; because [`BoardReducer::ingest`] is
 /// commutative and idempotent, folding one filter set after another yields the
-/// same state as a single combined walk. The reducer still resolves
-/// latest-authorised-wins, so a member can only edit cards they're authorised for
-/// (their own, or — for the owner — any); the authority *roster* is a separate
-/// concern layered on top.
+/// same state as a single combined walk.
+///
+/// Authority follows *team-key possession*: the walk ingests only team-sealed
+/// rumors (see [`team_sealed`]) — those nostrdb unwrapped from a kind-1081
+/// envelope sealed under `team_pubkey`, which only a keyholder can produce — and
+/// the reducer runs in [`Authority::TeamKey`] mode, so any of them may amend any
+/// card. This drops plaintext notes forged at the coordinate, and is what lets a
+/// non-owner member's edit count. Per-member edit *permissions* (an admin-signed
+/// roster) are the separate G6 gate, `headway:headway/purchase-arch-since`.
+///
+/// `team_pubkey` is the board channel's team public key
+/// (`enostr::sns::derive_sns_keys(team_root).team_keypair.pubkey`), the same value
+/// a kind-1081 envelope is authored by.
 ///
 /// Returns `None` if `board_addr` isn't a well-formed board coordinate or the
 /// index walk fails. A board with no cards yields an empty (phase-A-only) reducer
 /// rather than `None`.
 #[profiling::function]
-pub fn fold_shared_board(ndb: &Ndb, txn: &Transaction, board_addr: &str) -> Option<BoardReducer> {
+pub fn fold_shared_board(
+    ndb: &Ndb,
+    txn: &Transaction,
+    board_addr: &str,
+    team_pubkey: &Pubkey,
+) -> Option<BoardReducer> {
     let phase_a = board_scoped_filters(board_addr)?;
+    let team = team_pubkey.bytes();
     let mut card_ids: Vec<[u8; 32]> = Vec::new();
     let acc = ndb
-        .fold(txn, &phase_a, BoardReducer::default(), |mut acc, note| {
-            if note.kind() == KIND_ISSUE {
-                card_ids.push(*note.id());
-            }
-            if let Some(event) = parse(&note) {
-                acc.ingest(event);
-            }
-            acc
-        })
+        .fold(
+            txn,
+            &phase_a,
+            BoardReducer::team_authored(),
+            |mut acc, note| {
+                if !team_sealed(&note, team) {
+                    return acc;
+                }
+                if note.kind() == KIND_ISSUE {
+                    card_ids.push(*note.id());
+                }
+                if let Some(event) = parse(&note) {
+                    acc.ingest(event);
+                }
+                acc
+            },
+        )
         .ok()?;
 
     // No cards means no card-anchored overlays to gather; the `#e`/`#E` filters
@@ -2249,12 +2321,26 @@ pub fn fold_shared_board(ndb: &Ndb, txn: &Transaction, board_addr: &str) -> Opti
 
     let phase_b = [card_meta_filter(&card_ids), comment_filter(&card_ids)];
     ndb.fold(txn, &phase_b, acc, |mut acc, note| {
+        if !team_sealed(&note, team) {
+            return acc;
+        }
         if let Some(event) = parse(&note) {
             acc.ingest(event);
         }
         acc
     })
     .ok()
+}
+
+/// Whether `note` is a rumor nostrdb unwrapped from an SNS kind-1081 envelope
+/// sealed under `team_pubkey` — i.e. produced by a holder of this board's team
+/// key. nostrdb stamps the envelope's ECDH recipient (the team pubkey) into an
+/// unwrapped rumor's receiver slot *after* decrypting under the team key, and a
+/// plaintext note forged at the board coordinate is not a rumor, so neither leg
+/// of this check can be spoofed by a non-keyholder. This is the seal-trust that
+/// makes [`Authority::TeamKey`] sound.
+fn team_sealed(note: &Note, team_pubkey: &[u8; 32]) -> bool {
+    note.is_rumor() && note.rumor_receiver_pubkey() == Some(team_pubkey)
 }
 
 /// Fold a batch of freshly-arrived notes (identified by `keys`) into an existing
@@ -2509,12 +2595,18 @@ pub fn load_board(
 /// member's events. The multi-writer analogue of [`load_board`]: a one-shot
 /// [`fold_shared_board`] + finalize for callers that don't keep the reducer
 /// around (`BoardCache::shared_board` is the memoized in-app path). `None` until
-/// the board's definition has folded in.
+/// the board's definition has folded in. `team_pubkey` is the board channel's
+/// team key — see [`fold_shared_board`].
 #[profiling::function]
-pub fn load_shared_board(ndb: &Ndb, txn: &Transaction, board_addr: &str) -> Option<BoardView> {
+pub fn load_shared_board(
+    ndb: &Ndb,
+    txn: &Transaction,
+    board_addr: &str,
+    team_pubkey: &Pubkey,
+) -> Option<BoardView> {
     // fold_shared_board folds a single coordinate, so its finalize yields the one
     // board (empty until the board definition has arrived).
-    fold_shared_board(ndb, txn, board_addr)?
+    fold_shared_board(ndb, txn, board_addr, team_pubkey)?
         .finalize()
         .into_iter()
         .next()
@@ -3482,13 +3574,16 @@ mod tests {
     }
 
     /// A board written by two different members converges through
-    /// [`fold_shared_board`]: the owner-authored card and a *different* member's
-    /// card (with that member's own placement and subject edit) both land in one
-    /// board — the multi-writer read fan-out. The single-author [`fold_board`]
-    /// misses the second member entirely, which is the gap this closes.
+    /// [`fold_shared_board`], and authority follows team-key possession: every
+    /// edit is a team-sealed rumor, so the owner-authored card, a *different*
+    /// member's own card (with that member's placement, subject edit and
+    /// comments), *and* that member's edit of the **owner's** card all land in one
+    /// board. The single-author [`fold_board`] misses the second member entirely,
+    /// which is the gap this closes.
     #[test]
-    fn fold_shared_board_gathers_all_members() {
-        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+    fn fold_shared_board_gathers_and_trusts_all_team_members() {
+        use crate::store::{self, NoPublish, Signer, SnsChannel};
+        use nostrdb::{Config, Ndb, Transaction};
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -3498,17 +3593,28 @@ mod tests {
         let member = FullKeypair::generate();
         let addr = board_address(&owner.pubkey, "headway");
 
-        // Ingest a builder signed by an arbitrary member, returning the note id.
-        let ingest = |b: NoteBuilder, kp: &FullKeypair| -> NoteId {
-            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
-            let id = NoteId::new(*note.id());
-            let json = enostr::ClientMessage::event(&note)
-                .unwrap()
-                .to_json()
-                .unwrap();
-            ndb.process_event_with(&json, IngestMetadata::new().client(true))
-                .unwrap();
-            id
+        // A shared board is a team channel: every edit is sealed into a kind-1081
+        // envelope under the team key, and nostrdb auto-unwraps it back to a rumor
+        // once the team_root is registered. Distinctive bytes so a stray all-zero
+        // root can't accidentally match.
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x42;
+        let channel = SnsChannel {
+            keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+        };
+        assert!(ndb.add_team_root(&root));
+
+        // Seal a builder into the channel signed by an arbitrary member, returning
+        // the (stable) rumor id nostrdb recomputes on unwrap.
+        let seal = |b: NoteBuilder, kp: &FullKeypair| -> NoteId {
+            store::ingest_signed(
+                &ndb,
+                b,
+                &Signer::shared(&kp.secret_key.secret_bytes(), &channel),
+                &mut NoPublish,
+            )
+            .expect("sealed ingest")
         };
 
         let cols = vec![
@@ -3516,23 +3622,23 @@ mod tests {
             ColumnDef::new("done", "Done"),
         ];
         // Owner defines the board and authors one card.
-        ingest(build_board("headway", "Headway", "", &cols), &owner);
-        let a = ingest(build_issue(&addr, "Owner card", ""), &owner);
-        ingest(build_placement("headway", &addr, &a, "todo", "g"), &owner);
+        seal(build_board("headway", "Headway", "", &cols), &owner);
+        let a = seal(build_issue(&addr, "Owner card", ""), &owner);
+        seal(build_placement("headway", &addr, &a, "todo", "g"), &owner);
 
         // A *different* member authors their own card, places it, and renames it.
-        let b = ingest(build_issue(&addr, "Member card", ""), &member);
-        ingest(build_placement("headway", &addr, &b, "done", "m"), &member);
-        ingest(build_subject_edit(&b, "Member card (renamed)"), &member);
+        let b = seal(build_issue(&addr, "Member card", ""), &member);
+        seal(build_placement("headway", &addr, &b, "done", "m"), &member);
+        seal(build_subject_edit(&b, "Member card (renamed)"), &member);
 
         // ...then comments on it, including a threaded reply. A reply's lowercase
         // `e` points at its parent comment (not the issue), so it's only reachable
         // via the `#E` root tag — the case comment_filter exists to cover.
-        let c1 = ingest(
+        let c1 = seal(
             build_comment(&b, &member.pubkey, None, "member comment"),
             &member,
         );
-        ingest(
+        seal(
             build_comment(
                 &b,
                 &member.pubkey,
@@ -3542,15 +3648,25 @@ mod tests {
             &member,
         );
 
+        // The member edits the OWNER's card. Under team-key authority this counts
+        // (any keyholder may edit any card); the old author-or-owner gate dropped
+        // it. This is the pre-roster authority — see `Authority::TeamKey`.
+        seal(
+            build_subject_edit(&a, "Owner card (member-edited)"),
+            &member,
+        );
+
+        let team_pubkey = &channel.keys.team_keypair.pubkey;
         let deadline = Instant::now() + Duration::from_secs(5);
         let view = loop {
             let txn = Transaction::new(&ndb).unwrap();
-            if let Some(reducer) = fold_shared_board(&ndb, &txn, &addr)
+            if let Some(reducer) = fold_shared_board(&ndb, &txn, &addr, team_pubkey)
                 && let Some(view) = pick_board(&reducer, &owner.pubkey, "headway")
                 && view.columns[0].cards.len() == 1
                 && view.columns[1].cards.len() == 1
-                // Wait on the member's subject edit and both comments (ingested
-                // last) so the assertions don't race them into view.
+                // Wait on the members' edits and comments (unwrapped last) so the
+                // assertions don't race them into view.
+                && view.columns[0].cards[0].title == "Owner card (member-edited)"
                 && view.columns[1].cards[0].title == "Member card (renamed)"
                 && view.columns[1].cards[0].comments.len() == 2
             {
@@ -3563,9 +3679,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         };
 
-        // Both members' cards converge into one board, with the member's own
-        // subject edit applied.
-        assert_eq!(view.columns[0].cards[0].title, "Owner card");
+        // Both members' cards converge into one board, the member's own subject
+        // edit applied — and the member's edit of the *owner's* card counts too.
+        assert_eq!(view.columns[0].cards[0].title, "Owner card (member-edited)");
         assert_eq!(view.columns[1].cards[0].title, "Member card (renamed)");
 
         // The whole comment thread folds in: the top-level comment and the reply
@@ -3585,7 +3701,9 @@ mod tests {
         assert_eq!(root.parent, None);
         assert_eq!(reply.parent, Some(c1));
 
-        // The single-author fold sees only the owner's card: exactly the gap
+        // The single-author fold sees only the owner's card, still titled as the
+        // owner left it: fold_board gathers only the owner's own events, so the
+        // member's cross-edit is invisible to it. Exactly the multi-writer gap
         // fold_shared_board closes.
         let txn = Transaction::new(&ndb).unwrap();
         let owner_only = fold_board(&ndb, &txn, &owner.pubkey)

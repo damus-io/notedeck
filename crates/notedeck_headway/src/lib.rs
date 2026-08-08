@@ -141,15 +141,21 @@ impl Headway {
             let Some(slug) = team.board_slug() else {
                 continue;
             };
+            let Some(keys) = team.sns_keys() else {
+                continue;
+            };
             if boards.iter().any(|b| b.id == slug) {
                 continue;
             }
             let title = Transaction::new(ctx.ndb)
                 .ok()
                 .and_then(|txn| {
-                    self.board_cache
-                        .borrow_mut()
-                        .shared_board(ctx.ndb, &txn, &team.board_addr)
+                    self.board_cache.borrow_mut().shared_board(
+                        ctx.ndb,
+                        &txn,
+                        &team.board_addr,
+                        &keys.team_keypair.pubkey,
+                    )
                 })
                 .map(|v| v.title)
                 .unwrap_or_else(|| slug.to_string());
@@ -521,10 +527,18 @@ impl App for Headway {
         // Resolve the active board's view: a shared board folds by coordinate
         // (multi-writer), an own board off the per-account reducer.
         let view = match &active_team {
-            Some(team) => Transaction::new(ctx.ndb).ok().and_then(|txn| {
-                self.board_cache
-                    .borrow_mut()
-                    .shared_board(ctx.ndb, &txn, &team.board_addr)
+            // Fold by the channel's team key — see `event::fold_shared_board`.
+            // No channel (missing keys) means we can't fold; falls through to the
+            // "loading" message below.
+            Some(team) => channel.as_ref().and_then(|c| {
+                Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                    self.board_cache.borrow_mut().shared_board(
+                        ctx.ndb,
+                        &txn,
+                        &team.board_addr,
+                        &c.keys.team_keypair.pubkey,
+                    )
+                })
             }),
             None => own_boards.iter().find(|v| v.id == self.board_id).cloned(),
         };
@@ -890,7 +904,8 @@ impl BoardCache {
                 None => Vec::new(),
             };
             if !polled.is_empty() || entry.reducer.is_none() {
-                entry.reducer = event::fold_shared_board(ndb, txn, &team.board_addr);
+                entry.reducer =
+                    event::fold_shared_board(ndb, txn, &team.board_addr, &keys.team_keypair.pubkey);
                 entry.finalized = None;
             }
             fresh.extend(polled);
@@ -906,10 +921,11 @@ impl BoardCache {
         ndb: &Ndb,
         txn: &Transaction,
         board_addr: &str,
+        team_pubkey: &Pubkey,
     ) -> Option<BoardView> {
         let entry = self.shared.entry(board_addr.to_string()).or_default();
         if entry.reducer.is_none() {
-            entry.reducer = event::fold_shared_board(ndb, txn, board_addr);
+            entry.reducer = event::fold_shared_board(ndb, txn, board_addr, team_pubkey);
         }
         if entry.finalized.is_none() {
             entry.finalized = Some(entry.reducer.as_ref()?.finalize());
@@ -1850,13 +1866,19 @@ mod tests {
         };
         let teams = vec![team.clone()];
 
-        // Seed the board plaintext, then establish the shared 1081 subscription
-        // *before* editing so it reports our own envelope when it lands.
-        store::seed_default_board(
+        // Seal the board definition into the channel (a shared board has no
+        // plaintext leg, and the shared fold gathers only team-sealed rumors), then
+        // establish the shared 1081 subscription *before* editing so it reports our
+        // own envelope when it lands.
+        let cols = vec![
+            event::ColumnDef::new("backlog", "Backlog"),
+            event::ColumnDef::new("todo", "Todo"),
+            event::ColumnDef::new("done", "Done"),
+        ];
+        store::ingest_signed(
             &t.ndb,
-            &t.kp.pubkey,
-            &t.secret(),
-            store::BOARD_ID,
+            event::build_board(store::BOARD_ID, "Headway", "", &cols),
+            &store::Signer::shared(&t.secret(), &channel),
             &mut store::NoPublish,
         );
         t.poll();
@@ -1891,7 +1913,12 @@ mod tests {
                 let txn = Transaction::new(&t.ndb).unwrap();
                 t.cache.poll_shared(&t.ndb, &txn, &teams);
                 t.cache
-                    .shared_board(&t.ndb, &txn, &team.board_addr)
+                    .shared_board(
+                        &t.ndb,
+                        &txn,
+                        &team.board_addr,
+                        &channel.keys.team_keypair.pubkey,
+                    )
                     .and_then(|v| {
                         v.columns
                             .iter()
