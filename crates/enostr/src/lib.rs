@@ -13,10 +13,7 @@ pub mod sns;
 pub use client::{ClientMessage, EventClientMessage};
 pub use error::Error;
 pub use filter::Filter;
-pub use keypair::{
-    parse_keypair_from_tokens, serialize_keypair_tokens, FilledKeypair, FullKeypair, Keypair,
-    KeypairUnowned, SerializableKeypair,
-};
+pub use keypair::{FilledKeypair, FullKeypair, Keypair, KeypairUnowned, SerializableKeypair};
 pub use nostr::SecretKey;
 pub use note::{Note, NoteId};
 pub use profile::ProfileState;

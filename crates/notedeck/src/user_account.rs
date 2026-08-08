@@ -1,4 +1,6 @@
-use enostr::{parse_keypair_from_tokens, serialize_keypair_tokens, Keypair, KeypairUnowned};
+use enostr::{Keypair, KeypairUnowned};
+
+use crate::keypair_tokens::{parse_keypair_from_tokens, serialize_keypair_tokens};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
 use crate::{
