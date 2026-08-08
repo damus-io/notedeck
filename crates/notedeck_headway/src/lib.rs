@@ -1104,37 +1104,6 @@ impl HeadwayRefParser {
     fn is_slug_byte(b: u8) -> bool {
         b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
     }
-
-    /// End index of a `word-word-word` run of *exactly three* lowercase-letter
-    /// (BIP-39) words starting at `i`, or `None`. Words are `[a-z]+` joined by a
-    /// single `-`; a fourth dash-joined word is rejected so a longer hyphenated
-    /// run isn't mistaken for a word id.
-    fn three_words_end(bytes: &[u8], i: usize) -> Option<usize> {
-        let mut pos = i;
-        for word in 0..3 {
-            let start = pos;
-            while pos < bytes.len() && bytes[pos].is_ascii_lowercase() {
-                pos += 1;
-            }
-            if pos == start {
-                return None; // empty word (leading/double/trailing dash)
-            }
-            if word < 2 {
-                // Require a single `-` before each of the next two words.
-                if pos < bytes.len() && bytes[pos] == b'-' {
-                    pos += 1;
-                } else {
-                    return None; // fewer than three words
-                }
-            }
-        }
-        // A `-` right after the third word means a fourth is coming: not a bare
-        // three-word id.
-        if pos < bytes.len() && bytes[pos] == b'-' {
-            return None;
-        }
-        Some(pos)
-    }
 }
 
 impl notedeck::ReferenceParser for HeadwayRefParser {
@@ -1168,8 +1137,9 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
                 continue;
             }
 
-            // Three dash-joined words right after the `/`.
-            if let Some(end) = Self::three_words_end(bytes, i + 1) {
+            // Three dash-joined words right after the `/` (the shared word-id
+            // grammar; see [`headway::wordid::three_words_end`]).
+            if let Some(end) = headway::wordid::three_words_end(bytes, i + 1) {
                 return Some(start..end);
             }
         }

@@ -12,7 +12,7 @@
 //! [`crate::event::resolve_card`]); a card is always board-scoped, so the segment
 //! is mandatory and a bare word-id is never a reference.
 
-pub use wordid::{SEP, encode};
+pub use wordid::{SEP, encode, three_words_end};
 
 /// The URI scheme that precedes a full card reference. Aligned with the inline
 /// parser's id (`notedeck_headway::HeadwayRefParser::id()` returns `"headway"`).
