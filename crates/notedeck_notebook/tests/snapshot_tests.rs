@@ -466,17 +466,6 @@ fn seed_embed_note(ndb: &Ndb, secret: &[u8; 32], d: &str, title: &str, summary: 
     ingest(ndb, builder, secret, &mut NoPublish).expect("seed embed longform");
 }
 
-/// `nostr:naddr…` reference for one of `author`'s longform notes, given its `d`.
-/// The bech32 coordinate a note-embed Link node carries; the built-in nostr
-/// parser decodes it back to the note when the embed renders.
-fn longform_naddr(author: &Pubkey, d: &str) -> String {
-    use nostr::nips::nip19::ToBech32;
-    let pk = nostr::PublicKey::from_slice(author.bytes()).expect("pubkey");
-    let mut coord = nostr::nips::nip01::Coordinate::new(nostr::Kind::from(30023_u16), pk);
-    coord.identifier = d.to_string();
-    format!("nostr:{}", coord.to_bech32().expect("naddr"))
-}
-
 /// Seed a canvas holding a single note-embed (Link) node whose url is `reference`
 /// (a `nostr:naddr…`). Placed clear of the vault sidebar (which appears once the
 /// referenced longform note folds in) so the whole embed is visible.
@@ -526,7 +515,7 @@ fn snapshot_notebook_note_embed() {
     let secret = harness.state().account.secret_key.secret_bytes();
     let author = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
-    let reference = longform_naddr(&author, "embed-00");
+    let reference = event::longform_naddr(&author, "embed-00").expect("naddr");
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
         seed_embed_note(

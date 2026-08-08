@@ -156,6 +156,20 @@ pub fn longform_address(author: &Pubkey, d: &str) -> String {
     format!("{KIND_LONGFORM}:{}:{d}", author.hex())
 }
 
+/// The `nostr:naddr…` URI addressing one of `author`'s longform notes by its `d`.
+/// This is the reference a note-embed [`Link`](NodeKind::Link) node carries; the
+/// built-in nostr parser decodes it back to the note when the embed renders. Used
+/// both by paste-aware create and by dragging a vault note onto the canvas.
+/// `None` if the coordinate can't be bech32-encoded.
+pub fn longform_naddr(author: &Pubkey, d: &str) -> Option<String> {
+    use nostr::nips::nip19::ToBech32;
+    let pk = nostr::PublicKey::from_slice(author.bytes()).ok()?;
+    let mut coord =
+        nostr::nips::nip01::Coordinate::new(nostr::Kind::from(KIND_LONGFORM as u16), pk);
+    coord.identifier = d.to_string();
+    Some(format!("nostr:{}", coord.to_bech32().ok()?))
+}
+
 // ---------------------------------------------------------------------------
 // Builders
 // ---------------------------------------------------------------------------
