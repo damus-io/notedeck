@@ -372,6 +372,11 @@ pub struct Dave {
     auto_steal: focus_queue::AutoStealState,
     /// The session ID to return to after processing all NeedsInput items
     home_session: Option<SessionId>,
+    /// A kind-31988 session-state note to focus, raised when its inline
+    /// `agentium:` chip is clicked in another app (a note, a Dave chat). Resolved
+    /// to a session and switched to on the next [`update`](Self::update), then
+    /// cleared. See [`Self::open`] / [`Self::process_pending_open`].
+    pending_open: Option<enostr::NoteId>,
     /// Directory picker for selecting working directory when creating sessions
     directory_picker: DirectoryPicker,
     /// Session picker for resuming existing Claude sessions
@@ -853,6 +858,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             collapse_serializer,
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
+            pending_open: None,
             directory_picker,
             session_picker: SessionPicker::new(),
             active_overlay,
@@ -926,6 +932,64 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// in update() where AppContext (ndb) is available.
     pub fn summarize_thread(&mut self, note_id: enostr::NoteId) {
         self.pending_summaries.push(note_id);
+    }
+
+    /// Focus a session referenced from elsewhere in the app — raised when its
+    /// inline `agentium:` chip (drawn by [`render::AgentiumSessionRenderer`]) is
+    /// clicked in another app like a note or Dave chat. `note` is the kind-31988
+    /// session-state event; the switch happens on the next
+    /// [`update`](Self::update) (see [`process_pending_open`](Self::process_pending_open)).
+    pub fn open(&mut self, note: enostr::NoteId) {
+        self.pending_open = Some(note);
+    }
+
+    /// Act on a pending [`open`](Self::open): resolve the clicked kind-31988 note to
+    /// one of this account's sessions (by its `claude_session_id` d-tag) and switch
+    /// to it, revealing the chat. A note we can't route to (not a session state, or
+    /// a session this Dave hasn't materialized) drops the request rather than
+    /// retrying forever.
+    fn process_pending_open(&mut self, ndb: &nostrdb::Ndb) {
+        let Some(note_id) = self.pending_open.take() else {
+            return;
+        };
+        let Ok(txn) = Transaction::new(ndb) else {
+            // Couldn't open a read txn this frame; retry next frame.
+            self.pending_open = Some(note_id);
+            return;
+        };
+        // The session's stable event id (the kind-31988 `d` tag), if this note is a
+        // session-state event.
+        let event_id: Option<String> = ndb
+            .get_note_by_id(&txn, note_id.bytes())
+            .ok()
+            .and_then(|note| session_events::get_tag_value(&note, "d").map(|s| s.to_string()));
+        let Some(session_id) = event_id.and_then(|id| self.session_id_for_event_id(&id)) else {
+            // Not a session-state note we can route to, or no matching materialized
+            // session — nothing to focus.
+            return;
+        };
+        if self.session_manager.switch_to(session_id) {
+            // Reveal the chat: clear any overlay (directory/session picker) and the
+            // mobile session-list drawer, and stop auto-steal fighting the switch.
+            self.active_overlay = DaveOverlay::None;
+            self.show_session_list = false;
+            self.focus_queue.dequeue(session_id);
+        }
+    }
+
+    /// The [`SessionId`] of the materialized session whose stable event id
+    /// (kind-1988/31988 d-tag) is `event_id`, if any. Matches an agentic session's
+    /// [`event_session_id`](session::AgenticSessionData::event_session_id) — the same
+    /// key kind-31988 state events carry.
+    fn session_id_for_event_id(&self, event_id: &str) -> Option<SessionId> {
+        self.session_manager
+            .iter()
+            .find(|s| {
+                s.agentic
+                    .as_ref()
+                    .is_some_and(|a| a.event_session_id() == event_id)
+            })
+            .map(|s| s.id)
     }
 
     /// Fetch the thread from ndb, format it, and create a session with the prompt.
@@ -4128,9 +4192,19 @@ impl Drop for Dave {
     }
 }
 
+/// Whether `kind` is one Dave renders inline and routes clicks for — the
+/// kind-31988 session-state event ([`render::AgentiumSessionRenderer`]). The
+/// chrome uses this to route a click on an `agentium:` chip to Dave rather than
+/// the timeline (mirrors `notedeck_notebook::is_notebook_kind`).
+pub fn is_agentium_kind(kind: u32) -> bool {
+    kind == session_events::AI_SESSION_STATE_KIND
+}
+
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         self.refresh_pns_relay_url(ctx);
+        // Focus a session whose inline chip was clicked in another app.
+        self.process_pending_open(ctx.ndb);
         self.ensure_pns_local_state(ctx);
         self.ensure_pns_remote_subscription(ctx);
         // Track whether the discovery sub's synced view has settled, so
