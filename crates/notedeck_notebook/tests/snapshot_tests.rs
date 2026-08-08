@@ -13,6 +13,8 @@ use notedeck_notebook::event::{
 use notedeck_notebook::store::{
     CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_longform, load_longform,
 };
+use notedeck_notebook::wordid;
+use notedeck_ui::markdown::render_markdown_with_refs;
 
 struct NotebookTestState {
     notedeck: Notedeck,
@@ -22,6 +24,12 @@ struct NotebookTestState {
     account: FullKeypair,
     /// Whether to seed the colored demo canvas on the injection frame.
     seed_colors: bool,
+    /// When set, `render_notebook` draws note/Dave surfaces rendering this body
+    /// (which holds an inline `notebook:<word-id>` reference) instead of the
+    /// canvas — the inline-reference chip snapshot. The notebook app still
+    /// `update`s each frame, so the shared cache the chip folds through stays
+    /// current; only the drawn surface changes.
+    ref_surface: Option<String>,
     _tmpdir: tempfile::TempDir,
     setup_done: bool,
 }
@@ -68,8 +76,55 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
     // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
     // every opened app each frame, then `render` for the foreground one.
     state.notebook.update(&mut app_ctx, ctx);
+
+    // Reference-chip mode: draw note/Dave surfaces holding an inline
+    // `notebook:<word-id>` instead of the canvas. `update` above already folded
+    // this frame, so the chip resolves against the same live cache the canvas
+    // would.
+    if let Some(body) = &state.ref_surface {
+        render_ref_surfaces(ctx, &mut app_ctx, body);
+        return;
+    }
+
     egui::CentralPanel::default().show(ctx, |ui| {
         state.notebook.render(&mut app_ctx, ui);
+    });
+}
+
+/// Draw two ref-aware surfaces — a plain note and a Dave-style chat bubble — each
+/// rendering `body` through [`render_markdown_with_refs`], the very path notes and
+/// Dave messages use for `NoteOptions::InlineReferences`. A `notebook:<word-id>` in
+/// `body` resolves via the registered parser and draws as a live node chip folded
+/// from the shared cache — the cross-app demo the card asks for, in one frame.
+fn render_ref_surfaces(ctx: &egui::Context, app_ctx: &mut notedeck::AppContext, body: &str) {
+    egui::CentralPanel::default().show(ctx, |ui| {
+        ui.add_space(16.0);
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(560.0);
+
+            ui.label(egui::RichText::new("In a note").weak());
+            ui.add_space(4.0);
+            egui::Frame::group(ui.style())
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                    let mut note_ctx = app_ctx.note_context();
+                    render_markdown_with_refs(ui, &mut note_ctx, &txn, body);
+                });
+
+            ui.add_space(24.0);
+
+            ui.label(egui::RichText::new("In a Dave message").weak());
+            ui.add_space(4.0);
+            egui::Frame::group(ui.style())
+                .fill(ui.visuals().faint_bg_color)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                    let mut note_ctx = app_ctx.note_context();
+                    render_markdown_with_refs(ui, &mut note_ctx, &txn, body);
+                });
+        });
     });
 }
 
@@ -180,12 +235,19 @@ fn build_harness(
     for renderer in notebook.kind_renderers() {
         notedeck.register_kind_renderer(renderer);
     }
+    // ...and its reference parsers, so a `notebook:<word-id>` in a run of text
+    // resolves to its node before the renderer above draws it (chrome does both
+    // at startup; see `chrome.rs`).
+    for parser in notebook.reference_parsers() {
+        notedeck.register_reference_parser(parser);
+    }
 
     let state = NotebookTestState {
         notedeck,
         notebook,
         account: FullKeypair::generate(),
         seed_colors,
+        ref_surface: None,
         _tmpdir: tmpdir,
         setup_done: false,
     };
@@ -585,6 +647,95 @@ fn snapshot_notebook_note_embed_drag() {
     }
     harness.run_steps(3);
     harness.snapshot("notebook_note_embed_drag");
+}
+
+/// Seed a canvas with a single text node titled `title`, returning the node's
+/// creation event id — the 32-byte identity a `notebook:<word-id>` reference
+/// encodes (see [`wordid::node_ref`]).
+fn seed_ref_node(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    title: &str,
+) -> notedeck::enostr::NoteId {
+    let addr = canvas_address(author, CANVAS_ID);
+    let mut publisher = NoPublish;
+    ingest(
+        ndb,
+        build_canvas(CANVAS_ID, "Planning", &[], false),
+        secret,
+        &mut publisher,
+    );
+    let geo = Geometry {
+        x: 40,
+        y: 40,
+        w: 240,
+        h: 100,
+    };
+    let content = NodeContent {
+        text: title.to_string(),
+        ..Default::default()
+    };
+    let id = ingest(
+        ndb,
+        build_node(&addr, NodeKind::Text, &geo, &content),
+        secret,
+        &mut publisher,
+    )
+    .expect("ref node ingested");
+    let z = event::rank_between(None, None);
+    ingest(
+        ndb,
+        build_transform(CANVAS_ID, &addr, &id, &geo, &z, None),
+        secret,
+        &mut publisher,
+    );
+    id
+}
+
+/// Seed a node, reference it by `notebook:<word-id>` inline in a note and a
+/// Dave-style message, and snapshot both surfaces — the cross-app demo for the
+/// inline-reference epic. Each surface renders through
+/// [`render_markdown_with_refs`], the same path `NoteOptions::InlineReferences`
+/// drives, and the chip resolves + folds its title from the shared cache the
+/// notebook app maintains. Waiting on the node's *title* (not the raw ref text)
+/// asserts the reference actually resolved before the snapshot is taken.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_reference_chip() {
+    let mut harness = build_harness(egui::Vec2::new(720.0, 460.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let author = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    let title = "Q3 planning canvas node";
+    let node_ref = {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        let id = seed_ref_node(app_ctx.ndb, &author, &secret, title);
+        wordid::node_ref(id.bytes())
+    };
+    harness.state_mut().ref_surface = Some(format!(
+        "Captured in {node_ref} — worth a look before Friday."
+    ));
+
+    // Wait until the chip renders the resolved node title (not the raw ref) in
+    // *both* surfaces, proving the parser + renderer folded it from the shared
+    // cache. `query_all_by_label` (not `query_by_label`) because the title is
+    // deliberately shown twice — once per surface.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness.query_all_by_label(title).count() >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the node reference never resolved to its title chip in both surfaces"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_steps(3);
+    harness.snapshot("notebook_reference_chip");
 }
 
 /// Drag the "Red" node and confirm its position moves; clicking a node selects
