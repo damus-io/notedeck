@@ -13,6 +13,7 @@ mod path_normalize;
 pub(crate) mod path_utils;
 mod quaternion;
 pub mod reference;
+pub mod render;
 pub mod session;
 pub mod session_cache;
 pub mod session_discovery;
@@ -4416,6 +4417,19 @@ impl notedeck::App for Dave {
     /// reflected in the resolution.
     fn reference_parsers(&self) -> Vec<Box<dyn notedeck::ReferenceParser>> {
         vec![Box::new(reference::AgentiumRefParser::new(
+            self.session_cache.clone(),
+        ))]
+    }
+
+    /// Contribute the session (kind 31988) renderer, so an `agentium:<word-id>` (or
+    /// `nostr:`) reference to a session draws a live chip/card of its current
+    /// title/status. Shares the app's one
+    /// [`AgentiumSessionCache`](session_cache::AgentiumSessionCache) (cloned in, like
+    /// headway's issue renderer), so a session referenced by word id folds the same
+    /// realtime session state the foreground UI and the reference parser read — a
+    /// live status update shows on the chip, not just the open session.
+    fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
+        vec![Box::new(render::AgentiumSessionRenderer::new(
             self.session_cache.clone(),
         ))]
     }
