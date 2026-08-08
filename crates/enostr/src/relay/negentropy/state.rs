@@ -79,6 +79,26 @@ impl NegentropyData {
             || !self.retry_neg_sets.is_empty()
     }
 
+    /// Whether this relay still has negentropy work in flight owned by one
+    /// full-history subscription: an open session, an id surfaced but not yet
+    /// drained, or a pending retry. This is the relay-side counterpart to the
+    /// tracker's local `has_pending_work`, and is what makes "settled" mean
+    /// "reconciliation has actually finished" rather than "the local queue is
+    /// momentarily empty while the relay exchange is still running".
+    pub(crate) fn has_pending_work_for_owner(&self, owner_history_id: FullHistorySubId) -> bool {
+        self.active_sessions
+            .values()
+            .any(|session| session.owner_history_id == owner_history_id)
+            || self
+                .surfaced_need_ids
+                .iter()
+                .any(|need| need.owner_history_id == owner_history_id)
+            || self
+                .retry_neg_sets
+                .iter()
+                .any(|retry| retry.owner_history_id == owner_history_id)
+    }
+
     /// Whether the relay is known to reject or ignore negentropy.
     pub(crate) fn is_unsupported(&self) -> bool {
         self.capability == Some(false)

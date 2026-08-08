@@ -3223,6 +3223,37 @@ async fn full_history_settled_tracks_reconciliation_lifecycle() {
 }
 
 #[tokio::test]
+async fn full_history_not_settled_during_relay_reconciliation() {
+    let relay = relay_url("relay-side-settle");
+    let mut pool = ready_pool();
+    let history_id = subscribe_unbounded(&mut pool, MockWakeup::default(), [relay.clone()]);
+
+    // Reproduce the window after a neg-set has been dispatched to the relay: the
+    // local tracker has gone quiet (no pending neg-set / fetch / ingestion) so
+    // `sub_settled` alone reads settled, but the relay still has an id surfaced
+    // by the in-flight negentropy exchange for this owner.
+    clear_pending_neg_sets(&mut pool, history_id);
+    assert!(
+        tracked_sub(&pool, history_id).rounds_started >= 1,
+        "a round has started"
+    );
+    seed_relay_need(&mut pool, &relay, history_id, note_id(7));
+    assert!(
+        !pool.full_history_settled(history_id),
+        "relay-side negentropy work in flight -> not settled"
+    );
+
+    // Drain the relay-side work: nothing remains locally or on the relay now.
+    relay_data_mut(&mut pool, &relay)
+        .negentropy_data
+        .drain_need_ids();
+    assert!(
+        pool.full_history_settled(history_id),
+        "no local or relay-side reconciliation work -> settled"
+    );
+}
+
+#[tokio::test]
 async fn full_history_not_settled_before_first_round() {
     let relay = relay_url("pre-first-round");
     let mut pool = ready_pool();
