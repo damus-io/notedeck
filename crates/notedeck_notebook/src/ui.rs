@@ -1194,8 +1194,9 @@ fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) 
 
 /// Render a link node. A `nostr:` link is a **note-embed** node: resolve the
 /// reference and draw the referenced note as the node's body via its registered
-/// kind renderer (an `Embed`), so the same note referenced from several canvases
-/// stays in sync because it's one nostr event. Any other URL is a plain web link.
+/// kind renderer (a `Full` render, since the node *is* the document), so the same
+/// note referenced from several canvases stays in sync because it's one nostr
+/// event. Any other URL is a plain web link.
 fn link_node_ui(
     ui: &mut egui::Ui,
     ctx: &mut AppContext,
@@ -1215,7 +1216,9 @@ fn link_node_ui(
 
 /// Draw a `nostr:` reference as a full note embed (the body of a note-embed
 /// node). Canvas rendering holds no transaction, so open a short-lived one here
-/// and resolve + draw the note via its kind renderer. An unresolved reference
+/// and resolve + draw the note via its kind renderer in
+/// [`RenderContext::Full`](notedeck::RenderContext::Full) so the node shows the
+/// complete document, not a preview. An unresolved reference
 /// (not synced yet, or no renderer for its kind) falls back to its raw text so
 /// the node still reads as a reference.
 fn embed_node_ui(ui: &mut egui::Ui, ctx: &mut AppContext, reference: &str) {
@@ -1226,7 +1229,7 @@ fn embed_node_ui(ui: &mut egui::Ui, ctx: &mut AppContext, reference: &str) {
         &mut note_ctx,
         &txn,
         reference,
-        notedeck::RenderContext::Embed,
+        notedeck::RenderContext::Full,
     );
     if !drawn {
         ui.weak(reference);

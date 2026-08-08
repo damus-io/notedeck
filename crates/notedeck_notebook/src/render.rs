@@ -36,8 +36,9 @@ const UNTITLED: &str = "Untitled";
 ///
 /// Honors [`req.context`](KindRenderRequest::context): a compact one-line **chip**
 /// (a document glyph + title) when the reference flows inline in a text node's
-/// prose, and a fuller **block** (title heading + body preview) when a surface
-/// gives the reference its own box — a note-embed node, say.
+/// prose; a **block** preview (title heading + summary/head of body) for a block
+/// embed inside another document; and the **full** document (title + entire body)
+/// when a surface is dedicated to this one note — a canvas note-embed node, say.
 pub struct LongformKindRenderer;
 
 impl KindRenderer for LongformKindRenderer {
@@ -62,6 +63,9 @@ impl KindRenderer for LongformKindRenderer {
         let theme = ColorTheme::current(ui.ctx());
         let response = match req.context {
             notedeck::RenderContext::Inline => longform_chip_ui(ui, &theme, req.note),
+            // A surface dedicated to this one note (a canvas note-embed node) wants
+            // the whole document, not the block's summary/head preview.
+            notedeck::RenderContext::Full => longform_full_ui(ui, note_context, req),
             _ => longform_block_ui(ui, &theme, note_context, req),
         };
         KindRenderResponse::new(response)
@@ -104,6 +108,35 @@ fn longform_block_ui(
         if truncated {
             ui.weak("…");
         }
+    })
+    .response
+}
+
+/// The full document render of a longform note ([`notedeck::RenderContext::Full`]):
+/// its title heading followed by the *entire* markdown body — no `summary`
+/// substitution and no truncation, unlike the [`longform_block_ui`] preview. Drawn
+/// for a surface dedicated to this one note (a canvas note-embed node), which is the
+/// document rather than a reference sitting in another document's flow.
+///
+/// Stays allocation-free on the per-frame path: the title and body are borrowed
+/// straight from the note (`content()` is the whole body, so there's nothing to cut).
+fn longform_full_ui(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    req: &KindRenderRequest,
+) -> egui::Response {
+    ui.vertical(|ui| {
+        ui.label(
+            egui::RichText::new(tag_value(req.note, "title").unwrap_or(UNTITLED))
+                .heading()
+                .strong(),
+        );
+        notedeck_ui::markdown::render_markdown_with_refs(
+            ui,
+            note_context,
+            req.txn,
+            req.note.content(),
+        );
     })
     .response
 }

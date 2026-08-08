@@ -452,9 +452,10 @@ fn snapshot_notebook_editor() {
 }
 
 /// Seed one longform note with a title, summary and body under a deterministic
-/// `d`, for a note-embed to reference. Distinct from [`seed_vault`] because the
-/// embed shows the note's own `summary` (a real NIP-23 note keeps its title in
-/// the tag, not repeated as a body heading), so the seed sets one.
+/// `d`, for a note-embed to reference. A real NIP-23 note keeps its title in the
+/// tag (not repeated as a body heading), so the seed sets one; the `summary` is
+/// seeded too so a block-embed preview would differ visibly from the full-body
+/// render a note-embed node draws.
 fn seed_embed_note(ndb: &Ndb, secret: &[u8; 32], d: &str, title: &str, summary: &str, body: &str) {
     let input = LongformInput {
         title: title.to_string(),
@@ -506,7 +507,8 @@ fn seed_embed_canvas(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], reference: &
 
 /// Seed a longform note and a canvas holding a single note-embed node that
 /// references it by naddr, then snapshot the rendered embed — the note's title
-/// and body preview drawn full-node via the longform kind renderer.
+/// and *full* markdown body drawn full-node via the longform kind renderer
+/// (`RenderContext::Full`), not the summary/head preview a block embed shows.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_note_embed() {
@@ -524,7 +526,11 @@ fn snapshot_notebook_note_embed() {
             "embed-00",
             "Q3 planning notes",
             "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review.",
-            "# Milestones\n\nShip the notebook vault and the longform editor.",
+            "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
+             ## Stretch goals\n\n\
+             - Cross-device longform sync\n\
+             - Note templates and daily notes\n\n\
+             Revisit these at the **mid-point review**.",
         );
         seed_embed_canvas(app_ctx.ndb, &author, &secret, &reference);
     }
@@ -544,8 +550,8 @@ fn snapshot_notebook_note_embed() {
 
 /// Simulate the vault → canvas drag-drop end to end: seed a longform note, drag
 /// its vault row onto the canvas, and snapshot the note-embed node the drop
-/// creates — the note's title and body preview drawn full-node by the longform
-/// renderer, the same shape [`snapshot_notebook_note_embed`] seeds by hand.
+/// creates — the note's title and full markdown body drawn full-node by the
+/// longform renderer, the same shape [`snapshot_notebook_note_embed`] seeds by hand.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_note_embed_drag() {
@@ -561,7 +567,11 @@ fn snapshot_notebook_note_embed_drag() {
             "drag-00",
             "Q3 planning notes",
             "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review.",
-            "# Milestones\n\nShip the notebook vault and the longform editor.",
+            "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
+             ## Stretch goals\n\n\
+             - Cross-device longform sync\n\
+             - Note templates and daily notes\n\n\
+             Revisit these at the **mid-point review**.",
         );
     }
 
