@@ -5257,7 +5257,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.10.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=27eca1065656#27eca1065656fefc232feb11c9c04637b98ea8a3"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=179e27f77d37#179e27f77d37d419f4191c72a944e137a1373729"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -5273,7 +5273,7 @@ dependencies = [
 [[package]]
 name = "nostrdb_net"
 version = "0.1.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=27eca1065656#27eca1065656fefc232feb11c9c04637b98ea8a3"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=179e27f77d37#179e27f77d37d419f4191c72a944e137a1373729"
 dependencies = [
  "base64 0.22.1",
  "bech32",
