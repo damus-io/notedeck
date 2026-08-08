@@ -36,9 +36,17 @@ pub fn node_ref(id: &[u8; 32]) -> String {
 ///
 /// The word-id shape is *not* validated here; resolution re-encodes each candidate
 /// and matches. The returned slice borrows from `sel`.
+///
+/// A thin adapter over the shared [`wordid::WordIdRef`] grammar with the required
+/// `notebook:` scheme: a node ref carries no scope segment, so only a
+/// [`Bare`](wordid::WordIdRef::Bare) body is a node reference.
 pub fn parse_ref(sel: &str) -> Option<&str> {
-    let words = sel.strip_prefix(SCHEME)?.strip_prefix(':')?;
-    (!words.is_empty()).then_some(words)
+    match wordid::WordIdRef::parse_uri(sel, SCHEME)? {
+        wordid::WordIdRef::Bare { words } => Some(words),
+        // A `<scope>/<word-id>` body has no meaning for notebook (nodes aren't
+        // canvas-scoped in their identity), so it's not a node reference.
+        wordid::WordIdRef::Scoped { .. } => None,
+    }
 }
 
 #[cfg(test)]
