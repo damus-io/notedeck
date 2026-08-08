@@ -210,12 +210,6 @@ pub struct AgenticSessionData {
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
     pub seen_note_ids: HashSet<[u8; 32]>,
-    /// Highest conversation ordering key `(ms, seq)` appended via live polling.
-    /// Live events are appended in arrival order, so when a note arrives with a
-    /// lower key than this (out-of-order relay delivery), the chat is rebuilt
-    /// from ndb in sorted order. Mirrors the loader's ordering (see
-    /// `session_loader`). `None` until the first conversation note is seen.
-    pub max_seen_order: Option<agentium_core::session_loader::EventOrder>,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
     /// Runtime allowlist for auto-accepting permissions this session.
@@ -260,7 +254,6 @@ impl AgenticSessionData {
             remote_status: None,
             remote_status_ts: 0,
             seen_note_ids: HashSet::new(),
-            max_seen_order: None,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
             auto_accept_all: false,

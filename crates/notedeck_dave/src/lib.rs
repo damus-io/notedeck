@@ -2794,7 +2794,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ) -> (Vec<(SessionId, String)>, Vec<session_events::BuiltEvent>) {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
-        let mut reorder_ids: Vec<SessionId> = Vec::new();
+        let mut rebuild_ids: Vec<SessionId> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return (remote_user_messages, events_to_publish);
         };
@@ -2850,44 +2850,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
             remote_user_messages.extend(result.remote_user_messages);
             events_to_publish.extend(result.events_to_publish);
-            if result.needs_reorder {
-                reorder_ids.push(session_id);
+            if result.rebuild_chat {
+                rebuild_ids.push(session_id);
             }
         }
 
-        // Drop the read txn before the reorder pass, which opens its own fresh
+        // Drop the read txn before the rebuild pass, which opens its own fresh
         // transaction per session (avoids nested transactions).
         drop(txn);
 
-        // Out-of-order relay delivery was detected for these remote sessions:
-        // rebuild each chat from ndb in `seq` order. Done after the poll loop
-        // so each rebuild uses a fresh transaction (no nested txns).
-        for session_id in reorder_ids {
+        // A new displayable note landed for each of these remote sessions:
+        // rebuild each chat from ndb in sorted order. This is the single display
+        // path for remote sessions, so the result is independent of arrival/poll
+        // order. Done after the poll loop so each rebuild uses a fresh
+        // transaction (no nested txns).
+        for session_id in rebuild_ids {
             let Ok(txn) = Transaction::new(ndb) else {
                 continue;
             };
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
-            let Some(claude_sid) = session
-                .agentic
-                .as_ref()
-                .map(|a| a.event_session_id().to_string())
-            else {
-                continue;
-            };
-            let loaded =
-                session_loader::load_session_messages_for_author(ndb, &txn, &account, &claude_sid);
-            session.chat = loaded.messages;
-            if let Some(agentic) = &mut session.agentic {
-                agentic.seen_note_ids.extend(loaded.note_ids);
-                agentic.permissions.merge_loaded(
-                    loaded.permissions.responded,
-                    loaded.permissions.request_note_ids,
-                );
-            }
+            rebuild_remote_chat(session, ndb, &txn, &account);
             tracing::debug!(
-                "rebuilt remote session {} chat in seq order ({} messages)",
+                "rebuilt remote session {} chat from ndb ({} messages)",
                 session_id,
                 session.chat.len(),
             );
@@ -4676,23 +4662,33 @@ pub(crate) struct ProcessedNotes {
     pub remote_user_messages: Vec<(SessionId, String)>,
     /// Events that should be published to relays.
     pub events_to_publish: Vec<session_events::BuiltEvent>,
-    /// True if an out-of-order (lower `seq`) conversation note was appended,
-    /// so the caller should rebuild this remote session's chat from ndb in
-    /// `seq` order. Only set for remote sessions.
-    pub needs_reorder: bool,
+    /// True if this batch ingested a new displayable note for a remote session,
+    /// so the caller must rebuild that session's chat from ndb in sorted order
+    /// (see [`rebuild_remote_chat`]). Remote display order is a pure function of
+    /// the persisted event set — the loader is the single ordering path — so any
+    /// new displayable note triggers a full rebuild rather than an incremental
+    /// append that could diverge from the loader across out-of-order polls.
+    pub rebuild_chat: bool,
 }
 
 /// Process a batch of kind-1988 notes for a single session.
 ///
-/// Sorts the batch by `seq`, deduplicates via `seen_note_ids`, and appends
-/// messages to `session.chat`. Returns any remote user messages (for local
+/// Deduplicates via `seen_note_ids` and runs the side effects each note implies
+/// (permission auto-accept + response tracking, compaction lifecycle,
+/// proceed-after-compaction). Returns any remote user messages (for local
 /// sessions) and events to publish.
 ///
-/// Appending only preserves order within this batch; events arriving in a
-/// later poll are appended after earlier ones. To recover from out-of-order
-/// relay delivery across polls, this tracks the highest conversation `seq`
-/// appended and sets `needs_reorder` when a lower-`seq` note arrives, so the
-/// caller rebuilds the remote session's chat from ndb in `seq` order.
+/// For **remote** sessions this does NOT append display messages to
+/// `session.chat`: remote conversation order must be a pure function of the
+/// persisted event set, independent of arrival/poll order, so a single path —
+/// the loader ([`rebuild_remote_chat`]) — owns display. When a new displayable
+/// note arrives, `rebuild_chat` is set and the caller reloads the whole chat
+/// from ndb sorted by [`EventOrder`](session_loader::EventOrder). This replaces
+/// the old incremental-append + `max_seen_order` out-of-order detector, whose
+/// unseeded state let backfilled events append at the end on a fresh machine.
+///
+/// For **local** sessions only incoming remote user messages are appended (the
+/// live streaming path owns local display); those are never rebuilt from ndb.
 pub(crate) fn process_conversation_notes<'a>(
     mut notes: Vec<nostrdb::Note<'a>>,
     session: &mut session::ChatSession,
@@ -4703,18 +4699,17 @@ pub(crate) fn process_conversation_notes<'a>(
 ) -> ProcessedNotes {
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
-    let mut needs_reorder = false;
+    let mut rebuild_chat = false;
     // Newest `created_at` of a displayable remote note in this batch, applied
     // to `last_activity` after the loop (can't call `session.mark_activity`
     // inside — `session.agentic` is mutably borrowed below).
     let mut latest_activity: Option<u64> = None;
 
     // Sort this batch by wall-clock time at millisecond resolution, keyed off
-    // the same `EventOrder` the loader uses so the two can never drift apart.
-    // NOTE: this only orders within a single poll batch; events that arrive in
-    // a later batch are still appended after earlier ones (see
-    // process_conversation_notes docs), so out-of-order delivery across polls
-    // can still misorder the chat.
+    // the same `EventOrder` the loader uses. For remote sessions display order
+    // ultimately comes from the loader-driven rebuild, so this sort only matters
+    // for the local-session user-message append below; for remote it keeps the
+    // side-effect processing (compaction lifecycle) in a sensible order.
     notes.sort_by_key(|n| session_loader::EventOrder::from_note(n));
 
     for note in &notes {
@@ -4747,10 +4742,11 @@ pub(crate) fn process_conversation_notes<'a>(
             continue;
         };
 
-        // Track conversation ordering. Live events are appended in arrival
-        // order, so a displayable note whose ordering key is below the highest
-        // seen means relay delivery was out of order; flag a rebuild from ndb in
-        // sorted order. Only newly-seen notes reach here (deduped above).
+        // Any newly-seen displayable note means the loader-rendered chat is now
+        // stale: flag a rebuild from ndb in sorted order. Remote display order
+        // is owned entirely by the loader (see the function docs), so we never
+        // append display messages here — the caller's rebuild is the single,
+        // ingestion-order-independent source of truth.
         let displayable = matches!(
             role,
             Some("user")
@@ -4763,66 +4759,32 @@ pub(crate) fn process_conversation_notes<'a>(
         if displayable {
             let created_at = note.created_at();
             latest_activity = Some(latest_activity.map_or(created_at, |p| p.max(created_at)));
-            let order = session_loader::EventOrder::from_note(note);
-            if matches!(agentic.max_seen_order, Some(prev) if order < prev) {
-                needs_reorder = true;
-            }
-            agentic.max_seen_order = Some(agentic.max_seen_order.map_or(order, |p| p.max(order)));
+            rebuild_chat = true;
         }
 
+        // Side effects only — display is rebuilt from ndb by the caller. The
+        // arms below run effects that a reload can't recover (publishing
+        // responses, advancing compaction state) or that are order-neutral
+        // in-place updates (marking a permission responded).
         match role {
-            Some("user") => {
-                session.chat.push(Message::User(content.to_string().into()));
-            }
-            Some("assistant") => {
-                session.chat.push(Message::Assistant(
-                    crate::messages::AssistantMessage::from_text(content.to_string()),
-                ));
-            }
-            Some("tool_call") => {
-                session.chat.push(Message::Assistant(
-                    crate::messages::AssistantMessage::from_text(content.to_string()),
-                ));
-            }
-            Some("tool_result") => {
-                let summary = if content.chars().count() > 100 {
-                    let truncated: String = content.chars().take(100).collect();
-                    format!("{}...", truncated)
-                } else {
-                    content.to_string()
-                };
-                let tool_name = session_events::get_tag_value(note, "tool-name")
-                    .unwrap_or("tool")
-                    .to_string();
-                session
-                    .chat
-                    .push(Message::ToolResponse(ToolResponse::executed_tool(
-                        crate::messages::ExecutedTool {
-                            tool_name,
-                            summary,
-                            parent_task_id: None,
-                            file_update: None,
-                        },
-                    )));
-            }
             Some("permission_request") => {
                 handle_remote_permission_request(
                     note,
                     content,
                     agentic,
-                    &mut session.chat,
                     secret_key,
                     &mut events_to_publish,
                 );
             }
             Some("permission_response") => {
-                // Track that this permission was responded to
+                // Track that this permission was responded to, and reflect it on
+                // the existing chat message in place (order-neutral) so a lone
+                // response with no displayable note in the batch still updates.
                 if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                     if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
                         let (response_type, _, _) =
                             session_events::decode_permission_response(content);
                         agentic.permissions.responded.insert(perm_id, response_type);
-                        // Update the matching PermissionRequest in chat
                         for msg in session.chat.iter_mut() {
                             if let Message::PermissionRequest(req) = msg {
                                 if req.id == perm_id && req.response.is_none() {
@@ -4838,9 +4800,7 @@ pub(crate) fn process_conversation_notes<'a>(
             }
             Some("compaction_complete") => {
                 let pre_tokens = content.parse::<u64>().unwrap_or(0);
-                let info = crate::messages::CompactionInfo { pre_tokens };
-                agentic.last_compaction = Some(info.clone());
-                session.chat.push(Message::CompactionComplete(info));
+                agentic.last_compaction = Some(crate::messages::CompactionInfo { pre_tokens });
 
                 // Advance compact-and-proceed: for remote sessions,
                 // there's no stream-end to wait for, so go straight
@@ -4887,17 +4847,71 @@ pub(crate) fn process_conversation_notes<'a>(
     ProcessedNotes {
         remote_user_messages,
         events_to_publish,
-        needs_reorder,
+        rebuild_chat,
+    }
+}
+
+/// Rebuild a remote session's chat from ndb — the single source of truth for
+/// remote conversation display order.
+///
+/// Loads every kind-1988 event for the session sorted by
+/// [`EventOrder`](session_loader::EventOrder) and replaces `session.chat`, so
+/// the displayed order is a pure, total function of the persisted event set,
+/// independent of the order events arrived or were ingested (the fresh-machine
+/// backfill case). Re-seeds the dedup set and permission state, then overlays
+/// any in-memory permission decisions the loader couldn't know from ndb — an
+/// auto-accept published this poll but not yet ingested back through the relay.
+pub(crate) fn rebuild_remote_chat(
+    session: &mut session::ChatSession,
+    ndb: &nostrdb::Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+) {
+    let Some(claude_sid) = session
+        .agentic
+        .as_ref()
+        .map(|a| a.event_session_id().to_string())
+    else {
+        return;
+    };
+    let loaded = session_loader::load_session_messages_for_author(ndb, txn, author, &claude_sid);
+    session.chat = loaded.messages;
+
+    let Some(agentic) = &mut session.agentic else {
+        return;
+    };
+    agentic.seen_note_ids.extend(loaded.note_ids);
+    agentic.permissions.merge_loaded(
+        loaded.permissions.responded,
+        loaded.permissions.request_note_ids,
+    );
+
+    // Overlay in-memory permission decisions onto the freshly loaded chat. The
+    // loader only knows responses persisted in ndb, so an auto-accept recorded
+    // this poll (its response event published but not yet ingested) would render
+    // as pending without this.
+    for msg in session.chat.iter_mut() {
+        let Message::PermissionRequest(req) = msg else {
+            continue;
+        };
+        if req.response.is_none() {
+            if let Some(&resp) = agentic.permissions.responded.get(&req.id) {
+                req.response = Some(resp);
+            }
+        }
     }
 }
 
 /// Handle a remote permission request from a kind-1988 conversation event.
-/// Checks runtime allowlist for auto-accept, otherwise adds to chat for UI display.
+///
+/// Runs only the side effects — records the request note id and, if the runtime
+/// allowlist auto-accepts, records the response and publishes it. The chat
+/// message itself is rendered by the loader on the caller's rebuild (with the
+/// in-memory `responded` overlay), so this never appends to chat.
 fn handle_remote_permission_request(
     note: &nostrdb::Note,
     content: &str,
     agentic: &mut session::AgenticSessionData,
-    chat: &mut Vec<Message>,
     secret_key: Option<&[u8; 32]>,
     events_to_publish: &mut Vec<session_events::BuiltEvent>,
 ) {
@@ -4923,44 +4937,35 @@ fn handle_remote_permission_request(
         .insert(perm_id, *note.id());
 
     // Runtime allowlist auto-accept
-    if agentic.should_runtime_allow(&tool_name, &tool_input) {
-        tracing::info!(
-            "runtime allow: auto-accepting remote '{}' for this session",
-            tool_name,
-        );
-        agentic
-            .permissions
-            .responded
-            .insert(perm_id, crate::messages::PermissionResponseType::Allowed);
-        if let Some(sk) = secret_key {
-            let sid = agentic.event_session_id().to_string();
-            if let Ok(evt) = session_events::build_permission_response_event(
-                &perm_id,
-                note.id(),
-                true,
-                None,
-                false,
-                &sid,
-                &mut agentic.live_threading,
-                sk,
-            ) {
-                events_to_publish.push(evt);
-            }
-        }
-        let request = crate::messages::PermissionRequest::pending(perm_id, tool_name, tool_input)
-            .auto_accept();
-        chat.push(Message::PermissionRequest(request));
+    if !agentic.should_runtime_allow(&tool_name, &tool_input) {
         return;
     }
 
-    // Check if we already responded
-    let response = agentic.permissions.responded.get(&perm_id).copied();
-
-    chat.push(Message::PermissionRequest(
-        crate::messages::PermissionRequest::new(
-            perm_id, tool_name, tool_input, None, response, None,
-        ),
-    ));
+    tracing::info!(
+        "runtime allow: auto-accepting remote '{}' for this session",
+        tool_name,
+    );
+    // Record the decision in memory so the rebuild overlay renders it as allowed
+    // even before the published response round-trips back through the relay.
+    agentic
+        .permissions
+        .responded
+        .insert(perm_id, crate::messages::PermissionResponseType::Allowed);
+    if let Some(sk) = secret_key {
+        let sid = agentic.event_session_id().to_string();
+        if let Ok(evt) = session_events::build_permission_response_event(
+            &perm_id,
+            note.id(),
+            true,
+            None,
+            false,
+            &sid,
+            &mut agentic.live_threading,
+            sk,
+        ) {
+            events_to_publish.push(evt);
+        }
+    }
 }
 
 /// Handle a remote permission response from a kind-1988 event.
@@ -5416,13 +5421,25 @@ mod tests {
         );
     }
 
-    /// Integration test: events ingested out of order into ndb are sorted
-    /// by `seq` and produce correctly ordered chat messages.
-    /// This exercises the actual `process_conversation_notes` code path
-    /// used by `poll_remote_conversation_events`.
+    /// Every `Message::Assistant` body in a chat, in order — for asserting the
+    /// rebuilt remote transcript's ordering by content.
+    fn assistant_texts(chat: &[Message]) -> Vec<&str> {
+        chat.iter()
+            .filter_map(|m| match m {
+                Message::Assistant(a) => Some(a.text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Integration test for the remote conversation display path: events
+    /// ingested out of order into ndb produce a correctly ordered chat after
+    /// the loader-driven rebuild (`rebuild_remote_chat`), the single ordering
+    /// source `poll_remote_conversation_events` uses.
     #[tokio::test]
     async fn test_process_conversation_notes_ordering() {
         let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "poll-ordering-test";
 
@@ -5478,7 +5495,8 @@ mod tests {
             let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
         }
 
-        // Create a remote agentic session
+        // Create a remote agentic session whose event identity matches the
+        // events' `d`-tag, so the rebuild loader can find them.
         let mut session = session::ChatSession::new(
             1,
             PathBuf::from("/tmp"),
@@ -5486,8 +5504,10 @@ mod tests {
             BackendType::Claude,
         );
         session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
 
-        // First pass: query, process, and verify ordering
+        // First poll: process the batch (side effects + rebuild flag), then
+        // rebuild the chat from ndb exactly as the caller does.
         {
             let txn = Transaction::new(&ndb).unwrap();
             let results = ndb.query(&txn, std::slice::from_ref(&filter), 128).unwrap();
@@ -5512,13 +5532,19 @@ mod tests {
             );
 
             assert!(result.remote_user_messages.is_empty());
+            assert!(
+                result.rebuild_chat,
+                "a batch of new displayable notes must request a rebuild"
+            );
             assert_eq!(
                 session.last_activity, newest_created_at,
                 "last_activity should track the newest ingested note's created_at"
             );
+
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
         }
 
-        // Assert correct ordering in chat
+        // Assert correct ordering in the rebuilt chat
         assert_eq!(
             session.chat.len(),
             3,
@@ -5544,7 +5570,8 @@ mod tests {
             assert_eq!(req.id, perm_id);
         }
 
-        // Second pass: verify dedup prevents duplicate messages
+        // Second poll of the same events: all already seen, so no rebuild is
+        // requested and the chat is unchanged (dedup).
         {
             let txn = Transaction::new(&ndb).unwrap();
             let results = ndb.query(&txn, &[filter], 128).unwrap();
@@ -5553,7 +5580,11 @@ mod tests {
                 .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
                 .collect();
 
-            let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+            let result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+            assert!(
+                !result.rebuild_chat,
+                "already-seen notes must not request a rebuild"
+            );
         }
         assert_eq!(
             session.chat.len(),
@@ -5562,131 +5593,120 @@ mod tests {
         );
     }
 
-    /// A conversation note arriving in a later poll batch with a lower `seq`
-    /// than already-appended notes (out-of-order relay delivery across polls)
-    /// must set `needs_reorder` so the caller rebuilds the chat from ndb in
-    /// seq order. In-order delivery must not.
+    /// Fresh-machine regression (dave#pledge-grief-close): on a machine that
+    /// rebuilt ndb from a negentropy backfill, a session's events arrive in
+    /// arbitrary order across polls. An early-order event that backfills *after*
+    /// the initial load must still land in its correct position.
+    ///
+    /// The old path appended live notes incrementally and relied on a
+    /// `max_seen_order` detector to trigger a rebuild on inversion — but that
+    /// detector was never seeded from the initial load, so on a fresh machine
+    /// the first backfilled event that belonged mid-list was appended at the end
+    /// and never noticed, leaving the chat permanently misordered. The single
+    /// loader-driven rebuild path (`rebuild_remote_chat`) is order-independent by
+    /// construction: `process_conversation_notes` never appends display for
+    /// remote sessions, it only flags that a rebuild is needed.
     #[tokio::test]
-    async fn process_conversation_notes_flags_cross_batch_out_of_order() {
-        fn notes_with_seq<'a>(
-            ndb: &'a Ndb,
-            txn: &'a Transaction,
-            filter: &nostrdb::Filter,
-            seq: u32,
-        ) -> Vec<nostrdb::Note<'a>> {
-            let results = ndb.query(txn, std::slice::from_ref(filter), 128).unwrap();
-            results
-                .iter()
-                .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
-                .filter(|n| {
-                    session_events::get_tag_value(n, "seq").and_then(|s| s.parse::<u32>().ok())
-                        == Some(seq)
-                })
-                .collect()
-        }
-
+    async fn fresh_machine_backfill_rebuilds_in_order() {
         let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
         let mut threading = ThreadingState::new();
-        let session_id_str = "cross-batch-test";
+        let session_id_str = "backfill-test";
 
-        // Two live events: seq 0 then seq 1.
-        let first = build_live_event(
-            "first",
-            "assistant",
-            session_id_str,
-            None,
-            None,
-            None,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
-        let second = build_live_event(
-            "second",
-            "assistant",
-            session_id_str,
-            None,
-            None,
-            None,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
+        // Authored order A < B < C (increasing seq, and non-decreasing ms).
+        let mut mk = |text: &str| {
+            build_live_event(
+                text,
+                "assistant",
+                session_id_str,
+                None,
+                None,
+                None,
+                &mut threading,
+                &sk,
+            )
+            .unwrap()
+        };
+        let a = mk("A");
+        let b = mk("B");
+        let c = mk("C");
 
         let tmp_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
         let filter = nostrdb::Filter::new()
             .kinds([session_events::AI_CONVERSATION_KIND as u64])
             .build();
-        for event in [&first, &second] {
+
+        let ingest = |ndb: &Ndb, evt: &session_events::BuiltEvent| {
             let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
-            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
+            sub
+        };
+
+        // Initial backfill delivered only the middle and last events (A hasn't
+        // arrived yet).
+        for event in [&b, &c] {
+            let sub = ingest(&ndb, event);
             let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
         }
 
-        let new_remote_session = || {
-            let mut s = session::ChatSession::new(
-                1,
-                PathBuf::from("/tmp"),
-                AiMode::Agentic,
-                BackendType::Claude,
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        // Initial load populates the chat with what's present so far: [B, C].
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+        }
+        assert_eq!(
+            assistant_texts(&session.chat),
+            vec!["B", "C"],
+            "initial load has only the backfilled-so-far events"
+        );
+
+        // A backfills late; a subsequent poll delivers it on its own.
+        {
+            let sub = ingest(&ndb, &a);
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            let a_batch: Vec<_> = ndb
+                .query(&txn, std::slice::from_ref(&filter), 128)
+                .unwrap()
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .filter(|n| n.content() == "A")
+                .collect();
+            assert_eq!(a_batch.len(), 1, "the poll batch is just A");
+
+            let result = process_conversation_notes(a_batch, &mut session, 1, true, Some(&sk), &ndb);
+            assert!(
+                result.rebuild_chat,
+                "a new displayable backfill note must request a rebuild"
             );
-            s.source = SessionSource::Remote;
-            s
-        };
+            // The single-path design never appends display for remote sessions;
+            // process leaves the chat untouched and the rebuild fixes order.
+            assert_eq!(
+                assistant_texts(&session.chat),
+                vec!["B", "C"],
+                "process must not append display messages for remote sessions"
+            );
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+        }
 
-        let txn = Transaction::new(&ndb).unwrap();
-
-        // In order (seq 0 then seq 1): never flags reorder.
-        let mut in_order = new_remote_session();
-        assert!(
-            !process_conversation_notes(
-                notes_with_seq(&ndb, &txn, &filter, 0),
-                &mut in_order,
-                1,
-                true,
-                Some(&sk),
-                &ndb,
-            )
-            .needs_reorder
-        );
-        assert!(
-            !process_conversation_notes(
-                notes_with_seq(&ndb, &txn, &filter, 1),
-                &mut in_order,
-                1,
-                true,
-                Some(&sk),
-                &ndb,
-            )
-            .needs_reorder
-        );
-
-        // Out of order (seq 1 then seq 0): the later, lower-seq batch flags it.
-        let mut out_of_order = new_remote_session();
-        assert!(
-            !process_conversation_notes(
-                notes_with_seq(&ndb, &txn, &filter, 1),
-                &mut out_of_order,
-                1,
-                true,
-                Some(&sk),
-                &ndb,
-            )
-            .needs_reorder
-        );
-        assert!(
-            process_conversation_notes(
-                notes_with_seq(&ndb, &txn, &filter, 0),
-                &mut out_of_order,
-                1,
-                true,
-                Some(&sk),
-                &ndb,
-            )
-            .needs_reorder,
-            "a lower-seq note arriving in a later batch must flag a rebuild"
+        // A lands in its correct position despite arriving last.
+        assert_eq!(
+            assistant_texts(&session.chat),
+            vec!["A", "B", "C"],
+            "a backfilled early event must sort into place, not append at the end"
         );
     }
 
@@ -5699,6 +5719,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_response_denied_is_decoded() {
         let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "perm-deny-test";
         let perm_id = uuid::Uuid::new_v4();
@@ -5735,15 +5756,8 @@ mod tests {
             .kinds([session_events::AI_CONVERSATION_KIND as u64])
             .build();
 
-        // Ingest both events
-        for event in [&perm_req_evt, &perm_resp_evt] {
-            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
-            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
-                .expect("ingest failed");
-            let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
-        }
-
-        // Create a remote agentic session
+        // Create a remote agentic session whose event identity matches the
+        // events' `d`-tag so the rebuild loader can find them.
         let mut session = session::ChatSession::new(
             1,
             PathBuf::from("/tmp"),
@@ -5751,20 +5765,28 @@ mod tests {
             BackendType::Remote,
         );
         session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
 
-        // Pass 1: process only the permission_request event so the chat
-        // gets a pending PermissionRequest with response=None.
+        // Pass 1: ingest and process only the permission_request, then rebuild
+        // the chat from ndb so it holds a pending PermissionRequest
+        // (response=None). The response is not in ndb yet.
         {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&perm_req_evt.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+
             let txn = Transaction::new(&ndb).unwrap();
             let results = ndb.query(&txn, std::slice::from_ref(&filter), 128).unwrap();
             let notes: Vec<_> = results
                 .iter()
                 .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
-                .filter(|n| session_events::get_tag_value(n, "role") == Some("permission_request"))
                 .collect();
             assert_eq!(notes.len(), 1, "should have 1 permission_request");
 
-            let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+            let result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+            assert!(result.rebuild_chat, "a permission_request must request a rebuild");
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
         }
 
         // Verify the request is pending (response=None)
@@ -5781,9 +5803,18 @@ mod tests {
             "request should be pending before response"
         );
 
-        // Pass 2: process the permission_response event.
-        // Reset the seen set for the response event only (request was already seen).
+        // Pass 2: the denied response arrives on a later poll. It is
+        // order-neutral, so `process_conversation_notes` marks the existing chat
+        // request in place (no rebuild needed).
         {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(
+                &perm_resp_evt.to_event_json(),
+                IngestMetadata::new().client(true),
+            )
+            .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+
             let txn = Transaction::new(&ndb).unwrap();
             let results = ndb.query(&txn, &[filter], 128).unwrap();
             let notes: Vec<_> = results
@@ -5825,6 +5856,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_denied_single_batch() {
         let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "perm-single-batch";
         let perm_id = uuid::Uuid::new_v4();
@@ -5872,8 +5904,9 @@ mod tests {
             BackendType::Remote,
         );
         session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
 
-        // Process all events in one batch
+        // Process all events in one batch, then rebuild the chat from ndb.
         {
             let txn = Transaction::new(&ndb).unwrap();
             let results = ndb.query(&txn, &[filter], 128).unwrap();
@@ -5884,6 +5917,7 @@ mod tests {
             assert_eq!(notes.len(), 2);
 
             let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
         }
 
         // Find the PermissionRequest — regardless of processing order,

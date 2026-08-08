@@ -80,12 +80,18 @@ impl PermissionTracker {
     }
 
     /// Merge loaded permission state from restored events.
+    ///
+    /// Both maps are *merged* (not replaced) so in-memory decisions survive a
+    /// reload: an auto-accept recorded this poll whose response event hasn't yet
+    /// round-tripped into ndb is kept, while persisted decisions from ndb win on
+    /// conflict (they are authoritative). At initial load `responded` is empty,
+    /// so this is equivalent to assignment.
     pub fn merge_loaded(
         &mut self,
         responded: HashMap<Uuid, PermissionResponseType>,
         request_note_ids: HashMap<Uuid, [u8; 32]>,
     ) {
-        self.responded = responded;
+        self.responded.extend(responded);
         self.request_note_ids.extend(request_note_ids);
     }
 }
