@@ -938,25 +938,6 @@ fn board_summaries(boards: &[BoardView]) -> Vec<BoardSummary> {
     summaries
 }
 
-/// Wrap an inline widget's response so clicking it opens the entity in the
-/// Headway app: sense clicks over the drawn area, show a pointer cursor on hover,
-/// and on click emit a `NoteAction::Note` for `note`. The shell routes headway
-/// kinds to [`Headway::open`] (see [`is_headway_kind`]) rather than the timeline.
-fn open_on_click(
-    ui: &egui::Ui,
-    response: egui::Response,
-    note: &nostrdb::Note,
-) -> notedeck::KindRenderResponse {
-    let response = response.interact(egui::Sense::click());
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    let action = response
-        .clicked()
-        .then(|| notedeck::AppAction::Note(notedeck::NoteAction::note(NoteId::new(*note.id()))));
-    notedeck::KindRenderResponse::with_action(response, action)
-}
-
 /// Renders a headway issue (kind 1621) referenced inline, e.g. from a notebook
 /// note. Registered into [`notedeck::KindRendererRegistry`] at app startup.
 ///
@@ -1021,7 +1002,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
                 None => issue_inline_ui(ui, &theme, &issue),
             },
         };
-        open_on_click(ui, response, note)
+        notedeck::open_on_click(ui, response, note)
     }
 }
 
@@ -1063,7 +1044,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
             Some(view) => board_inline_ui(ui, &theme, &view),
             None => ui.weak("headway board not found"),
         };
-        open_on_click(ui, response, note)
+        notedeck::open_on_click(ui, response, note)
     }
 }
 

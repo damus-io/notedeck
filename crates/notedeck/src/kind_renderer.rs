@@ -85,6 +85,25 @@ impl KindRenderResponse {
     }
 }
 
+/// Wrap an inline widget's [`egui::Response`] so clicking it opens the drawn entity
+/// in the app that owns it — the shared click-to-open behaviour every inline
+/// [`KindRenderer`] wants, so no impl re-derives it.
+///
+/// Senses clicks over the drawn area, shows a pointer cursor on hover, and on a
+/// click emits [`AppAction::Note`](crate::AppAction::Note) carrying `note`'s id. The
+/// shell routes that action to the owning app (it sniffs the note's kind to pick
+/// the destination), just as it does for a clicked note anywhere else.
+pub fn open_on_click(ui: &egui::Ui, response: egui::Response, note: &Note) -> KindRenderResponse {
+    let response = response.interact(egui::Sense::click());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let action = response
+        .clicked()
+        .then(|| crate::AppAction::Note(crate::NoteAction::note(NoteId::new(*note.id()))));
+    KindRenderResponse::with_action(response, action)
+}
+
 /// Where an inline reference is being drawn, so a [`KindRenderer`] can pick a
 /// shape for the *same* entity — a compact chip in flowing prose versus a full
 /// card as a block embed.

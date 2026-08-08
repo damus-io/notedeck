@@ -95,8 +95,8 @@ pub use jobs::{
     MediaJobs,
 };
 pub use kind_renderer::{
-    resolve_ref, KindRenderRequest, KindRenderResponse, KindRenderer, KindRendererRegistry,
-    RenderContext,
+    open_on_click, resolve_ref, KindRenderRequest, KindRenderResponse, KindRenderer,
+    KindRendererRegistry, RenderContext,
 };
 pub use media::{
     update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction, ObfuscationType,
