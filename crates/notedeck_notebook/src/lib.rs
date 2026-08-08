@@ -138,6 +138,12 @@ pub struct Notebook {
     /// Dave chat). Resolved by [`process_pending_open`](Notebook::process_pending_open)
     /// on the next render: select the node once its canvas has folded in.
     pending_open: Option<NoteId>,
+    /// The viewport centre an in-flight reveal pan is easing toward, in canvas
+    /// coords. Set by [`reveal_node`](Notebook::reveal_node) so a node opened from
+    /// a reference glides into view instead of snapping; [`update_pan`](Notebook::update_pan)
+    /// eases `scene_rect` toward it each frame and clears it on arrival. `None`
+    /// when no pan is running, so ordinary user panning owns `scene_rect`.
+    pan_target: Option<Pos2>,
     /// The node an edge is currently being dragged from, if any. Persisted across
     /// frames so its side handles stay alive (and the egui drag keeps its id)
     /// even once the pointer leaves the source node.
@@ -297,6 +303,20 @@ fn move_anim_ids(id: &NodeId) -> (egui::Id, egui::Id) {
     )
 }
 
+/// How long the reveal-node camera pan runs, in seconds. A touch longer than a
+/// node slide since it sweeps the whole viewport rather than one box.
+const PAN_ANIM_SECS: f32 = 0.4;
+
+/// The egui animation-manager ids holding the panned viewport centre's x and y.
+/// A single reused pair (unlike per-node [`move_anim_ids`]) — only one reveal
+/// pan runs at a time.
+fn pan_anim_ids() -> (egui::Id, egui::Id) {
+    (
+        egui::Id::new("notebook-pan-x"),
+        egui::Id::new("notebook-pan-y"),
+    )
+}
+
 impl Notebook {
     pub fn new() -> Self {
         Notebook::default()
@@ -375,7 +395,7 @@ impl Notebook {
     /// from the viewport (clearing `loaded`), and it runs *after* this — so panning
     /// before that first layout would just be overwritten.
     #[profiling::function]
-    fn process_pending_open(&mut self, ndb: &Ndb) {
+    fn process_pending_open(&mut self, ndb: &Ndb, ctx: &egui::Context) {
         let Some(note_id) = self.pending_open else {
             return;
         };
@@ -408,19 +428,51 @@ impl Notebook {
             // ticking until `loaded` flips.
             return;
         }
-        self.reveal_node(target.node, center);
+        self.reveal_node(ctx, target.node, center);
         self.pending_open = None;
         self.wake();
     }
 
-    /// Select `node` and pan the scene so it sits at the centre of the viewport.
-    /// `center` is the node's centre in canvas coords. A pan only — `scene_rect`'s
-    /// size is preserved, so the current zoom (and aspect) is untouched; we just
-    /// translate the visible region. Used by [`process_pending_open`] to reveal a
-    /// node opened from elsewhere, which may sit anywhere on the canvas.
-    fn reveal_node(&mut self, node: NodeId, center: Pos2) {
+    /// Select `node` and start an animated pan so it eases to the centre of the
+    /// viewport. `center` is the node's centre in canvas coords. Only the pan is
+    /// started here — [`update_pan`](Self::update_pan) drives `scene_rect` toward
+    /// it over the next frames. Used by [`process_pending_open`] to reveal a node
+    /// opened from elsewhere, which may sit anywhere on the canvas.
+    ///
+    /// egui's animation manager eases from the value it last saw for an id, so we
+    /// seed it at the *current* viewport centre (time 0) — otherwise the first
+    /// `update_pan` would ease from a stale value (or snap straight to the target).
+    fn reveal_node(&mut self, ctx: &egui::Context, node: NodeId, center: Pos2) {
         self.selected = Some(node);
+        let start = self.scene_rect.center();
+        let (x_id, y_id) = pan_anim_ids();
+        ctx.animate_value_with_time(x_id, start.x, 0.0);
+        ctx.animate_value_with_time(y_id, start.y, 0.0);
+        self.pan_target = Some(center);
+    }
+
+    /// Ease `scene_rect` toward a pending reveal pan ([`pan_target`](Self::pan_target),
+    /// set by [`reveal_node`](Self::reveal_node)) via egui's animation manager,
+    /// which self-schedules the repaints. A pan only — `scene_rect`'s size (zoom
+    /// and aspect) is preserved each frame; only the centre moves. Clears the
+    /// target once the centre has arrived, handing `scene_rect` back to ordinary
+    /// user panning. A no-op when nothing is panning.
+    ///
+    /// Runs each render before the scene is drawn, so this frame's pan is visible
+    /// immediately.
+    fn update_pan(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.pan_target else {
+            return;
+        };
+        let (x_id, y_id) = pan_anim_ids();
+        let x = ctx.animate_value_with_time(x_id, target.x, PAN_ANIM_SECS);
+        let y = ctx.animate_value_with_time(y_id, target.y, PAN_ANIM_SECS);
+        let center = Pos2::new(x, y);
         self.scene_rect = Rect::from_center_size(center, self.scene_rect.size());
+        // Within a subpixel of the target: the ease is done, stop overriding.
+        if (center - target).length() <= 0.5 {
+            self.pan_target = None;
+        }
     }
 
     /// The currently rendered canvas (folded view converted to `jsoncanvas`).
@@ -802,6 +854,7 @@ impl Default for Notebook {
             rendered_heights: HashMap::new(),
             selected: None,
             pending_open: None,
+            pan_target: None,
             connecting: None,
             edit: NodeEdit::Idle,
             confirm_delete: None,
@@ -952,7 +1005,7 @@ impl notedeck::App for Notebook {
 
         // Focus a node a click elsewhere asked us to open (see `open`). Runs after
         // `update`, so `self.canvas` already reflects this frame's fold.
-        self.process_pending_open(ctx.ndb);
+        self.process_pending_open(ctx.ndb, ui.ctx());
 
         // Full-screen editor mode takes over the whole area; the canvas is hidden.
         // Background sync still runs in `update`, which also pumps the post-save
@@ -1043,6 +1096,10 @@ impl notedeck::App for Notebook {
         // Ease each node toward its committed position for this frame (egui drives
         // the slide and its repaints) before drawing.
         self.update_anim_positions(ui.ctx());
+
+        // Advance an in-flight reveal pan (a node opened from a reference glides
+        // into view) before the scene reads `scene_rect` below.
+        self.update_pan(ui.ctx());
 
         // Render against the cached canvas, collecting the edit the user made
         // this frame (at most one — like headway's board action).

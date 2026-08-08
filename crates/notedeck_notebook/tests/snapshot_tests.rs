@@ -818,14 +818,26 @@ fn open_pans_the_canvas_to_an_offscreen_node() {
     // Open it, exactly as chrome does when its inline chip is clicked.
     harness.state_mut().notebook.open(node_note);
 
-    // Pump until the open resolves (the node becomes selected).
+    // The reveal selects immediately but pans over several frames (it's animated),
+    // so pump until the pan settles and the node is actually in view. Terminal
+    // state, not a fixed step count, so the animation length can't flake it.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         harness.run_ok();
-        if harness.state().notebook.selected() == Some(&jc_id) {
+        let selected = harness.state().notebook.selected() == Some(&jc_id);
+        let scene = harness.state().notebook.scene_rect();
+        let pos = harness
+            .state()
+            .notebook
+            .node_position(&jc_id)
+            .expect("node position");
+        if selected && scene.contains(pos) {
             break;
         }
-        assert!(Instant::now() < deadline, "open never selected the node");
+        assert!(
+            Instant::now() < deadline,
+            "open never revealed the node in the viewport"
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 
