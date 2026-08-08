@@ -16,6 +16,7 @@ mod frame_history;
 pub mod i18n;
 mod imgcache;
 pub mod jobs;
+mod keypair_tokens;
 pub mod kind_renderer;
 pub mod media;
 mod muted;

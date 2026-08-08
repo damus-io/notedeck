@@ -29,7 +29,6 @@ thiserror = { workspace = true }
 url = { workspace = true }
 mio = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "net", "macros", "time"] }
-tokenator = { workspace = true }
 hashbrown = { workspace = true }
 slab = { workspace = true }
 hkdf = { workspace = true }

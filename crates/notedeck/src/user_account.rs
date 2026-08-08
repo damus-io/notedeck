@@ -1,4 +1,6 @@
 use enostr::{Keypair, KeypairUnowned};
+
+use crate::keypair_tokens::{parse_keypair_from_tokens, serialize_keypair_tokens};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
 use crate::{
@@ -81,7 +83,7 @@ impl TokenSerializable for UserAccountSerializable {
             let res = TokenParser::alt(
                 parser,
                 &[
-                    |p| Ok(UserAccountRoute::Key(Keypair::parse_from_tokens(p)?)),
+                    |p| Ok(UserAccountRoute::Key(parse_keypair_from_tokens(p)?)),
                     |p| {
                         Ok(UserAccountRoute::Wallet(
                             WalletSerializable::parse_from_tokens(p)?,
@@ -116,7 +118,7 @@ impl TokenSerializable for UserAccountSerializable {
     }
 
     fn serialize_tokens(&self, writer: &mut tokenator::TokenWriter) {
-        self.key.serialize_tokens(writer);
+        serialize_keypair_tokens(&self.key, writer);
 
         let Some(wallet) = &self.wallet else {
             return;
