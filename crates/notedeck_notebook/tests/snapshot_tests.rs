@@ -461,8 +461,9 @@ fn snapshot_notebook_vault_rename() {
 }
 
 /// Seed a note with rich markdown, open it from the vault, and snapshot the
-/// full-screen editor (source on the left, live rendered preview on the right)
-/// for eyeballing the editor's visual design.
+/// full-screen editor for eyeballing its visual design. A note opened from the
+/// vault lands on the Preview face (`notebook_editor`); clicking the header's
+/// Write toggle flips to the raw markdown source (`notebook_editor_write`).
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_editor() {
@@ -511,6 +512,11 @@ fn snapshot_notebook_editor() {
     }
     harness.run_steps(3);
     harness.snapshot("notebook_editor");
+
+    // Flip to the Write face and snapshot the raw markdown source.
+    harness.get_by_label("Write").simulate_click();
+    harness.run_steps(3);
+    harness.snapshot("notebook_editor_write");
 }
 
 /// Seed one longform note with a title, summary and body under a deterministic

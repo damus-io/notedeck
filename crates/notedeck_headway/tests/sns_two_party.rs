@@ -16,16 +16,15 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{
     CONVERGE_TIMEOUT, apply_sealed, build_headway_device, join_shared_board, seal_board_definition,
-    shared_board, shared_card_id, shared_card_titles, step_for, wait_for_convergence,
+    shared_board, shared_card_id, step_for, wait_for_convergence,
 };
-use enostr::FullKeypair;
-use nostrdb::{Filter, Transaction};
+use enostr::{FullKeypair, Pubkey};
 use notedeck_headway::{
-    event::{self, ColumnDef, HeadwayEvent},
+    event::{self, ColumnDef},
     store::{BoardAction, SnsChannel},
 };
 use notedeck_testing::{device::DeviceHarness, init_tracing, stepping::wait_for_device_condition};
@@ -52,30 +51,6 @@ fn shared_columns() -> Vec<ColumnDef> {
 const BOARD_ID: &str = "headway";
 const BOARD_TITLE: &str = "Two-party shared board";
 
-/// The subjects of every kind-1985 subject-edit overlay in a device's local
-/// nostrdb. Used to prove a co-member's *retitle* of the owner's card arrived (its
-/// overlay rumor was unwrapped and stored), separately from whether the fold's
-/// authority gate honours it.
-fn local_subject_edits(device: &mut DeviceHarness) -> Vec<String> {
-    let egui_ctx = device.ctx.clone();
-    let app_ctx = &mut device.state_mut().notedeck.app_context(&egui_ctx);
-    let txn = Transaction::new(app_ctx.ndb).expect("txn");
-    let Ok(results) = app_ctx.ndb.query(
-        &txn,
-        &[Filter::new().kinds([event::KIND_LABEL as u64]).build()],
-        4096,
-    ) else {
-        return Vec::new();
-    };
-    results
-        .into_iter()
-        .filter_map(|r| match event::parse(&r.note) {
-            Some(HeadwayEvent::Subject(edit)) => Some(edit.subject),
-            _ => None,
-        })
-        .collect()
-}
-
 /// Bring up a two-member shared board over a live relay: both members join the
 /// same `team_root`, the owner seals the board *definition* into the channel, and
 /// we wait until it has folded in on the owner's own device (so a later sealed
@@ -95,6 +70,16 @@ struct SharedBoardFixture {
     /// Kept alive so the in-process relay proxy (shuts down on drop) outlives the
     /// devices syncing through it.
     _relay: notedeck_testing::negentropy_relay::MemoryNegentropyRelay,
+}
+
+impl SharedBoardFixture {
+    /// The board channel's team public key — the shared fold's authority key (any
+    /// team-key holder may edit; see [`event::fold_shared_board`]). Returned by
+    /// value (`Pubkey` is `Copy`) so a test can bind it once and still borrow the
+    /// fixture's devices mutably alongside it.
+    fn team_pubkey(&self) -> Pubkey {
+        self.channel.keys.team_keypair.pubkey
+    }
 }
 
 async fn setup_shared_board() -> SharedBoardFixture {
@@ -142,7 +127,7 @@ async fn setup_shared_board() -> SharedBoardFixture {
         CONVERGE_TIMEOUT,
         "owner's own shared board definition folds in",
         |device| {
-            if shared_board(device, &board_addr).is_some() {
+            if shared_board(device, &board_addr, &channel.keys.team_keypair.pubkey).is_some() {
                 Ok(())
             } else {
                 Err("board definition not folded yet".to_owned())
@@ -155,6 +140,7 @@ async fn setup_shared_board() -> SharedBoardFixture {
         &mut owner_device,
         &mut member_device,
         &board_addr,
+        &channel.keys.team_keypair.pubkey,
         "the member to receive the sealed board definition over the relay",
     );
 
@@ -176,6 +162,7 @@ async fn setup_shared_board() -> SharedBoardFixture {
 async fn owner_sealed_edits_converge_to_member_over_relay() {
     init_tracing();
     let mut fx = setup_shared_board().await;
+    let team_pk = fx.team_pubkey();
 
     // The owner adds a card, sealed into the channel. Its distinctive title is a
     // sentinel: it lives only inside the encrypted 1081 envelope, so if it ever
@@ -202,6 +189,7 @@ async fn owner_sealed_edits_converge_to_member_over_relay() {
         &mut fx.owner_device,
         &mut fx.member_device,
         &fx.board_addr,
+        &team_pk,
         "owner's sealed card to fold into the member's shared board",
         |titles| titles.iter().any(|t| t == "owner-sentinel-card"),
     );
@@ -225,6 +213,7 @@ async fn owner_sealed_edits_converge_to_member_over_relay() {
 async fn member_own_card_folds_into_owners_shared_board_over_relay() {
     init_tracing();
     let mut fx = setup_shared_board().await;
+    let team_pk = fx.team_pubkey();
 
     // The member adds its own card off the shared view, sealed into the channel,
     // exactly as the render path would (author = the member's own pubkey).
@@ -250,6 +239,7 @@ async fn member_own_card_folds_into_owners_shared_board_over_relay() {
         &mut fx.member_device,
         &mut fx.owner_device,
         &fx.board_addr,
+        &team_pk,
         "the member's own sealed card to fold into the owner's shared board",
         |titles| titles.iter().any(|t| t == "member-own-card"),
     );
@@ -258,6 +248,7 @@ async fn member_own_card_folds_into_owners_shared_board_over_relay() {
         &mut fx.owner_device,
         &mut fx.member_device,
         &fx.board_addr,
+        &team_pk,
         "the member's own sealed card to fold into the member's shared board",
         |titles| titles.iter().any(|t| t == "member-own-card"),
     );
@@ -310,7 +301,7 @@ async fn sealed_rumors_never_cross_the_wire_in_plaintext() {
         CONVERGE_TIMEOUT,
         "owner's own shared board definition folds in",
         |device| {
-            if shared_board(device, &board_addr).is_some() {
+            if shared_board(device, &board_addr, &channel.keys.team_keypair.pubkey).is_some() {
                 Ok(())
             } else {
                 Err("board definition not folded yet".to_owned())
@@ -335,6 +326,7 @@ async fn sealed_rumors_never_cross_the_wire_in_plaintext() {
         &mut owner_device,
         &mut member_device,
         &board_addr,
+        &channel.keys.team_keypair.pubkey,
         "the sealed card to converge before checking the wire",
         |titles| titles.iter().any(|t| t == "plaintext-sentinel-card"),
     );
@@ -370,32 +362,26 @@ async fn sealed_rumors_never_cross_the_wire_in_plaintext() {
     );
 }
 
-/// A member editing the **owner's** card propagates over the relay — the overlay
-/// rumor lands in the owner's nostrdb — but it does **not** fold into the owner's
-/// shared board. This pins the G6 boundary that survives the coordinate fix.
+/// A member editing the **owner's** card converges into the owner's shared board:
+/// under team-key authority any keyholder may edit any card. The member seals a
+/// retitle of a card the owner authored; it crosses the relay and folds into the
+/// owner's view, replacing the original title.
 ///
-/// The coordinate fix (this card, `headway:headway/fever-decline-fragile`) makes a
-/// member's edit anchor at the board *owner's* coordinate, so `fold_shared_board`
-/// now *gathers* the member's overlay — a member's own new card counts (see
-/// `member_own_card_folds_into_owners_shared_board_over_relay`). What still gates a
-/// member editing a card it does **not** own is the reducer's authority check:
-/// `card_view`'s `authorised = who == issue.author || who == board_author`
-/// (`event.rs`) honours a subject overlay only from the card's author or the board
-/// owner. A member retitling the owner's card is neither, so the overlay is
-/// dropped and the owner keeps the original title.
-///
-/// That authority gate is exactly `headway:headway/purchase-arch-since` (G6 roster
-/// authority): until an admin-signed roster defines who may edit whose cards, a
-/// member can add its own cards to a shared board but cannot rewrite a co-member's.
-/// When G6 lands, this assertion should flip — flag it there rather than treating
-/// today's behavior as correct.
+/// This is the pre-roster authority (`headway:headway/modify-episode-inhale`):
+/// possession of the team key *is* the write capability, so cross-member edits
+/// count. `fold_shared_board` gathers only team-sealed rumors and runs in
+/// `Authority::TeamKey` mode, so the old author-or-owner gate no longer drops a
+/// member's overlay on a co-member's card. Per-member edit *permissions* (an
+/// admin-signed roster restricting who may edit whose cards) remain deferred to
+/// `headway:headway/purchase-arch-since` (G6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn member_editing_owners_card_propagates_but_does_not_count() {
+async fn member_editing_owners_card_counts_over_relay() {
     init_tracing();
     let mut fx = setup_shared_board().await;
+    let team_pk = fx.team_pubkey();
 
     // The owner adds a card and it converges to the member, so the member has a
-    // co-member-owned card to (attempt to) edit.
+    // co-member-owned card to edit.
     apply_sealed(
         &mut fx.owner_device,
         BOARD_ID,
@@ -414,14 +400,20 @@ async fn member_editing_owners_card_propagates_but_does_not_count() {
         &mut fx.owner_device,
         &mut fx.member_device,
         &fx.board_addr,
+        &team_pk,
         "the owner's card to reach the member before it edits it",
         |titles| titles.iter().any(|t| t == "owner-card"),
     );
 
     // The member retitles the owner's card, sealed into the channel (author = the
     // member's own pubkey, exactly as the render path would).
-    let card = shared_card_id(&mut fx.member_device, &fx.board_addr, "owner-card")
-        .expect("owner's card folds into the member's view before it edits it");
+    let card = shared_card_id(
+        &mut fx.member_device,
+        &fx.board_addr,
+        &team_pk,
+        "owner-card",
+    )
+    .expect("owner's card folds into the member's view before it edits it");
     apply_sealed(
         &mut fx.member_device,
         BOARD_ID,
@@ -435,38 +427,18 @@ async fn member_editing_owners_card_propagates_but_does_not_count() {
         },
     );
 
-    // Propagation works: the sealed 1081 crosses the relay and nostrdb unwraps the
-    // member's subject-edit rumor into the owner's db.
-    let deadline = Instant::now() + CONVERGE_TIMEOUT;
-    loop {
-        fx.member_device.run_ok();
-        fx.owner_device.run_ok();
-        if local_subject_edits(&mut fx.owner_device)
-            .iter()
-            .any(|s| s == "member-retitle")
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "member's sealed retitle never propagated to the owner's db over the relay"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    // ...but collaboration does not: the owner's fold keeps the original title,
-    // because the reducer's author-or-owner authority gate drops a member's overlay
-    // on a card it doesn't own. This flips once headway:headway/purchase-arch-since
-    // (G6 roster authority) lands.
-    let owner_titles = shared_card_titles(&mut fx.owner_device, &fx.board_addr);
-    assert!(
-        owner_titles.iter().any(|t| t == "owner-card"),
-        "owner lost its own card title. Owner saw: {owner_titles:?}"
-    );
-    assert!(
-        !owner_titles.iter().any(|t| t == "member-retitle"),
-        "member's retitle of the owner's card unexpectedly counted — has the G6 \
-         roster-authority gate (headway:headway/purchase-arch-since) landed? Update \
-         this assertion if so. Owner saw: {owner_titles:?}"
+    // It converges into the owner's own fold: the card now carries the member's
+    // title and the original is gone — a member edited a card it doesn't own, and
+    // it counted, because the edit was sealed under the team key.
+    wait_for_convergence(
+        &mut fx.member_device,
+        &mut fx.owner_device,
+        &fx.board_addr,
+        &team_pk,
+        "the member's retitle of the owner's card to fold into the owner's board",
+        |titles| {
+            titles.iter().any(|t| t == "member-retitle")
+                && !titles.iter().any(|t| t == "owner-card")
+        },
     );
 }

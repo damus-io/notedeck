@@ -284,8 +284,13 @@ fn resolve_target(
                 "shared board '{board_id}' has an unusable team key; refusing to publish unsealed"
             )
         })?;
-    let view = event::load_shared_board(ndb, &txn, &team.board_addr)
-        .ok_or_else(|| format!("shared board '{board_id}' has not synced yet"))?;
+    let view = event::load_shared_board(
+        ndb,
+        &txn,
+        &team.board_addr,
+        &channel.keys.team_keypair.pubkey,
+    )
+    .ok_or_else(|| format!("shared board '{board_id}' has not synced yet"))?;
     Ok((view, Some(channel)))
 }
 
@@ -909,31 +914,6 @@ mod tests {
         }
     }
 
-    /// Seed `owner`'s demo board into `ndb` and wait for its 7 cards to fold in.
-    fn seed_board_for(ndb: &Ndb, owner: &FullKeypair) {
-        store::seed_demo_board(
-            ndb,
-            &owner.pubkey,
-            &owner.secret_key.secret_bytes(),
-            store::BOARD_ID,
-            1_700_000_000,
-            &mut store::NoPublish,
-        );
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let txn = Transaction::new(ndb).expect("txn");
-            let ready = event::load_board(ndb, &txn, &owner.pubkey, store::BOARD_ID)
-                .map(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7)
-                .unwrap_or(false);
-            drop(txn);
-            if ready {
-                return;
-            }
-            assert!(Instant::now() < deadline, "seeded board never materialised");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
     /// A joined shared board (one this account doesn't own) resolves *with* a
     /// sealing channel — the anti-leak contract: an AI-tool edit to a shared board
     /// seals into its SNS channel rather than publishing a plaintext rumor.
@@ -943,15 +923,54 @@ mod tests {
         let ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
         let owner = FullKeypair::generate();
         let member = FullKeypair::generate();
-        seed_board_for(&ndb, &owner);
 
-        // The member joined the owner's board over an SNS channel.
+        // The owner shares a board over an SNS channel. A shared board's definition
+        // travels sealed (the member's coordinate fold gathers only team-sealed
+        // rumors), and the owner's own author-scoped fold sees the same unwrapped
+        // rumor — so one sealed definition serves both resolution paths.
         let mut root = [0u8; 32];
         root[0] = 0x11;
         root[31] = 0x22;
+        assert!(ndb.add_team_root(&root));
+        let channel = store::SnsChannel {
+            keys: enostr::sns::derive_sns_keys(&root).expect("keys"),
+        };
+        let board_addr = event::board_address(&owner.pubkey, store::BOARD_ID);
+        let cols = vec![
+            event::ColumnDef::new("backlog", "Backlog"),
+            event::ColumnDef::new("todo", "Todo"),
+            event::ColumnDef::new("done", "Done"),
+        ];
+        store::ingest_signed(
+            &ndb,
+            event::build_board(store::BOARD_ID, "Headway", "", &cols),
+            &store::Signer::shared(&owner.secret_key.secret_bytes(), &channel),
+            &mut store::NoPublish,
+        );
+
+        // Wait for the sealed definition to unwrap and fold on both paths.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = Transaction::new(&ndb).expect("txn");
+            let ready = event::load_shared_board(
+                &ndb,
+                &txn,
+                &board_addr,
+                &channel.keys.team_keypair.pubkey,
+            )
+            .is_some()
+                && event::load_board(&ndb, &txn, &owner.pubkey, store::BOARD_ID).is_some();
+            drop(txn);
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "sealed board never materialised");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
         let team = teams::Team {
             team_root: hex::encode(root),
-            board_addr: event::board_address(&owner.pubkey, store::BOARD_ID),
+            board_addr,
             epoch: None,
         };
         let teams = [team];

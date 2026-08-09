@@ -1,5 +1,5 @@
 //! The longform (NIP-23, kind 30023) note editor: a full-screen markdown editor
-//! with a live rendered preview, paired with the canvas in [`crate::Notebook`].
+//! with a Write/Preview toggle, paired with the canvas in [`crate::Notebook`].
 //!
 //! Like the canvas UI ([`crate::ui`]), this module is deliberately
 //! persistence-free: [`editor_ui`] edits the working buffers in place and returns
@@ -18,6 +18,25 @@ use notedeck_ui::context_menu::{PasteBehavior, input_context};
 /// Minimum visible rows the source editor requests before it scrolls, so a fresh
 /// note still opens with a roomy typing area.
 const SOURCE_MIN_ROWS: usize = 20;
+
+/// The comfortable reading/typing measure for the document column. Both the
+/// Write and Preview views are centered within this width so long lines don't
+/// sprawl edge-to-edge on a wide viewport (the chief eyesore of the old
+/// side-by-side split), and toggling between the two never shifts the text.
+const CONTENT_MAX_WIDTH: f32 = 720.0;
+
+/// Which face of the note the editor is currently showing. The editor is a
+/// single centered document column that toggles between the raw markdown
+/// ([`Write`](Self::Write)) and its live rendered form ([`Preview`](Self::Preview)),
+/// rather than showing both side-by-side. Held in [`LongformEditor`] so the choice
+/// persists across frames; flipped by the header's segmented toggle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorView {
+    /// Editing the raw markdown source.
+    Write,
+    /// Reading the rendered markdown (references resolved).
+    Preview,
+}
 
 /// The persisted identity of the note an editor is bound to: its stable
 /// replaceable-event `d` and the `created_at` of the last version we wrote. The
@@ -48,6 +67,8 @@ pub(crate) struct LongformEditor {
     saved_title: String,
     /// The last-persisted content, to detect an unsaved body change.
     saved_content: String,
+    /// Which face (raw source or rendered preview) is currently shown.
+    view: EditorView,
 }
 
 impl LongformEditor {
@@ -59,6 +80,7 @@ impl LongformEditor {
             saved: None,
             saved_title: String::new(),
             saved_content: String::new(),
+            view: EditorView::Write,
         }
     }
 
@@ -75,6 +97,9 @@ impl LongformEditor {
             }),
             saved_title: note.title.clone(),
             saved_content: note.content.clone(),
+            // Opened from the vault to read: land on the rendered view, one tap
+            // from Write. A brand-new note ([`Self::new`]) instead opens in Write.
+            view: EditorView::Preview,
         }
     }
 
@@ -109,10 +134,11 @@ pub(crate) enum EditorAction {
     Close,
 }
 
-/// Render the full-screen longform editor: a header (Close / title / Save) over a
-/// split of the markdown source and its live rendered preview. Edits land in
-/// `editor`'s buffers directly; the frame's single [`EditorAction`] (if any) is
-/// returned for [`crate::Notebook::render`] to persist or dismiss.
+/// Render the full-screen longform editor: a header (Close / title / view toggle
+/// / Save) over a single centered document column that shows either the raw
+/// markdown or its live rendered form, per the header's Write/Preview toggle.
+/// Edits land in `editor`'s buffers directly; the frame's single [`EditorAction`]
+/// (if any) is returned for [`crate::Notebook::render`] to persist or dismiss.
 pub(crate) fn editor_ui(
     editor: &mut LongformEditor,
     ctx: &mut AppContext,
@@ -125,135 +151,190 @@ pub(crate) fn editor_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(SPACING_LG as i8, SPACING_SM as i8))
         .show(ui, |ui| {
-            // Header: a back button on the left; the title (a borderless heading),
-            // a dirty marker and Save on the right (right-to-left so the title
-            // fills the gap between).
-            ui.horizontal(|ui| {
-                if ui.button("← Canvas").clicked() {
-                    action = Some(EditorAction::Close);
-                }
-                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                    let dirty = editor.dirty();
-                    if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
-                        action = Some(EditorAction::Save);
-                    }
-                    if dirty {
-                        ui.label(RichText::new("●").color(theme.accent))
-                            .on_hover_text("Unsaved changes");
-                    }
-                    ui.add(
-                        TextEdit::singleline(&mut editor.title)
-                            .hint_text("Untitled")
-                            .font(egui::TextStyle::Heading)
-                            .frame(false)
-                            .desired_width(f32::INFINITY),
-                    );
-                });
-            });
+            header_ui(editor, ui, &theme, &mut action);
 
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_SM);
 
-            body_ui(editor, ctx, ui, &theme);
+            body_ui(editor, ctx, ui);
         });
 
     action
 }
 
-/// The editor body: source on the left, preview on the right (side-by-side on a
-/// wide viewport; stacked in a single scroll column when narrow).
-fn body_ui(
+/// The editor header: a `← Canvas` back button on the left; the title (a
+/// borderless heading), the Write/Preview toggle, a dirty marker and Save on the
+/// right. Laid out right-to-left so the title fills the gap between the back
+/// button and the toggle. Sets `action` when Close or Save is triggered.
+fn header_ui(
     editor: &mut LongformEditor,
-    ctx: &mut AppContext,
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    action: &mut Option<EditorAction>,
 ) {
-    let height = ui.available_height();
-
-    if notedeck::ui::is_narrow(ui.ctx()) {
-        // Narrow: one scroll column — the source editor panel, then the live
-        // preview beneath it.
-        ScrollArea::vertical()
-            .id_salt("notebook-editor-narrow")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                source_panel_ui(ui, &mut editor.content, ctx, theme, SOURCE_MIN_ROWS);
-                ui.add_space(notedeck::tokens::SPACING_MD);
-                preview_body_ui(ui, ctx, &editor.content);
-            });
-        return;
-    }
-
-    // Wide: source | preview, each its own vertically-scrolling column.
-    ui.columns(2, |cols| {
-        source_column_ui(&mut cols[0], &mut editor.content, ctx, height, theme);
-        preview_column_ui(&mut cols[1], ctx, &editor.content, height);
+    use notedeck::tokens::{SPACING_MD, SPACING_SM};
+    ui.horizontal(|ui| {
+        if ui.button("← Canvas").clicked() {
+            *action = Some(EditorAction::Close);
+        }
+        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+            let dirty = editor.dirty();
+            if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
+                *action = Some(EditorAction::Save);
+            }
+            if dirty {
+                ui.label(RichText::new("●").color(theme.accent))
+                    .on_hover_text("Unsaved changes");
+            }
+            ui.add_space(SPACING_SM);
+            view_toggle_ui(ui, theme, &mut editor.view);
+            ui.add_space(SPACING_MD);
+            ui.add(
+                TextEdit::singleline(&mut editor.title)
+                    .hint_text("Untitled")
+                    .font(egui::TextStyle::Heading)
+                    .frame(false)
+                    .desired_width(f32::INFINITY),
+            );
+        });
     });
 }
 
-/// The left column: a monospace markdown source editor in a subtle rounded panel
-/// that fills the column height and scrolls when the note outgrows it.
-fn source_column_ui(
-    ui: &mut egui::Ui,
-    content: &mut String,
-    ctx: &mut AppContext,
-    height: f32,
-    theme: &ColorTheme,
-) {
-    let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
-    let rows = ((height / row_h) as usize).max(SOURCE_MIN_ROWS);
-    ScrollArea::vertical()
-        .id_salt("notebook-editor-source")
-        .max_height(height)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            source_panel_ui(ui, content, ctx, theme, rows);
-        });
-}
-
-/// The monospace source editor itself: a frameless code editor inside a rounded
-/// `surface_secondary` panel, so the raw markdown reads as a distinct "source"
-/// pane against the rendered preview. A right-click Paste/Copy/Cut menu (plus
-/// middle-click paste) is attached via the shared
-/// [`input_context`](notedeck_ui::context_menu::input_context) helper — the same
-/// one the rest of notedeck's text inputs use — so editing the note's text works
-/// the same everywhere. It's selection-aware: Copy/Cut act on the highlighted
-/// span and Paste ([`PasteBehavior::Append`]) drops the clipboard over the
-/// selection or at the caret (never clearing the whole note).
-fn source_panel_ui(
-    ui: &mut egui::Ui,
-    content: &mut String,
-    ctx: &mut AppContext,
-    theme: &ColorTheme,
-    rows: usize,
-) {
+/// The segmented Write/Preview toggle: two pills in a rounded `surface_secondary`
+/// track, the active face filled with the interactive-hover tint. Flips
+/// `view` in place when the inactive side is clicked. Small enough to sit inline
+/// in the header beside Save.
+fn view_toggle_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &mut EditorView) {
+    use notedeck::tokens::RADIUS_PILL;
     egui::Frame::new()
         .fill(theme.surface_secondary)
-        .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
-        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::same(2))
         .show(ui, |ui| {
-            let resp = ui.add(
-                TextEdit::multiline(content)
-                    .code_editor()
-                    .frame(false)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(rows),
-            );
-            input_context(ui, &resp, ctx.clipboard, content, PasteBehavior::Append);
+            ui.spacing_mut().item_spacing.x = 2.0;
+            // `ui.horizontal` shrink-wraps the track to its two segments, but it
+            // inherits the header's right-to-left direction — so add Preview then
+            // Write to have them render left-to-right as Write | Preview.
+            ui.horizontal(|ui| {
+                segment_ui(ui, theme, view, EditorView::Preview, "Preview");
+                segment_ui(ui, theme, view, EditorView::Write, "Write");
+            });
         });
 }
 
-/// The right column: the rendered markdown preview, scrolling independently of
-/// the source.
-fn preview_column_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str, height: f32) {
+/// One pill of the [`view_toggle_ui`] segmented control. The active segment is
+/// filled and reads in the primary text color; an inactive segment is transparent
+/// and muted, highlighting on hover. Clicking an inactive segment selects `which`.
+fn segment_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &mut EditorView,
+    which: EditorView,
+    label: &str,
+) {
+    use notedeck::tokens::{RADIUS_PILL, SPACING_SM};
+    let selected = *view == which;
+    let color = if selected {
+        theme.text_primary
+    } else {
+        theme.text_muted
+    };
+    let (galley, desired) = {
+        let galley = ui.painter().layout_no_wrap(
+            label.to_owned(),
+            egui::TextStyle::Body.resolve(ui.style()),
+            color,
+        );
+        let size = galley.size() + egui::vec2(SPACING_SM * 2.0, 4.0);
+        (galley, size)
+    };
+    let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
+    // Painted, not a real widget, so publish an accessible label + selected state
+    // for screen readers (and so kittest can find the segment by name).
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label)
+    });
+    let fill = if selected {
+        Some(theme.interactive_hover)
+    } else if resp.hovered() {
+        Some(theme.interactive_hover.gamma_multiply(0.5))
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(RADIUS_PILL as u8), fill);
+    }
+    if !selected && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let text_pos = rect.center() - galley.size() / 2.0;
+    ui.painter().galley(text_pos, galley, color);
+    if resp.clicked() {
+        *view = which;
+    }
+}
+
+/// The editor body: one centered document column (capped at [`CONTENT_MAX_WIDTH`])
+/// in a single vertical scroll, showing the raw markdown source or its live
+/// preview per the current [`EditorView`]. Centering both views on the same
+/// measure keeps text readable on a wide viewport and steady across a toggle.
+fn body_ui(editor: &mut LongformEditor, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    let height = ui.available_height();
+    // The Write field fills the visible height (so a click anywhere lands in a
+    // roomy typing area), growing past it as the note does.
+    let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+    let rows = ((height / row_h) as usize).max(SOURCE_MIN_ROWS);
+
     ScrollArea::vertical()
-        .id_salt("notebook-editor-preview")
-        .max_height(height)
+        .id_salt("notebook-editor-body")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            preview_body_ui(ui, ctx, content);
+            centered_column_ui(ui, |ui| match editor.view {
+                EditorView::Write => source_panel_ui(ui, &mut editor.content, ctx, rows),
+                EditorView::Preview => preview_body_ui(ui, ctx, &editor.content),
+            });
         });
+}
+
+/// Run `add_contents` inside a column centered in the available width and capped
+/// at [`CONTENT_MAX_WIDTH`], so the document doesn't sprawl edge-to-edge on a wide
+/// viewport. On a narrow viewport the cap is a no-op and the column simply fills.
+fn centered_column_ui(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let avail = ui.available_width();
+    let width = avail.min(CONTENT_MAX_WIDTH);
+    let margin = ((avail - width) / 2.0).max(0.0);
+    ui.horizontal_top(|ui| {
+        ui.add_space(margin);
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, ui.available_height()),
+            Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                add_contents(ui);
+            },
+        );
+    });
+}
+
+/// The markdown source editor: a frameless monospace code editor that blends into
+/// the page (no heavy filled box), sitting in the centered document column. A
+/// right-click Paste/Copy/Cut menu (plus middle-click paste) is attached via the
+/// shared [`input_context`](notedeck_ui::context_menu::input_context) helper — the
+/// same one the rest of notedeck's text inputs use — so editing the note's text
+/// works the same everywhere. It's selection-aware: Copy/Cut act on the
+/// highlighted span and Paste ([`PasteBehavior::Append`]) drops the clipboard over
+/// the selection or at the caret (never clearing the whole note).
+fn source_panel_ui(ui: &mut egui::Ui, content: &mut String, ctx: &mut AppContext, rows: usize) {
+    let resp = ui.add(
+        TextEdit::multiline(content)
+            .code_editor()
+            .frame(false)
+            .desired_width(f32::INFINITY)
+            .desired_rows(rows),
+    );
+    input_context(ui, &resp, ctx.clipboard, content, PasteBehavior::Append);
 }
 
 /// Render `content` as the live preview, resolving any inline `nostr:` references

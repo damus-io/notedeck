@@ -242,7 +242,7 @@ fn load_session_messages_with_author(
 }
 
 /// A persisted session state from a kind-31988 event.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionState {
     pub claude_session_id: String,
     pub title: String,

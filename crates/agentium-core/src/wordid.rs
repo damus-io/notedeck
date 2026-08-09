@@ -21,6 +21,11 @@
 //! re-encoding each candidate and matching — see
 //! [`resolve_session`](crate::session_loader::resolve_session).
 
+/// Re-export the shared `find`-half scanner so the inline `agentium:` reference
+/// parser recognises a rendered word-id inside prose without depending on the
+/// `wordid` crate directly (it reaches it through this module, next to [`SCHEME`]).
+pub use wordid::three_words_end;
+
 /// The URI scheme that precedes a session word-id in a full reference, e.g.
 /// `agentium:maple-river-canyon`. A scheme (not headway's `#` sigil) so the ref
 /// survives nostrdb tokenization and needs no shell quoting.
@@ -40,6 +45,25 @@ pub fn encode_session_id(session_id: &str) -> String {
     wordid::encode_str(session_id)
 }
 
+/// The word-id out of a **free-text** session reference: strips the required
+/// `agentium:` scheme and returns the trailing word-id, or `None` for a bare
+/// word-id or a plain id (no scheme). The scheme is what distinguishes a
+/// reference from ordinary `word-word-word` prose, so it is mandatory here —
+/// unlike [`resolve_session`](crate::session_loader::resolve_session), the
+/// interactive resolver, which accepts the scheme optionally because the app is
+/// implied by context.
+///
+/// The word-id shape is *not* validated; resolution re-encodes each candidate
+/// session's id and matches (git-short-hash style). Single-segment: a session's
+/// identity carries no scope, so only a [`Bare`](wordid::WordIdRef::Bare) body is
+/// a session reference. The returned slice borrows from `sel`.
+pub fn parse_ref(sel: &str) -> Option<&str> {
+    match wordid::WordIdRef::parse_uri(sel, SCHEME)? {
+        wordid::WordIdRef::Bare { words } => Some(words),
+        wordid::WordIdRef::Scoped { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +80,26 @@ mod tests {
             encode_session_id(id),
             encode_session_id("a-different-session")
         );
+    }
+
+    #[test]
+    fn session_ref_round_trips_through_parse_ref() {
+        let id = "3f0e-uuid-like-string";
+        let r = session_ref(id);
+        assert_eq!(parse_ref(&r), Some(encode_session_id(id).as_str()));
+    }
+
+    #[test]
+    fn parse_ref_requires_the_scheme() {
+        assert_eq!(
+            parse_ref("agentium:maple-river-canyon"),
+            Some("maple-river-canyon")
+        );
+        // A bare word-id is not a reference — no scheme.
+        assert_eq!(parse_ref("maple-river-canyon"), None);
+        // A scoped body has no meaning for a session (single-segment identity).
+        assert_eq!(parse_ref("agentium:work/maple-river-canyon"), None);
+        // An empty word-id after the scheme is not a reference.
+        assert_eq!(parse_ref("agentium:"), None);
     }
 }

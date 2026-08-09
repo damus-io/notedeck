@@ -1532,6 +1532,19 @@ fn is_headway_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> b
         .unwrap_or(false)
 }
 
+/// Whether `note_id` refers to an agentium session-state event, so a click on its
+/// inline widget routes to the Dave app instead of the timeline.
+#[cfg(feature = "dave")]
+fn is_agentium_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> bool {
+    let Ok(txn) = Transaction::new(ctx.ndb) else {
+        return false;
+    };
+    ctx.ndb
+        .get_note_by_id(&txn, note_id.bytes())
+        .map(|note| notedeck_dave::is_agentium_kind(note.kind()))
+        .unwrap_or(false)
+}
+
 /// Whether `note_id` refers to a notebook node event, so a click on its inline
 /// widget routes to the Notebook app instead of the timeline.
 #[cfg(feature = "notebook")]
@@ -1564,6 +1577,19 @@ fn chrome_handle_app_action(
                     chrome.switch_to_dave();
                     if let Some(dave) = chrome.get_dave_app() {
                         dave.summarize_thread(note_id);
+                    }
+                    return;
+                }
+            }
+
+            // Intercept a click on an inline agentium session widget — open it in
+            // the Dave app rather than the timeline (see `is_agentium_kind`).
+            #[cfg(feature = "dave")]
+            if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
+                if is_agentium_note(ctx, *note_id) {
+                    chrome.switch_to_dave();
+                    if let Some(dave) = chrome.get_dave_app() {
+                        dave.open(*note_id);
                     }
                     return;
                 }
