@@ -699,6 +699,21 @@ async fn session_actor(
     if model.is_some() {
         options.model = model;
     }
+    // Export this session's identity into the spawned backend's environment so an
+    // in-session agent can identify its OWN agentium session deterministically
+    // (e.g. to quote the ref into a headway done-comment) instead of guessing via
+    // `agentium list --json --cwd/--host`. `session_id` here is the stable
+    // kind-31988 d-tag (see `AgenticSessionData::event_session_id`), which is what
+    // `agentium_core::wordid` hashes. `AGENTIUM_SESSION_ID` is that raw, lossless
+    // id; `AGENTIUM_SESSION` is the sayable `agentium:<word-id>` URI derived from
+    // it (the word-id is a one-way hash, so both are exported).
+    options
+        .env
+        .insert("AGENTIUM_SESSION_ID".to_string(), session_id.clone());
+    options.env.insert(
+        "AGENTIUM_SESSION".to_string(),
+        agentium_core::wordid::session_ref(&session_id),
+    );
     let mut client = ClaudeClient::new(options);
 
     // Connect once - this starts the subprocess

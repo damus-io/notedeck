@@ -99,7 +99,7 @@ async fn session_actor(
     mut command_rx: tokio_mpsc::Receiver<SessionCommand>,
 ) {
     // Spawn the codex app-server child process
-    let mut child = match spawn_codex(&codex_binary, &cwd) {
+    let mut child = match spawn_codex(&codex_binary, &cwd, &session_id) {
         Ok(c) => c,
         Err(err) => {
             tracing::error!("Session {} failed to spawn codex: {}", session_id, err);
@@ -1518,12 +1518,25 @@ fn handle_item_completed(
 // Codex process spawning and JSON-RPC helpers
 // ---------------------------------------------------------------------------
 
-fn spawn_codex(binary: &str, cwd: &Option<PathBuf>) -> Result<Child, std::io::Error> {
+fn spawn_codex(
+    binary: &str,
+    cwd: &Option<PathBuf>,
+    session_id: &str,
+) -> Result<Child, std::io::Error> {
     let mut cmd = Command::new(binary);
     cmd.arg("app-server");
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Export this session's identity so an in-session agent can identify its own
+    // agentium session (mirrors the claude backend). `session_id` is the stable
+    // kind-31988 d-tag; `AGENTIUM_SESSION` is the sayable `agentium:<word-id>` URI
+    // derived from it (a one-way hash, so the raw id is exported alongside it).
+    cmd.env("AGENTIUM_SESSION_ID", session_id);
+    cmd.env(
+        "AGENTIUM_SESSION",
+        agentium_core::wordid::session_ref(session_id),
+    );
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
