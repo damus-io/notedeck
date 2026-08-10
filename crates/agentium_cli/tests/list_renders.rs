@@ -64,6 +64,38 @@ fn seed_session(
     ndb.process_client_event(&frame).expect("ingest");
 }
 
+/// Run the real `agentium` binary against the seeded cache `db_path` (with `dir`
+/// redirecting XDG/HOME so the run can't touch real config), passing `list_args`
+/// after `list`. Asserts a clean exit and returns stdout. The relay port is
+/// closed so connect fails fast and the bounded sync-settle elapses into a cache
+/// read.
+fn run_list(db_path: &str, dir: &TempDir, list_args: &[&str]) -> String {
+    let mut args = vec![
+        "--nsec",
+        NSEC,
+        "--db",
+        db_path,
+        "--relay",
+        "ws://127.0.0.1:1",
+        "list",
+    ];
+    args.extend_from_slice(list_args);
+    let out = Command::new(env!("CARGO_BIN_EXE_agentium"))
+        .args(&args)
+        .env("XDG_DATA_HOME", dir.path())
+        .env("HOME", dir.path())
+        .output()
+        .expect("run agentium");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "nonzero exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status
+    );
+    stdout
+}
+
 #[tokio::test]
 async fn list_renders_seeded_sessions() {
     let dir = TempDir::new().expect("tmp dir");
@@ -102,31 +134,8 @@ async fn list_renders_seeded_sessions() {
             .expect("ingest seeded events");
     }
 
-    // Run the real binary against the seeded cache. XDG_DATA_HOME is redirected
-    // into the tempdir so the run's persisted relay config can't touch the
-    // developer's real config; the relay port is closed so connect fails fast.
-    let out = Command::new(env!("CARGO_BIN_EXE_agentium"))
-        .args([
-            "--nsec",
-            NSEC,
-            "--db",
-            &db_path,
-            "--relay",
-            "ws://127.0.0.1:1",
-            "list",
-        ])
-        .env("XDG_DATA_HOME", dir.path())
-        .env("HOME", dir.path())
-        .output()
-        .expect("run agentium");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "nonzero exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        out.status
-    );
+    // Run the real binary against the seeded cache.
+    let stdout = run_list(&db_path, &dir, &[]);
     // The host group header, both titles, both status labels, and the
     // needs-input summary all render.
     for needle in [
@@ -142,4 +151,73 @@ async fn list_renders_seeded_sessions() {
             "missing {needle:?} in output:\n{stdout}"
         );
     }
+}
+
+/// A soft-deleted session is hidden from the default `list` but surfaced by
+/// `--deleted` (deleted only) and `--all` (both) — so a tombstoned session, and
+/// the durable `agentium:` ref quoting it, stay discoverable end-to-end.
+#[tokio::test]
+async fn list_deleted_scope_surfaces_tombstones() {
+    let dir = TempDir::new().expect("tmp dir");
+    let db_path = dir.path().to_str().expect("path").to_string();
+
+    {
+        let ndb = Ndb::new(&db_path, &Config::new()).expect("ndb");
+        let filter = nostrdb::Filter::new()
+            .kinds([KIND_SESSION_STATE as u64])
+            .build();
+        let sub = ndb
+            .subscribe(std::slice::from_ref(&filter))
+            .expect("subscribe");
+        seed_session(
+            &ndb,
+            "sess-live",
+            "Live work",
+            "working",
+            "macbook",
+            "/home/u/proj",
+            "claude",
+        );
+        seed_session(
+            &ndb,
+            "sess-gone",
+            "Closed spike",
+            "deleted",
+            "macbook",
+            "/home/u/spike",
+            "claude",
+        );
+        ndb.wait_for_notes(sub, 2)
+            .await
+            .expect("ingest seeded events");
+    }
+
+    // Default: the tombstone is hidden, the live session shows.
+    let default = run_list(&db_path, &dir, &[]);
+    assert!(
+        default.contains("Live work"),
+        "live shows by default:\n{default}"
+    );
+    assert!(
+        !default.contains("Closed spike"),
+        "deleted session must be hidden by default:\n{default}"
+    );
+
+    // --deleted: only the tombstone, with its Deleted label.
+    let deleted = run_list(&db_path, &dir, &["--deleted"]);
+    assert!(
+        deleted.contains("Closed spike") && deleted.contains("Deleted"),
+        "--deleted surfaces the tombstone:\n{deleted}"
+    );
+    assert!(
+        !deleted.contains("Live work"),
+        "--deleted excludes live sessions:\n{deleted}"
+    );
+
+    // --all: both.
+    let all = run_list(&db_path, &dir, &["--all"]);
+    assert!(
+        all.contains("Live work") && all.contains("Closed spike"),
+        "--all shows live and deleted together:\n{all}"
+    );
 }
