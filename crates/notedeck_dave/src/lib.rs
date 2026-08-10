@@ -581,6 +581,75 @@ fn queue_built_event(
     }
 }
 
+/// The status, hostname, and monotonic `created_at` to stamp on a kind-31988
+/// state-event publish for a dirty session.
+struct SessionStatePublish {
+    status: String,
+    hostname: String,
+    created_at: u64,
+}
+
+/// Decide what to publish for a dirty session's kind-31988 state event, or
+/// `None` to skip it.
+///
+/// A **local** session publishes on any dirty change, using this machine's
+/// hostname and its derived status. A **remote** session is owned by another
+/// machine, so we publish one ONLY to persist a `custom_title` change we own (a
+/// rename): status-only dirties are skipped (the owner is authoritative for
+/// status) by comparing the in-memory title to the latest persisted one, and we
+/// re-assert the last-known remote status + the owner's hostname so we don't
+/// rewrite them. The owner's next publish overrides with a newer `created_at`
+/// and adopts the title via its own ingest handler.
+///
+/// `created_at` is `max(now, latest_persisted + 1)` so the newest revision
+/// always wins nostrdb's replaceable resolution and the receive-side guard. The
+/// ndb lookups use a short read txn dropped before returning, since the caller
+/// ingests afterward and a nested read/write txn deadlocks LMDB.
+fn session_state_publish_params(
+    session: &session::ChatSession,
+    event_sid: &str,
+    local_hostname: &str,
+    ndb: &nostrdb::Ndb,
+    account: &enostr::Pubkey,
+) -> Option<SessionStatePublish> {
+    let now = session_events::now_secs();
+
+    if !session.is_remote() {
+        let latest = Transaction::new(ndb)
+            .ok()
+            .and_then(|txn| session_loader::latest_state_created_at(ndb, &txn, account, event_sid));
+        return Some(SessionStatePublish {
+            status: session.status().as_str().to_string(),
+            hostname: local_hostname.to_string(),
+            created_at: session_events::next_state_created_at(now, latest.unwrap_or(0)),
+        });
+    }
+
+    // Remote: only publish to persist a custom_title change (rename). The latest
+    // persisted revision gives both the title to compare against and the
+    // monotonic baseline.
+    let persisted = Transaction::new(ndb).ok().and_then(|txn| {
+        session_loader::latest_valid_session_for_author(ndb, &txn, account, event_sid)
+    });
+    if persisted.as_ref().and_then(|s| s.custom_title.clone()) == session.details.custom_title {
+        return None;
+    }
+    let status = session
+        .agentic
+        .as_ref()
+        .and_then(|a| a.remote_status.as_ref())
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_else(|| "idle".to_string());
+    Some(SessionStatePublish {
+        status,
+        hostname: session.details.hostname.clone(),
+        created_at: session_events::next_state_created_at(
+            now,
+            persisted.as_ref().map(|s| s.created_at).unwrap_or(0),
+        ),
+    })
+}
+
 /// Build and ingest a live kind-1988 event into ndb (via PNS wrapping).
 ///
 /// Extracts cwd and session ID from the session's agentic data,
@@ -2011,36 +2080,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             }
 
-            // Remote sessions are owned by another machine — only the
-            // session owner should publish state events.
-            if session.is_remote() {
-                session.state_dirty = false;
-                continue;
-            }
-
             let Some(agentic) = &session.agentic else {
                 continue;
             };
-
             let event_sid = agentic.event_session_id().to_string();
+
+            // What to publish for this dirty session, or `None` to skip it —
+            // see `session_state_publish_params`.
+            let Some(publish) = session_state_publish_params(
+                session,
+                &event_sid,
+                &self.hostname,
+                ctx.ndb,
+                &account,
+            ) else {
+                session.state_dirty = false;
+                continue;
+            };
+
             let cwd = agentic.cwd.to_string_lossy().to_string();
-            let status = session.status().as_str();
             let indicator = session.indicator.as_ref().map(|i| i.as_str());
             let perm_mode = crate::session::permission_mode_to_str(agentic.permission_mode);
             let cli_sid = agentic.cli_resume_id().map(|s| s.to_string());
-            // Strictly-monotonic per-session `created_at` so the newest status
-            // always wins replaceable resolution + the receive-side guard. The
-            // baseline is what ndb already holds (a short read txn, dropped
-            // before the ingest below), not a value tracked in memory.
-            let created_at = {
-                let latest = Transaction::new(ctx.ndb).ok().and_then(|txn| {
-                    session_loader::latest_state_created_at(ctx.ndb, &txn, &account, &event_sid)
-                });
-                session_events::next_state_created_at(
-                    session_events::now_secs(),
-                    latest.unwrap_or(0),
-                )
-            };
 
             queue_built_event(
                 session_events::build_session_state_event(
@@ -2048,18 +2109,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &session.details.title,
                     session.details.custom_title.as_deref(),
                     &cwd,
-                    status,
+                    &publish.status,
                     indicator,
-                    &self.hostname,
+                    &publish.hostname,
                     &session.details.home_dir,
                     session.backend_type.as_str(),
                     perm_mode,
                     cli_sid.as_deref(),
                     session.spawn_id.as_deref(),
-                    created_at,
+                    publish.created_at,
                     &sk,
                 ),
-                &format!("publishing session state: {} -> {}", event_sid, status),
+                &format!(
+                    "publishing session state: {} -> {}",
+                    event_sid, publish.status
+                ),
                 ctx.ndb,
                 &sk,
                 &mut self.pending_relay_events,
@@ -5862,6 +5926,102 @@ mod tests {
             assistant_texts(&rebuilt.messages),
             "the fast-path append must match a from-scratch rebuild"
         );
+    }
+
+    /// A remote-session rename must publish a kind-31988 (so it persists across
+    /// restart), carrying the owner's hostname + last-known status — but a
+    /// status-only dirty on a remote session must NOT publish. This is the gate
+    /// in `session_state_publish_params` that lets the phone persist a
+    /// custom_title it owns without clobbering the owner's authoritative status.
+    #[tokio::test]
+    async fn remote_rename_publishes_only_on_custom_title_change() {
+        let sk = test_secret_key();
+        let account = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let sid = "rename-persist-test";
+
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_SESSION_STATE_KIND as u64])
+            .build();
+
+        // The owner published a state with NO custom_title.
+        let seed = session_events::build_session_state_event(
+            sid,
+            "Auto Title",
+            None,
+            "/home/dev/proj",
+            "working",
+            None,
+            "build-server",
+            "/home/dev",
+            "claude",
+            "default",
+            Some(sid),
+            None,
+            1_000,
+            &sk,
+        )
+        .unwrap();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        ndb.process_event_with(
+            &format!("[\"EVENT\",{}]", seed.note_json),
+            IngestMetadata::new().client(true),
+        )
+        .unwrap();
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+
+        // A remote session renamed in memory to "My Title".
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/home/dev/proj"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.details.hostname = "build-server".to_string();
+        session.details.custom_title = Some("My Title".to_string());
+        {
+            let a = session.agentic.as_mut().unwrap();
+            a.event_id = sid.to_string();
+            a.remote_status = Some(AgentStatus::Working);
+        }
+
+        // custom_title differs from persisted (None) -> publish, faithfully.
+        let publish = session_state_publish_params(&session, sid, "phone-host", &ndb, &account)
+            .expect("a remote rename must publish");
+        assert_eq!(
+            publish.status, "working",
+            "re-asserts the last-known remote status, not a derived one"
+        );
+        assert_eq!(
+            publish.hostname, "build-server",
+            "keeps the owner's hostname, not the phone's"
+        );
+        assert!(
+            publish.created_at > 1_000,
+            "created_at must strictly beat the persisted revision"
+        );
+
+        // Now the in-memory title matches what's persisted -> a status-only
+        // dirty must be skipped (the owner is authoritative for status).
+        session.details.custom_title = None;
+        assert!(
+            session_state_publish_params(&session, sid, "phone-host", &ndb, &account).is_none(),
+            "a remote status-only dirty must not publish"
+        );
+
+        // A local session always publishes, using this machine's hostname.
+        let mut local = session::ChatSession::new(
+            2,
+            PathBuf::from("/home/dev/proj"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        local.agentic.as_mut().unwrap().event_id = "local-sid".to_string();
+        let lp = session_state_publish_params(&local, "local-sid", "phone-host", &ndb, &account)
+            .expect("a local session publishes on any dirty");
+        assert_eq!(lp.hostname, "phone-host", "local publish uses this machine");
     }
 
     /// A denied permission_response event must set PermissionResponseType::Denied
