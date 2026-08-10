@@ -61,6 +61,13 @@ pub struct Headway {
     /// loaded from disk and re-registered with nostrdb on each account switch (see
     /// [`teams`]). Grown live as incoming kind-1082 key-shares are auto-accepted.
     teams: Vec<teams::Team>,
+    /// Team-of-one boards we just created this session, kept until
+    /// [`teams::teams_from_ndb`] independently returns them (their self-share
+    /// key-share has folded back through nostrdb, which is async). Merged into
+    /// [`teams`](Self::teams) on every roster rebuild so a freshly-created board
+    /// keeps sealing edits — and stays in the roster — without a window where an
+    /// edit would be written plaintext and then excluded from the shared fold.
+    pending_teams: Vec<teams::Team>,
     /// Subscription to unwrapped kind-1082 key-share rumors, so a share that
     /// arrives while Headway is open is detected and accepted without a restart.
     keyshare_sub: Option<Subscription>,
@@ -85,6 +92,7 @@ impl Default for Headway {
             repaint_frames: 0,
             pending_open: None,
             teams: Vec::new(),
+            pending_teams: Vec::new(),
             keyshare_sub: None,
             board_cache: Rc::new(RefCell::new(BoardCache::default())),
         }
@@ -180,6 +188,76 @@ impl Headway {
             .collect();
         merge_shared_boards(&mut boards, shared.into_iter());
         boards
+    }
+
+    /// Rebuild the joined-boards roster from nostrdb, preserving boards created
+    /// this session whose self-share hasn't folded back yet.
+    ///
+    /// [`teams::teams_from_ndb`] is the source of truth, but a board we just
+    /// created ([`create_board`](Self::create_board)) self-shares asynchronously —
+    /// its kind-1082 rumor isn't queryable until nostrdb ingests it. Until then we
+    /// keep it in [`pending_teams`](Self::pending_teams) and merge it in, so the
+    /// board keeps resolving as a sealed channel (edits seal, not leak plaintext)
+    /// even if some *other* keyshare triggers a rebuild first. Each pending team is
+    /// dropped once `teams_from_ndb` returns it independently.
+    fn set_roster(&mut self, ndb: &Ndb, author: &Pubkey) {
+        self.teams = teams::teams_from_ndb(ndb, author);
+        self.pending_teams.retain(|p| {
+            !self
+                .teams
+                .iter()
+                .any(|t| t.team_root == p.team_root && t.board_addr == p.board_addr)
+        });
+        self.teams.extend(self.pending_teams.iter().cloned());
+        teams::register_teams(ndb, &self.teams);
+    }
+
+    /// Create a new team-of-one board (see [`store::create_shared_board`]) and
+    /// register it in the roster immediately, so it resolves as its own sealed
+    /// channel from the very next frame — edits seal under the board's fresh
+    /// `team_root` rather than leaking plaintext while the self-share folds back
+    /// in. Returns whether the board was created.
+    fn create_board(
+        &mut self,
+        ndb: &Ndb,
+        author: &Pubkey,
+        secret: &[u8; 32],
+        board_id: &str,
+        title: &str,
+    ) -> bool {
+        let root = store::mint_team_root();
+        if !store::create_shared_board(
+            ndb,
+            author,
+            secret,
+            board_id,
+            title,
+            &root,
+            &mut store::NoPublish,
+        ) {
+            return false;
+        }
+        let team = teams::Team {
+            team_root: hex::encode(root),
+            board_addr: event::board_address(author, board_id),
+            epoch: None,
+            shared_at: 0,
+        };
+        if !self
+            .pending_teams
+            .iter()
+            .any(|t| t.team_root == team.team_root && t.board_addr == team.board_addr)
+        {
+            self.pending_teams.push(team.clone());
+        }
+        if !self
+            .teams
+            .iter()
+            .any(|t| t.team_root == team.team_root && t.board_addr == team.board_addr)
+        {
+            self.teams.push(team);
+        }
+        true
     }
 
     /// Navigate to a headway entity referenced from elsewhere in the app — raised
@@ -384,8 +462,7 @@ impl App for Headway {
             // [`teams::teams_from_ndb`]). Re-register their team_roots so nostrdb
             // unwraps the boards' envelopes (registered keys don't survive a restart
             // — the same reason `add_key` re-runs on boot).
-            self.teams = teams::teams_from_ndb(ctx.ndb, &author);
-            teams::register_teams(ctx.ndb, &self.teams);
+            self.set_roster(ctx.ndb, &author);
         }
 
         // Declare the inbound cross-device subscription (catch-up + realtime)
@@ -424,8 +501,7 @@ impl App for Headway {
         // wake when it grew so the newly-joined board folds in.
         if !self.poll_keyshare_sub(ctx).is_empty() {
             let joined = self.teams.len();
-            self.teams = teams::teams_from_ndb(ctx.ndb, &author);
-            teams::register_teams(ctx.ndb, &self.teams);
+            self.set_roster(ctx.ndb, &author);
             if self.teams.len() != joined {
                 self.wake();
             }
@@ -497,6 +573,12 @@ impl App for Headway {
                 // to seed, and no need to keep checking.
                 self.seeded = true;
             } else {
+                // The auto-seeded default board stays plaintext (single-writer,
+                // non-shareable). Only an explicit "New board" mints a team-of-one
+                // SNS board (see the `BoardNav::Create` path / `create_board`):
+                // auto-seeding a *sealed* default here would race an incoming share
+                // of the same slug and mint a conflicting channel before that share
+                // folds into the roster.
                 store::seed_default_board(ctx.ndb, &author, secret, &slug, &mut store::NoPublish);
                 self.seeded = true;
                 self.wake();
@@ -535,9 +617,11 @@ impl App for Headway {
 
         // Is the active board shared? Matched by coordinate against the roster (see
         // `active_shared_team`) — which is what fixes owner-blindness: a board you
-        // *own* and shared is in the roster too (self-shared team-of-one), so it
-        // routes through the multi-writer fold below rather than the author-scoped
-        // fold that would hide co-members' cards.
+        // *own* and shared is in the roster too (self-shared team-of-one, including
+        // one you just created via `create_board`), so it routes through the
+        // multi-writer fold below rather than the author-scoped fold that would hide
+        // co-members' cards. Only a legacy plaintext board (never self-shared, not in
+        // the roster) falls through to the plaintext own path.
         let active_team: Option<teams::Team> =
             active_shared_team(&self.teams, self.active()).cloned();
         // The SNS channel to seal edits into when the active board is shared.
@@ -619,16 +703,11 @@ impl App for Headway {
                 BoardNav::Create(title) => {
                     if let Some(secret) = &signer {
                         let slug = store::board_slug(&title, |s| boards.iter().any(|b| b.id == s));
-                        // Ingest locally only; `update`'s poll fans the new events
-                        // out to the private relays next frame (see `wake`).
-                        store::seed_board(
-                            ctx.ndb,
-                            &author,
-                            secret,
-                            &slug,
-                            &title,
-                            &mut store::NoPublish,
-                        );
+                        // Born a team-of-one SNS board (sealed + self-shared), so it
+                        // can be shared later with no history re-seal. Ingest locally
+                        // only; `update`'s poll fans the new events out to the private
+                        // relays next frame (see `wake`).
+                        self.create_board(ctx.ndb, &author, secret, &slug, &title);
                         // A new board is ours: coordinate owner = the account.
                         self.active = Some(event::BoardCoord::new(*author.bytes(), slug));
                         store::save_board_pref(
