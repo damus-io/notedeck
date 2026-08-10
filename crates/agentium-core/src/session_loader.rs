@@ -252,6 +252,15 @@ pub fn render_conversation_note(
     }
 }
 
+/// The `status` tag value marking a soft-deleted session.
+///
+/// Deletion is a tombstone, not an erasure: a fresh kind-31988 revision carries
+/// this status so it wins nostrdb's replaceable resolution, while every earlier
+/// revision (and the session's kind-1988 messages / kind-1989 archive) stays
+/// queryable. Loaders key their include/exclude decision off this one string, so
+/// it lives in one place rather than being spelled `"deleted"` at each site.
+pub const DELETED_STATUS: &str = "deleted";
+
 /// A persisted session state from a kind-31988 event.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionState {
@@ -310,6 +319,13 @@ impl SessionState {
             Some(t) if !t.is_empty() => t,
             _ => &self.title,
         }
+    }
+
+    /// Whether this is a tombstoned (soft-deleted) session — its latest revision
+    /// carries [`DELETED_STATUS`]. Such sessions are kept out of the default list
+    /// but stay resolvable so a durable `agentium:` ref can still reopen them.
+    pub fn is_deleted(&self) -> bool {
+        self.status == DELETED_STATUS
     }
 }
 
@@ -377,6 +393,28 @@ pub fn resolve_session<'a>(
     }
 }
 
+/// Resolve `sel` for a resume-oriented command, falling back to tombstoned
+/// sessions when the live set has no match.
+///
+/// Reopening work — a `resume`, or opening a durable `agentium:` ref quoted long
+/// after the session was closed — must still find a session after it's been
+/// soft-deleted. This tries the live `sessions` first, so their errors (including
+/// an ambiguous live selector) are reported against the clean set, and only on a
+/// miss retries against `deleted`. The two sets are disjoint by session id
+/// (nostrdb keeps a single latest revision per `d` tag, either live or a
+/// tombstone), so the searches can't collide. When both miss, the live-set error
+/// is returned — it's the one the caller most likely meant.
+pub fn resolve_session_including_deleted<'a>(
+    sessions: &'a [SessionState],
+    deleted: &'a [SessionState],
+    sel: &str,
+) -> Result<&'a SessionState, String> {
+    match resolve_session(sessions, sel) {
+        Ok(s) => Ok(s),
+        Err(live_err) => resolve_session(deleted, sel).map_err(|_| live_err),
+    }
+}
+
 /// Format an "ambiguous selector" error listing each candidate by its sayable
 /// word-id and title, so the user can retype a longer, unique selector.
 fn ambiguous_session(sel: &str, hits: &[&SessionState]) -> String {
@@ -399,7 +437,7 @@ fn ambiguous_session(sel: &str, hits: &[&SessionState]) -> String {
 /// Uses `query_replaceable_filtered` to deduplicate by d-tag, keeping
 /// only the most recent non-deleted revision of each session state.
 pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
-    load_session_states_with_author(ndb, txn, None)
+    load_session_states_with_author(ndb, txn, None, SessionScope::Live)
 }
 
 /// Load session state events signed by the selected Dave account.
@@ -408,13 +446,40 @@ pub fn load_session_states_for_author(
     txn: &Transaction,
     author: &enostr::Pubkey,
 ) -> Vec<SessionState> {
-    load_session_states_with_author(ndb, txn, Some(author))
+    load_session_states_with_author(ndb, txn, Some(author), SessionScope::Live)
+}
+
+/// Load only the *tombstoned* (soft-deleted) sessions for the selected account.
+///
+/// The counterpart to [`load_session_states_for_author`]: it keeps the sessions
+/// that one drops, so a resume-oriented path can fall back to them when a durable
+/// `agentium:` ref no longer matches anything live (see
+/// [`resolve_session_including_deleted`]). Deliberately kept separate — and out of
+/// the default list — so the live list stays clean; a caller wanting both merges
+/// the two loads.
+pub fn load_deleted_session_states_for_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+) -> Vec<SessionState> {
+    load_session_states_with_author(ndb, txn, Some(author), SessionScope::Deleted)
+}
+
+/// Which revisions the session-state loader keeps once each `d`-tag has been
+/// folded to its latest revision.
+#[derive(Clone, Copy)]
+enum SessionScope {
+    /// Live sessions only — tombstones dropped. The default list.
+    Live,
+    /// Only tombstoned ([`DELETED_STATUS`]) sessions — the resume / `--deleted` set.
+    Deleted,
 }
 
 fn load_session_states_with_author(
     ndb: &Ndb,
     txn: &Transaction,
     author: Option<&enostr::Pubkey>,
+    scope: SessionScope,
 ) -> Vec<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 
@@ -425,15 +490,16 @@ fn load_session_states_with_author(
     let filter = filter.build();
 
     let is_valid = |note: &nostrdb::Note| {
-        // Skip deleted sessions
-        if get_tag_value(note, "status") == Some("deleted") {
-            return false;
-        }
-        // Skip old JSON-content format events
+        // Skip old JSON-content format events regardless of scope.
         if note.content().starts_with('{') {
             return false;
         }
-        true
+        // Keep or drop the latest revision by whether it's a tombstone, per scope.
+        let deleted = get_tag_value(note, "status") == Some(DELETED_STATUS);
+        match scope {
+            SessionScope::Live => !deleted,
+            SessionScope::Deleted => deleted,
+        }
     };
 
     let note_keys = query_replaceable_filtered(ndb, txn, &[filter], is_valid);
@@ -518,7 +584,7 @@ pub fn latest_valid_session(
     let results = ndb.query(txn, &[filter], 1).ok()?;
     let note = &results.first()?.note;
 
-    if get_tag_value(note, "status") == Some("deleted") {
+    if get_tag_value(note, "status") == Some(DELETED_STATUS) {
         return None;
     }
     if note.content().starts_with('{') {
@@ -546,7 +612,7 @@ pub fn latest_valid_session_for_author(
     let results = ndb.query(txn, &[filter], 1).ok()?;
     let note = &results.first()?.note;
 
-    if get_tag_value(note, "status") == Some("deleted") {
+    if get_tag_value(note, "status") == Some(DELETED_STATUS) {
         return None;
     }
     if note.content().starts_with('{') {
@@ -621,7 +687,7 @@ fn load_recent_paths_by_host_with_author(
     let filter = filter.build();
 
     let is_valid = |note: &nostrdb::Note| {
-        if get_tag_value(note, "status") == Some("deleted") {
+        if get_tag_value(note, "status") == Some(DELETED_STATUS) {
             return false;
         }
         if note.content().starts_with('{') {
@@ -1064,5 +1130,39 @@ mod tests {
         let err = resolve_session(&sessions, "aaaa").unwrap_err();
         assert!(err.starts_with("ambiguous session 'aaaa'"), "{err}");
         assert!(err.contains("agentium:"), "candidates are listed: {err}");
+    }
+
+    /// A tombstoned session (whose `sess` fixture we mark deleted) that no longer
+    /// appears in the live set is still resolvable via the deleted fallback — the
+    /// durability the card is about — while a live match always wins over it.
+    #[test]
+    fn resolve_including_deleted_falls_back() {
+        let live = vec![sess("aaaa-1111", None, "Refactor auth")];
+        let mut gone = sess("bbbb-2222", Some("cli-old"), "Closed spike");
+        gone.status = DELETED_STATUS.to_string();
+        let deleted = vec![gone];
+
+        // A live selector resolves against the live set and never reaches deleted.
+        assert_eq!(
+            resolve_session_including_deleted(&live, &deleted, "aaaa-1111")
+                .unwrap()
+                .claude_session_id,
+            "aaaa-1111"
+        );
+
+        // A deleted session's id, cli-id, and word-id all resolve via the fallback,
+        // even though it's absent from the live set.
+        let words = crate::wordid::encode_session_id("bbbb-2222");
+        for sel in ["bbbb-2222", "cli-old", &words, &format!("agentium:{words}")] {
+            let s = resolve_session_including_deleted(&live, &deleted, sel).unwrap_or_else(|e| {
+                panic!("selector {sel:?} should resolve a deleted session: {e}")
+            });
+            assert_eq!(s.claude_session_id, "bbbb-2222");
+            assert!(s.is_deleted());
+        }
+
+        // Missing in both sets reports the live-set error, not the deleted one.
+        let err = resolve_session_including_deleted(&live, &deleted, "zzz").unwrap_err();
+        assert!(err.contains("no session matching 'zzz'"), "{err}");
     }
 }
