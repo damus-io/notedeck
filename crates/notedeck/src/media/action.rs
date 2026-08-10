@@ -116,6 +116,12 @@ impl MediaAction {
                         .animated
                         .request(jobs, ctx, &url, ImageType::Content(None))
                 }
+                MediaCacheType::Webp => {
+                    images
+                        .textures
+                        .webp
+                        .request(jobs, ctx, &url, ImageType::Content(None))
+                }
             },
             MediaAction::DoneLoading { url, cache_type: _ } => {
                 images.textures.blurred.finished_transitioning(&url);
