@@ -32,12 +32,17 @@
 //! Browser-level sync with the host app closed is out of scope here — see
 //! `headway:notedeck/buffalo-change-cook`.
 
-use agentium_core::session_loader::{SessionState, DELETED_STATUS};
+use agentium_core::session_loader::SessionState;
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::collections::HashMap;
 
 use agentium_core::session_events::AI_SESSION_STATE_KIND;
+
+/// The `status` tag value marking a session-state event as a tombstone. Retained
+/// in the fold (so a stale earlier revision can't resurrect it) but never
+/// projected to a view.
+const DELETED_STATUS: &str = "deleted";
 
 /// Upper bound on session-state events folded in one seed query. Far above any
 /// realistic per-account session count; the incremental path folds later
@@ -107,24 +112,6 @@ impl SessionReducer {
             .filter(|v| v.state.status != DELETED_STATUS)
             .cloned()
             .collect()
-    }
-
-    /// The state-event note id of the session whose word-id is `words`,
-    /// **including tombstones**. A session's stable identity is its
-    /// `claude_session_id`, so each candidate is matched by re-encoding that id
-    /// (SHA-256 → BIP-39 — see [`agentium_core::wordid::encode_session_id`]),
-    /// exactly how the CLI resolver matches a word-id.
-    ///
-    /// Unlike [`views`](Self::views), this searches every folded revision, deleted
-    /// ones included: a durable `agentium:` ref (e.g. quoted in a headway
-    /// done-comment) must keep resolving so a closed session can still be reopened.
-    /// `None` if no session matches. Reads the fold directly rather than the
-    /// projected views precisely because the projection drops tombstones.
-    fn resolve_wordid_including_deleted(&self, words: &str) -> Option<NoteId> {
-        self.latest
-            .values()
-            .find(|v| agentium_core::wordid::encode_session_id(&v.state.claude_session_id) == words)
-            .map(|v| v.note_id)
     }
 }
 
@@ -248,15 +235,10 @@ impl AgentiumSessionCache {
     }
 
     /// The current state-event note id of the session whose word-id is `words`,
-    /// **including tombstoned sessions**, seeding the fold on first touch. `None`
-    /// before the first fold or when no session matches.
-    ///
-    /// A durable `agentium:` ref must keep resolving after its session is
-    /// soft-deleted, so this reads the raw fold (via
-    /// [`with_reducer`](notedeck::RealtimeCache::with_reducer)) rather than the
-    /// projected views, which drop tombstones to keep the live scene clean. Going
-    /// through the shared cache still means a chip drawn the same frame reuses this
-    /// fold.
+    /// seeding the fold on first touch. `None` before the first fold or when no
+    /// session matches. Resolves off the shared fold (via the memoized
+    /// [`with_sessions`](Self::with_sessions)), so a chip drawn the same frame
+    /// reuses this fold.
     #[profiling::function]
     pub fn resolve_wordid(
         &mut self,
@@ -265,11 +247,10 @@ impl AgentiumSessionCache {
         author: &Pubkey,
         words: &str,
     ) -> Option<NoteId> {
-        self.authors
-            .with_reducer(ndb, txn, author, |r| {
-                r.0.resolve_wordid_including_deleted(words)
-            })
-            .flatten()
+        self.with_sessions(ndb, txn, author, |sessions| {
+            resolve_session_by_wordid(sessions, words)
+        })
+        .flatten()
     }
 
     /// The current folded state for `session_id` (a `claude_session_id` d-tag), if
@@ -292,6 +273,18 @@ impl AgentiumSessionCache {
         })
         .flatten()
     }
+}
+
+/// The current state-event note id of the session whose word-id is `words`, across
+/// `sessions`. A session's stable identity is its `claude_session_id`, so each
+/// candidate is matched by re-encoding that id (SHA-256 → BIP-39 — see
+/// [`agentium_core::wordid::encode_session_id`]), exactly how the CLI resolver
+/// matches a word-id. `None` if no session matches.
+fn resolve_session_by_wordid(sessions: &[SessionView], words: &str) -> Option<NoteId> {
+    sessions
+        .iter()
+        .find(|v| agentium_core::wordid::encode_session_id(&v.state.claude_session_id) == words)
+        .map(|v| v.note_id)
 }
 
 #[cfg(test)]
@@ -431,12 +424,10 @@ mod tests {
         assert!(t.resolve("maple-river-canyon").is_none());
     }
 
-    /// A `deleted` tombstone drops a session from the *projected* views (so it
-    /// leaves the live scene) but keeps it *resolvable*: a durable `agentium:` ref
-    /// must still resolve so a closed session can be reopened. A re-delivered older
-    /// (non-deleted) revision does not resurrect it into the projection.
+    /// A `deleted` tombstone hides a session from resolution, and a re-delivered
+    /// older (non-deleted) revision does not resurrect it.
     #[tokio::test]
-    async fn deleted_session_stays_resolvable_but_unprojected() {
+    async fn deleted_session_stays_hidden() {
         let mut t = TestCache::new();
         let sid = "session-beta";
         let words = agentium_core::wordid::encode_session_id(sid);
@@ -450,22 +441,19 @@ mod tests {
             }
         }
 
-        // A newer `deleted` revision tombstones the session: it leaves the
-        // projection (`session` is None) but stays resolvable, now pointing at the
-        // tombstone revision's note id.
+        // A newer `deleted` revision tombstones the session.
         t.write_state(sid, "Beta", DELETED_STATUS, 2_000);
         t.await_notes(1).await;
-        let tombstone_id = loop {
+        loop {
             t.poll();
-            if t.session(sid).is_none() {
-                break t.resolve(&words).expect("a deleted session still resolves");
+            if t.resolve(&words).is_none() {
+                break;
             }
-        };
+        }
+        assert!(t.session(sid).is_none(), "deleted session is not projected");
 
         // Re-delivering the original (older) creation revision must not resurrect
-        // it: the fold holds the newer tombstone, so the older revision is ignored —
-        // the session stays unprojected and resolves to the tombstone, not the
-        // stale working revision.
+        // it: the fold holds the newer tombstone, so the older revision is ignored.
         t.write_state(sid, "Beta", "working", 1_000);
         // The re-delivered older event may not commit (nostrdb drops a stale
         // replaceable revision), so poll a few times rather than await a commit.
@@ -473,13 +461,8 @@ mod tests {
             t.poll();
         }
         assert!(
-            t.session(sid).is_none(),
+            t.resolve(&words).is_none(),
             "a stale older revision must not resurrect a deleted session"
-        );
-        assert_eq!(
-            t.resolve(&words),
-            Some(tombstone_id),
-            "resolve must stay pinned to the tombstone, not the stale revision"
         );
     }
 }

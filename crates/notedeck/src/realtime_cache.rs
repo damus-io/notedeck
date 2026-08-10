@@ -277,31 +277,6 @@ impl<R: Reducer> RealtimeCache<R> {
         Some(read(entry.finalized.as_ref()?))
     }
 
-    /// Advance `author`'s reducer, then run `read` against the *raw* folded
-    /// reducer — the fold-free counterpart to [`with_views`](Self::with_views).
-    ///
-    /// [`with_views`](Self::with_views) only exposes the projected
-    /// [`finalize`](Reducer::finalize) views, which deliberately drop state a
-    /// consumer sometimes still needs — most notably entries a reducer keeps in
-    /// the fold to block resurrection (e.g. tombstones) but hides from the
-    /// projection. This hands the reducer itself to a specialized, read-only
-    /// lookup so such state stays reachable without changing what `finalize`
-    /// projects. It skips the memoized finalize entirely: nothing is projected or
-    /// cached here, so the lookup pays only for the advance, not a whole-reducer
-    /// walk. `None` until the reducer seeds.
-    #[profiling::function]
-    pub fn with_reducer<T>(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        author: &Pubkey,
-        read: impl FnOnce(&R) -> T,
-    ) -> Option<T> {
-        self.advance(ndb, txn, author);
-        let entry = self.authors.get(author)?;
-        Some(read(entry.reducer.as_ref()?))
-    }
-
     /// The always-on observability counters (see [`RealtimeCacheStats`]).
     pub fn stats(&self) -> RealtimeCacheStats {
         self.stats

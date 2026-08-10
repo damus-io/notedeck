@@ -168,10 +168,6 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `label <card> [labels...]` | Set labels (no labels clears them) |
 | `priority <card> <level>` | Set priority: `none`/`low`/`medium`/`high`/`urgent` (`none` clears it) |
 | `parent <card> [parent]` | Make a card a subissue of `[parent]`; omit the parent to detach |
-| `due <card> <date>` | Set a due date (`YYYY-MM-DD`, or `none` to clear) |
-| `estimate <card> <n>` | Set an estimate — a number (or `none` to clear) |
-| `seq <card> <pos> [--in <c>]` | Position a card in a container's work-order (see Work order) |
-| `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
@@ -179,7 +175,6 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `link <card> --to <board>` | Also place the card on another board (it stays on this one) |
 | `move-board <card> --to <board>` | Move the card off this board onto another |
 | `board [id]` | Switch the current board to `id`, or (no arg) list boards and mark the current one |
-| `rename <title...>` | Rename the current board's display title (slug unchanged) |
 | `login <nsec>` | Store a signing key so later runs just work |
 | `logout` | Forget the stored signing key |
 
@@ -231,50 +226,6 @@ How it renders:
 Notes: re-parenting that would create a cycle is refused; children may live on
 a different board than the parent; nesting works (a child can itself be a
 parent) but each rollup counts direct children only.
-
-## Work order: what to do next (`next` and `seq`)
-
-Beyond columns and subissues a board carries a **work-order** — a deliberate
-sequence over cards that answers "what should I pick up next?". Two commands read
-and write it:
-
-- `headway next` prints the **ready frontier**: the cards workable *right now*,
-  in work-order. `next` alone prints just the first (the single best next thing);
-  `next --ready` prints the whole frontier; `next -n <k>` caps it at `k`. More
-  than one card can be ready at once — that's the parallel-dispatch signal
-  (independent cards you could hand to different workers at the same time).
-- `headway seq <card> <pos>` positions a card in a container's work-order, which
-  is how you *curate* the order `next` reads. `<pos>` is `--first`, `--last`,
-  `--after <card>`, or `--before <card>`.
-
-`--in <c>` names the container whose order you mean: a **card ref** targets that
-card's subissues, a **board slug** targets the board root (its top-level cards);
-omitted, it's the board root. `next` refuses to guess the board — pass
-`--board <id>` or an `--in <headway:board/word-id>` ref (never the persisted
-current board).
-
-```bash
-headway --board dave next               # the single best next card
-headway --board dave next --ready       # the whole ready frontier, in order
-headway --board dave next -n 3          # the top 3
-headway seq <card> --first --in dave    # make <card> the first board-root task
-headway seq <epic-child> --after <sib> --in <epic>   # order within an epic
-```
-
-**What "ready" means.** A card is ready when it is *not done* (not sitting in the
-board's last column), *not blocked*, and *not a parent with unfinished subissues*
-(an epic's real work is its children, which are in the frontier themselves, so the
-epic card isn't dispatchable). Note a card in **In Review** still counts as
-ready/workable — only the last column (Done) reads as done — so `next` will
-resurface review-stage cards.
-
-**Ordering, and the priority caveat.** Within a container, members run in
-`seq`-order where a `seq` has been set, else creation order (the board root falls
-back to spatial column order). `next` does **not** sort by the `priority` field —
-priority is a human-facing label, not an input to the frontier. So a board where
-nobody has run `seq` has no real work-order: `next --ready` is just the board in
-default order, and you should judge the biggest win yourself rather than trust the
-first line. Curate with `seq` to make `next` meaningful.
 
 ## Cross-board cards: `link` and `move-board`
 

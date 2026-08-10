@@ -307,6 +307,10 @@ fn move_anim_ids(id: &NodeId) -> (egui::Id, egui::Id) {
 /// node slide since it sweeps the whole viewport rather than one box.
 const PAN_ANIM_SECS: f32 = 0.4;
 
+/// The gap (in canvas coords) left above a revealed node's top when it's taller
+/// than the viewport, so a long note isn't pinned flush against the top edge.
+const REVEAL_TOP_MARGIN: f32 = 24.0;
+
 /// The egui animation-manager ids holding the panned viewport centre's x and y.
 /// A single reused pair (unlike per-node [`move_anim_ids`]) — only one reveal
 /// pan runs at a time.
@@ -413,11 +417,11 @@ impl Notebook {
         // The node's rect this frame, or `None` if the canvas hasn't folded it in
         // yet — retry on the next repaint. Computed before any `&mut self` so the
         // canvas borrow is released before `reveal_node` moves the view.
-        let Some(center) = self
+        let Some(node_rect) = self
             .canvas
             .get_nodes()
             .get(&target.node)
-            .map(|node| self.node_rect(&target.node, node).center())
+            .map(|node| self.node_rect(&target.node, node))
         else {
             return;
         };
@@ -428,27 +432,42 @@ impl Notebook {
             // ticking until `loaded` flips.
             return;
         }
-        self.reveal_node(ctx, target.node, center);
+        self.reveal_node(ctx, target.node, node_rect);
         self.pending_open = None;
         self.wake();
     }
 
-    /// Select `node` and start an animated pan so it eases to the centre of the
-    /// viewport. `center` is the node's centre in canvas coords. Only the pan is
-    /// started here — [`update_pan`](Self::update_pan) drives `scene_rect` toward
-    /// it over the next frames. Used by [`process_pending_open`] to reveal a node
-    /// opened from elsewhere, which may sit anywhere on the canvas.
+    /// Select `node` and start an animated pan so it eases into view. `node_rect`
+    /// is the node's rect in canvas coords. Only the pan is started here —
+    /// [`update_pan`](Self::update_pan) drives `scene_rect` toward the target over
+    /// the next frames. Used by [`process_pending_open`] to reveal a node opened
+    /// from elsewhere, which may sit anywhere on the canvas.
+    ///
+    /// The target keeps the node centred horizontally, but vertically it aligns the
+    /// node's *top* (with a small [`REVEAL_TOP_MARGIN`] gap) rather than its centre
+    /// whenever the node is taller than the viewport — otherwise a long note would
+    /// pan so its middle sits centre-screen, leaving the beginning scrolled off
+    /// above. A node that fits keeps the tidier centred framing.
     ///
     /// egui's animation manager eases from the value it last saw for an id, so we
     /// seed it at the *current* viewport centre (time 0) — otherwise the first
     /// `update_pan` would ease from a stale value (or snap straight to the target).
-    fn reveal_node(&mut self, ctx: &egui::Context, node: NodeId, center: Pos2) {
+    fn reveal_node(&mut self, ctx: &egui::Context, node: NodeId, node_rect: Rect) {
         self.selected = Some(node);
+        let viewport = self.scene_rect.size();
+        // Vertical target: centre a node that fits; else pin its top a margin below
+        // the viewport top so the note reads from the beginning.
+        let target_y = if node_rect.height() <= viewport.y {
+            node_rect.center().y
+        } else {
+            node_rect.top() - REVEAL_TOP_MARGIN + viewport.y / 2.0
+        };
+        let target = Pos2::new(node_rect.center().x, target_y);
         let start = self.scene_rect.center();
         let (x_id, y_id) = pan_anim_ids();
         ctx.animate_value_with_time(x_id, start.x, 0.0);
         ctx.animate_value_with_time(y_id, start.y, 0.0);
-        self.pan_target = Some(center);
+        self.pan_target = Some(target);
     }
 
     /// Ease `scene_rect` toward a pending reveal pan ([`pan_target`](Self::pan_target),
