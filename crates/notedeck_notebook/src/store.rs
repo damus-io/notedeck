@@ -144,18 +144,11 @@ fn ingest_pns(
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
     let inner_id = NoteId::new(*inner.id());
-    let inner_json = inner.json().ok()?;
+    // The crypto + kind-1080 wrapper construction lives in `enostr::pns::wrap`
+    // (signed by the derived PNS keypair, unlinkable to the account); here we only
+    // ingest + publish the resulting envelope.
     let pns_keys = enostr::pns::derive_pns_keys(device_secret);
-    let ciphertext = enostr::pns::encrypt(&pns_keys.conversation_key, &inner_json).ok()?;
-    // The kind-1080 envelope is signed by the derived PNS keypair (not the user's
-    // key), so even the wrapper's author reveals nothing linkable to the account.
-    let pns_secret = pns_keys.keypair.secret_key.secret_bytes();
-    let wrapper = NoteBuilder::new()
-        .content(&ciphertext)
-        .kind(enostr::pns::PNS_KIND)
-        .created_at(now_secs())
-        .sign(&pns_secret)
-        .build()?;
+    let wrapper = enostr::pns::wrap(&pns_keys, &inner.json().ok()?, now_secs())?;
     ingest_signed(ndb, &wrapper, publisher)?;
     Some(inner_id)
 }
