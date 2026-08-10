@@ -65,19 +65,17 @@ impl BuiltEvent {
 
 /// Wrap an inner event in a kind-1080 PNS envelope for relay publishing.
 ///
-/// Encrypts the inner event JSON with the PNS conversation key and signs
-/// the outer event with the PNS keypair. Returns the kind-1080 event JSON.
+/// The encrypt + sign-1080 construction lives in [`enostr::pns::wrap`]; this
+/// adapts it to agentium's `Result<String, EventBuildError>` by returning the
+/// wrapper's event JSON.
 pub fn wrap_pns(
     inner_json: &str,
     pns_keys: &enostr::pns::PnsKeys,
 ) -> Result<String, EventBuildError> {
-    let ciphertext = enostr::pns::encrypt(&pns_keys.conversation_key, inner_json)
-        .map_err(|e| EventBuildError::Serialize(format!("PNS encrypt: {e}")))?;
-
-    let pns_secret = pns_keys.keypair.secret_key.secret_bytes();
-    let builder = init_note_builder(enostr::pns::PNS_KIND, &ciphertext, Some(now_secs()));
-    let event = finalize_built_event(builder, &pns_secret, enostr::pns::PNS_KIND)?;
-    Ok(event.note_json)
+    enostr::pns::wrap(pns_keys, inner_json, now_secs())
+        .ok_or_else(|| EventBuildError::Serialize("PNS wrap failed".to_string()))?
+        .json()
+        .map_err(|e| EventBuildError::Serialize(format!("PNS wrap json: {e}")))
 }
 
 /// Maintains threading state across a session's events.
