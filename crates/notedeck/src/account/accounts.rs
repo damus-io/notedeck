@@ -1,3 +1,4 @@
+use crate::account::bookmarks::AccountBookmarksData;
 use crate::account::cache::AccountCache;
 use crate::account::contacts::Contacts;
 use crate::account::mute::AccountMutedData;
@@ -332,6 +333,11 @@ impl Accounts {
         Box::new(Arc::clone(&account_data.muted.muted))
     }
 
+    pub fn bookmarks(&self) -> Box<Arc<crate::Bookmarks>> {
+        let account_data = self.get_selected_account_data();
+        Box::new(Arc::clone(&account_data.bookmarks.bookmarks))
+    }
+
     pub fn update_max_hashtags_per_note(&mut self, max_hashtags: usize) {
         for account in self.cache.accounts_mut() {
             account.data.muted.update_max_hashtags(max_hashtags);
@@ -487,6 +493,7 @@ fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> O
 pub struct AccountData {
     pub(crate) relay: AccountRelayData,
     pub(crate) muted: AccountMutedData,
+    pub(crate) bookmarks: AccountBookmarksData,
     pub contacts: Contacts,
 }
 
@@ -495,6 +502,7 @@ impl AccountData {
         Self {
             relay: AccountRelayData::new(pubkey),
             muted: AccountMutedData::new(pubkey),
+            bookmarks: AccountBookmarksData::new(pubkey),
             contacts: Contacts::new(pubkey),
         }
     }
@@ -512,6 +520,8 @@ impl AccountData {
             .poll_private_for_updates(ndb, &txn, ndb_subs.private_relay_ndb, keypair);
 
         self.muted.poll_for_updates(ndb, &txn, ndb_subs.mute_ndb);
+        self.bookmarks
+            .poll_for_updates(ndb, &txn, ndb_subs.bookmarks_ndb);
         self.contacts
             .poll_for_updates(ndb, &txn, ndb_subs.contacts_ndb);
 
@@ -522,6 +532,7 @@ impl AccountData {
     pub(super) fn query(&mut self, ndb: &Ndb, txn: &Transaction, keypair: &Keypair) {
         self.relay.query(ndb, txn, keypair);
         self.muted.query(ndb, txn);
+        self.bookmarks.query(ndb, txn);
         self.contacts.query(ndb, txn);
     }
 }
@@ -587,6 +598,15 @@ fn selected_account_request_subs(
                     ),
                 );
             }
+            AccountRemoteSubKind::BookmarksList => {
+                let _ = scoped_subs.ensure_sub(
+                    identity,
+                    make_account_remote_config(
+                        vec![data.bookmarks.filter.clone()],
+                        RelayRoutingPreference::default(),
+                    ),
+                );
+            }
             AccountRemoteSubKind::ContactsList => {
                 let _ = scoped_subs.ensure_sub(
                     identity,
@@ -621,6 +641,7 @@ enum AccountRemoteSubKind {
     RelayList,
     PrivateRelayList,
     MuteList,
+    BookmarksList,
     ContactsList,
     Giftwrap,
 }
@@ -630,6 +651,7 @@ fn account_remote_sub_kinds() -> [AccountRemoteSubKind; 5] {
         AccountRemoteSubKind::RelayList,
         AccountRemoteSubKind::PrivateRelayList,
         AccountRemoteSubKind::MuteList,
+        AccountRemoteSubKind::BookmarksList,
         AccountRemoteSubKind::ContactsList,
         AccountRemoteSubKind::Giftwrap,
     ]
@@ -668,6 +690,7 @@ struct AccountNdbSubs {
     relay_ndb: Subscription,
     private_relay_ndb: Subscription,
     mute_ndb: Subscription,
+    bookmarks_ndb: Subscription,
     contacts_ndb: Subscription,
 }
 
@@ -682,6 +705,9 @@ impl AccountNdbSubs {
         let mute_ndb = ndb
             .subscribe(from_ref(&data.muted.filter))
             .expect("ndb sub");
+        let bookmarks_ndb = ndb
+            .subscribe(from_ref(&data.bookmarks.filter))
+            .expect("ndb sub");
         let contacts_ndb = ndb
             .subscribe(from_ref(&data.contacts.filter))
             .expect("ndb sub");
@@ -689,6 +715,7 @@ impl AccountNdbSubs {
             relay_ndb,
             private_relay_ndb,
             mute_ndb,
+            bookmarks_ndb,
             contacts_ndb,
         }
     }
@@ -697,6 +724,7 @@ impl AccountNdbSubs {
         let _ = ndb.unsubscribe(self.relay_ndb);
         let _ = ndb.unsubscribe(self.private_relay_ndb);
         let _ = ndb.unsubscribe(self.mute_ndb);
+        let _ = ndb.unsubscribe(self.bookmarks_ndb);
         let _ = ndb.unsubscribe(self.contacts_ndb);
 
         *self = AccountNdbSubs::new(ndb, new_selection_data);

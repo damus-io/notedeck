@@ -657,6 +657,11 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 .accounts
                 .mute()
                 .is_pk_muted(self.note.pubkey());
+            let is_bookmarked = self
+                .note_context
+                .accounts
+                .bookmarks()
+                .is_bookmarked(self.note.id());
             let note_id = NoteId::new(*self.note.id());
             if let Some(action) = NoteContextButton::menu(
                 ui,
@@ -665,6 +670,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 note_id,
                 can_sign,
                 is_muted,
+                is_bookmarked,
             ) {
                 note_action = Some(NoteAction::Context(ContextSelection { note_key, action }));
             }

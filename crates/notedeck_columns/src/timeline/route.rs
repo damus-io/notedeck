@@ -25,6 +25,7 @@ pub fn render_timeline_route(
         | TimelineKind::Search(_)
         | TimelineKind::Algo(_)
         | TimelineKind::Notifications(_)
+        | TimelineKind::Bookmarks(_)
         | TimelineKind::Universe
         | TimelineKind::Hashtag(_)
         | TimelineKind::Generic(_) => {

@@ -1,11 +1,12 @@
 use crate::error::Error;
 use crate::nfilter::{filter_from_querystring, filter_to_querystring};
 use crate::search::SearchQuery;
-use crate::timeline::{Timeline, TimelineTab};
+use crate::timeline::{Timeline, TimelineTab, ViewFilter};
 use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::filter::{NdbQueryPackage, ValidKind};
 use notedeck::{
+    bookmarks_from_note,
     contacts::{contacts_filter, hybrid_contacts_filter, hybrid_last_per_pubkey_filter},
     filter::{self, default_limit, default_remote_limit, HybridFilter},
     tr, FilterError, FilterState, Localization, NoteCache, RootIdError, RootNoteIdBuf,
@@ -255,6 +256,10 @@ pub enum TimelineKind {
 
     Profile(Pubkey),
 
+    /// The account's NIP-51 bookmarks list (kind 10003), sorted by most
+    /// recently bookmarked first.
+    Bookmarks(Pubkey),
+
     Universe,
 
     /// Custom filter timeline
@@ -358,6 +363,7 @@ impl TimelineKind {
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(list_kind)) => list_kind.pubkey(),
             TimelineKind::Notifications(pk) => Some(pk),
             TimelineKind::Profile(pk) => Some(pk),
+            TimelineKind::Bookmarks(pk) => Some(pk),
             TimelineKind::Universe => None,
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
@@ -373,6 +379,7 @@ impl TimelineKind {
             TimelineKind::List(_list_kind) => true,
             TimelineKind::Notifications(_pk_src) => true,
             TimelineKind::Profile(_pk_src) => true,
+            TimelineKind::Bookmarks(_pk_src) => true,
             TimelineKind::Universe => true,
             TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
@@ -402,6 +409,10 @@ impl TimelineKind {
             }
             TimelineKind::Profile(pk) => {
                 writer.write_token("profile");
+                PubkeySource::pubkey(*pk).serialize_tokens(writer);
+            }
+            TimelineKind::Bookmarks(pk) => {
+                writer.write_token("bookmarks");
                 PubkeySource::pubkey(*pk).serialize_tokens(writer);
             }
             TimelineKind::Universe => {
@@ -441,6 +452,15 @@ impl TimelineKind {
         });
         if notifications.is_ok() {
             return notifications;
+        }
+
+        let bookmarks = parser.try_parse(|p| {
+            p.parse_token("bookmarks")?;
+            let pk_src = PubkeySource::parse_from_tokens(p)?;
+            Ok(TimelineKind::Bookmarks(*pk_src.as_pubkey(deck_author)))
+        });
+        if bookmarks.is_ok() {
+            return bookmarks;
         }
 
         let list_tl =
@@ -526,6 +546,10 @@ impl TimelineKind {
         TimelineKind::Notifications(pk)
     }
 
+    pub fn bookmarks(pk: Pubkey) -> Self {
+        TimelineKind::Bookmarks(pk)
+    }
+
     // TODO: probably should set default limit here
     /// Build the filter state for this timeline kind.
     pub fn filters(&self, txn: &Transaction, ndb: &Ndb) -> FilterState {
@@ -558,6 +582,8 @@ impl TimelineKind {
             TimelineKind::Generic(filter_vec) => generic_filter_state(filter_vec),
 
             TimelineKind::Profile(pk) => FilterState::ready_hybrid(profile_filter(pk.bytes())),
+
+            TimelineKind::Bookmarks(pk) => bookmarks_filter_state(txn, ndb, pk),
         }
     }
 
@@ -642,6 +668,12 @@ impl TimelineKind {
                 ))
             }
 
+            TimelineKind::Bookmarks(pk) => Some(Timeline::new(
+                TimelineKind::Bookmarks(pk),
+                bookmarks_filter_state(txn, ndb, &pk),
+                vec![TimelineTab::new(ViewFilter::All)],
+            )),
+
             TimelineKind::Hashtag(hashtag) => Some(Timeline::hashtag(hashtag)),
 
             TimelineKind::List(ListKind::Contact(pk)) => Some(Timeline::new(
@@ -717,6 +749,9 @@ impl TimelineKind {
                 ColumnTitle::formatted(tr!(i18n, "Notifications", "Column title for notifications"))
             }
             TimelineKind::Profile(_pubkey_source) => ColumnTitle::needs_db(self),
+            TimelineKind::Bookmarks(_pubkey_source) => {
+                ColumnTitle::formatted(tr!(i18n, "Bookmarks", "Column title for bookmarks"))
+            }
             TimelineKind::Universe => {
                 ColumnTitle::formatted(tr!(i18n, "Universe", "Column title for universe feed"))
             }
@@ -952,6 +987,43 @@ fn people_list_last_per_pubkey_filter_state(
             Ok(filter) => FilterState::ready_hybrid(filter),
         }
     }
+}
+
+/// Filter to fetch a user's NIP-51 bookmarks list (kind 10003)
+pub fn bookmarks_note_filter(pk: &Pubkey) -> Filter {
+    Filter::new()
+        .authors([pk.bytes()])
+        .kinds([10003])
+        .limit(1)
+        .build()
+}
+
+/// Build the filter state for a bookmarks timeline. Unlike contact/people
+/// lists, the bookmark ids are already known locally at all times (the
+/// account's bookmark list is queried/subscribed continuously regardless of
+/// whether a bookmarks column is open), so we can go straight to a `Ready`
+/// ids filter with no `NeedsRemote` staging.
+fn bookmarks_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterState {
+    let list_filter = bookmarks_note_filter(pk);
+
+    let results = match ndb.query(txn, std::slice::from_ref(&list_filter), 1) {
+        Ok(results) => results,
+        Err(err) => {
+            error!("bookmarks list query failed: {err}");
+            return FilterState::Broken(FilterError::EmptyList);
+        }
+    };
+
+    let ids: Vec<[u8; 32]> = results
+        .first()
+        .map(|qr| bookmarks_from_note(&qr.note).note_ids.into_iter().collect())
+        .unwrap_or_default();
+
+    FilterState::ready(vec![Filter::new()
+        .kinds([1])
+        .ids(ids.iter())
+        .limit(default_limit())
+        .build()])
 }
 
 pub(super) fn hashtag_filter_state(hashtag: &[String]) -> FilterState {

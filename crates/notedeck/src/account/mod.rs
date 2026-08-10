@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod bookmarks;
 pub mod cache;
 pub mod contacts;
 pub mod mute;

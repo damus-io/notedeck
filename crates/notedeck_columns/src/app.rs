@@ -229,34 +229,43 @@ fn try_process_event(
             // only thread timelines are reversed
             let reversed = false;
 
-            match timeline.poll_notes_into_view(
-                &selected_account_pk,
-                app_ctx.ndb,
-                &txn,
-                app_ctx.unknown_ids,
-                app_ctx.note_cache,
-                reversed,
-            ) {
-                Ok(new_note_keys) => {
-                    if !new_note_keys.is_empty() && matches!(kind, TimelineKind::Notifications(_)) {
-                        let muted = app_ctx.accounts.mute();
-                        let has_unmuted = new_note_keys.iter().any(|key| {
-                            app_ctx
-                                .ndb
-                                .get_note_by_key(&txn, *key)
-                                .is_ok_and(|note| !muted.is_pk_muted(note.pubkey()))
-                        });
-                        if has_unmuted {
-                            app_ctx
-                                .sound
-                                .play_debounced(notedeck::SoundEffect::Notification, 2000);
+            if matches!(kind, TimelineKind::Bookmarks(_)) {
+                // Bookmarks need bespoke insertion so we can sort by
+                // bookmark order instead of note timestamp; see
+                // `Timeline::rebuild_bookmarks_view`.
+                timeline.rebuild_bookmarks_view(&selected_account_pk, app_ctx.ndb, &txn);
+            } else {
+                match timeline.poll_notes_into_view(
+                    &selected_account_pk,
+                    app_ctx.ndb,
+                    &txn,
+                    app_ctx.unknown_ids,
+                    app_ctx.note_cache,
+                    reversed,
+                ) {
+                    Ok(new_note_keys) => {
+                        if !new_note_keys.is_empty()
+                            && matches!(kind, TimelineKind::Notifications(_))
+                        {
+                            let muted = app_ctx.accounts.mute();
+                            let has_unmuted = new_note_keys.iter().any(|key| {
+                                app_ctx
+                                    .ndb
+                                    .get_note_by_key(&txn, *key)
+                                    .is_ok_and(|note| !muted.is_pk_muted(note.pubkey()))
+                            });
+                            if has_unmuted {
+                                app_ctx
+                                    .sound
+                                    .play_debounced(notedeck::SoundEffect::Notification, 2000);
+                            }
                         }
 
                         verify_new_zap_receipts(app_ctx, &txn, &new_note_keys);
                     }
-                }
-                Err(err) => {
-                    error!("poll_notes_into_view: {err}");
+                    Err(err) => {
+                        error!("poll_notes_into_view: {err}");
+                    }
                 }
             }
         } else {
@@ -814,6 +823,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
                 // no!
                 TimelineKind::Search(_) => false,
                 TimelineKind::Notifications(_) => false,
+                TimelineKind::Bookmarks(_) => false,
             }
         }
 

@@ -69,6 +69,7 @@ impl NoteContextButton {
         note_id: NoteId,
         can_sign: bool,
         is_muted: bool,
+        is_bookmarked: bool,
     ) -> Option<NoteContextSelection> {
         let mut context_selection: Option<NoteContextSelection> = None;
 
@@ -171,6 +172,20 @@ impl NoteContextButton {
             }
 
             if can_sign {
+                let bookmark_label = if is_bookmarked {
+                    tr!(
+                        i18n,
+                        "Remove Bookmark",
+                        "Remove this note from your bookmarks"
+                    )
+                } else {
+                    tr!(i18n, "Bookmark Note", "Save this note to your bookmarks")
+                };
+                if ui.button(bookmark_label).clicked() {
+                    context_selection = Some(NoteContextSelection::BookmarkNote);
+                    ui.close_menu();
+                }
+
                 let label = if is_muted {
                     tr!(i18n, "Unmute User", "Unmute the author of this note")
                 } else {

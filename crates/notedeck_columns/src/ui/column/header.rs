@@ -511,6 +511,7 @@ impl<'a> NavTitle<'a> {
                 TimelineKind::Universe
                 | TimelineKind::Algo(_)
                 | TimelineKind::Notifications(_)
+                | TimelineKind::Bookmarks(_)
                 | TimelineKind::Generic(_)
                 | TimelineKind::List(_) => Some(self.timeline_pfp(ui, kind, pfp_size)),
             },

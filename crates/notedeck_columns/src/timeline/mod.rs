@@ -3,7 +3,8 @@ use crate::{
     scoped_sub_owner_keys::timeline_remote_owner_key,
     timeline::{
         kind::{
-            hashtag_filter_state, people_list_note_filter, AlgoTimeline, ListKind, PeopleListRef,
+            bookmarks_note_filter, hashtag_filter_state, people_list_note_filter, AlgoTimeline,
+            ListKind, PeopleListRef,
         },
         note_units::InsertManyResponse,
         sub::TimelineSub,
@@ -13,6 +14,7 @@ use crate::{
 };
 
 use notedeck::{
+    bookmarks_from_note,
     contacts::{hybrid_contacts_filter, hybrid_last_per_pubkey_filter},
     filter::{self},
     is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
@@ -637,6 +639,75 @@ impl Timeline {
         Ok(new_note_ids)
     }
 
+    /// Rebuild a bookmarks timeline's single view directly from the
+    /// account's current NIP-51 bookmark list, in
+    /// most-recently-bookmarked-first order.
+    ///
+    /// Bookmarks needs bespoke insertion instead of the generic
+    /// [`Timeline::insert`] merge path because that path always derives
+    /// [`NoteRef::created_at`] straight from the note's own `created_at` —
+    /// there's no way to sort by "when was this bookmarked" through it.
+    /// Here we assign each note a synthetic, purely-positional `created_at`
+    /// so the existing `NoteRef` ordering does the sorting for us; note
+    /// content shown in the UI is always re-read from the real note by key,
+    /// so this is invisible to the user.
+    ///
+    /// The underlying ids-filter subscription (set up generically, same as
+    /// any other timeline) is only used here to keep pulling in note bodies
+    /// for bookmarked ids not yet cached locally; we don't care which keys
+    /// it polls since we always fully re-resolve the current bookmark list
+    /// below, only rebuilding the view when the resulting order actually
+    /// changed (to avoid resetting the virtual list/scroll position every
+    /// frame).
+    #[profiling::function]
+    pub fn rebuild_bookmarks_view(&mut self, account_pk: &Pubkey, ndb: &Ndb, txn: &Transaction) {
+        if let Some(sub) = self.subscription.get_local(account_pk) {
+            let _ = ndb.poll_for_notes(sub, 500);
+        }
+
+        let TimelineKind::Bookmarks(pk) = &self.kind else {
+            return;
+        };
+
+        let list_filter = bookmarks_note_filter(pk);
+        let bookmarks = ndb
+            .query(txn, std::slice::from_ref(&list_filter), 1)
+            .ok()
+            .and_then(|results| results.first().map(|qr| bookmarks_from_note(&qr.note)))
+            .unwrap_or_default();
+
+        let mut new_refs = Vec::with_capacity(bookmarks.note_ids.len());
+        for (rank, id) in bookmarks.most_recent_first().enumerate() {
+            let Ok(note) = ndb.get_note_by_id(txn, id) else {
+                continue;
+            };
+            if note.kind() != 1 {
+                continue;
+            }
+            let Some(key) = note.key() else {
+                continue;
+            };
+            new_refs.push(NoteRef {
+                key,
+                created_at: u64::MAX - rank as u64,
+            });
+        }
+
+        let current_keys: Vec<NoteKey> = (0..self.current_view().units.len())
+            .filter_map(|i| self.current_view().units.get(i))
+            .map(|unit| unit.get_underlying_noteref().key)
+            .collect();
+        let new_keys: Vec<NoteKey> = new_refs.iter().map(|r| r.key).collect();
+
+        if current_keys == new_keys {
+            return;
+        }
+
+        let tab = self.current_view_mut();
+        tab.units = TimelineUnits::from_refs_single(new_refs);
+        tab.list.borrow_mut().reset();
+    }
+
     /// Invalidate the timeline, forcing a rebuild on the next check.
     ///
     /// This resets all relay states to [`FilterState::NeedsRemote`] and
@@ -1186,6 +1257,129 @@ mod remote_tests {
         assert!(
             h.pool.status(&compaction_id).is_empty(),
             "updating notifications should keep the dedicated route and leave the old compaction leg revoked"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bookmarks_tests {
+    use super::*;
+    use enostr::FullKeypair;
+    use nostrdb::{Config, NoteBuildOptions, NoteBuilder};
+    use tempfile::TempDir;
+
+    /// `process_client_event` ingests asynchronously, so wait for the note
+    /// to actually become queryable before returning (mirrors the
+    /// wait-for-ingest pattern used by the e2e test harness).
+    fn sign_and_ingest(ndb: &Ndb, kp: &FullKeypair, builder: NoteBuilder<'_>) -> [u8; 32] {
+        let note = builder
+            .sign(&kp.secret_key.secret_bytes())
+            .build()
+            .expect("build note");
+        let id = *note.id();
+        let json = note.json().expect("note json");
+        ndb.process_client_event(&json).expect("ingest note");
+
+        for _ in 0..200 {
+            let txn = Transaction::new(ndb).expect("txn");
+            if ndb.get_note_by_id(&txn, &id).is_ok() {
+                return id;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("note {} never became queryable", hex::encode(id));
+    }
+
+    fn kind1_note(content: &str) -> NoteBuilder<'static> {
+        NoteBuilder::new()
+            .kind(1)
+            .content(content)
+            .options(NoteBuildOptions::default())
+    }
+
+    /// Verifies that a bookmarks timeline sorts by bookmark order (most
+    /// recently bookmarked first), not by the bookmarked notes' own
+    /// `created_at`, and that removing a bookmark and re-running the rebuild
+    /// drops it from the view.
+    #[test]
+    fn bookmarks_timeline_orders_by_bookmark_time_not_note_time() {
+        let tmp = TempDir::new().expect("tmp dir");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let kp = FullKeypair::generate();
+
+        // Note "a" is the newest note by created_at, but will be the
+        // *oldest* bookmark - if ordering were by note timestamp it would
+        // sort first; bookmark order should sort it last instead.
+        let id_a = sign_and_ingest(&ndb, &kp, kind1_note("a").created_at(300));
+        let id_b = sign_and_ingest(&ndb, &kp, kind1_note("b").created_at(200));
+        let id_c = sign_and_ingest(&ndb, &kp, kind1_note("c").created_at(100));
+
+        // Bookmark a, then b, then c (c is most recently bookmarked).
+        let bookmarks_note = NoteBuilder::new()
+            .kind(10003)
+            .content("")
+            .options(NoteBuildOptions::default())
+            .start_tag()
+            .tag_str("e")
+            .tag_id(&id_a)
+            .start_tag()
+            .tag_str("e")
+            .tag_id(&id_b)
+            .start_tag()
+            .tag_str("e")
+            .tag_id(&id_c);
+        sign_and_ingest(&ndb, &kp, bookmarks_note);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let kind = TimelineKind::Bookmarks(kp.pubkey);
+        let mut timeline = kind.into_timeline(&txn, &ndb).expect("bookmarks timeline");
+        timeline.rebuild_bookmarks_view(&kp.pubkey, &ndb, &txn);
+
+        let ordered_ids: Vec<[u8; 32]> = (0..timeline.current_view().units.len())
+            .filter_map(|i| timeline.current_view().units.get(i))
+            .filter_map(|unit| {
+                ndb.get_note_by_key(&txn, unit.get_underlying_noteref().key)
+                    .ok()
+            })
+            .map(|note| *note.id())
+            .collect();
+
+        assert_eq!(
+            ordered_ids,
+            vec![id_c, id_b, id_a],
+            "bookmarks should be ordered most-recently-bookmarked-first, ignoring note created_at"
+        );
+        drop(txn);
+
+        // Unbookmark "b" by republishing the list without it.
+        let updated_bookmarks_note = NoteBuilder::new()
+            .kind(10003)
+            .content("")
+            .options(NoteBuildOptions::default())
+            .start_tag()
+            .tag_str("e")
+            .tag_id(&id_a)
+            .start_tag()
+            .tag_str("e")
+            .tag_id(&id_c);
+        sign_and_ingest(&ndb, &kp, updated_bookmarks_note);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        timeline.rebuild_bookmarks_view(&kp.pubkey, &ndb, &txn);
+
+        let ordered_ids_after_unbookmark: Vec<[u8; 32]> = (0..timeline.current_view().units.len())
+            .filter_map(|i| timeline.current_view().units.get(i))
+            .filter_map(|unit| {
+                ndb.get_note_by_key(&txn, unit.get_underlying_noteref().key)
+                    .ok()
+            })
+            .map(|note| *note.id())
+            .collect();
+
+        assert_eq!(
+            ordered_ids_after_unbookmark,
+            vec![id_c, id_a],
+            "unbookmarking should remove the note from the view on the next rebuild"
         );
     }
 }
