@@ -76,6 +76,9 @@ pub struct LoadedSession {
     pub permissions: PermissionTracker,
     /// All note IDs found, for seeding dedup in live polling.
     pub note_ids: HashSet<[u8; 32]>,
+    /// Highest [`EventOrder`] among the loaded notes, for seeding the live
+    /// poll-merge tail so it knows what's already displayed. `None` when empty.
+    pub max_order: Option<EventOrder>,
 }
 
 /// Load conversation messages from ndb for a given session ID.
@@ -119,6 +122,7 @@ fn load_session_messages_with_author(
                 last_note_id: None,
                 permissions: PermissionTracker::new(),
                 note_ids: HashSet::new(),
+                max_order: None,
             };
         }
     };
@@ -167,67 +171,14 @@ fn load_session_messages_with_author(
         }
     }
 
-    // Second pass: convert to messages
+    // Highest ordering key present, for seeding the live-merge tail (notes are
+    // sorted, so the last one is the max).
+    let max_order = notes.last().map(EventOrder::from_note);
+
+    // Second pass: convert to messages via the shared renderer.
     let mut messages = Vec::new();
     for note in &notes {
-        let content = note.content();
-        let role = get_tag_value(note, "role");
-
-        let msg = match role {
-            Some("user") => Some(Message::User(content.to_string().into())),
-            Some("assistant") | Some("tool_call") => Some(Message::Assistant(
-                AssistantMessage::from_text(content.to_string()),
-            )),
-            Some("tool_result") => {
-                let summary = crate::util::truncate(content, 200);
-                Some(Message::ToolResponse(ToolResponse::executed_tool(
-                    ExecutedTool {
-                        tool_name: get_tag_value(note, "tool-name")
-                            .unwrap_or("tool")
-                            .to_string(),
-                        summary,
-                        parent_task_id: None,
-                        file_update: None,
-                    },
-                )))
-            }
-            Some("permission_request") => {
-                if let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) {
-                    let tool_name = content_json["tool_name"]
-                        .as_str()
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let tool_input = content_json
-                        .get("tool_input")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-                    let perm_id = get_tag_value(note, "perm-id")
-                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                        .unwrap_or_else(uuid::Uuid::new_v4);
-
-                    let response = permissions.responded.get(&perm_id).copied();
-
-                    Some(Message::PermissionRequest(PermissionRequest::new(
-                        perm_id, tool_name, tool_input, None, response, None,
-                    )))
-                } else {
-                    None
-                }
-            }
-            Some("compaction_complete") => {
-                // The live poll-merge path renders this too; the loader must
-                // match it so a rebuild-from-ndb yields the identical transcript
-                // (see `process_conversation_notes` in notedeck_dave).
-                let pre_tokens = content.parse::<u64>().unwrap_or(0);
-                Some(Message::CompactionComplete(
-                    crate::messages::CompactionInfo { pre_tokens },
-                ))
-            }
-            // Skip permission_response, progress, queue-operation, etc.
-            _ => None,
-        };
-
-        if let Some(msg) = msg {
+        if let Some(msg) = render_conversation_note(note, &permissions.responded) {
             messages.push(msg);
         }
     }
@@ -238,6 +189,66 @@ fn load_session_messages_with_author(
         last_note_id,
         permissions,
         note_ids,
+        max_order,
+    }
+}
+
+/// Render one conversation note into a chat [`Message`], or `None` for roles
+/// that carry no display message (permission_response, progress, …).
+///
+/// This is the **single** note→message mapping, shared by the loader (a
+/// from-scratch rebuild) and the live poll-merge append path in notedeck_dave,
+/// so the two can never render the same event differently (path agreement).
+/// `responded` supplies the decision to show on a `permission_request`.
+pub fn render_conversation_note(
+    note: &nostrdb::Note,
+    responded: &HashMap<uuid::Uuid, crate::messages::PermissionResponseType>,
+) -> Option<Message> {
+    let content = note.content();
+    match get_tag_value(note, "role") {
+        Some("user") => Some(Message::User(content.to_string().into())),
+        Some("assistant") | Some("tool_call") => Some(Message::Assistant(
+            AssistantMessage::from_text(content.to_string()),
+        )),
+        Some("tool_result") => {
+            let summary = crate::util::truncate(content, 200);
+            Some(Message::ToolResponse(ToolResponse::executed_tool(
+                ExecutedTool {
+                    tool_name: get_tag_value(note, "tool-name")
+                        .unwrap_or("tool")
+                        .to_string(),
+                    summary,
+                    parent_task_id: None,
+                    file_update: None,
+                },
+            )))
+        }
+        Some("permission_request") => {
+            let content_json = serde_json::from_str::<serde_json::Value>(content).ok()?;
+            let tool_name = content_json["tool_name"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();
+            let tool_input = content_json
+                .get("tool_input")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let perm_id = get_tag_value(note, "perm-id")
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .unwrap_or_else(uuid::Uuid::new_v4);
+            let response = responded.get(&perm_id).copied();
+            Some(Message::PermissionRequest(PermissionRequest::new(
+                perm_id, tool_name, tool_input, None, response, None,
+            )))
+        }
+        Some("compaction_complete") => {
+            let pre_tokens = content.parse::<u64>().unwrap_or(0);
+            Some(Message::CompactionComplete(
+                crate::messages::CompactionInfo { pre_tokens },
+            ))
+        }
+        // Skip permission_response, progress, queue-operation, etc.
+        _ => None,
     }
 }
 

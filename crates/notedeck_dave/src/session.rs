@@ -210,6 +210,14 @@ pub struct AgenticSessionData {
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
     pub seen_note_ids: HashSet<[u8; 32]>,
+    /// Highest [`EventOrder`](agentium_core::session_loader::EventOrder) already
+    /// reflected in `chat` for a remote session — the fast-path tail marker.
+    /// When a poll batch's new notes all sort after this, they are appended in
+    /// order (O(batch)) instead of triggering a full rebuild (O(n)); a note at
+    /// or before it forces a rebuild. Seeded from the loader on every rebuild
+    /// (see `rebuild_remote_chat`); `None` conservatively forces a rebuild, so a
+    /// missed seeding can never misorder — it only costs one extra rebuild.
+    pub tail_order: Option<agentium_core::session_loader::EventOrder>,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
     /// Runtime allowlist for auto-accepting permissions this session.
@@ -254,6 +262,7 @@ impl AgenticSessionData {
             remote_status: None,
             remote_status_ts: 0,
             seen_note_ids: HashSet::new(),
+            tail_order: None,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
             auto_accept_all: false,

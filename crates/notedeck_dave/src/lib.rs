@@ -4695,12 +4695,10 @@ pub(crate) struct ProcessedNotes {
     pub remote_user_messages: Vec<(SessionId, String)>,
     /// Events that should be published to relays.
     pub events_to_publish: Vec<session_events::BuiltEvent>,
-    /// True if this batch ingested a new displayable note for a remote session,
-    /// so the caller must rebuild that session's chat from ndb in sorted order
-    /// (see [`rebuild_remote_chat`]). Remote display order is a pure function of
-    /// the persisted event set — the loader is the single ordering path — so any
-    /// new displayable note triggers a full rebuild rather than an incremental
-    /// append that could diverge from the loader across out-of-order polls.
+    /// True if this batch needs the caller to rebuild the remote session's chat
+    /// from ndb (see [`rebuild_remote_chat`]) — set only on the slow path, when
+    /// a new displayable note sorts at or before what's already shown. In-order
+    /// notes are appended directly here and do NOT set this.
     pub rebuild_chat: bool,
 }
 
@@ -4711,14 +4709,21 @@ pub(crate) struct ProcessedNotes {
 /// proceed-after-compaction). Returns any remote user messages (for local
 /// sessions) and events to publish.
 ///
-/// For **remote** sessions this does NOT append display messages to
-/// `session.chat`: remote conversation order must be a pure function of the
-/// persisted event set, independent of arrival/poll order, so a single path —
-/// the loader ([`rebuild_remote_chat`]) — owns display. When a new displayable
-/// note arrives, `rebuild_chat` is set and the caller reloads the whole chat
-/// from ndb sorted by [`EventOrder`](session_loader::EventOrder). This replaces
-/// the old incremental-append + `max_seen_order` out-of-order detector, whose
-/// unseeded state let backfilled events append at the end on a fresh machine.
+/// For **remote** sessions display order must be a pure function of the
+/// persisted event set. Two paths keep that guarantee:
+/// - **fast path** — when every new displayable note in the batch sorts after
+///   `agentic.tail_order` (what's already shown), they are appended in order via
+///   [`render_conversation_note`](session_loader::render_conversation_note), the
+///   *same* renderer the loader uses, so the result is byte-identical to a
+///   rebuild. O(batch).
+/// - **slow path** — any note at or before the tail (out-of-order relay
+///   delivery / a fresh-machine backfill) sets `rebuild_chat`; the caller
+///   reloads the whole chat from ndb sorted by
+///   [`EventOrder`](session_loader::EventOrder), which reseeds `tail_order`.
+///
+/// `tail_order` is seeded from the loader on every rebuild; when `None` (never
+/// loaded) the batch conservatively takes the slow path, so a missed seeding
+/// can only cost an extra rebuild, never misorder.
 ///
 /// For **local** sessions only incoming remote user messages are appended (the
 /// live streaming path owns local display); those are never rebuilt from ndb.
@@ -4737,6 +4742,9 @@ pub(crate) fn process_conversation_notes<'a>(
     // to `last_activity` after the loop (can't call `session.mark_activity`
     // inside — `session.agentic` is mutably borrowed below).
     let mut latest_activity: Option<u64> = None;
+    // Indices (into the sorted `notes`) of new displayable remote notes, decided
+    // into an append or a rebuild after the side-effect pass below.
+    let mut new_display_idxs: Vec<usize> = Vec::new();
 
     // Sort this batch by wall-clock time at millisecond resolution, keyed off
     // the same `EventOrder` the loader uses. For remote sessions display order
@@ -4745,7 +4753,7 @@ pub(crate) fn process_conversation_notes<'a>(
     // side-effect processing (compaction lifecycle) in a sensible order.
     notes.sort_by_key(|n| session_loader::EventOrder::from_note(n));
 
-    for note in &notes {
+    for (idx, note) in notes.iter().enumerate() {
         // Skip events we've already processed (dedup)
         let note_id = *note.id();
         let dominated = session
@@ -4775,11 +4783,8 @@ pub(crate) fn process_conversation_notes<'a>(
             continue;
         };
 
-        // Any newly-seen displayable note means the loader-rendered chat is now
-        // stale: flag a rebuild from ndb in sorted order. Remote display order
-        // is owned entirely by the loader (see the function docs), so we never
-        // append display messages here — the caller's rebuild is the single,
-        // ingestion-order-independent source of truth.
+        // Collect newly-seen displayable notes; after the side-effect pass they
+        // are either appended in order (fast path) or trigger a rebuild.
         let displayable = matches!(
             role,
             Some("user")
@@ -4792,7 +4797,7 @@ pub(crate) fn process_conversation_notes<'a>(
         if displayable {
             let created_at = note.created_at();
             latest_activity = Some(latest_activity.map_or(created_at, |p| p.max(created_at)));
-            rebuild_chat = true;
+            new_display_idxs.push(idx);
         }
 
         // Side effects only — display is rebuilt from ndb by the caller. The
@@ -4871,6 +4876,29 @@ pub(crate) fn process_conversation_notes<'a>(
         }
     }
 
+    // Reflect the new displayable notes. Fast path: if they all sort after
+    // what's already shown (`tail_order`), append them in order using the same
+    // renderer the loader uses — byte-identical to a rebuild, O(batch). Slow
+    // path (any note at/before the tail, or an unseeded tail): flag a rebuild.
+    if let (false, Some(agentic)) = (new_display_idxs.is_empty(), &mut session.agentic) {
+        let min_new = session_loader::EventOrder::from_note(&notes[new_display_idxs[0]]);
+        let appendable = matches!(agentic.tail_order, Some(tail) if min_new > tail);
+        if appendable {
+            for &i in &new_display_idxs {
+                if let Some(msg) = session_loader::render_conversation_note(
+                    &notes[i],
+                    &agentic.permissions.responded,
+                ) {
+                    session.chat.push(msg);
+                }
+            }
+            let last = *new_display_idxs.last().expect("non-empty");
+            agentic.tail_order = Some(session_loader::EventOrder::from_note(&notes[last]));
+        } else {
+            rebuild_chat = true;
+        }
+    }
+
     // Remote sessions never hit the local `append_token` path, so drive the
     // status-bar "last activity" indicator off the newest ingested note.
     if let Some(ts) = latest_activity {
@@ -4914,6 +4942,9 @@ pub(crate) fn rebuild_remote_chat(
         return;
     };
     agentic.seen_note_ids.extend(loaded.note_ids);
+    // Seed the fast-path tail from the freshly loaded set: subsequent in-order
+    // notes can then append instead of forcing another rebuild.
+    agentic.tail_order = loaded.max_order;
     agentic.permissions.merge_loaded(
         loaded.permissions.responded,
         loaded.permissions.request_note_ids,
@@ -5724,14 +5755,15 @@ mod tests {
                 process_conversation_notes(a_batch, &mut session, 1, true, Some(&sk), &ndb);
             assert!(
                 result.rebuild_chat,
-                "a new displayable backfill note must request a rebuild"
+                "an out-of-order backfill note (before the tail) must take the \
+                 slow path and request a rebuild"
             );
-            // The single-path design never appends display for remote sessions;
-            // process leaves the chat untouched and the rebuild fixes order.
+            // The out-of-order note is not appended (that would misorder); the
+            // chat is left for the rebuild to fix.
             assert_eq!(
                 assistant_texts(&session.chat),
                 vec!["B", "C"],
-                "process must not append display messages for remote sessions"
+                "an out-of-order note must not be appended"
             );
             rebuild_remote_chat(&mut session, &ndb, &txn, &author);
         }
@@ -5741,6 +5773,94 @@ mod tests {
             assistant_texts(&session.chat),
             vec!["A", "B", "C"],
             "a backfilled early event must sort into place, not append at the end"
+        );
+    }
+
+    /// Fast path: when a polled note sorts after everything already displayed
+    /// (in-order delivery, the common case), it is appended directly — no
+    /// rebuild — and the result matches a from-scratch loader rebuild. This is
+    /// the O(batch) optimization over always reloading the whole chat.
+    #[tokio::test]
+    async fn in_order_note_appends_without_rebuild() {
+        let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let mut threading = ThreadingState::new();
+        let session_id_str = "fast-path-test";
+
+        let mut mk = |text: &str| {
+            build_live_event(
+                text,
+                "assistant",
+                session_id_str,
+                None,
+                None,
+                None,
+                &mut threading,
+                &sk,
+            )
+            .unwrap()
+        };
+        let a = mk("A");
+        let b = mk("B");
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let ingest = |ndb: &Ndb, evt: &session_events::BuiltEvent| {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            sub
+        };
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        // Initial load with A only (seeds tail_order at A).
+        {
+            let sub = ingest(&ndb, &a);
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+        }
+        assert_eq!(assistant_texts(&session.chat), vec!["A"]);
+
+        // B arrives in order; the poll appends it without asking for a rebuild.
+        {
+            let sub = ingest(&ndb, &b);
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            let batch: Vec<_> = ndb
+                .query(&txn, std::slice::from_ref(&filter), 128)
+                .unwrap()
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .filter(|n| n.content() == "B")
+                .collect();
+            let result = process_conversation_notes(batch, &mut session, 1, true, Some(&sk), &ndb);
+            assert!(
+                !result.rebuild_chat,
+                "an in-order note must be appended, not trigger a rebuild"
+            );
+        }
+
+        // Appended directly, and identical to what a full rebuild would produce.
+        assert_eq!(assistant_texts(&session.chat), vec!["A", "B"]);
+        let txn = Transaction::new(&ndb).unwrap();
+        let rebuilt =
+            session_loader::load_session_messages_for_author(&ndb, &txn, &author, session_id_str);
+        assert_eq!(
+            assistant_texts(&session.chat),
+            assistant_texts(&rebuilt.messages),
+            "the fast-path append must match a from-scratch rebuild"
         );
     }
 
