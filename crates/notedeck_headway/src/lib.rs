@@ -4,10 +4,7 @@ use std::rc::Rc;
 
 use enostr::{NoteId, Pubkey, RelayId, RelayStatus};
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
-use notedeck::{
-    App, AppContext, AppResponse, ColorTheme, DataPath, DataPathType, PrivateRelaySync,
-    fan_out_unseen_notes,
-};
+use notedeck::{App, AppContext, AppResponse, ColorTheme, PrivateRelaySync, fan_out_unseen_notes};
 
 pub use headway::{event, store};
 
@@ -218,7 +215,22 @@ impl Headway {
         // Switch to the owning board first; the fold lands on a later frame.
         if self.board_id != board_id {
             self.board_id = board_id;
-            save_board_pref(ctx.path, author, &self.board_id);
+            // Persist the switch as a PNS note when we can sign; a watch-only
+            // account has no secret to encrypt with, so its selection just isn't
+            // remembered (it never was persistable).
+            if let Some(secret) = ctx
+                .accounts
+                .selected_filled()
+                .map(|f| f.secret_key.secret_bytes())
+            {
+                store::save_board_pref(
+                    ctx.ndb,
+                    author,
+                    &secret,
+                    &self.board_id,
+                    &mut store::NoPublish,
+                );
+            }
             self.wake();
             return;
         }
@@ -339,11 +351,13 @@ impl App for Headway {
             .map(|f| f.secret_key.secret_bytes());
 
         // On first update and after an account switch, restore that account's
-        // last-selected board from disk (falling back to the default). Re-arm the
-        // auto-seed so a fresh account still gets its default board seeded.
+        // last-selected board from nostrdb — a PNS-wrapped kind-30623 note
+        // ([`store::save_board_pref`]) that replaced the old `headway-boards.json`
+        // (falling back to the default). Re-arm the auto-seed so a fresh account
+        // still gets its default board seeded.
         if self.board_account != Some(author) {
-            self.board_id =
-                load_board_pref(ctx.path, &author).unwrap_or_else(|| store::BOARD_ID.to_string());
+            self.board_id = event::load_board_pref(ctx.ndb, &author)
+                .unwrap_or_else(|| store::BOARD_ID.to_string());
             self.board_account = Some(author);
             self.seeded = false;
 
@@ -572,7 +586,15 @@ impl App for Headway {
             match nav {
                 BoardNav::Switch(board_id) => {
                     self.board_id = board_id;
-                    save_board_pref(ctx.path, &author, &self.board_id);
+                    if let Some(secret) = &signer {
+                        store::save_board_pref(
+                            ctx.ndb,
+                            &author,
+                            secret,
+                            &self.board_id,
+                            &mut store::NoPublish,
+                        );
+                    }
                     self.wake();
                 }
                 BoardNav::Create(title) => {
@@ -589,7 +611,13 @@ impl App for Headway {
                             &mut store::NoPublish,
                         );
                         self.board_id = slug;
-                        save_board_pref(ctx.path, &author, &self.board_id);
+                        store::save_board_pref(
+                            ctx.ndb,
+                            &author,
+                            secret,
+                            &self.board_id,
+                            &mut store::NoPublish,
+                        );
                         self.wake();
                     }
                 }
@@ -694,41 +722,6 @@ fn sync_status(ctx: &AppContext) -> ui::SyncStatus {
         ui::SyncStatus::Syncing
     } else {
         ui::SyncStatus::Offline
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Per-account board selection, persisted across restarts
-// ---------------------------------------------------------------------------
-
-/// The file holding each account's last-selected board: a JSON map of pubkey-hex
-/// → board slug, under the app's settings dir. One file for all accounts so a
-/// single read/write keeps every account's choice.
-fn board_pref_path(path: &DataPath) -> std::path::PathBuf {
-    path.path(DataPathType::Setting).join("headway-boards.json")
-}
-
-/// The board slug `author` last selected, if one was saved.
-fn load_board_pref(path: &DataPath, author: &Pubkey) -> Option<String> {
-    let data = std::fs::read_to_string(board_pref_path(path)).ok()?;
-    let map: HashMap<String, String> = serde_json::from_str(&data).ok()?;
-    map.get(&author.hex()).cloned()
-}
-
-/// Persist `author`'s selected board, merging into the existing map so other
-/// accounts' choices are preserved. Best-effort: a write failure is non-fatal.
-fn save_board_pref(path: &DataPath, author: &Pubkey, board_id: &str) {
-    let file = board_pref_path(path);
-    let mut map: HashMap<String, String> = std::fs::read_to_string(&file)
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default();
-    map.insert(author.hex(), board_id.to_string());
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(&map) {
-        let _ = std::fs::write(&file, json);
     }
 }
 

@@ -58,6 +58,17 @@ pub const KIND_RELATION: u32 = 30621;
 /// `rank` on [`KIND_PLACEMENT`] — resolved latest-authorised-wins. See the
 /// `birth-plate-alien` card design.
 pub const KIND_SEQUENCE: u32 = 30622;
+/// Headway per-account board-selection preference: addressable (parameterized
+/// replaceable), `d` = [`BOARD_PREF_D`] so there's exactly one per author,
+/// content = the last-selected board slug. Written PNS-wrapped
+/// ([`crate::store::save_board_pref`]) and never synced — it's the local
+/// replacement for the old `headway-boards.json`, read latest-wins by
+/// [`load_board_pref`].
+pub const KIND_BOARD_PREF: u32 = 30623;
+
+/// The fixed `d` tag on every [`KIND_BOARD_PREF`] note: one preference slot per
+/// account, superseded latest-wins on each board switch.
+const BOARD_PREF_D: &str = "selected-board";
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
@@ -280,6 +291,61 @@ pub fn build_board<'a>(
     }
 
     b
+}
+
+/// Build the per-account board-selection preference note (kind 30623): a
+/// parameterized-replaceable note whose content is the selected board slug and
+/// whose fixed `d` ([`BOARD_PREF_D`]) makes each save supersede the last. The
+/// caller signs it with the account key and PNS-wraps it — see
+/// [`crate::store::save_board_pref`].
+pub fn build_board_pref(board_id: &str) -> NoteBuilder<'_> {
+    base(KIND_BOARD_PREF, board_id)
+        .start_tag()
+        .tag_str("d")
+        .tag_str(BOARD_PREF_D)
+}
+
+/// A filter for `author`'s board-preference note (kind 30623). Kind 30623 is
+/// replaceable, so nostrdb returns revisions newest-first — [`load_board_pref`]
+/// takes the first, which is the winning (latest) one.
+fn board_pref_filter(author: &Pubkey) -> Filter {
+    Filter::new()
+        .authors([author.bytes()])
+        .kinds([KIND_BOARD_PREF as u64])
+        .limit(1)
+        .build()
+}
+
+/// The board slug `author` last selected, or `None` if none was ever saved (or
+/// the account is watch-only, so nostrdb can't unwrap the PNS envelope). The
+/// newest revision wins — the same latest-wins read as the notebook's
+/// `load_longform`. The note is stored PNS-wrapped, but nostrdb has already
+/// unwrapped it on read (the account key is registered via `Ndb::add_key` at
+/// sign-in), so this only ever sees the inner note.
+pub fn load_board_pref(ndb: &Ndb, author: &Pubkey) -> Option<String> {
+    let txn = Transaction::new(ndb).ok()?;
+    ndb.query(&txn, &[board_pref_filter(author)], 1)
+        .ok()?
+        .into_iter()
+        .next()
+        .filter(|r| !r.note.content().is_empty())
+        .map(|r| r.note.content().to_string())
+}
+
+/// The `created_at` of `author`'s current board-preference note, or 0 if none —
+/// the supersede baseline the next save stamps strictly past (see
+/// [`crate::store::save_board_pref`]) so a same-second re-save still wins.
+pub fn board_pref_created_at(ndb: &Ndb, author: &Pubkey) -> u64 {
+    Transaction::new(ndb)
+        .ok()
+        .and_then(|txn| {
+            ndb.query(&txn, &[board_pref_filter(author)], 1)
+                .ok()?
+                .into_iter()
+                .next()
+                .map(|r| r.note.created_at())
+        })
+        .unwrap_or(0)
 }
 
 /// Build a card (NIP-34 issue, kind 1621) anchored to `board_addr`. The body is

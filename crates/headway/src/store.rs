@@ -10,7 +10,7 @@
 //! relay over its websocket.
 
 use enostr::{NoteId, Pubkey};
-use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
+use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
@@ -221,6 +221,63 @@ pub fn ingest_signed(
         .ok()?;
     publisher.publish(&frame);
     Some(id)
+}
+
+/// Persist `board_id` as `author`'s selected-board preference: a replaceable
+/// kind-30623 note ([`event::build_board_pref`]) signed by the account key and
+/// PNS-wrapped, ingested into the local nostrdb. This is the on-nostrdb
+/// replacement for the old `headway-boards.json`; [`event::load_board_pref`]
+/// reads it back latest-wins.
+///
+/// Callers pass [`NoPublish`], so the note stays local — it is never fanned out
+/// to a relay, and its inner kind isn't in `headway_filter`, so the board sync
+/// never picks it up either. A watch-only account has no `secret` and so can't
+/// save one (it never had a real preference to persist); callers guard on the
+/// signer.
+pub fn save_board_pref(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    publisher: &mut dyn Publisher,
+) {
+    // Stamp strictly past the current preference so a same-second re-save (rapid
+    // board switching) still supersedes rather than tying latest-wins.
+    let created_at = next_after(event::board_pref_created_at(ndb, author));
+    let Some(inner) = event::build_board_pref(board_id)
+        .created_at(created_at)
+        .sign(secret)
+        .build()
+    else {
+        return;
+    };
+    ingest_pns(ndb, &inner, secret, publisher);
+}
+
+/// PNS-wrap a signed `inner` note and ingest the kind-1080 wrapper into the local
+/// nostrdb, then publish it. The crypto + wrapper construction lives in
+/// [`enostr::pns::wrap`]; this only adds the app-specific ingest/publish glue (the
+/// [`Publisher`] seam differs per crate, so it can't be shared). nostrdb
+/// transparently unwraps the envelope on read once the account key is registered
+/// via `Ndb::add_key`, so the inner note stays queryable. Returns the inner note's
+/// id.
+fn ingest_pns(
+    ndb: &Ndb,
+    inner: &Note,
+    device_secret: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let inner_id = NoteId::new(*inner.id());
+    let pns_keys = enostr::pns::derive_pns_keys(device_secret);
+    let wrapper = enostr::pns::wrap(&pns_keys, &inner.json().ok()?, now_secs())?;
+    let frame = enostr::ClientMessage::event(&wrapper)
+        .ok()?
+        .to_json()
+        .ok()?;
+    ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+        .ok()?;
+    publisher.publish(&frame);
+    Some(inner_id)
 }
 
 /// The default columns a fresh board is seeded with.
@@ -1990,5 +2047,51 @@ mod tests {
             }
             await_ingest(&mut stream).await;
         }
+    }
+
+    /// Round-trip the board-selection preference through nostrdb: a save is
+    /// PNS-wrapped + ingested, and [`event::load_board_pref`] reads the slug back;
+    /// a later save supersedes latest-wins. Registers the device key with
+    /// `add_key` so nostrdb unwraps the kind-1080 envelope (the app does this at
+    /// sign-in), and subscribes to the inner kind-30623 so the fold advances on
+    /// the writer's ingest notification rather than a sleep.
+    #[tokio::test]
+    async fn board_pref_round_trip_latest_wins() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+        let secret = kp.secret_key.secret_bytes();
+        assert!(ndb.add_key(&secret));
+
+        let pref_filter = nostrdb::Filter::new()
+            .authors([kp.pubkey.bytes()])
+            .kinds([event::KIND_BOARD_PREF as u64])
+            .build();
+        let sub = ndb.subscribe(&[pref_filter]).unwrap();
+        let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
+
+        // Advance the ingest until the preference reads back as `want`. Checks
+        // first so an already-committed save doesn't hang awaiting a note that
+        // won't come.
+        async fn wait_pref(
+            ndb: &Ndb,
+            stream: &mut SubscriptionStream,
+            author: &Pubkey,
+            want: &str,
+        ) {
+            while event::load_board_pref(ndb, author).as_deref() != Some(want) {
+                stream.next().await.expect("subscription open");
+            }
+        }
+
+        // Nothing saved yet.
+        assert_eq!(event::load_board_pref(&ndb, &kp.pubkey), None);
+
+        save_board_pref(&ndb, &kp.pubkey, &secret, "work", &mut NoPublish);
+        wait_pref(&ndb, &mut stream, &kp.pubkey, "work").await;
+
+        // A later save supersedes the previous revision latest-wins.
+        save_board_pref(&ndb, &kp.pubkey, &secret, "personal", &mut NoPublish);
+        wait_pref(&ndb, &mut stream, &kp.pubkey, "personal").await;
     }
 }
