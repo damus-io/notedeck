@@ -545,6 +545,33 @@ pub fn latest_valid_session_for_author(
     SessionState::from_note(note, Some(session_id))
 }
 
+/// The `created_at` of the newest persisted kind-31988 state revision for a
+/// session, if any.
+///
+/// Callers stamp the next state event with `max(now, this + 1)` (see
+/// [`crate::session_events::next_state_created_at`]) so each revision is
+/// strictly newer than what ndb already holds — the latest status then always
+/// wins nostrdb's replaceable resolution and the receive-side `remote_status_ts`
+/// guard, even for two transitions in one wall-clock second. The authoritative
+/// timestamp lives in ndb (queried here), not duplicated in session state.
+pub fn latest_state_created_at(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+    session_id: &str,
+) -> Option<u64> {
+    use crate::session_events::AI_SESSION_STATE_KIND;
+
+    let filter = Filter::new()
+        .kinds([AI_SESSION_STATE_KIND as u64])
+        .authors([author.bytes()])
+        .tags([session_id], 'd')
+        .limit(1)
+        .build();
+    let results = ndb.query(txn, &[filter], 1).ok()?;
+    Some(results.first()?.note.created_at())
+}
+
 /// Extract recent working directories grouped by hostname from kind-31988
 /// session state events.
 ///

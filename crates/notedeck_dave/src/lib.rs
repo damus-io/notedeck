@@ -2004,6 +2004,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
             return;
         };
+        let account = *ctx.accounts.selected_account_pubkey();
 
         for session in self.session_manager.iter_mut() {
             if !session.state_dirty {
@@ -2022,11 +2023,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             };
 
             let event_sid = agentic.event_session_id().to_string();
-            let cwd = agentic.cwd.to_string_lossy();
+            let cwd = agentic.cwd.to_string_lossy().to_string();
             let status = session.status().as_str();
             let indicator = session.indicator.as_ref().map(|i| i.as_str());
             let perm_mode = crate::session::permission_mode_to_str(agentic.permission_mode);
             let cli_sid = agentic.cli_resume_id().map(|s| s.to_string());
+            // Strictly-monotonic per-session `created_at` so the newest status
+            // always wins replaceable resolution + the receive-side guard. The
+            // baseline is what ndb already holds (a short read txn, dropped
+            // before the ingest below), not a value tracked in memory.
+            let created_at = {
+                let latest = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                    session_loader::latest_state_created_at(ctx.ndb, &txn, &account, &event_sid)
+                });
+                session_events::next_state_created_at(
+                    session_events::now_secs(),
+                    latest.unwrap_or(0),
+                )
+            };
 
             queue_built_event(
                 session_events::build_session_state_event(
@@ -2042,6 +2056,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     perm_mode,
                     cli_sid.as_deref(),
                     session.spawn_id.as_deref(),
+                    created_at,
                     &sk,
                 ),
                 &format!("publishing session state: {} -> {}", event_sid, status),
@@ -2090,8 +2105,25 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
             return;
         };
+        let account = *ctx.accounts.selected_account_pubkey();
 
         for info in std::mem::take(&mut self.pending_deletions) {
+            // Keep the "deleted" revision strictly newest so it wins replaceable
+            // resolution over the session's last status event (same-second safe).
+            let created_at = {
+                let latest = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                    session_loader::latest_state_created_at(
+                        ctx.ndb,
+                        &txn,
+                        &account,
+                        &info.claude_session_id,
+                    )
+                });
+                session_events::next_state_created_at(
+                    session_events::now_secs(),
+                    latest.unwrap_or(0),
+                )
+            };
             queue_built_event(
                 session_events::build_session_state_event(
                     &info.claude_session_id,
@@ -2106,6 +2138,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     "default",
                     None,
                     None, // no spawn_id for deletions
+                    created_at,
                     &sk,
                 ),
                 &format!(
@@ -5687,7 +5720,8 @@ mod tests {
                 .collect();
             assert_eq!(a_batch.len(), 1, "the poll batch is just A");
 
-            let result = process_conversation_notes(a_batch, &mut session, 1, true, Some(&sk), &ndb);
+            let result =
+                process_conversation_notes(a_batch, &mut session, 1, true, Some(&sk), &ndb);
             assert!(
                 result.rebuild_chat,
                 "a new displayable backfill note must request a rebuild"
@@ -5772,8 +5806,11 @@ mod tests {
         // (response=None). The response is not in ndb yet.
         {
             let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
-            ndb.process_event_with(&perm_req_evt.to_event_json(), IngestMetadata::new().client(true))
-                .expect("ingest failed");
+            ndb.process_event_with(
+                &perm_req_evt.to_event_json(),
+                IngestMetadata::new().client(true),
+            )
+            .expect("ingest failed");
             let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
 
             let txn = Transaction::new(&ndb).unwrap();
@@ -5785,7 +5822,10 @@ mod tests {
             assert_eq!(notes.len(), 1, "should have 1 permission_request");
 
             let result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
-            assert!(result.rebuild_chat, "a permission_request must request a rebuild");
+            assert!(
+                result.rebuild_chat,
+                "a permission_request must request a rebuild"
+            );
             rebuild_remote_chat(&mut session, &ndb, &txn, &author);
         }
 

@@ -19,7 +19,7 @@
 
 use agentium_core::messages::Message;
 use agentium_core::session_events::{
-    build_permission_request_event, build_session_state_event, wrap_pns, ThreadingState,
+    build_permission_request_event, build_session_state_event, now_secs, wrap_pns, ThreadingState,
 };
 use agentium_core::{Engine, SessionWatch, Transport};
 use enostr::NormRelayUrl;
@@ -179,6 +179,7 @@ fn desktop_open_session(transport: &mut impl Transport, relay: &NormRelayUrl) {
         "default",
         None,
         None,
+        now_secs(),
         &DEVICE_KEY,
     )
     .unwrap();

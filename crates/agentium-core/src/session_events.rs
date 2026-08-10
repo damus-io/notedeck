@@ -197,11 +197,26 @@ impl ThreadingState {
 }
 
 /// Get the current Unix timestamp in seconds.
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// The `created_at` for the next kind-31988 state event of a session, kept
+/// strictly greater than the last one published for it.
+///
+/// kind-31988 is a parameterized-replaceable event ordered only by
+/// second-resolution `created_at`, so two status transitions within one second
+/// would tie and resolve by event id (~random) — letting a stale status win
+/// (the "NeedsInput floats to top" regression). Advancing to `last + 1` when
+/// wall-clock hasn't ticked guarantees the newest revision always compares
+/// newest, in both nostrdb's replaceable resolution and the receive-side
+/// `remote_status_ts` guard. Drift above real time is bounded and self-heals
+/// once wall-clock passes it.
+pub fn next_state_created_at(now: u64, last_published: u64) -> u64 {
+    now.max(last_published + 1)
 }
 
 /// Get the current Unix timestamp in milliseconds.
@@ -867,6 +882,15 @@ pub fn decode_permission_response(
 /// Published on every status change so remote clients and startup restore
 /// can discover active sessions. nostrdb auto-replaces older versions
 /// with same (kind, pubkey, d-tag).
+///
+/// `created_at` is supplied by the caller (rather than stamped internally) so
+/// it can be kept **strictly monotonic per session** — see
+/// [`next_state_created_at`]. Both nostrdb's replaceable resolution and the
+/// receive-side `remote_status_ts` guard key on this second-resolution
+/// timestamp; if two status transitions shared a second the tie was broken by
+/// event id (~random), so a stale status could win and the session would stick
+/// (e.g. `NeedsInput` floating to the top of the sidebar). Monotonic
+/// `created_at` makes the latest revision always compare newest.
 #[allow(clippy::too_many_arguments)]
 pub fn build_session_state_event(
     event_session_id: &str,
@@ -881,9 +905,10 @@ pub fn build_session_state_event(
     permission_mode: &str,
     cli_session_id: Option<&str>,
     spawn_id: Option<&str>,
+    created_at: u64,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(now_secs()));
+    let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(created_at));
 
     // Session identity (makes this a parameterized replaceable event)
     builder = builder.start_tag().tag_str("d").tag_str(event_session_id);
@@ -1781,6 +1806,7 @@ mod tests {
             "plan",
             None,
             None,
+            1_770_000_000,
             &sk,
         )
         .unwrap();
@@ -1802,6 +1828,29 @@ mod tests {
         assert!(json.contains(r#""hostname","my-laptop"#));
         assert!(json.contains(r#""backend","claude"#));
         assert!(json.contains(r#""permission-mode","plan"#));
+        // created_at is the caller-supplied value (monotonic per session)
+        assert!(json.contains(r#""created_at":1770000000"#), "json: {json}");
+    }
+
+    /// Monotonic per-session `created_at`: when wall-clock hasn't advanced past
+    /// the last published state event, the next one still gets a strictly
+    /// greater timestamp so the newest revision always wins replaceable
+    /// resolution and the receive-side guard (the "NeedsInput floats" fix).
+    #[test]
+    fn next_state_created_at_is_strictly_monotonic() {
+        // Same second as last publish -> advance past it.
+        assert_eq!(next_state_created_at(100, 100), 101);
+        assert_eq!(next_state_created_at(100, 105), 106);
+        // Wall-clock has moved on -> use real time.
+        assert_eq!(next_state_created_at(200, 105), 200);
+        // A burst within one second keeps strictly increasing.
+        let mut last = 0;
+        let mut prev = 0;
+        for _ in 0..5 {
+            last = next_state_created_at(500, last);
+            assert!(last > prev, "must strictly increase: {prev} -> {last}");
+            prev = last;
+        }
     }
 
     #[test]

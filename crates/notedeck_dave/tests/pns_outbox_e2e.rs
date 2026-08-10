@@ -182,6 +182,7 @@ async fn seed_pns_session_state(
         "default",
         cli_session_id,
         None,
+        session_events::now_secs(),
         &secret_key,
     )
     .expect("session state event");
@@ -212,6 +213,7 @@ async fn seed_pns_session_state_at(
         "default",
         Some(session_id),
         None,
+        created_at,
         &secret_key,
     )
     .expect("session state event");

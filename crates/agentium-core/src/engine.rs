@@ -1249,6 +1249,7 @@ mod tests {
             "default",
             None,
             None,
+            1_770_000_000,
             &TEST_SECKEY,
         )
         .expect("state event");
@@ -1359,6 +1360,7 @@ mod tests {
             "default",
             None,
             None,
+            1_770_000_000,
             &TEST_SECKEY,
         )
         .expect("state event");
