@@ -16,6 +16,11 @@ command reference; the board flows
 - **When done with the work**: Always commit your changes (see Committing
   below), then comment on the card with the commit hash so future iterations can
   see what's already been done: `headway comment <card> "committed <hash>: ..."`.
+  If you are a Dave agentic session, also include your own `agentium:` session
+  ref beside the hash (e.g. `committed <hash> (agentium:<word-id>): ...`) so a
+  reviewer or future iteration can jump straight to the session transcript. Find
+  your ref with `echo "$AGENTIUM_SESSION"` — see the `agentium` skill
+  (`.claude/skills/agentium/SKILL.md`) for the fallback when that's unset.
   This comment is read in the context of code review and follow-up work, so use
   it to note anything specific that should be tested or interesting things worth
   flagging beyond the commit message that would help someone reviewing the

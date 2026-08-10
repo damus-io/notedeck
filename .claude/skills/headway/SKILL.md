@@ -190,6 +190,10 @@ Other flags: `--board <id>` (target another board for one run; see Multiple
 boards), `--db <path>` (cache dir),
 `--author <pk>` (read someone else's board), `-h`/`--help`.
 
+When commenting a finished card's commit hash, a Dave agentic session should also
+quote its own `agentium:` session ref (from `$AGENTIUM_SESSION`) beside the hash —
+see AGENTS.md "When done with the work" and the `agentium` skill.
+
 ## Subissues
 
 A card can be a **subissue** of one parent card (GitHub sub-issue semantics:
