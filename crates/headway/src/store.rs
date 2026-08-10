@@ -371,6 +371,84 @@ pub fn seed_board(
     .is_some() as usize
 }
 
+/// Mint a fresh random `team_root` — the 32-byte channel secret an SNS board is
+/// sealed under (see [`create_shared_board`]). A freshly generated secp256k1
+/// secret is a valid random root that [`enostr::sns::derive_sns_keys`] accepts;
+/// generating via `FullKeypair` avoids a raw-`OsRng` call under the crate's
+/// `deny(clippy::disallowed_methods)`.
+///
+/// Each standalone board mints its own root, giving per-board content isolation
+/// (sharing one board's key can't decrypt another). A future *workspace* of boards
+/// that should all be unlocked by one key would instead mint a root once and pass
+/// the same value to [`create_shared_board`] for each board — which is why the root
+/// is a parameter there rather than minted inside.
+pub fn mint_team_root() -> [u8; 32] {
+    enostr::FullKeypair::generate().secret_key.secret_bytes()
+}
+
+/// Create a board sealed into the SNS channel identified by `team_root` — a board
+/// under a "team". Unlike [`seed_board`] (plaintext, single-writer), this registers
+/// the root so nostrdb (un)seals the channel, self-shares it (a kind-1082 key-share
+/// gift-wrapped to the creator, so the board joins the account's roster like any
+/// share and rides its NIP-59 inbox across devices), and seals the board definition
+/// into the channel. The board is therefore encrypted from note #1, and sharing it
+/// later is just handing the same root to another member
+/// ([`enostr::sns::wrap_keyshare`]) — no history re-seal.
+///
+/// Pass a freshly-[minted](mint_team_root) root for a standalone team-of-one board,
+/// or an existing root to add a board to a shared workspace channel whose boards
+/// all reuse one key. Returns `true` on success, `false` if the account can't sign
+/// (`secret` invalid) or a wrap/ingest step fails. The caller already holds
+/// `team_root`, so it can register the board in its in-memory roster immediately —
+/// closing the window where an edit made before the self-share folds back in would
+/// be written plaintext.
+pub fn create_shared_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    title: &str,
+    team_root: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> bool {
+    let Some(creator) = enostr::FullKeypair::from_secret_bytes(secret) else {
+        return false;
+    };
+    let Some(keys) = enostr::sns::derive_sns_keys(team_root) else {
+        return false;
+    };
+    let channel = SnsChannel { keys };
+
+    // Register before ingesting the sealed definition so nostrdb auto-unwraps it.
+    ndb.add_team_root(team_root);
+
+    // Self key-share: gift-wrap the root to ourselves so the board joins the roster
+    // (see notedeck_headway `teams_from_ndb`) and syncs across our own devices.
+    let board_addr = board_address(author, board_id);
+    let share =
+        enostr::sns::wrap_keyshare(&creator, author, team_root, &board_addr, None, now_secs())
+            .and_then(|gw| enostr::ClientMessage::event(&gw).ok()?.to_json().ok());
+    let Some(frame) = share else {
+        return false;
+    };
+    if ndb
+        .process_event_with(&frame, IngestMetadata::new().client(true))
+        .is_err()
+    {
+        return false;
+    }
+    publisher.publish(&frame);
+
+    // Seal the board definition into the channel — no plaintext board-def.
+    ingest_signed(
+        ndb,
+        build_board(board_id, title, "", &default_columns()),
+        &Signer::shared(secret, &channel),
+        publisher,
+    )
+    .is_some()
+}
+
 /// Seed a default board *and* a fixed set of demo cards. The product seed
 /// ([`seed_default_board`]) is deliberately card-less; this is the populated
 /// board used by tests and demos. Cards land 3 / 2 / 1 / 0 / 1 across the
@@ -1356,6 +1434,48 @@ mod tests {
             .flat_map(|c| c.cards.iter())
             .find(|c| c.title == title)
             .map(|c| c.id)
+    }
+
+    /// A board created with [`create_shared_board`] is sealed into its SNS channel
+    /// from note #1: the definition folds through the shared (team-key) path, not as
+    /// a plaintext own-board event. Proves mint → register → seal → auto-unwrap
+    /// round-trips through a real `Ndb`.
+    #[tokio::test]
+    async fn create_shared_board_seals_definition_into_channel() {
+        let t = TestNdb::new();
+        // The account key must be registered for the self-share (1059) to unwrap.
+        t.ndb.add_key(&t.secret());
+
+        let root = mint_team_root();
+        assert!(create_shared_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            BOARD_ID,
+            "Team Board",
+            &root,
+            &mut NoPublish,
+        ));
+
+        let team_pk = enostr::sns::derive_sns_keys(&root)
+            .unwrap()
+            .team_keypair
+            .pubkey;
+        let board_addr = board_address(&t.kp.pubkey, BOARD_ID);
+
+        // Ingest is async; fold the shared coordinate until the sealed def lands.
+        let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
+        let view = loop {
+            {
+                let txn = Transaction::new(&t.ndb).unwrap();
+                if let Some(v) = event::load_shared_board(&t.ndb, &txn, &board_addr, &team_pk) {
+                    break v;
+                }
+            }
+            await_ingest(&mut stream).await;
+        };
+        assert_eq!(view.title, "Team Board");
+        assert_eq!(col_titles(&view).len(), 5);
     }
 
     #[tokio::test]
