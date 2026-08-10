@@ -1,3 +1,10 @@
+# Unreleased
+
+## Added
+- Relay hints: route unknown ID lookups to hint relays from nprofile/nevent mentions
+- NIP-19 nprofile parsing with relay hint extraction (ParsedNprofile)
+- NIP-10 author pubkey in reply e-tags and quote q-tags
+
 # Notedeck Beta - v0.4 - 2025-05-05
 
 # Added

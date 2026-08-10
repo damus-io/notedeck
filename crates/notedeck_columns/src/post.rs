@@ -96,11 +96,13 @@ impl NewPost {
                 .tag_str(&hex::encode(root.id))
                 .tag_str("")
                 .tag_str("root")
+                .tag_str(&hex::encode(replying_to.pubkey()))
                 .start_tag()
                 .tag_str("e")
                 .tag_str(&hex::encode(replying_to.id()))
                 .tag_str("")
                 .tag_str("reply")
+                .tag_str(&hex::encode(replying_to.pubkey()))
                 .sign(seckey)
         } else {
             // we're replying to a post that isn't in a thread,
@@ -111,6 +113,7 @@ impl NewPost {
                 .tag_str(&hex::encode(replying_to.id()))
                 .tag_str("")
                 .tag_str("root")
+                .tag_str(&hex::encode(replying_to.pubkey()))
                 .sign(seckey)
         };
 
@@ -166,6 +169,8 @@ impl NewPost {
             .start_tag()
             .tag_str("q")
             .tag_str(&hex::encode(quoting.id()))
+            .tag_str("")
+            .tag_str(&hex::encode(quoting.pubkey()))
             .start_tag()
             .tag_str("p")
             .tag_str(&hex::encode(quoting.pubkey()))
