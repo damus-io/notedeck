@@ -221,3 +221,47 @@ async fn list_deleted_scope_surfaces_tombstones() {
         "--all shows live and deleted together:\n{all}"
     );
 }
+
+/// `list --json` emits each session's raw state *plus* the flattened
+/// `agentium_uri` field, so an external agent reads the sayable ref straight from
+/// machine output instead of re-encoding the word-id. The URI must equal
+/// `agentium_core`'s canonical encoding of the session's stable id.
+#[tokio::test]
+async fn list_json_includes_agentium_uri() {
+    let dir = TempDir::new().expect("tmp dir");
+    let db_path = dir.path().to_str().expect("path").to_string();
+
+    let d = "sess-json";
+    {
+        let ndb = Ndb::new(&db_path, &Config::new()).expect("ndb");
+        let filter = nostrdb::Filter::new()
+            .kinds([KIND_SESSION_STATE as u64])
+            .build();
+        let sub = ndb
+            .subscribe(std::slice::from_ref(&filter))
+            .expect("subscribe");
+        seed_session(
+            &ndb,
+            d,
+            "Draft release notes",
+            "working",
+            "macbook",
+            "/home/u/proj",
+            "claude",
+        );
+        ndb.wait_for_notes(sub, 1)
+            .await
+            .expect("ingest seeded event");
+    }
+
+    let stdout = run_list(&db_path, &dir, &["--json"]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON array");
+    let row = &parsed.as_array().expect("array")[0];
+    // The flattened state is still present alongside the added URI.
+    assert_eq!(row["claude_session_id"], d);
+    assert_eq!(
+        row["agentium_uri"],
+        serde_json::Value::String(agentium_core::wordid::session_ref(d)),
+        "agentium_uri must be the canonical encoding of the stable id"
+    );
+}

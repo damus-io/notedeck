@@ -156,6 +156,28 @@ impl ListScope {
     }
 }
 
+/// The `--json` view of a session: every [`SessionState`] field, plus the
+/// rendered `agentium:word-word-word` URI the terminal rows show but the raw
+/// struct omits (it carries only the underlying `claude_session_id`). Flattened
+/// so the extra field sits alongside the state, not nested under it.
+#[derive(serde::Serialize)]
+struct SessionJson<'a> {
+    #[serde(flatten)]
+    state: &'a SessionState,
+    /// The sayable reference (`agentium_core::SessionState::agentium_uri`) an
+    /// external agent quotes without re-encoding the word-id itself.
+    agentium_uri: String,
+}
+
+impl<'a> SessionJson<'a> {
+    fn new(state: &'a SessionState) -> Self {
+        SessionJson {
+            state,
+            agentium_uri: state.agentium_uri(),
+        }
+    }
+}
+
 /// `agentium list` — enumerate this identity's sessions, newest first, grouped
 /// by host.
 ///
@@ -163,8 +185,8 @@ impl ListScope {
 /// to `author`), drops rows that don't match `filters`, and renders one row per
 /// session: a colored status glyph + label, the title, the working directory,
 /// backend, permission mode, and how long ago it last updated. With `as_json`,
-/// the raw [`SessionState`] set is emitted instead. Status colors are written
-/// only when stdout is a terminal.
+/// each session is emitted as a [`SessionJson`] (the state plus its `agentium:`
+/// URI). Status colors are written only when stdout is a terminal.
 fn cmd_list(
     engine: &Engine,
     author: &Pubkey,
@@ -193,9 +215,12 @@ fn cmd_list(
     sessions.retain(|s| filters.matches(s));
 
     if as_json {
-        // The full SessionState set, machine-readable. `SessionState` derives
-        // Serialize in agentium-core precisely so read commands can do this.
-        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        // The full SessionState set plus its rendered `agentium:` URI,
+        // machine-readable. External agents (e.g. the agentium Claude skill)
+        // quote their own session ref into a headway done-comment straight from
+        // this field rather than reimplementing the word-id encoding.
+        let view: Vec<SessionJson> = sessions.iter().map(SessionJson::new).collect();
+        println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }
 

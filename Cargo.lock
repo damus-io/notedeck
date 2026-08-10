@@ -198,6 +198,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "nostrdb_relay",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

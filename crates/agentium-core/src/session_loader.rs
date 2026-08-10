@@ -327,6 +327,17 @@ impl SessionState {
     pub fn is_deleted(&self) -> bool {
         self.status == DELETED_STATUS
     }
+
+    /// The sayable `agentium:word-word-word` reference for this session — the
+    /// selector `list`/`show` print and [`resolve_session`] accepts back, built
+    /// from the stable `claude_session_id`.
+    ///
+    /// The single place callers derive the URI, so `list --json`, `show`, and the
+    /// desktop all quote the same ref rather than each re-encoding the word-id (see
+    /// [`crate::wordid::session_ref`]).
+    pub fn agentium_uri(&self) -> String {
+        crate::wordid::session_ref(&self.claude_session_id)
+    }
 }
 
 /// Resolve a user-typed session selector to exactly one session.
@@ -1164,5 +1175,21 @@ mod tests {
         // Missing in both sets reports the live-set error, not the deleted one.
         let err = resolve_session_including_deleted(&live, &deleted, "zzz").unwrap_err();
         assert!(err.contains("no session matching 'zzz'"), "{err}");
+    }
+
+    /// `agentium_uri()` is the `scheme:word-id` wrapper over the session's stable
+    /// id — the same ref the resolver accepts back, and what `list --json` exposes.
+    #[test]
+    fn agentium_uri_is_the_sayable_ref() {
+        let s = sess("aaaa-1111", None, "Refactor auth");
+        assert_eq!(s.agentium_uri(), crate::wordid::session_ref("aaaa-1111"));
+        assert!(s.agentium_uri().starts_with("agentium:"));
+        // Round-trips: the URI it renders resolves back to the same session.
+        assert_eq!(
+            resolve_session(std::slice::from_ref(&s), &s.agentium_uri())
+                .unwrap()
+                .claude_session_id,
+            "aaaa-1111"
+        );
     }
 }
