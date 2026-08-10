@@ -411,9 +411,6 @@ pub fn create_shared_board(
     team_root: &[u8; 32],
     publisher: &mut dyn Publisher,
 ) -> bool {
-    let Some(creator) = enostr::FullKeypair::from_secret_bytes(secret) else {
-        return false;
-    };
     let Some(keys) = enostr::sns::derive_sns_keys(team_root) else {
         return false;
     };
@@ -422,22 +419,13 @@ pub fn create_shared_board(
     // Register before ingesting the sealed definition so nostrdb auto-unwraps it.
     ndb.add_team_root(team_root);
 
-    // Self key-share: gift-wrap the root to ourselves so the board joins the roster
-    // (see notedeck_headway `teams_from_ndb`) and syncs across our own devices.
+    // Self key-share: hand the root to ourselves so the board joins the roster (see
+    // notedeck_headway `teams_from_ndb`) and syncs across our own devices — the same
+    // gift-wrap [`share_board`] sends a co-member, addressed to us.
     let board_addr = board_address(author, board_id);
-    let share =
-        enostr::sns::wrap_keyshare(&creator, author, team_root, &board_addr, None, now_secs())
-            .and_then(|gw| enostr::ClientMessage::event(&gw).ok()?.to_json().ok());
-    let Some(frame) = share else {
-        return false;
-    };
-    if ndb
-        .process_event_with(&frame, IngestMetadata::new().client(true))
-        .is_err()
-    {
+    if !share_board(ndb, secret, author, &board_addr, team_root, publisher) {
         return false;
     }
-    publisher.publish(&frame);
 
     // Seal the board definition into the channel — no plaintext board-def.
     ingest_signed(
@@ -447,6 +435,45 @@ pub fn create_shared_board(
         publisher,
     )
     .is_some()
+}
+
+/// Share an existing SNS board with `recipient`: gift-wrap the board's `team_root`
+/// to them as a kind-1082 key-share ([`enostr::sns::wrap_keyshare`]) and ingest +
+/// publish it, so it reaches the recipient's NIP-59 inbox and, once they register
+/// the root, unseals the board for them.
+///
+/// Because the board was sealed under this same root from creation
+/// ([`create_shared_board`]), the recipient reads all existing history with **no
+/// re-seal** — sharing is a metadata hand-off, not a re-encryption of the board.
+/// `board_addr` (`30619:<owner>:<board-id>`) tells the recipient which board the
+/// root unlocks. Returns `false` if the sharer can't sign or a wrap/ingest step
+/// fails. (A self-share — `recipient` == the sharer — is how a freshly created
+/// board joins its own creator's roster.)
+pub fn share_board(
+    ndb: &Ndb,
+    sharer_secret: &[u8; 32],
+    recipient: &Pubkey,
+    board_addr: &str,
+    team_root: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> bool {
+    let Some(sharer) = enostr::FullKeypair::from_secret_bytes(sharer_secret) else {
+        return false;
+    };
+    let frame =
+        enostr::sns::wrap_keyshare(&sharer, recipient, team_root, board_addr, None, now_secs())
+            .and_then(|gw| enostr::ClientMessage::event(&gw).ok()?.to_json().ok());
+    let Some(frame) = frame else {
+        return false;
+    };
+    if ndb
+        .process_event_with(&frame, IngestMetadata::new().client(true))
+        .is_err()
+    {
+        return false;
+    }
+    publisher.publish(&frame);
+    true
 }
 
 /// Seed a default board *and* a fixed set of demo cards. The product seed
@@ -1476,6 +1503,57 @@ mod tests {
         };
         assert_eq!(view.title, "Team Board");
         assert_eq!(col_titles(&view).len(), 5);
+    }
+
+    /// Sharing an existing board hands over its key, it does not re-seal history:
+    /// [`share_board`] publishes exactly one event — a NIP-59 gift wrap (kind 1059)
+    /// of the key-share — and no board content. The board stays sealed under the
+    /// same root, so a recipient reads all existing history with just that root
+    /// (that a co-member then reads the sealed board is covered by the two-party
+    /// relay tests; that the share carries the right root, by the `teams` tests).
+    #[test]
+    fn sharing_a_board_only_hands_over_the_key() {
+        #[derive(Default)]
+        struct Recorder {
+            frames: Vec<String>,
+        }
+        impl Publisher for Recorder {
+            fn publish(&mut self, frame: &str) {
+                self.frames.push(frame.to_owned());
+            }
+        }
+
+        let t = TestNdb::new();
+        t.ndb.add_key(&t.secret());
+        let member = FullKeypair::generate();
+
+        let root = mint_team_root();
+        assert!(create_shared_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            BOARD_ID,
+            "Shared",
+            &root,
+            &mut NoPublish,
+        ));
+        let board_addr = board_address(&t.kp.pubkey, BOARD_ID);
+
+        let mut rec = Recorder::default();
+        assert!(share_board(
+            &t.ndb,
+            &t.secret(),
+            &member.pubkey,
+            &board_addr,
+            &root,
+            &mut rec,
+        ));
+
+        // One published event, and it's the key-share gift wrap — no re-sealed
+        // board envelopes (kind 1081), so existing history is untouched.
+        assert_eq!(rec.frames.len(), 1);
+        assert!(rec.frames[0].contains("\"kind\":1059"));
+        assert!(!rec.frames[0].contains("\"kind\":1081"));
     }
 
     #[tokio::test]
