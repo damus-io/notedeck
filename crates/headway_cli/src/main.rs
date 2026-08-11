@@ -47,6 +47,10 @@ enum Command {
         cards: Vec<String>,
     },
     Seed,
+    /// Migrate the current board to SNS: seal it under a fresh per-board team key
+    /// so it can be shared, re-sealing existing notes in place (no data loss). See
+    /// [`store::migrate_board_to_sns`].
+    Migrate,
     Add {
         title: String,
         col: Option<String>,
@@ -253,6 +257,7 @@ impl Command {
             | Command::Link { card, .. }
             | Command::MoveBoard { card, .. } => selectors.push(card),
             Command::Seed
+            | Command::Migrate
             | Command::Rename { .. }
             | Command::Board { .. }
             | Command::Login { .. }
@@ -374,6 +379,23 @@ async fn run() -> Result<()> {
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
                 "seeded board '{board}' ({n} events){}",
+                nostrdb_net::relay::sync::offline_note(&relay)
+            );
+        }
+
+        Command::Migrate => {
+            let secret = secret.ok_or("migrate needs --nsec to sign")?;
+            if load_board(&ndb, &author, &board).is_none() {
+                return Err(format!("no board '{board}' to migrate — nothing to seal").into());
+            }
+            // Fresh per-board root; the board coordinate (and every card id) is
+            // unchanged, so this seals history in place rather than recreating it.
+            let root = store::mint_team_root();
+            let mut sink = Collect::default();
+            let n = store::migrate_board_to_sns(&ndb, &author, &secret, &board, &root, &mut sink);
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
+            println!(
+                "migrated board '{board}' to SNS ({n} notes re-sealed){}",
                 nostrdb_net::relay::sync::offline_note(&relay)
             );
         }
@@ -684,6 +706,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Show { .. }
         | Command::Next { .. }
         | Command::Seed
+        | Command::Migrate
         | Command::Link { .. }
         | Command::MoveBoard { .. }
         | Command::Board { .. }
@@ -1444,6 +1467,7 @@ fn parse_command(
             cards: rest.to_vec(),
         },
         "seed" => Command::Seed,
+        "migrate" => Command::Migrate,
         "add" => Command::Add {
             title: joined(rest, 0, name)?,
             col,
@@ -1568,6 +1592,9 @@ COMMANDS:
                                detail (--archived to list archived, --all for
                                every board, --json for machine output)
     seed                       Seed the default board if none exists
+    migrate                    Migrate this board to SNS: seal it under a fresh
+                               per-board key so it can be shared, re-sealing
+                               existing notes in place (no data loss)
     add <title...>             Add a card (--col <c> column, -l <labels> to tag,
                                --parent <card> to create it as a subissue)
     move <card> --col <c>      Move a card to a column (--row to position)
