@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use enostr::{NoteId, Pubkey};
-use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder};
+use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
@@ -474,6 +474,122 @@ pub fn share_board(
     }
     publisher.publish(&frame);
     true
+}
+
+/// Migrate an existing single-writer **plaintext** board to SNS in place, sealing
+/// it under `team_root` so it can be shared — without losing card ids, ranks, or
+/// history (unlike delete-and-recreate). The board coordinate is unchanged (it's
+/// anchored to `author`'s real pubkey), so every card keeps its id/word-id.
+///
+/// Registers the root, self-shares it (so the board joins the roster and becomes
+/// shareable — see [`share_board`]), then re-seals **every** existing note of the
+/// board: it re-wraps each as a rumor in an SNS envelope ([`enostr::sns::wrap_rumor`])
+/// and ingests it. nostrdb promotes each already-stored plaintext note to a
+/// team-sealed rumor in place (same note_key — see `ndb_write_note`), so the board
+/// then folds via the shared/team-key path. Idempotent: a note already sealed is a
+/// no-op, so re-running is safe.
+///
+/// Returns the number of notes re-sealed. Pass a freshly-[minted](mint_team_root)
+/// `team_root`. As sole author of a single-writer board, `author` can validly seal
+/// all of its history. Note the original signed plaintext events remain on relays
+/// (they can't be unpublished) — this makes the board shareable and future edits
+/// sealed, it does not retract already-public history.
+pub fn migrate_board_to_sns(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    team_root: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> usize {
+    let Some(member) = enostr::FullKeypair::from_secret_bytes(secret) else {
+        return 0;
+    };
+    let Some(keys) = enostr::sns::derive_sns_keys(team_root) else {
+        return 0;
+    };
+    let channel = SnsChannel { keys };
+    ndb.add_team_root(team_root);
+    let board_addr = board_address(author, board_id);
+
+    // Join the roster so the board resolves as a channel (and is shareable).
+    if !share_board(ndb, secret, author, &board_addr, team_root, publisher) {
+        return 0;
+    }
+
+    // Re-seal every existing note of the board under the channel.
+    let mut sealed = 0;
+    for (json, created_at) in collect_board_notes(ndb, &board_addr) {
+        let Some(envelope) = enostr::sns::wrap_rumor(&channel.keys, &member, &json, created_at)
+        else {
+            continue;
+        };
+        let Some(frame) = enostr::ClientMessage::event(&envelope)
+            .ok()
+            .and_then(|m| m.to_json().ok())
+        else {
+            continue;
+        };
+        if ndb
+            .process_event_with(&frame, IngestMetadata::new().client(true))
+            .is_ok()
+        {
+            publisher.publish(&frame);
+            sealed += 1;
+        }
+    }
+    sealed
+}
+
+/// Every existing note belonging to the board at `board_addr`, as
+/// `(event_json, created_at)` to re-seal — both fold phases: the board definition,
+/// issues and placements ([`event::board_scoped_filters`]), plus each card's
+/// metadata overlays and comments keyed by card id ([`event::card_meta_filter`] +
+/// [`event::comment_filter`]). Deduped by note id (a comment can match more than one
+/// phase-B filter). Used by [`migrate_board_to_sns`]; not filtered by `team_sealed`
+/// because on a plaintext board none are sealed yet.
+fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<(String, u64)> {
+    let Ok(txn) = Transaction::new(ndb) else {
+        return Vec::new();
+    };
+    let Some(phase_a) = event::board_scoped_filters(board_addr) else {
+        return Vec::new();
+    };
+
+    let mut seen: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    let mut out: Vec<(String, u64)> = Vec::new();
+    let mut card_ids: Vec<[u8; 32]> = Vec::new();
+
+    if let Ok(results) = ndb.query(&txn, &phase_a, 5000) {
+        for res in results {
+            if res.note.kind() == event::KIND_ISSUE {
+                card_ids.push(*res.note.id());
+            }
+            if seen.insert(*res.note.id())
+                && let Ok(json) = res.note.json()
+            {
+                out.push((json, res.note.created_at()));
+            }
+        }
+    }
+
+    if !card_ids.is_empty() {
+        let phase_b = [
+            event::card_meta_filter(&card_ids),
+            event::comment_filter(&card_ids),
+        ];
+        if let Ok(results) = ndb.query(&txn, &phase_b, 5000) {
+            for res in results {
+                if seen.insert(*res.note.id())
+                    && let Ok(json) = res.note.json()
+                {
+                    out.push((json, res.note.created_at()));
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Seed a default board *and* a fixed set of demo cards. The product seed
@@ -1554,6 +1670,71 @@ mod tests {
         assert_eq!(rec.frames.len(), 1);
         assert!(rec.frames[0].contains("\"kind\":1059"));
         assert!(!rec.frames[0].contains("\"kind\":1081"));
+    }
+
+    /// Migrating a plaintext board re-seals it in place: its existing card folds via
+    /// the shared/team-key path afterward, with the **same id** (no delete/recreate).
+    /// Exercises the nostrdb promote-in-place path end to end. (Uses a bounded poll,
+    /// not an ingest-notification wait, because the promote deliberately does not
+    /// notify subscriptions.)
+    #[tokio::test]
+    async fn migrate_board_to_sns_reseals_in_place() {
+        let t = TestNdb::new();
+        t.ndb.add_key(&t.secret());
+
+        // Pre-migration: a plaintext board with a card.
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        let view = t.wait(|v| v.columns.len() == 5).await;
+        t.apply(
+            &view,
+            BoardAction::AddCard {
+                col: 0,
+                title: "existing card".into(),
+                labels: vec![],
+                parent: None,
+            },
+        );
+        let plaintext = t
+            .wait(|v| card_id_by_title(v, "existing card").is_some())
+            .await;
+        let card_id = card_id_by_title(&plaintext, "existing card").unwrap();
+
+        // Migrate under a fresh root.
+        let root = mint_team_root();
+        let sealed = migrate_board_to_sns(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            BOARD_ID,
+            &root,
+            &mut NoPublish,
+        );
+        assert!(
+            sealed >= 2,
+            "board-def + card re-sealed at least; got {sealed}"
+        );
+
+        // It now folds via the shared path, with the SAME card id preserved.
+        let team_pk = enostr::sns::derive_sns_keys(&root)
+            .unwrap()
+            .team_keypair
+            .pubkey;
+        let board_addr = board_address(&t.kp.pubkey, BOARD_ID);
+        let mut folded = None;
+        for _ in 0..300 {
+            {
+                let txn = Transaction::new(&t.ndb).unwrap();
+                if let Some(v) = event::load_shared_board(&t.ndb, &txn, &board_addr, &team_pk)
+                    && card_id_by_title(&v, "existing card").is_some()
+                {
+                    folded = Some(v);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let shared = folded.expect("migrated board folds via the shared path with its card");
+        assert_eq!(card_id_by_title(&shared, "existing card"), Some(card_id));
     }
 
     #[tokio::test]
