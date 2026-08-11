@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "agentium-core"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "chrono",
  "enostr",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "agentium_cli"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "agentium-core",
  "bech32",
@@ -3612,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "headway"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "enostr",
  "futures-util",
@@ -3626,7 +3626,7 @@ dependencies = [
 
 [[package]]
 name = "headway_cli"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "bech32",
  "enostr",
@@ -5245,7 +5245,7 @@ dependencies = [
 
 [[package]]
 name = "nostr_calsync"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "chrono",
  "enostr",
@@ -5300,7 +5300,7 @@ dependencies = [
 
 [[package]]
 name = "nostrdb_relay"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -5315,7 +5315,7 @@ dependencies = [
 
 [[package]]
 name = "notebook_cli"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "bech32",
  "enostr",
@@ -5330,7 +5330,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "agentium-core",
  "android-activity",
@@ -5409,7 +5409,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_chrome"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "android-keyring",
  "bitflags 2.11.0",
@@ -5452,7 +5452,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_clndash"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "eframe",
  "egui",
@@ -5471,7 +5471,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_columns"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -5533,7 +5533,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_dashboard"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -5553,7 +5553,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_dave"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "agentium-core",
  "arboard",
@@ -5605,7 +5605,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_headway"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -5627,7 +5627,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_horizon"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "chrono",
  "egui",
@@ -5644,7 +5644,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_messages"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -5675,7 +5675,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_nostrverse"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "bytemuck",
  "egui",
@@ -5698,7 +5698,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_notebook"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -5720,7 +5720,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_release"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "hex",
  "nostr 0.37.0",
@@ -5734,7 +5734,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_testing"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "eframe",
  "egui",
@@ -5756,7 +5756,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_ui"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "bitflags 2.11.0",
  "eframe",
@@ -5783,7 +5783,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_wasm"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "cc",
  "dirs",
@@ -10988,7 +10988,7 @@ dependencies = [
 
 [[package]]
 name = "wordid"
-version = "0.10.0-beta.4"
+version = "0.11.0-beta.1"
 dependencies = [
  "bip39",
  "sha2 0.10.9",
