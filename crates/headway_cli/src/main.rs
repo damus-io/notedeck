@@ -384,6 +384,17 @@ async fn run() -> Result<()> {
         }
 
         Command::Migrate => {
+            // Migrate mutates live data and publishes sealed events, so — like
+            // `next` — it refuses to lean on the persisted current board: sealing
+            // the wrong board is unrecoverable (you can't unpublish from relays).
+            if !board_explicit {
+                return Err(
+                    "migrate never uses the persisted current board — pass --board <id>, \
+                     or a self-routing ref that names its own board, so you can't \
+                     accidentally seal the wrong board"
+                        .into(),
+                );
+            }
             let secret = secret.ok_or("migrate needs --nsec to sign")?;
             if load_board(&ndb, &author, &board).is_none() {
                 return Err(format!("no board '{board}' to migrate — nothing to seal").into());
@@ -1841,6 +1852,15 @@ mod tests {
         assert!(parse(&["next", "--board", "headway"]).board_explicit);
         assert!(!parse(&["next"]).board_explicit);
         assert!(!parse(&["next", "--in", "headway"]).board_explicit);
+    }
+
+    /// `migrate` seals live data under a fresh key, so it must name its board
+    /// explicitly — a bare `migrate` is not `board_explicit`, so dispatch rejects
+    /// it rather than sealing the persisted current board.
+    #[test]
+    fn migrate_board_explicitness() {
+        assert!(!parse(&["migrate"]).board_explicit);
+        assert!(parse(&["migrate", "--board", "commerce"]).board_explicit);
     }
 
     #[test]
