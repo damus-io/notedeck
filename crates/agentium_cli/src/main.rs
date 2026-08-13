@@ -123,7 +123,7 @@ async fn run() -> Result<()> {
     };
 
     match cli.command {
-        Command::List => cmd_list(&engine, &read_pk, &filters, cli.json)?,
+        Command::List => cmd_list(&engine, &read_pk, &filters, cli.list_scope, cli.json)?,
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
 
@@ -152,6 +152,32 @@ impl<'a> SessionJson<'a> {
     }
 }
 
+/// Which sessions `list` shows. Tombstoned sessions are hidden by default so the
+/// list stays clean; `--deleted`/`--all` surface them so a soft-deleted session
+/// (and the durable `agentium:` ref that quotes it) is still discoverable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ListScope {
+    /// Live sessions only — the default.
+    Live,
+    /// Only tombstoned (deleted) sessions.
+    Deleted,
+    /// Live and tombstoned sessions together.
+    All,
+}
+
+impl ListScope {
+    /// Select the scope from the `--all`/`--deleted` flags. `--all` (live +
+    /// deleted) wins over `--deleted` (deleted only); neither leaves the default
+    /// live-only list.
+    fn from_flags(all: bool, deleted: bool) -> ListScope {
+        match (all, deleted) {
+            (true, _) => ListScope::All,
+            (false, true) => ListScope::Deleted,
+            (false, false) => ListScope::Live,
+        }
+    }
+}
+
 /// `agentium list` — enumerate this identity's sessions, newest first, grouped
 /// by host.
 ///
@@ -161,10 +187,31 @@ impl<'a> SessionJson<'a> {
 /// backend, permission mode, and how long ago it last updated. With `as_json`,
 /// each session is emitted as a [`SessionJson`] (the state plus its `agentium:`
 /// URI). Status colors are written only when stdout is a terminal.
-fn cmd_list(engine: &Engine, author: &Pubkey, filters: &ListFilters, as_json: bool) -> Result<()> {
+fn cmd_list(
+    engine: &Engine,
+    author: &Pubkey,
+    filters: &ListFilters,
+    scope: ListScope,
+    as_json: bool,
+) -> Result<()> {
+    use agentium_core::session_loader::{
+        load_deleted_session_states_for_author, load_session_states_for_author,
+    };
+
     let txn = Transaction::new(engine.ndb())?;
-    let mut sessions =
-        agentium_core::session_loader::load_session_states_for_author(engine.ndb(), &txn, author);
+    let mut sessions = match scope {
+        ListScope::Live => load_session_states_for_author(engine.ndb(), &txn, author),
+        ListScope::Deleted => load_deleted_session_states_for_author(engine.ndb(), &txn, author),
+        ListScope::All => {
+            let mut v = load_session_states_for_author(engine.ndb(), &txn, author);
+            v.extend(load_deleted_session_states_for_author(
+                engine.ndb(),
+                &txn,
+                author,
+            ));
+            v
+        }
+    };
     sessions.retain(|s| filters.matches(s));
 
     if as_json {
@@ -247,6 +294,7 @@ fn status_style(status: &str) -> (&'static str, String, &'static str) {
         "error" => ("✖", "Error".into(), "31"),
         "done" => ("✓", "Done".into(), "34"),
         "pending" => ("◌", "Pending".into(), "36"),
+        "deleted" => ("⊘", "Deleted".into(), "90"),
         other => ("?", other.to_string(), "0"),
     }
 }
@@ -397,6 +445,8 @@ struct Cli {
     status: Option<String>,
     cwd: Option<String>,
     backend: Option<String>,
+    /// Which sessions `list` shows (`--deleted`/`--all`); [`ListScope::Live`] by default.
+    list_scope: ListScope,
     command: Command,
 }
 
@@ -419,6 +469,8 @@ impl Cli {
         let mut status = None;
         let mut cwd = None;
         let mut backend = None;
+        let mut deleted = false;
+        let mut all = false;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -439,6 +491,8 @@ impl Cli {
                 "--status" => status = Some(value("--status")?),
                 "--cwd" => cwd = Some(value("--cwd")?),
                 "--backend" => backend = Some(value("--backend")?),
+                "--deleted" => deleted = true,
+                "--all" => all = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -466,6 +520,8 @@ impl Cli {
             (_, None) => None,
         };
 
+        let list_scope = ListScope::from_flags(all, deleted);
+
         Ok(Some(Cli {
             secret,
             author,
@@ -476,6 +532,7 @@ impl Cli {
             status,
             cwd,
             backend,
+            list_scope,
             command,
         }))
     }
@@ -510,7 +567,8 @@ USAGE:
 COMMANDS:
     list              List this identity's sessions, newest first, grouped by
                       host. Filter with --host/--status/--cwd/--backend; --json
-                      emits the raw session set.
+                      emits the raw session set. Deleted sessions are hidden
+                      unless --deleted/--all is passed.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
@@ -534,6 +592,8 @@ OPTIONS:
                       (idle|working|needs_input|error|done|pending)
     --cwd <c>         Only sessions whose working dir contains <c>
     --backend <b>     Only sessions whose backend contains <b>
+    --deleted         Show only soft-deleted (tombstoned) sessions
+    --all             Show live and deleted sessions together
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -605,8 +665,20 @@ mod tests {
     fn status_style_known_and_unknown() {
         let (g, l, c) = status_style("needs_input");
         assert_eq!((g, l.as_str(), c), ("◆", "Needs Input", SGR_NEEDS_INPUT));
+        // A tombstoned session gets its own muted glyph rather than the "?" fallback.
+        let (g, l, _) = status_style("deleted");
+        assert_eq!((g, l.as_str()), ("⊘", "Deleted"));
         let (g, l, c) = status_style("weird");
         assert_eq!((g, l.as_str(), c), ("?", "weird", "0"));
+    }
+
+    #[test]
+    fn list_scope_from_flags() {
+        assert_eq!(ListScope::from_flags(false, false), ListScope::Live);
+        assert_eq!(ListScope::from_flags(false, true), ListScope::Deleted);
+        assert_eq!(ListScope::from_flags(true, false), ListScope::All);
+        // --all wins over --deleted.
+        assert_eq!(ListScope::from_flags(true, true), ListScope::All);
     }
 
     #[test]
