@@ -953,26 +953,52 @@ pub fn build_session_state_event(
     finalize_built_event(builder, secret_key, AI_SESSION_STATE_KIND)
 }
 
+/// Resume parameters for a spawn command that reopens an *existing* session
+/// instead of creating a fresh one.
+///
+/// When present on [`build_spawn_command_event`], the command's `command` tag
+/// becomes `"resume_session"` and it carries the target session's stable
+/// identity plus the CLI session id needed for `claude --resume`. The host peels
+/// these back in `poll_session_command_events` to revive the tombstoned session
+/// rather than minting a new one.
+pub struct ResumeSpawn<'a> {
+    /// The kind-31988 d-tag of the session to revive (its stable Nostr identity,
+    /// i.e. the `agentium:` ref). The host reopens *this* session.
+    pub target_session_id: &'a str,
+    /// The real CLI session id (the `cli_session` tag value) that the backend
+    /// feeds to `claude --resume` to reconstruct the conversation.
+    pub cli_session_id: &'a str,
+}
+
 /// Build a kind-31989 spawn command event.
 ///
-/// This is a fire-and-forget command that tells a remote host to create a new
+/// This is a fire-and-forget command that tells a remote host to create a
 /// session. The target host discovers the command via its ndb subscription,
-/// creates the session locally, and publishes a kind-31988 state event.
+/// materializes the session locally, and publishes a kind-31988 state event.
+///
+/// With `resume` = `None` this is a plain spawn (`command = "spawn_session"`,
+/// a new session). With `resume` = `Some`, it is a resume command
+/// (`command = "resume_session"`) that reopens the session named by
+/// [`ResumeSpawn::target_session_id`] — see [`ResumeSpawn`].
 pub fn build_spawn_command_event(
     target_host: &str,
     cwd: &str,
     backend: &str,
     spawn_id: &str,
+    resume: Option<&ResumeSpawn<'_>>,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let command_id = uuid::Uuid::new_v4().to_string();
     let mut builder = init_note_builder(AI_SESSION_COMMAND_KIND, "", Some(now_secs()));
 
+    let command = if resume.is_some() {
+        "resume_session"
+    } else {
+        "spawn_session"
+    };
+
     builder = builder.start_tag().tag_str("d").tag_str(&command_id);
-    builder = builder
-        .start_tag()
-        .tag_str("command")
-        .tag_str("spawn_session");
+    builder = builder.start_tag().tag_str("command").tag_str(command);
     builder = builder
         .start_tag()
         .tag_str("target_host")
@@ -980,6 +1006,20 @@ pub fn build_spawn_command_event(
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
     builder = builder.start_tag().tag_str("backend").tag_str(backend);
     builder = builder.start_tag().tag_str("spawn_id").tag_str(spawn_id);
+
+    // Resume commands carry the identity of the session to revive plus the CLI
+    // session id for `claude --resume`. Absent on a plain spawn.
+    if let Some(resume) = resume {
+        builder = builder
+            .start_tag()
+            .tag_str("session_id")
+            .tag_str(resume.target_session_id);
+        builder = builder
+            .start_tag()
+            .tag_str("resume_session_id")
+            .tag_str(resume.cli_session_id);
+    }
+
     builder = builder
         .start_tag()
         .tag_str("t")
@@ -1828,6 +1868,59 @@ mod tests {
         assert!(json.contains(r#""permission-mode","plan"#));
         // created_at is the caller-supplied value (monotonic per session)
         assert!(json.contains(r#""created_at":1770000000"#), "json: {json}");
+    }
+
+    #[test]
+    fn spawn_command_has_no_resume_tags() {
+        let sk = test_secret_key();
+        let event =
+            build_spawn_command_event("host-a", "/tmp/proj", "claude", "spawn-1", None, &sk)
+                .unwrap();
+
+        assert_eq!(event.kind, AI_SESSION_COMMAND_KIND);
+        let json = &event.note_json;
+        assert!(json.contains(r#""command","spawn_session"#), "json: {json}");
+        assert!(json.contains(r#""target_host","host-a"#));
+        assert!(json.contains(r#""cwd","/tmp/proj"#));
+        assert!(json.contains(r#""backend","claude"#));
+        assert!(json.contains(r#""spawn_id","spawn-1"#));
+        // A plain spawn never carries resume identity.
+        assert!(!json.contains("resume_session_id"), "json: {json}");
+        assert!(!json.contains(r#""session_id"#), "json: {json}");
+    }
+
+    #[test]
+    fn resume_command_carries_target_and_cli_session() {
+        let sk = test_secret_key();
+        let resume = ResumeSpawn {
+            target_session_id: "d-tag-of-dead-session",
+            cli_session_id: "claude-cli-uuid",
+        };
+        let event = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            "spawn-2",
+            Some(&resume),
+            &sk,
+        )
+        .unwrap();
+
+        let json = &event.note_json;
+        // The discriminator flips so the host takes its resume branch.
+        assert!(
+            json.contains(r#""command","resume_session"#),
+            "json: {json}"
+        );
+        // The session to revive + the id for `claude --resume`.
+        assert!(
+            json.contains(r#""session_id","d-tag-of-dead-session"#),
+            "json: {json}"
+        );
+        assert!(
+            json.contains(r#""resume_session_id","claude-cli-uuid"#),
+            "json: {json}"
+        );
     }
 
     /// Monotonic per-session `created_at`: when wall-clock hasn't advanced past

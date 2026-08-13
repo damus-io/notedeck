@@ -546,7 +546,34 @@ impl Engine {
         backend: &str,
     ) -> Result<String, EngineError> {
         let spawn_id = uuid::Uuid::new_v4().to_string();
-        let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id)?;
+        let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id, None)?;
+        self.publish_session_event(transport, built)?;
+        Ok(spawn_id)
+    }
+
+    /// Resume a closed (possibly soft-deleted) session on a remote host.
+    ///
+    /// Mirrors [`spawn_session`](Engine::spawn_session) but publishes a
+    /// `command = "resume_session"` variant of the kind-31989 command carrying
+    /// the target session's stable id (`target_session_id`, the `agentium:` ref)
+    /// and the CLI session id for `claude --resume` (`cli_session_id`). The host
+    /// reopens *that* session — reviving its tombstone and rehydrating history —
+    /// rather than creating a new one. Returns the `spawn_id` for symmetry.
+    pub fn resume_session(
+        &self,
+        transport: &mut impl Transport,
+        target_host: &str,
+        cwd: &str,
+        backend: &str,
+        target_session_id: &str,
+        cli_session_id: &str,
+    ) -> Result<String, EngineError> {
+        let spawn_id = uuid::Uuid::new_v4().to_string();
+        let resume = crate::session_events::ResumeSpawn {
+            target_session_id,
+            cli_session_id,
+        };
+        let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id, Some(&resume))?;
         self.publish_session_event(transport, built)?;
         Ok(spawn_id)
     }
@@ -563,24 +590,29 @@ impl Engine {
         backend: &str,
         spawn_id: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        let built = self.make_spawn_command(target_host, cwd, backend, spawn_id)?;
+        let built = self.make_spawn_command(target_host, cwd, backend, spawn_id, None)?;
         self.wrap_and_ingest(&built)?;
         Ok(built)
     }
 
     /// Build the inner kind-31989 spawn-command event (no ingest, no publish).
+    ///
+    /// `resume` = `None` builds a plain spawn; `Some` builds a resume command
+    /// (see [`build_spawn_command_event`](crate::session_events::build_spawn_command_event)).
     fn make_spawn_command(
         &self,
         target_host: &str,
         cwd: &str,
         backend: &str,
         spawn_id: &str,
+        resume: Option<&crate::session_events::ResumeSpawn<'_>>,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
         crate::session_events::build_spawn_command_event(
             target_host,
             cwd,
             backend,
             spawn_id,
+            resume,
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))
