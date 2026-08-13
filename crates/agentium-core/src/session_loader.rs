@@ -660,6 +660,34 @@ pub fn latest_state_created_at(
     Some(results.first()?.note.created_at())
 }
 
+/// The `created_at` of the newest event for a session across *both* its
+/// conversation messages (kind-1988) and its state revisions (kind-31988) — the
+/// session's last-activity timestamp.
+///
+/// Read straight from ndb (the authoritative timeline) rather than from a folded
+/// [`SessionState`], whose `created_at` only advances when the *status* is
+/// republished: an actively streaming session whose status tag hasn't changed
+/// still reads as fresh here. Used to fade a stale status indicator. Both kinds
+/// tag their session id under `d`, so a single filter ordered by `created_at`
+/// yields the global newest with `limit(1)`.
+pub fn latest_activity_created_at(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+    session_id: &str,
+) -> Option<u64> {
+    use crate::session_events::AI_SESSION_STATE_KIND;
+
+    let filter = Filter::new()
+        .kinds([AI_CONVERSATION_KIND as u64, AI_SESSION_STATE_KIND as u64])
+        .authors([author.bytes()])
+        .tags([session_id], 'd')
+        .limit(1)
+        .build();
+    let results = ndb.query(txn, &[filter], 1).ok()?;
+    Some(results.first()?.note.created_at())
+}
+
 /// Extract recent working directories grouped by hostname from kind-31988
 /// session state events.
 ///

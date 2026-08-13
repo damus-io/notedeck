@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use egui::{Align, Color32, Layout, Pos2, Sense};
 use notedeck_ui::app_images;
 
-use crate::agent_status::AgentStatus;
+use crate::agent_status::{stale_color, AgentStatus};
 use crate::backend::BackendType;
 use crate::collapse_state::CollapseState;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
-use crate::session::{SessionId, SessionManager};
+use crate::session::{now_unix, SessionId, SessionManager};
 use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint, KeybindHint};
 
 /// Actions that can be triggered from the session list UI
@@ -240,6 +240,7 @@ impl<'a> SessionListUi<'a> {
                 shortcut_hint,
                 cycle_hint,
                 session.status(),
+                session.last_activity,
                 queue_priority,
                 session.backend_type,
                 git_lines,
@@ -392,6 +393,7 @@ impl<'a> SessionListUi<'a> {
         shortcut_hint: Option<usize>,
         cycle_hint: Option<&str>,
         status: AgentStatus,
+        last_activity: Option<u64>,
         queue_priority: Option<FocusPriority>,
         backend_type: BackendType,
         git_lines: Option<(usize, usize)>,
@@ -403,8 +405,12 @@ impl<'a> SessionListUi<'a> {
 
         paint_row_background(ui, rect, is_active, &response);
 
-        // Status color indicator (left edge vertical bar)
-        let status_color = status.color();
+        // Status color indicator (left edge vertical bar), faded toward a
+        // desaturated version of itself as the session goes stale (no activity).
+        let age = last_activity
+            .map(|t| now_unix().saturating_sub(t))
+            .unwrap_or(0);
+        let status_color = stale_color(status.color(), age);
         let status_bar_rect = egui::Rect::from_min_size(
             rect.left_top() + egui::vec2(2.0, 4.0),
             egui::vec2(3.0, rect.height() - 8.0),
@@ -1313,6 +1319,7 @@ mod tests {
                     None,
                     None,
                     AgentStatus::NeedsInput,
+                    None,
                     priority,
                     BackendType::Claude,
                     git_lines,

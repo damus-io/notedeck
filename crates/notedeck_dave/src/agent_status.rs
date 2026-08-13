@@ -66,3 +66,88 @@ impl AgentStatus {
         }
     }
 }
+
+/// Seconds of inactivity before a status color starts to fade.
+const FRESH_SECS: u64 = 5 * 60;
+/// Seconds of inactivity at which a status color is fully faded.
+const STALE_SECS: u64 = 60 * 60;
+/// Saturation multiplier applied at full staleness. Keeps the hue recognisable
+/// (a washed-out version of the color) rather than fading all the way to gray.
+const STALE_SATURATION: f32 = 0.2;
+
+/// How stale a session is, from `0.0` (fresh) to `1.0` (fully stale), given
+/// `age_secs` seconds since its last activity. `0.0` under [`FRESH_SECS`], then a
+/// linear ramp to `1.0` at [`STALE_SECS`].
+fn staleness(age_secs: u64) -> f32 {
+    if age_secs <= FRESH_SECS {
+        return 0.0;
+    }
+    let span = (STALE_SECS - FRESH_SECS) as f32;
+    (((age_secs - FRESH_SECS) as f32) / span).clamp(0.0, 1.0)
+}
+
+/// Fade a status `color` toward a desaturated version of itself (same hue) as a
+/// session goes stale. `age_secs` is the seconds since the session last did
+/// anything: the color is returned unchanged while fresh (under [`FRESH_SECS`]),
+/// then its saturation ramps down to [`STALE_SATURATION`] of the original by
+/// [`STALE_SECS`]. Gives the user an at-a-glance "this has gone quiet" signal
+/// without losing the status hue.
+///
+/// Pure and allocation-free — safe to call every frame in the render path.
+pub fn stale_color(color: egui::Color32, age_secs: u64) -> egui::Color32 {
+    let t = staleness(age_secs);
+    if t <= 0.0 {
+        // Fresh: return the color untouched (no lossy Hsva round-trip).
+        return color;
+    }
+    let mut hsva = egui::ecolor::Hsva::from(color);
+    hsva.s *= 1.0 + (STALE_SATURATION - 1.0) * t;
+    egui::Color32::from(hsva)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh session's color is returned byte-identical (no fade, no round-trip
+    /// loss), both below the fresh window and exactly at its edge.
+    #[test]
+    fn fresh_color_is_unchanged() {
+        let green = AgentStatus::Working.color();
+        assert_eq!(stale_color(green, 0), green);
+        assert_eq!(stale_color(green, FRESH_SECS), green);
+    }
+
+    /// A fully stale color keeps its hue but drops to ~[`STALE_SATURATION`] of its
+    /// original saturation.
+    #[test]
+    fn fully_stale_desaturates_but_keeps_hue() {
+        let green = AgentStatus::Working.color();
+        let faded = stale_color(green, STALE_SECS);
+        assert_ne!(faded, green);
+
+        let before = egui::ecolor::Hsva::from(green);
+        let after = egui::ecolor::Hsva::from(faded);
+        // Hue preserved (allow small 8-bit round-trip error).
+        assert!((after.h - before.h).abs() < 0.02, "hue drifted");
+        // Saturation cut to ~20% of the original.
+        assert!(
+            (after.s - before.s * STALE_SATURATION).abs() < 0.05,
+            "expected ~{} saturation, got {}",
+            before.s * STALE_SATURATION,
+            after.s
+        );
+    }
+
+    /// A mid-range age fades partway: less saturated than fresh, more than fully
+    /// stale.
+    #[test]
+    fn mid_range_is_between() {
+        let green = AgentStatus::Working.color();
+        let mid_age = (FRESH_SECS + STALE_SECS) / 2;
+        let mid = egui::ecolor::Hsva::from(stale_color(green, mid_age)).s;
+        let fresh = egui::ecolor::Hsva::from(green).s;
+        let stale = egui::ecolor::Hsva::from(stale_color(green, STALE_SECS)).s;
+        assert!(stale < mid && mid < fresh, "{stale} < {mid} < {fresh}");
+    }
+}

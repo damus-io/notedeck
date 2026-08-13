@@ -22,10 +22,10 @@ use notedeck::{
     ColorTheme, KindRenderRequest, KindRenderResponse, KindRenderer, NoteContext, RenderContext,
 };
 
-use crate::agent_status::AgentStatus;
+use crate::agent_status::{stale_color, AgentStatus};
 use crate::session_cache::AgentiumSessionCache;
-use agentium_core::session_events::AI_SESSION_STATE_KIND;
-use agentium_core::session_loader::{SessionState, DELETED_STATUS};
+use agentium_core::session_events::{now_secs, AI_SESSION_STATE_KIND};
+use agentium_core::session_loader::{latest_activity_created_at, SessionState, DELETED_STATUS};
 
 /// The kinds this renderer draws: the parameterized-replaceable session-state
 /// event. A `'static` slice so [`KindRenderer::kinds`] can hand it out by
@@ -45,18 +45,30 @@ struct LiveSession {
     status: String,
     /// The working directory the session runs in (for the block card).
     cwd: String,
+    /// Unix seconds of the session's last activity — the newest folded revision's
+    /// `created_at`, overridden in [`live_session`] by the newest event ndb holds.
+    /// Used to fade the status dot as the session goes stale.
+    last_activity: u64,
 }
 
 impl LiveSession {
     /// Build from a folded [`SessionState`] (the live cache read) or the note's own
-    /// snapshot (the fallback).
+    /// snapshot (the fallback). `last_activity` starts from the state's own
+    /// `created_at`; [`live_session`] refines it from ndb.
     fn from_state(state: &SessionState) -> Self {
         Self {
             title: state.display_title().to_string(),
             status: state.status.clone(),
             cwd: state.cwd.clone(),
+            last_activity: state.created_at,
         }
     }
+}
+
+/// Seconds since a session last did anything, `0` when its timestamp is in the
+/// future (clock skew) — the age fed to [`stale_color`].
+fn session_age(live: &LiveSession) -> u64 {
+    now_secs().saturating_sub(live.last_activity)
 }
 
 /// Renders an agent session (kind 31988) referenced inline, e.g. by an
@@ -138,11 +150,17 @@ fn live_session(
     snapshot: &SessionState,
 ) -> LiveSession {
     let author = Pubkey::new(*note.pubkey());
-    cache
+    let mut live = cache
         .borrow_mut()
         .session(ndb, txn, &author, &snapshot.claude_session_id)
         .map(|v| LiveSession::from_state(&v.state))
-        .unwrap_or_else(|| LiveSession::from_state(snapshot))
+        .unwrap_or_else(|| LiveSession::from_state(snapshot));
+    // Prefer the newest-event time from ndb (accounts for streamed messages, not
+    // just status publishes) over the folded state's own `created_at`.
+    if let Some(ts) = latest_activity_created_at(ndb, txn, &author, &snapshot.claude_session_id) {
+        live.last_activity = ts;
+    }
+    live
 }
 
 /// The chip/heading title for a session: its display title, or
@@ -167,7 +185,7 @@ fn status_color(theme: &ColorTheme, status: &str) -> egui::Color32 {
 /// followed by the session's title, in a small rounded pill — the in-prose shape
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
 fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
-    let color = status_color(theme, &live.status);
+    let color = stale_color(status_color(theme, &live.status), session_age(live));
     // A tombstoned session reads as resumable: a hollow ring instead of a filled
     // dot, and a hover hint. Clicking it reopens (revives + resumes) the session
     // via Dave's pending-open path — the inline resume affordance.
@@ -200,7 +218,7 @@ fn session_card_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) ->
                 ui.painter(),
                 rect.center(),
                 size,
-                status_color(theme, &live.status),
+                stale_color(status_color(theme, &live.status), session_age(live)),
             );
             ui.weak(status_label(&live.status));
         });
@@ -241,6 +259,7 @@ mod tests {
             title: String::new(),
             status: "working".into(),
             cwd: String::new(),
+            last_activity: 0,
         };
         assert_eq!(session_title(&blank), UNTITLED_SESSION);
 
@@ -248,6 +267,7 @@ mod tests {
             title: "Fix the parser".into(),
             status: "idle".into(),
             cwd: String::new(),
+            last_activity: 0,
         };
         assert_eq!(session_title(&named), "Fix the parser");
     }
