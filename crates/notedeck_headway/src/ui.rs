@@ -2805,6 +2805,7 @@ fn comment_note_ui(
     // keeps each comment compact in the thread.
     let flags = notedeck_ui::NoteOptions::SelectableText
         | notedeck_ui::NoteOptions::SmallPfp
+        | notedeck_ui::NoteOptions::InlineReferences
         | notedeck_ui::NoteOptions::Framed;
     let mut note_context = app_ctx.note_context();
     notedeck_ui::NoteView::new(&mut note_context, &note, flags).show(ui);
