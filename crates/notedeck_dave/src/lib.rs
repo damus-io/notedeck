@@ -2383,68 +2383,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     state.title,
                     loaded.messages.len(),
                 );
-                session.chat = loaded.messages;
-
-                if is_session_remote(&state.hostname, &state.cwd, &self.hostname) {
-                    session.source = session::SessionSource::Remote;
-                }
-
-                // Local sessions use the current machine's hostname;
-                // remote sessions use what was stored in the event.
-                session.details.hostname = if session.is_remote() {
-                    state.hostname.clone()
-                } else {
-                    self.hostname.clone()
-                };
-
-                session.details.custom_title = state.custom_title.clone();
-                session.spawn_id = state.spawn_id.clone();
-
-                // Restore focus indicator from state event
-                session.indicator = state
-                    .indicator
-                    .as_deref()
-                    .and_then(focus_queue::FocusPriority::from_indicator_str);
-
-                // Use home_dir from the event for remote abbreviation
-                if !state.home_dir.is_empty() {
-                    session.details.home_dir = state.home_dir.clone();
-                }
-
-                // A state event is a "host is alive" signal; feed the
-                // status-bar last-activity indicator (before borrowing agentic).
-                session.mark_activity(state.created_at);
-
-                if let Some(agentic) = &mut session.agentic {
-                    // Restore the event_id from the d-tag so published
-                    // state events keep using the same Nostr identity.
-                    agentic.event_id = state.claude_session_id.clone();
-
-                    // If cli_session was empty the backend never ran —
-                    // clear resume_session_id so we don't try --resume
-                    // with the event UUID.
-                    if state.cli_session_id.as_ref().is_some_and(|s| s.is_empty()) {
-                        agentic.resume_session_id = None;
-                    }
-
-                    if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last);
-                    }
-                    // Load permission state and dedup set from events
-                    agentic.permissions.merge_loaded(
-                        loaded.permissions.responded,
-                        loaded.permissions.request_note_ids,
-                    );
-                    agentic.seen_note_ids = loaded.note_ids;
-                    // Set remote status and permission mode from state event
-                    agentic.remote_status = AgentStatus::from_status_str(&state.status);
-                    agentic.remote_status_ts = state.created_at;
-                    if let Some(ref pm) = state.permission_mode {
-                        agentic.permission_mode = crate::session::permission_mode_from_str(pm);
-                    }
-                    // Live conversation events flow through the shared per-account
-                    // subscription; no per-session subscription needed here.
-                }
+                hydrate_session_from_state(session, state, loaded, &self.hostname);
             }
             existing_ids.insert(state.claude_session_id.clone());
         }
@@ -2697,7 +2636,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             } else {
                 self.session_manager.new_resumed_session(
                     cwd,
-                    resume_id.clone(),
+                    resume_id,
                     state.title.clone(),
                     AiMode::Agentic,
                     backend,
@@ -2710,31 +2649,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
-                // Clear pending state (upgrades placeholder to real session)
+                // Clear pending state (upgrades placeholder to real session).
                 session.pending_created_at = None;
                 session.details.title = state.title.clone();
-                session.details.hostname = state.hostname.clone();
-                session.details.custom_title = state.custom_title.clone();
-                session.indicator = state
-                    .indicator
-                    .as_deref()
-                    .and_then(focus_queue::FocusPriority::from_indicator_str);
-                if !state.home_dir.is_empty() {
-                    session.details.home_dir = state.home_dir.clone();
-                }
-                if !loaded.messages.is_empty() {
-                    tracing::info!(
-                        "loaded {} messages for discovered session",
-                        loaded.messages.len()
-                    );
-                    session.chat = loaded.messages;
-                }
-
-                if is_session_remote(&state.hostname, &state.cwd, &self.hostname) {
-                    session.source = session::SessionSource::Remote;
-                }
 
                 // Initialize agentic data if absent (e.g. upgraded placeholder)
+                // so the shared hydrator has something to populate.
                 if session.agentic.is_none() {
                     session.agentic = Some(session::AgenticSessionData::new(
                         dave_sid,
@@ -2742,43 +2662,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     ));
                 }
 
-                // A state event is a "host is alive" signal; feed the
-                // status-bar last-activity indicator (before borrowing agentic).
-                session.mark_activity(state.created_at);
-
-                if let Some(agentic) = &mut session.agentic {
-                    // Restore the event_id from the d-tag
-                    agentic.event_id = claude_sid.to_string();
-
-                    if !resume_id.is_empty() {
-                        agentic.resume_session_id = Some(resume_id.clone());
-                    }
-
-                    // If cli_session was empty the backend never ran —
-                    // clear resume_session_id so we don't try --resume
-                    // with the event UUID.
-                    if state.cli_session_id.as_ref().is_some_and(|s| s.is_empty()) {
-                        agentic.resume_session_id = None;
-                    }
-
-                    if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last);
-                    }
-                    // Load permission state and dedup set
-                    agentic.permissions.merge_loaded(
-                        loaded.permissions.responded,
-                        loaded.permissions.request_note_ids,
+                if !loaded.messages.is_empty() {
+                    tracing::info!(
+                        "loaded {} messages for discovered session",
+                        loaded.messages.len()
                     );
-                    agentic.seen_note_ids = loaded.note_ids;
-                    // Set remote status and permission mode
-                    agentic.remote_status = AgentStatus::from_status_str(&state.status);
-                    agentic.remote_status_ts = state.created_at;
-                    if let Some(ref pm) = state.permission_mode {
-                        agentic.permission_mode = crate::session::permission_mode_from_str(pm);
-                    }
-                    // Live conversation events flow through the shared per-account
-                    // subscription; no per-session subscription needed here.
                 }
+
+                hydrate_session_from_state(session, &state, loaded, &self.hostname);
             }
 
             self.session_manager.rebuild_cwd_groups();
@@ -4641,6 +4532,96 @@ fn is_session_remote(hostname: &str, cwd: &str, local_hostname: &str) -> bool {
         || (hostname.is_empty() && !std::path::PathBuf::from(cwd).exists())
 }
 
+/// Hydrate an already-created session from its persisted kind-31988
+/// [`SessionState`](session_loader::SessionState) and loaded kind-1988 history.
+///
+/// This is the single place that turns "a state event + its conversation" into a
+/// live [`ChatSession`], shared by startup restore, relay discovery, the session
+/// picker resume, and `agentium resume`. Getting it right in one spot is what
+/// keeps a resumed session's Nostr **identity** intact — `agentic.event_id` is
+/// repointed at the d-tag so future state events keep the same `agentium:` ref
+/// (and, for a tombstoned session, a later active publish revives it) — and its
+/// **history** present (chat, threading seed, permission state, dedup set).
+///
+/// The caller owns session *creation* (`new_resumed_session`) and any
+/// path-specific setup (placeholder upgrade, title) done before calling this.
+/// `mark_activity` is issued here *before* the `agentic` borrow to avoid a double
+/// mutable borrow of `session`.
+fn hydrate_session_from_state(
+    session: &mut ChatSession,
+    state: &session_loader::SessionState,
+    loaded: session_loader::LoadedSession,
+    local_hostname: &str,
+) {
+    session.chat = loaded.messages;
+
+    if is_session_remote(&state.hostname, &state.cwd, local_hostname) {
+        session.source = session::SessionSource::Remote;
+    }
+
+    // Local sessions use the current machine's hostname; remote sessions use
+    // what was stored in the event.
+    session.details.hostname = if session.is_remote() {
+        state.hostname.clone()
+    } else {
+        local_hostname.to_string()
+    };
+
+    session.details.custom_title = state.custom_title.clone();
+    session.spawn_id = state.spawn_id.clone();
+
+    // Restore focus indicator from the state event.
+    session.indicator = state
+        .indicator
+        .as_deref()
+        .and_then(focus_queue::FocusPriority::from_indicator_str);
+
+    // Use home_dir from the event for remote abbreviation.
+    if !state.home_dir.is_empty() {
+        session.details.home_dir = state.home_dir.clone();
+    }
+
+    // A state event is a "host is alive" signal; feed the status-bar
+    // last-activity indicator (before borrowing agentic).
+    session.mark_activity(state.created_at);
+
+    if let Some(agentic) = &mut session.agentic {
+        // Restore the event_id from the d-tag so published state events keep
+        // using the same Nostr identity.
+        agentic.event_id = state.claude_session_id.clone();
+
+        // The cli_session tag holds the real CLI id for `claude --resume`. An
+        // empty value means the backend never started (nothing to resume, so we
+        // must not pass the event UUID as a session id); an absent tag is a
+        // legacy event where the d-tag itself was the CLI id. Setting this here
+        // (rather than only at session creation) keeps upgraded placeholders —
+        // which are born without agentic data — correctly resumable.
+        agentic.resume_session_id = match state.cli_session_id {
+            Some(ref cli) if !cli.is_empty() => Some(cli.clone()),
+            Some(_) => None,
+            None => Some(state.claude_session_id.clone()),
+        };
+
+        if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
+            agentic.live_threading.seed(root, last);
+        }
+        // Load permission state and dedup set from events.
+        agentic.permissions.merge_loaded(
+            loaded.permissions.responded,
+            loaded.permissions.request_note_ids,
+        );
+        agentic.seen_note_ids = loaded.note_ids;
+        // Set remote status and permission mode from the state event.
+        agentic.remote_status = AgentStatus::from_status_str(&state.status);
+        agentic.remote_status_ts = state.created_at;
+        if let Some(ref pm) = state.permission_mode {
+            agentic.permission_mode = crate::session::permission_mode_from_str(pm);
+        }
+        // Live conversation events flow through the shared per-account
+        // subscription; no per-session subscription needed here.
+    }
+}
+
 /// Handle tool calls from the AI backend.
 ///
 /// Pushes the tool calls to chat, executes each one, and pushes the
@@ -5455,6 +5436,103 @@ mod tests {
             route_new_session(AiMode::Agentic, true),
             NewSessionRoute::HostPicker
         );
+    }
+
+    /// A `SessionState` with the fields the hydrator reads, defaulted so a test
+    /// only sets what it cares about.
+    fn hydrate_test_state(
+        claude_session_id: &str,
+        cli: Option<&str>,
+    ) -> session_loader::SessionState {
+        session_loader::SessionState {
+            claude_session_id: claude_session_id.to_string(),
+            title: "restored title".to_string(),
+            custom_title: Some("custom".to_string()),
+            cwd: "/tmp/proj".to_string(),
+            status: "working".to_string(),
+            indicator: None,
+            hostname: "my-host".to_string(),
+            home_dir: "/home/me".to_string(),
+            backend: Some("claude".to_string()),
+            permission_mode: None,
+            created_at: 1_770_000_123,
+            cli_session_id: cli.map(str::to_string),
+            spawn_id: Some("spawn-xyz".to_string()),
+        }
+    }
+
+    /// The shared hydrator restores a resumed session's Nostr identity (event_id
+    /// = the d-tag), its resume id, and its dedup set — the fields the old
+    /// SessionPicker resume path dropped. This is the regression guard for the
+    /// "resume doesn't carry history/identity" bug.
+    #[test]
+    fn hydrator_restores_identity_and_resume_id() {
+        let mut manager = SessionManager::new();
+        // Born with a fresh random event_id and no resume id — as if just created.
+        let sid = manager.new_resumed_session(
+            PathBuf::from("/tmp/proj"),
+            String::new(),
+            "placeholder".to_string(),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+
+        let state = hydrate_test_state("dead-dtag", Some("cli-uuid-123"));
+        let mut note_ids = HashSet::new();
+        note_ids.insert([7u8; 32]);
+        let loaded = session_loader::LoadedSession {
+            messages: Vec::new(),
+            root_note_id: None,
+            last_note_id: None,
+            permissions: session::PermissionTracker::new(),
+            note_ids: note_ids.clone(),
+            max_order: None,
+        };
+
+        let session = manager.get_mut(sid).unwrap();
+        let fresh_event_id = session.agentic.as_ref().unwrap().event_id.clone();
+        hydrate_session_from_state(session, &state, loaded, "my-host");
+
+        let agentic = manager.get_mut(sid).unwrap().agentic.as_ref().unwrap();
+        // Identity is repointed off the fresh UUID onto the persisted d-tag.
+        assert_ne!(agentic.event_id, fresh_event_id);
+        assert_eq!(agentic.event_id, "dead-dtag");
+        // The real CLI id is what `claude --resume` needs.
+        assert_eq!(agentic.resume_session_id.as_deref(), Some("cli-uuid-123"));
+        // Dedup set seeded so live polling won't double-append restored notes.
+        assert_eq!(agentic.seen_note_ids, note_ids);
+    }
+
+    /// An empty `cli_session` means the backend never started: there is nothing
+    /// to `--resume`, so the hydrator must leave `resume_session_id` cleared
+    /// rather than pass the event UUID as a bogus CLI id.
+    #[test]
+    fn hydrator_clears_resume_id_when_backend_never_started() {
+        let mut manager = SessionManager::new();
+        let sid = manager.new_resumed_session(
+            PathBuf::from("/tmp/proj"),
+            "stale".to_string(),
+            "placeholder".to_string(),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+
+        let state = hydrate_test_state("dead-dtag", Some(""));
+        let loaded = session_loader::LoadedSession {
+            messages: Vec::new(),
+            root_note_id: None,
+            last_note_id: None,
+            permissions: session::PermissionTracker::new(),
+            note_ids: HashSet::new(),
+            max_order: None,
+        };
+
+        let session = manager.get_mut(sid).unwrap();
+        hydrate_session_from_state(session, &state, loaded, "my-host");
+
+        let agentic = manager.get_mut(sid).unwrap().agentic.as_ref().unwrap();
+        assert_eq!(agentic.event_id, "dead-dtag");
+        assert_eq!(agentic.resume_session_id, None);
     }
 
     fn test_config() -> Config {
