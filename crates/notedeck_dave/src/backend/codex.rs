@@ -4826,7 +4826,7 @@ mod tests {
     )> {
         let codex_binary = std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string());
 
-        let mut child = match spawn_codex(&codex_binary, &None) {
+        let mut child = match spawn_codex(&codex_binary, &None, "test-session") {
             Ok(child) => child,
             Err(e) => {
                 eprintln!(
