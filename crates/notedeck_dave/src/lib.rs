@@ -519,9 +519,18 @@ struct ProcessEventsResult {
 struct DeletedSessionInfo {
     claude_session_id: String,
     title: String,
+    /// User-renamed title. Carried through the tombstone so a delete doesn't
+    /// silently drop a rename the user owns.
+    custom_title: Option<String>,
     cwd: String,
     home_dir: String,
     backend: BackendType,
+    /// Real backend (CLI) session id, needed to `--resume` a revived session.
+    /// Carried through the tombstone so soft-deleting doesn't strand the
+    /// underlying CLI conversation.
+    cli_session_id: Option<String>,
+    /// Spawn-command UUID linking this session to the request that created it.
+    spawn_id: Option<String>,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -2216,7 +2225,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 session_events::build_session_state_event(
                     &info.claude_session_id,
                     &info.title,
-                    None,
+                    info.custom_title.as_deref(),
                     &info.cwd,
                     "deleted",
                     None, // no indicator for deleted sessions
@@ -2224,8 +2233,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &info.home_dir,
                     info.backend.as_str(),
                     "default",
-                    None,
-                    None, // no spawn_id for deletions
+                    info.cli_session_id.as_deref(),
+                    info.spawn_id.as_deref(),
                     created_at,
                     &sk,
                 ),
@@ -3041,9 +3050,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.pending_deletions.push(DeletedSessionInfo {
                     claude_session_id: agentic.event_session_id().to_string(),
                     title: session.details.title.clone(),
+                    custom_title: session.details.custom_title.clone(),
                     cwd: agentic.cwd.to_string_lossy().to_string(),
                     home_dir: session.details.home_dir.clone(),
                     backend: session.backend_type,
+                    cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
+                    spawn_id: session.spawn_id.clone(),
                 });
             }
         }
@@ -6361,6 +6373,50 @@ mod tests {
         assert!(
             session.state_dirty,
             "dirty so the next publish emits an active revision that overwrites the tombstone"
+        );
+    }
+
+    /// Deleting a session must carry its `cli_session_id`, `custom_title`, and
+    /// `spawn_id` into the tombstone. The fat kind-31988 note republishes
+    /// wholesale on every status change, so the winning (deleted) revision built
+    /// from a lossy snapshot would strand the backend `--resume` id and silently
+    /// lose a user rename. Regression guard for the fat-note carry-forward hazard.
+    #[test]
+    fn delete_carries_resume_id_title_and_spawn_into_tombstone() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let mut dave = test_dave(&data_path);
+
+        let sid = dave.session_manager.new_resumed_session(
+            PathBuf::from("/tmp/proj"),
+            "cli-xyz".to_string(), // the real CLI --resume id
+            "A Session".to_string(),
+            AiMode::Agentic,
+            BackendType::Remote,
+        );
+        // The fields the tombstone used to drop.
+        let session = dave.session_manager.get_mut(sid).unwrap();
+        session.details.custom_title = Some("Renamed".to_string());
+        session.spawn_id = Some("spawn-1".to_string());
+
+        dave.delete_session(sid);
+
+        assert_eq!(dave.pending_deletions.len(), 1);
+        let info = &dave.pending_deletions[0];
+        assert_eq!(
+            info.cli_session_id.as_deref(),
+            Some("cli-xyz"),
+            "the backend --resume id must survive the tombstone"
+        );
+        assert_eq!(
+            info.custom_title.as_deref(),
+            Some("Renamed"),
+            "a user rename must survive the tombstone"
+        );
+        assert_eq!(
+            info.spawn_id.as_deref(),
+            Some("spawn-1"),
+            "the spawn linkage must survive the tombstone"
         );
     }
 
