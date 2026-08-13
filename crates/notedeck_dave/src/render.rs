@@ -173,19 +173,25 @@ fn session_title(live: &LiveSession) -> &str {
     }
 }
 
-/// The color of the live status dot: the mapped [`AgentStatus`] color for a known
-/// status, else a muted dot for an unrecognised one.
-fn status_color(theme: &ColorTheme, status: &str) -> egui::Color32 {
+/// The base color of the live status dot: the mapped [`AgentStatus`] color for a known status,
+/// else a muted dot for an unrecognised one.
+fn base_status_color(theme: &ColorTheme, status: &str) -> egui::Color32 {
     AgentStatus::from_status_str(status)
         .map(|s| s.color())
         .unwrap_or(theme.text_muted)
+}
+
+/// A status color that fades with age.
+fn status_color(theme: &ColorTheme, session: &LiveSession) -> egui::Color32 {
+    let age = session_age(session);
+    stale_color(base_status_color(theme, &session.status), age)
 }
 
 /// A compact, single-line inline reference to a session: a live status dot
 /// followed by the session's title, in a small rounded pill — the in-prose shape
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
 fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
-    let color = stale_color(status_color(theme, &live.status), session_age(live));
+    let color = status_color(theme, live);
     // A tombstoned session reads as resumable: a hollow ring instead of a filled
     // dot, and a hover hint. Clicking it reopens (revives + resumes) the session
     // via Dave's pending-open path — the inline resume affordance.
@@ -214,12 +220,7 @@ fn session_card_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) ->
         ui.horizontal(|ui| {
             let size = ui.text_style_height(&egui::TextStyle::Small);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-            status_dot(
-                ui.painter(),
-                rect.center(),
-                size,
-                stale_color(status_color(theme, &live.status), session_age(live)),
-            );
+            status_dot(ui.painter(), rect.center(), size, status_color(theme, live));
             ui.weak(status_label(&live.status));
         });
         if !live.cwd.is_empty() {
