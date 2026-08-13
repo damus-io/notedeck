@@ -2681,11 +2681,105 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Poll for kind-31989 spawn command events.
+    /// Reopen a closed (possibly soft-deleted) session so a new message drives
+    /// its backend again — the host side of `agentium resume` and the
+    /// deleted-chip resume button.
     ///
-    /// When a remote device wants to create a session on this host, it publishes
+    /// Resolves `selector` (a d-tag, cli-session id, or `agentium:` word-id)
+    /// across both the live and tombstoned sets, then materializes the session
+    /// through the shared [`hydrate_session_from_state`] — which pins `event_id`
+    /// back to the original d-tag, restores history + dedup, and derives
+    /// `resume_session_id` from the `cli_session` tag so the backend resumes with
+    /// `claude --resume`. Marking it `state_dirty` makes the next
+    /// [`publish_dirty_session_states`](Self::publish_dirty_session_states) emit a
+    /// newer active revision for that d-tag, which overwrites the tombstone in
+    /// both folds — reviving the `agentium:` ref in place. An already-open
+    /// session is simply refocused. Returns the reopened `SessionId`, or `None`
+    /// if nothing matched.
+    fn reopen_session(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        account: enostr::Pubkey,
+        selector: &str,
+    ) -> Option<SessionId> {
+        let txn = Transaction::new(ndb).ok()?;
+        let live = session_loader::load_session_states_for_author(ndb, &txn, &account);
+        let deleted = session_loader::load_deleted_session_states_for_author(ndb, &txn, &account);
+        let state =
+            match session_loader::resolve_session_including_deleted(&live, &deleted, selector) {
+                Ok(state) => state.clone(),
+                Err(err) => {
+                    tracing::warn!("reopen_session: {}", err);
+                    return None;
+                }
+            };
+
+        // Already materialized (e.g. resuming a still-live session) — just focus.
+        let already_open = self
+            .session_manager
+            .iter()
+            .find(|session| {
+                session.agentic.as_ref().map(|a| a.event_session_id())
+                    == Some(state.claude_session_id.as_str())
+            })
+            .map(|session| session.id);
+        if let Some(existing) = already_open {
+            self.session_manager.switch_to(existing);
+            return Some(existing);
+        }
+
+        let backend = state
+            .backend
+            .as_deref()
+            .and_then(BackendType::from_tag_str)
+            .unwrap_or(BackendType::Claude);
+
+        // resume_session_id is (re)derived inside the hydrator from cli_session;
+        // seed empty here.
+        let dave_sid = self.session_manager.new_resumed_session(
+            PathBuf::from(&state.cwd),
+            String::new(),
+            state.title.clone(),
+            AiMode::Agentic,
+            backend,
+        );
+
+        let loaded = session_loader::load_session_messages_for_author(
+            ndb,
+            &txn,
+            &account,
+            &state.claude_session_id,
+        );
+
+        if let Some(session) = self.session_manager.get_mut(dave_sid) {
+            tracing::info!(
+                "reopening session '{}' ({}): {} messages",
+                state.title,
+                state.claude_session_id,
+                loaded.messages.len(),
+            );
+            hydrate_session_from_state(session, &state, loaded, &self.hostname);
+            // Force a fresh active revision for the (possibly tombstoned) d-tag:
+            // publish_dirty_session_states emits status != deleted at a created_at
+            // above the tombstone, reviving it in both folds.
+            session.state_dirty = true;
+            session.focus_requested = true;
+        }
+
+        self.session_manager.rebuild_cwd_groups();
+        if self.show_scene {
+            self.scene.select(dave_sid);
+        }
+        self.session_manager.switch_to(dave_sid);
+        Some(dave_sid)
+    }
+
+    /// Poll for kind-31989 session command events.
+    ///
+    /// When a remote device wants to act on a session on this host, it publishes
     /// a kind-31989 event with `target_host` matching our hostname. We pick it up
-    /// here and create the session locally.
+    /// here: `spawn_session` creates a new session locally; `resume_session`
+    /// reopens (and revives) an existing one via [`reopen_session`](Self::reopen_session).
     fn poll_session_command_events(&mut self, ctx: &mut AppContext<'_>) {
         let Some(sub) = self.session_command_sub else {
             return;
@@ -2699,72 +2793,101 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        let txn = match Transaction::new(ctx.ndb) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
+        // Sessions to reopen after the read txn closes — reopen_session needs its
+        // own ndb access, so it can't run while `txn` borrows ctx.ndb.
+        let mut to_reopen: Vec<String> = Vec::new();
 
-        for key in note_keys {
-            let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
-                continue;
-            };
-            if *note.pubkey() != *account.bytes() {
-                continue;
-            }
-
-            let Some(command_id) = session_events::get_tag_value(&note, "d") else {
-                continue;
+        {
+            let txn = match Transaction::new(ctx.ndb) {
+                Ok(t) => t,
+                Err(_) => return,
             };
 
-            // Dedup: skip already-processed commands
-            if self.processed_commands.contains(command_id) {
-                continue;
-            }
+            for key in note_keys {
+                let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
+                    continue;
+                };
+                if *note.pubkey() != *account.bytes() {
+                    continue;
+                }
 
-            let command = session_events::get_tag_value(&note, "command").unwrap_or("");
-            if command != "spawn_session" {
-                continue;
-            }
+                let Some(command_id) = session_events::get_tag_value(&note, "d") else {
+                    continue;
+                };
 
-            let target = session_events::get_tag_value(&note, "target_host").unwrap_or("");
-            if target != self.hostname {
-                continue;
-            }
+                // Dedup: skip already-processed commands
+                if self.processed_commands.contains(command_id) {
+                    continue;
+                }
 
-            let cwd = session_events::get_tag_value(&note, "cwd").unwrap_or("");
-            let backend_str = session_events::get_tag_value(&note, "backend").unwrap_or("");
-            let backend =
-                BackendType::from_tag_str(backend_str).unwrap_or(self.model_config.backend);
-            let spawn_id = session_events::get_tag_value(&note, "spawn_id").map(|s| s.to_string());
+                let command = session_events::get_tag_value(&note, "command").unwrap_or("");
+                let target = session_events::get_tag_value(&note, "target_host").unwrap_or("");
+                if target != self.hostname {
+                    continue;
+                }
 
-            tracing::info!(
-                "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}",
-                command_id,
-                cwd,
-                backend,
-                spawn_id,
-            );
+                match command {
+                    "spawn_session" => {
+                        let cwd = session_events::get_tag_value(&note, "cwd").unwrap_or("");
+                        let backend_str =
+                            session_events::get_tag_value(&note, "backend").unwrap_or("");
+                        let backend = BackendType::from_tag_str(backend_str)
+                            .unwrap_or(self.model_config.backend);
+                        let spawn_id =
+                            session_events::get_tag_value(&note, "spawn_id").map(|s| s.to_string());
 
-            self.processed_commands.insert(command_id.to_string());
-            let sid = update::create_session_with_cwd(
-                &mut self.session_manager,
-                &mut self.directory_picker,
-                &mut self.scene,
-                self.show_scene,
-                self.ai_mode,
-                PathBuf::from(cwd),
-                &self.hostname,
-                backend,
-                Model::Default,
-            );
+                        tracing::info!(
+                            "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}",
+                            command_id,
+                            cwd,
+                            backend,
+                            spawn_id,
+                        );
 
-            // Store spawn_id so it's echoed in kind-31988 state events,
-            // letting the sender match this session to its placeholder.
-            if let Some(spawn_id) = spawn_id {
-                if let Some(session) = self.session_manager.get_mut(sid) {
-                    session.spawn_id = Some(spawn_id);
+                        self.processed_commands.insert(command_id.to_string());
+                        let sid = update::create_session_with_cwd(
+                            &mut self.session_manager,
+                            &mut self.directory_picker,
+                            &mut self.scene,
+                            self.show_scene,
+                            self.ai_mode,
+                            PathBuf::from(cwd),
+                            &self.hostname,
+                            backend,
+                            Model::Default,
+                        );
+
+                        // Store spawn_id so it's echoed in kind-31988 state events,
+                        // letting the sender match this session to its placeholder.
+                        if let Some(spawn_id) = spawn_id {
+                            if let Some(session) = self.session_manager.get_mut(sid) {
+                                session.spawn_id = Some(spawn_id);
+                            }
+                        }
+                    }
+                    "resume_session" => {
+                        let Some(session_id) = session_events::get_tag_value(&note, "session_id")
+                        else {
+                            tracing::warn!("resume command {} missing session_id", command_id);
+                            continue;
+                        };
+                        tracing::info!(
+                            "received resume command {}: session_id={}",
+                            command_id,
+                            session_id,
+                        );
+                        self.processed_commands.insert(command_id.to_string());
+                        to_reopen.push(session_id.to_string());
+                    }
+                    other => {
+                        tracing::debug!("ignoring unknown session command '{}'", other);
+                    }
                 }
             }
+        }
+
+        for selector in to_reopen {
+            self.reopen_session(ctx.ndb, account, &selector);
         }
     }
 
@@ -6126,6 +6249,95 @@ mod tests {
         let lp = session_state_publish_params(&local, "local-sid", "phone-host", &ndb, &account)
             .expect("a local session publishes on any dirty");
         assert_eq!(lp.hostname, "phone-host", "local publish uses this machine");
+    }
+
+    /// Reopening a soft-deleted session materializes it from ndb with its
+    /// *original* identity (event_id = the d-tag), its full history, and its CLI
+    /// resume id — and marks it dirty so the next state publish overwrites the
+    /// tombstone. The end-to-end guard for `agentium resume` and the deleted-chip
+    /// resume button.
+    #[tokio::test]
+    async fn reopen_revives_deleted_session_with_history() {
+        let sk = test_secret_key();
+        let account = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let sid = "revive-me";
+
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let mut dave = test_dave(&data_path);
+        // Publish the tombstone under dave's own hostname so the reopened session
+        // is treated as local (and thus publishes an active state to revive it).
+        let host = dave.hostname.clone();
+
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+
+        // Two conversation messages keyed by the session's d-tag.
+        let mut threading = ThreadingState::new();
+        let m1 =
+            build_live_event("hello", "user", sid, None, None, None, &mut threading, &sk).unwrap();
+        let m2 = build_live_event(
+            "hi there",
+            "assistant",
+            sid,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        // A tombstone (status=deleted) as the latest state revision, carrying the
+        // real CLI session id for `claude --resume`.
+        let tomb = session_events::build_session_state_event(
+            sid,
+            "Dead Session",
+            None,
+            "/tmp/proj",
+            "deleted",
+            None,
+            &host,
+            "/home/dev",
+            "claude",
+            "default",
+            Some("cli-abc"),
+            None,
+            1_000,
+            &sk,
+        )
+        .unwrap();
+
+        let filter = nostrdb::Filter::new().build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        for ev in [&m1, &m2, &tomb] {
+            ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+        }
+        let _ = ndb.wait_for_notes(sub, 3).await.unwrap();
+
+        let reopened = dave
+            .reopen_session(&ndb, account, sid)
+            .expect("reopen resolves the tombstone");
+
+        let session = dave
+            .session_manager
+            .get_mut(reopened)
+            .expect("session materialized");
+        let agentic = session.agentic.as_ref().unwrap();
+        assert_eq!(
+            agentic.event_id, sid,
+            "keeps the original d-tag identity (revive in place)"
+        );
+        assert_eq!(
+            agentic.resume_session_id.as_deref(),
+            Some("cli-abc"),
+            "resumes the real CLI session"
+        );
+        assert_eq!(session.chat.len(), 2, "history is rehydrated");
+        assert!(
+            session.state_dirty,
+            "dirty so the next publish emits an active revision that overwrites the tombstone"
+        );
     }
 
     /// A denied permission_response event must set PermissionResponseType::Denied
