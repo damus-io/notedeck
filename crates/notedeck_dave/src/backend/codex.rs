@@ -4823,14 +4823,27 @@ mod tests {
     ///
     /// These tests are `#[ignore]`d, but the snapshot CI job runs every ignored
     /// test in this binary via `--ignored` (see `scripts/snapshot-test`), which
-    /// sweeps these real-binary tests up too. Skipping on a missing binary keeps
-    /// that sweep green on runners without codex while still exercising the real
-    /// path locally when codex is present.
+    /// sweeps these real-binary tests up too.
+    ///
+    /// They hit the live codex backend, so on a machine where codex is installed
+    /// but its auth has lapsed the turn fails (expired refresh token) and the
+    /// sweep goes red — a login-dependent flake. To keep CI deterministic they
+    /// are opt-in: set `CODEX_LIVE_TEST=1` to actually exercise the real path
+    /// (locally, with valid auth). Unset — as in CI — they skip. A missing
+    /// `codex` binary skips too.
     fn setup_real_codex_test() -> Option<(
         tokio_mpsc::Sender<SessionCommand>,
         mpsc::Receiver<DaveApiResponse>,
         tokio::task::JoinHandle<()>,
     )> {
+        if std::env::var_os("CODEX_LIVE_TEST").is_none() {
+            eprintln!(
+                "[test] skipping real codex test: set CODEX_LIVE_TEST=1 to run it \
+                 (needs a codex binary with valid auth)"
+            );
+            return None;
+        }
+
         let codex_binary = std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string());
 
         let mut child = match spawn_codex(&codex_binary, &None, Some("test-session")) {
