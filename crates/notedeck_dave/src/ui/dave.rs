@@ -1487,36 +1487,54 @@ impl<'a> DaveUi<'a> {
         ui: &mut egui::Ui,
     ) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            let r = egui::Frame::new()
+            // The bubble's content response, captured from an inner `scope` so the
+            // context menu attaches to *it* rather than the surrounding `Frame`.
+            let content = egui::Frame::new()
                 .inner_margin(10.0)
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
-                    for img in &msg.images {
-                        ui.add(
-                            egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
-                                .max_size(egui::vec2(200.0, 200.0))
-                                .corner_radius(4.0),
-                        );
-                    }
-                    if !msg.text.is_empty() {
-                        // Ref-aware markdown so a headway ref the user types
-                        // (bare or backtick-wrapped) renders as its inline chip,
-                        // matching the assistant surface. Chat rendering holds no
-                        // transaction, so open one here and pass it in.
-                        let mut note_ctx = ctx.note_context();
-                        let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
-                        markdown_ui::render_markdown_with_refs(ui, &mut note_ctx, &txn, &msg.text);
-                    }
-                    if is_queued {
-                        ui.label(
-                            egui::RichText::new("queued")
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                    }
-                });
-            notedeck_ui::context_menu::context_menu(&r.response, |ui| {
+                    ui.scope(|ui| {
+                        for img in &msg.images {
+                            ui.add(
+                                egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
+                                    .max_size(egui::vec2(200.0, 200.0))
+                                    .corner_radius(4.0),
+                            );
+                        }
+                        if !msg.text.is_empty() {
+                            // Ref-aware markdown so a headway ref the user types
+                            // (bare or backtick-wrapped) renders as its inline chip,
+                            // matching the assistant surface. Chat rendering holds no
+                            // transaction, so open one here and pass it in.
+                            let mut note_ctx = ctx.note_context();
+                            let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
+                            markdown_ui::render_markdown_with_refs(
+                                ui,
+                                &mut note_ctx,
+                                &txn,
+                                &msg.text,
+                            );
+                        }
+                        if is_queued {
+                            ui.label(
+                                egui::RichText::new("queued")
+                                    .small()
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        }
+                    })
+                    .response
+                })
+                .inner;
+            // Attach the context menu to the inner content, NOT the bubble `Frame`.
+            // `context_menu` forces `Sense::click` onto its response every frame, and
+            // the `Frame`'s response fully contains any inline chip drawn inside it —
+            // so egui's hit-test tie-break awards a chip click to the bubble instead
+            // of the chip, silently swallowing it (a chip in an assistant message,
+            // whose bubble is a bare `scope`, stays clickable). The tighter `scope`
+            // response doesn't enclose the chip the same way, so the chip wins.
+            notedeck_ui::context_menu::context_menu(&content, |ui| {
                 if ui.button("Copy").clicked() {
                     ui.ctx().copy_text(msg.text.clone());
                     ui.close_menu();
