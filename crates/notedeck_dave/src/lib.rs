@@ -1014,32 +1014,56 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Act on a pending [`open`](Self::open): resolve the clicked kind-31988 note to
     /// one of this account's sessions (by its `claude_session_id` d-tag) and switch
-    /// to it, revealing the chat. A note we can't route to (not a session state, or
-    /// a session this Dave hasn't materialized) drops the request rather than
-    /// retrying forever.
+    /// to it, revealing the chat.
+    ///
+    /// A materialized session is simply focused. A session that *isn't*
+    /// materialized — a soft-deleted (tombstoned) session, or one not yet restored
+    /// — is [reopened](Self::reopen_session): clicking a deleted `agentium:` chip
+    /// revives and resumes a session we own (or surfaces history for a remote one)
+    /// rather than doing nothing. A note that isn't a session state at all drops
+    /// the request rather than retrying forever.
     fn process_pending_open(&mut self, ndb: &nostrdb::Ndb) {
         let Some(note_id) = self.pending_open.take() else {
             return;
         };
-        let Ok(txn) = Transaction::new(ndb) else {
-            // Couldn't open a read txn this frame; retry next frame.
-            self.pending_open = Some(note_id);
-            return;
-        };
         // The session's stable event id (the kind-31988 `d` tag), if this note is a
-        // session-state event.
-        let event_id: Option<String> = ndb
-            .get_note_by_id(&txn, note_id.bytes())
-            .ok()
-            .and_then(|note| session_events::get_tag_value(&note, "d").map(|s| s.to_string()));
-        let Some(session_id) = event_id.and_then(|id| self.session_id_for_event_id(&id)) else {
-            // Not a session-state note we can route to, or no matching materialized
-            // session — nothing to focus.
+        // session-state event. Scope the read txn so it drops before reopen below.
+        let event_id: Option<String> = {
+            let Ok(txn) = Transaction::new(ndb) else {
+                // Couldn't open a read txn this frame; retry next frame.
+                self.pending_open = Some(note_id);
+                return;
+            };
+            ndb.get_note_by_id(&txn, note_id.bytes())
+                .ok()
+                .and_then(|note| session_events::get_tag_value(&note, "d").map(|s| s.to_string()))
+        };
+        let Some(event_id) = event_id else {
+            // Not a session-state note we can route to.
             return;
         };
-        if self.session_manager.switch_to(session_id) {
-            // Reveal the chat: clear any overlay (directory/session picker) and the
-            // mobile session-list drawer, and stop auto-steal fighting the switch.
+
+        // Already materialized — just focus it.
+        if let Some(session_id) = self.session_id_for_event_id(&event_id) {
+            if self.session_manager.switch_to(session_id) {
+                // Reveal the chat: clear any overlay (directory/session picker) and
+                // the mobile session-list drawer, and stop auto-steal fighting the
+                // switch.
+                self.active_overlay = DaveOverlay::None;
+                self.show_session_list = false;
+                self.focus_queue.dequeue(session_id);
+            }
+            return;
+        }
+
+        // Not materialized: a soft-deleted (or not-yet-restored) session. Reopen
+        // it — reviving + resuming a session we own, or surfacing history for a
+        // remote one — instead of dropping the click. This is the deleted-chip
+        // resume affordance.
+        let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
+            return;
+        };
+        if let Some(session_id) = self.reopen_session(ndb, account, &event_id) {
             self.active_overlay = DaveOverlay::None;
             self.show_session_list = false;
             self.focus_queue.dequeue(session_id);

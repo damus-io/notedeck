@@ -190,6 +190,44 @@ fn snapshot_agentium_reference_chip() {
     harness.snapshot("agentium_reference_chip");
 }
 
+/// A *tombstoned* session still resolves to a chip — drawn with the hollow
+/// "resumable" ring (vs a live session's filled dot) — so a soft-deleted
+/// `agentium:` ref reads as click-to-resume rather than vanishing. The chip folds
+/// its title from the note snapshot (the projection drops tombstones), proving the
+/// deleted ref resolved before the snapshot.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_agentium_deleted_chip() {
+    let mut harness = build_harness();
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let ctx = harness.ctx.clone();
+    let session_id = "claude-session-deleted-demo";
+    let title = "Resume the parser refactor";
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        seed_session(app_ctx.ndb, &secret, session_id, title, "deleted");
+    }
+    let session_ref = agentium_core::wordid::session_ref(session_id);
+    harness.state_mut().body = format!("Closed {session_ref} — click to resume.");
+
+    // Wait until the deleted session's chip renders its title in both surfaces.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness.query_all_by_label(title).count() >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the deleted session reference never resolved to its title chip"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_steps(3);
+    harness.snapshot("agentium_deleted_chip");
+}
+
 /// The word-id in a resolved `agentium:` ref round-trips through the parser's
 /// resolution the same way `session_ref` renders it — a fast, renderer-free guard
 /// that the seed + scheme wiring line up (the snapshot above needs lavapipe, so

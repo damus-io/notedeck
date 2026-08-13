@@ -25,7 +25,7 @@ use notedeck::{
 use crate::agent_status::AgentStatus;
 use crate::session_cache::AgentiumSessionCache;
 use agentium_core::session_events::AI_SESSION_STATE_KIND;
-use agentium_core::session_loader::SessionState;
+use agentium_core::session_loader::{SessionState, DELETED_STATUS};
 
 /// The kinds this renderer draws: the parameterized-replaceable session-state
 /// event. A `'static` slice so [`KindRenderer::kinds`] can hand it out by
@@ -168,10 +168,23 @@ fn status_color(theme: &ColorTheme, status: &str) -> egui::Color32 {
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
 fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
     let color = status_color(theme, &live.status);
-    notedeck_ui::inline_chip(ui, theme, session_title(live), move |ui, size| {
+    // A tombstoned session reads as resumable: a hollow ring instead of a filled
+    // dot, and a hover hint. Clicking it reopens (revives + resumes) the session
+    // via Dave's pending-open path — the inline resume affordance.
+    let deleted = live.status == DELETED_STATUS;
+    let response = notedeck_ui::inline_chip(ui, theme, session_title(live), move |ui, size| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-        status_dot(ui.painter(), rect.center(), size, color);
-    })
+        if deleted {
+            status_ring(ui.painter(), rect.center(), size, color);
+        } else {
+            status_dot(ui.painter(), rect.center(), size, color);
+        }
+    });
+    if deleted {
+        response.on_hover_text("Deleted — click to resume")
+    } else {
+        response
+    }
 }
 
 /// The block embed of a session ([`notedeck::RenderContext::Embed`]): its title, a
@@ -210,6 +223,12 @@ fn status_label(status: &str) -> &str {
 /// the agentium analog of headway's column [`StatusIcon`].
 fn status_dot(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
     painter.circle_filled(center, size * 0.32, color);
+}
+
+/// A hollow status ring — the tombstoned/resumable indicator, distinguishing a
+/// deleted session's chip from a live one's filled [`status_dot`].
+fn status_ring(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
+    painter.circle_stroke(center, size * 0.30, egui::Stroke::new(size * 0.12, color));
 }
 
 #[cfg(test)]
