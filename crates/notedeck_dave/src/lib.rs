@@ -190,6 +190,7 @@ struct PnsLocalRuntime {
     conversation_action_sub: Option<nostrdb::Subscription>,
     processed_commands: std::collections::HashSet<String>,
     pending_spawn_commands: Vec<PendingSpawnCommand>,
+    pending_resume_commands: Vec<PendingResumeCommand>,
     pending_perm_responses: Vec<PermissionPublish>,
     pending_mode_commands: Vec<update::ModeCommandPublish>,
     pending_deletions: Vec<DeletedSessionInfo>,
@@ -225,6 +226,7 @@ impl PnsLocalRuntime {
             conversation_action_sub: None,
             processed_commands: std::collections::HashSet::new(),
             pending_spawn_commands: Vec::new(),
+            pending_resume_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
             pending_deletions: Vec::new(),
@@ -294,6 +296,109 @@ struct PendingSpawnCommand {
     /// UUID that links this command to the placeholder session and the
     /// kind-31988 response from the remote host.
     spawn_id: String,
+}
+
+/// A pending kind-31989 resume command waiting to be built and published,
+/// mirroring [`PendingSpawnCommand`]. Queued when a deleted `agentium:` chip for
+/// a session on *another* host is clicked: we can't revive it locally (no
+/// backend here), so we ask its host to reopen + revive + resume it. The revived
+/// kind-31988 state streams back and re-renders the chip live.
+struct PendingResumeCommand {
+    target_host: String,
+    cwd: PathBuf,
+    backend: BackendType,
+    spawn_id: String,
+    /// kind-31988 d-tag of the session to revive (its stable `agentium:`
+    /// identity). The receiving host resolves and reopens *this* session.
+    target_session_id: String,
+    /// Real CLI session id for `claude --resume` (empty if the backend on the
+    /// remote host never started).
+    cli_session_id: String,
+}
+
+/// A kind-31989 session command addressed to this host, decoded from its note by
+/// [`decode_session_command`]. The caller ([`Dave::poll_session_command_events`])
+/// still owns author-match, dedup, and the side-effecting dispatch.
+enum SessionCommand {
+    /// Create a fresh session locally (`command = "spawn_session"`).
+    Spawn {
+        command_id: String,
+        cwd: String,
+        backend: BackendType,
+        /// UUID linking the session back to the sender's placeholder.
+        spawn_id: Option<String>,
+    },
+    /// Reopen + revive + resume an existing session (`command = "resume_session"`),
+    /// named by its kind-31988 d-tag.
+    Resume {
+        command_id: String,
+        session_id: String,
+    },
+}
+
+impl SessionCommand {
+    /// The command's stable id (its `d` tag), used for dedup at the call site.
+    fn command_id(&self) -> &str {
+        match self {
+            SessionCommand::Spawn { command_id, .. } => command_id,
+            SessionCommand::Resume { command_id, .. } => command_id,
+        }
+    }
+}
+
+/// Decode a kind-31989 command note addressed to `local_hostname`.
+///
+/// Returns `None` when the note is malformed (no `d` tag), targets a different
+/// host (`target_host != local_hostname`), is a resume command missing its
+/// `session_id`, or is an unknown command — mirroring the filtering
+/// [`Dave::poll_session_command_events`] applies inline. `default_backend` is
+/// used when a spawn command omits (or mis-spells) its `backend` tag.
+///
+/// Pure over the note's tags so the command-parse + target-gate branch is
+/// testable without an `AppContext`; the caller still owns author-match, dedup,
+/// and the side-effecting dispatch.
+fn decode_session_command(
+    note: &nostrdb::Note,
+    local_hostname: &str,
+    default_backend: BackendType,
+) -> Option<SessionCommand> {
+    let command_id = session_events::get_tag_value(note, "d")?.to_string();
+    let target = session_events::get_tag_value(note, "target_host").unwrap_or("");
+    if target != local_hostname {
+        return None;
+    }
+
+    match session_events::get_tag_value(note, "command").unwrap_or("") {
+        "spawn_session" => {
+            let cwd = session_events::get_tag_value(note, "cwd")
+                .unwrap_or("")
+                .to_string();
+            let backend = session_events::get_tag_value(note, "backend")
+                .and_then(BackendType::from_tag_str)
+                .unwrap_or(default_backend);
+            let spawn_id = session_events::get_tag_value(note, "spawn_id").map(|s| s.to_string());
+            Some(SessionCommand::Spawn {
+                command_id,
+                cwd,
+                backend,
+                spawn_id,
+            })
+        }
+        "resume_session" => {
+            let Some(session_id) = session_events::get_tag_value(note, "session_id") else {
+                tracing::warn!("resume command {} missing session_id", command_id);
+                return None;
+            };
+            Some(SessionCommand::Resume {
+                command_id,
+                session_id: session_id.to_string(),
+            })
+        }
+        other => {
+            tracing::debug!("ignoring unknown session command '{}'", other);
+            None
+        }
+    }
 }
 
 /// Represents which full-screen overlay (if any) is currently active.
@@ -413,6 +518,9 @@ pub struct Dave {
     processed_commands: std::collections::HashSet<String>,
     /// Spawn commands waiting to be built+published in update() where secret key is available.
     pending_spawn_commands: Vec<PendingSpawnCommand>,
+    /// Resume commands (deleted-chip resume for sessions on another host) waiting
+    /// to be built+published in update() where the secret key is available.
+    pending_resume_commands: Vec<PendingResumeCommand>,
     /// Permission responses queued for relay publishing (from remote sessions).
     /// Built and published in the update loop where AppContext is available.
     pending_perm_responses: Vec<PermissionPublish>,
@@ -951,6 +1059,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             conversation_action_sub: None,
             processed_commands: std::collections::HashSet::new(),
             pending_spawn_commands: Vec::new(),
+            pending_resume_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
             pending_deletions: Vec::new(),
@@ -1066,12 +1175,42 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         // Not materialized: a soft-deleted (or not-yet-restored) session. Reopen
-        // it — reviving + resuming a session we own, or surfacing history for a
-        // remote one — instead of dropping the click. This is the deleted-chip
-        // resume affordance.
+        // it instead of dropping the click — the deleted-chip resume affordance.
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return;
         };
+
+        // Resolve the target session's state (across live + tombstoned) so we can
+        // route by host: a session on THIS host is revived + resumed locally; one
+        // on ANOTHER host can't be (there's no local backend to `claude --resume`
+        // it), so we publish a resume command asking its own host to reopen it.
+        let state = {
+            let Ok(txn) = Transaction::new(ndb) else {
+                // Couldn't open a read txn this frame; retry next frame.
+                self.pending_open = Some(note_id);
+                return;
+            };
+            let live = session_loader::load_session_states_for_author(ndb, &txn, &account);
+            let deleted =
+                session_loader::load_deleted_session_states_for_author(ndb, &txn, &account);
+            session_loader::resolve_session_including_deleted(&live, &deleted, &event_id)
+                .ok()
+                .cloned()
+        };
+        let Some(state) = state else {
+            return;
+        };
+
+        if !state.hostname.is_empty() && state.hostname != self.hostname {
+            // Remote session: ask its host to reopen + revive + resume it. The
+            // revived kind-31988 state streams back over the shared subscription
+            // and re-renders the chip live — no local session is materialized.
+            self.queue_resume_command(&state);
+            self.show_session_list = false;
+            return;
+        }
+
+        // Local session: revive + resume it in place.
         if let Some(session_id) = self.reopen_session(ndb, account, &event_id) {
             self.active_overlay = DaveOverlay::None;
             self.show_session_list = false;
@@ -2844,31 +2983,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     continue;
                 }
 
-                let Some(command_id) = session_events::get_tag_value(&note, "d") else {
+                let Some(command) =
+                    decode_session_command(&note, &self.hostname, self.model_config.backend)
+                else {
                     continue;
                 };
 
-                // Dedup: skip already-processed commands
-                if self.processed_commands.contains(command_id) {
-                    continue;
-                }
-
-                let command = session_events::get_tag_value(&note, "command").unwrap_or("");
-                let target = session_events::get_tag_value(&note, "target_host").unwrap_or("");
-                if target != self.hostname {
+                // Dedup: skip already-processed commands.
+                if self.processed_commands.contains(command.command_id()) {
                     continue;
                 }
 
                 match command {
-                    "spawn_session" => {
-                        let cwd = session_events::get_tag_value(&note, "cwd").unwrap_or("");
-                        let backend_str =
-                            session_events::get_tag_value(&note, "backend").unwrap_or("");
-                        let backend = BackendType::from_tag_str(backend_str)
-                            .unwrap_or(self.model_config.backend);
-                        let spawn_id =
-                            session_events::get_tag_value(&note, "spawn_id").map(|s| s.to_string());
-
+                    SessionCommand::Spawn {
+                        command_id,
+                        cwd,
+                        backend,
+                        spawn_id,
+                    } => {
                         tracing::info!(
                             "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}",
                             command_id,
@@ -2877,7 +3009,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             spawn_id,
                         );
 
-                        self.processed_commands.insert(command_id.to_string());
+                        self.processed_commands.insert(command_id);
                         let sid = update::create_session_with_cwd(
                             &mut self.session_manager,
                             &mut self.directory_picker,
@@ -2898,22 +3030,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                         }
                     }
-                    "resume_session" => {
-                        let Some(session_id) = session_events::get_tag_value(&note, "session_id")
-                        else {
-                            tracing::warn!("resume command {} missing session_id", command_id);
-                            continue;
-                        };
+                    SessionCommand::Resume {
+                        command_id,
+                        session_id,
+                    } => {
                         tracing::info!(
                             "received resume command {}: session_id={}",
                             command_id,
                             session_id,
                         );
-                        self.processed_commands.insert(command_id.to_string());
-                        to_reopen.push(session_id.to_string());
-                    }
-                    other => {
-                        tracing::debug!("ignoring unknown session command '{}'", other);
+                        self.processed_commands.insert(command_id);
+                        to_reopen.push(session_id);
                     }
                 }
             }
@@ -3323,6 +3450,37 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             backend,
             spawn_id,
         );
+        self.active_overlay = DaveOverlay::None;
+    }
+
+    /// Queue a kind-31989 resume command for a soft-deleted session that lives on
+    /// another host. Mirrors [`queue_spawn_command`](Self::queue_spawn_command)
+    /// but carries the target session's identity (`claude_session_id`, its
+    /// `agentium:` d-tag) and CLI session id, so the remote host reopens, revives,
+    /// and resumes *that* session rather than spawning a fresh one. The revived
+    /// kind-31988 state streams back over the shared subscription and re-renders
+    /// the chip live, so no local placeholder is created here.
+    fn queue_resume_command(&mut self, state: &session_loader::SessionState) {
+        let spawn_id = uuid::Uuid::new_v4().to_string();
+        let backend = state
+            .backend
+            .as_deref()
+            .and_then(BackendType::from_tag_str)
+            .unwrap_or(BackendType::Claude);
+        tracing::info!(
+            "queuing resume command {} for session {} on host {}",
+            spawn_id,
+            state.claude_session_id,
+            state.hostname,
+        );
+        self.pending_resume_commands.push(PendingResumeCommand {
+            target_host: state.hostname.clone(),
+            cwd: PathBuf::from(&state.cwd),
+            backend,
+            spawn_id,
+            target_session_id: state.claude_session_id.clone(),
+            cli_session_id: state.cli_session_id.clone().unwrap_or_default(),
+        });
         self.active_overlay = DaveOverlay::None;
     }
 
@@ -4210,6 +4368,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             conversation_action_sub: self.conversation_action_sub.take(),
             processed_commands: std::mem::take(&mut self.processed_commands),
             pending_spawn_commands: std::mem::take(&mut self.pending_spawn_commands),
+            pending_resume_commands: std::mem::take(&mut self.pending_resume_commands),
             pending_perm_responses: std::mem::take(&mut self.pending_perm_responses),
             pending_mode_commands: std::mem::take(&mut self.pending_mode_commands),
             pending_deletions: std::mem::take(&mut self.pending_deletions),
@@ -4254,6 +4413,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.conversation_action_sub = runtime.conversation_action_sub;
         self.processed_commands = runtime.processed_commands;
         self.pending_spawn_commands = runtime.pending_spawn_commands;
+        self.pending_resume_commands = runtime.pending_resume_commands;
         self.pending_perm_responses = runtime.pending_perm_responses;
         self.pending_mode_commands = runtime.pending_mode_commands;
         self.pending_deletions = runtime.pending_deletions;
@@ -4449,6 +4609,28 @@ impl notedeck::App for Dave {
                     ) {
                         Ok(evt) => self.pending_relay_events.push(evt),
                         Err(e) => tracing::warn!("failed to build spawn command: {:?}", e),
+                    }
+                }
+            }
+        }
+
+        // Build resume command events (deleted-chip resume of a session on
+        // another host) the same way; publish them from our own queue.
+        if !self.pending_resume_commands.is_empty() {
+            if let Some(engine) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
+                .and_then(|sk| embedded_engine(ctx.ndb, &sk))
+            {
+                for cmd in std::mem::take(&mut self.pending_resume_commands) {
+                    match engine.prepare_resume_command(
+                        &cmd.target_host,
+                        &cmd.cwd.to_string_lossy(),
+                        cmd.backend.as_str(),
+                        &cmd.spawn_id,
+                        &cmd.target_session_id,
+                        &cmd.cli_session_id,
+                    ) {
+                        Ok(evt) => self.pending_relay_events.push(evt),
+                        Err(e) => tracing::warn!("failed to build resume command: {:?}", e),
                     }
                 }
             }
@@ -6418,6 +6600,181 @@ mod tests {
             Some("spawn-1"),
             "the spawn linkage must survive the tombstone"
         );
+    }
+
+    /// The kind-31989 command-parse branch on the receiving host: a
+    /// `resume_session` command addressed to us decodes to
+    /// [`SessionCommand::Resume`] carrying the target session's id (from the
+    /// `session_id` tag), a plain `spawn_session` decodes to
+    /// [`SessionCommand::Spawn`], and a command for a *different* host is dropped
+    /// by the target gate. This is the host dispatch the deleted-chip remote
+    /// resume (and `agentium resume`) drive end-to-end — parsed here from a real
+    /// ingested event rather than a hand-built note.
+    #[tokio::test]
+    async fn session_command_parse_respects_target_and_reads_session_id() {
+        let sk = test_secret_key();
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+
+        // A resume command targeting "host-a" naming session "sess-42", and a
+        // plain spawn command for the same host.
+        let resume = session_events::ResumeSpawn {
+            target_session_id: "sess-42",
+            cli_session_id: "cli-xyz",
+        };
+        let resume_cmd = session_events::build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            "spawn-1",
+            Some(&resume),
+            &sk,
+        )
+        .unwrap();
+        let spawn_cmd = session_events::build_spawn_command_event(
+            "host-a",
+            "/work/dir",
+            "claude",
+            "spawn-2",
+            None,
+            &sk,
+        )
+        .unwrap();
+
+        let filter = nostrdb::Filter::new().build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        for ev in [&resume_cmd, &spawn_cmd] {
+            ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+        }
+        let _ = ndb.wait_for_notes(sub, 2).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let resume_note = ndb.get_note_by_id(&txn, &resume_cmd.note_id).unwrap();
+        let spawn_note = ndb.get_note_by_id(&txn, &spawn_cmd.note_id).unwrap();
+
+        // Resume command addressed to us decodes with the target session id.
+        let Some(SessionCommand::Resume { session_id, .. }) =
+            decode_session_command(&resume_note, "host-a", BackendType::Claude)
+        else {
+            panic!("expected a Resume command for this host");
+        };
+        assert_eq!(session_id, "sess-42", "reads the session_id tag");
+
+        // Spawn command decodes with its cwd / backend / spawn_id.
+        let Some(SessionCommand::Spawn {
+            cwd,
+            backend,
+            spawn_id,
+            ..
+        }) = decode_session_command(&spawn_note, "host-a", BackendType::Claude)
+        else {
+            panic!("expected a Spawn command for this host");
+        };
+        assert_eq!(cwd, "/work/dir");
+        assert_eq!(backend, BackendType::Claude);
+        assert_eq!(spawn_id.as_deref(), Some("spawn-2"));
+
+        // The target-host gate drops commands meant for another host.
+        assert!(
+            decode_session_command(&resume_note, "other-host", BackendType::Claude).is_none(),
+            "a command for another host must not be processed here",
+        );
+    }
+
+    /// Clicking a deleted `agentium:` chip routes by the session's host: a
+    /// tombstone owned by *another* host queues a kind-31989 resume command
+    /// (asking that host to reopen it) and materializes nothing locally, while one
+    /// owned by *this* host is revived + resumed in place with no command emitted.
+    /// The end-to-end guard for "resume a chip from any remote on the correct
+    /// host".
+    #[tokio::test]
+    async fn deleted_chip_routes_remote_resume_but_revives_local() {
+        let sk = test_secret_key();
+        let account = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let mut dave = test_dave(&data_path);
+        dave.pns_local_state = Some(PnsLocalState {
+            account,
+            has_secret_key: true,
+        });
+        let local_host = dave.hostname.clone();
+
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+
+        // Build a tombstone (status=deleted) for a session on `host`, carrying the
+        // CLI session id for `claude --resume`.
+        let tombstone = |sid: &str, host: &str| {
+            session_events::build_session_state_event(
+                sid,
+                "Dead Session",
+                None,
+                "/tmp/proj",
+                "deleted",
+                None,
+                host,
+                "/home/dev",
+                "claude",
+                "default",
+                Some("cli-abc"),
+                None,
+                1_000,
+                &sk,
+            )
+            .unwrap()
+        };
+        let remote_tomb = tombstone("remote-sess", "other-host");
+        let local_tomb = tombstone("local-sess", &local_host);
+
+        let filter = nostrdb::Filter::new().build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        for ev in [&remote_tomb, &local_tomb] {
+            ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+        }
+        let _ = ndb.wait_for_notes(sub, 2).await.unwrap();
+
+        // Click the remote chip: a resume command is queued for its host and no
+        // session is materialized here.
+        dave.pending_open = Some(enostr::NoteId::new(remote_tomb.note_id));
+        dave.process_pending_open(&ndb);
+        assert_eq!(
+            dave.pending_resume_commands.len(),
+            1,
+            "remote chip queues exactly one resume command",
+        );
+        let cmd = &dave.pending_resume_commands[0];
+        assert_eq!(cmd.target_host, "other-host", "targets the session's host");
+        assert_eq!(cmd.target_session_id, "remote-sess", "names the session");
+        assert_eq!(cmd.cli_session_id, "cli-abc", "carries the CLI resume id");
+        assert_eq!(
+            dave.session_manager.iter().count(),
+            0,
+            "no local session is materialized for a remote resume",
+        );
+
+        // Click the local chip: it is revived in place (materialized, dirty) with
+        // no additional resume command emitted.
+        dave.pending_open = Some(enostr::NoteId::new(local_tomb.note_id));
+        dave.process_pending_open(&ndb);
+        assert_eq!(
+            dave.pending_resume_commands.len(),
+            1,
+            "a local resume revives in place, emitting no command",
+        );
+        let revived = dave
+            .session_manager
+            .iter()
+            .find(|s| {
+                s.agentic
+                    .as_ref()
+                    .is_some_and(|a| a.event_session_id() == "local-sess")
+            })
+            .expect("local session materialized in place");
+        assert!(revived.state_dirty, "dirty so the tombstone is overwritten");
     }
 
     /// A denied permission_response event must set PermissionResponseType::Denied
