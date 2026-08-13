@@ -3694,6 +3694,57 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// When resuming a session, the JSONL archive needs to be converted to
     /// nostr events. If events already exist in ndb, load them directly.
+    /// Restore a resumed session's history + identity once its kind-1988 events
+    /// are in ndb (the session-picker resume path).
+    ///
+    /// Prefers the full [`hydrate_session_from_state`] when a kind-31988 state
+    /// event exists for the session; otherwise (a fresh JSONL import that never
+    /// had a dave state) it pins the Nostr identity to the d-tag the messages are
+    /// keyed by and loads history + dedup directly. Either way it restores the
+    /// three things the old picker path dropped: `event_id`, the `seen_note_ids`
+    /// dedup set, and the `responded` permission map — so a resumed session keeps
+    /// its `agentium:` identity and doesn't double-append its own history.
+    fn load_resumed_session_history(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        account: enostr::Pubkey,
+        dave_sid: SessionId,
+        claude_sid: &str,
+    ) {
+        let txn = Transaction::new(ndb).expect("txn");
+        let loaded =
+            session_loader::load_session_messages_for_author(ndb, &txn, &account, claude_sid);
+        tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
+
+        if let Some(state) =
+            session_loader::latest_valid_session_for_author(ndb, &txn, &account, claude_sid)
+        {
+            if let Some(session) = self.session_manager.get_mut(dave_sid) {
+                hydrate_session_from_state(session, &state, loaded, &self.hostname);
+            }
+            return;
+        }
+
+        // No kind-31988 state yet: pin identity to the d-tag and load the
+        // history/dedup subset the full hydrator does (the picker already set
+        // title/cwd/hostname/resume id at session creation).
+        let Some(session) = self.session_manager.get_mut(dave_sid) else {
+            return;
+        };
+        session.chat = loaded.messages;
+        if let Some(agentic) = &mut session.agentic {
+            agentic.event_id = claude_sid.to_string();
+            if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
+                agentic.live_threading.seed(root, last);
+            }
+            agentic.permissions.merge_loaded(
+                loaded.permissions.responded,
+                loaded.permissions.request_note_ids,
+            );
+            agentic.seen_note_ids = loaded.note_ids;
+        }
+    }
+
     fn process_archive_conversion(&mut self, ctx: &mut AppContext<'_>) {
         let Some((file_path, dave_sid, claude_sid)) = self.pending_archive_convert.take() else {
             return;
@@ -3719,27 +3770,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 "session {} already has events in ndb, skipping archive conversion",
                 claude_sid
             );
-            let loaded_txn = Transaction::new(ctx.ndb).expect("txn");
-            let loaded = session_loader::load_session_messages_for_author(
-                ctx.ndb,
-                &loaded_txn,
-                &account,
-                &claude_sid,
-            );
-            if let Some(session) = self.session_manager.get_mut(dave_sid) {
-                tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
-                session.chat = loaded.messages;
-
-                if let Some(agentic) = &mut session.agentic {
-                    if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                        agentic.live_threading.seed(root, last);
-                    }
-                    agentic
-                        .permissions
-                        .request_note_ids
-                        .extend(loaded.permissions.request_note_ids);
-                }
-            }
+            self.load_resumed_session_history(ctx.ndb, account, dave_sid, &claude_sid);
         } else if let Some(secret_bytes) =
             secret_key_bytes(ctx.accounts.get_selected_account().keypair())
         {
@@ -3797,28 +3828,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        let txn = Transaction::new(ndb).expect("txn");
-        let loaded = session_loader::load_session_messages_for_author(
-            ndb,
-            &txn,
-            &pending.account,
-            &pending.claude_session_id,
-        );
-        if let Some(session) = self.session_manager.get_mut(pending.dave_session_id) {
-            tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
-            session.chat = loaded.messages;
-
-            if let Some(agentic) = &mut session.agentic {
-                if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
-                    agentic.live_threading.seed(root, last);
-                }
-                agentic
-                    .permissions
-                    .request_note_ids
-                    .extend(loaded.permissions.request_note_ids);
-            }
-        }
+        // Copy out what we need, then drop the borrow so the shared hydrator can
+        // take &mut self.
+        let account = pending.account;
+        let dave_sid = pending.dave_session_id;
+        let claude_sid = pending.claude_session_id.clone();
         self.pending_message_load = None;
+
+        self.load_resumed_session_history(ndb, account, dave_sid, &claude_sid);
     }
 
     /// Point the PNS sync relay at the selected account's first "private"
