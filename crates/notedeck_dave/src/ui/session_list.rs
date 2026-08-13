@@ -10,6 +10,7 @@ use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{now_unix, SessionId, SessionManager};
 use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint, KeybindHint};
+use crate::ui::SquareLoadingSpinner;
 
 /// Actions that can be triggered from the session list UI
 #[derive(Debug, Clone)]
@@ -428,6 +429,30 @@ impl<'a> SessionListUi<'a> {
             let icon = crate::ui::backend_icon(backend_type);
             icon.paint_at(ui, icon_rect);
             text_start_x += icon_size + 4.0;
+        }
+
+        // A pending placeholder (a remote spawn/resume in flight) shows a small
+        // loading spinner before its "Connecting…" title so the row reads as
+        // in-progress. Reuses SquareLoadingSpinner (interval-based repaint) over
+        // egui::Spinner (which repaints every frame). Drawn in a detached child ui
+        // so it paints at an absolute rect without advancing the row's layout.
+        if status == AgentStatus::Pending {
+            let spin_size = 12.0;
+            let slot_w = 22.0;
+            let spin_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    rect.left() + text_start_x,
+                    rect.center().y - spin_size / 2.0,
+                ),
+                egui::vec2(slot_w, spin_size),
+            );
+            let mut spinner_ui = ui.new_child(egui::UiBuilder::new().max_rect(spin_rect));
+            spinner_ui.add(
+                SquareLoadingSpinner::new()
+                    .size(spin_size)
+                    .color(status_color),
+            );
+            text_start_x += slot_w + 2.0;
         }
 
         let hints: &[(&str, &str)] = &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")];
@@ -1349,5 +1374,58 @@ mod tests {
         let mut harness = agent_row_harness(None, None);
         harness.run();
         harness.snapshot("agent_row_clean");
+    }
+
+    /// Render a grouped agentic row with a given status/title in isolation, so the
+    /// remote-resume "Connecting…" placeholder (spinner + muted title) can be
+    /// compared against the live row it upgrades into via snapshot.
+    fn status_row_harness(status: AgentStatus, title: &'static str) -> Harness<'static> {
+        Harness::builder()
+            .with_size(egui::Vec2::new(260.0, 40.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut session_manager = SessionManager::new();
+                let id = session_manager.new_session(
+                    PathBuf::from("/tmp/project"),
+                    AiMode::Agentic,
+                    BackendType::Claude,
+                );
+                let focus_queue = FocusQueue::new();
+                let collapse_state = CollapseState::new();
+                let list =
+                    SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
+                list.agent_row_ui(
+                    ui,
+                    id,
+                    title,
+                    None,
+                    false,
+                    None,
+                    None,
+                    status,
+                    None,
+                    None,
+                    BackendType::Claude,
+                    None,
+                );
+            })
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_connecting_placeholder_row() {
+        // A single step (not run()) since the spinner self-schedules a repaint
+        // every interval and run() would loop to its step cap.
+        let mut harness = status_row_harness(AgentStatus::Pending, "Connecting...");
+        harness.step();
+        harness.snapshot("session_row_connecting");
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_revived_session_row() {
+        let mut harness = status_row_harness(AgentStatus::Idle, "Dead Session");
+        harness.run();
+        harness.snapshot("session_row_revived");
     }
 }

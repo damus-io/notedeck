@@ -42,6 +42,9 @@ bitflags! {
         const AutoStealFocus   = 1 << 6;
         const IsRemote         = 1 << 7;
         const AutoAcceptAll    = 1 << 8;
+        /// A not-yet-materialized placeholder session (a remote spawn or resume in
+        /// flight) — drives the "connecting…" status line + spinner.
+        const IsConnecting     = 1 << 9;
     }
 }
 
@@ -340,6 +343,13 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    /// Mark this as a pending placeholder (a remote spawn/resume in flight), which
+    /// renders the "connecting…" status line + spinner instead of a bare chat.
+    pub fn is_connecting(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::IsConnecting, val);
+        self
+    }
+
     pub fn status_dot_color(mut self, color: Option<egui::Color32>) -> Self {
         self.status_dot_color = color;
         self
@@ -623,6 +633,10 @@ impl<'a> DaveUi<'a> {
             Some("compacting...")
         } else if self.flags.contains(DaveUiFlags::IsWorking) {
             Some("computing...")
+        } else if self.flags.contains(DaveUiFlags::IsConnecting) {
+            // A pending placeholder (remote spawn/resume in flight): show progress
+            // until the real kind-31988 state arrives and upgrades it.
+            Some("connecting...")
         } else {
             None
         };

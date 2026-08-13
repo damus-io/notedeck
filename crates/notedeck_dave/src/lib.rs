@@ -333,6 +333,13 @@ enum SessionCommand {
     Resume {
         command_id: String,
         session_id: String,
+        /// UUID linking the reopened session back to the sender's "Connecting…"
+        /// placeholder. The host echoes it into the revived kind-31988 state (via
+        /// [`ChatSession::spawn_id`](crate::session::ChatSession)) so the sender's
+        /// discovery fold upgrades that placeholder in place — the same
+        /// correlation a [`Spawn`](SessionCommand::Spawn) uses — rather than
+        /// rendering a second "Connecting…" chip beside the revived one.
+        spawn_id: Option<String>,
     },
 }
 
@@ -344,6 +351,19 @@ impl SessionCommand {
             SessionCommand::Resume { command_id, .. } => command_id,
         }
     }
+}
+
+/// A decoded [`Resume`](SessionCommand::Resume) command's reopen work, deferred
+/// until the read txn closes (`reopen_session` needs its own ndb access). Carries
+/// the session to revive plus the sender's `spawn_id` to echo back so their
+/// "Connecting…" placeholder upgrades in place.
+struct ReopenRequest {
+    /// The session to reopen — its kind-31988 d-tag (`agentium:` identity).
+    selector: String,
+    /// The requesting host's placeholder id, stamped onto the reopened session so
+    /// its next kind-31988 state carries it back. `None` for a resume command
+    /// that predates placeholder correlation.
+    spawn_id: Option<String>,
 }
 
 /// Decode a kind-31989 command note addressed to `local_hostname`.
@@ -389,9 +409,11 @@ fn decode_session_command(
                 tracing::warn!("resume command {} missing session_id", command_id);
                 return None;
             };
+            let spawn_id = session_events::get_tag_value(note, "spawn_id").map(|s| s.to_string());
             Some(SessionCommand::Resume {
                 command_id,
                 session_id: session_id.to_string(),
+                spawn_id,
             })
         }
         other => {
@@ -1222,9 +1244,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         if !state.hostname.is_empty() && state.hostname != self.hostname {
-            // Remote session: ask its host to reopen + revive + resume it. The
-            // revived kind-31988 state streams back over the shared subscription
-            // and re-renders the chip live — no local session is materialized.
+            // Remote session: ask its host to reopen + revive + resume it, and
+            // stand up a "Connecting…" placeholder for immediate feedback (see
+            // queue_resume_command). The revived kind-31988 state streams back
+            // over the shared subscription and upgrades the placeholder in place.
             self.queue_resume_command(&state);
             self.show_session_list = false;
             return;
@@ -2962,7 +2985,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Sessions to reopen after the read txn closes — reopen_session needs its
         // own ndb access, so it can't run while `txn` borrows ctx.ndb.
-        let mut to_reopen: Vec<String> = Vec::new();
+        let mut to_reopen: Vec<ReopenRequest> = Vec::new();
 
         {
             let txn = match Transaction::new(ctx.ndb) {
@@ -3028,21 +3051,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     SessionCommand::Resume {
                         command_id,
                         session_id,
+                        spawn_id,
                     } => {
                         tracing::info!(
-                            "received resume command {}: session_id={}",
+                            "received resume command {}: session_id={}, spawn_id={:?}",
                             command_id,
                             session_id,
+                            spawn_id,
                         );
                         self.processed_commands.insert(command_id);
-                        to_reopen.push(session_id);
+                        to_reopen.push(ReopenRequest {
+                            selector: session_id,
+                            spawn_id,
+                        });
                     }
                 }
             }
         }
 
-        for selector in to_reopen {
-            self.reopen_session(ctx.ndb, account, &selector);
+        for req in to_reopen {
+            let Some(sid) = self.reopen_session(ctx.ndb, account, &req.selector) else {
+                continue;
+            };
+            // Echo the requesting host's placeholder id onto the reopened session
+            // so its next kind-31988 state (published because reopen_session marks
+            // it dirty) carries the spawn_id. That lets the requester's discovery
+            // fold upgrade its "Connecting…" placeholder in place — the same
+            // correlation the spawn path uses — instead of adding a duplicate chip.
+            if let Some(spawn_id) = req.spawn_id {
+                if let Some(session) = self.session_manager.get_mut(sid) {
+                    session.spawn_id = Some(spawn_id);
+                }
+            }
         }
     }
 
@@ -3455,9 +3495,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// another host. Mirrors [`queue_spawn_command`](Self::queue_spawn_command)
     /// but carries the target session's identity (`claude_session_id`, its
     /// `agentium:` d-tag) and CLI session id, so the remote host reopens, revives,
-    /// and resumes *that* session rather than spawning a fresh one. The revived
-    /// kind-31988 state streams back over the shared subscription and re-renders
-    /// the chip live, so no local placeholder is created here.
+    /// and resumes *that* session rather than spawning a fresh one.
+    ///
+    /// Reuses the spawn path's [`new_pending_placeholder`](SessionManager::new_pending_placeholder)
+    /// machinery keyed by this resume's `spawn_id`: the deleted chip gets an
+    /// immediate "Connecting…" affordance instead of sitting unresponsive until
+    /// the owning host answers. The owning host echoes the same `spawn_id` into
+    /// the revived kind-31988 state (see [`poll_session_command_events`](Self::poll_session_command_events)),
+    /// so when it streams back over the shared subscription the discovery fold
+    /// upgrades this placeholder in place — one pending-chip path, not two.
     fn queue_resume_command(&mut self, state: &session_loader::SessionState) {
         let spawn_id = uuid::Uuid::new_v4().to_string();
         let backend = state
@@ -3475,10 +3521,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             target_host: state.hostname.clone(),
             cwd: PathBuf::from(&state.cwd),
             backend,
-            spawn_id,
+            spawn_id: spawn_id.clone(),
             target_session_id: state.claude_session_id.clone(),
             cli_session_id: state.cli_session_id.clone().unwrap_or_default(),
         });
+
+        // Immediate feedback via the same placeholder the spawn path uses. Keyed
+        // by this resume's spawn_id so the revived kind-31988 upgrades it in place.
+        self.session_manager.new_pending_placeholder(
+            PathBuf::from(&state.cwd),
+            state.hostname.clone(),
+            backend,
+            spawn_id,
+        );
         self.active_overlay = DaveOverlay::None;
     }
 
@@ -6671,13 +6726,22 @@ mod tests {
         let resume_note = ndb.get_note_by_id(&txn, &resume_cmd.note_id).unwrap();
         let spawn_note = ndb.get_note_by_id(&txn, &spawn_cmd.note_id).unwrap();
 
-        // Resume command addressed to us decodes with the target session id.
-        let Some(SessionCommand::Resume { session_id, .. }) =
-            decode_session_command(&resume_note, "host-a", BackendType::Claude)
+        // Resume command addressed to us decodes with the target session id and
+        // the sender's spawn_id (echoed back to correlate its placeholder).
+        let Some(SessionCommand::Resume {
+            session_id,
+            spawn_id,
+            ..
+        }) = decode_session_command(&resume_note, "host-a", BackendType::Claude)
         else {
             panic!("expected a Resume command for this host");
         };
         assert_eq!(session_id, "sess-42", "reads the session_id tag");
+        assert_eq!(
+            spawn_id.as_deref(),
+            Some("spawn-1"),
+            "reads the spawn_id tag for placeholder correlation",
+        );
 
         // Spawn command decodes with its cwd / backend / spawn_id.
         let Some(SessionCommand::Spawn {
@@ -6702,10 +6766,10 @@ mod tests {
 
     /// Clicking a deleted `agentium:` chip routes by the session's host: a
     /// tombstone owned by *another* host queues a kind-31989 resume command
-    /// (asking that host to reopen it) and materializes nothing locally, while one
-    /// owned by *this* host is revived + resumed in place with no command emitted.
-    /// The end-to-end guard for "resume a chip from any remote on the correct
-    /// host".
+    /// (asking that host to reopen it) plus a "Connecting…" placeholder keyed by
+    /// that command's spawn_id, while one owned by *this* host is revived +
+    /// resumed in place with no command emitted. The end-to-end guard for "resume
+    /// a chip from any remote on the correct host".
     #[tokio::test]
     async fn deleted_chip_routes_remote_resume_but_revives_local() {
         let sk = test_secret_key();
@@ -6755,8 +6819,8 @@ mod tests {
         }
         let _ = ndb.wait_for_notes(sub, 2).await.unwrap();
 
-        // Click the remote chip: a resume command is queued for its host and no
-        // session is materialized here.
+        // Click the remote chip: a resume command is queued for its host, and a
+        // "Connecting…" placeholder stands in until the owning host revives it.
         dave.pending_open = Some(enostr::NoteId::new(remote_tomb.note_id));
         dave.process_pending_open(&ndb);
         assert_eq!(
@@ -6768,10 +6832,30 @@ mod tests {
         assert_eq!(cmd.target_host, "other-host", "targets the session's host");
         assert_eq!(cmd.target_session_id, "remote-sess", "names the session");
         assert_eq!(cmd.cli_session_id, "cli-abc", "carries the CLI resume id");
+        let resume_spawn_id = cmd.spawn_id.clone();
+
+        // The only materialized session is a pending placeholder keyed by the
+        // resume's spawn_id — no session identity yet (agentic is None), so the
+        // revived kind-31988 (which echoes the spawn_id) upgrades it in place
+        // rather than adding a duplicate chip.
         assert_eq!(
             dave.session_manager.iter().count(),
-            0,
-            "no local session is materialized for a remote resume",
+            1,
+            "a remote resume materializes only the Connecting… placeholder",
+        );
+        let placeholder = dave
+            .session_manager
+            .iter()
+            .find(|s| s.pending_created_at.is_some())
+            .expect("a pending placeholder for the remote resume");
+        assert_eq!(
+            placeholder.spawn_id.as_deref(),
+            Some(resume_spawn_id.as_str()),
+            "placeholder is keyed by the resume command's spawn_id",
+        );
+        assert!(
+            placeholder.agentic.is_none(),
+            "placeholder carries no session identity until the host revives it",
         );
 
         // Click the local chip: it is revived in place (materialized, dirty) with

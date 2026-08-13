@@ -62,6 +62,9 @@ fn build_dave_ui<'a>(
     running_sessions: &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
 ) -> DaveUi<'a> {
     let is_working = session.status() == AgentStatus::Working;
+    // A placeholder (remote spawn/resume in flight) reports Pending — render it as
+    // "connecting…" rather than an empty chat.
+    let is_connecting = session.status() == AgentStatus::Pending;
     let has_pending_permission = session.has_pending_permissions();
     let permission_mode = session.permission_mode();
     let auto_accept_all = session.auto_accept_all();
@@ -84,6 +87,7 @@ fn build_dave_ui<'a>(
         session.ai_mode,
     )
     .is_working(is_working)
+    .is_connecting(is_connecting)
     .interrupt_pending(is_interrupt_pending)
     .has_pending_permission(has_pending_permission)
     .permission_mode(permission_mode)
