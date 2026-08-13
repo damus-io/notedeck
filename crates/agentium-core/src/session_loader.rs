@@ -7,7 +7,8 @@
 use crate::messages::{AssistantMessage, ExecutedTool, Message, PermissionRequest};
 use crate::session::PermissionTracker;
 use crate::session_events::{
-    decode_permission_response, get_tag_value, is_conversation_role, AI_CONVERSATION_KIND,
+    build_session_state_event, decode_permission_response, get_tag_value, is_conversation_role,
+    AI_CONVERSATION_KIND,
 };
 use crate::tools::ToolResponse;
 use nostrdb::{Filter, Ndb, Transaction};
@@ -309,6 +310,37 @@ impl SessionState {
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
             spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
         })
+    }
+
+    /// Serialize this state back into a signed kind-31988 event — the exact
+    /// inverse of [`from_note`](Self::from_note).
+    ///
+    /// Every builder argument reads from a `self` field, so a state round-trips
+    /// through the note without losing any tag. Callers that need to publish a
+    /// *derived* state (e.g. a deletion tombstone) mutate the relevant fields
+    /// (`status`, `created_at`) and call this, rather than re-listing the whole
+    /// field set at each site — the pattern that repeatedly stranded fields when
+    /// each publish path hand-built its own event.
+    pub fn build_event(
+        &self,
+        secret_key: &[u8; 32],
+    ) -> Result<crate::session_events::BuiltEvent, crate::session_events::EventBuildError> {
+        build_session_state_event(
+            &self.claude_session_id,
+            &self.title,
+            self.custom_title.as_deref(),
+            &self.cwd,
+            &self.status,
+            self.indicator.as_deref(),
+            &self.hostname,
+            &self.home_dir,
+            self.backend.as_deref().unwrap_or_default(),
+            self.permission_mode.as_deref().unwrap_or("default"),
+            self.cli_session_id.as_deref(),
+            self.spawn_id.as_deref(),
+            self.created_at,
+            secret_key,
+        )
     }
 
     /// The title to show: the user's custom title when set and non-empty, else

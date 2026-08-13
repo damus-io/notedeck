@@ -193,7 +193,7 @@ struct PnsLocalRuntime {
     pending_resume_commands: Vec<PendingResumeCommand>,
     pending_perm_responses: Vec<PermissionPublish>,
     pending_mode_commands: Vec<update::ModeCommandPublish>,
-    pending_deletions: Vec<DeletedSessionInfo>,
+    pending_deletions: Vec<session_loader::SessionState>,
     pending_worktree_removals: Vec<PendingWorktreeRemoval>,
     pending_summaries: Vec<enostr::NoteId>,
     run_processes: HashMap<SessionId, HashMap<String, std::process::Child>>,
@@ -528,7 +528,7 @@ pub struct Dave {
     pending_mode_commands: Vec<update::ModeCommandPublish>,
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
-    pending_deletions: Vec<DeletedSessionInfo>,
+    pending_deletions: Vec<session_loader::SessionState>,
     pending_worktree_removals: Vec<PendingWorktreeRemoval>,
     /// Thread summaries pending processing. Queued by summarize_thread(),
     /// resolved in update() where AppContext (ndb) is available.
@@ -621,24 +621,6 @@ struct ProcessEventsResult {
     events_to_publish: Vec<session_events::BuiltEvent>,
     /// Sessions that need a compact query dispatched (compact-and-proceed).
     needs_compact: HashSet<SessionId>,
-}
-
-/// Info captured from a session before deletion, for publishing a "deleted" state event.
-struct DeletedSessionInfo {
-    claude_session_id: String,
-    title: String,
-    /// User-renamed title. Carried through the tombstone so a delete doesn't
-    /// silently drop a rename the user owns.
-    custom_title: Option<String>,
-    cwd: String,
-    home_dir: String,
-    backend: BackendType,
-    /// Real backend (CLI) session id, needed to `--resume` a revived session.
-    /// Carried through the tombstone so soft-deleting doesn't strand the
-    /// underlying CLI conversation.
-    cli_session_id: Option<String>,
-    /// Spawn-command UUID linking this session to the request that created it.
-    spawn_id: Option<String>,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -764,6 +746,44 @@ fn session_state_publish_params(
             now,
             persisted.as_ref().map(|s| s.created_at).unwrap_or(0),
         ),
+    })
+}
+
+/// Snapshot a live [`ChatSession`] into the persistable [`SessionState`] — the
+/// single, total mapping from an in-memory session to its kind-31988 tag set.
+///
+/// The publish-decision fields (`status`, `hostname`, `created_at`) are supplied
+/// by the caller ([`session_state_publish_params`] for a live status publish, or
+/// the delete path for a tombstone); every other field is read straight off the
+/// session. Both publish paths funnel through here and [`SessionState::build_event`]
+/// so no tag can be silently dropped by one site — the hazard that repeatedly
+/// stranded fields (hostname, cli_session_id, custom_title, spawn_id) back when
+/// each site hand-built its own event from a bespoke snapshot.
+///
+/// Returns `None` for a non-agentic session (nothing to persist).
+fn session_state_snapshot(
+    session: &session::ChatSession,
+    status: String,
+    hostname: String,
+    created_at: u64,
+) -> Option<session_loader::SessionState> {
+    let agentic = session.agentic.as_ref()?;
+    Some(session_loader::SessionState {
+        claude_session_id: agentic.event_session_id().to_string(),
+        title: session.details.title.clone(),
+        custom_title: session.details.custom_title.clone(),
+        cwd: agentic.cwd.to_string_lossy().to_string(),
+        status,
+        indicator: session.indicator.as_ref().map(|i| i.as_str().to_string()),
+        hostname,
+        home_dir: session.details.home_dir.clone(),
+        backend: Some(session.backend_type.as_str().to_string()),
+        permission_mode: Some(
+            crate::session::permission_mode_to_str(agentic.permission_mode).to_string(),
+        ),
+        created_at,
+        cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
+        spawn_id: session.spawn_id.clone(),
     })
 }
 
@@ -2270,28 +2290,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             };
 
-            let cwd = agentic.cwd.to_string_lossy().to_string();
-            let indicator = session.indicator.as_ref().map(|i| i.as_str());
-            let perm_mode = crate::session::permission_mode_to_str(agentic.permission_mode);
-            let cli_sid = agentic.cli_resume_id().map(|s| s.to_string());
+            let Some(state) = session_state_snapshot(
+                session,
+                publish.status.clone(),
+                publish.hostname,
+                publish.created_at,
+            ) else {
+                session.state_dirty = false;
+                continue;
+            };
 
             queue_built_event(
-                session_events::build_session_state_event(
-                    &event_sid,
-                    &session.details.title,
-                    session.details.custom_title.as_deref(),
-                    &cwd,
-                    &publish.status,
-                    indicator,
-                    &publish.hostname,
-                    &session.details.home_dir,
-                    session.backend_type.as_str(),
-                    perm_mode,
-                    cli_sid.as_deref(),
-                    session.spawn_id.as_deref(),
-                    publish.created_at,
-                    &sk,
-                ),
+                state.build_event(&sk),
                 &format!(
                     "publishing session state: {} -> {}",
                     event_sid, publish.status
@@ -2343,16 +2353,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
         let account = *ctx.accounts.selected_account_pubkey();
 
-        for info in std::mem::take(&mut self.pending_deletions) {
+        for mut state in std::mem::take(&mut self.pending_deletions) {
             // Keep the "deleted" revision strictly newest so it wins replaceable
             // resolution over the session's last status event (same-second safe).
-            let created_at = {
+            state.created_at = {
                 let latest = Transaction::new(ctx.ndb).ok().and_then(|txn| {
                     session_loader::latest_state_created_at(
                         ctx.ndb,
                         &txn,
                         &account,
-                        &info.claude_session_id,
+                        &state.claude_session_id,
                     )
                 });
                 session_events::next_state_created_at(
@@ -2361,25 +2371,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 )
             };
             queue_built_event(
-                session_events::build_session_state_event(
-                    &info.claude_session_id,
-                    &info.title,
-                    info.custom_title.as_deref(),
-                    &info.cwd,
-                    "deleted",
-                    None, // no indicator for deleted sessions
-                    &self.hostname,
-                    &info.home_dir,
-                    info.backend.as_str(),
-                    "default",
-                    info.cli_session_id.as_deref(),
-                    info.spawn_id.as_deref(),
-                    created_at,
-                    &sk,
-                ),
+                state.build_event(&sk),
                 &format!(
                     "publishing deleted session state: {}",
-                    info.claude_session_id
+                    state.claude_session_id
                 ),
                 ctx.ndb,
                 &sk,
@@ -3171,19 +3166,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn delete_session(&mut self, id: SessionId) {
         self.kill_session_run_processes(id);
 
-        // Capture session info before deletion so we can publish a "deleted" state event
+        // Snapshot the full session state before deletion so we can publish a
+        // tombstone that carries every persisted field — including the owning
+        // `hostname`, so a deleted remote session's chip resumes on its owner
+        // (see `process_pending_open`), not here. `created_at` is recomputed at
+        // publish time (`publish_pending_deletions`). The publish decision fields
+        // are the deleted status and the session's own host; a tombstone carries
+        // no attention indicator.
         if let Some(session) = self.session_manager.get(id) {
-            if let Some(agentic) = &session.agentic {
-                self.pending_deletions.push(DeletedSessionInfo {
-                    claude_session_id: agentic.event_session_id().to_string(),
-                    title: session.details.title.clone(),
-                    custom_title: session.details.custom_title.clone(),
-                    cwd: agentic.cwd.to_string_lossy().to_string(),
-                    home_dir: session.details.home_dir.clone(),
-                    backend: session.backend_type,
-                    cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
-                    spawn_id: session.spawn_id.clone(),
-                });
+            if let Some(mut state) = session_state_snapshot(
+                session,
+                session_loader::DELETED_STATUS.to_string(),
+                session.details.hostname.clone(),
+                0,
+            ) {
+                state.indicator = None;
+                self.pending_deletions.push(state);
             }
         }
 
@@ -6558,11 +6556,14 @@ mod tests {
         );
     }
 
-    /// Deleting a session must carry its `cli_session_id`, `custom_title`, and
-    /// `spawn_id` into the tombstone. The fat kind-31988 note republishes
-    /// wholesale on every status change, so the winning (deleted) revision built
-    /// from a lossy snapshot would strand the backend `--resume` id and silently
-    /// lose a user rename. Regression guard for the fat-note carry-forward hazard.
+    /// Deleting a session must carry its `cli_session_id`, `custom_title`,
+    /// `spawn_id`, and owning `hostname` into the tombstone. The fat kind-31988
+    /// note republishes wholesale on every status change, so the winning
+    /// (deleted) revision built from a lossy snapshot would strand the backend
+    /// `--resume` id, silently lose a user rename, and — by restamping the
+    /// tombstone with *this* machine's hostname — make a deleted remote
+    /// session's chip resume locally instead of on its owning host. Regression
+    /// guard for the fat-note carry-forward hazard.
     #[test]
     fn delete_carries_resume_id_title_and_spawn_into_tombstone() {
         let base_dir = TempDir::new().unwrap();
@@ -6580,23 +6581,40 @@ mod tests {
         let session = dave.session_manager.get_mut(sid).unwrap();
         session.details.custom_title = Some("Renamed".to_string());
         session.spawn_id = Some("spawn-1".to_string());
+        // A session owned by another host: its tombstone must keep that host, or
+        // clicking the deleted chip would revive it here instead of resuming it
+        // on its owner (see `process_pending_open`).
+        session.details.hostname = "other-host".to_string();
 
         dave.delete_session(sid);
 
         assert_eq!(dave.pending_deletions.len(), 1);
-        let info = &dave.pending_deletions[0];
+        let tomb = &dave.pending_deletions[0];
         assert_eq!(
-            info.cli_session_id.as_deref(),
+            tomb.status,
+            session_loader::DELETED_STATUS,
+            "the snapshot is stamped as a tombstone"
+        );
+        assert_eq!(
+            tomb.indicator, None,
+            "a tombstone carries no attention indicator"
+        );
+        assert_eq!(
+            tomb.cli_session_id.as_deref(),
             Some("cli-xyz"),
             "the backend --resume id must survive the tombstone"
         );
         assert_eq!(
-            info.custom_title.as_deref(),
+            tomb.hostname, "other-host",
+            "the owning host must survive the tombstone so a remote chip resumes remotely"
+        );
+        assert_eq!(
+            tomb.custom_title.as_deref(),
             Some("Renamed"),
             "a user rename must survive the tombstone"
         );
         assert_eq!(
-            info.spawn_id.as_deref(),
+            tomb.spawn_id.as_deref(),
             Some("spawn-1"),
             "the spawn linkage must survive the tombstone"
         );
