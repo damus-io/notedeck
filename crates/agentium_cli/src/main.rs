@@ -15,8 +15,8 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use agentium_core::Engine;
 use agentium_core::session_loader::SessionState;
+use agentium_core::{Engine, Transport};
 use enostr::Pubkey;
 use nostrdb::Transaction;
 
@@ -29,6 +29,11 @@ const APP: &str = "agentium-cli";
 /// Hard cap on the settle wait, so a reachable-but-silent relay can't stall the
 /// read: past this we give up on the reconcile and read whatever the cache holds.
 const SYNC_MAX: Duration = Duration::from_secs(6);
+
+/// Bound on the post-publish flush (see [`cmd_resume`]). The publish rides the
+/// engine loop's FIFO, so this only needs to outlast the loop draining that one
+/// command — the initial [`SYNC_MAX`] reconcile already settled the backfill.
+const PUBLISH_FLUSH: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -47,6 +52,12 @@ async fn main() -> ExitCode {
 enum Command {
     /// Enumerate this identity's sessions.
     List,
+    /// Reopen a closed (possibly soft-deleted) session on its host so a new
+    /// message drives its backend again. The argument is any session selector
+    /// `list` accepts (a d-tag, cli-session id, or `agentium:` word-id).
+    Resume {
+        session: String,
+    },
     Login {
         nsec: String,
     },
@@ -124,9 +135,88 @@ async fn run() -> Result<()> {
 
     match cli.command {
         Command::List => cmd_list(&engine, &read_pk, &filters, cli.list_scope, cli.json)?,
+        Command::Resume { session } => {
+            cmd_resume(&engine, &mut transport, &read_pk, &session).await?
+        }
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
 
+    Ok(())
+}
+
+/// `agentium resume <session>` — reopen a closed session's backend.
+///
+/// Resolves the selector across the live *and* tombstoned sets (so a durable
+/// `agentium:` ref still resolves after the session was soft-deleted), then
+/// publishes a kind-31989 `resume_session` command targeting the session's host.
+/// The host reopens the session — reviving its `agentium:` ref, rehydrating its
+/// history, and resuming the CLI backend with `claude --resume`.
+///
+/// Errors early (before publishing) when nothing matches, or when the resolved
+/// session has no CLI session id to resume — i.e. its backend never started, so
+/// there is nothing for `--resume` to reconstruct.
+async fn cmd_resume(
+    engine: &Engine,
+    transport: &mut impl Transport,
+    author: &Pubkey,
+    selector: &str,
+) -> Result<()> {
+    use agentium_core::session_loader::{
+        load_deleted_session_states_for_author, load_session_states_for_author,
+        resolve_session_including_deleted,
+    };
+
+    // Resolve to the fields the resume command needs, then drop the borrow of the
+    // loaded state vectors before we publish.
+    let (target_host, cwd, backend, target_sid, cli_sid, uri) = {
+        let txn = Transaction::new(engine.ndb())?;
+        let live = load_session_states_for_author(engine.ndb(), &txn, author);
+        let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+        let state = resolve_session_including_deleted(&live, &deleted, selector)?;
+
+        let cli = match state.cli_session_id.as_deref() {
+            Some(cli) if !cli.is_empty() => cli.to_string(),
+            _ => {
+                return Err(format!(
+                    "{} has no CLI session to resume — its backend never started",
+                    state.agentium_uri()
+                )
+                .into());
+            }
+        };
+        (
+            state.hostname.clone(),
+            state.cwd.clone(),
+            state
+                .backend
+                .clone()
+                .unwrap_or_else(|| "claude".to_string()),
+            state.claude_session_id.clone(),
+            cli,
+            state.agentium_uri(),
+        )
+    };
+
+    if target_host.is_empty() {
+        return Err(format!("{uri} has no recorded host; cannot target a resume").into());
+    }
+
+    engine.resume_session(
+        transport,
+        &target_host,
+        &cwd,
+        &backend,
+        &target_sid,
+        &cli_sid,
+    )?;
+
+    // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
+    // after it resolves once the loop has drained (sent) the publish. Bounded so
+    // an unreachable relay can't stall exit — the event is already ingested
+    // locally regardless.
+    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+
+    println!("resume command sent to {target_host} for {uri}");
     Ok(())
 }
 
@@ -541,6 +631,9 @@ impl Cli {
 fn parse_command(name: &str, rest: &[String]) -> Result<Command> {
     Ok(match name {
         "list" => Command::List,
+        "resume" => Command::Resume {
+            session: arg(rest, 0, name)?,
+        },
         "login" => Command::Login {
             nsec: arg(rest, 0, name)?,
         },
@@ -569,6 +662,10 @@ COMMANDS:
                       host. Filter with --host/--status/--cwd/--backend; --json
                       emits the raw session set. Deleted sessions are hidden
                       unless --deleted/--all is passed.
+    resume <session>  Reopen a closed (even soft-deleted) session on its host so
+                      a new message drives its backend again. Takes any selector
+                      `list` accepts (d-tag, cli-session id, or agentium: ref);
+                      revives the session's agentium: reference in place.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
