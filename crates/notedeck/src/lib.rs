@@ -31,6 +31,7 @@ mod oneshot_api;
 mod options;
 mod persist;
 pub mod platform;
+pub mod pns_sync;
 mod private_sync;
 pub mod profile;
 mod publish;
