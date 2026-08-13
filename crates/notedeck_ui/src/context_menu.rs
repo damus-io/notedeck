@@ -103,6 +103,23 @@ fn handle_paste(
     }
 }
 
+/// Force text widget `id`'s selection back to the ordered char `range`. egui only
+/// *paints* a selection highlight while the widget has focus (see
+/// `paint_text_selection` in egui's `text_edit`), and a right-click both keeps the
+/// `TextEdit` focused and collapses its span to a caret — so writing the span back
+/// into the stored state each frozen frame is what keeps the user's highlight
+/// visible through the right-click and the whole time the menu is open.
+fn restore_selection(ctx: &egui::Context, id: egui::Id, range: &std::ops::Range<usize>) {
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else {
+        return;
+    };
+    state.cursor.set_char_range(Some(CCursorRange::two(
+        CCursor::new(range.start),
+        CCursor::new(range.end),
+    )));
+    egui::TextEdit::store_state(ctx, id, state);
+}
+
 /// Read the effective text selection for the context menu, working around egui
 /// collapsing a `TextEdit`'s highlighted span the instant any pointer button is
 /// pressed on it — including the right-click that opens this very menu (see
@@ -111,6 +128,11 @@ fn handle_paste(
 /// that shadow the moment the secondary button starts interacting (or the menu is
 /// open), so the span the user had *just before* they right-clicked survives into
 /// the menu's Copy/Cut/Paste handlers.
+///
+/// While frozen we also paint the shadowed span back into the widget's stored
+/// state so the highlight the user made stays *visible* through the right-click —
+/// egui had collapsed it to a bare caret and never restored it on its own, which
+/// read as "right-clicking deselects".
 fn frozen_selection(ui: &mut egui::Ui, response: &egui::Response) -> Option<TextSelection> {
     let snap_id = response.id.with("input_context_selection");
 
@@ -126,12 +148,20 @@ fn frozen_selection(ui: &mut egui::Ui, response: &egui::Response) -> Option<Text
         ui.data_mut(|d| d.insert_temp(snap_id, live));
     }
 
-    ui.data(|d| d.get_temp::<Option<std::ops::Range<usize>>>(snap_id))
-        .flatten()
-        .map(|range| TextSelection {
-            id: response.id,
-            range,
-        })
+    let range = ui
+        .data(|d| d.get_temp::<Option<std::ops::Range<usize>>>(snap_id))
+        .flatten()?;
+
+    // Repaint the highlight the right-click collapsed, but only for a real span:
+    // restoring a bare caret would fight the user placing the caret elsewhere.
+    if frozen && !range.is_empty() {
+        restore_selection(ui.ctx(), response.id, &range);
+    }
+
+    Some(TextSelection {
+        id: response.id,
+        range,
+    })
 }
 
 pub fn input_context(
@@ -344,5 +374,104 @@ mod tests {
         assert_eq!(copy_target("hello world", None), "hello world");
         // Multibyte span slices on char boundaries.
         assert_eq!(copy_target("héllo", Some(&selection(0..2))), "hé");
+    }
+
+    /// Read a text widget's stored selection as an ordered char range.
+    fn stored_range(ctx: &egui::Context, id: egui::Id) -> Option<std::ops::Range<usize>> {
+        let range = egui::TextEdit::load_state(ctx, id)?.cursor.char_range()?;
+        let (a, b) = (range.primary.index, range.secondary.index);
+        Some(a.min(b)..a.max(b))
+    }
+
+    /// A right-click must not visibly clear the highlight: egui collapses a
+    /// `TextEdit`'s span to a caret on any pointer press, so [`frozen_selection`]
+    /// has to paint the shadowed span back into the widget state each frozen frame.
+    /// We seed a span, fire a secondary press over the widget, and assert both the
+    /// range the menu will act on *and* the widget's own stored selection survive.
+    #[test]
+    fn right_click_keeps_the_selection() {
+        use egui_kittest::Harness;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let id = egui::Id::new("frozen_selection_test_edit");
+
+        struct Shared {
+            text: String,
+            frame: usize,
+            rect: egui::Rect,
+            /// The range `frozen_selection` handed the menu on the latest frame.
+            menu_range: Option<std::ops::Range<usize>>,
+            /// The widget's own stored selection after `frozen_selection` ran.
+            stored_after: Option<std::ops::Range<usize>>,
+        }
+
+        let shared = Rc::new(RefCell::new(Shared {
+            text: "hello world".to_owned(),
+            frame: 0,
+            rect: egui::Rect::NOTHING,
+            menu_range: None,
+            stored_after: None,
+        }));
+
+        let closure_shared = shared.clone();
+        let mut harness = Harness::new_ui(move |ui| {
+            let mut sh = closure_shared.borrow_mut();
+            let resp = ui.add(
+                egui::TextEdit::multiline(&mut sh.text)
+                    .id(id)
+                    .desired_rows(2),
+            );
+            sh.rect = resp.rect;
+
+            // Seed the "hello" span once, before any press, exactly as a mouse
+            // drag-select would leave it.
+            if sh.frame == 0 {
+                let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                state
+                    .cursor
+                    .set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(5))));
+                egui::TextEdit::store_state(ui.ctx(), id, state);
+            }
+
+            sh.menu_range = frozen_selection(ui, &resp).map(|s| s.range);
+            sh.stored_after = stored_range(ui.ctx(), id);
+            sh.frame += 1;
+        });
+
+        // Frame 0: lay out and seed the span (no press yet).
+        harness.run_ok();
+        assert_eq!(
+            shared.borrow().menu_range,
+            Some(0..5),
+            "the seeded span should be visible before any right-click"
+        );
+
+        // Right-click the widget: hover it, then press the secondary button. egui
+        // collapses the live selection to a caret on this press.
+        let center = shared.borrow().rect.center();
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(center));
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.run_ok();
+
+        let sh = shared.borrow();
+        assert_eq!(
+            sh.menu_range,
+            Some(0..5),
+            "the menu handlers must still see the pre-right-click span"
+        );
+        assert_eq!(
+            sh.stored_after,
+            Some(0..5),
+            "the widget's own selection must be restored so the highlight stays visible"
+        );
     }
 }
