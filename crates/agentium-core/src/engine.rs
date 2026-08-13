@@ -595,6 +595,33 @@ impl Engine {
         Ok(built)
     }
 
+    /// Build a kind-31989 resume command, ingest it locally, and return it for
+    /// the caller to publish through its own transport — the batching-host
+    /// counterpart to [`resume_session`](Engine::resume_session), exactly as
+    /// [`prepare_spawn_command`](Engine::prepare_spawn_command) is to
+    /// [`spawn_session`](Engine::spawn_session). The command reopens the session
+    /// named by `target_session_id` on `target_host` (reviving its tombstone and
+    /// resuming via `cli_session_id`) rather than minting a new one. The caller
+    /// supplies `spawn_id` and publishes the returned event itself; nothing is
+    /// sent here.
+    pub fn prepare_resume_command(
+        &self,
+        target_host: &str,
+        cwd: &str,
+        backend: &str,
+        spawn_id: &str,
+        target_session_id: &str,
+        cli_session_id: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let resume = crate::session_events::ResumeSpawn {
+            target_session_id,
+            cli_session_id,
+        };
+        let built = self.make_spawn_command(target_host, cwd, backend, spawn_id, Some(&resume))?;
+        self.wrap_and_ingest(&built)?;
+        Ok(built)
+    }
+
     /// Build the inner kind-31989 spawn-command event (no ingest, no publish).
     ///
     /// `resume` = `None` builds a plain spawn; `Some` builds a resume command
