@@ -150,6 +150,13 @@ pub trait AiBackend: Send + Sync {
     /// If `resume_session_id` is Some, the backend should resume the specified Claude
     /// session instead of starting a new conversation.
     ///
+    /// `session_id` is the ephemeral in-process routing key (`dave-session-{n}`).
+    /// `agentium_session_id` is the session's *stable* kind-31988 d-tag (the
+    /// [`event_session_id`](crate::session::AgenticSessionData::event_session_id)
+    /// UUID) — the identity `agentium`/`wordid` hashes into the `agentium:` ref.
+    /// Subprocess backends export it so an in-session agent can identify its OWN
+    /// session; it is `None` for non-agentic sessions, which don't have one.
+    ///
     /// [`persistent_stream`]: AiBackend::persistent_stream
     #[allow(clippy::too_many_arguments)]
     fn stream_request(
@@ -159,6 +166,7 @@ pub trait AiBackend: Send + Sync {
         model: Option<String>,
         user_id: String,
         session_id: String,
+        agentium_session_id: Option<String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
         waker: Waker,

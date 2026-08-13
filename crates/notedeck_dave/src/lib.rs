@@ -3759,6 +3759,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
         let session_id = format!("dave-session-{}", session.id);
+        // The stable kind-31988 d-tag (UUID), distinct from the ephemeral
+        // `dave-session-{n}` routing key above. Subprocess backends export it as
+        // the agentium identity so an in-session agent reads its OWN ref. Only
+        // agentic sessions have one.
+        let agentium_session_id = session
+            .agentic
+            .as_ref()
+            .map(|a| a.event_session_id().to_string());
         let messages = session.chat.clone();
         let cwd = session.agentic.as_ref().map(|a| a.cwd.clone());
         let resume_session_id = session
@@ -3780,6 +3788,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             model_name,
             user_id,
             session_id,
+            agentium_session_id,
             cwd,
             resume_session_id,
             crate::backend::egui_waker(&ctx),

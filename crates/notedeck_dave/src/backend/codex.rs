@@ -92,6 +92,7 @@ enum HandleResult {
 /// Per-session actor that owns the `codex app-server` child process.
 async fn session_actor(
     session_id: String,
+    agentium_session_id: Option<String>,
     cwd: Option<PathBuf>,
     codex_binary: String,
     model: Option<String>,
@@ -99,7 +100,7 @@ async fn session_actor(
     mut command_rx: tokio_mpsc::Receiver<SessionCommand>,
 ) {
     // Spawn the codex app-server child process
-    let mut child = match spawn_codex(&codex_binary, &cwd, &session_id) {
+    let mut child = match spawn_codex(&codex_binary, &cwd, agentium_session_id.as_deref()) {
         Ok(c) => c,
         Err(err) => {
             tracing::error!("Session {} failed to spawn codex: {}", session_id, err);
@@ -1521,7 +1522,7 @@ fn handle_item_completed(
 fn spawn_codex(
     binary: &str,
     cwd: &Option<PathBuf>,
-    session_id: &str,
+    agentium_session_id: Option<&str>,
 ) -> Result<Child, std::io::Error> {
     let mut cmd = Command::new(binary);
     cmd.arg("app-server");
@@ -1529,14 +1530,17 @@ fn spawn_codex(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     // Export this session's identity so an in-session agent can identify its own
-    // agentium session (mirrors the claude backend). `session_id` is the stable
-    // kind-31988 d-tag; `AGENTIUM_SESSION` is the sayable `agentium:<word-id>` URI
+    // agentium session (mirrors the claude backend). This MUST be the stable
+    // kind-31988 d-tag (`event_session_id`), NOT the ephemeral `dave-session-{n}`
+    // routing key; `AGENTIUM_SESSION` is the sayable `agentium:<word-id>` URI
     // derived from it (a one-way hash, so the raw id is exported alongside it).
-    cmd.env("AGENTIUM_SESSION_ID", session_id);
-    cmd.env(
-        "AGENTIUM_SESSION",
-        agentium_core::wordid::session_ref(session_id),
-    );
+    if let Some(agentium_session_id) = agentium_session_id {
+        cmd.env("AGENTIUM_SESSION_ID", agentium_session_id);
+        cmd.env(
+            "AGENTIUM_SESSION",
+            agentium_core::wordid::session_ref(agentium_session_id),
+        );
+    }
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -1948,6 +1952,7 @@ impl AiBackend for CodexBackend {
         model: Option<String>,
         _user_id: String,
         session_id: String,
+        agentium_session_id: Option<String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
         waker: Waker,
@@ -1972,12 +1977,14 @@ impl AiBackend for CodexBackend {
             let model_clone = model.clone();
             let cwd_clone = cwd.clone();
             let resume_clone = resume_session_id.clone();
+            let agentium_sid_clone = agentium_session_id.clone();
             let handle = entry.or_insert_with(|| {
                 let (command_tx, command_rx) = tokio_mpsc::channel(16);
                 let sid = session_id.clone();
                 tokio::spawn(async move {
                     session_actor(
                         sid,
+                        agentium_sid_clone,
                         cwd_clone,
                         codex_binary,
                         model_clone,
@@ -4826,7 +4833,7 @@ mod tests {
     )> {
         let codex_binary = std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string());
 
-        let mut child = match spawn_codex(&codex_binary, &None, "test-session") {
+        let mut child = match spawn_codex(&codex_binary, &None, Some("test-session")) {
             Ok(child) => child,
             Err(e) => {
                 eprintln!(

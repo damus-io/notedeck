@@ -31,6 +31,7 @@ impl AiBackend for OpenAiBackend {
         model: Option<String>,
         user_id: String,
         _session_id: String,
+        _agentium_session_id: Option<String>,
         _cwd: Option<PathBuf>,
         _resume_session_id: Option<String>,
         waker: Waker,

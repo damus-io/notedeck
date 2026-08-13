@@ -590,8 +590,10 @@ struct PermissionRequestInternal {
 }
 
 /// Session actor task that owns a single ClaudeClient with persistent connection
+#[allow(clippy::too_many_arguments)]
 async fn session_actor(
     session_id: String,
+    agentium_session_id: Option<String>,
     cwd: Option<PathBuf>,
     resume_session_id: Option<String>,
     model: Option<String>,
@@ -702,18 +704,23 @@ async fn session_actor(
     // Export this session's identity into the spawned backend's environment so an
     // in-session agent can identify its OWN agentium session deterministically
     // (e.g. to quote the ref into a headway done-comment) instead of guessing via
-    // `agentium list --json --cwd/--host`. `session_id` here is the stable
-    // kind-31988 d-tag (see `AgenticSessionData::event_session_id`), which is what
-    // `agentium_core::wordid` hashes. `AGENTIUM_SESSION_ID` is that raw, lossless
-    // id; `AGENTIUM_SESSION` is the sayable `agentium:<word-id>` URI derived from
-    // it (the word-id is a one-way hash, so both are exported).
-    options
-        .env
-        .insert("AGENTIUM_SESSION_ID".to_string(), session_id.clone());
-    options.env.insert(
-        "AGENTIUM_SESSION".to_string(),
-        agentium_core::wordid::session_ref(&session_id),
-    );
+    // `agentium list --json --cwd/--host`. This MUST be the stable kind-31988
+    // d-tag (`AgenticSessionData::event_session_id`), which is what
+    // `agentium_core::wordid` hashes — NOT the ephemeral `dave-session-{n}`
+    // routing key in `session_id`, which resets every run and would resolve to no
+    // session. `AGENTIUM_SESSION_ID` is that raw, lossless id; `AGENTIUM_SESSION`
+    // is the sayable `agentium:<word-id>` URI derived from it (the word-id is a
+    // one-way hash, so both are exported).
+    if let Some(agentium_session_id) = &agentium_session_id {
+        options.env.insert(
+            "AGENTIUM_SESSION_ID".to_string(),
+            agentium_session_id.clone(),
+        );
+        options.env.insert(
+            "AGENTIUM_SESSION".to_string(),
+            agentium_core::wordid::session_ref(agentium_session_id),
+        );
+    }
     let mut client = ClaudeClient::new(options);
 
     // Connect once - this starts the subprocess
@@ -901,6 +908,7 @@ impl AiBackend for ClaudeBackend {
         model: Option<String>,
         _user_id: String,
         session_id: String,
+        agentium_session_id: Option<String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
         waker: Waker,
@@ -934,6 +942,7 @@ impl AiBackend for ClaudeBackend {
                 // Spawn session actor with cwd, optional resume session ID, model,
                 // and the session-lifetime response channel + initial waker.
                 let session_id_clone = session_id.clone();
+                let agentium_session_id_clone = agentium_session_id.clone();
                 let cwd_clone = cwd.clone();
                 let resume_session_id_clone = resume_session_id.clone();
                 let model_clone = model.clone();
@@ -941,6 +950,7 @@ impl AiBackend for ClaudeBackend {
                 tokio::spawn(async move {
                     session_actor(
                         session_id_clone,
+                        agentium_session_id_clone,
                         cwd_clone,
                         resume_session_id_clone,
                         model_clone,
