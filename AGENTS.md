@@ -62,6 +62,22 @@ When fixing a bug introduced by another commit, add:
 
 You can create this line with `git --no-pager show -s --pretty=fixes <commit>`
 
+Every commit should also record the work it belongs to as git trailers so the
+commit itself points back at the board card and, for agentic sessions, the
+session transcript:
+
+   Headway: headway:board/word-id
+   Agentium: agentium:word-id
+
+Use the full scheme refs (`headway:<board>/<word-id>`, `agentium:<word-id>`),
+never a bare word-id or the old hash form. The `Headway:` trailer is the URI of
+the card the commit advances; add it to every commit that maps to a card. The
+`Agentium:` trailer is only for Dave agentic sessions — find your ref with
+`echo "$AGENTIUM_SESSION"` (see the `agentium` skill for the fallback when that's
+unset) and omit the trailer entirely when you're not running inside a session.
+These trailers are in addition to — not a replacement for — the headway
+done-comment described under Work Tracking above.
+
 ## Repository Topology
 
 - **`crates/notedeck`** – Core framework: application host (`Notedeck`), shared services (`AppContext`, `Accounts`, caches, persistence, localization).
