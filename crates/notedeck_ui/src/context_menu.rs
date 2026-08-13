@@ -103,6 +103,37 @@ fn handle_paste(
     }
 }
 
+/// Read the effective text selection for the context menu, working around egui
+/// collapsing a `TextEdit`'s highlighted span the instant any pointer button is
+/// pressed on it — including the right-click that opens this very menu (see
+/// [`TextSelection::load`] callers and egui's `pointer_interaction`). We shadow
+/// the widget's live selection in per-widget temp memory every frame and freeze
+/// that shadow the moment the secondary button starts interacting (or the menu is
+/// open), so the span the user had *just before* they right-clicked survives into
+/// the menu's Copy/Cut/Paste handlers.
+fn frozen_selection(ui: &mut egui::Ui, response: &egui::Response) -> Option<TextSelection> {
+    let snap_id = response.id.with("input_context_selection");
+
+    // Freeze from the first secondary press, through the button being held and
+    // released, and for as long as the menu stays open — the whole window during
+    // which egui has clobbered the live selection.
+    let frozen = response.context_menu_opened()
+        || response.secondary_clicked()
+        || ui.input(|i| i.pointer.secondary_down());
+
+    if !frozen {
+        let live = TextSelection::load(ui.ctx(), response).map(|s| s.range);
+        ui.data_mut(|d| d.insert_temp(snap_id, live));
+    }
+
+    ui.data(|d| d.get_temp::<Option<std::ops::Range<usize>>>(snap_id))
+        .flatten()
+        .map(|range| TextSelection {
+            id: response.id,
+            range,
+        })
+}
+
 pub fn input_context(
     ui: &mut egui::Ui,
     response: &egui::Response,
@@ -112,7 +143,7 @@ pub fn input_context(
 ) {
     // The selection is stored on the egui Context, so it's the same whether read
     // here (for the menu) or below (for a middle-click paste).
-    let selection = TextSelection::load(ui.ctx(), response);
+    let selection = frozen_selection(ui, response);
 
     context_menu(response, |ui| {
         if ui.button("Paste").clicked() {
