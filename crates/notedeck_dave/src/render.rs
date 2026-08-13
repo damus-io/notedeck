@@ -192,14 +192,15 @@ fn status_color(theme: &ColorTheme, session: &LiveSession) -> egui::Color32 {
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
 fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
     let color = status_color(theme, live);
-    // A tombstoned session reads as resumable: a hollow ring instead of a filled
-    // dot, and a hover hint. Clicking it reopens (revives + resumes) the session
-    // via Dave's pending-open path — the inline resume affordance.
+    // A tombstoned session reads as resumable: a small "resume" play triangle
+    // instead of a filled status dot, plus a hover hint. Clicking it reopens
+    // (revives + resumes) the session via Dave's pending-open path — the inline
+    // resume affordance.
     let deleted = live.status == DELETED_STATUS;
     let response = notedeck_ui::inline_chip(ui, theme, session_title(live), move |ui, size| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
         if deleted {
-            status_ring(ui.painter(), rect.center(), size, color);
+            resume_glyph(ui.painter(), rect.center(), size, color);
         } else {
             status_dot(ui.painter(), rect.center(), size, color);
         }
@@ -244,10 +245,20 @@ fn status_dot(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egu
     painter.circle_filled(center, size * 0.32, color);
 }
 
-/// A hollow status ring — the tombstoned/resumable indicator, distinguishing a
-/// deleted session's chip from a live one's filled [`status_dot`].
-fn status_ring(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
-    painter.circle_stroke(center, size * 0.30, egui::Stroke::new(size * 0.12, color));
+/// A small right-pointing "resume" play triangle — the tombstoned/resumable
+/// indicator. A filled dot means live status and a hollow circle is headway's
+/// TODO glyph, so a deleted session's chip uses a play triangle to read as
+/// click-to-resume without colliding with either.
+fn resume_glyph(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
+    let r = size * 0.30;
+    // A right-pointing triangle centred on `center`, nudged left so it looks
+    // optically centred (a triangle's visual mass sits toward its base).
+    let pts = vec![
+        egui::pos2(center.x - r * 0.7, center.y - r),
+        egui::pos2(center.x - r * 0.7, center.y + r),
+        egui::pos2(center.x + r, center.y),
+    ];
+    painter.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
 }
 
 #[cfg(test)]
