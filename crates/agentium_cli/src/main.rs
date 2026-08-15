@@ -635,10 +635,23 @@ fn cmd_list(
         println!("{}\n", paint(color, SGR_NEEDS_INPUT, &note));
     }
 
+    // Size the leading `agentium:` column to the longest ref in the list so
+    // every URI renders in full — a truncated ref can't be copied into
+    // `show`/`send`, which is the whole point of leading with it.
+    let sref_width = sessions
+        .iter()
+        .map(|s| {
+            agentium_core::wordid::session_ref(&s.claude_session_id)
+                .chars()
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+
     for (host, group) in group_by_host(sessions) {
         println!("{}", paint(color, SGR_BOLD, &host));
         for s in group {
-            println!("{}", session_row(&s, now, color));
+            println!("{}", session_row(&s, now, color, sref_width));
         }
     }
 
@@ -655,11 +668,13 @@ const SGR_BOLD: &str = "1";
 ///
 /// Leads with the session's sayable `agentium:word-word-word` reference — the
 /// selector a human copies into `show`/`send`/etc. — then the status, title,
-/// working dir, backend, permission mode, and last-updated age.
-fn session_row(s: &SessionState, now: u64, color: bool) -> String {
+/// working dir, backend, permission mode, and last-updated age. `sref_width` is
+/// the column width for that leading reference; the caller sizes it to the
+/// longest ref in the list so the full, copyable URI is never truncated.
+fn session_row(s: &SessionState, now: u64, color: bool, sref_width: usize) -> String {
     let (glyph, label, sgr) = status_style(&s.status);
     let sref = agentium_core::wordid::session_ref(&s.claude_session_id);
-    let sref_col = paint(color, "90", &col(&sref, 28));
+    let sref_col = paint(color, "90", &col(&sref, sref_width));
     let status_col = paint(color, sgr, &format!("{glyph} {}", col(&label, 11)));
     let title = col(s.display_title(), 30);
     let cwd = col(&abbreviate_home(&s.cwd, &s.home_dir), 26);
@@ -1149,9 +1164,14 @@ mod tests {
     #[test]
     fn session_row_plain_is_uncolored_and_complete() {
         let s = session("mac", "Hello", "working", 0);
-        let row = session_row(&s, 60, false);
+        let sref = agentium_core::wordid::session_ref(&s.claude_session_id);
+        let row = session_row(&s, 60, false, sref.chars().count());
         assert!(!row.contains('\x1b'), "no ANSI when color=false: {row:?}");
         assert!(row.contains("agentium:"), "row leads with the sayable ref");
+        assert!(
+            row.contains(&sref) && !row.contains('…'),
+            "the full, copyable ref renders untruncated: {row:?}"
+        );
         assert!(row.contains("● Working"));
         assert!(row.contains("Hello"));
         assert!(row.contains("~/proj")); // cwd home-abbreviated
