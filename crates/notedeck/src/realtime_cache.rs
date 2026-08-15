@@ -104,6 +104,20 @@ struct CachedAuthor<R: Reducer> {
     /// snapshot; without this they'd be lost until a full re-seed, which is why a
     /// cross-device edit could otherwise go missing until an app restart.
     pending: Vec<NoteKey>,
+    /// Freshly-folded delta keys awaiting the fan-out pump — a per-author outbox.
+    ///
+    /// The subscription is drained destructively by *every* [`advance`], and
+    /// `advance` runs from both the fan-out [`poll`](RealtimeCache::poll) and the
+    /// read paths ([`with_views`](RealtimeCache::with_views) /
+    /// [`with_reducer`](RealtimeCache::with_reducer)). Whichever runs first takes
+    /// the note off the subscription, so if the fan-out relied on its *own* drain
+    /// it would miss any note a read swallowed first — the note folds locally but
+    /// never publishes to the user's other devices. So `advance` instead appends
+    /// each folded key here, and only `poll` drains it: the fan-out pump is
+    /// guaranteed every fresh key exactly once, no matter which caller drained the
+    /// subscription. Seeds don't enqueue (their keys are historical, not new
+    /// ingests — see [`PollResponse::fresh`]).
+    unsynced: Vec<NoteKey>,
 }
 
 // Derived `Default` would require `R: Default`, which no reducer needs; a manual
@@ -115,6 +129,7 @@ impl<R: Reducer> Default for CachedAuthor<R> {
             sub: None,
             finalized: None,
             pending: Vec::new(),
+            unsynced: Vec::new(),
         }
     }
 }
@@ -126,9 +141,13 @@ pub struct PollResponse {
     /// The reducer was seeded or had new notes folded in this call, so the caller
     /// schedules follow-up repaints (keep waking while edits stream in).
     pub changed: bool,
-    /// Note keys folded in *incrementally* this call — empty on a seed (those are
-    /// historical, not new ingests) and on a no-op. The caller fans these out to
-    /// the account's private relays (see [`fan_out_unseen_notes`](crate::fan_out_unseen_notes)).
+    /// Note keys folded in *incrementally* since the last [`poll`](RealtimeCache::poll)
+    /// — drained from the author's outbox ([`unsynced`](CachedAuthor::unsynced)), so
+    /// this includes deltas a read path (`with_views`/`with_reducer`) folded between
+    /// polls, not just ones this call drained. Empty on a seed (those keys are
+    /// historical, not new ingests) and when nothing folded. The caller fans these
+    /// out to the account's private relays (see
+    /// [`fan_out_unseen_notes`](crate::fan_out_unseen_notes)).
     pub fresh: Vec<NoteKey>,
 }
 
@@ -181,12 +200,16 @@ impl<R: Reducer> Default for RealtimeCache<R> {
 
 impl<R: Reducer> RealtimeCache<R> {
     /// Ensure a live subscription + seeded reducer for `author` and fold in any
-    /// freshly-arrived notes, reporting what changed. The shared primitive behind
-    /// [`poll`](Self::poll) and [`with_views`](Self::with_views): the app's
-    /// per-frame pump and a chip's lazy fold-on-render both flow through it, so a
-    /// reducer is seeded once and thereafter only ever folds deltas.
+    /// freshly-arrived notes, enqueueing each folded delta key on the author's
+    /// fan-out outbox ([`unsynced`](CachedAuthor::unsynced)) and returning whether
+    /// anything folded. The shared primitive behind [`poll`](Self::poll) and
+    /// [`with_views`](Self::with_views): the app's per-frame pump and a chip's lazy
+    /// fold-on-render both flow through it, so a reducer is seeded once and
+    /// thereafter only ever folds deltas — and, crucially, *any* of those callers
+    /// draining the subscription still routes the note to the fan-out pump via the
+    /// outbox (only [`poll`](Self::poll) drains it).
     #[profiling::function]
-    fn advance(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> PollResponse {
+    fn advance(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> bool {
         let entry = self.authors.entry(*author).or_default();
         if entry.sub.is_none() {
             entry.sub = ndb.subscribe(&[R::filter(author)]).ok();
@@ -235,19 +258,37 @@ impl<R: Reducer> RealtimeCache<R> {
         if changed {
             entry.finalized = None;
         }
-        if changed && fresh.is_empty() {
-            // A full seed fold, as opposed to an incremental delta (non-empty
-            // `fresh`) or a no-op (`!changed`).
+        // A full seed fold has no `fresh` keys (as opposed to an incremental delta,
+        // non-empty `fresh`, or a no-op, `!changed`); a seed's keys are historical,
+        // not new ingests, so they never enqueue for fan-out.
+        let full_seed = changed && fresh.is_empty();
+        entry.unsynced.extend(fresh);
+        if full_seed {
             self.stats.full_reloads += 1;
         }
-        PollResponse { changed, fresh }
+        changed
     }
 
     /// Advance `author`'s reducer and report the change — the per-frame pump
     /// called from the app's `update`. Fan out [`fresh`](PollResponse::fresh) and
     /// wake on [`changed`](PollResponse::changed).
+    ///
+    /// Drains the author's fan-out outbox ([`unsynced`](CachedAuthor::unsynced))
+    /// into [`fresh`](PollResponse::fresh): every delta folded since the last poll,
+    /// *including ones a read path drained from the shared subscription first*. A
+    /// non-empty drain also reads as `changed`, so the app keeps waking until the
+    /// outbox is empty and every key is fanned out.
     pub fn poll(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> PollResponse {
-        self.advance(ndb, txn, author)
+        let changed = self.advance(ndb, txn, author);
+        let fresh = self
+            .authors
+            .get_mut(author)
+            .map(|entry| std::mem::take(&mut entry.unsynced))
+            .unwrap_or_default();
+        PollResponse {
+            changed: changed || !fresh.is_empty(),
+            fresh,
+        }
     }
 
     /// Advance `author`'s reducer, (re)finalize it *at most once per fold*, and
@@ -591,5 +632,64 @@ mod tests {
             1,
             "recovered by folding a delta, not by re-seeding"
         );
+    }
+
+    /// A *read* (`with_views`) and the fan-out [`poll`](RealtimeCache::poll) share
+    /// one destructive subscription, so whichever runs first takes the note off it.
+    /// When a read wins — the production render-then-next-update frame shape, or an
+    /// inline chip rendered off-foreground — the note must still surface as
+    /// `fresh` on the next poll, else a CLI edit folds locally but never fans out to
+    /// the user's other devices. Regression guard for the outbox
+    /// ([`CachedAuthor::unsynced`]); before it, this key was folded then silently
+    /// dropped from every `poll().fresh`.
+    #[test]
+    fn a_read_does_not_swallow_fresh_from_the_next_poll() {
+        reset_counters();
+        let (ndb, _dir) = test_ndb();
+        let kp = enostr::FullKeypair::generate();
+        let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
+        let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
+
+        // Seed the cache (opens its own subscription) before any notes exist.
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            cache.poll(&ndb, &txn, &kp.pubkey);
+        }
+
+        // A note arrives, then a *read* — not the fan-out poll — drains it off the
+        // shared subscription and folds it, exactly as an inline chip render does a
+        // frame before the next fan-out poll.
+        write_note(&ndb, &kp, "one");
+        wait_commit(&ndb, det);
+        let views = loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            let v = cache
+                .with_views(&ndb, &txn, &kp.pubkey, |views| views.to_vec())
+                .unwrap();
+            if v.len() == 1 {
+                break v;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(views.len(), 1, "the read folded the note in");
+
+        // The read drained the subscription, so the poll's own advance folds
+        // nothing new — yet it must still report the read-folded note as `fresh`
+        // (and as `changed`, to keep waking) by draining the outbox.
+        let txn = Transaction::new(&ndb).unwrap();
+        let resp = cache.poll(&ndb, &txn, &kp.pubkey);
+        assert_eq!(
+            resp.fresh, views,
+            "poll must surface the read-folded note as fresh for fan-out"
+        );
+        assert!(resp.changed, "a non-empty outbox drain reads as changed");
+
+        // Drained exactly once: a second poll with nothing new is a clean no-op.
+        let resp = cache.poll(&ndb, &txn, &kp.pubkey);
+        assert!(
+            resp.fresh.is_empty(),
+            "the outbox reports each key only once"
+        );
+        assert!(!resp.changed);
     }
 }
