@@ -467,19 +467,12 @@ impl App for Headway {
 
         // Declare the inbound cross-device subscription (catch-up + realtime)
         // against the account's private relays, and resolve the same set as our
-        // outbound publish targets. Empty => local-only. Alongside our own board
-        // events we pull each joined shared board's kind-1081 envelope stream, so a
-        // co-member's sealed edits reach us (nostrdb unwraps them once the root is
-        // registered — see [`teams`]).
-        let mut inbound = vec![event::headway_filter(&author)];
-        let joined: Vec<Pubkey> = self
-            .teams
-            .iter()
-            .filter_map(|t| Some(t.sns_keys()?.team_keypair.pubkey))
-            .collect();
-        if !joined.is_empty() {
-            inbound.push(teams::envelope_filter(&joined));
-        }
+        // outbound publish targets. Empty => local-only. This is headway's own
+        // *plaintext* board leg only: the sealed shared-board kind-1081/1082 streams
+        // are now pulled centrally by the notedeck host's private `Session` (see
+        // `notedeck::HostPrivateSync`), which registers the roots and auto-unwraps
+        // the envelopes off-foreground — so headway no longer declares them here.
+        let inbound = vec![event::headway_filter(&author)];
         let private_relays = self.private_sync.update(ctx, inbound);
 
         // Pump the shared board cache: advance this account's reducer, folding in

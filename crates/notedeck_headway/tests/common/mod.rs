@@ -44,8 +44,16 @@ use tempfile::TempDir;
 pub const CONVERGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Installs the Headway app on a freshly booted device.
+///
+/// The sealed shared-board (kind-1081/1082) inbound leg is now owned by the
+/// notedeck host's private `Session` (`notedeck::HostPrivateSync`), which is off
+/// under the test harness by default — force it on so these two-party tests
+/// exercise the account's inbound path (headway folds the resulting local nostrdb
+/// state). The `Session` is spawned lazily on the first pumped frame, so this
+/// takes effect because the tests run under a multi-thread Tokio runtime.
 pub fn headway_app_factory() -> AppFactory {
     Box::new(|notedeck, _egui_ctx| {
+        notedeck.enable_host_private_sync_for_test();
         notedeck.set_app(Headway::new());
     })
 }
