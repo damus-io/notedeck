@@ -73,7 +73,7 @@ const FRESH_SECS: u64 = 5 * 60;
 const STALE_SECS: u64 = 60 * 60;
 /// Saturation multiplier applied at full staleness. Keeps the hue recognisable
 /// (a washed-out version of the color) rather than fading all the way to gray.
-const STALE_SATURATION: f32 = 0.2;
+const STALE_SATURATION: f32 = 0.4;
 
 /// How stale a session is, from `0.0` (fresh) to `1.0` (fully stale), given
 /// `age_secs` seconds since its last activity. `0.0` under [`FRESH_SECS`], then a
@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(stale_color(green, FRESH_SECS), green);
     }
 
-    /// A fully stale color keeps its hue but drops to ~[`STALE_SATURATION`] of its
+    /// A fully stale color keeps its hue but drops to [`STALE_SATURATION`] of its
     /// original saturation.
     #[test]
     fn fully_stale_desaturates_but_keeps_hue() {
@@ -130,7 +130,7 @@ mod tests {
         let after = egui::ecolor::Hsva::from(faded);
         // Hue preserved (allow small 8-bit round-trip error).
         assert!((after.h - before.h).abs() < 0.02, "hue drifted");
-        // Saturation cut to ~20% of the original.
+        // Saturation cut to STALE_SATURATION of the original.
         assert!(
             (after.s - before.s * STALE_SATURATION).abs() < 0.05,
             "expected ~{} saturation, got {}",
