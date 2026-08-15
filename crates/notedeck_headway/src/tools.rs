@@ -251,31 +251,65 @@ fn split_labels(csv: &str) -> Vec<String> {
         .collect()
 }
 
-/// Resolve a mutation's target board and the SNS channel to seal its edits into.
+/// A resolved edit target: the folded board view and the SNS channel to seal its
+/// edits into — `None` for an own plaintext board, `Some` for a shared board.
+struct ResolvedTarget {
+    view: BoardView,
+    channel: Option<store::SnsChannel>,
+}
+
+/// Resolve a mutation's target board and the SNS channel to seal its edits into,
+/// mirroring the app's [`render`](crate) coordinate-aware routing.
 ///
-/// Own boards win on a slug collision, mirroring the app's [`render`](crate) rule:
-/// if `author` authors `board_id` it's edited as our own board (plaintext, channel
-/// `None`); otherwise, if it's a joined shared board in `teams`, fold it by
-/// coordinate and seal every edit into that channel — so an AI-tool edit to a
-/// shared board is sealed exactly like the GUI path and never leaks a plaintext
-/// rumor onto the relay. A shared board whose channel can't be derived, or that
-/// hasn't synced yet, is *refused* rather than edited unsealed.
+/// A board is shared iff its coordinate is in `teams`, matched on the full
+/// coordinate — so a board you *own* and shared (self-shared team-of-one, whose
+/// coordinate is your own) folds by coordinate (every member's cards) and seals
+/// every edit, instead of folding author-scoped and leaking a plaintext rumor.
+/// That own-coordinate case is checked first; a private own board (not in the
+/// roster) then wins the author-scoped fold on a bare-slug collision with a joined
+/// board; otherwise a joined shared board of that slug is folded and sealed. A
+/// shared board whose channel can't be derived, or that hasn't synced yet, is
+/// *refused* rather than edited unsealed.
 fn resolve_target(
     ndb: &Ndb,
     author: &Pubkey,
     board_id: &str,
     teams: &[teams::Team],
-) -> Result<(BoardView, Option<store::SnsChannel>), String> {
+) -> Result<ResolvedTarget, String> {
     let txn = Transaction::new(ndb).map_err(|e| format!("failed to open db: {e}"))?;
-    // Own board wins on a slug collision, so this is checked first.
-    if let Some(view) = event::load_board(ndb, &txn, author, board_id) {
-        return Ok((view, None));
+
+    // Your own board, matched by coordinate against the roster first: if shared,
+    // fold + seal it rather than leak plaintext via the author-scoped fold below.
+    let own_coord = event::board_address(author, board_id);
+    if let Some(team) = teams.iter().find(|t| t.board_addr == own_coord) {
+        return resolve_shared(ndb, &txn, board_id, team);
     }
-    // Not ours: only a joined shared board is editable, and only sealed.
+
+    // Own plaintext board wins on a bare-slug collision with a joined board.
+    if let Some(view) = event::load_board(ndb, &txn, author, board_id) {
+        return Ok(ResolvedTarget {
+            view,
+            channel: None,
+        });
+    }
+
+    // Not ours: only a joined shared board of that slug is editable, and only sealed.
     let team = teams
         .iter()
         .find(|t| t.board_slug() == Some(board_id))
         .ok_or_else(|| format!("no board '{board_id}'"))?;
+    resolve_shared(ndb, &txn, board_id, team)
+}
+
+/// Fold a shared board by coordinate and derive its sealing channel. Refuses
+/// (rather than editing unsealed) when the channel key is unusable or the board
+/// hasn't synced yet.
+fn resolve_shared(
+    ndb: &Ndb,
+    txn: &Transaction,
+    board_id: &str,
+    team: &teams::Team,
+) -> Result<ResolvedTarget, String> {
     let channel = team
         .sns_keys()
         .map(|keys| store::SnsChannel { keys })
@@ -286,12 +320,15 @@ fn resolve_target(
         })?;
     let view = event::load_shared_board(
         ndb,
-        &txn,
+        txn,
         &team.board_addr,
         &channel.keys.team_keypair.pubkey,
     )
     .ok_or_else(|| format!("shared board '{board_id}' has not synced yet"))?;
-    Ok((view, Some(channel)))
+    Ok(ResolvedTarget {
+        view,
+        channel: Some(channel),
+    })
 }
 
 /// Apply a board mutation for the selected account and fan the resulting events
@@ -314,7 +351,7 @@ fn mutate(
     // specific resolution error rather than a generic capability error. The roster
     // is read straight from nostrdb (see [`teams::teams_from_ndb`]).
     let teams = teams::teams_from_ndb(cx.ndb, &author);
-    let (view, channel) = resolve_target(cx.ndb, &author, board_id, &teams)?;
+    let ResolvedTarget { view, channel } = resolve_target(cx.ndb, &author, board_id, &teams)?;
     let action = build(&view)?;
 
     let secret = cx
@@ -914,11 +951,13 @@ mod tests {
         }
     }
 
-    /// A joined shared board (one this account doesn't own) resolves *with* a
-    /// sealing channel — the anti-leak contract: an AI-tool edit to a shared board
-    /// seals into its SNS channel rather than publishing a plaintext rumor.
+    /// A shared board resolves *with* a sealing channel — the anti-leak contract:
+    /// an AI-tool edit to a shared board seals into its SNS channel rather than
+    /// publishing a plaintext rumor. Covers both the joined path (a board this
+    /// account doesn't own) and the owner's own shared board (its coordinate is in
+    /// the roster, so it seals too instead of folding author-scoped).
     #[test]
-    fn resolve_target_seals_a_joined_shared_board() {
+    fn resolve_target_seals_a_shared_board() {
         let dir = TempDir::new().expect("tmp dir");
         let ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
         let owner = FullKeypair::generate();
@@ -976,7 +1015,7 @@ mod tests {
         let teams = [team];
 
         // The member doesn't own the board, so it folds by coordinate and seals.
-        let (view, channel) =
+        let ResolvedTarget { view, channel } =
             resolve_target(&ndb, &member.pubkey, store::BOARD_ID, &teams).expect("resolves");
         assert_eq!(view.id, store::BOARD_ID);
         assert!(
@@ -984,13 +1023,17 @@ mod tests {
             "a joined shared board must resolve a sealing channel, never plaintext"
         );
 
-        // The owner editing their own board stays plaintext even though a team for
-        // the same coordinate exists (own wins on a slug collision).
-        let (_own_view, own_channel) =
-            resolve_target(&ndb, &owner.pubkey, store::BOARD_ID, &teams).expect("resolves");
+        // The owner editing their OWN shared board also seals (breakage #1 + the
+        // plaintext leak): its coordinate is in the roster, so it folds by
+        // coordinate — surfacing co-members' cards — and seals every edit, rather
+        // than folding author-scoped and publishing a plaintext rumor.
+        let ResolvedTarget {
+            channel: own_channel,
+            ..
+        } = resolve_target(&ndb, &owner.pubkey, store::BOARD_ID, &teams).expect("resolves");
         assert!(
-            own_channel.is_none(),
-            "own-board edits stay plaintext (own wins over a shared team)"
+            own_channel.is_some(),
+            "an owner's own shared board must seal too, not leak plaintext"
         );
     }
 
