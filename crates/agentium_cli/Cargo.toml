@@ -21,3 +21,4 @@ nostrdb_relay = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tempfile = { workspace = true }
 bech32 = { workspace = true }
+uuid = { workspace = true }
