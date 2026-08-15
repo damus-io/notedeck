@@ -192,6 +192,15 @@ pub fn send_tool_result(
 /// Returns `true` (and logs) when the tool should be silently
 /// accepted without asking the user.
 pub fn should_auto_accept(tool_name: &str, tool_input: &serde_json::Value) -> bool {
+    // Decision-type prompts (AskUserQuestion / ExitPlanMode plan review) always
+    // need a real user decision and must never be silently accepted. This gate
+    // runs at the backend, before the request reaches dave's session-level
+    // `should_runtime_allow`, so the same invariant is enforced here too — the
+    // default rules don't list these tools today, but that must not be load-
+    // bearing.
+    if PermissionView::is_decision_tool(tool_name) {
+        return false;
+    }
     let rules = AutoAcceptRules::default();
     let accepted = rules.should_auto_accept(tool_name, tool_input);
     if accepted {
@@ -298,6 +307,20 @@ mod tests {
 
     fn img(bytes: &[u8], mime: &str) -> ImageAttachment {
         ImageAttachment::new(bytes.to_vec(), mime)
+    }
+
+    #[test]
+    fn decision_tools_never_backend_auto_accepted() {
+        // A question set / plan review must reach the user for a real decision,
+        // so the backend-level default-rules gate must never silently accept it.
+        assert!(!should_auto_accept(
+            "AskUserQuestion",
+            &serde_json::json!({ "questions": [] }),
+        ));
+        assert!(!should_auto_accept(
+            "ExitPlanMode",
+            &serde_json::json!({ "plan": "# Do the thing" }),
+        ));
     }
 
     #[test]
