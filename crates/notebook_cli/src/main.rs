@@ -12,6 +12,7 @@
 
 use std::env;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
@@ -52,6 +53,11 @@ enum Command {
         /// Optional node selectors. When non-empty, `show` prints only these
         /// nodes rather than the whole canvas.
         nodes: Vec<String>,
+    },
+    Vault {
+        /// Optional note selectors. Empty → list the vault; otherwise print each
+        /// named note's markdown body.
+        notes: Vec<String>,
     },
     Seed {
         title: String,
@@ -146,6 +152,22 @@ async fn run() -> Result<()> {
     };
 
     let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
+
+    // Register the signer's key so nostrdb transparently unwraps our PNS-wrapped
+    // longform (kind 1080 → 30023) for the vault reader below, mirroring what the
+    // app does when the account is added. Without it the vault reads empty.
+    if let Some((sk, _)) = &cli.secret {
+        ndb.add_key(sk);
+    }
+
+    // The vault is a local read of the PNS-unwrapped longform store. Longform
+    // never travels over the relay — pushing the plaintext kind-30023 would leak
+    // the article (cross-device sync fans the 1080 wrapper instead; see
+    // notedeck_notebook and headway:notebook/merry-patch-boost) — so a `vault`
+    // command skips the canvas reconcile entirely and works fully offline.
+    if let Command::Vault { notes } = &cli.command {
+        return run_vault(&ndb, &author, notes, cli.json);
+    }
 
     // Reconcile the local cache against the relay both ways so the cache and the
     // app converge regardless of which side an edit happened on. Best-effort: an
@@ -286,7 +308,11 @@ fn build_action(view: &CanvasView, command: Command) -> Result<CanvasAction> {
             }
         }
         Command::Rename { title } => CanvasAction::Rename { title },
-        Command::Show { .. } | Command::Seed { .. } | Command::Login { .. } | Command::Logout => {
+        Command::Show { .. }
+        | Command::Vault { .. }
+        | Command::Seed { .. }
+        | Command::Login { .. }
+        | Command::Logout => {
             unreachable!("handled before build_action")
         }
     })
@@ -473,6 +499,158 @@ fn print_nodes(view: &CanvasView, sels: &[String], as_json: bool) -> Result<()> 
 }
 
 // ---------------------------------------------------------------------------
+// vault (longform notes)
+// ---------------------------------------------------------------------------
+
+/// List `author`'s longform vault, or print the markdown bodies of the notes named
+/// by `sels`. A purely local read of the PNS-unwrapped longform store — see the
+/// short-circuit in [`run`] for why longform never syncs over the relay.
+fn run_vault(ndb: &Ndb, author: &Pubkey, sels: &[String], as_json: bool) -> Result<()> {
+    let txn = Transaction::new(ndb).map_err(|e| format!("opening a db transaction: {e}"))?;
+    let notes = event::list_longform(ndb, &txn, author);
+
+    if sels.is_empty() {
+        print_vault(&notes, as_json);
+        return Ok(());
+    }
+
+    // Resolve every selector first so one bad ref fails the whole command rather
+    // than printing a partial result (mirrors `print_nodes`).
+    let picked: Vec<&event::LongformNote> = sels
+        .iter()
+        .map(|sel| find_longform(&notes, sel))
+        .collect::<Result<_>>()?;
+    print_vault_bodies(&picked, as_json);
+    Ok(())
+}
+
+/// Resolve a vault-note selector against the current list, accepting (in order): a
+/// `nostr:naddr…`/coordinate reference; a `notebook:<word-id>` reference (matched
+/// against each note's canonical ref); or a full `d` or unique `d` prefix.
+fn find_longform<'a>(
+    notes: &'a [event::LongformNote],
+    sel: &str,
+) -> Result<&'a event::LongformNote> {
+    // A nostr:naddr / bare coordinate → match by (author, d).
+    if let Some((author, d)) = event::parse_longform_naddr(sel) {
+        return notes
+            .iter()
+            .find(|n| n.author == *author.bytes() && n.d == d)
+            .ok_or_else(|| format!("no vault note matching '{sel}'").into());
+    }
+
+    // A `notebook:<word-id>` reference → the note whose canonical ref equals it.
+    // Ref-shaped but unmatched fails here rather than falling through to a `d`
+    // prefix, so a mistyped word-id can't silently resolve to some other note.
+    if wordid::parse_ref(sel).is_some() {
+        return notes
+            .iter()
+            .find(|n| event::longform_ref(&Pubkey::new(n.author), &n.d) == sel)
+            .ok_or_else(|| format!("no vault note matching '{sel}'").into());
+    }
+
+    // Otherwise a full `d` or a unique `d` prefix.
+    let mut hits = notes.iter().filter(|n| n.d.starts_with(sel));
+    match (hits.next(), hits.next()) {
+        (Some(n), None) => Ok(n),
+        (Some(_), Some(_)) => Err(format!("ambiguous vault selector '{sel}'").into()),
+        _ => Err(format!("no vault note matching '{sel}'").into()),
+    }
+}
+
+/// A vault note's one-line title for listings, falling back when the note has no
+/// title tag yet (a freshly-created draft).
+fn note_title(n: &event::LongformNote) -> &str {
+    let t = n.title.trim();
+    if t.is_empty() { "(untitled)" } else { t }
+}
+
+/// Print the vault list: one row per note (title, edited-age, ref), with the
+/// summary on a muted second line when present.
+fn print_vault(notes: &[event::LongformNote], as_json: bool) {
+    if as_json {
+        let out: Vec<_> = notes.iter().map(event::longform_json).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
+        );
+        return;
+    }
+
+    let now = now_secs();
+    println!(
+        "Vault ({} note{})",
+        notes.len(),
+        if notes.len() == 1 { "" } else { "s" }
+    );
+    for n in notes {
+        let author = Pubkey::new(n.author);
+        let when = nostrdb_net::relay::sync::dim(&format!("edited {}", ago(n.created_at, now)));
+        let reference = nostrdb_net::relay::sync::dim(&event::longform_ref(&author, &n.d));
+        println!("  {}  {}  {}", note_title(n), when, reference);
+        if let Some(summary) = n
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            println!("    {}", nostrdb_net::relay::sync::dim(&one_line(summary)));
+        }
+    }
+}
+
+/// Print the markdown bodies of the resolved notes. A single note prints its raw
+/// body only, so `notebook vault <note> > note.md` round-trips; more than one is
+/// separated by a muted ref header so the concatenation stays navigable.
+fn print_vault_bodies(notes: &[&event::LongformNote], as_json: bool) {
+    if as_json {
+        let out: Vec<_> = notes.iter().map(|n| event::longform_json(n)).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
+        );
+        return;
+    }
+
+    for (i, n) in notes.iter().enumerate() {
+        if notes.len() > 1 {
+            if i > 0 {
+                println!();
+            }
+            let reference = event::longform_ref(&Pubkey::new(n.author), &n.d);
+            println!("{}", nostrdb_net::relay::sync::dim(&reference));
+        }
+        print!("{}", n.content);
+        // Ensure a trailing newline so the shell prompt isn't glued to the body.
+        if !n.content.ends_with('\n') {
+            println!();
+        }
+    }
+}
+
+/// Wall-clock seconds since the Unix epoch (0 if the clock somehow predates it).
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// A compact relative age ("just now", "5m ago", "2h ago", "3d ago") for a note's
+/// last edit. Deliberately dependency-light: the CLI isn't a localized surface,
+/// unlike the in-app vault sidebar's `edited_subtitle`.
+fn ago(then: u64, now: u64) -> String {
+    let secs = now.saturating_sub(then);
+    match secs {
+        0..=1 => "just now".to_string(),
+        2..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86_399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // argument parsing
 // ---------------------------------------------------------------------------
 
@@ -591,6 +769,9 @@ fn parse_command(
         "show" => Command::Show {
             nodes: rest.to_vec(),
         },
+        "vault" => Command::Vault {
+            notes: rest.to_vec(),
+        },
         "seed" => Command::Seed {
             // `seed [title...]`, or --title, defaulting to "Notebook".
             title: title
@@ -670,6 +851,9 @@ USAGE:
 COMMANDS:
     show [nodes...]            Print the canvas, or just the given nodes
                               (--json for machine output)
+    vault [notes...]          List your longform vault, or print the named notes'
+                              markdown bodies (--json for machine output). A local
+                              read — needs your --nsec/login to decrypt the vault.
     seed [title...]           Seed the canvas if none exists (default \"Notebook\")
     add <text...>             Add a text node (-x -y -w --height to place/size it)
     move <node> -x <n> -y <n> Move/resize a node (-w --height to resize)
@@ -702,4 +886,65 @@ OPTIONS:
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
         canvas = store::CANVAS_ID,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(author: [u8; 32], d: &str, title: &str) -> event::LongformNote {
+        event::LongformNote {
+            author,
+            d: d.to_string(),
+            title: title.to_string(),
+            summary: None,
+            content: String::new(),
+            published_at: None,
+            hashtags: Vec::new(),
+            created_at: 0,
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn ago_buckets_by_magnitude() {
+        assert_eq!(ago(100, 100), "just now");
+        assert_eq!(ago(100, 101), "just now");
+        assert_eq!(ago(0, 30), "30s ago");
+        assert_eq!(ago(0, 120), "2m ago");
+        assert_eq!(ago(0, 7200), "2h ago");
+        assert_eq!(ago(0, 3 * 86_400), "3d ago");
+        // A clock that ran backwards clamps to "just now" rather than underflowing.
+        assert_eq!(ago(500, 100), "just now");
+    }
+
+    #[test]
+    fn find_longform_by_prefix_ref_and_naddr() {
+        let a = [7u8; 32];
+        let notes = vec![note(a, "abcdef", "One"), note(a, "abff00", "Two")];
+
+        // A unique `d` prefix resolves; an ambiguous one is rejected.
+        assert_eq!(find_longform(&notes, "abcd").unwrap().d, "abcdef");
+        assert!(find_longform(&notes, "ab").is_err());
+        assert!(find_longform(&notes, "zz").is_err());
+
+        // The canonical `notebook:<word-id>` ref resolves to its own note.
+        let reference = event::longform_ref(&Pubkey::new(a), "abcdef");
+        assert_eq!(find_longform(&notes, &reference).unwrap().d, "abcdef");
+
+        // A nostr:naddr for the note resolves too.
+        let naddr = event::longform_naddr(&Pubkey::new(a), "abff00").unwrap();
+        assert_eq!(find_longform(&notes, &naddr).unwrap().d, "abff00");
+
+        // A well-formed ref that matches no note fails rather than falling through
+        // to a `d`-prefix match.
+        let missing = event::longform_ref(&Pubkey::new(a), "nope");
+        assert!(find_longform(&notes, &missing).is_err());
+    }
+
+    #[test]
+    fn note_title_falls_back_when_blank() {
+        assert_eq!(note_title(&note([0u8; 32], "d", "  Hi ")), "Hi");
+        assert_eq!(note_title(&note([0u8; 32], "d", "   ")), "(untitled)");
+    }
 }
