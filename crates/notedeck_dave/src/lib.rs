@@ -91,6 +91,15 @@ fn normalize_relay_url(url: String) -> String {
 /// How long a pending placeholder session waits before being removed.
 const PENDING_SESSION_TIMEOUT_SECS: f64 = 15.0;
 
+/// How long the PNS discovery subscription may stay un-settled before the
+/// [latch](Dave::discovery_settled) is forced on anyway. The settle signals
+/// (live EOSE + full-history reconcile) never fire against a relay that never
+/// connects or never EOSEs, which would otherwise defer remote session
+/// discovery, status and deletion updates for the entire app run. Forcing the
+/// latch after this deadline degrades to processing the mid-sync snapshot
+/// (idempotent guards still apply) rather than freezing remote updates.
+const DISCOVERY_SETTLE_TIMEOUT_SECS: f64 = 20.0;
+
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
     keypair.secret_key.map(|sk| {
@@ -548,6 +557,12 @@ pub struct Dave {
     /// [`Dave::poll_discovery_settled`]. Reset to `false` whenever the discovery
     /// subscription is (re)declared (e.g. account/relay switch).
     discovery_settled: bool,
+    /// When the current discovery subscription was declared, i.e. when the
+    /// [settle](Dave::discovery_settled) wait began. Drives the
+    /// [`DISCOVERY_SETTLE_TIMEOUT_SECS`] fallback so an unreachable or
+    /// never-EOSE relay can't defer remote discovery forever. `None` while no
+    /// remote subscription is declared.
+    discovery_pending_since: Option<Instant>,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
@@ -1089,6 +1104,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pns_relay_url,
             pns_remote_sub_state: None,
             discovery_settled: false,
+            discovery_pending_since: None,
             pns_local_state: None,
             pns_local_runtimes: HashMap::new(),
             settings_serializer,
@@ -4268,6 +4284,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Fresh subscription: its EOSE has not been observed yet, so the synced
         // view is once again mid-sync until `poll_discovery_settled` sees EOSE.
         self.discovery_settled = false;
+        self.discovery_pending_since = Some(Instant::now());
     }
 
     /// Remove Dave's PNS discovery subscription via the engine [`Transport`].
@@ -4280,6 +4297,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .drop_subscription(&pns_remote_sub_id());
         self.pns_remote_sub_state = None;
         self.discovery_settled = false;
+        self.discovery_pending_since = None;
     }
 
     /// Whether the remote discovery sync is still pending: a remote discovery
@@ -4316,6 +4334,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// session whose `deleted` event has not arrived yet. Consumers gate that
     /// work on this latch.
     ///
+    /// Neither signal fires against a relay that never connects or never EOSEs,
+    /// so the latch is also forced on after [`DISCOVERY_SETTLE_TIMEOUT_SECS`] to
+    /// avoid deferring remote discovery, status and deletion updates for the
+    /// entire app run. The idempotent snapshot guards still apply after a forced
+    /// settle, so the worst case is a brief litter flicker on a relay that is
+    /// still reconciling past the deadline — not stale-forever remote state.
+    ///
     /// Cheap to call every frame: it short-circuits once latched, and each query
     /// is a small hashmap lookup over tracked-relay / tracked-sub state.
     fn poll_discovery_settled(&mut self, ctx: &mut AppContext<'_>) {
@@ -4330,7 +4355,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
         if live_eosed && scoped.full_history_settled(identity) {
             self.discovery_settled = true;
+            self.discovery_pending_since = None;
             tracing::info!("dave discovery subscription settled (live EOSE + history reconciled)");
+            return;
+        }
+
+        let timed_out = self
+            .discovery_pending_since
+            .is_some_and(|since| since.elapsed().as_secs_f64() > DISCOVERY_SETTLE_TIMEOUT_SECS);
+        if timed_out {
+            self.discovery_settled = true;
+            self.discovery_pending_since = None;
+            tracing::warn!(
+                "dave discovery subscription settle timed out after {DISCOVERY_SETTLE_TIMEOUT_SECS}s \
+                 (relay unreachable or slow); processing mid-sync snapshot"
+            );
         }
     }
 
