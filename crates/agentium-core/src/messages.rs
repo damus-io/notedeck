@@ -171,6 +171,22 @@ impl PermissionView {
         Self::RawFallback
     }
 
+    /// Tool names whose permission requests always require an explicit user
+    /// decision and must never be silently auto-accepted (by Auto Accept All,
+    /// Auto Accept Edits, or the runtime allowlist).
+    ///
+    /// `AskUserQuestion` needs a real selection among options and `ExitPlanMode`
+    /// needs the user to actually review and approve the plan — neither is a
+    /// yes/no tool-permission grant, so auto-accepting them would silently
+    /// discard a decision that is the user's to make. These map to the
+    /// [`QuestionSet`](Self::QuestionSet) and [`PlanReview`](Self::PlanReview)
+    /// views (see [`infer`](Self::infer)); we key off the tool name rather than
+    /// the inferred view so a malformed payload can't downgrade the request to
+    /// an auto-acceptable fallback.
+    pub fn is_decision_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "AskUserQuestion" | "ExitPlanMode")
+    }
+
     /// Infer an approval prompt only from the narrow shape we intentionally
     /// emit for compact allow/deny cards.
     fn infer_approval_prompt(tool_input: &Value) -> Option<ApprovalPromptInput> {

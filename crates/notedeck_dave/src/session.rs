@@ -290,6 +290,13 @@ impl AgenticSessionData {
     /// allowlist. This is the single dave-side checkpoint every backend's
     /// permission requests flow through, so it is backend-agnostic.
     pub fn should_runtime_allow(&self, tool_name: &str, tool_input: &serde_json::Value) -> bool {
+        // Decision-type prompts (AskUserQuestion / ExitPlanMode plan review)
+        // always need a real user decision — a question set needs a selection
+        // and a plan review needs approval, neither is a yes/no tool grant — so
+        // never auto-accept them, even under Auto Accept All.
+        if crate::messages::PermissionView::is_decision_tool(tool_name) {
+            return false;
+        }
         if self.auto_accept_all {
             return true;
         }
@@ -1563,11 +1570,35 @@ mod tests {
         let scary = serde_json::json!({ "command": "rm -rf /" });
         assert!(!agentic.should_runtime_allow("Bash", &scary));
 
-        // On: dave auto-accepts everything, regardless of tool or allowlist.
+        // On: dave auto-accepts genuine tool grants, regardless of tool or
+        // allowlist. Decision-type prompts are the exception (see below).
         agentic.auto_accept_all = true;
         assert!(agentic.should_runtime_allow("Bash", &scary));
         assert!(agentic
             .should_runtime_allow("Write", &serde_json::json!({ "file_path": "/etc/passwd" })));
+    }
+
+    #[test]
+    fn decision_tools_never_auto_accepted() {
+        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+
+        let question = serde_json::json!({
+            "questions": [{
+                "header": "Approach",
+                "question": "Which one?",
+                "options": [{ "label": "A" }, { "label": "B" }],
+            }],
+        });
+        let plan = serde_json::json!({ "plan": "# Do the thing" });
+
+        // A question set / plan review needs a real user decision, so it is
+        // never auto-accepted — not by Auto Accept All, not by the allowlist.
+        assert!(!agentic.should_runtime_allow("AskUserQuestion", &question));
+        assert!(!agentic.should_runtime_allow("ExitPlanMode", &plan));
+
+        agentic.auto_accept_all = true;
+        assert!(!agentic.should_runtime_allow("AskUserQuestion", &question));
+        assert!(!agentic.should_runtime_allow("ExitPlanMode", &plan));
     }
 
     fn test_session() -> ChatSession {
