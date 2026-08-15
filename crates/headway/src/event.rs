@@ -247,7 +247,55 @@ impl ColumnDef {
     }
 }
 
-/// The addressable coordinate of a board: `30619:<author-hex>:<board-id>`.
+/// The addressable identity of a board: its owner plus its slug — i.e. the nostr
+/// coordinate `30619:<owner-hex>:<slug>`.
+///
+/// A board is `(owner, slug)`, never a bare slug: two owners can each have a board
+/// with the same slug (your "roadmap" and a teammate's shared "roadmap"), so the
+/// selection, switcher, and saved-preference layers key on this coordinate rather
+/// than the slug alone. It is also the `#a`-tag value that anchors a board's cards,
+/// and the key `fold_shared_board` gathers every member's events under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoardCoord {
+    /// The board owner's pubkey — the author of its kind-30619 definition. Raw
+    /// bytes (not [`Pubkey`]) to match `BoardView::author` / `IssueEvent::board_author`
+    /// and avoid conversions at the many construction sites.
+    pub owner: [u8; 32],
+    /// The board's slug: the `d`-tag identifier of its definition.
+    pub slug: String,
+}
+
+impl BoardCoord {
+    /// Construct from an owner pubkey and slug.
+    pub fn new(owner: [u8; 32], slug: impl Into<String>) -> Self {
+        Self {
+            owner,
+            slug: slug.into(),
+        }
+    }
+
+    /// Render as the coordinate string `30619:<owner-hex>:<slug>`.
+    pub fn coordinate(&self) -> String {
+        board_address(&Pubkey::new(self.owner), &self.slug)
+    }
+
+    /// Parse a `30619:<owner-hex>:<slug>` coordinate. `None` if the kind prefix
+    /// isn't [`KIND_BOARD`] or the owner segment isn't valid hex.
+    pub fn parse(addr: &str) -> Option<BoardCoord> {
+        let mut parts = addr.splitn(3, ':');
+        let kind = parts.next()?;
+        if kind != KIND_BOARD.to_string() {
+            return None;
+        }
+        let owner_hex = parts.next()?;
+        let slug = parts.next()?;
+        let owner = *Pubkey::from_hex(owner_hex).ok()?.bytes();
+        Some(BoardCoord::new(owner, slug))
+    }
+}
+
+/// The addressable coordinate of a board: `30619:<author-hex>:<board-id>`. Thin
+/// formatting helper; see [`BoardCoord`] for the owner+slug identity type.
 pub fn board_address(author: &Pubkey, board_id: &str) -> String {
     format!("{KIND_BOARD}:{}:{board_id}", author.hex())
 }
@@ -795,7 +843,7 @@ fn parse_issue(note: &Note) -> Option<IssueEvent> {
 
     for tag in note.tags() {
         match tag.get_str(0) {
-            Some("a") => board = tag.get_str(1).and_then(parse_board_address),
+            Some("a") => board = tag.get_str(1).and_then(BoardCoord::parse),
             Some("subject") => {
                 if let Some(s) = tag.get_str(1) {
                     subject = s.to_owned();
@@ -810,13 +858,13 @@ fn parse_issue(note: &Note) -> Option<IssueEvent> {
         }
     }
 
-    let (board_author, board_id) = board?;
+    let board = board?;
 
     Some(IssueEvent {
         id: *note.id(),
         author: *note.pubkey(),
-        board_author,
-        board_id,
+        board_author: board.owner,
+        board_id: board.slug,
         subject,
         body: note.content().to_owned(),
         inline_labels,
@@ -834,7 +882,7 @@ fn parse_placement(note: &Note) -> Option<PlacementEvent> {
     for tag in note.tags() {
         match tag.get_str(0) {
             Some("e") => issue_id = tag.get_id(1).copied(),
-            Some("a") => board = tag.get_str(1).and_then(parse_board_address),
+            Some("a") => board = tag.get_str(1).and_then(BoardCoord::parse),
             Some("col") => col = tag.get_str(1).map(|s| s.to_owned()),
             Some("rank") => rank = tag.get_str(1).map(|s| s.to_owned()),
             Some("from") => from = tag.get_str(1).map(|s| s.to_owned()),
@@ -842,12 +890,12 @@ fn parse_placement(note: &Note) -> Option<PlacementEvent> {
         }
     }
 
-    let (board_author, board_id) = board?;
+    let board = board?;
 
     Some(PlacementEvent {
         author: *note.pubkey(),
-        board_author,
-        board_id,
+        board_author: board.owner,
+        board_id: board.slug,
         issue_id: issue_id?,
         col: col?,
         rank: rank?,
@@ -1005,19 +1053,6 @@ fn parse_sequence(note: &Note) -> Option<SequenceEvent> {
 fn container_from_d(d: &str) -> Option<Container> {
     let (container, _issue_hex) = d.rsplit_once(':')?;
     Container::parse(container)
-}
-
-/// Parse a `30619:<author-hex>:<board-id>` address into `(author, board_id)`.
-fn parse_board_address(addr: &str) -> Option<([u8; 32], String)> {
-    let mut parts = addr.splitn(3, ':');
-    let kind = parts.next()?;
-    if kind != KIND_BOARD.to_string() {
-        return None;
-    }
-    let author_hex = parts.next()?;
-    let board_id = parts.next()?;
-    let author = Pubkey::from_hex(author_hex).ok()?;
-    Some((*author.bytes(), board_id.to_owned()))
 }
 
 // ---------------------------------------------------------------------------
@@ -2250,11 +2285,11 @@ pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Board
 /// "phase A" of [`fold_shared_board`]; the card ids it surfaces drive the
 /// card-anchored "phase B" ([`card_meta_filter`]).
 pub fn board_scoped_filters(board_addr: &str) -> Option<Vec<Filter>> {
-    let (owner, board_id) = parse_board_address(board_addr)?;
+    let coord = BoardCoord::parse(board_addr)?;
     let def = Filter::new()
         .kinds([KIND_BOARD as u64])
-        .authors([&owner])
-        .tags([board_id.as_str()], 'd')
+        .authors([&coord.owner])
+        .tags([coord.slug.as_str()], 'd')
         .limit(1)
         .build();
     let anchored = Filter::new()
@@ -2789,6 +2824,28 @@ pub fn rank_between(left: Option<&str>, right: Option<&str>) -> String {
 mod tests {
     use super::*;
     use enostr::FullKeypair;
+
+    #[test]
+    fn board_coord_round_trips_and_rejects_other_kinds() {
+        let kp = FullKeypair::generate();
+        let coord = BoardCoord::new(*kp.pubkey.bytes(), "roadmap");
+
+        // coordinate() matches the legacy board_address formatting exactly.
+        assert_eq!(coord.coordinate(), board_address(&kp.pubkey, "roadmap"));
+
+        // Round-trips back to the same owner + slug.
+        let parsed = BoardCoord::parse(&coord.coordinate()).expect("parse own coordinate");
+        assert_eq!(parsed, coord);
+
+        // A slug containing ':' survives (splitn keeps the tail intact).
+        let odd = BoardCoord::new(*kp.pubkey.bytes(), "a:b:c");
+        assert_eq!(BoardCoord::parse(&odd.coordinate()), Some(odd));
+
+        // Non-30619 kinds and malformed owners are rejected.
+        assert!(BoardCoord::parse(&format!("30620:{}:roadmap", kp.pubkey.hex())).is_none());
+        assert!(BoardCoord::parse("30619:not-hex:roadmap").is_none());
+        assert!(BoardCoord::parse("roadmap").is_none());
+    }
 
     /// Sign `builder` with `kp` and parse the result back into a [`HeadwayEvent`].
     fn roundtrip(builder: NoteBuilder, kp: &FullKeypair) -> HeadwayEvent {
