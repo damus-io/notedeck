@@ -384,6 +384,73 @@ fn snapshot_headway_detail_inline_ref() {
     harness.snapshot("headway_detail_inline_ref");
 }
 
+/// A card's detail pane must fold in edits that arrive *while it stays open* — a
+/// `headway` CLI move or a relay peer's edit. Its title and description render
+/// from edit buffers that historically seeded only once on open, so a remote
+/// edit went stale until the pane was closed and reopened (comments/labels/status
+/// updated live because they render straight from the fresh board). Open the card
+/// first, then edit it through the store the way an external writer would, and
+/// assert the new text shows without leaving the pane.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn detail_pane_live_updates_open_card() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    // Open the card first: this seeds the title/description edit buffers from the
+    // board as it stands now.
+    harness
+        .get_by_label("Define nostr event model for boards")
+        .simulate_click();
+    harness.run_ok();
+
+    // Now edit the open card the way a `headway` CLI run or a relay peer would —
+    // straight into the store, not through the pane's own editor. Scoped so the
+    // `AppContext` (and its harness borrow) drops before we pump frames again.
+    let new_title = "Define nostr event model for boards (edited live)";
+    let new_desc = "Edited while the detail pane was open.";
+    {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let secret = state.account.secret_key.secret_bytes();
+        let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+        let card = demo_card_id(app_ctx.ndb, &author, "Define nostr event model for boards");
+        let signer = store::Signer::new(&secret, None);
+
+        // Re-fold before each edit so the second action builds on the first.
+        for action in [
+            store::BoardAction::EditTitle {
+                card,
+                title: new_title.to_string(),
+            },
+            store::BoardAction::EditDescription {
+                card,
+                description: new_desc.to_string(),
+            },
+        ] {
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let reducer = headway::event::fold_board(app_ctx.ndb, &txn, &author).expect("folded");
+            let boards = reducer.finalize();
+            let view =
+                headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+            store::apply(
+                app_ctx.ndb,
+                store::BOARD_ID,
+                view,
+                &author,
+                &signer,
+                action,
+                &mut store::NoPublish,
+            );
+        }
+    }
+
+    // Without closing the pane, the new title and description must appear as the
+    // async ingest lands — the regression rendered the pre-edit text until reopen.
+    wait_for_label(&mut harness, new_title);
+    wait_for_label(&mut harness, new_desc);
+}
+
 /// A plain kind-1 nostr note that mentions a card by its `headway:board/word-word-word`
 /// id renders that reference as the card's live status chip in NoteView — the
 /// note-renderer counterpart to the detail-pane test above. Proves the browser's

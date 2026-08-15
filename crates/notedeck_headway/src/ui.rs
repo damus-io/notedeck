@@ -76,10 +76,20 @@ pub struct BoardUiState {
     detail_for: Option<NoteId>,
     /// Edit buffer for the selected card's title.
     detail_title: String,
+    /// The board's title value the title buffer was last synced to. While the
+    /// title is shown rendered (not being typed into), a change here versus the
+    /// live board drives a refresh so remote edits appear immediately. Keying on
+    /// this last-synced value — rather than comparing the buffer to the board —
+    /// keeps a just-committed local edit (whose buffer leads the board until its
+    /// async ingest lands) from being clobbered back to the old text.
+    detail_title_seen: String,
     /// Whether the title is shown rendered or in its raw editor.
     detail_title_mode: EditMode,
     /// Edit buffer for the selected card's description.
     detail_desc: String,
+    /// As [`detail_title_seen`](Self::detail_title_seen), for the description
+    /// buffer.
+    detail_desc_seen: String,
     /// Whether the description is shown rendered or in its raw editor.
     detail_desc_mode: EditMode,
     /// Buffer backing the "add label" field in the detail sheet.
@@ -1549,7 +1559,9 @@ fn card_detail_pane_ui(
     if state.detail_for != Some(card_id) {
         state.detail_for = Some(card_id);
         state.detail_title = card.title.clone();
+        state.detail_title_seen = card.title.clone();
         state.detail_desc = card.description.clone();
+        state.detail_desc_seen = card.description.clone();
         // A blank title opens straight into the editor; one with content shows
         // its render until the user asks to edit. The description always opens
         // rendered — its empty state is a quiet "Add description…" placeholder
@@ -1561,6 +1573,21 @@ fn card_detail_pane_ui(
         state.new_subissue.clear();
         state.subissue_composer = false;
         state.comment_draft.clear();
+    }
+
+    // Fold remote edits into the buffers live while the same card stays open.
+    // Comments, activity, labels and status already render straight from the
+    // fresh per-frame board; the title and description render from these edit
+    // buffers, so without this they'd only pick up a relay/CLI edit on reopen.
+    // Only refresh a field that's shown rendered (not mid-edit), and only when
+    // the board's value has moved since we last synced — see `detail_title_seen`.
+    if state.detail_title_mode == EditMode::Rendered && card.title != state.detail_title_seen {
+        state.detail_title = card.title.clone();
+        state.detail_title_seen = card.title.clone();
+    }
+    if state.detail_desc_mode == EditMode::Rendered && card.description != state.detail_desc_seen {
+        state.detail_desc = card.description.clone();
+        state.detail_desc_seen = card.description.clone();
     }
 
     let ctx = DetailCtx {
