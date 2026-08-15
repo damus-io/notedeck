@@ -1194,6 +1194,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
+        // Already awaiting a remote resume for this session — focus the existing
+        // "Connecting…" placeholder rather than queuing a second command and
+        // stranding a duplicate placeholder (re-clicking the chip before its host
+        // answers). The placeholder is agentic-less, so the check above misses it.
+        if let Some(placeholder_id) = self.pending_placeholder_for(None, &event_id) {
+            self.session_manager.switch_to(placeholder_id);
+            self.active_overlay = DaveOverlay::None;
+            self.show_session_list = false;
+            return;
+        }
+
         // Not materialized: a soft-deleted (or not-yet-restored) session. Reopen
         // it instead of dropping the click — the deleted-chip resume affordance.
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
@@ -6840,10 +6851,35 @@ mod tests {
         );
         // pending_placeholder_for finds it by that d-tag (spawn_id absent), the
         // exact lookup the discovery fold uses to upgrade in place.
+        let placeholder_id = placeholder.id;
         assert_eq!(
             dave.pending_placeholder_for(None, "remote-sess"),
-            Some(placeholder.id),
+            Some(placeholder_id),
             "the discovery fold correlates the revived state to this placeholder",
+        );
+
+        // Re-clicking the same deleted chip before the host answers focuses the
+        // existing placeholder instead of queuing a second command / stranding a
+        // duplicate placeholder.
+        dave.pending_open = Some(enostr::NoteId::new(remote_tomb.note_id));
+        dave.process_pending_open(&ndb);
+        assert_eq!(
+            dave.pending_resume_commands.len(),
+            1,
+            "re-click does not queue a second resume command",
+        );
+        assert_eq!(
+            dave.session_manager
+                .iter()
+                .filter(|s| s.pending_created_at.is_some())
+                .count(),
+            1,
+            "re-click does not create a second placeholder",
+        );
+        assert_eq!(
+            dave.session_manager.active_id(),
+            Some(placeholder_id),
+            "re-click focuses the existing placeholder",
         );
 
         // Click the local chip: it is revived in place (materialized, dirty) with
