@@ -31,7 +31,6 @@ mod oneshot_api;
 mod options;
 mod persist;
 pub mod platform;
-pub mod pns_sync;
 mod private_sync;
 pub mod profile;
 mod publish;
@@ -121,7 +120,9 @@ pub use notecache::{CachedNote, NoteCache};
 pub use oneshot_api::OneshotApi;
 pub use options::NotedeckOptions;
 pub use persist::*;
-pub use private_sync::{fan_out_event_frame, fan_out_unseen_notes, PrivateRelaySync};
+pub use private_sync::{
+    fan_out_event_frame, fan_out_unseen_notes, HostPrivateSync, PrivateRelaySync,
+};
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};
 pub use realtime_cache::{PollResponse, RealtimeCache, RealtimeCacheStats, Reducer};

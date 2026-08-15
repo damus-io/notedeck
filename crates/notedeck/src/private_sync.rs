@@ -18,9 +18,13 @@
 //! relay marked the relay set is empty and both directions are no-ops, so the
 //! app stays purely local.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+
 use enostr::{NormRelayUrl, Pubkey, RelayId};
 use hashbrown::HashSet;
-use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb_net::relay::sync::Session;
 
 use crate::{
     AppContext, ExplicitPublishApi, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey,
@@ -70,6 +74,24 @@ pub fn fan_out_unseen_notes(
     keys: &[NoteKey],
     relays: &[RelayId],
 ) {
+    fan_out_unseen_notes_with(ndb, txn, keys, relays, |json, targets| {
+        api.publish_event_json(json, targets)
+    });
+}
+
+/// The seen-on/`is_rumor` fan-out logic shared by the outbox path
+/// ([`fan_out_unseen_notes`]) and the host [`Session`] path
+/// ([`HostPrivateSync`]). For each key it resolves the note, skips unwrapped
+/// rumors, computes the private relays it hasn't been seen on, and hands the
+/// note's JSON plus those targets to `publish` — the only difference between the
+/// two callers being which transport `publish` writes to.
+fn fan_out_unseen_notes_with(
+    ndb: &Ndb,
+    txn: &Transaction,
+    keys: &[NoteKey],
+    relays: &[RelayId],
+    mut publish: impl FnMut(String, Vec<RelayId>),
+) {
     if relays.is_empty() || keys.is_empty() {
         return;
     }
@@ -115,7 +137,238 @@ pub fn fan_out_unseen_notes(
         let Ok(json) = note.json() else {
             continue;
         };
-        api.publish_event_json(json, targets);
+        publish(json, targets);
+    }
+}
+
+/// The stable subscription id the host's PNS [`Session`] declares on every
+/// private relay. It is a single logical subscription (one filter set) fanned
+/// across the relay set, so dropping it closes the PNS `REQ` on all of them.
+const HOST_PNS_SUB_ID: &str = "host/pns";
+
+/// The unlinkable pubkey that signs (and thus authors) the account's kind-1080
+/// PNS envelopes, HKDF-derived from the account secret
+/// (`enostr::pns::derive_pns_keys`). Every device for the same account derives the
+/// same pubkey, so this names the account's private-note stream. A PNS envelope
+/// wraps an account-private inner note — notebook longform, a dave session state,
+/// a headway board-pref — NIP-44 encrypted to that keypair; relays only ever see
+/// the opaque envelope, and nostrdb (seeded with the account key at sign-in)
+/// auto-unwraps it on ingest so the inner note becomes queryable by its own kind.
+fn pns_author(account_secret: &[u8; 32]) -> Pubkey {
+    enostr::pns::derive_pns_keys(account_secret).keypair.pubkey
+}
+
+/// Filter for the account's kind-1080 PNS envelope stream, authored by
+/// [`pns_author`]. Full-history: no `since`/time window — the negentropy backfill
+/// only transfers the envelopes this device lacks, so bounding the window would
+/// just risk dropping older private notes for no bandwidth saving. Because the
+/// derived author is a pure function of the account secret, this single filter
+/// pulls back *every* app's private notes for the account.
+fn pns_envelope_filter(pns_pubkey: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([enostr::pns::PNS_KIND as u64])
+        .authors([pns_pubkey.bytes()])
+        .build()
+}
+
+/// The host's account-wide private-note sync, run from [`Notedeck`](crate::Notedeck)
+/// independent of whichever app is foregrounded.
+///
+/// The host owns a long-lived [`Session`] over its own [`RelayPool`] — a small,
+/// dedicated pool for the account's 1–2 private-sync relays, separate from the
+/// app read/write outbox — and feeds it the account's kind-1080 PNS envelope
+/// filter ([`pns_envelope_filter`]). That covers *both* directions for every
+/// app's private notes at once:
+///
+/// - **inbound** — a live `REQ` plus a NIP-77 negentropy backfill pull the
+///   account's envelopes into the local nostrdb, where nostrdb auto-unwraps them;
+///   apps then read the inner notes with plain local queries.
+/// - **outbound** — a local subscription over the same envelope stream drives an
+///   [`is_rumor`](nostrdb::Note::is_rumor)-guarded fan-out of freshly-authored
+///   envelopes (e.g. a notebook longform created on this device) out to the
+///   private relays via [`Session::publish`].
+///
+/// Which filters to sync and the fan-out guard are host policy and live here; the
+/// [`Session`] itself is kind-agnostic. With no private relay marked the relay set
+/// is empty and both directions are no-ops, so the account stays purely local.
+pub struct HostPrivateSync {
+    /// The long-lived sync loop over the account's private relays. Lazily spawned
+    /// on the first [`update`](Self::update) where a Tokio runtime exists (it is
+    /// absent under the test harness, which keeps the host inert there). Held
+    /// behind an `Arc` so a settle watcher can be spawned onto the runtime with
+    /// its own handle.
+    session: Option<Arc<Session>>,
+    /// Local subscription over the account's kind-1080 envelope stream, re-created
+    /// when the selected account changes. Polled each frame to drive the outbound
+    /// fan-out.
+    local_sub: Option<Subscription>,
+    /// The `(account, sorted private relay urls)` the remote subscription was last
+    /// declared for, so we only re-declare (and re-arm the settle watcher) on a
+    /// real change rather than every frame.
+    declared: Option<(Pubkey, Vec<NormRelayUrl>)>,
+    /// Whether the history backfill for the current declaration has settled — read
+    /// by apps via [`AppContext::private_sync_settled`](crate::AppContext). Starts
+    /// `true` (nothing declared ⇒ nothing pending), flips `false` on each
+    /// (re)declaration, and latches back `true` when that declaration's backfill
+    /// completes. Shared with the settle watcher task.
+    settled: Arc<AtomicBool>,
+    /// Monotonic declaration generation. Each (re)declaration bumps it and spawns a
+    /// watcher capturing the new value; a watcher only latches [`settled`](Self::settled)
+    /// if its generation is still current, so a stale watcher from a superseded
+    /// declaration (e.g. after an account switch) can't mark a fresh sync settled.
+    settle_gen: Arc<AtomicU64>,
+}
+
+impl Default for HostPrivateSync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostPrivateSync {
+    /// A host sync that has not yet declared anything: inert until the first
+    /// [`update`](Self::update) resolves an account and (optionally) its relays.
+    pub fn new() -> Self {
+        Self {
+            session: None,
+            local_sub: None,
+            declared: None,
+            // Nothing declared yet ⇒ nothing to reconcile ⇒ settled.
+            settled: Arc::new(AtomicBool::new(true)),
+            settle_gen: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Whether the current PNS declaration's history backfill has settled.
+    ///
+    /// `true` when local-only (no private relay) or once the backfill has
+    /// reconciled; `false` in the window between (re)declaring the subscription
+    /// and its settle. Apps gate work that must not act on a mid-sync view (e.g.
+    /// dave's deleted-session litter avoidance) on this via
+    /// [`AppContext::private_sync_settled`](crate::AppContext).
+    pub fn settled(&self) -> bool {
+        self.settled.load(Ordering::Acquire)
+    }
+
+    /// Bring the host sync in line with the selected account: (re)declare the PNS
+    /// envelope subscription over `private_urls` and fan any freshly-authored local
+    /// envelopes out to them. Cheap to call every frame — the remote declaration is
+    /// deduped on `(account, urls)` and only the small fan-out poll runs otherwise.
+    ///
+    /// `account`/`account_secret` are the selected account's pubkey and secret;
+    /// `private_urls` its marked private-sync relays (empty ⇒ local-only). Must be
+    /// called from within a Tokio runtime for the first, session-spawning call to
+    /// take effect; without one it is a no-op (the test harness runs no runtime).
+    pub fn update(
+        &mut self,
+        ndb: &mut Ndb,
+        account: &Pubkey,
+        account_secret: &[u8; 32],
+        private_urls: &[NormRelayUrl],
+    ) {
+        // Lazily spawn the session loop. `Session::new` `tokio::spawn`s, so it
+        // needs a runtime; under the test harness there is none, so the host stays
+        // inert (and `settled` stays `true`, i.e. never blocks an app).
+        if self.session.is_none() {
+            if tokio::runtime::Handle::try_current().is_err() {
+                return;
+            }
+            self.session = Some(Arc::new(Session::new(ndb.clone())));
+        }
+        let session = self.session.clone().expect("session just ensured");
+        let pns_pubkey = pns_author(account_secret);
+
+        // Re-create the local envelope sub when the account changes: its filter is
+        // keyed on the account-derived PNS author, so a switch renames the stream.
+        let account_changed = self.declared.as_ref().map(|(a, _)| a) != Some(account);
+        if account_changed {
+            if let Some(old) = self.local_sub.take() {
+                let _ = ndb.unsubscribe(old);
+            }
+            self.local_sub = ndb.subscribe(&[pns_envelope_filter(&pns_pubkey)]).ok();
+        }
+
+        // (Re)declare the remote subscription on any account/relay-set change.
+        if self.declared.as_ref() != Some(&(*account, private_urls.to_vec())) {
+            self.redeclare(&session, &pns_pubkey, private_urls);
+            self.declared = Some((*account, private_urls.to_vec()));
+        }
+
+        self.fan_out_local_envelopes(ndb, &session, private_urls);
+    }
+
+    /// Replace the PNS declaration: close the prior `REQ` on every relay and, when
+    /// the account still has private relays, open a fresh live + backfilling
+    /// subscription over the current set, arming a generation-guarded settle
+    /// watcher. With no private relays this is the teardown to local-only.
+    fn redeclare(&mut self, session: &Arc<Session>, pns_pubkey: &Pubkey, urls: &[NormRelayUrl]) {
+        session.drop_subscription(HOST_PNS_SUB_ID);
+        if urls.is_empty() {
+            // Local-only: nothing to reconcile, so the view is trivially settled.
+            self.settled.store(true, Ordering::Release);
+            return;
+        }
+
+        // One logical subscription (same id + filter) fanned across the relay set;
+        // the same filter drives the live `REQ` and the history backfill.
+        let filter = pns_envelope_filter(pns_pubkey);
+        for url in urls {
+            session.set_subscription(
+                HOST_PNS_SUB_ID,
+                url.to_string(),
+                vec![filter.clone()],
+                vec![filter.clone()],
+            );
+        }
+
+        // Mid-sync until the backfill settles. Bump the generation and spawn a
+        // watcher that latches `settled` only if it is still the current
+        // declaration when the backfill completes.
+        self.settled.store(false, Ordering::Release);
+        let gen = self.settle_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let session = session.clone();
+        let settled = self.settled.clone();
+        let settle_gen = self.settle_gen.clone();
+        tokio::spawn(async move {
+            session.wait_for_sync().await;
+            if settle_gen.load(Ordering::Acquire) == gen {
+                settled.store(true, Ordering::Release);
+            }
+        });
+    }
+
+    /// Poll the local envelope subscription and fan freshly-authored envelopes out
+    /// to the private relays they have not been seen on yet, via [`Session::publish`].
+    ///
+    /// The seen-on check ([`fan_out_unseen_notes_with`]) keeps an envelope pulled
+    /// *in* by the inbound leg from being echoed straight back out, and the
+    /// `is_rumor` guard keeps a sealed rumor from ever leaking in the clear. Even
+    /// with no private relay we still drain the poll so a later-marked relay does
+    /// not receive an unbounded backlog dump in one frame.
+    fn fan_out_local_envelopes(&self, ndb: &Ndb, session: &Session, urls: &[NormRelayUrl]) {
+        let Some(sub) = self.local_sub else {
+            return;
+        };
+        let keys = ndb.poll_for_notes(sub, 64);
+        if keys.is_empty() || urls.is_empty() {
+            return;
+        }
+        let relays: Vec<RelayId> = urls.iter().cloned().map(RelayId::Websocket).collect();
+        let Ok(txn) = Transaction::new(ndb) else {
+            return;
+        };
+        fan_out_unseen_notes_with(ndb, &txn, &keys, &relays, |json, targets| {
+            let target_urls: Vec<String> = targets
+                .into_iter()
+                .filter_map(|relay| match relay {
+                    RelayId::Websocket(url) => Some(url.to_string()),
+                    RelayId::Multicast => None,
+                })
+                .collect();
+            if !target_urls.is_empty() {
+                session.publish(json, target_urls);
+            }
+        });
     }
 }
 
@@ -465,5 +718,128 @@ mod tests {
         let keys = waiter.await.expect("await");
 
         assert!(relays_fanned_for(&ndb, &keys, vec![]).is_empty());
+    }
+
+    // ===== HostPrivateSync =====
+
+    /// Fixed timestamp for the test envelope so its id is deterministic and no
+    /// wall clock is read.
+    const HOST_TEST_TS: u64 = 1_700_000_000;
+
+    /// Build the kind-1080 PNS envelope wrapping a signed inner kind-1 note for
+    /// `secret`'s account, returning the `["EVENT", {…}]` ingest frame, the
+    /// envelope id, and the inner note id.
+    fn pns_envelope_frame(secret: &[u8; 32]) -> (String, [u8; 32], [u8; 32]) {
+        let pns_keys = enostr::pns::derive_pns_keys(secret);
+        let inner = NoteBuilder::new()
+            .kind(1)
+            .content("private longform body")
+            .created_at(HOST_TEST_TS)
+            .sign(secret)
+            .build()
+            .expect("inner note");
+        let inner_id = *inner.id();
+        let envelope =
+            enostr::pns::wrap(&pns_keys, &inner.json().expect("inner json"), HOST_TEST_TS)
+                .expect("pns envelope");
+        let envelope_id = *envelope.id();
+        let frame = format!("[\"EVENT\",{}]", envelope.json().expect("envelope json"));
+        (frame, envelope_id, inner_id)
+    }
+
+    /// Whether `ndb` holds note `id` yet (queryable == committed).
+    fn ndb_has(ndb: &Ndb, id: &[u8; 32]) -> bool {
+        Transaction::new(ndb)
+            .ok()
+            .is_some_and(|txn| ndb.get_note_by_id(&txn, id).is_ok())
+    }
+
+    /// End-to-end host sync over a shared private relay: device A fans a freshly
+    /// authored PNS envelope out to the relay, device B backfills it and
+    /// auto-unwraps the inner note — the notebook-longform cross-device path,
+    /// exercised at the `HostPrivateSync` level with the source device backgrounded
+    /// (we just pump `update`, no app).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_sync_delivers_pns_envelope_between_devices() {
+        use nostrdb_net::relay::server;
+        use std::time::Duration;
+
+        // A shared private relay backed by its own opaque db (never seeded with the
+        // account key, so it only ever holds the envelope, never the inner note).
+        let (_relay_dir, relay_ndb) = test_ndb();
+        let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
+            .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+        let (frame, envelope_id, inner_id) = pns_envelope_frame(&secret);
+
+        // Device A: declare the host sub first (so its fan-out poll observes the
+        // envelope), then author the envelope into the local db.
+        let (_a_dir, mut ndb_a) = test_ndb();
+        ndb_a.add_key(&secret);
+        let mut host_a = HostPrivateSync::new();
+        host_a.update(&mut ndb_a, &account.pubkey, &secret, relays);
+        // A 2-element client frame (`["EVENT",{…}]`) is a locally-authored event,
+        // so ingest it as one — `process_event` expects the 3-element relay form.
+        ndb_a
+            .process_client_event(&frame)
+            .expect("ingest envelope on A");
+
+        // Pump A until the relay has stored the fanned-out envelope.
+        let mut fanned = false;
+        for _ in 0..500 {
+            host_a.update(&mut ndb_a, &account.pubkey, &secret, relays);
+            if ndb_has(&relay_ndb, &envelope_id) {
+                fanned = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            fanned,
+            "device A should fan its PNS envelope out to the private relay"
+        );
+
+        // Device B: backfill the account's private stream; nostrdb auto-unwraps the
+        // envelope (B is seeded with the account key) so the inner note is queryable.
+        let (_b_dir, mut ndb_b) = test_ndb();
+        ndb_b.add_key(&secret);
+        let mut host_b = HostPrivateSync::new();
+        let mut delivered = false;
+        for _ in 0..500 {
+            host_b.update(&mut ndb_b, &account.pubkey, &secret, relays);
+            if ndb_has(&ndb_b, &inner_id) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered,
+            "device B should backfill the envelope and auto-unwrap the inner note"
+        );
+
+        relay.shutdown();
+    }
+
+    /// With no private relay marked the host stays local-only and immediately
+    /// reports settled — an app gating on it is never blocked by a sync that isn't
+    /// running.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_sync_local_only_is_settled() {
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+        let (_dir, mut ndb) = test_ndb();
+
+        let mut host = HostPrivateSync::new();
+        assert!(host.settled(), "a fresh host has nothing pending");
+        host.update(&mut ndb, &account.pubkey, &secret, &[]);
+        assert!(
+            host.settled(),
+            "no private relay ⇒ nothing to reconcile ⇒ still settled"
+        );
     }
 }

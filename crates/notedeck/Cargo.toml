@@ -7,6 +7,7 @@ description = "The APIs and data structures used by notedeck apps"
 [dependencies]
 agentium-core = { workspace = true }
 nostrdb = { workspace = true }
+nostrdb_net = { workspace = true }
 negentropy = { workspace = true }
 jni = { workspace = true }
 url = { workspace = true }
