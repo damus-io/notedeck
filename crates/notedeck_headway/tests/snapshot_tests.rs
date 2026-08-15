@@ -5,7 +5,11 @@ use egui_kittest::kittest::{Key, Node, Queryable};
 use enostr::{FullKeypair, Keypair, NoteId, Pubkey};
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
 use notedeck::{App, AppContext, Notedeck};
-use notedeck_headway::{Headway, store};
+use notedeck_headway::{Headway, event, store};
+
+/// The two-party suite's SNS helpers; here we reuse only its gift-wrap key-share
+/// builder so the shared-board flows below don't hand-roll a kind-1059 envelope.
+mod common;
 
 struct HeadwayTestState {
     notedeck: Notedeck,
@@ -125,14 +129,23 @@ const SEED_AT: u64 = 1_700_000_000;
 
 /// A fixed signing key, so seeded event ids don't vary with a random keypair.
 fn test_keypair() -> FullKeypair {
-    let secret = enostr::SecretKey::from_slice(&[7u8; 32]).expect("valid test secret");
+    fixed_keypair(7)
+}
+
+/// A deterministic keypair from a single fill byte — the account plus every
+/// stand-in co-member (see the shared-board flows) use fixed keys so coordinates,
+/// switcher ordering, and snapshots reproduce run to run.
+fn fixed_keypair(fill: u8) -> FullKeypair {
+    let secret = enostr::SecretKey::from_slice(&[fill; 32]).expect("valid test secret");
     let kp = Keypair::from_secret(secret);
     FullKeypair::new(kp.pubkey, kp.secret_key.expect("has secret"))
 }
 
-/// Build a harness at `size` with fonts installed, a signing account injected,
-/// and the default board seeded + materialised.
-fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
+/// Build a fully-initialised [`HeadwayTestState`] (fonts pending, account keyed,
+/// demo board seeded on the first frame). Shared by both harness constructors —
+/// the pixel-snapshot [`headway_harness`] adds the wgpu software renderer, the
+/// behavioural [`behavioral_harness`] omits it so it needs no GPU.
+fn headway_state() -> HeadwayTestState {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
@@ -157,24 +170,46 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
         notedeck.register_reference_parser(parser);
     }
 
-    let state = HeadwayTestState {
+    HeadwayTestState {
         notedeck,
         headway,
         account: test_keypair(),
         _tmpdir: tmpdir,
         fonts_installed: false,
         ref_note: None,
-    };
+    }
+}
 
-    // `wake()` schedules an 8-frame `request_repaint_after` burst to poll for
-    // async ndb ingests; the harness's simulated clock elapses each delay
-    // immediately, so a single `run()` can take ~8 steps. Lift the default cap
-    // of 4 above that burst so the wait loops don't spuriously panic.
-    let mut harness = Harness::builder()
-        .with_size(size)
-        .with_max_steps(16)
+/// The shared [`Harness::builder`] both constructors use, minus the renderer:
+/// `size` and a raised `max_steps`. `wake()` schedules an 8-frame
+/// `request_repaint_after` burst to poll for async ndb ingests; the harness's
+/// simulated clock elapses each delay immediately, so a single `run()` can take
+/// ~8 steps. Lift the default cap of 4 above that burst so the wait loops don't
+/// spuriously panic.
+fn harness_builder(size: egui::Vec2) -> egui_kittest::HarnessBuilder<HeadwayTestState> {
+    Harness::builder().with_size(size).with_max_steps(16)
+}
+
+/// Build a harness at `size` with fonts installed, a signing account injected,
+/// and the default board seeded + materialised. Renders through the wgpu software
+/// renderer, so `snapshot()` works but a CPU Vulkan adapter (lavapipe) is
+/// required — these tests are `#[ignore]`d and run via `scripts/snapshot-test`.
+fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
+    let mut harness = harness_builder(size)
         .renderer(notedeck::software_renderer())
-        .build_state(render_headway, state);
+        .build_state(render_headway, headway_state());
+
+    wait_for_board(&mut harness);
+    harness
+}
+
+/// Like [`headway_harness`] but with **no** wgpu renderer, so it builds and drives
+/// `update()`/`render()` under plain `cargo test` — no CPU Vulkan adapter
+/// (lavapipe) needed. Use it for behavioural flows that only assert on the
+/// accesskit tree (via [`wait_for_label`]); it cannot `snapshot()` (that rasterises
+/// through the renderer, which is exactly what needs lavapipe).
+fn behavioral_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
+    let mut harness = harness_builder(size).build_state(render_headway, headway_state());
 
     wait_for_board(&mut harness);
     harness
@@ -923,4 +958,351 @@ fn add_card_reachable_when_column_overflows() {
          (limit {limit}); the column is overflowing its slot",
         btn.y1,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Coordinate-aware board addressing, end to end (headway:headway/visa-water-sniff)
+//
+// These drive the *wired* experience the parent card's unit/integration tests
+// couldn't reach: the real egui render loop routing an owner's own shared board
+// through the multi-writer fold, the switcher keeping same-slug boards distinct,
+// and the saved selection surviving a restart by coordinate.
+// ---------------------------------------------------------------------------
+
+/// The active board's switcher button label — its title plus the dropdown caret,
+/// exactly as `board_switcher` composes it (`"{title}  ⏷"`, two spaces). The demo
+/// board is titled "Headway".
+const SWITCHER_LABEL: &str = "Headway  ⏷";
+
+/// Poll the shared board at `board_addr` (async ingest) until its sealed
+/// definition has folded in, returning the folded view. Sleeps between reads
+/// rather than pumping frames — the caller holds an `AppContext` borrow — so it
+/// waits on the ndb writer thread, not the render loop. Panics past a deadline.
+fn wait_shared_board(ndb: &Ndb, board_addr: &str, team_pubkey: &Pubkey) -> event::BoardView {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        {
+            let txn = Transaction::new(ndb).expect("txn");
+            if let Some(view) = event::load_shared_board(ndb, &txn, board_addr, team_pubkey) {
+                return view;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "shared board {board_addr:?} definition never folded"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Poll `author`'s own board `slug` (async ingest) until it has folded in,
+/// returning the folded view. The own-board analogue of [`wait_shared_board`].
+fn wait_own_board(ndb: &Ndb, author: &Pubkey, slug: &str) -> event::BoardView {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        {
+            let txn = Transaction::new(ndb).expect("txn");
+            if let Some(view) = event::load_board(ndb, &txn, author, slug) {
+                return view;
+            }
+        }
+        assert!(Instant::now() < deadline, "own board {slug:?} never folded");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Pump frames until `author`'s persisted board preference (kind-30623, read back
+/// through the app's own nostrdb) resolves to `slug`, or panic past a deadline.
+/// Used to fence a restart against racing an un-committed preference save.
+fn wait_for_saved_slug(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    author: &Pubkey,
+    slug: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        let saved = {
+            let egui_ctx = harness.ctx.clone();
+            let state = harness.state_mut();
+            let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+            event::load_board_pref(app_ctx.ndb, author)
+        };
+        if saved.as_ref().map(|c| c.slug.as_str()) == Some(slug) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "board preference never persisted {slug:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Ingest a self-addressed kind-1082 key-share naming `board_addr`, derived from a
+/// fresh deterministic root (`root_fill`) — the db half of the account joining
+/// that board's channel. The app's live key-share poll then reconstructs the
+/// roster and lists the board in the switcher; a shared board with no sealed
+/// definition simply falls back to its slug for a title.
+fn ingest_keyshare(
+    ndb: &Ndb,
+    sender: &FullKeypair,
+    recipient: &Pubkey,
+    root_fill: u8,
+    board_addr: &str,
+) {
+    let root = [root_fill; 32];
+    let giftwrap = common::gift_wrapped_keyshare(sender, recipient, &root, Some(board_addr), None);
+    ndb.process_event(&format!("[\"EVENT\",\"kg\",{giftwrap}]"))
+        .expect("ingest keyshare giftwrap");
+}
+
+/// Deliverable 1 (behavioural, no lavapipe): a board you OWN and shared routes
+/// through the multi-writer shared fold in the real render loop, so a co-member's
+/// card — authored by a *second* keypair, sealed under the team key, anchored at
+/// your coordinate — shows in YOUR UI. Before the coordinate-addressing fix the
+/// owner's own shared board folded author-scoped, so this card was invisible.
+///
+/// Mirrors `shared_board_folds_via_cache`'s SNS setup but proves it through
+/// `update()` + `render()` rather than the cache in isolation.
+#[test]
+fn own_shared_board_folds_teammate_card_in_render() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let account = test_keypair();
+
+    // A distinct second member authors the card that must surface in the owner's
+    // fold — the whole point of the fix.
+    let teammate = fixed_keypair(0x2b);
+    const TEAMMATE_CARD: &str = "co-member sealed card";
+
+    // A fixed team_root (distinctive bytes) → deterministic channel keys.
+    let mut root = [0u8; 32];
+    root[0] = 0x53;
+    root[31] = 0x11;
+    let channel = store::SnsChannel {
+        keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+    };
+    let team_pubkey = channel.keys.team_keypair.pubkey;
+
+    // The active board defaults to the account's own `headway` coordinate; the
+    // self-share names exactly that coordinate, so once the roster reconstructs it
+    // the active board routes through the shared fold with no explicit switch.
+    let board_addr = event::board_address(&account.pubkey, store::BOARD_ID);
+
+    {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+        let ndb: &Ndb = app_ctx.ndb;
+
+        // Register the channel root so nostrdb unwraps its kind-1081 envelopes on
+        // ingest (the app re-registers idempotently once it sees the 1082).
+        assert!(ndb.add_team_root(&root), "team root registers");
+
+        // Self-share: gift-wrap a kind-1082 key-share to the account naming the
+        // coordinate, so `teams_from_ndb` reconstructs the roster (a team-of-one)
+        // and the app's live key-share poll flips the active board to shared. This
+        // share must name our fixed `root` (the channel we seal into below), so
+        // build it explicitly rather than through `ingest_keyshare`'s fresh root.
+        let giftwrap = common::gift_wrapped_keyshare(
+            &account,
+            &account.pubkey,
+            &root,
+            Some(&board_addr),
+            None,
+        );
+        ndb.process_event(&format!("[\"EVENT\",\"kg\",{giftwrap}]"))
+            .expect("ingest keyshare");
+
+        // Seal the board definition into the channel (owner-authored). A shared
+        // board has no plaintext leg, so the definition itself must travel sealed
+        // for `fold_shared_board` to resolve the board at all.
+        let cols = vec![
+            event::ColumnDef::new("backlog", "Backlog"),
+            event::ColumnDef::new("todo", "Todo"),
+            event::ColumnDef::new("done", "Done"),
+        ];
+        store::ingest_signed(
+            ndb,
+            event::build_board(store::BOARD_ID, "Shared board", "", &cols),
+            &store::Signer::shared(&account.secret_key.secret_bytes(), &channel),
+            &mut store::NoPublish,
+        );
+
+        // Wait for the sealed definition to fold in (async ingest), then seal a
+        // card AUTHORED BY THE TEAMMATE off that shared view — `store::apply`
+        // anchors it at the OWNER's coordinate (carried by `view.author`), the
+        // coordinate the owner's own fold now gathers.
+        let view = wait_shared_board(ndb, &board_addr, &team_pubkey);
+        store::apply(
+            ndb,
+            store::BOARD_ID,
+            &view,
+            &teammate.pubkey,
+            &store::Signer::shared(&teammate.secret_key.secret_bytes(), &channel),
+            store::BoardAction::AddCard {
+                col: 0,
+                title: TEAMMATE_CARD.to_string(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut store::NoPublish,
+        );
+    }
+
+    // Drive update()+render() until the teammate's card appears in the owner's UI:
+    // proof the *active own* board routed through the shared fold and gathered a
+    // co-member's coordinate-anchored, team-sealed card.
+    wait_for_label(&mut harness, TEAMMATE_CARD);
+}
+
+/// Deliverable 3 (behavioural, no lavapipe): the selected board survives a restart
+/// keyed by COORDINATE. Switch to a second own board through the real switcher,
+/// drop + rebuild `Headway` against the same ndb + account (a cold boot), and it
+/// reopens on the saved coordinate — the kind-30623 preference round-trips —
+/// instead of falling back to the default `headway` board.
+#[test]
+fn restart_reopens_saved_board_coordinate() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let account = test_keypair();
+    const ROADMAP_CARD: &str = "roadmap-only card";
+
+    // Seed a distinct second own board carrying a card only it has, so which board
+    // is active after the restart is unambiguous from what renders.
+    {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+        let ndb: &Ndb = app_ctx.ndb;
+        let secret = account.secret_key.secret_bytes();
+        store::seed_board(
+            ndb,
+            &account.pubkey,
+            &secret,
+            "roadmap",
+            "Roadmap",
+            &mut store::NoPublish,
+        );
+        let view = wait_own_board(ndb, &account.pubkey, "roadmap");
+        store::apply(
+            ndb,
+            "roadmap",
+            &view,
+            &account.pubkey,
+            &store::Signer::plain(&secret),
+            store::BoardAction::AddCard {
+                col: 0,
+                title: ROADMAP_CARD.to_string(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut store::NoPublish,
+        );
+    }
+
+    // Switch to the roadmap board through the real switcher menu.
+    harness.get_by_label(SWITCHER_LABEL).simulate_click();
+    // The entry appears once the roadmap board folds into the switcher list.
+    wait_for_label(&mut harness, "Roadmap");
+    harness.get_by_label("Roadmap").simulate_click();
+
+    // The switch persists a kind-30623 preference. Wait until both the roadmap-only
+    // card renders (active board is now roadmap) and the preference has committed,
+    // so the restart below can't race an un-saved preference.
+    wait_for_label(&mut harness, ROADMAP_CARD);
+    wait_for_saved_slug(&mut harness, &account.pubkey, "roadmap");
+
+    // Simulate a restart: rebuild `Headway` against the SAME ndb + account. A cold
+    // boot doesn't know the selection until the first `update` reloads the pref.
+    {
+        let state = harness.state_mut();
+        state.headway = Headway::new();
+    }
+
+    // It reopens on the coordinate-keyed selection — the roadmap-only card is back
+    // with no manual switch — and did NOT fall back to the default demo board.
+    wait_for_label(&mut harness, ROADMAP_CARD);
+    assert!(
+        harness.query_by_label("7 cards · 5 columns").is_none(),
+        "restart fell back to the default board instead of the saved coordinate"
+    );
+}
+
+/// Deliverable 2 (pixel snapshot, needs lavapipe): the switcher keeps two joined
+/// boards that share a slug but differ in owner as two distinct entries (breakage
+/// #3), and lists a board you own AND shared only once (coordinate dedup). Run via
+/// `scripts/snapshot-test`; `sharefile` the PNG for review.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_switcher_same_slug_boards() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    let account = test_keypair();
+
+    // Two co-members whose boards collide on the slug `notes` but not on owner.
+    let alice = fixed_keypair(0xa1);
+    let bob = fixed_keypair(0xb0);
+
+    {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+        let ndb: &Ndb = app_ctx.ndb;
+        let secret = account.secret_key.secret_bytes();
+
+        // An own board `roadmap` the account ALSO shares (self-share): it must
+        // appear once, not twice, despite being both an own and a joined board.
+        store::seed_board(
+            ndb,
+            &account.pubkey,
+            &secret,
+            "roadmap",
+            "Roadmap",
+            &mut store::NoPublish,
+        );
+        ingest_keyshare(
+            ndb,
+            &account,
+            &account.pubkey,
+            0x30,
+            &event::board_address(&account.pubkey, "roadmap"),
+        );
+
+        // Two joined boards, same slug `notes`, different owners → two entries.
+        ingest_keyshare(
+            ndb,
+            &alice,
+            &account.pubkey,
+            0xa5,
+            &event::board_address(&alice.pubkey, "notes"),
+        );
+        ingest_keyshare(
+            ndb,
+            &bob,
+            &account.pubkey,
+            0xb5,
+            &event::board_address(&bob.pubkey, "notes"),
+        );
+    }
+
+    // Open the switcher and wait until every joined board has been picked up and
+    // listed: the own+shared `roadmap` once, and both same-slug `notes` boards.
+    harness.get_by_label(SWITCHER_LABEL).simulate_click();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        // `query_all_*` (unlike `get_all_*`) yields an empty iterator instead of
+        // panicking while the shares are still being picked up.
+        let both_notes = harness.query_all_by_label("notes").count() >= 2;
+        if both_notes && harness.query_by_label("Roadmap").is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "switcher never listed both joined same-slug boards"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    harness.run_steps(3);
+    harness.snapshot("headway_switcher_same_slug");
 }
