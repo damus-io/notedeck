@@ -30,9 +30,14 @@ use event::{BoardReducer, BoardView};
 /// lets edits ingested by the `headway` CLI reach the user's other devices.
 /// [`PrivateRelaySync`] feeds remote edits back in.
 pub struct Headway {
-    /// The active board's slug. Switched via the header switcher and restored
-    /// per-account from disk; defaults to [`store::BOARD_ID`].
-    board_id: String,
+    /// The active board, identified by its full coordinate (owner + slug) — not a
+    /// bare slug, so a board you own and a joined shared board of the same slug
+    /// stay distinct, and your own shared board routes through the multi-writer
+    /// fold. Switched via the header switcher and restored per-account from the
+    /// saved preference. `None` until the first [`update`](App::update) after an
+    /// account switch resolves it (defaulting to [`store::BOARD_ID`]); always
+    /// `Some` by the time `render` or any sync logic reads it (see [`active`]).
+    active: Option<event::BoardCoord>,
     /// The account `board_id` was loaded for, so switching accounts reloads that
     /// account's own saved board selection.
     board_account: Option<Pubkey>,
@@ -73,7 +78,7 @@ pub struct Headway {
 impl Default for Headway {
     fn default() -> Self {
         Self {
-            board_id: store::BOARD_ID.to_string(),
+            active: None,
             board_account: None,
             state: BoardUiState::default(),
             private_sync: PrivateRelaySync::new("headway"),
@@ -96,6 +101,16 @@ impl Headway {
     /// async, on a writer thread) gets polled and surfaced promptly.
     fn wake(&mut self) {
         self.repaint_frames = 8;
+    }
+
+    /// The active board's coordinate. Resolved in [`update`](App::update) on the
+    /// first frame after an account switch (`board_account` starts `None`), which
+    /// always runs before `render` and the sync logic — so this is set by the time
+    /// anything reads it. Panics only if that invariant is ever broken.
+    fn active(&self) -> &event::BoardCoord {
+        self.active
+            .as_ref()
+            .expect("active board is resolved in update() before it is read")
     }
 
     /// Burn down the repaint countdown, requesting a delayed repaint each step.
@@ -124,44 +139,47 @@ impl Headway {
         }
     }
 
-    /// The switcher list: the account's own boards plus every joined shared board
-    /// (own boards win on a slug collision, matching the active-board rule). A
-    /// shared board's title comes from its folded view, falling back to its slug
-    /// until the definition arrives.
+    /// The switcher list: the account's own boards plus every joined shared board,
+    /// each keyed by coordinate. A board you own *and* shared is already in `own`
+    /// (same coordinate), so it's listed once; two joined boards that share a slug
+    /// but differ in owner are distinct coordinates and both appear. A shared
+    /// board's title comes from its folded view, falling back to its slug until the
+    /// definition arrives.
     fn board_summaries_with_shared(
         &self,
         ctx: &AppContext,
         own: &[BoardView],
     ) -> Vec<BoardSummary> {
         let mut boards = board_summaries(own);
-        for team in &self.teams {
-            let Some(slug) = team.board_slug() else {
-                continue;
-            };
-            let Some(keys) = team.sns_keys() else {
-                continue;
-            };
-            if boards.iter().any(|b| b.id == slug) {
-                continue;
-            }
-            let title = Transaction::new(ctx.ndb)
-                .ok()
-                .and_then(|txn| {
-                    self.board_cache.borrow_mut().shared_board(
-                        ctx.ndb,
-                        &txn,
-                        &team.board_addr,
-                        &keys.team_keypair.pubkey,
-                    )
+        // Resolve each joined board into a summary (its title needs the cache),
+        // then merge by coordinate. Collected first so the transient cache borrow
+        // is released before the merge.
+        let shared: Vec<BoardSummary> = self
+            .teams
+            .iter()
+            .filter_map(|team| {
+                let coord = event::BoardCoord::parse(&team.board_addr)?;
+                let keys = team.sns_keys()?;
+                let title = Transaction::new(ctx.ndb)
+                    .ok()
+                    .and_then(|txn| {
+                        self.board_cache.borrow_mut().shared_board(
+                            ctx.ndb,
+                            &txn,
+                            &team.board_addr,
+                            &keys.team_keypair.pubkey,
+                        )
+                    })
+                    .map(|v| v.title)
+                    .unwrap_or_else(|| coord.slug.clone());
+                Some(BoardSummary {
+                    owner: coord.owner,
+                    id: coord.slug,
+                    title,
                 })
-                .map(|v| v.title)
-                .unwrap_or_else(|| slug.to_string());
-            boards.push(BoardSummary {
-                id: slug.to_string(),
-                title,
-            });
-        }
-        boards.sort_by(|a, b| a.id.cmp(&b.id));
+            })
+            .collect();
+        merge_shared_boards(&mut boards, shared.into_iter());
         boards
     }
 
@@ -196,7 +214,9 @@ impl Headway {
         // move makes differ from the origin board its `a` tag records (what
         // `resolve_open_target` reads). Route to the board it's actually on so the
         // detail can open; fall back to the origin board when it isn't folded.
-        let board_id = match &target.card {
+        // `locate_card_in_boards` is author-scoped, so a card found there is on one
+        // of our own boards (owner = author); otherwise keep the target coordinate.
+        let board = match &target.card {
             Some(card) => Transaction::new(ctx.ndb)
                 .ok()
                 .and_then(|txn| {
@@ -206,15 +226,15 @@ impl Headway {
                             event::locate_card_in_boards(boards, author, card.bytes())
                         })
                         .flatten()
-                        .map(|located| located.board_id)
+                        .map(|located| event::BoardCoord::new(*author.bytes(), located.board_id))
                 })
-                .unwrap_or(target.board_id),
-            None => target.board_id,
+                .unwrap_or(target.board),
+            None => target.board,
         };
 
         // Switch to the owning board first; the fold lands on a later frame.
-        if self.board_id != board_id {
-            self.board_id = board_id;
+        if self.active.as_ref() != Some(&board) {
+            self.active = Some(board);
             // Persist the switch as a PNS note when we can sign; a watch-only
             // account has no secret to encrypt with, so its selection just isn't
             // remembered (it never was persistable).
@@ -227,7 +247,7 @@ impl Headway {
                     ctx.ndb,
                     author,
                     &secret,
-                    &event::BoardCoord::new(*author.bytes(), self.board_id.as_str()),
+                    self.active(),
                     &mut store::NoPublish,
                 );
             }
@@ -242,12 +262,15 @@ impl Headway {
         };
 
         // On the right board: open the card's detail once its view has folded in.
-        // Until then keep the request pending and retry on the next repaint.
+        // Until then keep the request pending and retry on the next repaint. The
+        // fold check is author-scoped (own boards); a card on a shared board owned
+        // by a co-member opens once that board is active and folded via `render`.
+        let slug = self.active().slug.clone();
         let folded = Transaction::new(ctx.ndb).ok().is_some_and(|txn| {
             self.board_cache
                 .borrow_mut()
-                .board(ctx.ndb, &txn, author, &self.board_id)
-                .is_some_and(|v| v.id == self.board_id)
+                .board(ctx.ndb, &txn, author, &slug)
+                .is_some_and(|v| v.id == slug)
         });
         if folded {
             self.state.open_card(card);
@@ -259,8 +282,8 @@ impl Headway {
 /// Where an inline headway widget click should land, resolved from the clicked
 /// entity by [`resolve_open_target`].
 struct OpenTarget {
-    /// The board to switch to.
-    board_id: String,
+    /// The board to switch to, by its full coordinate (owner + slug).
+    board: event::BoardCoord,
     /// The card whose detail to open once the board has folded in, or `None` when
     /// the target is a board itself.
     card: Option<NoteId>,
@@ -268,17 +291,19 @@ struct OpenTarget {
 
 /// Resolve a headway board/issue note into the [`OpenTarget`] for
 /// [`Headway::open`]. An issue opens its board *and* its own detail; a board just
-/// opens itself. `None` for anything that isn't one of those.
+/// opens itself. `None` for anything that isn't one of those. The board's owner
+/// comes straight off the parsed event (an issue's `a`-tag coordinate, a board's
+/// author), so the switch targets the exact coordinate — not a bare slug.
 fn resolve_open_target(ndb: &Ndb, note_id: NoteId) -> Option<OpenTarget> {
     let txn = Transaction::new(ndb).ok()?;
     let note = ndb.get_note_by_id(&txn, note_id.bytes()).ok()?;
     match event::parse(&note)? {
         event::HeadwayEvent::Issue(issue) => Some(OpenTarget {
-            board_id: issue.board_id,
+            board: event::BoardCoord::new(issue.board_author, issue.board_id),
             card: Some(NoteId::new(issue.id)),
         }),
         event::HeadwayEvent::Board(board) => Some(OpenTarget {
-            board_id: board.id,
+            board: event::BoardCoord::new(board.author, board.id),
             card: None,
         }),
         _ => None,
@@ -303,9 +328,12 @@ fn sns_envelope_filter(team_pk: &Pubkey) -> Filter {
         .build()
 }
 
-/// One entry in the board switcher: a board's stable `id` (slug) and its display
-/// `title`. Folded from the account's events by [`BoardCache::boards`].
+/// One entry in the board switcher: a board's `owner` + `id` (slug) — together its
+/// coordinate — and its display `title`. Carrying the owner keeps two boards that
+/// share a slug (yours and a joined one, or two joined ones) distinct entries that
+/// each select the right coordinate. Folded from events by [`BoardCache::boards`].
 pub struct BoardSummary {
+    pub owner: [u8; 32],
     pub id: String,
     pub title: String,
 }
@@ -356,9 +384,10 @@ impl App for Headway {
         // (falling back to the default). Re-arm the auto-seed so a fresh account
         // still gets its default board seeded.
         if self.board_account != Some(author) {
-            self.board_id = event::load_board_pref(ctx.ndb, &author)
-                .map(|coord| coord.slug)
-                .unwrap_or_else(|| store::BOARD_ID.to_string());
+            self.active = Some(
+                event::load_board_pref(ctx.ndb, &author)
+                    .unwrap_or_else(|| event::BoardCoord::new(*author.bytes(), store::BOARD_ID)),
+            );
             self.board_account = Some(author);
             self.seeded = false;
 
@@ -458,21 +487,19 @@ impl App for Headway {
         // the same poll path on a following frame. (The UI feedback for this state
         // is drawn in `render`.)
         //
-        // Never auto-seed when the active slug is a joined *shared* board: it's
-        // owned by a co-member, so seeding would mint a conflicting own board of
-        // the same slug instead of waiting for the shared one to fold in.
-        let active_is_shared = self
-            .teams
-            .iter()
-            .any(|t| t.board_slug() == Some(self.board_id.as_str()));
+        // Never auto-seed when the active board is a *shared* one (its coordinate
+        // is in the roster): it may be owned by a co-member, so seeding would mint
+        // a conflicting own board instead of waiting for the shared one to fold in.
+        let active_is_shared = active_shared_team(&self.teams, self.active()).is_some();
         if !self.seeded
             && !active_is_shared
             && let Some(secret) = &signer
         {
+            let slug = self.active().slug.clone();
             let has_board = Transaction::new(ctx.ndb).ok().is_some_and(|txn| {
                 self.board_cache
                     .borrow_mut()
-                    .board(ctx.ndb, &txn, &author, &self.board_id)
+                    .board(ctx.ndb, &txn, &author, &slug)
                     .is_some()
             });
             if has_board {
@@ -480,13 +507,7 @@ impl App for Headway {
                 // to seed, and no need to keep checking.
                 self.seeded = true;
             } else {
-                store::seed_default_board(
-                    ctx.ndb,
-                    &author,
-                    secret,
-                    &self.board_id,
-                    &mut store::NoPublish,
-                );
+                store::seed_default_board(ctx.ndb, &author, secret, &slug, &mut store::NoPublish);
                 self.seeded = true;
                 self.wake();
             }
@@ -522,17 +543,13 @@ impl App for Headway {
             })
             .unwrap_or_default();
 
-        // Is the active board a joined shared board rather than one we own? Own
-        // boards win on a slug collision (an unambiguous, stable rule until refs
-        // carry an explicit owner).
-        let active_team: Option<teams::Team> = if own_boards.iter().any(|v| v.id == self.board_id) {
-            None
-        } else {
-            self.teams
-                .iter()
-                .find(|t| t.board_slug() == Some(self.board_id.as_str()))
-                .cloned()
-        };
+        // Is the active board shared? Matched by coordinate against the roster (see
+        // `active_shared_team`) — which is what fixes owner-blindness: a board you
+        // *own* and shared is in the roster too (self-shared team-of-one), so it
+        // routes through the multi-writer fold below rather than the author-scoped
+        // fold that would hide co-members' cards.
+        let active_team: Option<teams::Team> =
+            active_shared_team(&self.teams, self.active()).cloned();
         // The SNS channel to seal edits into when the active board is shared.
         let channel: Option<store::SnsChannel> = active_team
             .as_ref()
@@ -540,7 +557,8 @@ impl App for Headway {
             .map(|keys| store::SnsChannel { keys });
 
         // Resolve the active board's view: a shared board folds by coordinate
-        // (multi-writer), an own board off the per-account reducer.
+        // (multi-writer, every member's events), an own board off the per-account
+        // reducer keyed on its owner + slug.
         let view = match &active_team {
             // Fold by the channel's team key — see `event::fold_shared_board`.
             // No channel (missing keys) means we can't fold; falls through to the
@@ -555,7 +573,13 @@ impl App for Headway {
                     )
                 })
             }),
-            None => own_boards.iter().find(|v| v.id == self.board_id).cloned(),
+            None => {
+                let active = self.active();
+                own_boards
+                    .iter()
+                    .find(|v| v.id == active.slug && v.author == active.owner)
+                    .cloned()
+            }
         };
         let Some(view) = view else {
             // No board yet. `update` auto-seeds one for a signing account; a
@@ -585,14 +609,17 @@ impl App for Headway {
         // seed a new one. Both persist the selection so it survives a restart.
         if let Some(nav) = self.state.take_nav() {
             match nav {
-                BoardNav::Switch(board_id) => {
-                    self.board_id = board_id;
+                // The switcher entry carries the board's full coordinate, so
+                // selecting a joined board (owned by a co-member) keeps its owner
+                // rather than collapsing onto one of ours with the same slug.
+                BoardNav::Switch(coord) => {
+                    self.active = Some(coord);
                     if let Some(secret) = &signer {
                         store::save_board_pref(
                             ctx.ndb,
                             &author,
                             secret,
-                            &event::BoardCoord::new(*author.bytes(), self.board_id.as_str()),
+                            self.active(),
                             &mut store::NoPublish,
                         );
                     }
@@ -611,12 +638,13 @@ impl App for Headway {
                             &title,
                             &mut store::NoPublish,
                         );
-                        self.board_id = slug;
+                        // A new board is ours: coordinate owner = the account.
+                        self.active = Some(event::BoardCoord::new(*author.bytes(), slug));
                         store::save_board_pref(
                             ctx.ndb,
                             &author,
                             secret,
-                            &event::BoardCoord::new(*author.bytes(), self.board_id.as_str()),
+                            self.active(),
                             &mut store::NoPublish,
                         );
                         self.wake();
@@ -637,7 +665,7 @@ impl App for Headway {
             })
         {
             let source = store::BoardRef {
-                id: &self.board_id,
+                id: &self.active().slug,
                 view: &view,
             };
             let target = store::BoardRef {
@@ -681,7 +709,7 @@ impl App for Headway {
         if let (Some(action), Some(secret)) = (action, &signer) {
             store::apply(
                 ctx.ndb,
-                &self.board_id,
+                &self.active().slug,
                 &view,
                 &author,
                 &store::Signer::new(secret, channel.as_ref()),
@@ -938,12 +966,43 @@ fn board_summaries(boards: &[BoardView]) -> Vec<BoardSummary> {
     let mut summaries: Vec<BoardSummary> = boards
         .iter()
         .map(|v| BoardSummary {
+            owner: v.author,
             id: v.id.clone(),
             title: v.title.clone(),
         })
         .collect();
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
     summaries
+}
+
+/// The roster entry for the active board, if it is shared. A board is shared iff
+/// its coordinate is in the roster — matched on the full coordinate (owner +
+/// slug), not the slug — so a board you *own* and shared still routes through the
+/// multi-writer fold (author-scoped folding would hide co-members' cards). Own
+/// *private* boards aren't in the roster and return `None`.
+fn active_shared_team<'a>(
+    teams: &'a [teams::Team],
+    active: &event::BoardCoord,
+) -> Option<&'a teams::Team> {
+    let coord = active.coordinate();
+    teams.iter().find(|t| t.board_addr == coord)
+}
+
+/// Append joined shared boards to the switcher list, deduped by coordinate: a
+/// board already present with the same owner + slug (one you own and shared) is
+/// skipped, but two boards that merely share a slug with different owners both
+/// remain. Sorts by slug then owner for a stable order.
+fn merge_shared_boards(boards: &mut Vec<BoardSummary>, shared: impl Iterator<Item = BoardSummary>) {
+    for entry in shared {
+        if boards
+            .iter()
+            .any(|b| b.owner == entry.owner && b.id == entry.id)
+        {
+            continue;
+        }
+        boards.push(entry);
+    }
+    boards.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.owner.cmp(&b.owner)));
 }
 
 /// Renders a headway issue (kind 1621) referenced inline, e.g. from a notebook
@@ -1393,14 +1452,17 @@ mod tests {
             )
         };
 
-        // A board opens itself, with no card detail to pop.
+        // A board opens itself, with no card detail to pop. The target carries the
+        // board's full coordinate (owner + slug), not a bare slug.
         let board_target = resolve_open_target(&t.ndb, board_id).expect("board resolves");
-        assert_eq!(board_target.board_id, store::BOARD_ID);
+        assert_eq!(board_target.board.slug, store::BOARD_ID);
+        assert_eq!(board_target.board.owner, *t.kp.pubkey.bytes());
         assert_eq!(board_target.card, None);
 
         // An issue opens its board and its own card detail.
         let issue_target = resolve_open_target(&t.ndb, issue_id).expect("issue resolves");
-        assert_eq!(issue_target.board_id, issue_board);
+        assert_eq!(issue_target.board.slug, issue_board);
+        assert_eq!(issue_target.board.owner, *t.kp.pubkey.bytes());
         assert_eq!(issue_target.card, Some(issue_id));
     }
 
@@ -1836,6 +1898,87 @@ mod tests {
             selected_account: None,
         };
         assert!(p.resolve(&matched, &ctx_no_acct).is_none());
+    }
+
+    /// Breakage #1 (owner-blindness): a board you *own* and shared must select as
+    /// shared — routed through the multi-writer fold that gathers co-members'
+    /// cards — even though you own a board of that slug. Its coordinate is in the
+    /// roster (self-shared team-of-one), so `active_shared_team` matches it; a
+    /// private board of yours (not in the roster) still selects as own. Paired with
+    /// `shared_board_folds_via_cache`, which proves the shared fold then surfaces a
+    /// co-member's coordinate-anchored card.
+    #[test]
+    fn own_shared_board_selects_as_shared() {
+        let owner = FullKeypair::generate();
+        let team = teams::Team {
+            team_root: hex::encode([0x11u8; 32]),
+            board_addr: event::board_address(&owner.pubkey, "roadmap"),
+            epoch: None,
+        };
+        let teams = vec![team.clone()];
+
+        // Your own "roadmap" — same slug you own — selects as shared because its
+        // coordinate is in the roster (the old "own wins" rule would have hidden
+        // co-members' cards here).
+        let shared = event::BoardCoord::new(*owner.pubkey.bytes(), "roadmap");
+        assert_eq!(active_shared_team(&teams, &shared), Some(&team));
+
+        // A private board you own is absent from the roster, so it selects as own.
+        let private = event::BoardCoord::new(*owner.pubkey.bytes(), "notes");
+        assert_eq!(active_shared_team(&teams, &private), None);
+
+        // A same-slug board owned by someone else is a different coordinate: not
+        // this team.
+        let foreign = event::BoardCoord::new([0x99u8; 32], "roadmap");
+        assert_eq!(active_shared_team(&teams, &foreign), None);
+    }
+
+    /// Breakage #3: two joined boards that share a slug but differ in owner are
+    /// distinct coordinates, so both stay in the switcher; a board you own and also
+    /// shared (same coordinate) is not duplicated.
+    #[test]
+    fn switcher_dedups_by_coordinate_not_slug() {
+        let alice = [0xAAu8; 32];
+        let bob = [0xBBu8; 32];
+
+        // No own boards: Alice's "notes" and Bob's "notes" both survive.
+        let mut boards = Vec::new();
+        merge_shared_boards(
+            &mut boards,
+            [
+                BoardSummary {
+                    owner: alice,
+                    id: "notes".into(),
+                    title: "Alice notes".into(),
+                },
+                BoardSummary {
+                    owner: bob,
+                    id: "notes".into(),
+                    title: "Bob notes".into(),
+                },
+            ]
+            .into_iter(),
+        );
+        assert_eq!(boards.len(), 2);
+        assert!(boards.iter().any(|b| b.owner == alice && b.id == "notes"));
+        assert!(boards.iter().any(|b| b.owner == bob && b.id == "notes"));
+
+        // An own board you also shared (same coordinate) is listed once.
+        let mut with_own = vec![BoardSummary {
+            owner: alice,
+            id: "roadmap".into(),
+            title: "Roadmap".into(),
+        }];
+        merge_shared_boards(
+            &mut with_own,
+            [BoardSummary {
+                owner: alice,
+                id: "roadmap".into(),
+                title: "Roadmap".into(),
+            }]
+            .into_iter(),
+        );
+        assert_eq!(with_own.iter().filter(|b| b.id == "roadmap").count(), 1);
     }
 
     /// The shared-board read path: an edit applied over an SNS channel is folded

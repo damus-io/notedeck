@@ -196,8 +196,9 @@ enum InlineEdit {
 /// to act on. Switching and creating are mutually exclusive, so one enum models
 /// the frame's intent rather than a clutch of `Option`s.
 pub enum BoardNav {
-    /// Switch the active board to this slug.
-    Switch(String),
+    /// Switch the active board to this coordinate (owner + slug), so a joined
+    /// board owned by a co-member selects distinctly from one of yours.
+    Switch(event::BoardCoord),
     /// Create (seed) a new board with this display title, then switch to it.
     Create(String),
 }
@@ -363,6 +364,8 @@ struct CrossBoardRef<'a> {
     words: &'a str,
     /// The referenced board's slug, in its canonical casing from the board list.
     board: &'a str,
+    /// The referenced board's owner, so the jump targets its full coordinate.
+    owner: [u8; 32],
 }
 
 /// Find the first term in `query` that is a reference to a card on another
@@ -385,6 +388,7 @@ fn cross_board_ref<'a>(
             term,
             words,
             board: &target.id,
+            owner: target.owner,
         })
     })
 }
@@ -404,7 +408,7 @@ fn filter_ref_jump(view: &BoardView, boards: &[BoardSummary], state: &mut BoardU
         .map(|t| if t == r.term { r.words } else { t })
         .collect::<Vec<_>>()
         .join(" ");
-    state.nav = Some(BoardNav::Switch(r.board.to_string()));
+    state.nav = Some(BoardNav::Switch(event::BoardCoord::new(r.owner, r.board)));
     state.filter = rewritten;
 }
 
@@ -1267,10 +1271,15 @@ fn board_switcher(
         .color(theme.text_primary);
     ui.menu_button(label, |ui| {
         for board in boards {
-            let current = board.id == view.id;
+            // Match the active board by coordinate (owner + slug), so a joined
+            // board that shares a slug with the open one isn't marked current.
+            let current = board.id == view.id && board.owner == view.author;
             if ui.selectable_label(current, &board.title).clicked() {
                 if !current {
-                    state.nav = Some(BoardNav::Switch(board.id.clone()));
+                    state.nav = Some(BoardNav::Switch(event::BoardCoord::new(
+                        board.owner,
+                        board.id.clone(),
+                    )));
                 }
                 ui.close_menu();
             }
@@ -3779,10 +3788,12 @@ mod tests {
     fn cross_board_ref_finds_only_known_foreign_boards() {
         let boards = vec![
             BoardSummary {
+                owner: [1u8; 32],
                 id: "headway".into(),
                 title: "Headway".into(),
             },
             BoardSummary {
+                owner: [2u8; 32],
                 id: "notebook".into(),
                 title: "Notebook".into(),
             },
