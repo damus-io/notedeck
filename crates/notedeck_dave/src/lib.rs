@@ -333,13 +333,6 @@ enum SessionCommand {
     Resume {
         command_id: String,
         session_id: String,
-        /// UUID linking the reopened session back to the sender's "Connecting…"
-        /// placeholder. The host echoes it into the revived kind-31988 state (via
-        /// [`ChatSession::spawn_id`](crate::session::ChatSession)) so the sender's
-        /// discovery fold upgrades that placeholder in place — the same
-        /// correlation a [`Spawn`](SessionCommand::Spawn) uses — rather than
-        /// rendering a second "Connecting…" chip beside the revived one.
-        spawn_id: Option<String>,
     },
 }
 
@@ -351,19 +344,6 @@ impl SessionCommand {
             SessionCommand::Resume { command_id, .. } => command_id,
         }
     }
-}
-
-/// A decoded [`Resume`](SessionCommand::Resume) command's reopen work, deferred
-/// until the read txn closes (`reopen_session` needs its own ndb access). Carries
-/// the session to revive plus the sender's `spawn_id` to echo back so their
-/// "Connecting…" placeholder upgrades in place.
-struct ReopenRequest {
-    /// The session to reopen — its kind-31988 d-tag (`agentium:` identity).
-    selector: String,
-    /// The requesting host's placeholder id, stamped onto the reopened session so
-    /// its next kind-31988 state carries it back. `None` for a resume command
-    /// that predates placeholder correlation.
-    spawn_id: Option<String>,
 }
 
 /// Decode a kind-31989 command note addressed to `local_hostname`.
@@ -409,11 +389,9 @@ fn decode_session_command(
                 tracing::warn!("resume command {} missing session_id", command_id);
                 return None;
             };
-            let spawn_id = session_events::get_tag_value(note, "spawn_id").map(|s| s.to_string());
             Some(SessionCommand::Resume {
                 command_id,
                 session_id: session_id.to_string(),
-                spawn_id,
             })
         }
         other => {
@@ -1259,6 +1237,35 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.show_session_list = false;
             self.focus_queue.dequeue(session_id);
         }
+    }
+
+    /// The pending placeholder a just-discovered kind-31988 state should upgrade
+    /// in place, or `None` to materialize a fresh session.
+    ///
+    /// A **spawn** placeholder has no session yet, so it is correlated by the
+    /// `spawn_id` the receiving host echoes into the new session's state. A
+    /// **resume** placeholder revives an *existing* session and is correlated by
+    /// that session's d-tag (`claude_sid`) instead: the revived state always comes
+    /// back on its original d-tag, whereas matching on a freshly-minted spawn_id
+    /// is racy — an older revision of the same session (re-delivered over PNS) can
+    /// materialize it before the spawn_id-carrying revision lands, stranding the
+    /// placeholder until it times out.
+    fn pending_placeholder_for(
+        &self,
+        spawn_id: Option<&str>,
+        claude_sid: &str,
+    ) -> Option<SessionId> {
+        self.session_manager
+            .iter()
+            .find(|s| {
+                if s.pending_created_at.is_none() {
+                    return false;
+                }
+                let resume_match = s.pending_resume_target.as_deref() == Some(claude_sid);
+                let spawn_match = spawn_id.is_some() && s.spawn_id.as_deref() == spawn_id;
+                resume_match || spawn_match
+            })
+            .map(|s| s.id)
     }
 
     /// The [`SessionId`] of the materialized session whose stable event id
@@ -2809,16 +2816,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 None => claude_sid.to_string(), // legacy
             };
 
-            // Check for a pending placeholder matching this session's spawn_id.
-            // If found, upgrade it in-place instead of creating a new session.
-            let pending_sid = state.spawn_id.as_ref().and_then(|incoming_id| {
-                self.session_manager
-                    .iter()
-                    .find(|s| {
-                        s.pending_created_at.is_some() && s.spawn_id.as_ref() == Some(incoming_id)
-                    })
-                    .map(|s| s.id)
-            });
+            // Check for a pending placeholder this state should upgrade in place
+            // (spawn: by echoed spawn_id; resume: by target d-tag). If found,
+            // upgrade it instead of creating a duplicate session.
+            let pending_sid = self.pending_placeholder_for(state.spawn_id.as_deref(), claude_sid);
 
             let dave_sid = if let Some(sid) = pending_sid {
                 tracing::info!("upgrading pending placeholder to real session");
@@ -2985,7 +2986,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Sessions to reopen after the read txn closes — reopen_session needs its
         // own ndb access, so it can't run while `txn` borrows ctx.ndb.
-        let mut to_reopen: Vec<ReopenRequest> = Vec::new();
+        let mut to_reopen: Vec<String> = Vec::new();
 
         {
             let txn = match Transaction::new(ctx.ndb) {
@@ -3051,38 +3052,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     SessionCommand::Resume {
                         command_id,
                         session_id,
-                        spawn_id,
                     } => {
                         tracing::info!(
-                            "received resume command {}: session_id={}, spawn_id={:?}",
+                            "received resume command {}: session_id={}",
                             command_id,
                             session_id,
-                            spawn_id,
                         );
                         self.processed_commands.insert(command_id);
-                        to_reopen.push(ReopenRequest {
-                            selector: session_id,
-                            spawn_id,
-                        });
+                        to_reopen.push(session_id);
                     }
                 }
             }
         }
 
-        for req in to_reopen {
-            let Some(sid) = self.reopen_session(ctx.ndb, account, &req.selector) else {
-                continue;
-            };
-            // Echo the requesting host's placeholder id onto the reopened session
-            // so its next kind-31988 state (published because reopen_session marks
-            // it dirty) carries the spawn_id. That lets the requester's discovery
-            // fold upgrade its "Connecting…" placeholder in place — the same
-            // correlation the spawn path uses — instead of adding a duplicate chip.
-            if let Some(spawn_id) = req.spawn_id {
-                if let Some(session) = self.session_manager.get_mut(sid) {
-                    session.spawn_id = Some(spawn_id);
-                }
-            }
+        for selector in to_reopen {
+            self.reopen_session(ctx.ndb, account, &selector);
         }
     }
 
@@ -3481,12 +3465,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             spawn_id: spawn_id.clone(),
         });
 
-        // Create a lightweight pending placeholder for immediate UI feedback
+        // Create a lightweight pending placeholder for immediate UI feedback. A
+        // spawn has no existing session to correlate by, so `resume_target` is
+        // None — the revived state is matched by the echoed `spawn_id`.
         self.session_manager.new_pending_placeholder(
             cwd.to_path_buf(),
             target_host.to_string(),
             backend,
             spawn_id,
+            None,
         );
         self.active_overlay = DaveOverlay::None;
     }
@@ -3498,12 +3485,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// and resumes *that* session rather than spawning a fresh one.
     ///
     /// Reuses the spawn path's [`new_pending_placeholder`](SessionManager::new_pending_placeholder)
-    /// machinery keyed by this resume's `spawn_id`: the deleted chip gets an
+    /// machinery — one pending-chip path, not two: the deleted chip gets an
     /// immediate "Connecting…" affordance instead of sitting unresponsive until
-    /// the owning host answers. The owning host echoes the same `spawn_id` into
-    /// the revived kind-31988 state (see [`poll_session_command_events`](Self::poll_session_command_events)),
-    /// so when it streams back over the shared subscription the discovery fold
-    /// upgrades this placeholder in place — one pending-chip path, not two.
+    /// the owning host answers. The placeholder is correlated by the target
+    /// session's d-tag (`resume_target`), which the revived kind-31988 always
+    /// carries, so [`pending_placeholder_for`](Self::pending_placeholder_for)
+    /// upgrades it in place when the state streams back over the shared
+    /// subscription (see the note there on why a spawn_id echo is not robust for
+    /// resume).
     fn queue_resume_command(&mut self, state: &session_loader::SessionState) {
         let spawn_id = uuid::Uuid::new_v4().to_string();
         let backend = state
@@ -3526,13 +3515,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cli_session_id: state.cli_session_id.clone().unwrap_or_default(),
         });
 
-        // Immediate feedback via the same placeholder the spawn path uses. Keyed
-        // by this resume's spawn_id so the revived kind-31988 upgrades it in place.
+        // Immediate feedback via the same placeholder the spawn path uses, keyed
+        // by the target session's d-tag so the revived kind-31988 upgrades it in
+        // place regardless of which revision materializes first.
         self.session_manager.new_pending_placeholder(
             PathBuf::from(&state.cwd),
             state.hostname.clone(),
             backend,
             spawn_id,
+            Some(state.claude_session_id.clone()),
         );
         self.active_overlay = DaveOverlay::None;
     }
@@ -6726,22 +6717,13 @@ mod tests {
         let resume_note = ndb.get_note_by_id(&txn, &resume_cmd.note_id).unwrap();
         let spawn_note = ndb.get_note_by_id(&txn, &spawn_cmd.note_id).unwrap();
 
-        // Resume command addressed to us decodes with the target session id and
-        // the sender's spawn_id (echoed back to correlate its placeholder).
-        let Some(SessionCommand::Resume {
-            session_id,
-            spawn_id,
-            ..
-        }) = decode_session_command(&resume_note, "host-a", BackendType::Claude)
+        // Resume command addressed to us decodes with the target session id.
+        let Some(SessionCommand::Resume { session_id, .. }) =
+            decode_session_command(&resume_note, "host-a", BackendType::Claude)
         else {
             panic!("expected a Resume command for this host");
         };
         assert_eq!(session_id, "sess-42", "reads the session_id tag");
-        assert_eq!(
-            spawn_id.as_deref(),
-            Some("spawn-1"),
-            "reads the spawn_id tag for placeholder correlation",
-        );
 
         // Spawn command decodes with its cwd / backend / spawn_id.
         let Some(SessionCommand::Spawn {
@@ -6832,12 +6814,11 @@ mod tests {
         assert_eq!(cmd.target_host, "other-host", "targets the session's host");
         assert_eq!(cmd.target_session_id, "remote-sess", "names the session");
         assert_eq!(cmd.cli_session_id, "cli-abc", "carries the CLI resume id");
-        let resume_spawn_id = cmd.spawn_id.clone();
 
-        // The only materialized session is a pending placeholder keyed by the
-        // resume's spawn_id — no session identity yet (agentic is None), so the
-        // revived kind-31988 (which echoes the spawn_id) upgrades it in place
-        // rather than adding a duplicate chip.
+        // The only materialized session is a pending placeholder correlated by the
+        // target session's d-tag — no session identity yet (agentic is None), so
+        // the revived kind-31988 (which comes back on that d-tag) upgrades it in
+        // place rather than adding a duplicate chip.
         assert_eq!(
             dave.session_manager.iter().count(),
             1,
@@ -6849,13 +6830,20 @@ mod tests {
             .find(|s| s.pending_created_at.is_some())
             .expect("a pending placeholder for the remote resume");
         assert_eq!(
-            placeholder.spawn_id.as_deref(),
-            Some(resume_spawn_id.as_str()),
-            "placeholder is keyed by the resume command's spawn_id",
+            placeholder.pending_resume_target.as_deref(),
+            Some("remote-sess"),
+            "placeholder is correlated by the target session's d-tag",
         );
         assert!(
             placeholder.agentic.is_none(),
             "placeholder carries no session identity until the host revives it",
+        );
+        // pending_placeholder_for finds it by that d-tag (spawn_id absent), the
+        // exact lookup the discovery fold uses to upgrade in place.
+        assert_eq!(
+            dave.pending_placeholder_for(None, "remote-sess"),
+            Some(placeholder.id),
+            "the discovery fold correlates the revived state to this placeholder",
         );
 
         // Click the local chip: it is revived in place (materialized, dirty) with
@@ -6877,6 +6865,63 @@ mod tests {
             })
             .expect("local session materialized in place");
         assert!(revived.state_dirty, "dirty so the tombstone is overwritten");
+    }
+
+    /// The discovery fold correlates a spawn placeholder by its echoed spawn_id
+    /// and a resume placeholder by the target session's d-tag. The resume case
+    /// must hold *regardless* of the revived state's spawn_id — an older revision
+    /// re-delivered over PNS carries a stale/absent spawn_id but the same d-tag,
+    /// and it must still upgrade the placeholder rather than strand it (the bug
+    /// where "Connecting…" lingered until the pending timeout).
+    #[test]
+    fn pending_placeholder_for_matches_spawn_by_id_and_resume_by_dtag() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let mut dave = test_dave(&data_path);
+
+        let spawn_id = dave.session_manager.new_pending_placeholder(
+            PathBuf::from("/tmp/proj"),
+            "host-a".to_string(),
+            BackendType::Claude,
+            "spawn-Y".to_string(),
+            None,
+        );
+        let resume_id = dave.session_manager.new_pending_placeholder(
+            PathBuf::from("/tmp/proj"),
+            "host-a".to_string(),
+            BackendType::Claude,
+            "spawn-X".to_string(),
+            Some("sess-D".to_string()),
+        );
+
+        // Spawn placeholder: matched by the echoed spawn_id, not by d-tag.
+        assert_eq!(
+            dave.pending_placeholder_for(Some("spawn-Y"), "sess-unrelated"),
+            Some(spawn_id),
+        );
+        // Resume placeholder: matched by d-tag even when no spawn_id is offered...
+        assert_eq!(
+            dave.pending_placeholder_for(None, "sess-D"),
+            Some(resume_id),
+        );
+        // ...and even when the revived state carries a *different* spawn_id (the
+        // PNS-reordering case the d-tag correlation is meant to survive).
+        assert_eq!(
+            dave.pending_placeholder_for(Some("some-stale-spawn"), "sess-D"),
+            Some(resume_id),
+        );
+        // A d-tag no placeholder is waiting on materializes a fresh session.
+        assert_eq!(
+            dave.pending_placeholder_for(Some("nope"), "sess-none"),
+            None
+        );
+
+        // Once a placeholder is upgraded (no longer pending), it stops matching.
+        dave.session_manager
+            .get_mut(resume_id)
+            .unwrap()
+            .pending_created_at = None;
+        assert_eq!(dave.pending_placeholder_for(None, "sess-D"), None);
     }
 
     /// A denied permission_response event must set PermissionResponseType::Denied

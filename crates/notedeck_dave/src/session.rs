@@ -494,6 +494,13 @@ pub struct ChatSession {
     /// Set on both the placeholder (sender) and the spawned session (receiver),
     /// echoed in kind-31988 events so the sender can match the response.
     pub spawn_id: Option<String>,
+    /// For a *resume* placeholder: the kind-31988 d-tag of the session being
+    /// revived on another host. The revived state always comes back on this
+    /// d-tag (unlike a freshly-minted `spawn_id`), so the discovery fold
+    /// correlates the placeholder by it — see
+    /// [`Dave::pending_placeholder_for`](crate::Dave). `None` for a spawn
+    /// placeholder (no session exists yet) and for real sessions.
+    pub pending_resume_target: Option<String>,
 }
 
 impl Drop for ChatSession {
@@ -546,6 +553,7 @@ impl ChatSession {
             indicator: None,
             pending_created_at: None,
             spawn_id: None,
+            pending_resume_target: None,
         }
     }
 
@@ -568,15 +576,20 @@ impl ChatSession {
         session
     }
 
-    /// Create a lightweight pending placeholder for a remote spawn command.
+    /// Create a lightweight pending placeholder for a remote spawn/resume command.
     /// Skips `AgenticSessionData` (no git status, no threading, no subscriptions)
     /// since the placeholder only exists until the real session event arrives.
+    ///
+    /// `resume_target` is the d-tag of the session being revived for a *resume*
+    /// placeholder (so the discovery fold can correlate the revived state by its
+    /// stable id), or `None` for a *spawn* placeholder (correlated by `spawn_id`).
     pub fn new_pending_placeholder(
         id: SessionId,
         cwd: PathBuf,
         hostname: String,
         backend_type: BackendType,
         spawn_id: String,
+        resume_target: Option<String>,
     ) -> Self {
         ChatSession {
             id,
@@ -606,6 +619,7 @@ impl ChatSession {
             pending_images: vec![],
             pending_created_at: Some(Instant::now()),
             spawn_id: Some(spawn_id),
+            pending_resume_target: resume_target,
         }
     }
 
@@ -1033,19 +1047,28 @@ impl SessionManager {
         id
     }
 
-    /// Create a lightweight pending placeholder session for a remote spawn.
+    /// Create a lightweight pending placeholder session for a remote spawn or
+    /// resume. `resume_target` names the session being revived (resume) or is
+    /// `None` (spawn) — see [`ChatSession::new_pending_placeholder`].
     pub fn new_pending_placeholder(
         &mut self,
         cwd: PathBuf,
         hostname: String,
         backend_type: BackendType,
         spawn_id: String,
+        resume_target: Option<String>,
     ) -> SessionId {
         let id = self.next_id;
         self.next_id += 1;
 
-        let session =
-            ChatSession::new_pending_placeholder(id, cwd, hostname, backend_type, spawn_id);
+        let session = ChatSession::new_pending_placeholder(
+            id,
+            cwd,
+            hostname,
+            backend_type,
+            spawn_id,
+            resume_target,
+        );
         self.sessions.insert(id, session);
         self.order.insert(0, id);
         self.active = Some(id);
@@ -3008,6 +3031,7 @@ mod tests {
             "remote-a".to_string(),
             BackendType::Claude,
             "spawn-1".to_string(),
+            None,
         );
 
         let groups = mgr.host_cwd_groups();
