@@ -33,7 +33,7 @@ mod vec3;
 pub mod worktree;
 
 use agent_status::AgentStatus;
-use agentium_core::transport::{SubscriptionId, SubscriptionSpec, Transport};
+use agentium_core::transport::Transport;
 use backend::{
     AiBackend, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend, RemoteOnlyBackend,
 };
@@ -44,14 +44,14 @@ use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType, ScopedSubEoseStatus,
+    DataPathType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
-use transport::{scoped_identity, RemoteApiTransport};
+use transport::RemoteApiTransport;
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
@@ -76,9 +76,6 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
-/// Dave PNS history window retained from the previous negentropy sync path.
-const PNS_HISTORY_WINDOW_SECS: u64 = 7 * 86400;
-
 /// Normalize a relay URL to always have a trailing slash.
 fn normalize_relay_url(url: String) -> String {
     if url.ends_with('/') {
@@ -90,15 +87,6 @@ fn normalize_relay_url(url: String) -> String {
 
 /// How long a pending placeholder session waits before being removed.
 const PENDING_SESSION_TIMEOUT_SECS: f64 = 15.0;
-
-/// How long the PNS discovery subscription may stay un-settled before the
-/// [latch](Dave::discovery_settled) is forced on anyway. The settle signals
-/// (live EOSE + full-history reconcile) never fire against a relay that never
-/// connects or never EOSEs, which would otherwise defer remote session
-/// discovery, status and deletion updates for the entire app run. Forcing the
-/// latch after this deadline degrades to processing the mid-sync snapshot
-/// (idempotent guards still apply) rather than freezing remote updates.
-const DISCOVERY_SETTLE_TIMEOUT_SECS: f64 = 20.0;
 
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
@@ -158,13 +146,6 @@ fn route_new_session(ai_mode: AiMode, has_remote_hosts: bool) -> NewSessionRoute
         (AiMode::Agentic, true) => NewSessionRoute::HostPicker,
         (AiMode::Agentic, false) => NewSessionRoute::LocalDirectoryPicker,
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PnsRemoteSubState {
-    account: enostr::Pubkey,
-    relay_url: String,
-    pns_author: enostr::Pubkey,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -261,42 +242,6 @@ impl PnsLocalRuntime {
             kill_process_tree(child);
         }
     }
-}
-
-/// Stable transport identity for the selected account's PNS discovery
-/// subscription.
-fn pns_remote_sub_id() -> SubscriptionId {
-    SubscriptionId::new("dave/pns", "pns")
-}
-
-fn pns_remote_sub_author(secret_key: &[u8; 32]) -> enostr::Pubkey {
-    enostr::pns::derive_pns_keys(secret_key).keypair.pubkey
-}
-
-/// Build the PNS discovery subscription spec for the engine's [`Transport`].
-fn pns_remote_sub_config(
-    pns_relay_url: &str,
-    pns_author: enostr::Pubkey,
-    now: u64,
-) -> Result<SubscriptionSpec, enostr::Error> {
-    let relay = NormRelayUrl::new(pns_relay_url)?;
-    let since = now.saturating_sub(PNS_HISTORY_WINDOW_SECS);
-    let pns_filter = nostrdb::Filter::new()
-        .kinds([enostr::pns::PNS_KIND as u64])
-        .authors([pns_author.bytes()])
-        .limit(500)
-        .build();
-    let pns_history_filter = nostrdb::Filter::new()
-        .kinds([enostr::pns::PNS_KIND as u64])
-        .authors([pns_author.bytes()])
-        .since(since)
-        .build();
-    Ok(SubscriptionSpec {
-        id: pns_remote_sub_id(),
-        relay,
-        live_filters: vec![pns_filter],
-        history_filters: vec![pns_history_filter],
-    })
 }
 
 /// A permission-mode change decoded from a remote command, to apply on the local
@@ -585,21 +530,6 @@ pub struct Dave {
     /// NIP-65 relay each frame. `None` means local-only (no cross-device sync);
     /// dave still ingests its events into nostrdb either way.
     pns_relay_url: Option<String>,
-    /// Last selected account/relay/PNS-author tuple declared through scoped subscriptions.
-    pns_remote_sub_state: Option<PnsRemoteSubState>,
-    /// Whether the PNS discovery subscription has reached EOSE on every tracked
-    /// relay, i.e. the relay has replayed its stored head (including the latest
-    /// replaceable session-state revisions, so deletions are present) and the
-    /// synced view has settled. Gates acting on a mid-sync ndb snapshot — see
-    /// [`Dave::poll_discovery_settled`]. Reset to `false` whenever the discovery
-    /// subscription is (re)declared (e.g. account/relay switch).
-    discovery_settled: bool,
-    /// When the current discovery subscription was declared, i.e. when the
-    /// [settle](Dave::discovery_settled) wait began. Drives the
-    /// [`DISCOVERY_SETTLE_TIMEOUT_SECS`] fallback so an unreachable or
-    /// never-EOSE relay can't defer remote discovery forever. `None` while no
-    /// remote subscription is declared.
-    discovery_pending_since: Option<Instant>,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
@@ -1140,9 +1070,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_summaries: Vec::new(),
             hostname,
             pns_relay_url,
-            pns_remote_sub_state: None,
-            discovery_settled: false,
-            discovery_pending_since: None,
             pns_local_state: None,
             pns_local_runtimes: HashMap::new(),
             settings_serializer,
@@ -2741,23 +2668,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         };
 
-        // Defer materializing discovered sessions until the discovery
-        // subscription has settled (see `poll_discovery_settled`). Negentropy
-        // history reconciliation streams events in over several rounds, so a
-        // mid-sync snapshot can hold a session's `create` revision while its
-        // newer `deleted` revision is still pending — draining now would
-        // materialize an already-deleted "litter" session that vanishes a few
-        // frames later. We return *before* `poll_for_notes` so the notes stay
-        // queued on the subscription; once settled, the drain sees the netted
-        // head (ndb has collapsed each replaceable session-state event to its
-        // latest revision, and the creation path re-queries that latest
-        // revision, so deleted sessions never surface).
+        // Defer materializing discovered sessions until the host's account-wide
+        // private-note sync has settled (`AppContext::private_sync_settled`, driven
+        // by `notedeck::HostPrivateSync`). Negentropy history reconciliation streams
+        // events in over several rounds, so a mid-sync snapshot can hold a session's
+        // `create` revision while its newer `deleted` revision is still pending —
+        // draining now would materialize an already-deleted "litter" session that
+        // vanishes a few frames later. We return *before* `poll_for_notes` so the
+        // notes stay queued on the subscription; once settled, the drain sees the
+        // netted head (ndb has collapsed each replaceable session-state event to its
+        // latest revision, and the creation path re-queries that latest revision, so
+        // deleted sessions never surface).
         //
-        // Only gate when a remote discovery sync is actually pending: with no
-        // remote subscription (local-only) there is nothing to reconcile and
-        // `discovery_settled` never latches, so processing immediately is
-        // correct.
-        if self.discovery_sync_pending() {
+        // `private_sync_settled` is `true` when local-only (no private relay ⇒
+        // nothing to reconcile), so processing runs immediately in that case.
+        if !ctx.private_sync_settled {
             return;
         }
 
@@ -4358,129 +4283,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Declare the selected account's PNS discovery subscription through RemoteApi.
-    fn ensure_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
-        let account = *ctx.accounts.selected_account_pubkey();
-        let Some(secret_key) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
-        else {
-            self.clear_pns_remote_subscription(ctx);
-            return;
-        };
-        // No private relay marked -> local-only, no remote PNS subscription.
-        let Some(relay_url) = self.pns_relay_url.clone() else {
-            self.clear_pns_remote_subscription(ctx);
-            return;
-        };
-        let pns_author = pns_remote_sub_author(&secret_key);
-        let next_state = PnsRemoteSubState {
-            account,
-            relay_url: relay_url.clone(),
-            pns_author,
-        };
-        if self.pns_remote_sub_state.as_ref() == Some(&next_state) {
-            return;
-        }
-
-        let Ok(spec) = pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
-        else {
-            self.clear_pns_remote_subscription(ctx);
-            return;
-        };
-
-        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts).set_subscription(spec);
-        self.pns_remote_sub_state = Some(next_state);
-        // Fresh subscription: its EOSE has not been observed yet, so the synced
-        // view is once again mid-sync until `poll_discovery_settled` sees EOSE.
-        self.discovery_settled = false;
-        self.discovery_pending_since = Some(Instant::now());
-    }
-
-    /// Remove Dave's PNS discovery subscription via the engine [`Transport`].
-    fn clear_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
-        if self.pns_remote_sub_state.is_none() {
-            return;
-        }
-
-        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts)
-            .drop_subscription(&pns_remote_sub_id());
-        self.pns_remote_sub_state = None;
-        self.discovery_settled = false;
-        self.discovery_pending_since = None;
-    }
-
-    /// Whether the remote discovery sync is still pending: a remote discovery
-    /// subscription is declared but its synced view has not
-    /// [settled](Dave::discovery_settled) yet.
-    ///
-    /// This is the single "is the ndb view still mid-sync?" predicate that
-    /// consumers gate on. It is `false` when there is no remote subscription
-    /// (local-only — nothing to reconcile) and once the sync has settled, and
-    /// `true` only in the window between (re)declaring the subscription and its
-    /// settle. [`Dave::poll_discovery_settled`] runs while this holds; snapshot
-    /// consumers defer while this holds.
-    fn discovery_sync_pending(&self) -> bool {
-        self.pns_remote_sub_state.is_some() && !self.discovery_settled
-    }
-
-    /// Latch [`Dave::discovery_settled`] once the PNS discovery subscription's
-    /// synced view has stopped churning.
-    ///
-    /// The discovery subscription has two independent lifecycles, and both must
-    /// quiesce before the ndb view is trustworthy:
-    ///
-    /// - **live EOSE** — the relay has replayed all stored events matching the
-    ///   live filter (the recent head, including the latest replaceable
-    ///   session-state revisions).
-    /// - **full-history settle** — the NIP-77 negentropy backfill over the
-    ///   history window has finished reconciling. This is the one that matters
-    ///   for litter: negentropy converges over *multiple rounds*, and a
-    ///   session's `create` can arrive in an early round with its `deleted`
-    ///   revision only in a later one. Until the rounds drain, materializing
-    ///   sessions from the snapshot resurrects already-deleted ones.
-    ///
-    /// Until both hold, the view is mid-sync: acting on it can materialize a
-    /// session whose `deleted` event has not arrived yet. Consumers gate that
-    /// work on this latch.
-    ///
-    /// Neither signal fires against a relay that never connects or never EOSEs,
-    /// so the latch is also forced on after [`DISCOVERY_SETTLE_TIMEOUT_SECS`] to
-    /// avoid deferring remote discovery, status and deletion updates for the
-    /// entire app run. The idempotent snapshot guards still apply after a forced
-    /// settle, so the worst case is a brief litter flicker on a relay that is
-    /// still reconciling past the deadline — not stale-forever remote state.
-    ///
-    /// Cheap to call every frame: it short-circuits once latched, and each query
-    /// is a small hashmap lookup over tracked-relay / tracked-sub state.
-    fn poll_discovery_settled(&mut self, ctx: &mut AppContext<'_>) {
-        if !self.discovery_sync_pending() {
-            return;
-        }
-        let identity = scoped_identity(&pns_remote_sub_id());
-        let scoped = ctx.remote.scoped_subs(ctx.accounts);
-        let live_eosed = matches!(
-            scoped.sub_eose_status(identity),
-            ScopedSubEoseStatus::Live(s) if s.all_eosed
-        );
-        if live_eosed && scoped.full_history_settled(identity) {
-            self.discovery_settled = true;
-            self.discovery_pending_since = None;
-            tracing::info!("dave discovery subscription settled (live EOSE + history reconciled)");
-            return;
-        }
-
-        let timed_out = self
-            .discovery_pending_since
-            .is_some_and(|since| since.elapsed().as_secs_f64() > DISCOVERY_SETTLE_TIMEOUT_SECS);
-        if timed_out {
-            self.discovery_settled = true;
-            self.discovery_pending_since = None;
-            tracing::warn!(
-                "dave discovery subscription settle timed out after {DISCOVERY_SETTLE_TIMEOUT_SECS}s \
-                 (relay unreachable or slow); processing mid-sync snapshot"
-            );
-        }
-    }
-
     /// Keep the selected account's PNS session state (workspace + ndb
     /// subscriptions + restored sessions) in sync with the account picker.
     ///
@@ -4729,10 +4531,10 @@ impl notedeck::App for Dave {
         // Focus a session whose inline chip was clicked in another app.
         self.process_pending_open(ctx.ndb);
         self.ensure_pns_local_state(ctx);
-        self.ensure_pns_remote_subscription(ctx);
-        // Track whether the discovery sub's synced view has settled, so
-        // downstream polls can avoid acting on a mid-sync ndb snapshot.
-        self.poll_discovery_settled(ctx);
+        // The account's inbound PNS 1080 sync (and its settle signal, read via
+        // `ctx.private_sync_settled`) is now owned by the notedeck host, running
+        // off-foreground for every app. Dave keeps only its own outbound publish
+        // (below) and its local session-state fold.
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
@@ -4847,13 +4649,12 @@ impl notedeck::App for Dave {
         self.publish_pending_interrupt_commands(ctx);
 
         self.pending_relay_events.extend(events_to_publish);
-        // Only publish to a remote relay when one is configured in the private
-        // relay list (and its PNS subscription is live). With no private relay
-        // dave is local-only:
-        // these events are already ingested into nostrdb at build time, and we
-        // retain the remote-publish queue so a later-configured private relay
-        // can sync the backlog.
-        if !self.pending_relay_events.is_empty() && self.pns_remote_sub_state.is_some() {
+        // Only publish to a remote relay when one is configured in the account's
+        // private relay list. With no private relay dave is local-only: these
+        // events are already ingested into nostrdb at build time, and we retain
+        // the remote-publish queue so a later-configured private relay can sync
+        // the backlog.
+        if !self.pending_relay_events.is_empty() {
             if let Some(pns_relay_url) = self.pns_relay_url.clone() {
                 if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
                     match NormRelayUrl::new(&pns_relay_url) {

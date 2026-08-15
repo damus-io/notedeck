@@ -415,6 +415,16 @@ impl Notedeck {
         host.update(&mut self.ndb, &account, &secret, &urls);
     }
 
+    /// Force-enable the host private-note sync even under the test harness, where
+    /// it is off by default. PNS end-to-end tests call this to exercise the host as
+    /// the account's inbound sync path (production enables it unconditionally when
+    /// not in test mode). Idempotent; the `Session` is still spawned lazily on the
+    /// first pumped frame, so this must run within a Tokio runtime to take effect.
+    pub fn enable_host_private_sync_for_test(&mut self) {
+        self.host_private_sync
+            .get_or_insert_with(crate::HostPrivateSync::new);
+    }
+
     /// Shuts down app-owned runtime state before dropping the host.
     pub fn shutdown_app(&mut self) {
         self.app.take();
