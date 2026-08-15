@@ -1737,6 +1737,103 @@ mod tests {
         assert_eq!(card_id_by_title(&shared, "existing card"), Some(card_id));
     }
 
+    /// Does a migrated board still fold after a db reopen (an app restart)? Seed a
+    /// plaintext board + card, migrate it in place, prove it folds live, then drop
+    /// the db and reopen the same dir with the team root re-registered. If the
+    /// shared fold comes up empty here, the after-restart "Loading shared board…"
+    /// hang is reproduced at the fold layer; if it folds, the hang lives upstream
+    /// (the app never obtains/keeps the sealed board-def — a reconcile concern).
+    #[tokio::test]
+    async fn migrated_board_folds_after_reopen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+        let kp = FullKeypair::generate();
+        let secret = kp.secret_key.secret_bytes();
+        let root = mint_team_root();
+        let team_pk = enostr::sns::derive_sns_keys(&root)
+            .unwrap()
+            .team_keypair
+            .pubkey;
+        let board_addr = board_address(&kp.pubkey, BOARD_ID);
+
+        async fn wait_plaintext(
+            ndb: &Ndb,
+            author: &Pubkey,
+            pred: impl Fn(&BoardView) -> bool,
+        ) -> BoardView {
+            let mut stream = ingest_stream(ndb, author);
+            loop {
+                {
+                    let txn = Transaction::new(ndb).unwrap();
+                    if let Some(v) = load_board(ndb, &txn, author, BOARD_ID)
+                        && pred(&v)
+                    {
+                        return v;
+                    }
+                }
+                await_ingest(&mut stream).await;
+            }
+        }
+
+        // Session 1: build a plaintext board + card, then migrate in place.
+        {
+            let ndb = Ndb::new(&path, &Config::new()).unwrap();
+            ndb.add_key(&secret);
+            seed_default_board(&ndb, &kp.pubkey, &secret, BOARD_ID, &mut NoPublish);
+            let view = wait_plaintext(&ndb, &kp.pubkey, |v| v.columns.len() == 5).await;
+            apply(
+                &ndb,
+                BOARD_ID,
+                &view,
+                &kp.pubkey,
+                &Signer::new(&secret, None),
+                BoardAction::AddCard {
+                    col: 0,
+                    title: "existing card".into(),
+                    labels: vec![],
+                    parent: None,
+                },
+                &mut NoPublish,
+            );
+            wait_plaintext(&ndb, &kp.pubkey, |v| {
+                card_id_by_title(v, "existing card").is_some()
+            })
+            .await;
+
+            let sealed =
+                migrate_board_to_sns(&ndb, &kp.pubkey, &secret, BOARD_ID, &root, &mut NoPublish);
+            assert!(sealed >= 2, "board-def + card re-sealed; got {sealed}");
+
+            // Promote is no-notify: bounded poll until the shared fold surfaces live.
+            let mut ok = false;
+            for _ in 0..300 {
+                {
+                    let txn = Transaction::new(&ndb).unwrap();
+                    if event::load_shared_board(&ndb, &txn, &board_addr, &team_pk)
+                        .and_then(|v| card_id_by_title(&v, "existing card"))
+                        .is_some()
+                    {
+                        ok = true;
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(ok, "migrated board folds live before reopen");
+        }
+
+        // Session 2: reopen the same dir (an app restart) and re-register the root.
+        let ndb = Ndb::new(&path, &Config::new()).unwrap();
+        assert!(ndb.add_team_root(&root));
+        let txn = Transaction::new(&ndb).unwrap();
+        let reopened = event::load_shared_board(&ndb, &txn, &board_addr, &team_pk)
+            .expect("migrated board must still fold via the shared path after reopen");
+        assert!(
+            card_id_by_title(&reopened, "existing card").is_some(),
+            "the sealed card survives the reopen"
+        );
+    }
+
     #[tokio::test]
     async fn reorder_subissues_promotes_unsequenced_children_into_exact_order() {
         let t = TestNdb::new();
