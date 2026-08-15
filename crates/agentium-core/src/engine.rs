@@ -728,6 +728,7 @@ impl Engine {
             allow,
             message,
             cancel_turn,
+            false, // explicit host-side decision, not auto-accepted
             session_id,
             &mut threading,
             &self.seckey(),
@@ -790,6 +791,7 @@ impl Engine {
             true,
             Some(&payload),
             false,
+            false, // explicit host-side answer, not auto-accepted
             session_id,
             &mut threading,
             &self.seckey(),

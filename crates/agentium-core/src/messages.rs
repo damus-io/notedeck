@@ -412,6 +412,21 @@ pub enum PermissionResponseType {
     Denied,
 }
 
+/// A recorded permission decision: the allow/deny outcome plus whether it was
+/// reached without an explicit user click (runtime allowlist / Auto Accept All).
+///
+/// The two always travel together — a decision's provenance is meaningless
+/// apart from the decision itself — so they live in one value rather than two
+/// parallel maps that a new code path could set out of step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionDecision {
+    pub response: PermissionResponseType,
+    /// Auto-accepted (no user click) — its responded row starts expanded so the
+    /// user can review what they never approved up front. See
+    /// [`PermissionRequest::auto_accepted`].
+    pub auto_accepted: bool,
+}
+
 /// Metadata about a completed tool execution from an agentic backend.
 /// Used as a variant in `ToolResponses` to unify with other tool responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]

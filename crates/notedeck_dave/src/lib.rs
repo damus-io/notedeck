@@ -4125,10 +4125,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                 agentic.live_threading.seed(root, last);
             }
-            agentic.permissions.merge_loaded(
-                loaded.permissions.responded,
-                loaded.permissions.request_note_ids,
-            );
+            agentic.permissions.merge_loaded(loaded.permissions);
             agentic.seen_note_ids = loaded.note_ids;
         }
     }
@@ -5058,10 +5055,7 @@ fn hydrate_session_from_state(
             agentic.live_threading.seed(root, last);
         }
         // Load permission state and dedup set from events.
-        agentic.permissions.merge_loaded(
-            loaded.permissions.responded,
-            loaded.permissions.request_note_ids,
-        );
+        agentic.permissions.merge_loaded(loaded.permissions);
         agentic.seen_note_ids = loaded.note_ids;
         // Set remote status and permission mode from the state event.
         agentic.remote_status = AgentStatus::from_status_str(&state.status);
@@ -5326,13 +5320,20 @@ pub(crate) fn process_conversation_notes<'a>(
                 // response with no displayable note in the batch still updates.
                 if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                     if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                        let (response_type, _, _) =
-                            session_events::decode_permission_response(content);
-                        agentic.permissions.responded.insert(perm_id, response_type);
+                        let decoded = session_events::decode_permission_response(content);
+                        let response_type = decoded.response_type;
+                        agentic.permissions.responded.insert(
+                            perm_id,
+                            crate::messages::PermissionDecision {
+                                response: response_type,
+                                auto_accepted: decoded.auto_accepted,
+                            },
+                        );
                         for msg in session.chat.iter_mut() {
                             if let Message::PermissionRequest(req) = msg {
                                 if req.id == perm_id && req.response.is_none() {
                                     req.response = Some(response_type);
+                                    req.auto_accepted = decoded.auto_accepted;
                                 }
                             }
                         }
@@ -5451,23 +5452,21 @@ pub(crate) fn rebuild_remote_chat(
     // Seed the fast-path tail from the freshly loaded set: subsequent in-order
     // notes can then append instead of forcing another rebuild.
     agentic.tail_order = loaded.max_order;
-    agentic.permissions.merge_loaded(
-        loaded.permissions.responded,
-        loaded.permissions.request_note_ids,
-    );
+    agentic.permissions.merge_loaded(loaded.permissions);
 
     // Overlay in-memory permission decisions onto the freshly loaded chat. The
     // loader only knows responses persisted in ndb, so an auto-accept recorded
     // this poll (its response event published but not yet ingested) would render
-    // as pending without this.
+    // as pending — and collapsed — without this.
     for msg in session.chat.iter_mut() {
         let Message::PermissionRequest(req) = msg else {
             continue;
         };
-        if req.response.is_none() {
-            if let Some(&resp) = agentic.permissions.responded.get(&req.id) {
-                req.response = Some(resp);
+        if let Some(&decision) = agentic.permissions.responded.get(&req.id) {
+            if req.response.is_none() {
+                req.response = Some(decision.response);
             }
+            req.auto_accepted = decision.auto_accepted;
         }
     }
 }
@@ -5516,11 +5515,15 @@ fn handle_remote_permission_request(
         tool_name,
     );
     // Record the decision in memory so the rebuild overlay renders it as allowed
-    // even before the published response round-trips back through the relay.
-    agentic
-        .permissions
-        .responded
-        .insert(perm_id, crate::messages::PermissionResponseType::Allowed);
+    // (and expanded) even before the published response round-trips back through
+    // the relay.
+    agentic.permissions.responded.insert(
+        perm_id,
+        crate::messages::PermissionDecision {
+            response: crate::messages::PermissionResponseType::Allowed,
+            auto_accepted: true,
+        },
+    );
     if let Some(sk) = secret_key {
         let sid = agentic.event_session_id().to_string();
         if let Ok(evt) = session_events::build_permission_response_event(
@@ -5529,6 +5532,7 @@ fn handle_remote_permission_request(
             true,
             None,
             false,
+            true,
             &sid,
             &mut agentic.live_threading,
             sk,
@@ -5553,9 +5557,10 @@ fn handle_remote_permission_response(
         return;
     };
 
-    let (response_type, message, cancel_turn) =
-        session_events::decode_permission_response(note.content());
-    let allowed = response_type == crate::messages::PermissionResponseType::Allowed;
+    let decoded = session_events::decode_permission_response(note.content());
+    let message = decoded.message;
+    let cancel_turn = decoded.cancel_turn;
+    let allowed = decoded.response_type == crate::messages::PermissionResponseType::Allowed;
 
     if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
         let response = if allowed {
@@ -5572,7 +5577,8 @@ fn handle_remote_permission_response(
         for msg in chat.iter_mut() {
             if let Message::PermissionRequest(req) = msg {
                 if req.id == perm_id {
-                    req.response = Some(response_type);
+                    req.response = Some(decoded.response_type);
+                    req.auto_accepted = decoded.auto_accepted;
                     break;
                 }
             }
@@ -7031,6 +7037,7 @@ mod tests {
             false,      // DENIED
             Some("too dangerous"),
             false,
+            false, // not auto-accepted
             session_id_str,
             &mut threading,
             &sk,
@@ -7172,6 +7179,7 @@ mod tests {
             false, // DENIED
             Some("too dangerous"),
             false,
+            false, // not auto-accepted
             session_id_str,
             &mut threading,
             &sk,
@@ -7237,6 +7245,97 @@ mod tests {
             perm_msg.response,
             Some(crate::messages::PermissionResponseType::Denied),
             "single-batch denied response should not be marked Allowed"
+        );
+    }
+
+    /// Regression: an auto-accepted remote permission must reconstruct as
+    /// `auto_accepted` from ndb alone. The remote chat is rebuilt purely from the
+    /// persisted event set (`rebuild_remote_chat`), so if the `"auto"` provenance
+    /// isn't carried on the response event and reconstructed by the loader, the
+    /// responded row starts collapsed on a fresh machine — the regression this
+    /// test guards. No in-memory decision is seeded here; the flag must come
+    /// entirely from persisted events.
+    #[tokio::test]
+    async fn test_auto_accepted_permission_survives_ndb_rebuild() {
+        let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let mut threading = ThreadingState::new();
+        let session_id_str = "perm-auto-rebuild";
+        let perm_id = uuid::Uuid::new_v4();
+
+        let perm_req_evt = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({"command": "cargo test --all"}),
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        // An auto-accepted (runtime allowlist) allow response: allowed=true,
+        // auto_accepted=true.
+        let perm_resp_evt = session_events::build_permission_response_event(
+            &perm_id,
+            &perm_req_evt.note_id,
+            true,  // allowed
+            None,  // no message
+            false, // not a turn interrupt
+            true,  // AUTO-ACCEPTED
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+
+        for event in [&perm_req_evt, &perm_resp_evt] {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        // Fresh remote session — nothing in memory, mimicking a newly-synced
+        // machine whose chat is reconstructed purely from ndb.
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Remote,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+        }
+
+        let perm_msg = session
+            .chat
+            .iter()
+            .find_map(|m| match m {
+                Message::PermissionRequest(req) if req.id == perm_id => Some(req),
+                _ => None,
+            })
+            .expect("should have a PermissionRequest in chat");
+
+        assert_eq!(
+            perm_msg.response,
+            Some(crate::messages::PermissionResponseType::Allowed),
+            "auto-accepted response should reconstruct as Allowed"
+        );
+        assert!(
+            perm_msg.auto_accepted,
+            "auto-accept provenance must survive the ndb rebuild so the row \
+             starts expanded on a fresh machine"
         );
     }
 

@@ -4,7 +4,9 @@
 //! `session.rs`. Currently just [`PermissionTracker`]; further session state
 //! joins this module as it is made platform-neutral.
 
-use crate::messages::{AnswerSummary, Message, PermissionResponse, PermissionResponseType};
+use crate::messages::{
+    AnswerSummary, Message, PermissionDecision, PermissionResponse, PermissionResponseType,
+};
 use std::collections::HashMap;
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -19,8 +21,12 @@ pub struct PermissionTracker {
     pub pending: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
     /// Maps permission-request UUID → nostr note ID of the published request.
     pub request_note_ids: HashMap<Uuid, [u8; 32]>,
-    /// Permission UUIDs that have already been responded to, with the decision.
-    pub responded: HashMap<Uuid, PermissionResponseType>,
+    /// Permission UUIDs that have already been responded to, with the decision
+    /// and its provenance (auto-accepted vs explicit user click). The
+    /// auto-accept provenance is persisted in the response event (`"auto"`) and
+    /// reconstructed on load, so a remote session rebuilt purely from ndb keeps
+    /// the expanded-by-default behaviour for auto-accepted rows.
+    pub responded: HashMap<Uuid, PermissionDecision>,
 }
 
 impl PermissionTracker {
@@ -62,9 +68,16 @@ impl PermissionTracker {
             }
         }
 
-        // 2. Update PermissionTracker state
+        // 2. Update PermissionTracker state. This path is an explicit user
+        // decision (allow/deny click), so it is never auto-accepted.
         if is_remote {
-            self.responded.insert(request_id, response_type);
+            self.responded.insert(
+                request_id,
+                PermissionDecision {
+                    response: response_type,
+                    auto_accepted: false,
+                },
+            );
         } else if let Some(response) = oneshot_response {
             if let Some(sender) = self.pending.remove(&request_id) {
                 if sender.send(response).is_err() {
@@ -81,18 +94,20 @@ impl PermissionTracker {
 
     /// Merge loaded permission state from restored events.
     ///
-    /// Both maps are *merged* (not replaced) so in-memory decisions survive a
-    /// reload: an auto-accept recorded this poll whose response event hasn't yet
-    /// round-tripped into ndb is kept, while persisted decisions from ndb win on
-    /// conflict (they are authoritative). At initial load `responded` is empty,
-    /// so this is equivalent to assignment.
-    pub fn merge_loaded(
-        &mut self,
-        responded: HashMap<Uuid, PermissionResponseType>,
-        request_note_ids: HashMap<Uuid, [u8; 32]>,
-    ) {
-        self.responded.extend(responded);
-        self.request_note_ids.extend(request_note_ids);
+    /// Every persisted field is *merged* (not replaced) so in-memory decisions
+    /// survive a reload: an auto-accept recorded this poll whose response event
+    /// hasn't yet round-tripped into ndb is kept, while persisted decisions from
+    /// ndb win on conflict (they are authoritative). At initial load the loaded
+    /// maps are empty, so this is equivalent to assignment.
+    ///
+    /// Takes the whole loaded [`PermissionTracker`] rather than individual fields
+    /// so a newly added persisted field can't be silently dropped here — the
+    /// auto-accept provenance folded into [`responded`](Self::responded) went
+    /// missing on the remote path exactly because a field-by-field reconstruction
+    /// stranded it. `loaded.pending` is always empty from the loader.
+    pub fn merge_loaded(&mut self, loaded: PermissionTracker) {
+        self.responded.extend(loaded.responded);
+        self.request_note_ids.extend(loaded.request_note_ids);
     }
 }
 

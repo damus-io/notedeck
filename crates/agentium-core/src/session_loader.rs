@@ -159,8 +159,14 @@ fn load_session_messages_with_author(
         if role == Some("permission_response") {
             if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
                 if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                    let (response_type, _, _) = decode_permission_response(note.content());
-                    permissions.responded.insert(perm_id, response_type);
+                    let decoded = decode_permission_response(note.content());
+                    permissions.responded.insert(
+                        perm_id,
+                        crate::messages::PermissionDecision {
+                            response: decoded.response_type,
+                            auto_accepted: decoded.auto_accepted,
+                        },
+                    );
                 }
             }
         } else if role == Some("permission_request") {
@@ -200,10 +206,12 @@ fn load_session_messages_with_author(
 /// This is the **single** note→message mapping, shared by the loader (a
 /// from-scratch rebuild) and the live poll-merge append path in notedeck_dave,
 /// so the two can never render the same event differently (path agreement).
-/// `responded` supplies the decision to show on a `permission_request`.
+/// `responded` supplies the decision to show on a `permission_request` — both
+/// the allow/deny outcome and whether it was auto-accepted (which starts the
+/// row expanded for review).
 pub fn render_conversation_note(
     note: &nostrdb::Note,
-    responded: &HashMap<uuid::Uuid, crate::messages::PermissionResponseType>,
+    responded: &HashMap<uuid::Uuid, crate::messages::PermissionDecision>,
 ) -> Option<Message> {
     let content = note.content();
     match get_tag_value(note, "role") {
@@ -237,10 +245,12 @@ pub fn render_conversation_note(
             let perm_id = get_tag_value(note, "perm-id")
                 .and_then(|s| uuid::Uuid::parse_str(s).ok())
                 .unwrap_or_else(uuid::Uuid::new_v4);
-            let response = responded.get(&perm_id).copied();
-            Some(Message::PermissionRequest(PermissionRequest::new(
-                perm_id, tool_name, tool_input, None, response, None,
-            )))
+            let decision = responded.get(&perm_id);
+            let response = decision.map(|d| d.response);
+            let mut request =
+                PermissionRequest::new(perm_id, tool_name, tool_input, None, response, None);
+            request.auto_accepted = decision.is_some_and(|d| d.auto_accepted);
+            Some(Message::PermissionRequest(request))
         }
         Some("compaction_complete") => {
             let pre_tokens = content.parse::<u64>().unwrap_or(0);
