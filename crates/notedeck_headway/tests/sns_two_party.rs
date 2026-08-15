@@ -48,7 +48,15 @@ fn shared_columns() -> Vec<ColumnDef> {
     ]
 }
 
-const BOARD_ID: &str = "headway";
+/// The shared board's slug. Deliberately **not** the default board slug
+/// (`store::BOARD_ID` = "headway"): a Headway device auto-seeds its default board
+/// as its own team-of-one SNS channel under a *derived* root, at the owner's
+/// coordinate `30619:<owner>:headway`. If this fixture reused that slug, the
+/// owner device would hold two "headway" teams at one coordinate (the auto-seeded
+/// derived-root one and this fixture's fixed-root one) and seal edits under the
+/// wrong root, so the member never converges. These tests exercise the generic
+/// SNS transport (a shared *New* board), which always has a non-default slug.
+const BOARD_ID: &str = "team-board";
 const BOARD_TITLE: &str = "Two-party shared board";
 
 /// Bring up a two-member shared board over a live relay: both members join the

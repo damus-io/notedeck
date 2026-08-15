@@ -1841,6 +1841,105 @@ mod tests {
         assert!(!rec.frames[0].contains("\"kind\":1081"));
     }
 
+    /// The auto-seeded default board converges across an account's devices. Each
+    /// device seeds the default independently at the same coordinate; because its
+    /// root is *derived* from the account secret (not a per-device random mint),
+    /// both devices arrive at the identical SNS channel, so device B adopts device
+    /// A's board instead of forking a second channel that never folds together.
+    /// This is exactly why the default uses [`enostr::sns::derive_board_root`]
+    /// rather than [`mint_team_root`] (see the auto-seed path in `notedeck_headway`).
+    #[tokio::test]
+    async fn default_board_converges_across_devices() {
+        #[derive(Default)]
+        struct Recorder {
+            frames: Vec<String>,
+        }
+        impl Publisher for Recorder {
+            fn publish(&mut self, frame: &str) {
+                self.frames.push(frame.to_owned());
+            }
+        }
+
+        // One account, two devices (separate dbs) sharing its secret.
+        let kp = FullKeypair::generate();
+        let secret = kp.secret_key.secret_bytes();
+
+        // The load-bearing property: both devices derive the SAME default root. A
+        // random mint would differ per device and fork the channel (shown for
+        // contrast) — which is the divergence the derivation exists to prevent.
+        let root_a = enostr::sns::derive_board_root(&secret, BOARD_ID);
+        let root_b = enostr::sns::derive_board_root(&secret, BOARD_ID);
+        assert_eq!(
+            root_a, root_b,
+            "derived default root is stable across devices"
+        );
+        assert_ne!(
+            mint_team_root(),
+            mint_team_root(),
+            "a random mint would fork the channel per device"
+        );
+
+        let team_pk = enostr::sns::derive_sns_keys(&root_a)
+            .unwrap()
+            .team_keypair
+            .pubkey;
+        let board_addr = board_address(&kp.pubkey, BOARD_ID);
+
+        // Device A seeds the default under the derived root and publishes it.
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let ndb_a = Ndb::new(dir_a.path().to_str().unwrap(), &Config::new()).unwrap();
+        ndb_a.add_key(&secret);
+        let mut wire = Recorder::default();
+        assert!(create_shared_board(
+            &ndb_a, &kp.pubkey, &secret, BOARD_ID, "Headway", &root_a, &mut wire,
+        ));
+
+        // Device B seeds the default independently, before it has synced A's board.
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let ndb_b = Ndb::new(dir_b.path().to_str().unwrap(), &Config::new()).unwrap();
+        ndb_b.add_key(&secret);
+        assert!(create_shared_board(
+            &ndb_b,
+            &kp.pubkey,
+            &secret,
+            BOARD_ID,
+            "Headway",
+            &root_b,
+            &mut NoPublish,
+        ));
+
+        // B now syncs A's published board events. Both sealed the board-def at the
+        // same coordinate under the same channel key (B registered the identical
+        // root, so it unwraps A's envelope), so it is the same replaceable event —
+        // B still folds exactly one board under the shared channel, not two.
+        for frame in &wire.frames {
+            let _ = ndb_b.process_event_with(frame, IngestMetadata::new().client(true));
+        }
+
+        let mut ok = false;
+        for _ in 0..300 {
+            {
+                let txn = Transaction::new(&ndb_b).unwrap();
+                if event::load_shared_board(
+                    &ndb_b,
+                    &txn,
+                    &board_addr,
+                    std::slice::from_ref(&team_pk),
+                )
+                .is_some()
+                {
+                    ok = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            ok,
+            "device B folds the default board under the one shared derived channel"
+        );
+    }
+
     /// Migrating a plaintext board re-seals it in place: its existing card folds via
     /// the shared/team-key path afterward, with the **same id** (no delete/recreate).
     /// Exercises the nostrdb promote-in-place path end to end. (Uses a bounded poll,
