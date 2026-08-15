@@ -11,7 +11,13 @@ command reference; the board flows
 
 - **Before starting work**: `headway show` to read the board. If a card for the
   work exists, move it to In Progress: `headway move <card> --col in-progress`.
-  If none exists, add one: `headway add "<title>" --col in-progress`.
+  If none exists, add one: `headway add "<title>" --col in-progress`. Then
+  comment on the card that work has begun, and if you are a Dave agentic session
+  include your own `agentium:` session ref in that comment (e.g. `headway comment
+  <card> "starting work (agentium:<word-id>): ..."`) so a reviewer can jump to
+  the session transcript for in-progress work, not just finished work. Find your
+  ref with `echo "$AGENTIUM_SESSION"` — see the `agentium` skill
+  (`.claude/skills/agentium/SKILL.md`) for the fallback when that's unset.
 - **Task breakdown**: Use one card per unit of work; `desc`/`label` for detail.
 - **When done with the work**: Always commit your changes (see Committing
   below), then comment on the card with the commit hash so future iterations can
