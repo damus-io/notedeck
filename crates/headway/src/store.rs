@@ -223,11 +223,13 @@ pub fn ingest_signed(
     Some(id)
 }
 
-/// Persist `board_id` as `author`'s selected-board preference: a replaceable
-/// kind-30623 note ([`event::build_board_pref`]) signed by the account key and
-/// PNS-wrapped, ingested into the local nostrdb. This is the on-nostrdb
-/// replacement for the old `headway-boards.json`; [`event::load_board_pref`]
-/// reads it back latest-wins.
+/// Persist `coord` as `author`'s selected-board preference: a replaceable
+/// kind-30623 note ([`event::build_board_pref`]) whose content is the board's
+/// coordinate, signed by the account key and PNS-wrapped, ingested into the local
+/// nostrdb. This is the on-nostrdb replacement for the old `headway-boards.json`;
+/// [`event::load_board_pref`] reads it back latest-wins. Carrying the full
+/// coordinate (not just the slug) lets the restored selection disambiguate an own
+/// board from a joined shared board of the same slug.
 ///
 /// Callers pass [`NoPublish`], so the note stays local — it is never fanned out
 /// to a relay, and its inner kind isn't in `headway_filter`, so the board sync
@@ -238,13 +240,14 @@ pub fn save_board_pref(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
-    board_id: &str,
+    coord: &event::BoardCoord,
     publisher: &mut dyn Publisher,
 ) {
     // Stamp strictly past the current preference so a same-second re-save (rapid
     // board switching) still supersedes rather than tying latest-wins.
     let created_at = next_after(event::board_pref_created_at(ndb, author));
-    let Some(inner) = event::build_board_pref(board_id)
+    let coordinate = coord.coordinate();
+    let Some(inner) = event::build_board_pref(&coordinate)
         .created_at(created_at)
         .sign(secret)
         .build()
@@ -2050,8 +2053,8 @@ mod tests {
     }
 
     /// Round-trip the board-selection preference through nostrdb: a save is
-    /// PNS-wrapped + ingested, and [`event::load_board_pref`] reads the slug back;
-    /// a later save supersedes latest-wins. Registers the device key with
+    /// PNS-wrapped + ingested, and [`event::load_board_pref`] reads the coordinate
+    /// back; a later save supersedes latest-wins. Registers the device key with
     /// `add_key` so nostrdb unwraps the kind-1080 envelope (the app does this at
     /// sign-in), and subscribes to the inner kind-30623 so the fold advances on
     /// the writer's ingest notification rather than a sleep.
@@ -2077,21 +2080,58 @@ mod tests {
             ndb: &Ndb,
             stream: &mut SubscriptionStream,
             author: &Pubkey,
-            want: &str,
+            want: &event::BoardCoord,
         ) {
-            while event::load_board_pref(ndb, author).as_deref() != Some(want) {
+            while event::load_board_pref(ndb, author).as_ref() != Some(want) {
                 stream.next().await.expect("subscription open");
             }
         }
 
+        let work = event::BoardCoord::new(*kp.pubkey.bytes(), "work");
+        let personal = event::BoardCoord::new(*kp.pubkey.bytes(), "personal");
+
         // Nothing saved yet.
         assert_eq!(event::load_board_pref(&ndb, &kp.pubkey), None);
 
-        save_board_pref(&ndb, &kp.pubkey, &secret, "work", &mut NoPublish);
-        wait_pref(&ndb, &mut stream, &kp.pubkey, "work").await;
+        save_board_pref(&ndb, &kp.pubkey, &secret, &work, &mut NoPublish);
+        wait_pref(&ndb, &mut stream, &kp.pubkey, &work).await;
 
         // A later save supersedes the previous revision latest-wins.
-        save_board_pref(&ndb, &kp.pubkey, &secret, "personal", &mut NoPublish);
-        wait_pref(&ndb, &mut stream, &kp.pubkey, "personal").await;
+        save_board_pref(&ndb, &kp.pubkey, &secret, &personal, &mut NoPublish);
+        wait_pref(&ndb, &mut stream, &kp.pubkey, &personal).await;
+    }
+
+    /// A preference note written before selection became coordinate-aware stored
+    /// the bare slug as its content. [`event::load_board_pref`] must still resolve
+    /// it — as an own board (`owner = the querying author`) — so a previously saved
+    /// selection keeps working without a migration.
+    #[tokio::test]
+    async fn board_pref_reads_legacy_bare_slug() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+        let secret = kp.secret_key.secret_bytes();
+        assert!(ndb.add_key(&secret));
+
+        let pref_filter = nostrdb::Filter::new()
+            .authors([kp.pubkey.bytes()])
+            .kinds([event::KIND_BOARD_PREF as u64])
+            .build();
+        let sub = ndb.subscribe(&[pref_filter]).unwrap();
+        let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
+
+        // Hand-write the legacy note: its content is a bare slug, not a coordinate.
+        let inner = event::build_board_pref("work")
+            .created_at(1)
+            .sign(&secret)
+            .build()
+            .expect("build legacy pref");
+        ingest_pns(&ndb, &inner, &secret, &mut NoPublish);
+
+        // It resolves to an own-board coordinate.
+        let want = event::BoardCoord::new(*kp.pubkey.bytes(), "work");
+        while event::load_board_pref(&ndb, &kp.pubkey).as_ref() != Some(&want) {
+            stream.next().await.expect("subscription open");
+        }
     }
 }

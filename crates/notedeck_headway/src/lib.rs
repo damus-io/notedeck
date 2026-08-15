@@ -227,7 +227,7 @@ impl Headway {
                     ctx.ndb,
                     author,
                     &secret,
-                    &self.board_id,
+                    &event::BoardCoord::new(*author.bytes(), self.board_id.as_str()),
                     &mut store::NoPublish,
                 );
             }
@@ -357,6 +357,7 @@ impl App for Headway {
         // still gets its default board seeded.
         if self.board_account != Some(author) {
             self.board_id = event::load_board_pref(ctx.ndb, &author)
+                .map(|coord| coord.slug)
                 .unwrap_or_else(|| store::BOARD_ID.to_string());
             self.board_account = Some(author);
             self.seeded = false;
@@ -591,7 +592,7 @@ impl App for Headway {
                             ctx.ndb,
                             &author,
                             secret,
-                            &self.board_id,
+                            &event::BoardCoord::new(*author.bytes(), self.board_id.as_str()),
                             &mut store::NoPublish,
                         );
                     }
@@ -615,7 +616,7 @@ impl App for Headway {
                             ctx.ndb,
                             &author,
                             secret,
-                            &self.board_id,
+                            &event::BoardCoord::new(*author.bytes(), self.board_id.as_str()),
                             &mut store::NoPublish,
                         );
                         self.wake();

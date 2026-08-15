@@ -342,12 +342,13 @@ pub fn build_board<'a>(
 }
 
 /// Build the per-account board-selection preference note (kind 30623): a
-/// parameterized-replaceable note whose content is the selected board slug and
-/// whose fixed `d` ([`BOARD_PREF_D`]) makes each save supersede the last. The
-/// caller signs it with the account key and PNS-wraps it — see
-/// [`crate::store::save_board_pref`].
-pub fn build_board_pref(board_id: &str) -> NoteBuilder<'_> {
-    base(KIND_BOARD_PREF, board_id)
+/// parameterized-replaceable note whose content is the selected board's
+/// coordinate ([`BoardCoord::coordinate`]) and whose fixed `d` ([`BOARD_PREF_D`])
+/// makes each save supersede the last. The caller signs it with the account key
+/// and PNS-wraps it — see [`crate::store::save_board_pref`], which owns the
+/// `coordinate` string this borrows.
+pub fn build_board_pref(coordinate: &str) -> NoteBuilder<'_> {
+    base(KIND_BOARD_PREF, coordinate)
         .start_tag()
         .tag_str("d")
         .tag_str(BOARD_PREF_D)
@@ -364,20 +365,30 @@ fn board_pref_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
-/// The board slug `author` last selected, or `None` if none was ever saved (or
-/// the account is watch-only, so nostrdb can't unwrap the PNS envelope). The
+/// The [`BoardCoord`] `author` last selected, or `None` if none was ever saved
+/// (or the account is watch-only, so nostrdb can't unwrap the PNS envelope). The
 /// newest revision wins — the same latest-wins read as the notebook's
 /// `load_longform`. The note is stored PNS-wrapped, but nostrdb has already
 /// unwrapped it on read (the account key is registered via `Ndb::add_key` at
 /// sign-in), so this only ever sees the inner note.
-pub fn load_board_pref(ndb: &Ndb, author: &Pubkey) -> Option<String> {
+///
+/// The content is the selected board's coordinate. A legacy note whose content is
+/// a bare slug — written before selection became coordinate-aware — is read as an
+/// own board (`owner = author`), so a previously saved preference keeps resolving
+/// without a migration.
+pub fn load_board_pref(ndb: &Ndb, author: &Pubkey) -> Option<BoardCoord> {
     let txn = Transaction::new(ndb).ok()?;
-    ndb.query(&txn, &[board_pref_filter(author)], 1)
+    let content = ndb
+        .query(&txn, &[board_pref_filter(author)], 1)
         .ok()?
         .into_iter()
         .next()
-        .filter(|r| !r.note.content().is_empty())
         .map(|r| r.note.content().to_string())
+        .filter(|c| !c.is_empty())?;
+    Some(match BoardCoord::parse(&content) {
+        Some(coord) => coord,
+        None => BoardCoord::new(*author.bytes(), content),
+    })
 }
 
 /// The `created_at` of `author`'s current board-preference note, or 0 if none —
