@@ -76,6 +76,97 @@ fn first_node_id(canvas: &Value) -> String {
         .to_string()
 }
 
+/// The vault is a *local* read — longform never syncs over the relay — so this
+/// exercises the browse path directly: write a PNS-wrapped longform note into the
+/// CLI's own db (as the app would), then drive the real binary to list it and
+/// print its body. A dummy relay is passed but never dialed: `vault` short-circuits
+/// before the reconcile.
+#[test]
+fn vault_lists_and_prints_local_longform() {
+    use notedeck_notebook::event;
+    use notedeck_notebook::store::{self, LongformInput, NoPublish};
+    use std::time::Instant;
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // The author whose vault we write and read.
+    let (_sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec()).expect("nsec");
+    let author = enostr::Pubkey::new(*pk.bytes());
+
+    // Populate the CLI db in-process, then drop the handle so the binary opens it
+    // cleanly. nostrdb only unwraps the PNS envelope once the device key is
+    // registered — mirror the app's account-add before creating the note.
+    let d = {
+        let ndb = Ndb::new(db, &Config::new().set_ingester_threads(1)).expect("ndb");
+        assert!(ndb.add_key(&SECRET), "register the device key");
+        let input = LongformInput {
+            title: "My Article".to_string(),
+            summary: Some("a short summary".to_string()),
+            content: "# My Article\n\nthe body".to_string(),
+            published_at: None,
+            hashtags: vec!["rust".to_string()],
+        };
+        let saved = store::create_longform(&ndb, &author, &SECRET, &input, None, &mut NoPublish)
+            .expect("create longform");
+
+        // Wait for the background ingester to unwrap + commit the note so the
+        // separate binary process can query it. Poll rather than sleep-and-hope.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = nostrdb::Transaction::new(&ndb).unwrap();
+            let ready = !event::list_longform(&ndb, &txn, &author).is_empty();
+            drop(txn);
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "longform note never materialised"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        saved.d
+    };
+
+    // `vault --json` lists the note with its metadata and canonical ref.
+    let listed = notebook("ws://127.0.0.1:1", db, &["vault", "--json"]);
+    assert!(
+        listed.status.success(),
+        "vault list failed: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let arr: Value = serde_json::from_slice(&listed.stdout).expect("vault json");
+    let row = &arr.as_array().expect("array")[0];
+    assert_eq!(row["title"], "My Article");
+    assert_eq!(row["summary"], "a short summary");
+    assert_eq!(row["d"], d.as_str());
+    assert_eq!(row["hashtags"][0], "rust");
+    let reference = row["ref"].as_str().expect("ref");
+    assert!(reference.starts_with("notebook:"), "human ref: {reference}");
+
+    // Addressing the note by its `ref` prints the raw markdown body.
+    let body = notebook("ws://127.0.0.1:1", db, &["vault", reference]);
+    assert!(
+        body.status.success(),
+        "vault body failed: {}",
+        String::from_utf8_lossy(&body.stderr)
+    );
+    let text = String::from_utf8_lossy(&body.stdout);
+    assert!(
+        text.contains("# My Article"),
+        "body missing heading: {text}"
+    );
+    assert!(text.contains("the body"), "body missing content: {text}");
+
+    // Addressing it by a unique `d` prefix works too.
+    let by_prefix = notebook("ws://127.0.0.1:1", db, &["vault", &d[..6]]);
+    assert!(
+        String::from_utf8_lossy(&by_prefix.stdout).contains("the body"),
+        "d-prefix selector failed"
+    );
+}
+
 #[test]
 fn seed_show_and_add_round_trip() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");

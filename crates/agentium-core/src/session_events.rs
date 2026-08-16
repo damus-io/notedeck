@@ -785,16 +785,21 @@ pub fn build_permission_response_event(
     allowed: bool,
     message: Option<&str>,
     cancel_turn: bool,
+    auto_accepted: bool,
     session_id: &str,
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     // Keep the legacy `interrupt` key on the wire for compatibility with
-    // sessions that may still decode the earlier payload shape.
+    // sessions that may still decode the earlier payload shape. `auto` records
+    // whether the runtime allowlist / Auto Accept All resolved this without a
+    // user click, so a remote session rebuilt from ndb can start the responded
+    // row expanded for after-the-fact review (see `PermissionRequest`).
     let content = serde_json::json!({
         "decision": if allowed { "allow" } else { "deny" },
         "message": message.unwrap_or(""),
         "interrupt": cancel_turn,
+        "auto": auto_accepted,
     })
     .to_string();
 
@@ -843,35 +848,59 @@ pub fn build_permission_response_event(
 /// human-readable message plus whether the denial should interrupt the
 /// current turn. Defaults to `Denied`/`false` if the content cannot be
 /// parsed or has no `"decision"` field.
-pub fn decode_permission_response(
-    content: &str,
-) -> (
-    crate::messages::PermissionResponseType,
-    Option<String>,
-    bool,
-) {
+/// Decoded fields of a permission-response event's JSON content.
+///
+/// A named struct rather than a bare tuple because the payload now carries two
+/// adjacent booleans (`cancel_turn`, `auto_accepted`) that are easy to transpose
+/// positionally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedPermissionResponse {
+    /// Whether the request was allowed or denied.
+    pub response_type: crate::messages::PermissionResponseType,
+    /// Optional human-readable message (e.g. the question-set answer payload).
+    pub message: Option<String>,
+    /// Whether a denial should interrupt the current turn.
+    pub cancel_turn: bool,
+    /// Whether the runtime allowlist / Auto Accept All resolved this without a
+    /// user click. Reconstructs [`PermissionRequest::auto_accepted`] on load.
+    pub auto_accepted: bool,
+}
+
+pub fn decode_permission_response(content: &str) -> DecodedPermissionResponse {
     use crate::messages::PermissionResponseType;
 
-    match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(v) => {
-            let allowed = v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny") == "allow";
-            let message = v
-                .get("message")
-                .and_then(|m| m.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let cancel_turn = v
-                .get("interrupt")
-                .and_then(|i| i.as_bool())
-                .unwrap_or(false);
-            let response_type = if allowed {
-                PermissionResponseType::Allowed
-            } else {
-                PermissionResponseType::Denied
-            };
-            (response_type, message, cancel_turn)
-        }
-        Err(_) => (PermissionResponseType::Denied, None, false),
+    let denied = DecodedPermissionResponse {
+        response_type: PermissionResponseType::Denied,
+        message: None,
+        cancel_turn: false,
+        auto_accepted: false,
+    };
+
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(content) else {
+        return denied;
+    };
+
+    let allowed = v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny") == "allow";
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let cancel_turn = v
+        .get("interrupt")
+        .and_then(|i| i.as_bool())
+        .unwrap_or(false);
+    let auto_accepted = v.get("auto").and_then(|a| a.as_bool()).unwrap_or(false);
+    let response_type = if allowed {
+        PermissionResponseType::Allowed
+    } else {
+        PermissionResponseType::Denied
+    };
+    DecodedPermissionResponse {
+        response_type,
+        message,
+        cancel_turn,
+        auto_accepted,
     }
 }
 
@@ -1662,6 +1691,7 @@ mod tests {
             true,
             Some("looks safe"),
             false,
+            false,
             "sess-perm-test",
             &mut threading,
             &sk,
@@ -1696,6 +1726,7 @@ mod tests {
             false,
             Some("too dangerous"),
             true,
+            false,
             "sess-perm-test",
             &mut threading,
             &sk,
@@ -1767,6 +1798,7 @@ mod tests {
             true,
             None,
             false,
+            false,
             session_id,
             &mut threading,
             &sk,
@@ -1793,16 +1825,32 @@ mod tests {
 
     #[test]
     fn test_decode_permission_response_interrupt() {
-        let (response_type, message, cancel_turn) = decode_permission_response(
+        let decoded = decode_permission_response(
             r#"{"decision":"deny","message":"stop here","interrupt":true}"#,
         );
 
         assert_eq!(
-            response_type,
+            decoded.response_type,
             crate::messages::PermissionResponseType::Denied
         );
-        assert_eq!(message.as_deref(), Some("stop here"));
-        assert!(cancel_turn);
+        assert_eq!(decoded.message.as_deref(), Some("stop here"));
+        assert!(decoded.cancel_turn);
+        // No `auto` key → defaults to false (manual decision).
+        assert!(!decoded.auto_accepted);
+    }
+
+    #[test]
+    fn test_decode_permission_response_auto_accepted() {
+        // The runtime allowlist / Auto Accept All records `"auto":true` so the
+        // responded row can be reconstructed as expanded on a fresh-machine load.
+        let decoded =
+            decode_permission_response(r#"{"decision":"allow","message":"","auto":true}"#);
+
+        assert_eq!(
+            decoded.response_type,
+            crate::messages::PermissionResponseType::Allowed
+        );
+        assert!(decoded.auto_accepted);
     }
 
     /// Backward compat: a legacy question-set response, where the answers were
@@ -1813,18 +1861,20 @@ mod tests {
     #[test]
     fn test_decode_permission_response_legacy_answers_json() {
         let legacy = r#"{"decision":"allow","message":"{\"answers\":{\"Languages\":{\"selected\":[\"Rust\"]}}}","interrupt":false}"#;
-        let (response_type, message, cancel_turn) = decode_permission_response(legacy);
+        let decoded = decode_permission_response(legacy);
 
         assert_eq!(
-            response_type,
+            decoded.response_type,
             crate::messages::PermissionResponseType::Allowed
         );
         assert_eq!(
-            message.as_deref(),
+            decoded.message.as_deref(),
             Some(r#"{"answers":{"Languages":{"selected":["Rust"]}}}"#),
             "the legacy escaped-JSON message decodes back intact"
         );
-        assert!(!cancel_turn);
+        assert!(!decoded.cancel_turn);
+        // Legacy events predate the `auto` key → defaults to false.
+        assert!(!decoded.auto_accepted);
     }
 
     #[test]

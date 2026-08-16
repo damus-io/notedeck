@@ -170,6 +170,33 @@ pub fn longform_naddr(author: &Pubkey, d: &str) -> Option<String> {
     Some(format!("nostr:{}", coord.to_bech32().ok()?))
 }
 
+/// A human-friendly reference to a longform note: `notebook:<word-id>`, where the
+/// word-id is a stable BIP-39 rendering of the note's addressable coordinate
+/// (`30023:<author>:<d>`). Stable across edits, since the coordinate is — unlike
+/// the per-revision event id that [`crate::wordid::node_ref`] encodes for canvas
+/// nodes (a longform note is replaceable, so each edit mints a fresh id). This is
+/// what the CLI vault browser prints and resolves back.
+pub fn longform_ref(author: &Pubkey, d: &str) -> String {
+    format!(
+        "{}:{}",
+        crate::wordid::SCHEME,
+        crate::wordid::encode_str(&longform_address(author, d))
+    )
+}
+
+/// Decode a longform note's address from a `nostr:naddr…` reference, a bare
+/// `naddr…`, the raw `30023:<author-hex>:<d>` coordinate, or a NIP-21 uri —
+/// returning the author and `d` when it names a kind-30023 note. `None` for any
+/// other kind or an unparseable coordinate. The inverse of [`longform_naddr`],
+/// used by the CLI to accept a note-embed's own reference back as a selector.
+pub fn parse_longform_naddr(s: &str) -> Option<(Pubkey, String)> {
+    let coord = nostr::nips::nip01::Coordinate::parse(s).ok()?;
+    if coord.kind != nostr::Kind::from(KIND_LONGFORM as u16) {
+        return None;
+    }
+    Some((Pubkey::new(coord.public_key.to_bytes()), coord.identifier))
+}
+
 // ---------------------------------------------------------------------------
 // Builders
 // ---------------------------------------------------------------------------
@@ -1294,6 +1321,25 @@ pub fn node_json(node: &NodeView) -> serde_json::Value {
     })
 }
 
+/// Render a longform vault note as JSON for the CLI's `--json` output. Mirrors
+/// [`node_json`]: carries the human `ref`/`naddr` alongside the raw NIP-23 fields
+/// so a machine consumer can address the note without re-deriving them.
+pub fn longform_json(note: &LongformNote) -> serde_json::Value {
+    let author = Pubkey::new(note.author);
+    serde_json::json!({
+        "d": note.d,
+        "ref": longform_ref(&author, &note.d),
+        "naddr": longform_naddr(&author, &note.d),
+        "author": author.hex(),
+        "title": note.title,
+        "summary": note.summary,
+        "published_at": note.published_at,
+        "hashtags": note.hashtags,
+        "created_at": note.created_at,
+        "content": note.content,
+    })
+}
+
 /// Render a single edge as JSON. See [`canvas_json`].
 pub fn edge_json(edge: &EdgeView) -> serde_json::Value {
     serde_json::json!({
@@ -1429,6 +1475,39 @@ mod tests {
         assert!(parse(&note).is_none());
         // A normal revision is not a tombstone.
         assert!(!parsed.deleted);
+    }
+
+    #[test]
+    fn longform_naddr_round_trips_through_parse() {
+        let author = FullKeypair::generate().pubkey;
+        let d = "abcdef0123456789";
+
+        // The naddr the note-embed carries decodes back to the same address.
+        let naddr = longform_naddr(&author, d).expect("naddr encodes");
+        assert_eq!(parse_longform_naddr(&naddr), Some((author, d.to_string())));
+
+        // So does the bare `30023:<author>:<d>` coordinate form.
+        let coord = longform_address(&author, d);
+        assert_eq!(parse_longform_naddr(&coord), Some((author, d.to_string())));
+
+        // A non-longform coordinate (kind 1) is rejected — not a vault note.
+        assert_eq!(
+            parse_longform_naddr(&format!("1:{}:{d}", author.hex())),
+            None
+        );
+        // A bare word-id is not a coordinate.
+        assert_eq!(parse_longform_naddr("maple-river-canyon"), None);
+    }
+
+    #[test]
+    fn longform_ref_is_stable_and_scheme_prefixed() {
+        let author = FullKeypair::generate().pubkey;
+        // Scheme-prefixed and deterministic for a given (author, d).
+        let r = longform_ref(&author, "abcdef0123456789");
+        assert!(r.starts_with("notebook:"), "ref carries the scheme: {r}");
+        assert_eq!(r, longform_ref(&author, "abcdef0123456789"));
+        // The coordinate — not the changing event id — is what's encoded, so the
+        // ref is independent of any particular revision's note.
     }
 
     #[test]
