@@ -595,6 +595,10 @@ pub use event::load_canvas;
 /// without naming the event module directly.
 pub use event::{LongformInput, LongformNote, list_longform, load_longform};
 
+/// Convenience re-exports for the unified vault projection so the app layer can
+/// list mixed note+canvas documents without naming the event module directly.
+pub use event::{VaultDoc, VaultDocKind, list_canvases, list_vault};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,5 +1226,75 @@ mod tests {
         assert_eq!(na.content, "one");
         assert_eq!(nb.title, "Second");
         assert_eq!(nb.content, "two");
+    }
+
+    #[tokio::test]
+    async fn list_vault_merges_notes_and_canvases() {
+        // Both stores in one listing: a canvas (plaintext kind-31606 events) and a
+        // longform note (PNS-wrapped kind-30023). The note is unwrapped only once
+        // the device key is registered; canvas events need no key.
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+        assert!(ndb.add_key(&kp.secret_key.secret_bytes()));
+        let secret = kp.secret_key.secret_bytes();
+
+        let (canvas_d, _) = create_canvas(&ndb, &kp.pubkey, &secret, "Board", &mut NoPublish)
+            .expect("create canvas");
+        let note = create_longform(
+            &ndb,
+            &kp.pubkey,
+            &secret,
+            &LongformInput {
+                title: "Draft".to_string(),
+                content: "body".to_string(),
+                ..Default::default()
+            },
+            None,
+            &mut NoPublish,
+        )
+        .expect("create note");
+
+        // Drain a combined subscription until both documents are folded into the
+        // vault (subscribe-then-poll, not a sleep — mirrors the other harnesses).
+        let sub = ndb
+            .subscribe(&[
+                event::notebook_filter(&kp.pubkey),
+                event::longform_filter(&kp.pubkey),
+            ])
+            .unwrap();
+        let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
+        let docs = loop {
+            {
+                let txn = Transaction::new(&ndb).unwrap();
+                let docs = list_vault(&ndb, &txn, &kp.pubkey);
+                if docs.len() == 2 {
+                    break docs;
+                }
+            }
+            stream.next().await.expect("subscription open");
+        };
+
+        // Exactly the two documents, one of each kind, each projected correctly.
+        let note_doc = docs
+            .iter()
+            .find(|d| d.kind == VaultDocKind::Note)
+            .expect("a note row");
+        let canvas_doc = docs
+            .iter()
+            .find(|d| d.kind == VaultDocKind::Canvas)
+            .expect("a canvas row");
+        assert_eq!(note_doc.d, note.d);
+        assert_eq!(note_doc.title, "Draft");
+        assert_eq!(note_doc.author, kp.pubkey);
+        assert_eq!(canvas_doc.d, canvas_d);
+        assert_eq!(canvas_doc.title, "Board");
+        assert_eq!(canvas_doc.author, kp.pubkey);
+        // Sorted newest-edited-first: the list is non-increasing in `edited_at`,
+        // whichever document happens to carry the later wall-clock second.
+        assert!(
+            docs[0].edited_at >= docs[1].edited_at,
+            "vault sorted newest-edited first"
+        );
     }
 }
