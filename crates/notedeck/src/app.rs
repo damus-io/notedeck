@@ -16,6 +16,7 @@ use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Config, Ndb, Transaction};
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -86,6 +87,45 @@ pub trait App {
 
     /// UI rendering — called only for the active/visible app.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
+
+    /// Render one entry of the chrome-owned global navigation history.
+    ///
+    /// The chrome owns a single browser-style
+    /// [`NavStack<ChromeNavEntry>`](crate::NavStack) spanning every app (see
+    /// [`crate::navigator`]). When it draws an entry it belongs to *this* app, it
+    /// calls `render_nav` with that entry's [`ChromeNavEntry::token`](crate::ChromeNavEntry)
+    /// so the app can draw the specific view the token names, rather than its
+    /// whole self.
+    ///
+    /// ## Token contract
+    ///
+    /// `token` is exactly the `Rc<dyn Any>` this app pushed onto the history (via
+    /// [`Navigator::push_route`](crate::Navigator::push_route) or friends). Two
+    /// properties matter to the app:
+    ///
+    /// - **Identity + cheap `Clone`.** The token is an opaque `Rc<dyn Any>` the
+    ///   chrome never inspects — it only hands it back here. `Rc` makes cloning it
+    ///   (which egui-nav does per transition) a refcount bump, not a deep copy.
+    /// - **Downcast to the app's own route type.** The app calls
+    ///   [`downcast_ref`](Any::downcast_ref) to recover the route value it stored
+    ///   and renders that view. A token it doesn't recognize (a different app's
+    ///   type, or a route it no longer serves) must fall back to
+    ///   [`render`](Self::render) or a safe default — never panic.
+    ///
+    /// Like every `*_ui` path, `render_nav` runs **every frame**: downcast and
+    /// match on the borrowed token, and do not allocate here (CLAUDE.md rule 18).
+    ///
+    /// The default implementation ignores the token and renders the whole app, so
+    /// a single-view app that never pushes routes needs no token handling at all.
+    fn render_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        token: &Rc<dyn Any>,
+    ) -> AppResponse {
+        let _ = token;
+        self.render(ctx, ui)
+    }
 
     /// Notification badge state for this app's chrome tab. Defaults to none.
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> TabNotifications {
@@ -729,4 +769,58 @@ fn try_swap_compacted_db(dbpath: &str) {
     let _ = std::fs::remove_file(&db_old);
     let _ = std::fs::remove_dir_all(&compact_path);
     info!("compact swap: success! {old_size} -> {compact_size} bytes");
+}
+
+#[cfg(test)]
+mod render_nav_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A single-view test app that does **not** override
+    /// [`App::render_nav`], so calling `render_nav` exercises the trait default.
+    /// `render` records that it ran by flipping `rendered`, letting the test
+    /// assert the default `render_nav` delegated to it.
+    #[derive(Default)]
+    struct FlagApp {
+        rendered: bool,
+    }
+
+    impl App for FlagApp {
+        fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
+            self.rendered = true;
+            AppResponse::none()
+        }
+    }
+
+    /// The default `render_nav` ignores its token and falls back to
+    /// [`App::render`], so a single-view app needs no token handling.
+    #[tokio::test]
+    async fn default_render_nav_falls_back_to_render() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let ui_ctx = egui::Context::default();
+        let mut notedeck = Notedeck::init(
+            &ui_ctx,
+            tmp.path(),
+            &["notedeck".to_owned(), "--testrunner".to_owned()],
+        );
+
+        // `__run_test_ui` wants an `Fn` closure, so reach the `&mut self`
+        // render path through `RefCell`s rather than mutable captures.
+        let app = RefCell::new(FlagApp::default());
+        let app_ctx = RefCell::new(notedeck.app_context(&ui_ctx));
+
+        // An arbitrary token the app never inspects; the default `render_nav`
+        // discards it and renders the whole app.
+        let token: Rc<dyn Any> = Rc::new(());
+
+        egui::__run_test_ui(|ui| {
+            let mut ctx = app_ctx.borrow_mut();
+            let _ = app.borrow_mut().render_nav(&mut ctx, ui, &token);
+        });
+
+        assert!(
+            app.borrow().rendered,
+            "default render_nav must delegate to render()"
+        );
+    }
 }

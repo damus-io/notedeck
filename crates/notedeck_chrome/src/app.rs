@@ -1,3 +1,6 @@
+use std::any::Any;
+use std::rc::Rc;
+
 use notedeck::{AppContext, AppResponse};
 
 use notedeck_columns::Damus;
@@ -117,6 +120,48 @@ impl notedeck::App for NotedeckApp {
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.render(ctx, ui),
 
             NotedeckApp::Other(_name, other) => other.render(ctx, ui),
+        }
+    }
+
+    /// Fan a chrome global-nav entry out to the app that owns it, handing over
+    /// the opaque route `token` so that app can downcast it and draw the specific
+    /// view it names (see [`notedeck::App::render_nav`]). Non-navigating apps
+    /// inherit the trait default, which discards the token and renders the whole
+    /// app.
+    #[profiling::function]
+    fn render_nav(
+        &mut self,
+        ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+        token: &Rc<dyn Any>,
+    ) -> AppResponse {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => dave.render_nav(ctx, ui, token),
+            NotedeckApp::Columns(columns) => columns.render_nav(ctx, ui, token),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.render_nav(ctx, ui, token),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.render_nav(ctx, ui, token),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.render_nav(ctx, ui, token),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.render_nav(ctx, ui, token),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.render_nav(ctx, ui, token),
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.render_nav(ctx, ui, token),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.render_nav(ctx, ui, token),
+
+            NotedeckApp::Other(_name, other) => other.render_nav(ctx, ui, token),
         }
     }
 
