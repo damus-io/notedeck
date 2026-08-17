@@ -583,6 +583,8 @@ fn snapshot_inline_card() {
         activity: vec![],
         parent: None,
         subissues: vec![],
+        blocked_by: vec![],
+        blocks: vec![],
         due: None,
         estimate: None,
         seq: None,

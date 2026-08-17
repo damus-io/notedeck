@@ -3697,6 +3697,8 @@ mod tests {
             activity: vec![],
             parent: None,
             subissues: vec![],
+            blocked_by: vec![],
+            blocks: vec![],
         }
     }
 
