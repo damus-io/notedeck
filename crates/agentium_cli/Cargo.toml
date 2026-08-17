@@ -14,7 +14,7 @@ enostr = { workspace = true }
 nostrdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal"] }
 
 [dev-dependencies]
 nostrdb_relay = { workspace = true }

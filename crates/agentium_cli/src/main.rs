@@ -155,6 +155,9 @@ async fn run() -> Result<()> {
     match cli.command {
         Command::List => cmd_list(&engine, &read_pk, &filters, cli.list_scope, cli.json)?,
         Command::Show { session } => cmd_show(&engine, &read_pk, session.as_deref(), cli.json)?,
+        Command::Log { session, view } if view.follow => {
+            cmd_follow(&engine, &read_pk, session.as_deref(), &view, cli.json).await?
+        }
         Command::Log { session, view } => {
             cmd_log(&engine, &read_pk, session.as_deref(), &view, cli.json)?
         }
@@ -397,6 +400,179 @@ fn cmd_log(
     };
 
     emit(&output, use_pager)
+}
+
+/// `agentium log <session> --follow` — print the current tail, then keep
+/// following, appending each new message as it lands until Ctrl-C. The reading
+/// *mode* of [`cmd_log`], not a separate command: same selector resolution, same
+/// [`EventOrder`]-ordered loader, same shared note→message mapping.
+///
+/// The loop is the engine's documented *wait, then re-read the snapshot*: an ndb
+/// subscription ([`Engine::watch_session`]) wakes on each new kind-1988 event and
+/// [`Engine::watch_sessions`] on each kind-31988 state revision; on either wake
+/// we re-read the whole ordered conversation and print only the suffix past the
+/// highest order already shown (via [`first_after`]) — never a message count, so
+/// a slightly-out-of-order live insert can't reprint or misorder. A status
+/// change (e.g. `-> needs_input`) is surfaced as a distinct line. The transport
+/// stays connected (as in [`run`]) so new relay envelopes keep firing the watch.
+///
+/// A live stream can't be paged or reconstructed from the point-in-time archive,
+/// so `--pager`/`--jsonl` were already rejected in parsing (see
+/// [`MessageView::check_follow`]); `--last`/`--role`/`--tools` shape the initial
+/// tail and the streamed messages, and `--json` emits newline-delimited
+/// role-tagged objects instead of the rendered text.
+///
+/// [`EventOrder`]: agentium_core::session_loader::EventOrder
+async fn cmd_follow(
+    engine: &Engine,
+    author: &Pubkey,
+    selector: Option<&str>,
+    view: &MessageView,
+    as_json: bool,
+) -> Result<()> {
+    use agentium_core::session_loader::{
+        EventOrder, load_deleted_session_states_for_author, load_session_messages_for_author,
+        load_session_states_for_author, resolve_session_including_deleted,
+    };
+
+    let selector = selector
+        .ok_or("no session — pass a selector (see `agentium list`) or set $AGENTIUM_SESSION")?;
+
+    // Resolve the selector once to the stable session id (its kind-1988 `d` tag)
+    // and its starting status; every watch and re-read below keys off that id.
+    let (session_id, mut last_status) = {
+        let txn = Transaction::new(engine.ndb())?;
+        let live = load_session_states_for_author(engine.ndb(), &txn, author);
+        let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+        let state = resolve_session_including_deleted(&live, &deleted, selector)?;
+        (state.claude_session_id.clone(), state.status.clone())
+    };
+
+    // A live follow never pages, so `auto` color just follows the real stdout
+    // tty (there is no color-aware pager to also satisfy, unlike `cmd_log`).
+    let color = view.color.enabled(std::io::stdout().is_terminal());
+
+    // Subscribe *before* the initial read so an event that lands in the gap
+    // between reading the tail and entering the loop still wakes us: the
+    // subscriptions capture from now on, the read captures history, and together
+    // they leave no hole. `watch_session` is scoped to this session's kind-1988
+    // events; `watch_sessions` wakes on any kind-31988 revision (we re-resolve
+    // and compare, so an unrelated session's change prints nothing).
+    let mut msg_watch = engine.watch_session(&session_id)?;
+    let mut state_watch = engine.watch_sessions()?;
+
+    // Initial tail: print it honoring --last/--role/--tools, but seed the cursor
+    // at the whole conversation's max order (not the filtered subset's) so the
+    // streamed delta resumes strictly after everything already shown.
+    let mut printed_any = false;
+    let mut last_order: Option<EventOrder> = {
+        let txn = Transaction::new(engine.ndb())?;
+        let loaded = load_session_messages_for_author(engine.ndb(), &txn, author, &session_id);
+        let selected = view.select(&loaded.messages);
+        emit_follow_messages(&selected, color, as_json, &mut printed_any);
+        loaded.max_order
+    };
+
+    // Follow until Ctrl-C. Ctrl-C breaks cleanly; either watch ending (`false`,
+    // e.g. the database was torn down) also ends the loop.
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            changed = msg_watch.changed() => {
+                if !changed {
+                    break;
+                }
+            }
+            changed = state_watch.changed() => {
+                if !changed {
+                    break;
+                }
+            }
+        }
+
+        // Message delta: re-read the full ordered snapshot, emit only the suffix
+        // whose order is past `last_order` (role/tool filtered, but never tailed
+        // — `--last` bounds only the initial view), then advance the cursor to
+        // the new global max.
+        {
+            let txn = Transaction::new(engine.ndb())?;
+            let loaded = load_session_messages_for_author(engine.ndb(), &txn, author, &session_id);
+            let start = first_after(&loaded.orders, last_order);
+            let fresh: Vec<&Message> = loaded.messages[start..]
+                .iter()
+                .filter(|m| view.keep(m))
+                .collect();
+            emit_follow_messages(&fresh, color, as_json, &mut printed_any);
+            if loaded.max_order.is_some() {
+                last_order = loaded.max_order;
+            }
+        }
+
+        // Status transition: re-resolve the session's kind-31988 status and, when
+        // it flips, print a distinct line (so `-> needs_input` surfaces mid-follow).
+        {
+            let txn = Transaction::new(engine.ndb())?;
+            let live = load_session_states_for_author(engine.ndb(), &txn, author);
+            let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+            if let Ok(state) = resolve_session_including_deleted(&live, &deleted, &session_id)
+                && state.status != last_status
+            {
+                emit_follow_status(&state.status, color, as_json);
+                last_status = state.status.clone();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Stream a batch of followed messages to stdout, flushed so the follower sees
+/// each immediately. Text mode reuses [`render_message`] and mirrors
+/// [`render_messages`]' spacing — a blank line *between* entries, none before
+/// the first — with `printed_any` carrying that "have we printed yet" state
+/// across batches. JSON mode emits one compact role-tagged object per line
+/// (newline-delimited, the streaming counterpart to `log --json`'s array),
+/// reusing the same [`Message::to_json`] shape.
+///
+/// [`Message::to_json`]: agentium_core::messages::Message::to_json
+fn emit_follow_messages(messages: &[&Message], color: bool, as_json: bool, printed_any: &mut bool) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    for m in messages {
+        if as_json {
+            if let Ok(line) = serde_json::to_string(&m.to_json()) {
+                let _ = writeln!(out, "{line}");
+            }
+        } else {
+            // A blank line separates entries (mirroring `render_messages`), but
+            // not before the very first one printed across all batches.
+            if *printed_any {
+                let _ = writeln!(out);
+            }
+            let _ = write!(out, "{}", render_message(m, color));
+        }
+        *printed_any = true;
+    }
+    let _ = out.flush();
+}
+
+/// Print a session's new status as a distinct, colored line while following (or
+/// a `{"event":"status",…}` object under `--json`), so a mid-follow transition
+/// like `-> needs_input` stands out from the message stream.
+fn emit_follow_status(status: &str, color: bool, as_json: bool) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    if as_json {
+        let obj = serde_json::json!({ "event": "status", "status": status });
+        if let Ok(line) = serde_json::to_string(&obj) {
+            let _ = writeln!(out, "{line}");
+        }
+    } else {
+        let (glyph, label, sgr) = status_style(status);
+        let line = paint(color, sgr, &format!("── {glyph} {label} ──"));
+        let _ = writeln!(out, "\n{line}");
+    }
+    let _ = out.flush();
 }
 
 /// Join JSONL lines into a single newline-terminated block (empty stays empty),
@@ -734,6 +910,12 @@ struct MessageView {
     /// `--pager`/`--no-pager`: whether to route output through a pager, like
     /// `git log`.
     pager: PagerMode,
+    /// `--follow`/`-f`: after printing the current tail, keep streaming each new
+    /// message as it lands (`git log`'s transcript, followed like `tail -f`)
+    /// until Ctrl-C. A live stream can't be paged or reconstructed as a
+    /// point-in-time archive, so it conflicts with `--pager`/`--jsonl` (see
+    /// [`MessageView::check_follow`]).
+    follow: bool,
 }
 
 /// When to ANSI-color the rendered transcript (`--color`). `Auto` follows the
@@ -789,27 +971,73 @@ impl PagerMode {
 }
 
 impl MessageView {
+    /// Whether a single message survives the role/tool filters — the per-message
+    /// predicate shared by [`select`](MessageView::select) (which then also
+    /// tails with `--last`) and the live `--follow` stream (which filters each
+    /// new message the same way but never tails it).
+    fn keep(&self, m: &Message) -> bool {
+        let role_ok = self.roles.is_empty()
+            || self
+                .roles
+                .iter()
+                .any(|r| message_role(m).eq_ignore_ascii_case(r));
+        role_ok && (self.show_tools || !is_tool_message(m))
+    }
+
     /// Apply the role/tool/last filters to an ordered message slice, returning
     /// borrowed references in the same order. Order of operations: role filter,
     /// then tool fold, then the `--last` tail — so `--last N` counts the
     /// messages actually shown, not ones a filter already dropped.
     fn select<'a>(&self, messages: &'a [Message]) -> Vec<&'a Message> {
-        let mut kept: Vec<&Message> = messages
-            .iter()
-            .filter(|m| {
-                self.roles.is_empty()
-                    || self
-                        .roles
-                        .iter()
-                        .any(|r| message_role(m).eq_ignore_ascii_case(r))
-            })
-            .filter(|m| self.show_tools || !is_tool_message(m))
-            .collect();
+        let mut kept: Vec<&Message> = messages.iter().filter(|m| self.keep(m)).collect();
         if let Some(n) = self.last {
             let start = kept.len().saturating_sub(n);
             kept.drain(..start);
         }
         kept
+    }
+
+    /// Reject the flag combinations that a live `--follow` can't honor. A live
+    /// stream can't be paged (there is no end to page over), and the `--jsonl`
+    /// reconstruction is a point-in-time dump of a finished archive, not a
+    /// stream — so both conflict with `--follow`. Returns the reason on
+    /// conflict; a no-op when `--follow` isn't set.
+    fn check_follow(&self) -> Result<()> {
+        if !self.follow {
+            return Ok(());
+        }
+        if self.jsonl {
+            return Err(
+                "cannot --follow --jsonl: the reconstructed source archive is a \
+                 point-in-time dump, not a live stream"
+                    .into(),
+            );
+        }
+        if self.pager == PagerMode::Always {
+            return Err("cannot page a live follow: --follow and --pager conflict".into());
+        }
+        Ok(())
+    }
+}
+
+/// Index of the first item whose order key is strictly greater than `last`
+/// (`0` when `last` is `None`, i.e. nothing printed yet — take everything).
+///
+/// The input keys must be ascending (as [`load_session_messages_for_author`]
+/// returns them); this then partitions them into "already printed" / "new" by
+/// the order key *itself*, never by a message count. That is the out-of-order
+/// guard the live follower needs: a message that arrives late and sorts before
+/// the previous max is simply not in the `> last` suffix, so it can never shove
+/// an already-printed message back into the tail (which a count-based cursor
+/// would do). Live callers key off [`EventOrder`]; the generic bound keeps the
+/// selection unit-testable with plain integers.
+///
+/// [`load_session_messages_for_author`]: agentium_core::session_loader::load_session_messages_for_author
+/// [`EventOrder`]: agentium_core::session_loader::EventOrder
+fn first_after<T: Ord + Copy>(orders: &[T], last: Option<T>) -> usize {
+    match last {
+        None => 0,
+        Some(last) => orders.partition_point(|o| *o <= last),
     }
 }
 
@@ -1345,6 +1573,7 @@ impl Cli {
         let mut jsonl = false;
         let mut color = ColorWhen::Auto;
         let mut pager = PagerMode::Auto;
+        let mut follow = false;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -1390,6 +1619,7 @@ impl Cli {
                 "--color" => color = ColorWhen::parse(&value("--color")?)?,
                 "--pager" => pager = PagerMode::Always,
                 "--no-pager" => pager = PagerMode::Never,
+                "--follow" | "-f" => follow = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -1407,7 +1637,11 @@ impl Cli {
             jsonl,
             color,
             pager,
+            follow,
         };
+        // A live follow can't be paged or reconstructed from the archive, so
+        // reject those combinations here (before any relay work spins up).
+        view.check_follow()?;
         let command = parse_command(name, rest, view)?;
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
@@ -1505,7 +1739,8 @@ COMMANDS:
                       any selector `list` accepts; defaults to $AGENTIUM_SESSION.
                       Filter/shape with --role/--last/--tools/--no-tools; --json
                       emits structured message objects, --jsonl the reconstructed
-                      claude-code JSONL from the source archive.
+                      claude-code JSONL from the source archive. --follow/-f keeps
+                      streaming new messages (and status changes) until Ctrl-C.
     resume <session>  Reopen a closed (even soft-deleted) session on its host so
                       a new message drives its backend again. Takes any selector
                       `list` accepts (d-tag, cli-session id, or agentium: ref);
@@ -1549,6 +1784,10 @@ OPTIONS:
     --pager           Force paging even when stdout isn't a terminal
     --no-pager        Never page; write straight to stdout
                       (pager command: $AGENTIUM_PAGER, $PAGER, else `less -R`)
+    -f, --follow      After the tail, stream new messages as they land (like
+                      `tail -f`) until Ctrl-C. Also surfaces status changes.
+                      Conflicts with --pager/--jsonl (can't page/reconstruct a
+                      live stream); with --json, streams newline-delimited objects.
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -1872,6 +2111,7 @@ mod tests {
             jsonl: false,
             color: ColorWhen::Auto,
             pager: PagerMode::Auto,
+            follow: false,
         }
     }
 
@@ -2070,6 +2310,89 @@ mod tests {
         assert!(!PagerMode::Auto.enabled(false));
         assert!(PagerMode::Always.enabled(false));
         assert!(!PagerMode::Never.enabled(true));
+    }
+
+    #[test]
+    fn first_after_selects_the_strictly_greater_suffix() {
+        let orders = [10u64, 20, 30];
+        // Nothing printed yet: take everything.
+        assert_eq!(first_after(&orders, None), 0);
+        // Past a middle key: only the strictly-greater tail.
+        assert_eq!(first_after(&orders, Some(10)), 1);
+        assert_eq!(first_after(&orders, Some(20)), 2);
+        // Past the max: nothing new.
+        assert_eq!(first_after(&orders, Some(30)), 3);
+        // A cursor between keys still splits by value, not position.
+        assert_eq!(first_after(&orders, Some(15)), 1);
+    }
+
+    #[test]
+    fn first_after_guards_out_of_order_inserts() {
+        // We followed up to the max (30) of [10, 20, 30]. A later re-read shows a
+        // late-arriving event (15) that sorts *before* that max, plus a genuinely
+        // newer one (40). Selecting by the order key past the previous max yields
+        // only the suffix (40) — the out-of-order 15 is neither re-emitted nor
+        // does it drag an already-printed message (10/20/30) back into view, the
+        // corruption a count-based cursor would cause.
+        let reread = [10u64, 15, 20, 30, 40];
+        let start = first_after(&reread, Some(30));
+        assert_eq!(&reread[start..], &[40]);
+    }
+
+    /// A `MessageView` with only `--follow` and one conflicting flag set,
+    /// otherwise default — for exercising [`MessageView::check_follow`].
+    fn follow_view(jsonl: bool, pager: PagerMode) -> MessageView {
+        MessageView {
+            follow: true,
+            jsonl,
+            pager,
+            ..view_all()
+        }
+    }
+
+    #[test]
+    fn check_follow_rejects_paging_and_jsonl() {
+        // A plain follow is fine, as is follow with a non-forced pager mode.
+        assert!(follow_view(false, PagerMode::Auto).check_follow().is_ok());
+        assert!(follow_view(false, PagerMode::Never).check_follow().is_ok());
+        // --follow --jsonl and --follow --pager both conflict.
+        assert!(follow_view(true, PagerMode::Auto).check_follow().is_err());
+        assert!(
+            follow_view(false, PagerMode::Always)
+                .check_follow()
+                .is_err()
+        );
+        // Without --follow the checks are a no-op even with those flags set.
+        let not_following = MessageView {
+            follow: false,
+            jsonl: true,
+            pager: PagerMode::Always,
+            ..view_all()
+        };
+        assert!(not_following.check_follow().is_ok());
+    }
+
+    #[test]
+    fn keep_matches_role_and_tool_filters() {
+        let user = Message::User("hi".into());
+        let tool = tool_result("Bash", "ok");
+        // Empty role filter keeps everything; tools shown by default.
+        assert!(view_all().keep(&user));
+        assert!(view_all().keep(&tool));
+        // --no-tools drops tool messages but keeps others.
+        let no_tools = MessageView {
+            show_tools: false,
+            ..view_all()
+        };
+        assert!(no_tools.keep(&user));
+        assert!(!no_tools.keep(&tool));
+        // A role filter keeps only the named role (case-insensitively).
+        let only_user = MessageView {
+            roles: vec!["USER".into()],
+            ..view_all()
+        };
+        assert!(only_user.keep(&user));
+        assert!(!only_user.keep(&tool));
     }
 
     #[test]

@@ -12,7 +12,10 @@
 //! must follow `ms`. That guards the card's one review note — the display axis is
 //! `EventOrder` (millisecond wall-clock), never `seq`.
 
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{ChildStdout, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use nostrdb::{Config, Ndb, NoteBuilder};
 use tempfile::TempDir;
@@ -313,6 +316,130 @@ async fn log_json_emits_role_tagged_objects() {
     assert_eq!(rows[1]["text"], "the answer");
     assert_eq!(rows[2]["role"], "user");
     assert_eq!(rows[2]["text"], "again please");
+}
+
+/// Drain a child's stdout on a background thread into a channel, so the test can
+/// read lines incrementally (the `--follow` child never exits, so `.output()`
+/// would block forever).
+fn spawn_line_reader(stdout: ChildStdout) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(l) = line else { break };
+            if tx.send(l).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// Block until a line containing `needle` arrives (or `timeout` elapses),
+/// returning every line seen so far. Panics on timeout with the transcript, so a
+/// stuck follower fails loudly instead of hanging the suite.
+fn wait_for_line(rx: &mpsc::Receiver<String>, needle: &str, timeout: Duration) -> Vec<String> {
+    let deadline = Instant::now() + timeout;
+    let mut seen = Vec::new();
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                let hit = line.contains(needle);
+                seen.push(line);
+                if hit {
+                    return seen;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    panic!(
+        "did not see {needle:?} within {timeout:?}; saw:\n{}",
+        seen.join("\n")
+    );
+}
+
+/// `agentium log --follow` streams a message that lands *after* the initial
+/// tail, without a restart. Unlike the other tests (which point the relay at a
+/// closed port and read a static cache), this stands up a real in-process relay
+/// so a live event can flow into the child's cache and fire its watch: a
+/// same-identity publisher engine `send_message`s through the relay, and the new
+/// line must appear on the running child's stdout. Then we kill the child rather
+/// than wait on Ctrl-C.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn follow_streams_a_live_message() {
+    use agentium_core::Engine;
+
+    // A real relay backed by its own ndb — the seam the live event crosses (a
+    // cross-process cache write can't fire the child's in-process subscription).
+    let relay_dir = TempDir::new().expect("relay tmp");
+    let relay_ndb =
+        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+    let relay =
+        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let url = relay.url();
+
+    // Seed the child's cache with the session state + one message, so the
+    // selector resolves and the follow has a tail to print — its arrival on
+    // stdout is our "child is now in the follow loop" signal.
+    let child_dir = TempDir::new().expect("child tmp");
+    let db_path = child_dir.path().to_str().expect("path").to_string();
+    {
+        let ndb = Ndb::new(&db_path, &Config::new()).expect("seed ndb");
+        let filter = nostrdb::Filter::new()
+            .kinds([KIND_SESSION_STATE as u64, KIND_CONVERSATION as u64])
+            .build();
+        let sub = ndb
+            .subscribe(std::slice::from_ref(&filter))
+            .expect("subscribe");
+        seed_state(&ndb, "sess-follow", "Followed session");
+        seed_message(&ndb, "sess-follow", "user", "initial tail msg", 1, 1000);
+        ndb.wait_for_all_notes(sub, 2).await.expect("ingest seed");
+    }
+
+    // Spawn the real binary in --follow against the reachable relay, so live
+    // envelopes keep flowing into its cache and firing the watch.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agentium"))
+        .args([
+            "--nsec",
+            NSEC,
+            "--db",
+            &db_path,
+            "--relay",
+            &url,
+            "log",
+            "sess-follow",
+            "--follow",
+        ])
+        .env("XDG_DATA_HOME", child_dir.path())
+        .env("HOME", child_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn agentium --follow");
+    let lines = spawn_line_reader(child.stdout.take().expect("child stdout"));
+
+    // Initial tail printed → the child has synced and entered the follow loop.
+    wait_for_line(&lines, "initial tail msg", Duration::from_secs(20));
+
+    // A same-identity publisher engine sends a new message through the relay.
+    let pub_dir = TempDir::new().expect("pub tmp");
+    let mut publisher =
+        Engine::open(pub_dir.path().to_str().expect("path"), SECKEY).expect("publisher engine");
+    let mut pub_tx = publisher.transport_handle().expect("pub transport");
+    publisher.connect(&mut pub_tx, &url).expect("pub connect");
+    publisher
+        .send_message(&mut pub_tx, "sess-follow", "live streamed msg")
+        .expect("send live message");
+    // Flush the publish through the loop's FIFO so it actually reaches the relay.
+    let _ = tokio::time::timeout(Duration::from_secs(5), publisher.wait_for_sync()).await;
+
+    // The live message streams onto the still-running child's stdout.
+    wait_for_line(&lines, "live streamed msg", Duration::from_secs(20));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    relay.shutdown();
 }
 
 #[tokio::test]

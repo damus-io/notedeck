@@ -158,6 +158,8 @@ agentium log X -n 20                    # just the last 20 messages
 agentium log X --no-tools              # fold away tool_call/tool_result noise
 agentium log X --json                  # structured, role-tagged message objects
 agentium log X --jsonl                 # raw reconstructed claude-code JSONL
+agentium log X --follow                # print the tail, then stream new messages
+agentium log X -n 20 -f                # last 20, then follow (like `tail -n 20 -f`)
 ```
 
 Flags:
@@ -165,16 +167,18 @@ Flags:
 | flag                       | effect                                                         |
 |----------------------------|----------------------------------------------------------------|
 | `--role <r[,r…]>`          | keep only these roles (comma-separated and/or repeatable); one of `user`, `assistant`, `tool_call`, `tool_result`, `permission_request`, `subagent`, `system`, `error`, `compaction`, `todo` |
-| `--last <n>`, `-n <n>`     | only the last `n` messages (after other filters)               |
+| `--last <n>`, `-n <n>`     | only the last `n` messages (after other filters); with `--follow`, sizes the initial tail |
 | `--tools` / `--no-tools`   | show (default) or fold `tool_call`/`tool_result` messages       |
-| `--json`                   | one role-tagged JSON object per message (a lossy display view)  |
+| `--json`                   | one role-tagged JSON object per message (a lossy display view). With `--follow`, streamed newline-delimited (one object per new message) |
 | `--jsonl`                  | raw reconstructed claude-code JSONL from the kind-1989 archive (the lossless source, in original `seq` order — a different axis than the display stream) |
+| `--follow`, `-f`           | after the tail, keep streaming each new message as it lands (and status changes, e.g. `-> needs_input`) until Ctrl-C. Conflicts with `--pager`/`--jsonl` (a live stream can't be paged or reconstructed from the point-in-time archive) |
 | `--color auto\|always\|never` | ANSI color; `auto` (default) follows the sink. Use `always` to keep color when piping into your own pager (e.g. `\| less -SR`) |
-| `--pager` / `--no-pager`   | force/disable paging. Default: page when stdout is a terminal   |
+| `--pager` / `--no-pager`   | force/disable paging. Default: page when stdout is a terminal (never for `--follow`) |
 
 The pager command is `$AGENTIUM_PAGER`, then `$PAGER`, else `less -R`. When
 scripting (parsing output), prefer `--json`/`--jsonl`; piping to a non-terminal
-already disables the pager and color automatically.
+already disables the pager and color automatically. `--follow` is `tail -f` for a
+session's transcript — the streaming *mode* of `log`, not a separate command.
 
 ## `resume` — reopen a closed session
 
@@ -188,7 +192,7 @@ agentium resume maple-river-canyon
 
 ## Command surface
 
-Implemented: `list`, `show`, `log`, `resume` (plus `login`/`logout`). Further
-control verbs (tail -f, watch dashboard, send, approve/deny, permission-mode,
-spawn, run-config management) are planned but **not yet implemented** — don't
-invoke them until they land.
+Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
+`resume` (plus `login`/`logout`). Further control verbs (watch dashboard, send,
+approve/deny, permission-mode, spawn, run-config management) are planned but
+**not yet implemented** — don't invoke them until they land.

@@ -71,6 +71,13 @@ impl EventOrder {
 /// Result of loading session messages, including threading info for live events.
 pub struct LoadedSession {
     pub messages: Vec<Message>,
+    /// The [`EventOrder`] of each rendered message, aligned 1:1 with
+    /// [`messages`](LoadedSession::messages) (a note that renders to no display
+    /// message contributes to neither vector). Lets a live follower select the
+    /// delta past a previously-printed order key without re-mapping — the
+    /// per-message counterpart to the scalar
+    /// [`max_order`](LoadedSession::max_order).
+    pub orders: Vec<EventOrder>,
     pub root_note_id: Option<[u8; 32]>,
     pub last_note_id: Option<[u8; 32]>,
     /// Permission state loaded from events (responded set + request note IDs).
@@ -119,6 +126,7 @@ fn load_session_messages_with_author(
         Err(_) => {
             return LoadedSession {
                 messages: vec![],
+                orders: vec![],
                 root_note_id: None,
                 last_note_id: None,
                 permissions: PermissionTracker::new(),
@@ -182,16 +190,21 @@ fn load_session_messages_with_author(
     // sorted, so the last one is the max).
     let max_order = notes.last().map(EventOrder::from_note);
 
-    // Second pass: convert to messages via the shared renderer.
+    // Second pass: convert to messages via the shared renderer, retaining each
+    // rendered message's ordering key alongside it (aligned 1:1 — a note that
+    // renders to nothing contributes to neither vector).
     let mut messages = Vec::new();
+    let mut orders = Vec::new();
     for note in &notes {
         if let Some(msg) = render_conversation_note(note, &permissions.responded) {
             messages.push(msg);
+            orders.push(EventOrder::from_note(note));
         }
     }
 
     LoadedSession {
         messages,
+        orders,
         root_note_id,
         last_note_id,
         permissions,

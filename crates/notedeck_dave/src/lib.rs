@@ -5940,6 +5940,7 @@ mod tests {
         note_ids.insert([7u8; 32]);
         let loaded = session_loader::LoadedSession {
             messages: Vec::new(),
+            orders: Vec::new(),
             root_note_id: None,
             last_note_id: None,
             permissions: session::PermissionTracker::new(),
@@ -5978,6 +5979,7 @@ mod tests {
         let state = hydrate_test_state("dead-dtag", Some(""));
         let loaded = session_loader::LoadedSession {
             messages: Vec::new(),
+            orders: Vec::new(),
             root_note_id: None,
             last_note_id: None,
             permissions: session::PermissionTracker::new(),
