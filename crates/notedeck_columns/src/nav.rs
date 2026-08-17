@@ -7,7 +7,7 @@ use crate::{
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
-    route::{cleanup_popped_route, ColumnsRouter, Route, SingletonRouter},
+    route::{cleanup_popped_route, Route, SingletonRouter},
     timeline::{
         route::{render_thread_route, render_timeline_route},
         TimelineCache,
@@ -37,7 +37,7 @@ use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
-    FilterState, NoteAction, NoteCache, NoteContext, NoteDetail, RelayAction,
+    FilterState, NavStack, NoteAction, NoteCache, NoteContext, NoteDetail, RelayAction,
 };
 use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
 use tracing::error;
@@ -311,7 +311,7 @@ fn process_nav_resp(
                     .router_mut();
                 cur_router.navigating_mut(false);
                 if cur_router.is_replacing() {
-                    cur_router.remove_previous_routes();
+                    cur_router.complete_replacement();
                 }
 
                 process_result = Some(ProcessNavResult::SwitchOccurred);
@@ -438,7 +438,7 @@ pub enum RouterType {
     Stack,
 }
 
-fn go_back(stack: &mut ColumnsRouter<Route>, sheet: &mut SingletonRouter<Route>) {
+fn go_back(stack: &mut NavStack<Route>, sheet: &mut SingletonRouter<Route>) {
     if sheet.route().is_some() {
         sheet.go_back();
     } else {
@@ -449,7 +449,7 @@ fn go_back(stack: &mut ColumnsRouter<Route>, sheet: &mut SingletonRouter<Route>)
 impl RouterAction {
     pub fn process_router_action(
         self,
-        stack_router: &mut ColumnsRouter<Route>,
+        stack_router: &mut NavStack<Route>,
         sheet_router: &mut SingletonRouter<Route>,
         sound: &notedeck::SoundManager,
     ) -> Option<ProcessNavResult> {

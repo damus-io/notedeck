@@ -1,34 +1,34 @@
 use crate::{
     actionbar::TimelineOpenResult,
-    route::{ColumnsRouter, Route, SingletonRouter},
+    route::{Route, SingletonRouter},
     timeline::{Timeline, TimelineCache, TimelineKind},
 };
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{NoteCache, ScopedSubApi};
+use notedeck::{NavStack, NoteCache, ScopedSubApi};
 use std::iter::Iterator;
 use tracing::warn;
 
 #[derive(Clone, Debug)]
 pub struct Column {
-    pub router: ColumnsRouter<Route>,
+    pub router: NavStack<Route>,
     pub sheet_router: SingletonRouter<Route>,
 }
 
 impl Column {
     pub fn new(routes: Vec<Route>) -> Self {
-        let router = ColumnsRouter::new(routes);
+        let router = NavStack::new(routes);
         Column {
             router,
             sheet_router: SingletonRouter::default(),
         }
     }
 
-    pub fn router(&self) -> &ColumnsRouter<Route> {
+    pub fn router(&self) -> &NavStack<Route> {
         &self.router
     }
 
-    pub fn router_mut(&mut self) -> &mut ColumnsRouter<Route> {
+    pub fn router_mut(&mut self) -> &mut NavStack<Route> {
         &mut self.router
     }
 }
@@ -166,7 +166,7 @@ impl Columns {
 
     // Get the first router in the columns if there are columns present.
     // Otherwise, create a new column picker and return the router
-    pub fn get_selected_router(&mut self) -> &mut ColumnsRouter<Route> {
+    pub fn get_selected_router(&mut self) -> &mut NavStack<Route> {
         self.ensure_column();
         self.selected_mut().router_mut()
     }

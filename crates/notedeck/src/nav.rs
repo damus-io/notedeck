@@ -1,4 +1,280 @@
+use crate::route::ReplacementType;
 use egui::scroll_area::ScrollAreaOutput;
+use std::ops::Range;
+
+/// A reusable, business-logic-free navigation stack.
+///
+/// `NavStack<R>` is the single navigation primitive shared by notedeck apps
+/// (and, eventually, the chrome-owned global history). It folds three concerns
+/// that used to be split across `columns`' `ColumnsRouter` and core's base
+/// `Router` into one self-contained type:
+///
+/// - the **back stack** (`routes`) plus a **forward stack** so that going back
+///   and then forward replays the popped route;
+/// - **overlay ranges**, contiguous groups of routes where only the most recent
+///   survives a single back step (used for stacked modals/overlays);
+/// - the `navigating` / `returning` **transition flags** and the
+///   route-`replacing` bookkeeping consumed by the egui-nav render loop.
+///
+/// `R` is the app's route type. `NavStack` never inspects it — it only pushes,
+/// pops, and hands routes back to the caller.
+#[derive(Clone, Debug)]
+pub struct NavStack<R: Clone> {
+    /// The active back stack. The last element is the currently-visible route.
+    routes: Vec<R>,
+
+    /// Routes popped by [`NavStack::pop`] that a [`NavStack::go_forward`] can
+    /// replay. Cleared whenever a fresh [`NavStack::route_to`] navigates
+    /// somewhere new.
+    forward_stack: Vec<R>,
+
+    /// Overlay groupings. Each range covers a contiguous span of `routes` where
+    /// only the most-recently-added route persists when going back.
+    overlay_ranges: Vec<Range<usize>>,
+
+    /// True while a back transition is animating out.
+    returning: bool,
+
+    /// True while a forward transition is animating in.
+    navigating: bool,
+
+    /// Set when a route was pushed to replace previous routes; resolved by
+    /// [`NavStack::complete_replacement`] once the new route is placed.
+    replacing: Option<ReplacementType>,
+}
+
+impl<R: Clone> NavStack<R> {
+    /// Create a new stack seeded with `routes`. Panics if `routes` is empty —
+    /// a nav stack always has a current route.
+    pub fn new(routes: Vec<R>) -> Self {
+        if routes.is_empty() {
+            panic!("routes can't be empty")
+        }
+        NavStack {
+            routes,
+            forward_stack: Vec::new(),
+            overlay_ranges: Vec::new(),
+            returning: false,
+            navigating: false,
+            replacing: None,
+        }
+    }
+
+    /// Push `route` onto the back stack and begin a forward transition. Does not
+    /// touch the forward stack — that bookkeeping lives in the public callers.
+    fn push_route(&mut self, route: R) {
+        self.navigating = true;
+        self.routes.push(route);
+    }
+
+    /// Navigate to `route`, discarding any forward history.
+    pub fn route_to(&mut self, route: R) {
+        self.push_route(route);
+        self.forward_stack.clear();
+    }
+
+    /// Navigate to `route` and fold it into the current overlay group (or start
+    /// one), so a single back step collapses the whole overlay.
+    pub fn route_to_overlaid(&mut self, route: R) {
+        self.route_to(route);
+        self.set_overlaying();
+    }
+
+    /// Navigate to `route` starting a fresh overlay group.
+    pub fn route_to_overlaid_new(&mut self, route: R) {
+        self.route_to(route);
+        self.new_overlay();
+    }
+
+    /// Navigate to `route`, then once it is placed
+    /// [`NavStack::complete_replacement`] should be called to drop all previous
+    /// routes.
+    pub fn route_to_replaced(&mut self, route: R) {
+        self.replacing = Some(ReplacementType::All);
+        self.push_route(route);
+    }
+
+    /// Begin going back, collapsing the current overlay group if any. Returns
+    /// the route that will become visible, or `None` if already returning or at
+    /// the root.
+    pub fn go_back(&mut self) -> Option<R> {
+        if self.returning || self.routes.len() == 1 {
+            return None;
+        }
+
+        if let Some(range) = self.overlay_ranges.pop() {
+            tracing::debug!("Going back, found overlay: {:?}", range);
+            self.remove_overlay(range);
+        } else {
+            tracing::debug!("Going back, no overlay");
+        }
+
+        self.returning = true;
+        if self.routes.len() == 1 {
+            return None;
+        }
+        self.prev().cloned()
+    }
+
+    /// Replay the most recently popped route from the forward stack. Returns
+    /// true if there was one.
+    pub fn go_forward(&mut self) -> bool {
+        if let Some(route) = self.forward_stack.pop() {
+            self.push_route(route);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Pop the top route. Should only be called on a `NavResponse::Returned`.
+    /// A non-overlay pop is pushed onto the forward stack so it can be replayed.
+    pub fn pop(&mut self) -> Option<R> {
+        if self.routes.len() == 1 {
+            return None;
+        }
+
+        self.returning = false;
+
+        let is_overlay = 's: {
+            let Some(last_range) = self.overlay_ranges.last_mut() else {
+                break 's false;
+            };
+
+            if last_range.end != self.routes.len() {
+                break 's false;
+            }
+
+            if last_range.end - 1 <= last_range.start {
+                self.overlay_ranges.pop();
+            } else {
+                last_range.end -= 1;
+            }
+
+            true
+        };
+
+        let popped = self.routes.pop()?;
+        if !is_overlay {
+            self.forward_stack.push(popped.clone());
+        }
+        Some(popped)
+    }
+
+    /// Removes all routes in the overlay besides the last.
+    fn remove_overlay(&mut self, overlay_range: Range<usize>) {
+        let num_routes = self.routes.len();
+        if num_routes <= 1 {
+            return;
+        }
+
+        if overlay_range.len() <= 1 {
+            return;
+        }
+
+        self.routes
+            .drain(overlay_range.start..overlay_range.end - 1);
+    }
+
+    /// Resolve a pending replacement, dropping the routes the new top replaced.
+    pub fn complete_replacement(&mut self) {
+        let num_routes = self.routes.len();
+
+        self.returning = false;
+        let Some(replacement) = self.replacing.take() else {
+            return;
+        };
+        if num_routes < 2 {
+            return;
+        }
+
+        match replacement {
+            ReplacementType::Single => {
+                self.routes.remove(num_routes - 2);
+            }
+            ReplacementType::All => {
+                self.routes.drain(..num_routes - 1);
+            }
+        }
+    }
+
+    /// True while a route pushed via [`NavStack::route_to_replaced`] awaits
+    /// [`NavStack::complete_replacement`].
+    pub fn is_replacing(&self) -> bool {
+        self.replacing.is_some()
+    }
+
+    /// Extend the active overlay group to include the new top route, or start a
+    /// group if the previous route isn't already the tail of one.
+    fn set_overlaying(&mut self) {
+        let mut overlaying_active = None;
+        let mut binding = self.overlay_ranges.last_mut();
+        if let Some(range) = &mut binding {
+            if range.end == self.routes.len() - 1 {
+                overlaying_active = Some(range);
+            }
+        };
+
+        if let Some(range) = overlaying_active {
+            range.end = self.routes.len();
+        } else {
+            let new_range = self.routes.len() - 1..self.routes.len();
+            self.overlay_ranges.push(new_range);
+        }
+    }
+
+    /// Start a brand-new overlay group at the current top route.
+    fn new_overlay(&mut self) {
+        let new_range = self.routes.len() - 1..self.routes.len();
+        self.overlay_ranges.push(new_range);
+    }
+
+    /// The full back stack, oldest first.
+    pub fn routes(&self) -> &Vec<R> {
+        &self.routes
+    }
+
+    /// True while a forward transition is animating.
+    pub fn navigating(&self) -> bool {
+        self.navigating
+    }
+
+    /// Set the forward-transition flag.
+    pub fn navigating_mut(&mut self, new: bool) {
+        self.navigating = new;
+    }
+
+    /// True while a back transition is animating.
+    pub fn returning(&self) -> bool {
+        self.returning
+    }
+
+    /// Set the back-transition flag.
+    pub fn returning_mut(&mut self, new: bool) {
+        self.returning = new;
+    }
+
+    /// The currently-visible (top) route.
+    pub fn top(&self) -> &R {
+        self.routes.last().expect("routes can't be empty")
+    }
+
+    /// The route immediately beneath the top, if any.
+    pub fn prev(&self) -> Option<&R> {
+        self.routes.get(self.routes.len() - 2)
+    }
+
+    /// Number of routes on the back stack.
+    pub fn len(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// True if the back stack is empty (only possible transiently; `new`
+    /// forbids constructing an empty stack).
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+}
 
 pub struct DragResponse<R> {
     pub drag_id: Option<egui::Id>, // the id which was used for dragging.
@@ -78,5 +354,120 @@ impl<R> DragResponse<R> {
         if self.output.is_none() {
             self.output = body.output;
         }
+    }
+}
+
+#[cfg(test)]
+mod nav_stack_tests {
+    use super::NavStack;
+
+    #[test]
+    #[should_panic(expected = "routes can't be empty")]
+    fn new_empty_panics() {
+        NavStack::<i32>::new(vec![]);
+    }
+
+    #[test]
+    fn route_to_pushes_and_flags_navigating() {
+        let mut stack = NavStack::new(vec![1]);
+        assert!(!stack.navigating());
+        stack.route_to(2);
+        assert_eq!(stack.routes(), &vec![1, 2]);
+        assert_eq!(stack.len(), 2);
+        assert_eq!(*stack.top(), 2);
+        assert_eq!(stack.prev(), Some(&1));
+        assert!(stack.navigating());
+    }
+
+    #[test]
+    fn pop_records_and_go_forward_replays() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to(3);
+
+        // pop replays in reverse: 3 then 2 land on the forward stack
+        assert_eq!(stack.pop(), Some(3));
+        assert_eq!(stack.pop(), Some(2));
+        assert_eq!(stack.routes(), &vec![1]);
+
+        // going forward replays them back in order
+        assert!(stack.go_forward());
+        assert_eq!(stack.routes(), &vec![1, 2]);
+        assert!(stack.go_forward());
+        assert_eq!(stack.routes(), &vec![1, 2, 3]);
+        assert!(!stack.go_forward());
+    }
+
+    #[test]
+    fn route_to_clears_forward_stack() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.pop(); // forward stack now holds 2
+
+        // navigating somewhere new drops the forward history
+        stack.route_to(3);
+        assert!(!stack.go_forward());
+        assert_eq!(stack.routes(), &vec![1, 3]);
+    }
+
+    #[test]
+    fn pop_at_root_returns_none() {
+        let mut stack = NavStack::new(vec![1]);
+        assert_eq!(stack.pop(), None);
+        assert_eq!(stack.go_back(), None);
+    }
+
+    #[test]
+    fn go_back_starts_returning() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        assert!(!stack.returning());
+        assert_eq!(stack.go_back(), Some(1));
+        assert!(stack.returning());
+        // a second go_back while already returning is a no-op
+        assert_eq!(stack.go_back(), None);
+    }
+
+    #[test]
+    fn overlay_collapses_on_go_back() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to_overlaid(2);
+        stack.route_to_overlaid(3);
+        assert_eq!(stack.routes(), &vec![1, 2, 3]);
+
+        // going back collapses the whole overlay group down to its last member
+        assert_eq!(stack.go_back(), Some(1));
+        assert_eq!(stack.routes(), &vec![1, 3]);
+
+        // the render loop then pops the surviving overlay route on Returned
+        assert_eq!(stack.pop(), Some(3));
+        assert_eq!(stack.routes(), &vec![1]);
+    }
+
+    #[test]
+    fn new_overlay_group_is_independent() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to_overlaid(2);
+        stack.route_to_overlaid_new(3);
+        assert_eq!(stack.routes(), &vec![1, 2, 3]);
+
+        // a fresh single-member overlay drains on the pop that follows go_back,
+        // touching only its own route and leaving the earlier overlay intact
+        assert_eq!(stack.go_back(), Some(2));
+        assert_eq!(stack.pop(), Some(3));
+        assert_eq!(stack.routes(), &vec![1, 2]);
+    }
+
+    #[test]
+    fn replace_drops_previous_routes() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to_replaced(3);
+        assert!(stack.is_replacing());
+        assert_eq!(stack.routes(), &vec![1, 2, 3]);
+
+        stack.complete_replacement();
+        assert!(!stack.is_replacing());
+        assert_eq!(stack.routes(), &vec![3]);
     }
 }
