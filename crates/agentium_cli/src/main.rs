@@ -77,6 +77,15 @@ enum Command {
     Resume {
         session: String,
     },
+    /// Send a `user` message to a session's conversation so its running agent
+    /// (local or remote) picks it up over relay sync. The selector is required
+    /// (unlike `show`/`log`, it can't default to `$AGENTIUM_SESSION` — the first
+    /// positional would be ambiguous against the message text), and the message
+    /// is the remaining positionals joined with spaces.
+    Send {
+        session: String,
+        text: String,
+    },
     Login {
         nsec: String,
     },
@@ -164,6 +173,9 @@ async fn run() -> Result<()> {
         Command::Resume { session } => {
             cmd_resume(&engine, &mut transport, &read_pk, &session).await?
         }
+        Command::Send { session, text } => {
+            cmd_send(&engine, &mut transport, &read_pk, &session, &text, cli.json).await?
+        }
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
 
@@ -243,6 +255,83 @@ async fn cmd_resume(
     let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
 
     println!("resume command sent to {target_host} for {uri}");
+    Ok(())
+}
+
+/// `agentium send <session> <text>` — publish a `user` message to a session.
+///
+/// Resolves the selector against the **live** session set only, builds a
+/// kind-1988 `user` event threaded onto the session's existing conversation, and
+/// publishes it through `transport` so the session's running agent (local *or*
+/// remote) picks it up over relay sync. Reports the resulting event id.
+///
+/// Live-only on purpose: a tombstoned (soft-deleted) session has no backend
+/// reading its conversation, so a message would just root a stray thread nobody
+/// consumes. When the selector matches only a deleted session we redirect to
+/// `resume` (the tool for reviving one) rather than send into the void; any
+/// other miss surfaces the resolver's own "no session matching" error, so a typo
+/// fails loudly instead of silently starting a fresh thread.
+///
+/// The send runs *after* [`run`]'s bounded sync-settle, so
+/// [`Engine::send_message`] threads onto the conversation's real last event (the
+/// reconcile has already pulled it) instead of starting a new thread. The
+/// post-publish flush mirrors [`cmd_resume`].
+async fn cmd_send(
+    engine: &Engine,
+    transport: &mut impl Transport,
+    author: &Pubkey,
+    selector: &str,
+    text: &str,
+    as_json: bool,
+) -> Result<()> {
+    use agentium_core::session_loader::{
+        load_deleted_session_states_for_author, load_session_states_for_author, resolve_session,
+    };
+
+    // Resolve to the session id + URI against the live set, dropping the borrow
+    // of the loaded state vectors before we publish. A miss that turns out to be
+    // a tombstoned session is redirected to `resume`; any other miss propagates
+    // the resolver's error.
+    let (session_id, uri) = {
+        let txn = Transaction::new(engine.ndb())?;
+        let live = load_session_states_for_author(engine.ndb(), &txn, author);
+        let state = match resolve_session(&live, selector) {
+            Ok(state) => state,
+            Err(live_err) => {
+                let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+                if let Ok(gone) = resolve_session(&deleted, selector) {
+                    return Err(format!(
+                        "{} is deleted — reopen it with `agentium resume {selector}` before sending",
+                        gone.agentium_uri()
+                    )
+                    .into());
+                }
+                return Err(live_err.into());
+            }
+        };
+        (state.claude_session_id.clone(), state.agentium_uri())
+    };
+
+    // Build + ingest + publish the kind-1988 `user` message; the returned event
+    // carries the durable note id we report.
+    let built = engine.send_message(transport, &session_id, text)?;
+    let event_id = hex::encode(built.note_id);
+
+    // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
+    // after it resolves once the loop has drained (sent) the publish. Bounded so
+    // an unreachable relay can't stall exit — the event is already ingested
+    // locally regardless.
+    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+
+    if as_json {
+        let obj = serde_json::json!({ "session": uri, "event_id": event_id });
+        println!("{}", serde_json::to_string_pretty(&obj)?);
+        return Ok(());
+    }
+
+    // A short id prefix reads cleanly at a glance; the full hex is in `--json`.
+    let short = &event_id[..event_id.len().min(8)];
+    println!("sent to {uri} (event {short}…)");
     Ok(())
 }
 
@@ -1690,6 +1779,10 @@ fn parse_command(name: &str, rest: &[String], view: MessageView) -> Result<Comma
         "resume" => Command::Resume {
             session: arg(rest, 0, name)?,
         },
+        "send" => Command::Send {
+            session: arg(rest, 0, name)?,
+            text: join_message(&rest[1..])?,
+        },
         "login" => Command::Login {
             nsec: arg(rest, 0, name)?,
         },
@@ -1713,6 +1806,18 @@ fn arg(rest: &[String], idx: usize, cmd: &str) -> Result<String> {
     rest.get(idx)
         .cloned()
         .ok_or_else(|| format!("`{cmd}` is missing an argument").into())
+}
+
+/// Join `send`'s trailing positionals into one message body, separated by single
+/// spaces, so `agentium send <sel> hey there` needs no quoting. Errors when the
+/// result is empty or whitespace-only — an empty `user` message is never
+/// something to publish.
+fn join_message(words: &[String]) -> Result<String> {
+    let text = words.join(" ");
+    if text.trim().is_empty() {
+        return Err("`send` needs a non-empty message".into());
+    }
+    Ok(text)
 }
 
 fn print_usage() {
@@ -1745,6 +1850,14 @@ COMMANDS:
                       a new message drives its backend again. Takes any selector
                       `list` accepts (d-tag, cli-session id, or agentium: ref);
                       revives the session's agentium: reference in place.
+    send <session> <text…>
+                      Send a user message to a live session so its running agent
+                      (local or remote) picks it up over relay sync, then report
+                      the resulting event id. The selector is required (no
+                      $AGENTIUM_SESSION default — it would be ambiguous against
+                      the text); the message is the remaining words joined with
+                      spaces (quote to preserve exact spacing). Reopen a deleted
+                      session with `resume` first. --json emits the event id.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
@@ -1974,6 +2087,44 @@ mod tests {
             }
             _ => panic!("expected Log"),
         }
+    }
+
+    #[test]
+    fn send_requires_session_and_joins_text() {
+        // `send <sel> hey there` → the first positional is the selector, the rest
+        // join into the message with single spaces (no quoting needed).
+        let rest = ["agentium:a-b-c", "hey", "there"].map(String::from);
+        match parse_command("send", &rest, view_all()).unwrap() {
+            Command::Send { session, text } => {
+                assert_eq!(session, "agentium:a-b-c");
+                assert_eq!(text, "hey there");
+            }
+            _ => panic!("expected Send"),
+        }
+    }
+
+    #[test]
+    fn send_missing_session_and_empty_text_are_errors() {
+        // No positionals at all → the missing-selector error (session is required;
+        // there is no $AGENTIUM_SESSION default for `send`).
+        assert!(parse_command("send", &[], view_all()).is_err());
+        // A selector but no message words → the empty-message error.
+        let one = ["agentium:a-b-c"].map(String::from);
+        assert!(parse_command("send", &one, view_all()).is_err());
+        // A selector plus a whitespace-only quoted arg is also rejected.
+        let blank = ["agentium:a-b-c", "   "].map(String::from);
+        assert!(parse_command("send", &blank, view_all()).is_err());
+    }
+
+    #[test]
+    fn join_message_joins_and_rejects_empty() {
+        assert_eq!(
+            join_message(&["hey".into(), "there".into()]).unwrap(),
+            "hey there"
+        );
+        assert_eq!(join_message(&["solo".into()]).unwrap(), "solo");
+        assert!(join_message(&[]).is_err());
+        assert!(join_message(&["  ".into()]).is_err());
     }
 
     fn usage(input: u64, cc: u64, cr: u64, out: u64, turns: u32, cost: Option<f64>) -> UsageInfo {

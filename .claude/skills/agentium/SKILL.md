@@ -117,11 +117,12 @@ Note the id distinction: `claude_session_id` is agentium's own stable identity
 
 ## Selecting a session
 
-`show`, `log`, and `resume` take a **session selector** — any of: the raw
+`show`, `log`, `resume`, and `send` take a **session selector** — any of: the raw
 `claude_session_id` (d-tag), the `cli_session_id`, an `agentium:<word-id>` ref
 (with or without the `agentium:` prefix), a unique id prefix, or a unique
 title substring. For `show` and `log` the selector is **optional** and defaults
-to `$AGENTIUM_SESSION`, so an agent running inside a session can address itself:
+to `$AGENTIUM_SESSION`, so an agent running inside a session can address itself
+(`resume`/`send` always require an explicit selector):
 
 ```bash
 agentium show                    # this session (via $AGENTIUM_SESSION)
@@ -190,9 +191,36 @@ needs a session whose backend actually started (a non-empty `cli_session_id`).
 agentium resume maple-river-canyon
 ```
 
+## `send` — send a message to a session
+
+`send <session> <text…>` publishes a `user` message onto a **live** session's
+conversation so its running agent (local *or* remote) picks it up over relay
+sync, then reports the resulting event id. This is the first write command — the
+way to steer another session from the shell.
+
+```bash
+agentium send maple-river-canyon run the tests and fix any failures
+agentium send maple-river-canyon "keep the exact  spacing"   # quote to preserve it
+agentium send maple-river-canyon hi --json                   # {"session","event_id"}
+```
+
+Notes:
+
+- The selector is **required** — unlike `show`/`log` there is no
+  `$AGENTIUM_SESSION` default, because the first word would be ambiguous against
+  the message text. Pass an explicit selector (any form `list` accepts).
+- The message is the remaining words **joined with single spaces**, so short
+  prompts need no quoting; quote a single argument to preserve exact spacing.
+  Empty/whitespace-only text is rejected.
+- Only **live** sessions can be sent to. A soft-deleted session has no backend
+  reading its conversation, so `send` refuses and points you at `resume` — reopen
+  it first, then send.
+- `--json` emits `{ "session": "agentium:…", "event_id": "<64-hex>" }`; the plain
+  output is `sent to <agentium:ref> (event <hex8>…)`.
+
 ## Command surface
 
 Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
-`resume` (plus `login`/`logout`). Further control verbs (watch dashboard, send,
+`resume`, `send` (plus `login`/`logout`). Further control verbs (watch dashboard,
 approve/deny, permission-mode, spawn, run-config management) are planned but
 **not yet implemented** — don't invoke them until they land.

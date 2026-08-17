@@ -195,6 +195,7 @@ dependencies = [
  "agentium-core",
  "bech32",
  "enostr",
+ "hex",
  "nostrdb",
  "nostrdb_net",
  "nostrdb_relay",

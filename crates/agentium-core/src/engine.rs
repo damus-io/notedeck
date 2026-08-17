@@ -485,14 +485,19 @@ impl Engine {
     /// conversation and publishes it. Works whether or not the session is known
     /// locally (a brand-new session simply starts a fresh thread). `transport`
     /// carries the PNS envelope to the relay — see [`Engine::transport_handle`].
+    ///
+    /// Returns the [`BuiltEvent`](crate::session_events::BuiltEvent) it published
+    /// so a caller (e.g. `agentium send`) can report the resulting event id;
+    /// callers that don't need it just discard the value.
     pub fn send_message(
         &self,
         transport: &mut impl Transport,
         session_id: &str,
         text: &str,
-    ) -> Result<(), EngineError> {
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
         let built = self.make_user_message(session_id, text)?;
-        self.publish_session_event(transport, built)
+        self.publish_session_event(transport, &built)?;
+        Ok(built)
     }
 
     /// Build a kind-1988 user message, ingest it locally, and return it for the
@@ -547,7 +552,7 @@ impl Engine {
     ) -> Result<String, EngineError> {
         let spawn_id = uuid::Uuid::new_v4().to_string();
         let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id, None)?;
-        self.publish_session_event(transport, built)?;
+        self.publish_session_event(transport, &built)?;
         Ok(spawn_id)
     }
 
@@ -574,7 +579,7 @@ impl Engine {
             cli_session_id,
         };
         let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id, Some(&resume))?;
-        self.publish_session_event(transport, built)?;
+        self.publish_session_event(transport, &built)?;
         Ok(spawn_id)
     }
 
@@ -667,7 +672,7 @@ impl Engine {
             message.as_deref(),
             cancel_turn,
         )?;
-        self.publish_session_event(transport, built)
+        self.publish_session_event(transport, &built)
     }
 
     /// Build a kind-1988 permission response, ingest it locally, and return it
@@ -797,7 +802,7 @@ impl Engine {
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(transport, built)
+        self.publish_session_event(transport, &built)
     }
 
     /// Request a permission-mode change on a session's host (e.g. `"default"`,
@@ -810,7 +815,7 @@ impl Engine {
         mode: &str,
     ) -> Result<(), EngineError> {
         let built = self.make_set_permission_mode(session_id, mode)?;
-        self.publish_session_event(transport, built)
+        self.publish_session_event(transport, &built)
     }
 
     /// Build a kind-1988 set-permission-mode command, ingest it locally, and
@@ -906,9 +911,9 @@ impl Engine {
     fn publish_session_event(
         &self,
         transport: &mut impl Transport,
-        built: crate::session_events::BuiltEvent,
+        built: &crate::session_events::BuiltEvent,
     ) -> Result<(), EngineError> {
-        let wrapped = self.wrap_and_ingest(&built)?;
+        let wrapped = self.wrap_and_ingest(built)?;
         match self.pns_relay.clone() {
             Some(relay) => transport.publish_event_json(wrapped, vec![relay]),
             None => tracing::debug!("engine: no publish relay set; event ingested locally only"),
