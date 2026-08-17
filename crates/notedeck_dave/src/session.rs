@@ -2880,6 +2880,7 @@ mod tests {
         let result = crate::messages::ExecutedTool {
             tool_name: "Read".to_string(),
             summary: "42 lines".to_string(),
+            output: None,
             parent_task_id: Some("task-1".to_string()),
             file_update: None,
         };
@@ -2906,6 +2907,7 @@ mod tests {
         let result = crate::messages::ExecutedTool {
             tool_name: "Bash".to_string(),
             summary: "exit 0".to_string(),
+            output: None,
             parent_task_id: None,
             file_update: None,
         };
@@ -2941,6 +2943,7 @@ mod tests {
         let result = crate::messages::ExecutedTool {
             tool_name: "Read".to_string(),
             summary: "42 lines".to_string(),
+            output: None,
             parent_task_id: Some("nonexistent-task".to_string()),
             file_update: None,
         };

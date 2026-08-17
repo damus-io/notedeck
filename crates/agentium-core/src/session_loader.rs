@@ -227,6 +227,7 @@ pub fn render_conversation_note(
                         .unwrap_or("tool")
                         .to_string(),
                     summary,
+                    output: None,
                     parent_task_id: None,
                     file_update: None,
                 },

@@ -1142,6 +1142,64 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render tool result metadata as a compact line
+    /// Render the compact `▶ ToolName summary` row shared by every tool-result
+    /// layout. `arrow` is `Some` for a collapsible result (there's a body to
+    /// reveal) and `None` for a plain one-liner. Returns the row response so a
+    /// collapsible caller can sense clicks on it.
+    fn exec_tool_header_ui(
+        tool_name: &str,
+        summary: &str,
+        arrow: Option<&str>,
+        ui: &mut egui::Ui,
+    ) -> egui::Response {
+        ui.horizontal(|ui| {
+            if let Some(arrow) = arrow {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(arrow)
+                        .size(10.0)
+                        .color(ui.visuals().text_color().gamma_multiply(0.5)),
+                ));
+            }
+            ui.add(egui::Label::new(
+                egui::RichText::new(tool_name)
+                    .size(11.0)
+                    .color(ui.visuals().text_color().gamma_multiply(0.6))
+                    .monospace(),
+            ));
+            if !summary.is_empty() {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(summary)
+                        .size(11.0)
+                        .color(ui.visuals().text_color().gamma_multiply(0.4))
+                        .monospace(),
+                ));
+            }
+        })
+        .response
+    }
+
+    /// Render a tool's raw textual output (e.g. bash stdout/stderr) as an
+    /// indented, subdued monospace block under its result row.
+    fn tool_output_ui(output: &str, ui: &mut egui::Ui) {
+        ui.indent("exec_output_body", |ui| {
+            egui::Frame::new()
+                .fill(ui.visuals().extreme_bg_color)
+                .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
+                .corner_radius(notedeck::tokens::RADIUS_LG)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(output)
+                                .size(11.0)
+                                .monospace()
+                                .color(ui.visuals().text_color().gamma_multiply(0.75)),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                    );
+                });
+        });
+    }
+
     fn executed_tool_ui(result: &ExecutedTool, ui: &mut egui::Ui) {
         if let Some(file_update) = &result.file_update {
             // File edit with diff — show collapsible header with inline diff
@@ -1149,31 +1207,10 @@ impl<'a> DaveUi<'a> {
             let is_small = file_update.diff_lines().len() < 10;
             let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(is_small));
 
-            let header_resp = ui
-                .horizontal(|ui| {
-                    let arrow = if expanded { "▼" } else { "▶" };
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(arrow)
-                            .size(10.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.5)),
-                    ));
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(&result.tool_name)
-                            .size(11.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.6))
-                            .monospace(),
-                    ));
-                    if !result.summary.is_empty() {
-                        ui.add(egui::Label::new(
-                            egui::RichText::new(&result.summary)
-                                .size(11.0)
-                                .color(ui.visuals().text_color().gamma_multiply(0.4))
-                                .monospace(),
-                        ));
-                    }
-                })
-                .response
-                .interact(egui::Sense::click());
+            let arrow = if expanded { "▼" } else { "▶" };
+            let header_resp =
+                Self::exec_tool_header_ui(&result.tool_name, &result.summary, Some(arrow), ui)
+                    .interact(egui::Sense::click());
 
             if header_resp.clicked() {
                 ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
@@ -1183,24 +1220,27 @@ impl<'a> DaveUi<'a> {
                 diff::file_path_header(file_update, ui);
                 diff::file_update_ui(file_update, false, ui);
             }
+        } else if let Some(output) = &result.output {
+            // Free-form tool output (bash stdout/stderr) — collapsed by default
+            // so a noisy command doesn't dominate the transcript; click to reveal.
+            let expand_id = ui.id().with("exec_output").with(&result.summary);
+            let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(false));
+
+            let arrow = if expanded { "▼" } else { "▶" };
+            let header_resp =
+                Self::exec_tool_header_ui(&result.tool_name, &result.summary, Some(arrow), ui)
+                    .interact(egui::Sense::click());
+
+            if header_resp.clicked() {
+                ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
+            }
+
+            if expanded {
+                Self::tool_output_ui(output, ui);
+            }
         } else {
             // Compact single-line display with subdued styling
-            ui.horizontal(|ui| {
-                ui.add(egui::Label::new(
-                    egui::RichText::new(&result.tool_name)
-                        .size(11.0)
-                        .color(ui.visuals().text_color().gamma_multiply(0.6))
-                        .monospace(),
-                ));
-                if !result.summary.is_empty() {
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(&result.summary)
-                            .size(11.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.4))
-                            .monospace(),
-                    ));
-                }
-            });
+            Self::exec_tool_header_ui(&result.tool_name, &result.summary, None, ui);
         }
     }
 
@@ -2926,5 +2966,85 @@ mod tests {
         }
         harness.run();
         harness.snapshot("responded_permission_widgets_expanded");
+    }
+
+    /// Build the mixed tool-result list the snapshots exercise: a Bash result
+    /// carrying stdout, a Bash result with no output, and a plain Read summary.
+    fn executed_tool_fixtures() -> Vec<crate::messages::ExecutedTool> {
+        vec![
+            crate::messages::ExecutedTool {
+                tool_name: "Bash".to_string(),
+                summary: "`ls -la crates` (312 chars)".to_string(),
+                output: Some(
+                    "total 24\ndrwxr-xr-x  notedeck\ndrwxr-xr-x  notedeck_dave\n-rw-r--r--  Cargo.toml"
+                        .to_string(),
+                ),
+                parent_task_id: None,
+                file_update: None,
+            },
+            crate::messages::ExecutedTool {
+                tool_name: "Bash".to_string(),
+                summary: "`true`".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+            crate::messages::ExecutedTool {
+                tool_name: "Read".to_string(),
+                summary: "lib.rs (128 lines)".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+        ]
+    }
+
+    /// Visualize the tool-result rows in their default (collapsed) state: the
+    /// Bash-with-output row shows a ▶ disclosure, the others render as plain
+    /// one-liners. Render with `scripts/snapshot-test snapshot_executed_tool_results`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_executed_tool_results() {
+        let results = executed_tool_fixtures();
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(420.0, 120.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                for result in &results {
+                    DaveUi::executed_tool_ui(result, ui);
+                    ui.add_space(4.0);
+                }
+            });
+
+        harness.run();
+        harness.snapshot("executed_tool_results");
+    }
+
+    /// Visualize the Bash-with-output row expanded, revealing its stdout block.
+    /// Render with `scripts/snapshot-test snapshot_executed_tool_results_expanded`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_executed_tool_results_expanded() {
+        let results = executed_tool_fixtures();
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(420.0, 200.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                // Seed the ls row's disclosure open so the stdout block renders.
+                // `executed_tool_ui` keys its expand flag off `exec_output` +
+                // summary against this same `ui`'s id, so the key matches.
+                let expand_id = ui
+                    .id()
+                    .with("exec_output")
+                    .with("`ls -la crates` (312 chars)");
+                ui.data_mut(|d| d.insert_temp(expand_id, true));
+                for result in &results {
+                    DaveUi::executed_tool_ui(result, ui);
+                    ui.add_space(4.0);
+                }
+            });
+
+        harness.run();
+        harness.snapshot("executed_tool_results_expanded");
     }
 }

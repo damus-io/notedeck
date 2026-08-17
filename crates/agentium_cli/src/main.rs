@@ -1819,6 +1819,7 @@ mod tests {
         Message::ToolResponse(ToolResponse::executed_tool(ExecutedTool {
             tool_name: name.into(),
             summary: summary.into(),
+            output: None,
             parent_task_id: None,
             file_update: None,
         }))

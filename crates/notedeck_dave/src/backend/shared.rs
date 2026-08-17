@@ -1,7 +1,9 @@
 //! Shared utilities used by multiple AI backend implementations.
 
 use crate::auto_accept::AutoAcceptRules;
-use crate::backend::tool_summary::{format_tool_summary, truncate_output};
+use crate::backend::tool_summary::{
+    extract_response_content, format_tool_summary, truncate_output,
+};
 use crate::file_update::FileUpdate;
 use crate::messages::{
     DaveApiResponse, ExecutedTool, ImageAttachment, PendingPermission, PermissionRequest,
@@ -172,6 +174,15 @@ pub fn send_tool_result(
     waker: &Waker,
 ) {
     let summary = format_tool_summary(tool_name, tool_input, result_value);
+    // Bash is the tool whose stdout/stderr *is* the result, so keep it around to
+    // render inline. Other tools are covered by their summary (or a file diff);
+    // broadening this set is a follow-up. Trimmed to a bounded tail so a long
+    // build log can't balloon the in-memory transcript.
+    let output = (tool_name == "Bash")
+        .then(|| extract_response_content(result_value))
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate_output(&s, 2000));
     // An explicit `parent_tool_use_id` (a subagent-internal result) wins over
     // the foreground nesting stack.
     let parent_task_id = parent_override
@@ -180,6 +191,7 @@ pub fn send_tool_result(
     let tool_result = ExecutedTool {
         tool_name: tool_name.to_string(),
         summary,
+        output,
         parent_task_id,
         file_update,
     };
@@ -542,6 +554,8 @@ mod tests {
             DaveApiResponse::ToolResult(tool) => {
                 assert_eq!(tool.tool_name, "Read");
                 assert_eq!(tool.parent_task_id, Some("task-1".to_string()));
+                // Only Bash carries raw output inline today.
+                assert!(tool.output.is_none(), "non-Bash tools carry no output");
             }
             _ => panic!("expected ToolResult"),
         }
@@ -570,6 +584,35 @@ mod tests {
                 assert!(tool.file_update.is_none());
                 // Summary should be non-empty (format_tool_summary produces something)
                 assert!(!tool.summary.is_empty(), "summary should not be empty");
+                // Bash stdout/stderr is surfaced inline for the transcript.
+                assert_eq!(tool.output.as_deref(), Some("file.txt"));
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn send_tool_result_bash_empty_output_stays_none() {
+        let (tx, rx) = mpsc::channel();
+        let waker = Waker::noop();
+        send_tool_result(
+            "Bash",
+            &serde_json::json!({"command": "true"}),
+            &serde_json::json!(""),
+            None,
+            None,
+            &[],
+            &tx,
+            &waker,
+        );
+
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::ToolResult(tool) => {
+                assert!(
+                    tool.output.is_none(),
+                    "empty output should not render a block"
+                );
             }
             _ => panic!("expected ToolResult"),
         }
