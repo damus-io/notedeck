@@ -37,7 +37,7 @@ use backend::{
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
-use enostr::{KeypairUnowned, NormRelayUrl, RelayId};
+use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
@@ -73,15 +73,6 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
-/// Normalize a relay URL to always have a trailing slash.
-fn normalize_relay_url(url: String) -> String {
-    if url.ends_with('/') {
-        url
-    } else {
-        url + "/"
-    }
-}
-
 /// How long a pending placeholder session waits before being removed.
 const PENDING_SESSION_TIMEOUT_SECS: f64 = 15.0;
 
@@ -99,8 +90,8 @@ fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
 ///
 /// Dave drives its own relay stack, so it takes the *embedded* engine (no relay
 /// loop, no Tokio requirement) and uses the engine's `prepare_*` methods to
-/// build + locally-ingest its remote-session write events, then publishes them
-/// from its own batched [`Dave::pending_relay_events`] queue. Constructed on
+/// build + locally-ingest its remote-session write events; the host's
+/// private-sync Session fans the freshly-ingested envelopes out. Constructed on
 /// demand at each drain from the current account, so it always signs and
 /// author-scopes with whichever account is selected. `None` if the secret is
 /// rejected (logged).
@@ -165,7 +156,6 @@ struct PnsLocalRuntime {
     active_overlay: DaveOverlay,
     pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
     pending_message_load: Option<PendingMessageLoad>,
-    pending_relay_events: Vec<session_events::BuiltEvent>,
     session_state_sub: Option<nostrdb::Subscription>,
     session_command_sub: Option<nostrdb::Subscription>,
     /// One shared per-account subscription for live conversation events across
@@ -207,7 +197,6 @@ impl PnsLocalRuntime {
             active_overlay: DaveOverlay::DirectoryPicker,
             pending_archive_convert: None,
             pending_message_load: None,
-            pending_relay_events: Vec::new(),
             session_state_sub: None,
             session_command_sub: None,
             conversation_sub: None,
@@ -484,7 +473,6 @@ pub struct Dave {
     /// Waiting for ndb to finish indexing 1988 events so we can load messages.
     pending_message_load: Option<PendingMessageLoad>,
     /// Events waiting to be published to relays (queued from non-pool contexts).
-    pending_relay_events: Vec<session_events::BuiltEvent>,
     /// Local ndb subscription for kind-31988 session state events.
     /// Fires when new session states are unwrapped from PNS events.
     session_state_sub: Option<nostrdb::Subscription>,
@@ -523,10 +511,6 @@ pub struct Dave {
     pending_summaries: Vec<enostr::NoteId>,
     /// Local machine hostname, included in session state events.
     hostname: String,
-    /// PNS sync relay. Sourced from the selected account's first "private"
-    /// NIP-65 relay each frame. `None` means local-only (no cross-device sync);
-    /// dave still ingests its events into nostrdb either way.
-    pns_relay_url: Option<String>,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
@@ -596,8 +580,6 @@ impl PendingWorktreeRemoval {
 struct ProcessEventsResult {
     /// Sessions that need to dispatch queued user messages.
     needs_send: HashSet<SessionId>,
-    /// Nostr events to publish to relays.
-    events_to_publish: Vec<session_events::BuiltEvent>,
     /// Sessions that need a compact query dispatched (compact-and-proceed).
     needs_compact: HashSet<SessionId>,
 }
@@ -638,18 +620,16 @@ fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8; 32]) {
 /// Ingest a freshly-built event: PNS-wrap into local ndb and push to the
 /// relay publish queue. Logs on success with `event_desc` and on failure.
 /// Returns `true` if the event was queued successfully.
-fn queue_built_event(
+fn ingest_built_event(
     result: Result<session_events::BuiltEvent, session_events::EventBuildError>,
     event_desc: &str,
     ndb: &nostrdb::Ndb,
     sk: &[u8; 32],
-    queue: &mut Vec<session_events::BuiltEvent>,
 ) -> bool {
     match result {
         Ok(evt) => {
             tracing::info!("{}", event_desc);
             pns_ingest(ndb, &evt.note_json, sk);
-            queue.push(evt);
             true
         }
         Err(e) => {
@@ -989,11 +969,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
-        // The PNS sync relay is derived from the selected account's "private"
-        // NIP-65 relay each frame (see `update`). None means local-only: dave
-        // still ingests its events into nostrdb, just without cross-device sync.
-        let pns_relay_url = None;
-
         let directory_picker = DirectoryPicker::new();
 
         // Create IPC listener for external spawn-agent commands
@@ -1051,7 +1026,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             notification_state: notifications::NotificationState::new(),
             pending_archive_convert: None,
             pending_message_load: None,
-            pending_relay_events: Vec::new(),
             session_state_sub: None,
             session_command_sub: None,
             conversation_sub: None,
@@ -1066,7 +1040,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
             hostname,
-            pns_relay_url,
             pns_local_state: None,
             pns_local_runtimes: HashMap::new(),
             settings_serializer,
@@ -1087,8 +1060,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
-        // pns_relay_url is sourced from the account's kind-10013 NIP-37 private
-        // relay list in `update`, not from settings.
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
@@ -1348,7 +1319,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Process incoming tokens from the ai backend for ALL sessions.
     fn process_events(&mut self, app_ctx: &AppContext) -> ProcessEventsResult {
         let mut needs_send: HashSet<SessionId> = HashSet::new();
-        let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
         let mut needs_compact: HashSet<SessionId> = HashSet::new();
         let active_id = self.session_manager.active_id();
 
@@ -1417,7 +1387,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 if let Some((content, role, tool_name)) = live_event {
                     if let Some(sk) = &secret_key {
-                        if let Some(evt) = ingest_live_event(
+                        ingest_live_event(
                             session,
                             app_ctx.ndb,
                             sk,
@@ -1425,9 +1395,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             role,
                             None,
                             tool_name,
-                        ) {
-                            events_to_publish.push(evt);
-                        }
+                        );
                     }
                 }
 
@@ -1457,13 +1425,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                     DaveApiResponse::PermissionRequest(pending) => {
-                        handle_permission_request(
-                            session,
-                            pending,
-                            &secret_key,
-                            app_ctx.ndb,
-                            &mut events_to_publish,
-                        );
+                        handle_permission_request(session, pending, &secret_key, app_ctx.ndb);
                     }
                     DaveApiResponse::ToolResult(result) => {
                         handle_tool_result(session, result);
@@ -1525,7 +1487,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             session_id,
                             &secret_key,
                             app_ctx.ndb,
-                            &mut events_to_publish,
                             &mut needs_send,
                             &mut needs_compact,
                         );
@@ -1543,7 +1504,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 session_id,
                                 &secret_key,
                                 app_ctx.ndb,
-                                &mut events_to_publish,
                                 &mut needs_send,
                                 &mut needs_compact,
                             );
@@ -1565,7 +1525,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         ProcessEventsResult {
             needs_send,
-            events_to_publish,
             needs_compact,
         }
     }
@@ -2325,7 +2284,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             };
 
-            queue_built_event(
+            ingest_built_event(
                 state.build_event(&sk),
                 &format!(
                     "publishing session state: {} -> {}",
@@ -2333,7 +2292,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 ),
                 ctx.ndb,
                 &sk,
-                &mut self.pending_relay_events,
             );
 
             session.state_dirty = false;
@@ -2395,7 +2353,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     latest.unwrap_or(0),
                 )
             };
-            queue_built_event(
+            ingest_built_event(
                 state.build_event(&sk),
                 &format!(
                     "publishing deleted session state: {}",
@@ -2403,7 +2361,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 ),
                 ctx.ndb,
                 &sk,
-                &mut self.pending_relay_events,
             );
         }
     }
@@ -2412,7 +2369,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Called in the update loop where AppContext is available.
     ///
     /// The engine builds + locally-ingests each response (resolving the request's
-    /// note id from ndb); we publish it from [`Dave::pending_relay_events`].
+    /// note id from ndb); the host's private-sync Session fans it out.
     fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
         if self.pending_perm_responses.is_empty() {
             return;
@@ -2436,13 +2393,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 resp.message.as_deref(),
                 resp.cancel_turn,
             ) {
-                Ok(evt) => {
+                Ok(_) => {
                     tracing::info!(
                         "queued permission response for {} ({})",
                         resp.perm_id,
                         if resp.allowed { "allow" } else { "deny" }
                     );
-                    self.pending_relay_events.push(evt);
                 }
                 Err(e) => tracing::error!(
                     "failed to build permission response for {}: {:?}",
@@ -2472,13 +2428,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         for cmd in std::mem::take(&mut self.pending_mode_commands) {
             match engine.prepare_set_permission_mode(&cmd.session_id, cmd.mode) {
-                Ok(evt) => {
+                Ok(_) => {
                     tracing::info!(
                         "publishing permission mode command: {} -> {}",
                         cmd.session_id,
                         cmd.mode
                     );
-                    self.pending_relay_events.push(evt);
                 }
                 Err(e) => tracing::error!(
                     "failed to build mode command for {}: {:?}",
@@ -2508,9 +2463,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         for cmd in std::mem::take(&mut self.pending_interrupt_commands) {
             match engine.prepare_interrupt(&cmd.session_id) {
-                Ok(evt) => {
+                Ok(_) => {
                     tracing::info!("publishing interrupt command for {}", cmd.session_id);
-                    self.pending_relay_events.push(evt);
                 }
                 Err(e) => tracing::error!(
                     "failed to build interrupt command for {}: {:?}",
@@ -3455,7 +3409,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ndb: &nostrdb::Ndb,
         sk: &[u8; 32],
     ) {
-        queue_built_event(
+        ingest_built_event(
             session_events::build_run_config_event(
                 config,
                 &cwd.to_string_lossy(),
@@ -3465,7 +3419,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             "run-config",
             ndb,
             sk,
-            &mut self.pending_relay_events,
         );
     }
 
@@ -3477,7 +3430,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ndb: &nostrdb::Ndb,
         sk: &[u8; 32],
     ) {
-        queue_built_event(
+        ingest_built_event(
             session_events::build_run_config_delete_event(
                 config_id,
                 &cwd.to_string_lossy(),
@@ -3487,7 +3440,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             "run-config-delete",
             ndb,
             sk,
-            &mut self.pending_relay_events,
         );
     }
 
@@ -3949,9 +3901,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-            if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
-                self.pending_relay_events.push(evt);
-            }
+            build_user_send_event(session, app_ctx.ndb, &sk, &user_text);
         }
 
         session
@@ -4014,9 +3964,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Generate the kind-1988 `user` event (remote sends route through
             // the engine, local sends archive the host turn in-place).
             if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-                if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
-                    self.pending_relay_events.push(evt);
-                }
+                build_user_send_event(session, app_ctx.ndb, &sk, &user_text);
             }
 
             let images = std::mem::take(&mut session.pending_images);
@@ -4254,30 +4202,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.load_resumed_session_history(ndb, account, dave_sid, &claude_sid);
     }
 
-    /// Point the PNS sync relay at the selected account's first "private"
-    /// NIP-65 relay. `None` (no private relay marked) keeps dave local-only.
-    ///
-    /// Multiple private relays are out of scope here: dave uses the first.
-    fn refresh_pns_relay_url(&mut self, ctx: &mut AppContext<'_>) {
-        let next = ctx
-            .accounts
-            .selected_account_private_relays()
-            .into_iter()
-            .find_map(|relay| match relay {
-                RelayId::Websocket(url) => Some(normalize_relay_url(url.to_string())),
-                _ => None,
-            });
-
-        if self.pns_relay_url != next {
-            tracing::info!(
-                previous_relay = ?self.pns_relay_url,
-                next_relay = ?next,
-                "Dave PNS relay changed"
-            );
-            self.pns_relay_url = next;
-        }
-    }
-
     /// Keep the selected account's PNS session state (workspace + ndb
     /// subscriptions + restored sessions) in sync with the account picker.
     ///
@@ -4360,7 +4284,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             active_overlay: std::mem::take(&mut self.active_overlay),
             pending_archive_convert: self.pending_archive_convert.take(),
             pending_message_load: self.pending_message_load.take(),
-            pending_relay_events: std::mem::take(&mut self.pending_relay_events),
             session_state_sub: self.session_state_sub.take(),
             session_command_sub: self.session_command_sub.take(),
             conversation_sub: self.conversation_sub.take(),
@@ -4406,7 +4329,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.active_overlay = runtime.active_overlay;
         self.pending_archive_convert = runtime.pending_archive_convert;
         self.pending_message_load = runtime.pending_message_load;
-        self.pending_relay_events = runtime.pending_relay_events;
         self.session_state_sub = runtime.session_state_sub;
         self.session_command_sub = runtime.session_command_sub;
         self.conversation_sub = runtime.conversation_sub;
@@ -4522,7 +4444,6 @@ pub fn is_agentium_kind(kind: u32) -> bool {
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        self.refresh_pns_relay_url(ctx);
         // Focus a session whose inline chip was clicked in another app.
         self.process_pending_open(ctx.ndb);
         self.ensure_pns_local_state(ctx);
@@ -4583,10 +4504,12 @@ impl notedeck::App for Dave {
         // Check if interrupt confirmation has timed out
         self.check_interrupt_timeout();
 
-        // Process incoming AI responses for all sessions
+        // Process incoming AI responses for all sessions. Every event these
+        // handlers build is ingested locally into nostrdb; the host's
+        // private-sync Session fans the freshly-ingested PNS envelopes out to the
+        // private relays, so dave keeps no outbound publish queue of its own.
         let ProcessEventsResult {
             needs_send: sessions_needing_send,
-            events_to_publish,
             needs_compact: sessions_needing_compact,
         } = self.process_events(ctx);
 
@@ -4594,33 +4517,33 @@ impl notedeck::App for Dave {
         self.publish_pending_perm_responses(ctx);
 
         // Build spawn command events through the engine (needs the selected
-        // account's secret from AppContext); publish them from our own queue.
+        // account's secret from AppContext). The engine ingests each event
+        // locally; the host fans it out to the private relays.
         if !self.pending_spawn_commands.is_empty() {
             if let Some(engine) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
                 .and_then(|sk| embedded_engine(ctx.ndb, &sk))
             {
                 for cmd in std::mem::take(&mut self.pending_spawn_commands) {
-                    match engine.prepare_spawn_command(
+                    if let Err(e) = engine.prepare_spawn_command(
                         &cmd.target_host,
                         &cmd.cwd.to_string_lossy(),
                         cmd.backend.as_str(),
                         &cmd.spawn_id,
                     ) {
-                        Ok(evt) => self.pending_relay_events.push(evt),
-                        Err(e) => tracing::warn!("failed to build spawn command: {:?}", e),
+                        tracing::warn!("failed to build spawn command: {:?}", e);
                     }
                 }
             }
         }
 
         // Build resume command events (deleted-chip resume of a session on
-        // another host) the same way; publish them from our own queue.
+        // another host) the same way; the engine ingests, the host fans out.
         if !self.pending_resume_commands.is_empty() {
             if let Some(engine) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
                 .and_then(|sk| embedded_engine(ctx.ndb, &sk))
             {
                 for cmd in std::mem::take(&mut self.pending_resume_commands) {
-                    match engine.prepare_resume_command(
+                    if let Err(e) = engine.prepare_resume_command(
                         &cmd.target_host,
                         &cmd.cwd.to_string_lossy(),
                         cmd.backend.as_str(),
@@ -4628,8 +4551,7 @@ impl notedeck::App for Dave {
                         &cmd.target_session_id,
                         &cmd.cli_session_id,
                     ) {
-                        Ok(evt) => self.pending_relay_events.push(evt),
-                        Err(e) => tracing::warn!("failed to build resume command: {:?}", e),
+                        tracing::warn!("failed to build resume command: {:?}", e);
                     }
                 }
             }
@@ -4640,44 +4562,6 @@ impl notedeck::App for Dave {
 
         // Build interrupt command events for remote sessions
         self.publish_pending_interrupt_commands(ctx);
-
-        self.pending_relay_events.extend(events_to_publish);
-        // Only publish to a remote relay when one is configured in the account's
-        // private relay list. With no private relay dave is local-only: these
-        // events are already ingested into nostrdb at build time, and we retain
-        // the remote-publish queue so a later-configured private relay can sync
-        // the backlog.
-        if !self.pending_relay_events.is_empty() {
-            if let Some(pns_relay_url) = self.pns_relay_url.clone() {
-                if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-                    match NormRelayUrl::new(&pns_relay_url) {
-                        Ok(relay) => {
-                            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                            // The host owns the PNS discovery subscription; dave's
-                            // side is publish-only, so it just fans each wrapped
-                            // envelope out to the private relay via the explicit
-                            // publisher.
-                            for event in std::mem::take(&mut self.pending_relay_events) {
-                                match session_events::wrap_pns(&event.note_json, &pns_keys) {
-                                    Ok(pns_json) => {
-                                        ctx.remote.publisher_explicit().publish_event_json(
-                                            pns_json,
-                                            vec![RelayId::Websocket(relay.clone())],
-                                        );
-                                    }
-                                    Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to parse PNS relay {}: {:?}", pns_relay_url, e);
-                        }
-                    }
-                } else {
-                    tracing::warn!("no secret key for publishing pending Dave PNS events");
-                }
-            }
-        }
 
         // Poll for remote conversation actions (permission responses, commands).
         let applies = self.poll_remote_conversation_actions(ctx.ndb);
@@ -5035,14 +4919,14 @@ fn handle_tool_calls(
 
 /// Handle a permission request from the AI backend.
 ///
-/// Builds and publishes a permission request event for remote clients,
-/// stores the response sender for later, and adds the request to chat.
+/// Builds and locally-ingests a permission request event for remote clients
+/// (the host fans it out), stores the response sender for later, and adds the
+/// request to chat.
 fn handle_permission_request(
     session: &mut session::ChatSession,
     pending: messages::PendingPermission,
     secret_key: &Option<[u8; 32]>,
     ndb: &nostrdb::Ndb,
-    events_to_publish: &mut Vec<session_events::BuiltEvent>,
 ) {
     tracing::info!(
         "Permission request for tool '{}': {:?}",
@@ -5085,7 +4969,6 @@ fn handle_permission_request(
                         .permissions
                         .request_note_ids
                         .insert(pending.request.id, evt.note_id);
-                    events_to_publish.push(evt);
                 }
                 Err(e) => {
                     tracing::warn!("failed to build permission request event: {}", e);
@@ -5670,14 +5553,13 @@ fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo) {
 
 /// Handle stream-end for a session after the AI backend disconnects.
 ///
-/// Finalizes the assistant message, publishes the live event,
-/// and checks whether queued messages need redispatch.
+/// Finalizes the assistant message, ingests the live event locally (the host
+/// fans it out), and checks whether queued messages need redispatch.
 fn handle_stream_end(
     session: &mut session::ChatSession,
     session_id: SessionId,
     secret_key: &Option<[u8; 32]>,
     ndb: &nostrdb::Ndb,
-    events_to_publish: &mut Vec<session_events::BuiltEvent>,
     needs_send: &mut HashSet<SessionId>,
     needs_compact: &mut HashSet<SessionId>,
 ) {
@@ -5686,9 +5568,7 @@ fn handle_stream_end(
     // Generate live event for the finalized assistant message
     if let Some(sk) = secret_key {
         if let Some(text) = session.last_assistant_text() {
-            if let Some(evt) = ingest_live_event(session, ndb, sk, &text, "assistant", None, None) {
-                events_to_publish.push(evt);
-            }
+            ingest_live_event(session, ndb, sk, &text, "assistant", None, None);
         }
     }
 
