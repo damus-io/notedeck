@@ -25,12 +25,18 @@ use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder};
 
 use crate::event::{
     self, CanvasView, EdgeEnds, Geometry, NodeContent, NodeKind, NodeView, build_canvas,
-    build_content, build_edge, build_edge_tombstone, build_longform, build_longform_tombstone,
-    build_node, build_node_tombstone, build_transform, canvas_address, rank_between,
+    build_canvas_tombstone, build_content, build_edge, build_edge_tombstone, build_longform,
+    build_longform_tombstone, build_node, build_node_tombstone, build_transform, canvas_address,
+    rank_between,
 };
 
-/// The single canvas the notebook manages for now. Multi-canvas support will
-/// turn this into a per-canvas identifier carried on [`crate::Notebook`].
+/// A canvas `d` used as the CLI's provisional `--canvas` default and as a fixed
+/// fixture id in tests. The egui app no longer depends on it — it tracks an active
+/// canvas ([`crate::Notebook::active_canvas`]) and mints a fresh `d` per canvas via
+/// [`create_canvas`]. The CLI's dependence on it goes away once `show` becomes
+/// vault-aware (`--canvas` resolved through the unified ref resolver); until then
+/// it stays a valid opaque id (existing accounts already hold this canvas, so no
+/// migration is needed).
 pub const CANVAS_ID: &str = "notebook";
 
 /// A UI intent to mutate the canvas. Collected during rendering and applied
@@ -173,6 +179,52 @@ pub fn seed_canvas(
     );
 }
 
+/// Create a new, empty canvas for `author` with a freshly-minted opaque `d` and
+/// the given title, returning that `d` so the caller can make it the active
+/// canvas. This is the vault "New canvas" path: unlike [`seed_canvas`] (which
+/// takes a caller-chosen id — used to re-seed a specific canvas), every call here
+/// mints a distinct id, so there is no single well-known canvas. The title lives
+/// in the `title` tag and is renamable via [`CanvasAction::Rename`]. Returns the
+/// canvas document's note id, or `None` if signing/ingest failed.
+pub fn create_canvas(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    title: &str,
+    publisher: &mut dyn Publisher,
+) -> Option<(String, NoteId)> {
+    let _ = author;
+    let d = mint_d();
+    let id = ingest(ndb, build_canvas(&d, title, &[], false), secret, publisher)?;
+    Some((d, id))
+}
+
+/// Delete a canvas by superseding it with a tombstone revision: an empty
+/// kind-31606 tagged `del`/`1` under the same `canvas_id`. Stamps strictly past
+/// `prev_created_at` (the live canvas document's timestamp) so the tombstone wins
+/// latest-wins, then ingests it as a plaintext event like every other canvas
+/// event (canvas kinds are never feed-rendered, so they skip the PNS wrap the
+/// longform path uses). Returns the tombstone's note id, or `None` on failure.
+///
+/// Reversible: a later canvas revision under the same `d` revives it (see
+/// [`event::build_canvas_tombstone`]).
+pub fn delete_canvas(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    canvas_id: &str,
+    prev_created_at: u64,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let _ = author;
+    ingest(
+        ndb,
+        build_canvas_tombstone(canvas_id).created_at(next_after(prev_created_at)),
+        secret,
+        publisher,
+    )
+}
+
 /// The id and stable `d` of a longform note that was just created, so the caller
 /// (the editor) can hold the `d` to drive later edits via [`edit_longform`].
 pub struct LongformSaved {
@@ -185,11 +237,12 @@ pub struct LongformSaved {
     pub created_at: u64,
 }
 
-/// Mint a fresh, opaque longform `d` — 8 random bytes as 16 hex chars. Not a
-/// [`crate::wordid`] (that encodes an *existing* event id; a replaceable `d` must
-/// be chosen before the event exists and stay stable across edits). Reuses the
-/// same OS RNG `enostr::FullKeypair::generate` already pulls in — no new crate.
-fn mint_d() -> String {
+/// Mint a fresh, opaque `d` — 8 random bytes as 16 hex chars — for a replaceable
+/// document (a longform note or a canvas). Not a [`crate::wordid`] (that encodes
+/// an *existing* event id; a replaceable `d` must be chosen before the event
+/// exists and stay stable across edits). Reuses the same OS RNG
+/// `enostr::FullKeypair::generate` already pulls in — no new crate.
+pub fn mint_d() -> String {
     use nostr::secp256k1::rand::{RngCore, rngs::OsRng};
     let mut bytes = [0u8; 8];
     OsRng.fill_bytes(&mut bytes);
@@ -542,6 +595,10 @@ pub use event::load_canvas;
 /// without naming the event module directly.
 pub use event::{LongformInput, LongformNote, list_longform, load_longform};
 
+/// Convenience re-exports for the unified vault projection so the app layer can
+/// list mixed note+canvas documents without naming the event module directly.
+pub use event::{VaultDoc, VaultDocKind, list_canvases, list_vault};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,8 +636,17 @@ mod tests {
             self.kp.secret_key.secret_bytes()
         }
 
-        /// Drain the subscription until the loaded canvas satisfies `pred`.
+        /// Drain the subscription until the [`CANVAS_ID`] canvas satisfies `pred`.
         fn wait<F>(&mut self, pred: F) -> CanvasView
+        where
+            F: Fn(&CanvasView) -> bool,
+        {
+            self.wait_id(CANVAS_ID, pred)
+        }
+
+        /// Drain the subscription until the canvas keyed by `d` loads and
+        /// satisfies `pred` — the multi-canvas form of [`wait`](Self::wait).
+        fn wait_id<F>(&mut self, d: &str, pred: F) -> CanvasView
         where
             F: Fn(&CanvasView) -> bool,
         {
@@ -588,10 +654,26 @@ mod tests {
                 loop {
                     {
                         let txn = Transaction::new(&self.ndb).unwrap();
-                        if let Some(view) = load_canvas(&self.ndb, &txn, &self.kp.pubkey, CANVAS_ID)
+                        if let Some(view) = load_canvas(&self.ndb, &txn, &self.kp.pubkey, d)
                             && pred(&view)
                         {
                             return view;
+                        }
+                    }
+                    self.stream.next().await.expect("subscription open");
+                }
+            })
+        }
+
+        /// Drain the subscription until the canvas keyed by `d` no longer loads —
+        /// its winning revision is a tombstone, so the fold drops it.
+        fn gone(&mut self, d: &str) -> bool {
+            pollster::block_on(async {
+                loop {
+                    {
+                        let txn = Transaction::new(&self.ndb).unwrap();
+                        if load_canvas(&self.ndb, &txn, &self.kp.pubkey, d).is_none() {
+                            return true;
                         }
                     }
                     self.stream.next().await.expect("subscription open");
@@ -873,6 +955,39 @@ mod tests {
         assert!(view.open);
     }
 
+    #[test]
+    fn create_mints_distinct_ids_and_delete_removes_canvas() {
+        let mut t = TestNdb::new();
+        // No well-known default id: each create mints its own opaque d.
+        let (a, _) =
+            create_canvas(&t.ndb, &t.kp.pubkey, &t.secret(), "Alpha", &mut NoPublish).unwrap();
+        let (b, _) =
+            create_canvas(&t.ndb, &t.kp.pubkey, &t.secret(), "Beta", &mut NoPublish).unwrap();
+        assert_ne!(a, b, "each canvas gets a distinct minted d");
+
+        // Both fold in, loadable by their own ids with the titles they were given.
+        let alpha = t.wait_id(&a, |v| v.title == "Alpha");
+        t.wait_id(&b, |v| v.title == "Beta");
+
+        // Deleting one leaves the other untouched: the tombstone supersedes only
+        // its own document, and the fold drops it from the vault.
+        delete_canvas(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            &a,
+            alpha.created_at,
+            &mut NoPublish,
+        )
+        .unwrap();
+        assert!(t.gone(&a), "a deleted canvas doesn't load");
+        assert_eq!(
+            t.wait_id(&b, |v| v.title == "Beta").id,
+            b,
+            "the sibling canvas survives the delete"
+        );
+    }
+
     /// Async harness for the standalone longform functions. Longform notes aren't
     /// in `notebook_filter`, so this subscribes to `longform_filter` and awaits
     /// commits on the stream directly — no blocking, the runtime wakes the task on
@@ -1111,5 +1226,75 @@ mod tests {
         assert_eq!(na.content, "one");
         assert_eq!(nb.title, "Second");
         assert_eq!(nb.content, "two");
+    }
+
+    #[tokio::test]
+    async fn list_vault_merges_notes_and_canvases() {
+        // Both stores in one listing: a canvas (plaintext kind-31606 events) and a
+        // longform note (PNS-wrapped kind-30023). The note is unwrapped only once
+        // the device key is registered; canvas events need no key.
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+        assert!(ndb.add_key(&kp.secret_key.secret_bytes()));
+        let secret = kp.secret_key.secret_bytes();
+
+        let (canvas_d, _) = create_canvas(&ndb, &kp.pubkey, &secret, "Board", &mut NoPublish)
+            .expect("create canvas");
+        let note = create_longform(
+            &ndb,
+            &kp.pubkey,
+            &secret,
+            &LongformInput {
+                title: "Draft".to_string(),
+                content: "body".to_string(),
+                ..Default::default()
+            },
+            None,
+            &mut NoPublish,
+        )
+        .expect("create note");
+
+        // Drain a combined subscription until both documents are folded into the
+        // vault (subscribe-then-poll, not a sleep — mirrors the other harnesses).
+        let sub = ndb
+            .subscribe(&[
+                event::notebook_filter(&kp.pubkey),
+                event::longform_filter(&kp.pubkey),
+            ])
+            .unwrap();
+        let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
+        let docs = loop {
+            {
+                let txn = Transaction::new(&ndb).unwrap();
+                let docs = list_vault(&ndb, &txn, &kp.pubkey);
+                if docs.len() == 2 {
+                    break docs;
+                }
+            }
+            stream.next().await.expect("subscription open");
+        };
+
+        // Exactly the two documents, one of each kind, each projected correctly.
+        let note_doc = docs
+            .iter()
+            .find(|d| d.kind == VaultDocKind::Note)
+            .expect("a note row");
+        let canvas_doc = docs
+            .iter()
+            .find(|d| d.kind == VaultDocKind::Canvas)
+            .expect("a canvas row");
+        assert_eq!(note_doc.d, note.d);
+        assert_eq!(note_doc.title, "Draft");
+        assert_eq!(note_doc.author, kp.pubkey);
+        assert_eq!(canvas_doc.d, canvas_d);
+        assert_eq!(canvas_doc.title, "Board");
+        assert_eq!(canvas_doc.author, kp.pubkey);
+        // Sorted newest-edited-first: the list is non-increasing in `edited_at`,
+        // whichever document happens to carry the later wall-clock second.
+        assert!(
+            docs[0].edited_at >= docs[1].edited_at,
+            "vault sorted newest-edited first"
+        );
     }
 }

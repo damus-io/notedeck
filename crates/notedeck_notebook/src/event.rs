@@ -150,6 +150,47 @@ pub fn canvas_address(author: &Pubkey, canvas_id: &str) -> String {
     format!("{KIND_CANVAS}:{}:{canvas_id}", author.hex())
 }
 
+/// The `nostr:naddr…` URI addressing one of `author`'s canvases by its `d`
+/// (canvas id). The canvas counterpart of [`longform_naddr`], for kind 31606 — the
+/// reference a cross-canvas link or a dragged-in canvas embed would carry so it
+/// decodes back to the canvas coordinate. `None` if the coordinate can't be
+/// bech32-encoded.
+pub fn canvas_naddr(author: &Pubkey, canvas_id: &str) -> Option<String> {
+    use nostr::nips::nip19::ToBech32;
+    let pk = nostr::PublicKey::from_slice(author.bytes()).ok()?;
+    let mut coord = nostr::nips::nip01::Coordinate::new(nostr::Kind::from(KIND_CANVAS as u16), pk);
+    coord.identifier = canvas_id.to_string();
+    Some(format!("nostr:{}", coord.to_bech32().ok()?))
+}
+
+/// A human-friendly reference to a canvas: `notebook:<word-id>`, where the word-id
+/// is a stable BIP-39 rendering of the canvas's addressable coordinate
+/// (`31606:<author>:<canvas-id>`). Like [`longform_ref`] for notes, and unlike the
+/// per-revision event id that [`crate::wordid::node_ref`] encodes for canvas
+/// *nodes*, this is stable across edits — a canvas is replaceable, so retitling or
+/// re-membering it reuses the same `d` and thus the same ref. This is what a mixed
+/// vault list prints for a canvas row and what [`resolve_ref`] resolves back.
+pub fn canvas_ref(author: &Pubkey, canvas_id: &str) -> String {
+    format!(
+        "{}:{}",
+        crate::wordid::SCHEME,
+        crate::wordid::encode_str(&canvas_address(author, canvas_id))
+    )
+}
+
+/// Decode a canvas's `(author, canvas_id)` from a `nostr:naddr…` reference, a bare
+/// `naddr…`, the raw `31606:<author-hex>:<canvas-id>` coordinate, or a NIP-21 uri —
+/// returning the author and canvas id when it names a kind-31606 canvas. `None` for
+/// any other kind or an unparseable coordinate. The inverse of [`canvas_naddr`],
+/// mirroring [`parse_longform_naddr`].
+pub fn parse_canvas_naddr(s: &str) -> Option<(Pubkey, String)> {
+    let coord = nostr::nips::nip01::Coordinate::parse(s).ok()?;
+    if coord.kind != nostr::Kind::from(KIND_CANVAS as u16) {
+        return None;
+    }
+    Some((Pubkey::new(coord.public_key.to_bytes()), coord.identifier))
+}
+
 /// The addressable coordinate of a longform note: `30023:<author-hex>:<d>` — the
 /// `nostr:` naddr coordinate a canvas node or link references (later cards).
 pub fn longform_address(author: &Pubkey, d: &str) -> String {
@@ -231,6 +272,23 @@ pub fn build_canvas<'a>(
     }
 
     b
+}
+
+/// Build a tombstone revision that deletes the canvas keyed by `canvas_id`: a
+/// superseding kind-31606 with an empty body tagged `del`/`1`. Because kind 31606
+/// is replaceable, the store stamps a strictly-later `created_at` so this wins
+/// latest-wins over the live canvas document, and [`parse_canvas`] surfaces it as
+/// [`CanvasEvent::deleted`] so [`CanvasReducer::finalize`] drops the canvas from
+/// the vault. Reversible: a later [`build_canvas`] revision under the same `d`
+/// restores it, mirroring [`build_longform_tombstone`].
+pub fn build_canvas_tombstone<'a>(canvas_id: &str) -> NoteBuilder<'a> {
+    base(KIND_CANVAS, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(canvas_id)
+        .start_tag()
+        .tag_str("del")
+        .tag_str("1")
 }
 
 /// Build a longform note (kind 30023, NIP-23) keyed by `d`. The markdown body is
@@ -486,6 +544,10 @@ pub struct CanvasEvent {
     pub members: Vec<[u8; 32]>,
     pub open: bool,
     pub created_at: u64,
+    /// Whether this revision is a delete tombstone (a `del`/`1` tag). The winning
+    /// revision of a deleted canvas carries this; [`CanvasReducer::finalize`] drops
+    /// such canvases so they leave the vault (a later revision revives them).
+    pub deleted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -558,10 +620,12 @@ fn parse_canvas(note: &Note) -> Option<CanvasEvent> {
     let mut title = String::new();
     let mut members = Vec::new();
     let mut open = false;
+    let mut deleted = false;
 
     for tag in note.tags() {
         match tag.get_str(0) {
             Some("d") => id = tag.get_str(1).map(|s| s.to_owned()),
+            Some("del") => deleted = tag.get_str(1) == Some("1"),
             Some("title") => {
                 if let Some(t) = tag.get_str(1) {
                     title = t.to_owned();
@@ -584,6 +648,7 @@ fn parse_canvas(note: &Note) -> Option<CanvasEvent> {
         members,
         open,
         created_at: note.created_at(),
+        deleted,
     })
 }
 
@@ -980,6 +1045,12 @@ impl CanvasReducer {
         let mut views: Vec<CanvasView> = Vec::new();
 
         for ((author, canvas_id), canvas) in &self.canvases {
+            // A deleted canvas leaves the vault: its winning revision is a
+            // tombstone, so skip building a view for it (a later revision revives
+            // it). Mirrors [`list_longform`] dropping deleted notes.
+            if canvas.deleted {
+                continue;
+            }
             // A node/overlay/edge is *surfaced* if the canvas is open, or its
             // author is the owner or a listed member. Strangers can still append;
             // their contributions just sit in `pending` until promoted.
@@ -1279,6 +1350,151 @@ pub fn list_longform(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<Longf
     notes
 }
 
+// ---------------------------------------------------------------------------
+// Vault: the unified note+canvas document projection
+// ---------------------------------------------------------------------------
+
+/// The kind of a vault document: a longform note or a canvas. The discriminant a
+/// mixed vault row renders as, and that `open` dispatches on. Canvas *nodes* are
+/// elements *inside* a canvas, not vault documents, so there is no `Node` variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VaultDocKind {
+    Note,
+    Canvas,
+}
+
+/// A vault document: an openable, addressable top-level item — a longform note
+/// (kind 30023) or a canvas (kind 31606) — projected to the one shape a mixed
+/// list/open surface needs. Both are addressable with a `d`, a title tag, and a
+/// coordinate `<kind>:<author>:<d>`; that common shape is all a listing renders.
+///
+/// This is a *view* over the two existing stores, **not** a nostr event:
+/// [`list_vault`] builds it from [`list_longform`] and [`list_canvases`], and the
+/// CLI vault listing and the app sidebar both render it, dispatching open on
+/// [`kind`](VaultDoc::kind).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultDoc {
+    /// Note vs canvas — the row's type, which the open action dispatches on.
+    pub kind: VaultDocKind,
+    /// The document's author (its owner).
+    pub author: Pubkey,
+    /// The stable addressable id: a note's `d`, or a canvas's `d` (canvas id).
+    pub d: String,
+    /// The title tag; may be empty (a fresh draft) — the renderer supplies the
+    /// "Untitled" fallback, as the CLI's note listing does.
+    pub title: String,
+    /// `created_at` of the winning revision, for newest-edited-first sorting.
+    pub edited_at: u64,
+}
+
+/// List all of `author`'s canvases as vault documents — the current (latest-wins)
+/// revision of each, with deleted canvases already dropped by
+/// [`CanvasReducer::finalize`]. The canvas half of [`list_vault`]; parallels
+/// [`list_longform`] for notes. Folds the canvas events once and projects each
+/// surfaced [`CanvasView`] (title + `created_at`) to a [`VaultDoc`]. Empty if the
+/// account has no canvas events yet.
+pub fn list_canvases(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<VaultDoc> {
+    fold_canvas(ndb, txn, author)
+        .map(|reducer| reducer.finalize())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| VaultDoc {
+            kind: VaultDocKind::Canvas,
+            author: Pubkey::new(c.author),
+            d: c.id,
+            title: c.title,
+            edited_at: c.created_at,
+        })
+        .collect()
+}
+
+/// The whole vault: `author`'s longform notes and canvases as one typed list,
+/// newest-edited first. Merges [`list_longform`] with [`list_canvases`] and applies
+/// the same deterministic `(edited_at desc, title, d)` tiebreak [`list_longform`]
+/// uses, so a same-second batch never falls back to nostrdb's ingest order (which
+/// shuffles run-to-run). This is the projection the CLI vault listing and the app
+/// vault sidebar both render.
+pub fn list_vault(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<VaultDoc> {
+    let mut docs: Vec<VaultDoc> = list_longform(ndb, txn, author)
+        .into_iter()
+        .map(|n| VaultDoc {
+            kind: VaultDocKind::Note,
+            author: Pubkey::new(n.author),
+            d: n.d,
+            title: n.title,
+            edited_at: n.created_at,
+        })
+        .collect();
+    docs.extend(list_canvases(ndb, txn, author));
+    docs.sort_by(|a, b| {
+        b.edited_at
+            .cmp(&a.edited_at)
+            .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.d.cmp(&b.d))
+    });
+    docs
+}
+
+/// What a `notebook:<word-id>` reference resolves to across the whole notebook: a
+/// vault document (note or canvas, addressed by its stable coordinate) or a canvas
+/// node (addressed by its immutable creation event id). The output of the one
+/// unified [`resolve_ref`] resolver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotebookTarget {
+    /// A longform note, by its `(author, d)` coordinate.
+    Note { author: Pubkey, d: String },
+    /// A canvas document, by its `(author, canvas-id)` coordinate.
+    Canvas { author: Pubkey, d: String },
+    /// A canvas node, by its immutable creation event id.
+    Node { id: NoteId },
+}
+
+/// Resolve a bare `word_id` — the trailing word-id of a `notebook:<word-id>`
+/// reference, its scheme already stripped by [`crate::wordid::parse_ref`] — to what
+/// it names across the whole notebook. This is the *one* resolver that replaces the
+/// two context-specific matchers today (the CLI's node vs. note lookups; the inline
+/// parser's node-only resolve); wiring those callers onto it is a follow-on.
+///
+/// word-ids are lossy 33-bit fingerprints, so resolution re-encodes each candidate's
+/// canonical string and compares — it never tries to decode the fingerprint back.
+/// Documents are matched **first** (a note by its `30023:<author>:<d>` coordinate,
+/// then a canvas by its `31606:<author>:<d>` coordinate) and only then nodes (by
+/// creation event id, pending nodes included, mirroring the inline parser and the
+/// CLI's `find_node`). This fixed order makes the ~1-in-8.5e9 cross-type fingerprint
+/// collision deterministic rather than ingest-order dependent — jb55's flat-namespace
+/// call. `None` if nothing matches.
+pub fn resolve_ref(
+    word_id: &str,
+    canvases: &[CanvasView],
+    notes: &[LongformNote],
+) -> Option<NotebookTarget> {
+    // Documents first: note coordinate, then canvas coordinate.
+    if let Some(note) = notes.iter().find(|n| {
+        crate::wordid::encode_str(&longform_address(&Pubkey::new(n.author), &n.d)) == word_id
+    }) {
+        return Some(NotebookTarget::Note {
+            author: Pubkey::new(note.author),
+            d: note.d.clone(),
+        });
+    }
+
+    if let Some(canvas) = canvases.iter().find(|c| {
+        crate::wordid::encode_str(&canvas_address(&Pubkey::new(c.author), &c.id)) == word_id
+    }) {
+        return Some(NotebookTarget::Canvas {
+            author: Pubkey::new(canvas.author),
+            d: canvas.id.clone(),
+        });
+    }
+
+    // Then nodes, by immutable creation event id.
+    canvases
+        .iter()
+        .flat_map(|c| c.nodes.iter().chain(c.pending.iter()))
+        .find(|n| crate::wordid::encode(n.id.bytes()) == word_id)
+        .map(|n| NotebookTarget::Node { id: n.id })
+}
+
 /// Whether `kind` is one of the notebook's addressable (latest-wins, keyed per
 /// `(kind, d-tag)`) kinds. Everything but the immutable node-creation event is
 /// addressable. Used by the CLI sync to push only the winning revision of each
@@ -1442,6 +1658,45 @@ mod tests {
         assert!(c.open);
         assert_eq!(c.members, vec![*member.pubkey.bytes()]);
         assert_eq!(c.author, *owner.pubkey.bytes());
+        // A normal canvas revision is not a tombstone.
+        assert!(!c.deleted);
+    }
+
+    #[test]
+    fn canvas_tombstone_parses_as_deleted() {
+        let author = FullKeypair::generate();
+        let NotebookEvent::Canvas(c) = parse_signed(build_canvas_tombstone("c1"), &author) else {
+            panic!("expected canvas");
+        };
+        // Keeps the `d` (so it supersedes that canvas) but is flagged deleted and
+        // carries no title/members — the reducer drops it rather than surfacing it.
+        assert_eq!(c.id, "c1");
+        assert!(c.deleted);
+        assert!(c.title.is_empty());
+        assert!(c.members.is_empty());
+    }
+
+    #[test]
+    fn reduce_drops_deleted_canvas() {
+        let author = FullKeypair::generate();
+        let keep = parse_signed(
+            build_canvas("keep", "Keep", &[], false).created_at(100),
+            &author,
+        );
+        let gone = parse_signed(
+            build_canvas("gone", "Gone", &[], false).created_at(100),
+            &author,
+        );
+        // A later revision of `gone` is a tombstone: latest-wins makes it the
+        // winning revision, so finalize drops that canvas from the vault while the
+        // untouched sibling survives.
+        let tomb = parse_signed(build_canvas_tombstone("gone").created_at(101), &author);
+
+        let ids: Vec<String> = reduce(&[keep, gone, tomb])
+            .into_iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(ids, ["keep"]);
     }
 
     #[test]
@@ -1508,6 +1763,110 @@ mod tests {
         assert_eq!(r, longform_ref(&author, "abcdef0123456789"));
         // The coordinate — not the changing event id — is what's encoded, so the
         // ref is independent of any particular revision's note.
+    }
+
+    #[test]
+    fn canvas_naddr_round_trips_through_parse() {
+        let author = FullKeypair::generate().pubkey;
+        let d = "abcdef0123456789";
+
+        // The naddr a canvas embed carries decodes back to the same coordinate.
+        let naddr = canvas_naddr(&author, d).expect("naddr encodes");
+        assert_eq!(parse_canvas_naddr(&naddr), Some((author, d.to_string())));
+
+        // So does the bare `31606:<author>:<d>` coordinate form.
+        let coord = canvas_address(&author, d);
+        assert_eq!(parse_canvas_naddr(&coord), Some((author, d.to_string())));
+
+        // A longform coordinate (kind 30023) is rejected — not a canvas.
+        assert_eq!(parse_canvas_naddr(&longform_address(&author, d)), None);
+        // A bare word-id is not a coordinate.
+        assert_eq!(parse_canvas_naddr("maple-river-canyon"), None);
+    }
+
+    #[test]
+    fn canvas_ref_is_stable_and_scheme_prefixed() {
+        let author = FullKeypair::generate().pubkey;
+        // Scheme-prefixed and deterministic for a given (author, canvas-id).
+        let r = canvas_ref(&author, "abcdef0123456789");
+        assert!(r.starts_with("notebook:"), "ref carries the scheme: {r}");
+        assert_eq!(r, canvas_ref(&author, "abcdef0123456789"));
+        // A canvas and a note with the *same* d get distinct refs — the encoded
+        // coordinate embeds the kind, so the flat namespace still separates them.
+        assert_ne!(
+            canvas_ref(&author, "abcdef0123456789"),
+            longform_ref(&author, "abcdef0123456789")
+        );
+    }
+
+    #[test]
+    fn resolve_ref_matches_documents_before_nodes() {
+        let author = FullKeypair::generate();
+        let pk = author.pubkey;
+        let addr = canvas_address(&pk, "cv");
+
+        // A canvas holding one node, folded to a CanvasView. The node id is the
+        // creation event's id, so build the same event twice: once to learn the id,
+        // once to fold. An open canvas surfaces the owner's node.
+        let node = node_id(
+            &author,
+            build_node(&addr, NodeKind::Text, &GEO, &text("hi")),
+        );
+        let canvas = parse_signed(build_canvas("cv", "Sketch", &[], true), &author);
+        let node_ev = parse_signed(
+            build_node(&addr, NodeKind::Text, &GEO, &text("hi")),
+            &author,
+        );
+        let canvases = reduce(&[canvas, node_ev]);
+        assert_eq!(canvases.len(), 1);
+        assert_eq!(canvases[0].nodes.len(), 1);
+        // The folded node id equals the standalone-built one (same signed event).
+        assert_eq!(canvases[0].nodes[0].id, node);
+
+        // A standalone longform note.
+        let note = parse_longform(
+            &build_longform(
+                "note-1",
+                &LongformInput {
+                    title: "Doc".to_string(),
+                    ..Default::default()
+                },
+            )
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("build longform"),
+        )
+        .expect("parse longform");
+        let notes = vec![note];
+
+        // Each document resolves to its typed target by its coordinate word-id.
+        let note_ref = longform_ref(&pk, "note-1");
+        let note_words = crate::wordid::parse_ref(&note_ref).unwrap();
+        assert_eq!(
+            resolve_ref(note_words, &canvases, &notes),
+            Some(NotebookTarget::Note {
+                author: pk,
+                d: "note-1".to_string()
+            })
+        );
+        let canvas_ref_str = canvas_ref(&pk, "cv");
+        let canvas_words = crate::wordid::parse_ref(&canvas_ref_str).unwrap();
+        assert_eq!(
+            resolve_ref(canvas_words, &canvases, &notes),
+            Some(NotebookTarget::Canvas {
+                author: pk,
+                d: "cv".to_string()
+            })
+        );
+        // The node resolves to its immutable creation event id.
+        let node_words = wordid::encode(node.bytes());
+        assert_eq!(
+            resolve_ref(&node_words, &canvases, &notes),
+            Some(NotebookTarget::Node { id: node })
+        );
+
+        // An unknown word-id matches nothing.
+        assert_eq!(resolve_ref("maple-river-canyon", &canvases, &notes), None);
     }
 
     #[test]

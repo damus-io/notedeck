@@ -58,6 +58,26 @@ fn resolve_open_target(ndb: &Ndb, note_id: NoteId) -> Option<NotebookOpenTarget>
     })
 }
 
+/// Choose which canvas the foreground shows from the account's folded `canvases`,
+/// updating `active` to the chosen `d` and returning that canvas. Keeps the
+/// currently-active canvas while it still exists; otherwise adopts the newest one
+/// (by `created_at`, `d` as a deterministic tiebreak) so a not-yet-chosen or
+/// just-deleted active canvas falls back to a real surface. `None` when the
+/// account has no canvases — the caller then seeds one. Since the reducer folds a
+/// single author, every entry is one of `author`'s own canvases.
+fn select_active(canvases: &[CanvasView], active: &mut Option<String>) -> Option<CanvasView> {
+    if let Some(id) = active.as_deref()
+        && let Some(view) = canvases.iter().find(|c| c.id == id)
+    {
+        return Some(view.clone());
+    }
+    let newest = canvases
+        .iter()
+        .max_by(|a, b| (a.created_at, a.id.as_str()).cmp(&(b.created_at, b.id.as_str())))?;
+    *active = Some(newest.id.clone());
+    Some(newest.clone())
+}
+
 /// A node's in-progress geometry override during a live drag or resize. Each
 /// axis is independently optional: a plain body drag sets only [`pos`]; a resize
 /// sets whichever of [`pos`]/[`width`]/[`height`] its handle controls. Held in
@@ -86,8 +106,13 @@ pub(crate) struct LiveGeometry {
 /// that same realtime state. Every edit is turned into a signed event ingested
 /// locally (see [`store`]) and fanned out to the account's private relays.
 pub struct Notebook {
-    /// Which canvas this instance manages (single canvas for now).
-    canvas_id: String,
+    /// The `d` of the canvas the foreground is showing, or `None` before the first
+    /// fold picks one. No longer a hard-coded id: the account may hold many
+    /// canvases (each a minted opaque `d`), and [`select_active`] chooses which one
+    /// is the background surface — keeping this one while it exists, else adopting
+    /// the newest. Seeded fresh (a minted `d` via [`store::create_canvas`]) when the
+    /// account has zero canvases.
+    active_canvas: Option<String>,
     /// The one canvas-data engine (see [`NotebookCache`]): the account's folded
     /// canvas reducer behind a per-frame-pumped [`notedeck::RealtimeCache`], shared
     /// (behind `Rc<RefCell<…>>`) with the inline widgets this app registers so a
@@ -98,10 +123,10 @@ pub struct Notebook {
     /// never fold into a canvas (see [`event::KIND_LONGFORM`]); only the foreground
     /// reads the vault, so — unlike the canvas cache — it isn't shared out.
     vault_sync: VaultSync,
-    /// The active canvas ([`canvas_id`](Self::canvas_id)) projected from
+    /// The active canvas ([`active_canvas`](Self::active_canvas)) projected from
     /// [`cache`](Self::cache) on the last change — the [`CanvasView`] the foreground
     /// render and edit path read without re-folding. `None` until the first fold,
-    /// or when no canvas with this id exists yet.
+    /// or when the account has no canvas yet.
     view: Option<CanvasView>,
     /// Inbound cross-device sync: declares a live + full-history subscription to
     /// the account's private relays each frame, and resolves the outbound
@@ -408,8 +433,8 @@ impl Notebook {
             self.pending_open = None;
             return;
         };
-        if target.canvas_id != self.canvas_id {
-            // A node on a canvas this instance doesn't manage. TODO: multi-canvas
+        if Some(&target.canvas_id) != self.active_canvas.as_ref() {
+            // A node on a canvas that isn't the active one. TODO: multi-canvas
             // switching — for now there's nowhere to focus it, so drop the request.
             self.pending_open = None;
             return;
@@ -498,6 +523,13 @@ impl Notebook {
     /// Exposed for tests/introspection.
     pub fn canvas(&self) -> &JsonCanvas {
         &self.canvas
+    }
+
+    /// The `d` of the active (foreground) canvas, or `None` before the first fold
+    /// has picked or seeded one. Exposed for tests/introspection — e.g. to seed a
+    /// node onto whichever canvas the app auto-seeded (see [`select_active`]).
+    pub fn active_canvas(&self) -> Option<&str> {
+        self.active_canvas.as_deref()
     }
 
     /// The visible region of the canvas in canvas coordinates — what the Scene
@@ -860,7 +892,7 @@ impl Notebook {
 impl Default for Notebook {
     fn default() -> Self {
         Notebook {
-            canvas_id: store::CANVAS_ID.to_string(),
+            active_canvas: None,
             cache: Rc::new(RefCell::new(NotebookCache::default())),
             vault_sync: VaultSync::default(),
             view: None,
@@ -956,7 +988,13 @@ impl notedeck::App for Notebook {
                 let mut cache = self.cache.borrow_mut();
                 let poll = cache.poll(ctx.ndb, &txn, &author);
                 if poll.changed {
-                    self.view = cache.canvas(ctx.ndb, &txn, &author, &self.canvas_id);
+                    // Re-project the active canvas, adopting the newest one when none
+                    // is chosen yet or the chosen one just vanished (e.g. a delete).
+                    self.view = cache
+                        .with_canvases(ctx.ndb, &txn, &author, |canvases| {
+                            select_active(canvases, &mut self.active_canvas)
+                        })
+                        .flatten();
                 }
                 poll
             })
@@ -991,21 +1029,20 @@ impl notedeck::App for Notebook {
             fan_out_unseen_notes(&mut api, ctx.ndb, &txn, &poll.fresh, &private_relays);
         }
 
-        // No canvas yet: auto-seed one for an account that can sign. The seeded
-        // events fan out via the same poll path on a following frame. (The UI
-        // feedback for this state is drawn in `render`.)
+        // No canvas yet: auto-seed one for an account that can sign, minting a fresh
+        // opaque `d` and adopting it as the active canvas — no well-known default id.
+        // The seeded event fans out via the same poll path on a following frame, and
+        // `select_active` keeps this id once it folds in. (The UI feedback for this
+        // state is drawn in `render`.)
         if self.view.is_none()
             && let Some(secret) = &signer
             && !self.seeded
         {
-            store::seed_canvas(
-                ctx.ndb,
-                &author,
-                secret,
-                &self.canvas_id,
-                "Notebook",
-                &mut store::NoPublish,
-            );
+            if let Some((d, _)) =
+                store::create_canvas(ctx.ndb, &author, secret, "Notebook", &mut store::NoPublish)
+            {
+                self.active_canvas = Some(d);
+            }
             self.seeded = true;
             self.wake();
         }
@@ -1133,7 +1170,7 @@ impl notedeck::App for Notebook {
             let view = self.view.as_ref().expect("view present");
             store::apply(
                 ctx.ndb,
-                &self.canvas_id,
+                &view.id,
                 view,
                 &author,
                 secret,

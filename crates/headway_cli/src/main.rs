@@ -98,6 +98,17 @@ enum Command {
         card: String,
         parent: Option<String>,
     },
+    /// Record that `card` is blocked by `on` (a dependency edge, independent of
+    /// the parent axis and allowed to cross boards).
+    Block {
+        card: String,
+        on: String,
+    },
+    /// Remove the `card`-blocked-by-`on` dependency edge.
+    Unblock {
+        card: String,
+        on: String,
+    },
     /// Print what to work on next: walk a container's work-order and show the
     /// ready frontier (see [`traversal`]). A read command — it never signs.
     Next {
@@ -211,6 +222,10 @@ impl Command {
             Command::Parent { card, parent } => {
                 selectors.push(card);
                 selectors.extend(parent.as_deref());
+            }
+            Command::Block { card, on } | Command::Unblock { card, on } => {
+                selectors.push(card);
+                selectors.push(on);
             }
             Command::Seq {
                 card,
@@ -595,6 +610,14 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
                 .map(|sel| resolve_card(view, sel))
                 .transpose()?,
         },
+        Command::Block { card, on } => BoardAction::Block {
+            card: resolve_card(view, &card)?,
+            on: resolve_card(view, &on)?,
+        },
+        Command::Unblock { card, on } => BoardAction::Unblock {
+            card: resolve_card(view, &card)?,
+            on: resolve_card(view, &on)?,
+        },
         Command::Seq {
             card,
             spec,
@@ -804,7 +827,8 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         println!("\n{} ({})", col.name, col.cards.len());
         for c in &col.cards {
             println!(
-                "  {}{}{}{}  {}",
+                "  {}{}{}{}{}  {}",
+                blocked_prefix(c),
                 priority_prefix(c.priority),
                 c.title,
                 progress_suffix(c),
@@ -1016,6 +1040,9 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
         }
     }
 
+    print_edges(view, "blocked by", &card.blocked_by);
+    print_edges(view, "blocks", &card.blocks);
+
     if !card.comments.is_empty() {
         println!("\ncomments ({})", card.comments.len());
         for c in &card.comments {
@@ -1098,6 +1125,30 @@ fn progress_suffix(card: &CardView) -> String {
     )
 }
 
+/// Print a card-detail dependency section (`blocked by:` / `blocks:`) — one line
+/// per edge, an `x` marking a cleared (done/archived) blocker so an open one
+/// stands out. Nothing is printed when there are no edges.
+fn print_edges(view: &BoardView, label: &str, edges: &[headway::event::EdgeRef]) {
+    if edges.is_empty() {
+        return;
+    }
+    println!("\n{label} ({})", edges.len());
+    for e in edges {
+        let mark = if e.done { "x" } else { " " };
+        println!("    [{mark}] {}  {}", e.title, card_ref(view, &e.id));
+    }
+}
+
+/// A dim ⊘ glyph flagging a card as blocked (held back by an unfinished blocker)
+/// on the board listing; empty when the card is free to work on.
+fn blocked_prefix(card: &CardView) -> String {
+    if card.is_blocked() {
+        nostrdb_net::relay::sync::dim("⊘ ")
+    } else {
+        String::new()
+    }
+}
+
 /// A card's human-friendly reference: `headway:<board>/<word-id>`, e.g.
 /// `headway:dave/maple-river-canyon` — a URI scheme so it reads as a reference
 /// inline (`Fixes: headway:dave/maple-river-canyon`) and in chat, survives
@@ -1157,6 +1208,7 @@ impl Cli {
         let mut to = None;
         let mut reply_to = None;
         let mut parent = None;
+        let mut on = None;
         let mut labels: Vec<String> = Vec::new();
         let mut seq = SeqFlags::default();
         // `next` flags.
@@ -1182,6 +1234,7 @@ impl Cli {
                 "--to" => to = Some(value("--to")?),
                 "--reply-to" => reply_to = Some(value("--reply-to")?),
                 "--parent" => parent = Some(value("--parent")?),
+                "--on" => on = Some(value("--on")?),
                 "--after" => seq.after = Some(value("--after")?),
                 "--before" => seq.before = Some(value("--before")?),
                 "--first" => seq.first = true,
@@ -1223,7 +1276,7 @@ impl Cli {
             return Ok(None);
         };
         let command = parse_command(
-            name, rest, col, row, to, reply_to, parent, labels, seq, ready, count,
+            name, rest, col, row, to, reply_to, parent, on, labels, seq, ready, count,
         )?;
 
         // A card selector like `headway:commerce/purse-metal-toilet` already names
@@ -1290,6 +1343,7 @@ fn parse_command(
     to: Option<String>,
     reply_to: Option<String>,
     parent: Option<String>,
+    on: Option<String>,
     labels: Vec<String>,
     seq: SeqFlags,
     ready: bool,
@@ -1351,6 +1405,20 @@ fn parse_command(
         "parent" => Command::Parent {
             card: card()?,
             parent: rest.get(1).cloned(),
+        },
+        // `block <card> --on <blocker>`; the blocker may also be a second
+        // positional so `block <card> <blocker>` works too.
+        "block" => Command::Block {
+            card: card()?,
+            on: on
+                .or_else(|| rest.get(1).cloned())
+                .ok_or("block needs --on <card>")?,
+        },
+        "unblock" => Command::Unblock {
+            card: card()?,
+            on: on
+                .or_else(|| rest.get(1).cloned())
+                .ok_or("unblock needs --on <card>")?,
         },
         "comment" => Command::Comment {
             card: card()?,
@@ -1431,6 +1499,9 @@ COMMANDS:
                                persisted current board).
     parent <card> [parent]     Make a card a subissue of [parent] (omit to
                                detach)
+    block <card> --on <b>      Mark <card> as blocked by <b> (a dependency edge,
+                               may cross boards; cycles are refused)
+    unblock <card> --on <b>    Remove the <card>-blocked-by-<b> edge
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
                                another comment)
     delete <card>              Remove a card (reversible tombstone)
@@ -1465,6 +1536,7 @@ OPTIONS:
     --to <board>      Target board for `link`/`move-board`
     --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
     --parent <card>   Parent card for `add` (created as its subissue)
+    --on <card>       Blocker card for `block`/`unblock`
     --in <c>          Container for `seq`/`next` (card ref or board slug)
     --ready           Print the whole ready set for `next` (not just the first)
     -n, --count <k>   Cap how many cards `next` prints

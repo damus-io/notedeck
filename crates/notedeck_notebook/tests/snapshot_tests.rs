@@ -672,26 +672,30 @@ fn seed_ref_node(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
+    canvas_id: &str,
     title: &str,
 ) -> notedeck::enostr::NoteId {
-    seed_ref_node_at(ndb, author, secret, title, 40, 40)
+    seed_ref_node_at(ndb, author, secret, canvas_id, title, 40, 40)
 }
 
 /// Like [`seed_ref_node`] but places the node at canvas position `(x, y)`, so a
-/// test can seed a node deliberately outside the initial viewport.
+/// test can seed a node deliberately outside the initial viewport. The node is
+/// attached to canvas `canvas_id` — pass the app's active canvas so it lands on
+/// the foreground surface (the app mints its own canvas `d` on first run).
 fn seed_ref_node_at(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
+    canvas_id: &str,
     title: &str,
     x: i64,
     y: i64,
 ) -> notedeck::enostr::NoteId {
-    let addr = canvas_address(author, CANVAS_ID);
+    let addr = canvas_address(author, canvas_id);
     let mut publisher = NoPublish;
     ingest(
         ndb,
-        build_canvas(CANVAS_ID, "Planning", &[], false),
+        build_canvas(canvas_id, "Planning", &[], false),
         secret,
         &mut publisher,
     );
@@ -715,7 +719,7 @@ fn seed_ref_node_at(
     let z = event::rank_between(None, None);
     ingest(
         ndb,
-        build_transform(CANVAS_ID, &addr, &id, &geo, &z, None),
+        build_transform(canvas_id, &addr, &id, &geo, &z, None),
         secret,
         &mut publisher,
     );
@@ -738,9 +742,15 @@ fn snapshot_notebook_reference_chip() {
     let author = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     let title = "Q3 planning canvas node";
+    let canvas_id = harness
+        .state()
+        .notebook
+        .active_canvas()
+        .expect("the app auto-seeded a canvas during warmup")
+        .to_string();
     let node_ref = {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        let id = seed_ref_node(app_ctx.ndb, &author, &secret, title);
+        let id = seed_ref_node(app_ctx.ndb, &author, &secret, &canvas_id, title);
         wordid::node_ref(id.bytes())
     };
     harness.state_mut().ref_surface = Some(format!(
@@ -781,10 +791,27 @@ fn open_pans_the_canvas_to_an_offscreen_node() {
     let ctx = harness.ctx.clone();
 
     // Seed a node far outside the initial viewport (which loads at the origin,
-    // ~820x500). `open` takes the kind-1606 note id the seed returns.
+    // ~820x500) onto the app's active canvas — the one it auto-seeded during
+    // warmup — so the node lands on the foreground surface rather than a sibling
+    // canvas the app isn't showing. `open` takes the kind-1606 note id the seed
+    // returns.
+    let canvas_id = harness
+        .state()
+        .notebook
+        .active_canvas()
+        .expect("the app auto-seeded a canvas during warmup")
+        .to_string();
     let node_note = {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
-        seed_ref_node_at(app_ctx.ndb, &author, &secret, "Far away node", 4000, 4000)
+        seed_ref_node_at(
+            app_ctx.ndb,
+            &author,
+            &secret,
+            &canvas_id,
+            "Far away node",
+            4000,
+            4000,
+        )
     };
     // The canvas keys nodes by the hex of their creation event id.
     let jc_id: jsoncanvas::NodeId = node_note.hex().parse().expect("node id");

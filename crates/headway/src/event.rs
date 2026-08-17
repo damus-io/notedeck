@@ -15,6 +15,7 @@
 //! | placement         | `30620` | addressable; `col` + fractional `rank`     |
 //! | relation          | `30621` | addressable; `d` = child, `parent` tag     |
 //! | sequence          | `30622` | addressable; `d` = `<container>:<issue>`   |
+//! | blockers          | `30624` | addressable; `d` = blocked, `blocked-by` tags |
 //!
 //! Effective state is resolved as **latest-authorised-wins** for every overlay
 //! (placement, subject, cover note, and labels — each label event carries the
@@ -69,6 +70,15 @@ pub const KIND_BOARD_PREF: u32 = 30623;
 /// The fixed `d` tag on every [`KIND_BOARD_PREF`] note: one preference slot per
 /// account, superseded latest-wins on each board switch.
 const BOARD_PREF_D: &str = "selected-board";
+
+/// Headway card blockers: addressable, `d` = the blocked issue id, carrying zero
+/// or more `blocked-by` tags each naming a blocker's issue event id. The set is a
+/// snapshot (like labels), so the newest authorised event is the card's complete
+/// blocker set — republishing without a blocker removes it. A directed
+/// dependency edge distinct from the parent/subissue axis ([`KIND_RELATION`]): a
+/// card may have both. The blockers reference event ids, so they may point at
+/// cards on other boards. See `headway:headway/goat-couple-flush`.
+pub const KIND_BLOCKERS: u32 = 30624;
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
@@ -407,6 +417,31 @@ pub fn board_pref_created_at(ndb: &Ndb, author: &Pubkey) -> u64 {
         .unwrap_or(0)
 }
 
+/// The `author`'s current [`BlockerSet`] for the card `blocked`, read straight
+/// from `ndb`, or `None` when it has none. Editing a blocker set rebuilds from
+/// this *raw* set rather than the folded [`CardView::blocked_by`], which drops
+/// edges the fold couldn't resolve (e.g. a cross-board blocker) — reconstructing
+/// from the resolved view would silently discard them. The returned
+/// [`BlockerSet::created_at`] is the supersede baseline the next write stamps
+/// strictly past (see [`crate::store`]). Mirrors [`board_pref_created_at`].
+pub fn current_blockers(ndb: &Ndb, author: &Pubkey, blocked: &NoteId) -> Option<BlockerSet> {
+    let txn = Transaction::new(ndb).ok()?;
+    // Keyed by the `#e` id-tag, not `#d`: the blocked card's id is 64-char hex, so
+    // nostrdb stores that `d` value as a 32-byte id rather than a string — a
+    // string `#d` filter silently matches nothing (the same trap as `#e`/`#p`).
+    // build_blockers carries the same id as an `e` tag, so `.events` reaches it.
+    let filter = Filter::new()
+        .kinds([KIND_BLOCKERS as u64])
+        .authors([author.bytes()])
+        .events(std::iter::once(blocked.bytes()))
+        .limit(1)
+        .build();
+    // nostrdb returns replaceable revisions newest-first, so the first match is
+    // the winning (latest) set — the same read as [`board_pref_created_at`].
+    let note = ndb.query(&txn, &[filter], 1).ok()?.into_iter().next()?.note;
+    parse_blockers(&note)
+}
+
 /// Build a card (NIP-34 issue, kind 1621) anchored to `board_addr`. The body is
 /// the event content; `subject` is the initial title.
 pub fn build_issue<'a>(board_addr: &str, subject: &str, body: &'a str) -> NoteBuilder<'a> {
@@ -535,6 +570,27 @@ pub fn build_relation<'a>(child: &NoteId, parent: Option<&NoteId>) -> NoteBuilde
 
     if let Some(parent) = parent {
         b = b.start_tag().tag_str("parent").tag_id(parent.bytes());
+    }
+
+    b
+}
+
+/// Build a blockers event (kind 30624) recording the complete set of cards
+/// `blocked` is blocked by, one `blocked-by` tag per blocker. Addressable on the
+/// blocked card (`d` = its id), so the newest authorised set wins — passing an
+/// empty `blockers` clears every dependency. The `e` tag mirrors `d` so the
+/// card-anchored fan-out ([`card_meta_filter`]) can reach it by the blocked card.
+pub fn build_blockers<'a>(blocked: &NoteId, blockers: &[NoteId]) -> NoteBuilder<'a> {
+    let mut b = base(KIND_BLOCKERS, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(&blocked.hex())
+        .start_tag()
+        .tag_str("e")
+        .tag_id(blocked.bytes());
+
+    for blocker in blockers {
+        b = b.start_tag().tag_str("blocked-by").tag_id(blocker.bytes());
     }
 
     b
@@ -765,6 +821,19 @@ pub struct RelationEvent {
     pub created_at: u64,
 }
 
+/// A card's dependency set: the cards it is *blocked by*. The addressable slot is
+/// keyed on the blocked card (`blocked_id`), and `blockers` is the complete set
+/// (snapshot semantics like [`LabelSet`]). See [`build_blockers`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BlockerSet {
+    pub author: [u8; 32],
+    /// The card these blockers hold back (the addressable `d` slot).
+    pub blocked_id: [u8; 32],
+    /// The blocker card ids, in the order the event listed them.
+    pub blockers: Vec<[u8; 32]>,
+    pub created_at: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentEvent {
     pub id: [u8; 32],
@@ -791,6 +860,7 @@ pub enum HeadwayEvent {
     Comment(CommentEvent),
     Relation(RelationEvent),
     Sequence(SequenceEvent),
+    Blockers(BlockerSet),
 }
 
 /// Parse a note into a [`HeadwayEvent`], or `None` if it isn't a recognised /
@@ -805,6 +875,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_COMMENT => parse_comment(note).map(HeadwayEvent::Comment),
         KIND_RELATION => parse_relation(note).map(HeadwayEvent::Relation),
         KIND_SEQUENCE => parse_sequence(note).map(HeadwayEvent::Sequence),
+        KIND_BLOCKERS => parse_blockers(note).map(HeadwayEvent::Blockers),
         _ => None,
     }
 }
@@ -1034,6 +1105,35 @@ fn parse_relation(note: &Note) -> Option<RelationEvent> {
     })
 }
 
+/// Parse a blockers set (kind 30624). The blocked card is the `e` tag; each
+/// `blocked-by` tag names one blocker's event id. A blockers event with no
+/// `blocked-by` tags is a cleared set, not malformed. See [`build_blockers`].
+fn parse_blockers(note: &Note) -> Option<BlockerSet> {
+    let mut blocked_id = None;
+    let mut blockers = Vec::new();
+
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            Some("e") => blocked_id = tag.get_id(1).copied(),
+            // `blocked-by` values are 32-byte event ids, so they read via
+            // `get_id`, not `get_str` (id tags are stored as raw bytes).
+            Some("blocked-by") => {
+                if let Some(id) = tag.get_id(1) {
+                    blockers.push(*id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(BlockerSet {
+        author: *note.pubkey(),
+        blocked_id: blocked_id?,
+        blockers,
+        created_at: note.created_at(),
+    })
+}
+
 fn parse_sequence(note: &Note) -> Option<SequenceEvent> {
     let mut issue_id = None;
     let mut container = None;
@@ -1157,6 +1257,20 @@ pub struct SubissueView {
     pub seq: Option<String>,
 }
 
+/// A dependency edge resolved for display: the other card's id, resolved title,
+/// and whether it is *cleared*. For a card's `blocked_by` edges, `done` means the
+/// blocker sits in its board's last column (or is archived everywhere) — the same
+/// positional doneness as a subissue. Symmetric for the reverse `blocks` edges,
+/// where `done` reflects the blocked card. See [`CardView::blocked_by`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EdgeRef {
+    pub id: NoteId,
+    pub title: String,
+    /// The referenced card is cleared (done or archived), so it no longer holds
+    /// work back.
+    pub done: bool,
+}
+
 /// A card as rendered: a stable id plus its resolved fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CardView {
@@ -1206,6 +1320,23 @@ pub struct CardView {
     /// Direct subissues in work-order: sequenced children first (by `seq` rank),
     /// then unsequenced ones by `(created_at, id)`. See [`SubissueView::seq`].
     pub subissues: Vec<SubissueView>,
+    /// Cards this one is *blocked by* — its dependency edges (authorised
+    /// [`BlockerSet`]). Orthogonal to [`parent`](CardView::parent): a card can be
+    /// both a subissue and blocked. Each edge carries the blocker's cleared state,
+    /// so [`is_blocked`](CardView::is_blocked) needs no further lookup.
+    pub blocked_by: Vec<EdgeRef>,
+    /// The reverse edges: cards that name this one as a blocker. Only those the
+    /// reducer has folded (same or, cross-board, another folded board) appear.
+    pub blocks: Vec<EdgeRef>,
+}
+
+impl CardView {
+    /// Is this card held back by at least one unfinished blocker? The write path
+    /// keeps the [`BlockerSet`] free of cycles, and the reducer resolves each
+    /// blocker's doneness, so this is a pure read over [`blocked_by`](Self::blocked_by).
+    pub fn is_blocked(&self) -> bool {
+        self.blocked_by.iter().any(|b| !b.done)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1295,6 +1426,9 @@ pub fn card_json(board: &str, card: &CardView) -> serde_json::Value {
         "updated_at": card.updated_at,
         "parent": card.parent.map(|p| p.hex()),
         "parent_ref": card.parent.map(|p| crate::wordid::card_ref(board, p.bytes())),
+        "blocked": card.is_blocked(),
+        "blocked_by": card.blocked_by.iter().map(|e| edge_json(board, e)).collect::<Vec<_>>(),
+        "blocks": card.blocks.iter().map(|e| edge_json(board, e)).collect::<Vec<_>>(),
         "subissues": card.subissues.iter().map(|s| serde_json::json!({
             "id": s.id.hex(),
             "ref": crate::wordid::card_ref(board, s.id.bytes()),
@@ -1306,6 +1440,18 @@ pub fn card_json(board: &str, card: &CardView) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "comments": card.comments.iter().map(|c| comment_json(board, c)).collect::<Vec<_>>(),
         "activity": card.activity.iter().map(|a| activity_json(board, a)).collect::<Vec<_>>(),
+    })
+}
+
+/// Render a dependency edge (`blocked_by` / `blocks`) on `board` as JSON: the
+/// referenced card's id, ref, resolved title, and cleared state. The `ref` shares
+/// `board` — like `parent_ref`, cross-board edges aren't re-homed. See [`EdgeRef`].
+fn edge_json(board: &str, edge: &EdgeRef) -> serde_json::Value {
+    serde_json::json!({
+        "id": edge.id.hex(),
+        "ref": crate::wordid::card_ref(board, edge.id.bytes()),
+        "title": edge.title,
+        "done": edge.done,
     })
 }
 
@@ -1446,6 +1592,11 @@ pub struct BoardReducer {
     /// Latest-authorised-wins like every other overlay; authority needs the
     /// issue maps so it's checked at resolve time, not here.
     relations: HashMap<[u8; 32], RelationEvent>,
+    /// Latest blocker set per *blocked* issue — its complete dependency edge set
+    /// (snapshot semantics like [`labels`](Self::labels), so removal is a
+    /// republish without the edge). Latest-authorised-wins; authority is checked
+    /// at resolve time against the issue maps, not here.
+    blockers: HashMap<[u8; 32], BlockerSet>,
     /// Latest sequence overlay per `(container, issue)` — the card's fractional
     /// work-order rank within that container (board root or parent card).
     /// Latest-authorised-wins; authority needs the issue maps so it's checked at
@@ -1575,6 +1726,19 @@ impl BoardReducer {
                     .is_none_or(|cur| newer(s.created_at, &s.author, cur.created_at, &cur.author))
                 {
                     self.seqs.insert(key, s);
+                }
+            }
+            HeadwayEvent::Blockers(b) => {
+                // Not remembered into activity history for now: dependency edits
+                // are lower-signal than moves/renames and the timeline has no
+                // blocker row yet. (A future `blocked-by changed` row can add it,
+                // mirroring the labels diff.)
+                if self
+                    .blockers
+                    .get(&b.blocked_id)
+                    .is_none_or(|cur| newer(b.created_at, &b.author, cur.created_at, &cur.author))
+                {
+                    self.blockers.insert(b.blocked_id, b);
                 }
             }
         }
@@ -1810,6 +1974,19 @@ impl BoardReducer {
         r.parent_id
             .and_then(|p| self.issues.get(&p))
             .is_some_and(|p| p.author == r.author)
+    }
+
+    /// Whether a blocker set is authorised: like a relation, honoured when
+    /// authored by the board owner, by the blocked card's author, or — on a shared
+    /// board — any team-key holder. (The *blockers* it points at may live on other
+    /// boards and belong to anyone; authority is over the blocked card's slot.)
+    fn blocker_authorised(&self, b: &BlockerSet, board_author: &[u8; 32]) -> bool {
+        self.trusts_all()
+            || &b.author == board_author
+            || self
+                .issues
+                .get(&b.blocked_id)
+                .is_some_and(|c| c.author == b.author)
     }
 
     /// Resolve one child of a parent card into a [`SubissueView`], deriving its
@@ -2063,6 +2240,38 @@ impl BoardReducer {
             .filter(|e| authorised(&e.author))
             .map(|e| e.rank.clone());
 
+        // Resolve one dependency edge to the referenced card's title + cleared
+        // state, reusing the subissue doneness logic (positional: last column /
+        // archived). `None` when the referenced card is unknown or tombstoned off
+        // every board — a vanished card no longer participates in the edge.
+        let edge = |id: &[u8; 32]| {
+            self.subissue_view(id, board_author, board_id, None)
+                .map(|s| EdgeRef {
+                    id: s.id,
+                    title: s.title,
+                    done: s.done,
+                })
+        };
+
+        // This card as blocked: its authorised blocker set, in listed order.
+        let blocked_by = self
+            .blockers
+            .get(&issue.id)
+            .filter(|b| self.blocker_authorised(b, board_author))
+            .map(|b| b.blockers.iter().filter_map(&edge).collect())
+            .unwrap_or_default();
+
+        // This card as a blocker: the reverse edges — every authorised set that
+        // names it — sorted by id so the order doesn't churn with hash iteration.
+        let mut blocks: Vec<EdgeRef> = self
+            .blockers
+            .values()
+            .filter(|b| b.blockers.contains(&issue.id))
+            .filter(|b| self.blocker_authorised(b, board_author))
+            .filter_map(|b| edge(&b.blocked_id))
+            .collect();
+        blocks.sort_by(|a, b| a.id.bytes().cmp(b.id.bytes()));
+
         CardView {
             id: NoteId::new(issue.id),
             author: issue.author,
@@ -2081,6 +2290,8 @@ impl BoardReducer {
             activity: self.card_activity(issue, board_author, board_id),
             parent,
             subissues,
+            blocked_by,
+            blocks,
         }
     }
 
@@ -2230,7 +2441,7 @@ fn newer(a_at: u64, a_who: &[u8; 32], b_at: u64, b_who: &[u8; 32]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 8] = [
+pub const HEADWAY_KINDS: [u32; 9] = [
     KIND_BOARD,
     KIND_ISSUE,
     KIND_PLACEMENT,
@@ -2239,6 +2450,7 @@ pub const HEADWAY_KINDS: [u32; 8] = [
     KIND_COMMENT,
     KIND_RELATION,
     KIND_SEQUENCE,
+    KIND_BLOCKERS,
 ];
 
 /// A filter for every headway event authored by `author`.
@@ -2313,7 +2525,8 @@ pub fn board_scoped_filters(board_addr: &str) -> Option<Vec<Filter>> {
 
 /// The card-anchored half of the shared-board read fan-out: a filter for every
 /// member's per-card metadata (subject/label edits, cover notes, relations,
-/// sequences and comments), keyed by the `e` tag pointing at each card.
+/// sequences, blocker sets and comments), keyed by the `e` tag pointing at each
+/// card.
 ///
 /// These overlays name their card by `e` tag and carry no board reference, so
 /// they can't be reached by the board coordinate — they're gathered by the set
@@ -2332,6 +2545,7 @@ pub fn card_meta_filter(card_ids: &[[u8; 32]]) -> Filter {
             KIND_RELATION as u64,
             KIND_SEQUENCE as u64,
             KIND_COVER_NOTE as u64,
+            KIND_BLOCKERS as u64,
         ])
         .events(card_ids.iter())
         .limit(5000)
@@ -3707,6 +3921,48 @@ mod tests {
         assert_eq!(view.columns[1].cards[0].title, "Card B");
     }
 
+    #[test]
+    fn current_blockers_reads_latest_set_from_ndb() {
+        use nostrdb::{Config, IngestMetadata, Ndb};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+
+        let ingest = |b: NoteBuilder| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            let json = enostr::ClientMessage::event(&note)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            ndb.process_event_with(&json, IngestMetadata::new().client(true))
+                .unwrap();
+        };
+
+        let a = NoteId::new([1; 32]);
+        let b = NoteId::new([2; 32]);
+        let c = NoteId::new([3; 32]);
+        ingest(build_blockers(&a, &[b]).created_at(1_000));
+        ingest(build_blockers(&a, &[b, c]).created_at(2_000));
+
+        // Poll until the newer set is queryable (ndb ingests on a writer thread).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(set) = current_blockers(&ndb, &kp.pubkey, &a)
+                && set.created_at == 2_000
+            {
+                assert_eq!(set.blockers, vec![*b.bytes(), *c.bytes()]);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "current_blockers never saw the latest set"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// A board written by two different members converges through
     /// [`fold_shared_board`], and authority follows team-key possession: every
     /// edit is a team-sealed rumor, so the owner-authored card, a *different*
@@ -3931,6 +4187,140 @@ mod tests {
         let child = todo.cards.iter().find(|c| c.id == c2).unwrap();
         assert_eq!(child.parent, Some(epic));
         assert!(child.subissues.is_empty());
+    }
+
+    /// A blockers set round-trips through build/parse, preserving the blocked card
+    /// and every listed blocker; an empty set is a well-formed cleared set.
+    #[test]
+    fn blockers_roundtrip_set_and_clear() {
+        let kp = FullKeypair::generate();
+        let addr = board_address(&kp.pubkey, "b1");
+        let blocked = note_id(&kp, build_issue(&addr, "blocked", ""));
+        let b1 = note_id(&kp, build_issue(&addr, "b1", ""));
+        let b2 = note_id(&kp, build_issue(&addr, "b2", ""));
+
+        let HeadwayEvent::Blockers(set) = roundtrip(build_blockers(&blocked, &[b1, b2]), &kp)
+        else {
+            panic!("blockers");
+        };
+        assert_eq!(set.blocked_id, *blocked.bytes());
+        assert_eq!(set.blockers, vec![*b1.bytes(), *b2.bytes()]);
+
+        // No `blocked-by` tags = a cleared set, still well-formed.
+        let HeadwayEvent::Blockers(set) = roundtrip(build_blockers(&blocked, &[]), &kp) else {
+            panic!("blockers");
+        };
+        assert!(set.blockers.is_empty());
+    }
+
+    /// A dependency edge resolves on both ends: the blocked card gains a
+    /// `blocked_by` edge with the blocker's positional doneness, the blocker gains
+    /// the reverse `blocks` edge, and clearing the blocker (moving it to the last
+    /// column) or republishing an empty set flips/removes the edge.
+    #[test]
+    fn reduce_resolves_blocker_edges() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let a = note_id(&owner, build_issue(&addr, "A", "").created_at(1_000));
+        let b = note_id(&owner, build_issue(&addr, "B", "").created_at(1_001));
+
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "A", "").created_at(1_000), &owner),
+            parse_owned(build_issue(&addr, "B", "").created_at(1_001), &owner),
+            parse_owned(
+                build_placement("b1", &addr, &a, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            parse_owned(
+                build_placement("b1", &addr, &b, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            // A is blocked by B.
+            parse_owned(build_blockers(&a, &[b]).created_at(1_200), &owner),
+        ];
+
+        let view = &reduce(&events)[0];
+        let card_a = view.card(a).unwrap();
+        let card_b = view.card(b).unwrap();
+        // A's edge names B, unfinished (B is in "todo", not the last column).
+        assert_eq!(card_a.blocked_by.len(), 1);
+        assert_eq!(card_a.blocked_by[0].id, b);
+        assert!(!card_a.blocked_by[0].done);
+        assert!(card_a.is_blocked());
+        // Reverse edge: B blocks A; B itself is unblocked.
+        assert_eq!(
+            card_b.blocks.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![a]
+        );
+        assert!(card_b.blocked_by.is_empty());
+        assert!(!card_b.is_blocked());
+
+        // Move B into "done" (the last column): the edge is now cleared.
+        events.push(parse_owned(
+            build_placement("b1", &addr, &b, "done", "m").created_at(2_000),
+            &owner,
+        ));
+        let view = &reduce(&events)[0];
+        let card_a = view.card(a).unwrap();
+        assert!(card_a.blocked_by[0].done);
+        assert!(!card_a.is_blocked());
+
+        // Republish A's set empty: the edge is gone.
+        events.push(parse_owned(
+            build_blockers(&a, &[]).created_at(3_000),
+            &owner,
+        ));
+        let view = &reduce(&events)[0];
+        assert!(view.card(a).unwrap().blocked_by.is_empty());
+    }
+
+    /// A blocker set from someone who is neither the blocked card's author nor the
+    /// board owner is ignored, exactly like every other overlay.
+    #[test]
+    fn reduce_ignores_unauthorised_blockers() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let a = note_id(&owner, build_issue(&addr, "A", "").created_at(1_000));
+        let b = note_id(&owner, build_issue(&addr, "B", "").created_at(1_001));
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "A", "").created_at(1_000), &owner),
+            parse_owned(build_issue(&addr, "B", "").created_at(1_001), &owner),
+            parse_owned(
+                build_placement("b1", &addr, &a, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            parse_owned(
+                build_placement("b1", &addr, &b, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            // The stranger tries to declare A blocked by B — unauthorised.
+            parse_owned(build_blockers(&a, &[b]).created_at(1_200), &stranger),
+        ];
+
+        let view = &reduce(&events)[0];
+        assert!(view.card(a).unwrap().blocked_by.is_empty());
+        assert!(!view.card(a).unwrap().is_blocked());
     }
 
     /// A sequence event round-trips through build/parse for both container kinds,
