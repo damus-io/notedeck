@@ -355,3 +355,92 @@ async fn snapshot_update_bar() {
 
     harness.snapshot("update_bar");
 }
+
+// ---------------------------------------------------------------------------
+// Global-nav header controls snapshot
+// ---------------------------------------------------------------------------
+
+/// A do-nothing app used only to populate extra chrome tabs so the global-nav
+/// header has more than one entry to switch between in the snapshot.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+struct DummyApp;
+
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+impl notedeck::App for DummyApp {
+    fn render(
+        &mut self,
+        _ctx: &mut notedeck::AppContext,
+        ui: &mut egui::Ui,
+    ) -> notedeck::AppResponse {
+        ui.label("dummy app");
+        notedeck::AppResponse::none()
+    }
+}
+
+/// Snapshot the browser-style global-nav header: the history clock dropdown and
+/// the back/forward chevrons in the chrome tab strip. Two apps have been visited,
+/// so the stack can go back (back chevron enabled) but not forward (forward
+/// chevron greyed) — exercising both control states in one image.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+#[tokio::test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+async fn snapshot_global_nav_header() {
+    use notedeck_chrome::{Chrome, NotedeckApp};
+
+    let ctx = egui::Context::default();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+
+    let mut chrome = {
+        let mut app_ctx = notedeck.app_context(&ctx);
+        Chrome::new_test(&mut app_ctx, &ctx, &args)
+    };
+
+    // Two extra tabs so switching between apps builds real global history.
+    chrome.add_app(NotedeckApp::Other("Notebook".into(), Box::new(DummyApp)));
+    chrome.add_app(NotedeckApp::Other("Headway".into(), Box::new(DummyApp)));
+
+    // Visit app 1 then app 2: the global stack is now [Columns, Notebook,
+    // Headway], so back is available and forward is not.
+    chrome.set_active(1);
+    chrome.set_active(2);
+
+    notedeck.set_app(chrome);
+
+    let state = TickTestState {
+        notedeck,
+        _tmpdir: tmpdir,
+        fonts_installed: false,
+    };
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(800.0, 600.0))
+        .renderer(notedeck::software_renderer())
+        .build_state(render_notedeck_tick_no_anim, state);
+
+    // Settle without run()'s fixed max_steps: chrome self-schedules repaint
+    // bursts that trip run()'s step budget (kittest-run-repaint-burst-flake).
+    let _ = harness.run_ok();
+
+    harness.snapshot("global_nav_header");
+}
+
+/// Like [`render_notedeck_tick`] but pins animations off so the tab strip and
+/// nav transitions render deterministically for the snapshot.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+fn render_notedeck_tick_no_anim(ctx: &egui::Context, state: &mut TickTestState) {
+    if !state.fonts_installed {
+        state.notedeck.setup(ctx);
+        ctx.style_mut(|s| s.animation_time = 0.0);
+        {
+            let app_ctx = state.notedeck.app_context(ctx);
+            // Completing welcome is what gates the desktop tab strip / header.
+            app_ctx.settings.complete_welcome();
+            app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+        }
+        state.fonts_installed = true;
+        return;
+    }
+    state.notedeck.tick(ctx);
+}

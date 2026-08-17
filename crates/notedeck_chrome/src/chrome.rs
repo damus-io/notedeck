@@ -43,6 +43,7 @@ use notedeck_horizon::Horizon;
 #[cfg(feature = "clndash")]
 use notedeck_ui::expanding_button;
 
+use notedeck_ui::header::{paint_chevron, ChevronDir};
 use notedeck_ui::{app_images, galley_centered_pos, ProfilePic};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -662,6 +663,42 @@ impl Chrome {
         self.sync_active_from_nav();
     }
 
+    /// Step one entry back in the global history, then re-derive the active app.
+    ///
+    /// The back is deferred/animated: [`NavStack::go_back`] only flags the
+    /// transition, and [`nav_frame`](notedeck::nav_frame) reconciles the pop once
+    /// the slide completes — so `active` doesn't change until the following frame
+    /// (the outgoing app stays rendered during the slide). No-op at the root.
+    /// Shared by the header chevron, `Alt+←`, and the back mouse button.
+    fn global_go_back(&mut self) {
+        if let Some(nav) = self.global_nav.as_mut() {
+            nav.go_back();
+        }
+        self.sync_active_from_nav();
+    }
+
+    /// Step one entry forward in the global history, replaying the most recently
+    /// popped route, then re-derive the active app. Unlike a back step the push
+    /// lands immediately, so `active` updates this frame. No-op with an empty
+    /// forward stack. Shared by the header chevron, `Alt+→`, and the forward
+    /// mouse button.
+    fn global_go_forward(&mut self) {
+        if let Some(nav) = self.global_nav.as_mut() {
+            nav.go_forward();
+        }
+        self.sync_active_from_nav();
+    }
+
+    /// Jump straight to back-stack `index` in the global history (used by the
+    /// header history dropdown), then re-derive the active app. Instant, with the
+    /// skipped-over routes preserved on the forward stack for redo.
+    fn global_go_to(&mut self, index: usize) {
+        if let Some(nav) = self.global_nav.as_mut() {
+            nav.go_to_route(index);
+        }
+        self.sync_active_from_nav();
+    }
+
     /// Close the active app's tab and switch to the nearest opened app.
     /// No-op if it's the only opened app — at least one app must stay open.
     /// Used by Ctrl+W.
@@ -895,6 +932,27 @@ impl Chrome {
                 self.cycle_app(false);
             } else if next {
                 self.cycle_app(true);
+            }
+        }
+
+        // Global history back/forward via keyboard (Alt+←/→, mirroring the
+        // Ctrl+Tab consume above) and the mouse's dedicated back/forward buttons
+        // (PointerButton::Extra1/Extra2). Handled unconditionally so it works on
+        // narrow layouts too, where the header chevrons aren't drawn. Consuming
+        // the keys keeps a focused app from also acting on them.
+        {
+            let (mut back, mut forward) = (false, false);
+            ui.input_mut(|i| {
+                back = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+                forward = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight);
+                back |= i.pointer.button_clicked(egui::PointerButton::Extra1);
+                forward |= i.pointer.button_clicked(egui::PointerButton::Extra2);
+            });
+            if back {
+                self.global_go_back();
+            }
+            if forward {
+                self.global_go_forward();
             }
         }
 
@@ -1553,18 +1611,159 @@ fn macos_traffic_light_inset(ctx: &AppContext, ui: &egui::Ui) -> f32 {
     }
 }
 
+/// Fixed slot size for a header nav button (history clock, back/forward chevron).
+const NAV_BTN_SIZE: egui::Vec2 = vec2(28.0, 30.0);
+
+/// Browser-style global-history controls drawn at the left of the chrome tab
+/// strip (matching the reference screenshot): a history dropdown (clock) listing
+/// the recent global-stack entries by title, then back / forward chevrons. The
+/// chevrons grey out when the stack can't move that way
+/// ([`NavStack::can_go_back`](notedeck::NavStack::can_go_back) /
+/// [`can_go_forward`](notedeck::NavStack::can_go_forward)). Clicks drive the
+/// global stack through [`Chrome::global_go_back`]/`global_go_forward`/`global_go_to`,
+/// exactly like the `Alt+←/→` keyboard and mouse-button shortcuts.
+fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    let (can_back, can_forward) = chrome
+        .global_nav
+        .as_ref()
+        .map(|nav| (nav.can_go_back(), nav.can_go_forward()))
+        .unwrap_or((false, false));
+
+    // History dropdown (clock). Its list is built lazily, only while open.
+    let (clock_resp, clock_rect) = nav_button_slot(ui, true);
+    paint_clock(
+        ui.painter(),
+        clock_rect.center(),
+        7.0,
+        ui.visuals().text_color(),
+    );
+    let popup_id = ui.make_persistent_id("chrome_history_popup");
+    if clock_resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+
+    let mut jump_to: Option<usize> = None;
+    egui::popup_below_widget(
+        ui,
+        popup_id,
+        &clock_resp,
+        egui::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(220.0);
+            let Some(nav) = chrome.global_nav.as_ref() else {
+                return;
+            };
+            let routes = nav.routes();
+            let current = routes.len() - 1;
+            // Newest (current) entry first, like a browser history menu. Each
+            // entry's title comes from the app that owns it (falling back to the
+            // app label until apps push per-view tokens); clicking an older one
+            // jumps straight to it.
+            for (i, entry) in routes.iter().enumerate().rev() {
+                let Some(app) = chrome.apps.get(entry.app.slot()) else {
+                    continue;
+                };
+                let title = app
+                    .nav_title(&entry.token)
+                    .unwrap_or_else(|| app_label(ctx.i18n, app));
+                if ui.selectable_label(i == current, title).clicked() && i != current {
+                    jump_to = Some(i);
+                }
+            }
+        },
+    );
+    if let Some(index) = jump_to {
+        chrome.global_go_to(index);
+    }
+
+    ui.add_space(4.0);
+
+    // Back / forward chevrons, greyed when the stack can't move that way.
+    let (back_resp, back_rect) = nav_button_slot(ui, can_back);
+    paint_nav_chevron(
+        ui.painter(),
+        back_rect,
+        ChevronDir::Left,
+        chevron_color(ui, can_back),
+    );
+    if back_resp.clicked() {
+        chrome.global_go_back();
+    }
+
+    let (fwd_resp, fwd_rect) = nav_button_slot(ui, can_forward);
+    paint_nav_chevron(
+        ui.painter(),
+        fwd_rect,
+        ChevronDir::Right,
+        chevron_color(ui, can_forward),
+    );
+    if fwd_resp.clicked() {
+        chrome.global_go_forward();
+    }
+
+    // A little breathing room before the tabs.
+    ui.add_space(8.0);
+}
+
+/// Allocate a fixed [`NAV_BTN_SIZE`] slot for a header nav button, painting a
+/// subtle rounded hover background when `enabled` and hovered. Returns the
+/// response and the slot rect for the caller to paint its glyph into. A disabled
+/// slot only senses hover, so its clicks are inert (a greyed-out control).
+fn nav_button_slot(ui: &mut egui::Ui, enabled: bool) -> (egui::Response, Rect) {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(NAV_BTN_SIZE, sense);
+    if !enabled {
+        return (response, rect);
+    }
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect.shrink(3.0),
+            6.0,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    (response, rect)
+}
+
+/// Colour for a header chevron: normal when the control is enabled, greyed (per
+/// the reference screenshot) when the stack can't move that way.
+fn chevron_color(ui: &egui::Ui, enabled: bool) -> Color32 {
+    if enabled {
+        ui.visuals().text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    }
+}
+
+/// Paint a back/forward chevron centred in `rect`.
+fn paint_nav_chevron(painter: &egui::Painter, rect: Rect, dir: ChevronDir, color: Color32) {
+    let glyph = Rect::from_center_size(rect.center(), vec2(10.0, 13.0));
+    paint_chevron(painter, glyph, 2.0, dir, egui::Stroke::new(1.6, color));
+}
+
+/// Paint a small clock glyph (ring + two hands) centred at `center`, used for the
+/// history dropdown button.
+fn paint_clock(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: Color32) {
+    let stroke = egui::Stroke::new(1.5, color);
+    painter.circle_stroke(center, radius, stroke);
+    // Hands reading ~10:10 — hour hand up, minute hand to the right.
+    painter.line_segment([center, center - vec2(0.0, radius * 0.55)], stroke);
+    painter.line_segment([center, center + vec2(radius * 0.6, 0.0)], stroke);
+}
+
 fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui) {
     let inset = macos_traffic_light_inset(ctx, ui);
 
-    // disjoint field borrows so the tab closure can read opened flags while
-    // mutably rendering app icons (e.g. Dave's avatar)
-    let opened = &chrome.opened;
-    let apps = &mut chrome.apps;
-    let n_apps = apps.len();
+    let n_apps = chrome.apps.len();
 
     // the active app is always opened, so there is always at least one tab
     let n_tabs = (0..n_apps)
-        .filter(|&i| bitset_get(opened, i as u16))
+        .filter(|&i| bitset_get(&chrome.opened, i as u16))
         .count();
     if n_tabs == 0 {
         return;
@@ -1573,56 +1772,59 @@ fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui)
     // the selected tab is the number of opened apps before the active app
     let active = chrome.active.max(0) as usize;
     let sel = (0..active.min(n_apps))
-        .filter(|&i| bitset_get(opened, i as u16))
+        .filter(|&i| bitset_get(&chrome.opened, i as u16))
         .count();
 
     ui.spacing_mut().item_spacing.y = 0.0;
 
-    let mut render_tabs = |ui: &mut egui::Ui| {
-        // egui_tabs keys its selection on `ui.id().with("tabs")` and prefers
-        // that temp value over `.selected()`, so overwrite it each frame to
-        // stay in sync with app switches that happen elsewhere (Ctrl+Tab, the
-        // sidebar, note actions). It must be keyed off the *same* ui we hand to
-        // `Tabs::show` — the traffic-light inset below wraps the strip in an
-        // extra `ui.horizontal`, and writing to the outer id instead would
-        // leave egui_tabs re-asserting the last-clicked tab every frame.
-        let tabs_id = ui.id().with("tabs");
-        ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
-
-        egui_tabs::Tabs::new(n_tabs as i32)
-            .selected(sel as i32)
-            .hover_bg(egui_tabs::TabColor::none())
-            .selected_fg(egui_tabs::TabColor::none())
-            .selected_bg(egui_tabs::TabColor::none())
-            .height(30.0)
-            .layout(Layout::centered_and_justified(egui::Direction::TopDown))
-            .show(ui, |ui, state| {
-                let Some(app_idx) = nth_opened(opened, n_apps, state.index() as usize) else {
-                    return;
-                };
-
-                let notifications = apps[app_idx].tab_notifications(ctx);
-                ChromeTab {
-                    app: &mut apps[app_idx],
-                    selected: state.is_selected(),
-                    notifications,
-                }
-                .show(ctx.i18n, ui);
-            })
-    };
-
-    // On macOS with the native titlebar hidden, indent the tab strip so the
-    // traffic-light window controls don't sit on top of the first tab.
-    let tab_res = if inset > 0.0 {
-        ui.horizontal(|ui| {
+    // The header strip is one horizontal row: the macOS traffic-light inset, the
+    // browser-style history controls (back/forward + dropdown), then the tabs.
+    let tab_res = ui
+        .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(inset);
-            render_tabs(ui)
+            // On macOS with the native titlebar hidden, indent so the
+            // traffic-light window controls don't sit on top of the controls.
+            if inset > 0.0 {
+                ui.add_space(inset);
+            }
+
+            chrome_nav_controls(chrome, ctx, ui);
+
+            // disjoint field borrows so the tab closure can read opened flags
+            // while mutably rendering app icons (e.g. Dave's avatar)
+            let opened = &chrome.opened;
+            let apps = &mut chrome.apps;
+
+            // egui_tabs keys its selection on `ui.id().with("tabs")` and prefers
+            // that temp value over `.selected()`, so overwrite it each frame to
+            // stay in sync with app switches that happen elsewhere (Ctrl+Tab, the
+            // sidebar, note actions). It must be keyed off the *same* ui we hand
+            // to `Tabs::show`.
+            let tabs_id = ui.id().with("tabs");
+            ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
+
+            egui_tabs::Tabs::new(n_tabs as i32)
+                .selected(sel as i32)
+                .hover_bg(egui_tabs::TabColor::none())
+                .selected_fg(egui_tabs::TabColor::none())
+                .selected_bg(egui_tabs::TabColor::none())
+                .height(30.0)
+                .layout(Layout::centered_and_justified(egui::Direction::TopDown))
+                .show(ui, |ui, state| {
+                    let Some(app_idx) = nth_opened(opened, n_apps, state.index() as usize) else {
+                        return;
+                    };
+
+                    let notifications = apps[app_idx].tab_notifications(ctx);
+                    ChromeTab {
+                        app: &mut apps[app_idx],
+                        selected: state.is_selected(),
+                        notifications,
+                    }
+                    .show(ctx.i18n, ui);
+                })
         })
-        .inner
-    } else {
-        render_tabs(ui)
-    };
+        .inner;
 
     tab_strip_fade(ui);
 
