@@ -9,9 +9,12 @@
 //!   a set of nostr events into a [`event::BoardView`]. No I/O.
 //! - [`store`] — sign + ingest into a local nostrdb, board seeding, and
 //!   [`store::apply`], which turns a [`store::BoardAction`] into events.
+//! - [`teams`] — the joined-shared-board roster: which SNS channels this account
+//!   holds keys for, so both front ends fold and seal the same shared boards.
 
 pub mod event;
 pub mod fmt;
 pub mod store;
+pub mod teams;
 pub mod traversal;
 pub mod wordid;

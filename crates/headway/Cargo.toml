@@ -6,11 +6,13 @@ version.workspace = true
 [dependencies]
 nostrdb = { workspace = true }
 enostr = { workspace = true }
+hex = { workspace = true }
 serde_json = { workspace = true }
 wordid = { workspace = true }
 profiling = { workspace = true }
 
 [dev-dependencies]
+nostr = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 futures-util = { workspace = true }

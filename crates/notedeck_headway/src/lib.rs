@@ -6,9 +6,8 @@ use enostr::{NoteId, Pubkey, RelayId, RelayStatus};
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use notedeck::{App, AppContext, AppResponse, ColorTheme, PrivateRelaySync, fan_out_unseen_notes};
 
-pub use headway::{event, store};
+pub use headway::{event, store, teams};
 
-mod teams;
 mod tools;
 mod ui;
 

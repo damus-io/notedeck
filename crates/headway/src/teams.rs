@@ -4,7 +4,13 @@
 //! `docs/nip-sns-sealed-shared-storage.md`). nostrdb is only the *mechanism* —
 //! register a root with [`Ndb::add_team_root`] and it auto-unwraps that channel's
 //! kind-1081 envelopes — while *joining* (which roots to register, and re-register
-//! on boot) is app **policy**, which lives here.
+//! on boot) is **policy**, which lives here.
+//!
+//! The policy is shared, not per-front-end: the egui app and the CLI must agree
+//! on which boards are shared, or one of them folds a board the other seals and
+//! they diverge (the CLI writing plaintext to a sealed board is invisible in the
+//! app, since [`crate::event::fold_shared_board`] ingests only sealed rumors).
+//! So this lives beside the fold it feeds rather than in either front end.
 //!
 //! The roster is not stored on disk: it *already* lives in nostrdb. A member is
 //! added by gift-wrapping them a kind-1082 key-share, and nostrdb unwraps the
