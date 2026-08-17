@@ -808,23 +808,32 @@ impl Roster {
         }
     }
 
-    /// The channel `board_id` is shared into, or `None` for a private board.
+    /// The channel new edits to `board_id` seal into — its *primary* channel (see
+    /// [`teams::board_channels`]) — or `None` for a private board. Reads gather
+    /// every channel instead; see [`Self::channel_pubkeys`].
     fn channel(&self, board_id: &str) -> Option<store::SnsChannel> {
         let addr = event::board_address(&self.author, board_id);
-        let team = self.teams.iter().find(|t| t.board_addr == addr)?;
+        let team = *teams::board_channels(&self.teams, &addr).first()?;
         Some(store::SnsChannel {
             keys: team.sns_keys()?,
         })
     }
 
-    /// The raw `team_root` behind `board_id`'s channel — what a re-seal needs in
-    /// order to keep sealing a shared board into the channel it already has,
-    /// rather than minting a second one (see the `migrate` command).
+    /// Every channel `board_id`'s content may be sealed into, primary first — what
+    /// a read folds the union of, because a board's history can be split across
+    /// channels that cannot be merged back together.
+    fn channel_pubkeys(&self, board_id: &str) -> Vec<Pubkey> {
+        let addr = event::board_address(&self.author, board_id);
+        teams::board_channel_pubkeys(&self.teams, &addr)
+    }
+
+    /// The raw `team_root` behind `board_id`'s primary channel — what a re-seal
+    /// needs in order to keep sealing a shared board into the channel it already
+    /// has, rather than minting a second one (see the `migrate` command).
     fn team_root(&self, board_id: &str) -> Option<[u8; 32]> {
         let addr = event::board_address(&self.author, board_id);
-        self.teams
-            .iter()
-            .find(|t| t.board_addr == addr)?
+        teams::board_channels(&self.teams, &addr)
+            .first()?
             .root_bytes()
     }
 }
@@ -834,14 +843,15 @@ impl Roster {
 /// from `author`'s own plaintext events.
 fn load_board(ndb: &Ndb, roster: &Roster, author: &Pubkey, board_id: &str) -> Option<BoardView> {
     let txn = Transaction::new(ndb).ok()?;
-    let Some(channel) = roster.channel(board_id) else {
+    let channels = roster.channel_pubkeys(board_id);
+    if channels.is_empty() {
         return event::load_board(ndb, &txn, author, board_id);
-    };
+    }
     event::load_shared_board(
         ndb,
         &txn,
         &event::board_address(author, board_id),
-        &channel.keys.team_keypair.pubkey,
+        &channels,
     )
 }
 
@@ -858,7 +868,7 @@ fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
     for board in &mut boards {
         // Only the shared ones: the author fold above already produced every
         // private board, and re-folding those would pay a whole extra walk each.
-        if roster.channel(&board.id).is_none() {
+        if roster.channel_pubkeys(&board.id).is_empty() {
             continue;
         }
         if let Some(shared) = load_board(ndb, roster, author, &board.id) {
@@ -1780,12 +1790,14 @@ mod tests {
                     team_root: hex::encode(root),
                     board_addr: event::board_address(&owner, "shared"),
                     epoch: None,
+                    shared_at: 0,
                 },
                 // Someone else's board that happens to use a slug we also use.
                 teams::Team {
                     team_root: hex::encode(root),
                     board_addr: event::board_address(&other, "private"),
                     epoch: None,
+                    shared_at: 0,
                 },
             ],
             author: owner,

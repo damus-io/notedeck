@@ -985,7 +985,9 @@ fn wait_shared_board(ndb: &Ndb, board_addr: &str, team_pubkey: &Pubkey) -> event
     loop {
         {
             let txn = Transaction::new(ndb).expect("txn");
-            if let Some(view) = event::load_shared_board(ndb, &txn, board_addr, team_pubkey) {
+            if let Some(view) =
+                event::load_shared_board(ndb, &txn, board_addr, std::slice::from_ref(team_pubkey))
+            {
                 return view;
             }
         }

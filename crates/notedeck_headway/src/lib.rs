@@ -158,7 +158,7 @@ impl Headway {
             .iter()
             .filter_map(|team| {
                 let coord = event::BoardCoord::parse(&team.board_addr)?;
-                let keys = team.sns_keys()?;
+                let channels = teams::board_channel_pubkeys(&self.teams, &team.board_addr);
                 let title = Transaction::new(ctx.ndb)
                     .ok()
                     .and_then(|txn| {
@@ -166,7 +166,7 @@ impl Headway {
                             ctx.ndb,
                             &txn,
                             &team.board_addr,
-                            &keys.team_keypair.pubkey,
+                            &channels,
                         )
                     })
                     .map(|v| v.title)
@@ -395,10 +395,13 @@ impl App for Headway {
         // co-member's sealed edits reach us (nostrdb unwraps them once the root is
         // registered — see [`teams`]).
         let mut inbound = vec![event::headway_filter(&author)];
-        for team in &self.teams {
-            if let Some(keys) = team.sns_keys() {
-                inbound.push(teams::envelope_filter(&keys.team_keypair.pubkey));
-            }
+        let joined: Vec<Pubkey> = self
+            .teams
+            .iter()
+            .filter_map(|t| Some(t.sns_keys()?.team_keypair.pubkey))
+            .collect();
+        if !joined.is_empty() {
+            inbound.push(teams::envelope_filter(&joined));
         }
         let private_relays = self.private_sync.update(ctx, inbound);
 
@@ -547,19 +550,20 @@ impl App for Headway {
         // (multi-writer, every member's events), an own board off the per-account
         // reducer keyed on its owner + slug.
         let view = match &active_team {
-            // Fold by the channel's team key — see `event::fold_shared_board`.
-            // No channel (missing keys) means we can't fold; falls through to the
-            // "loading" message below.
-            Some(team) => channel.as_ref().and_then(|c| {
+            // Fold the union of the board's channels — see
+            // `event::fold_shared_board`. No usable channel means we can't fold;
+            // falls through to the "loading" message below.
+            Some(team) => {
+                let channels = teams::board_channel_pubkeys(&self.teams, &team.board_addr);
                 Transaction::new(ctx.ndb).ok().and_then(|txn| {
                     self.board_cache.borrow_mut().shared_board(
                         ctx.ndb,
                         &txn,
                         &team.board_addr,
-                        &c.keys.team_keypair.pubkey,
+                        &channels,
                     )
                 })
-            }),
+            }
             None => {
                 let active = self.active();
                 own_boards
@@ -898,23 +902,31 @@ impl BoardCache {
     /// only re-fold when a member actually edits (every edit is one 1081 envelope).
     fn poll_shared(&mut self, ndb: &Ndb, txn: &Transaction, teams: &[teams::Team]) -> Vec<NoteKey> {
         let mut fresh = Vec::new();
+        // One pass per *board*, not per key-share: a board with several channels
+        // (a rotation epoch, or a re-seal that ran under a fresh root) has its
+        // content split across them irrecoverably, so it folds — and watches —
+        // the union. Two key-shares naming one coordinate must not become two
+        // competing entries for the same cache slot.
+        let mut done: Vec<&str> = Vec::new();
         for team in teams {
-            let Some(keys) = team.sns_keys() else {
+            if done.contains(&team.board_addr.as_str()) {
                 continue;
-            };
+            }
+            done.push(&team.board_addr);
+            let channels = teams::board_channel_pubkeys(teams, &team.board_addr);
+            if channels.is_empty() {
+                continue;
+            }
             let entry = self.shared.entry(team.board_addr.clone()).or_default();
             if entry.sub.is_none() {
-                entry.sub = ndb
-                    .subscribe(&[teams::envelope_filter(&keys.team_keypair.pubkey)])
-                    .ok();
+                entry.sub = ndb.subscribe(&[teams::envelope_filter(&channels)]).ok();
             }
             let polled = match entry.sub {
                 Some(sub) => ndb.poll_for_notes(sub, 64),
                 None => Vec::new(),
             };
             if !polled.is_empty() || entry.reducer.is_none() {
-                entry.reducer =
-                    event::fold_shared_board(ndb, txn, &team.board_addr, &keys.team_keypair.pubkey);
+                entry.reducer = event::fold_shared_board(ndb, txn, &team.board_addr, &channels);
                 entry.finalized = None;
             }
             fresh.extend(polled);
@@ -930,11 +942,11 @@ impl BoardCache {
         ndb: &Ndb,
         txn: &Transaction,
         board_addr: &str,
-        team_pubkey: &Pubkey,
+        team_pubkeys: &[Pubkey],
     ) -> Option<BoardView> {
         let entry = self.shared.entry(board_addr.to_string()).or_default();
         if entry.reducer.is_none() {
-            entry.reducer = event::fold_shared_board(ndb, txn, board_addr, team_pubkey);
+            entry.reducer = event::fold_shared_board(ndb, txn, board_addr, team_pubkeys);
         }
         if entry.finalized.is_none() {
             entry.finalized = Some(entry.reducer.as_ref()?.finalize());
@@ -1901,6 +1913,7 @@ mod tests {
             team_root: hex::encode([0x11u8; 32]),
             board_addr: event::board_address(&owner.pubkey, "roadmap"),
             epoch: None,
+            shared_at: 0,
         };
         let teams = vec![team.clone()];
 
@@ -1987,6 +2000,7 @@ mod tests {
             team_root: hex::encode(root),
             board_addr: event::board_address(&t.kp.pubkey, store::BOARD_ID),
             epoch: None,
+            shared_at: 0,
         };
         let teams = vec![team.clone()];
 
@@ -2041,7 +2055,7 @@ mod tests {
                         &t.ndb,
                         &txn,
                         &team.board_addr,
-                        &channel.keys.team_keypair.pubkey,
+                        std::slice::from_ref(&channel.keys.team_keypair.pubkey),
                     )
                     .and_then(|v| {
                         v.columns

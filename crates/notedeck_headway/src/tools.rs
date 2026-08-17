@@ -282,7 +282,7 @@ fn resolve_target(
     // fold + seal it rather than leak plaintext via the author-scoped fold below.
     let own_coord = event::board_address(author, board_id);
     if let Some(team) = teams.iter().find(|t| t.board_addr == own_coord) {
-        return resolve_shared(ndb, &txn, board_id, team);
+        return resolve_shared(ndb, &txn, board_id, team, teams);
     }
 
     // Own plaintext board wins on a bare-slug collision with a joined board.
@@ -298,7 +298,7 @@ fn resolve_target(
         .iter()
         .find(|t| t.board_slug() == Some(board_id))
         .ok_or_else(|| format!("no board '{board_id}'"))?;
-    resolve_shared(ndb, &txn, board_id, team)
+    resolve_shared(ndb, &txn, board_id, team, teams)
 }
 
 /// Fold a shared board by coordinate and derive its sealing channel. Refuses
@@ -309,8 +309,15 @@ fn resolve_shared(
     txn: &Transaction,
     board_id: &str,
     team: &teams::Team,
+    roster: &[teams::Team],
 ) -> Result<ResolvedTarget, String> {
-    let channel = team
+    // Seal into the board's *primary* channel, but fold every channel it has —
+    // see `teams::board_channels`.
+    let primary = teams::board_channels(roster, &team.board_addr)
+        .first()
+        .copied()
+        .unwrap_or(team);
+    let channel = primary
         .sns_keys()
         .map(|keys| store::SnsChannel { keys })
         .ok_or_else(|| {
@@ -318,13 +325,9 @@ fn resolve_shared(
                 "shared board '{board_id}' has an unusable team key; refusing to publish unsealed"
             )
         })?;
-    let view = event::load_shared_board(
-        ndb,
-        txn,
-        &team.board_addr,
-        &channel.keys.team_keypair.pubkey,
-    )
-    .ok_or_else(|| format!("shared board '{board_id}' has not synced yet"))?;
+    let channels = teams::board_channel_pubkeys(roster, &team.board_addr);
+    let view = event::load_shared_board(ndb, txn, &team.board_addr, &channels)
+        .ok_or_else(|| format!("shared board '{board_id}' has not synced yet"))?;
     Ok(ResolvedTarget {
         view,
         channel: Some(channel),
@@ -995,7 +998,7 @@ mod tests {
                 &ndb,
                 &txn,
                 &board_addr,
-                &channel.keys.team_keypair.pubkey,
+                std::slice::from_ref(&channel.keys.team_keypair.pubkey),
             )
             .is_some()
                 && event::load_board(&ndb, &txn, &owner.pubkey, store::BOARD_ID).is_some();
@@ -1011,6 +1014,7 @@ mod tests {
             team_root: hex::encode(root),
             board_addr,
             epoch: None,
+            shared_at: 0,
         };
         let teams = [team];
 

@@ -37,6 +37,9 @@ pub struct Team {
     /// Rotation generation, if the key-share named one (see *Rotation* in the SNS
     /// doc). `None` for a first-generation share.
     pub epoch: Option<u32>,
+    /// `created_at` of the key-share that joined this channel. Orders a board's
+    /// channels when it has more than one (see [`board_channels`]).
+    pub shared_at: u64,
 }
 
 impl Team {
@@ -73,8 +76,10 @@ pub fn keyshare_filter() -> Filter {
         .build()
 }
 
-/// Filter for one channel's kind-1081 SNS envelopes — every sealed edit to the
-/// board, addressed to (and signed by) the team keypair.
+/// Filter for the kind-1081 SNS envelopes of one or more channels — every sealed
+/// edit to a board, addressed to (and signed by) each team keypair. Takes a set
+/// because one board can span several channels (see [`board_channels`]), and its
+/// change signal has to cover all of them.
 ///
 /// The envelope, not the rumor inside it, is the sync unit: nostrdb stores both,
 /// but only the envelope carries the sealed bytes a *non*-keyholder relay can
@@ -83,10 +88,10 @@ pub fn keyshare_filter() -> Filter {
 ///
 /// Deliberately unbounded: a `limit` is inert for subscription matching, and a
 /// walk that a `limit` truncates would silently under-report the channel.
-pub fn envelope_filter(team_pubkey: &Pubkey) -> Filter {
+pub fn envelope_filter(team_pubkeys: &[Pubkey]) -> Filter {
     Filter::new()
         .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
-        .authors([team_pubkey.bytes()])
+        .authors(team_pubkeys.iter().map(|k| k.bytes()))
         .build()
 }
 
@@ -133,6 +138,7 @@ pub fn teams_from_ndb(ndb: &Ndb, author: &Pubkey) -> Vec<Team> {
             team_root: hex::encode(share.team_root),
             board_addr,
             epoch: share.epoch,
+            shared_at: res.note.created_at(),
         };
         if !teams
             .iter()
@@ -142,6 +148,41 @@ pub fn teams_from_ndb(ndb: &Ndb, author: &Pubkey) -> Vec<Team> {
         }
     }
     teams
+}
+
+/// Every channel the roster holds for the board at `board_addr`, ordered
+/// **primary first**: highest rotation [`epoch`](Team::epoch), then the earliest
+/// key-share.
+///
+/// A board usually has exactly one channel, but it can end up with several and
+/// they cannot be merged — a note is promoted to a sealed rumor only while it is
+/// still plaintext, so once sealed under one root it can never move to another.
+/// Rotation creates this deliberately (a new epoch is a new root); a re-seal that
+/// ran under a fresh root creates it by accident. Either way both halves of the
+/// board are real and readable, so a *read* must fold the union of all of them
+/// (see [`crate::event::fold_shared_board`]) — picking one would truncate the
+/// board, or lose it outright if the chosen channel lacks the board definition.
+///
+/// A *write* seals into the first entry: the newest epoch is where rotation says
+/// new edits belong, and the earliest-share tie-break keeps an accidental second
+/// channel from capturing them.
+pub fn board_channels<'a>(teams: &'a [Team], board_addr: &str) -> Vec<&'a Team> {
+    let mut matching: Vec<&Team> = teams
+        .iter()
+        .filter(|t| t.board_addr == board_addr)
+        .collect();
+    matching.sort_by_key(|t| (std::cmp::Reverse(t.epoch.unwrap_or(0)), t.shared_at));
+    matching
+}
+
+/// The team public keys of [`board_channels`], in the same order — what
+/// [`crate::event::fold_shared_board`] takes to gather every channel of a board.
+/// Entries whose root doesn't derive usable keys are dropped.
+pub fn board_channel_pubkeys(teams: &[Team], board_addr: &str) -> Vec<Pubkey> {
+    board_channels(teams, board_addr)
+        .into_iter()
+        .filter_map(|t| Some(t.sns_keys()?.team_keypair.pubkey))
+        .collect()
 }
 
 /// Register every joined `team_root` with nostrdb so it auto-unwraps that

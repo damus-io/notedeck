@@ -2609,9 +2609,18 @@ pub fn comment_filter(card_ids: &[[u8; 32]]) -> Filter {
 /// non-owner member's edit count. Per-member edit *permissions* (an admin-signed
 /// roster) are the separate G6 gate, `headway:headway/purchase-arch-since`.
 ///
-/// `team_pubkey` is the board channel's team public key
-/// (`enostr::sns::derive_sns_keys(team_root).team_keypair.pubkey`), the same value
-/// a kind-1081 envelope is authored by.
+/// `team_pubkeys` are the board channel's team public keys
+/// (`enostr::sns::derive_sns_keys(team_root).team_keypair.pubkey`), the value a
+/// kind-1081 envelope is authored by. It is a *set*, not one key, because a board
+/// can accumulate more than one channel over its life and its content is then
+/// split across them with no way to consolidate: a note is promoted to a sealed
+/// rumor only while it is still plaintext, so once sealed it can never be moved
+/// into a second channel. Key rotation produces this by design (each epoch is its
+/// own root — see *Rotation* in the SNS doc), and a re-seal that ran under a fresh
+/// root produces it by accident. Either way the board is the union of every
+/// channel the roster holds for its coordinate; folding just one silently
+/// truncates it, or — if the channel that happens to be picked lacks the board
+/// *definition* — loses the board entirely.
 ///
 /// Returns `None` if `board_addr` isn't a well-formed board coordinate or the
 /// index walk fails. A board with no cards yields an empty (phase-A-only) reducer
@@ -2621,10 +2630,11 @@ pub fn fold_shared_board(
     ndb: &Ndb,
     txn: &Transaction,
     board_addr: &str,
-    team_pubkey: &Pubkey,
+    team_pubkeys: &[Pubkey],
 ) -> Option<BoardReducer> {
     let phase_a = board_scoped_filters(board_addr)?;
-    let team = team_pubkey.bytes();
+    let teams: Vec<[u8; 32]> = team_pubkeys.iter().map(|k| *k.bytes()).collect();
+    let team = teams.as_slice();
     let mut card_ids: Vec<[u8; 32]> = Vec::new();
     let acc = ndb
         .fold(
@@ -2666,14 +2676,17 @@ pub fn fold_shared_board(
 }
 
 /// Whether `note` is a rumor nostrdb unwrapped from an SNS kind-1081 envelope
-/// sealed under `team_pubkey` — i.e. produced by a holder of this board's team
+/// sealed under *any* of `team_pubkeys` — i.e. produced by a holder of this board's team
 /// key. nostrdb stamps the envelope's ECDH recipient (the team pubkey) into an
 /// unwrapped rumor's receiver slot *after* decrypting under the team key, and a
 /// plaintext note forged at the board coordinate is not a rumor, so neither leg
 /// of this check can be spoofed by a non-keyholder. This is the seal-trust that
 /// makes [`Authority::TeamKey`] sound.
-fn team_sealed(note: &Note, team_pubkey: &[u8; 32]) -> bool {
-    note.is_rumor() && note.rumor_receiver_pubkey() == Some(team_pubkey)
+fn team_sealed(note: &Note, team_pubkeys: &[[u8; 32]]) -> bool {
+    note.is_rumor()
+        && note
+            .rumor_receiver_pubkey()
+            .is_some_and(|recv| team_pubkeys.contains(recv))
 }
 
 /// Fold a batch of freshly-arrived notes (identified by `keys`) into an existing
@@ -2935,11 +2948,11 @@ pub fn load_shared_board(
     ndb: &Ndb,
     txn: &Transaction,
     board_addr: &str,
-    team_pubkey: &Pubkey,
+    team_pubkeys: &[Pubkey],
 ) -> Option<BoardView> {
     // fold_shared_board folds a single coordinate, so its finalize yields the one
     // board (empty until the board definition has arrived).
-    fold_shared_board(ndb, txn, board_addr, team_pubkey)?
+    fold_shared_board(ndb, txn, board_addr, team_pubkeys)?
         .finalize()
         .into_iter()
         .next()
@@ -4057,7 +4070,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let view = loop {
             let txn = Transaction::new(&ndb).unwrap();
-            if let Some(reducer) = fold_shared_board(&ndb, &txn, &addr, team_pubkey)
+            if let Some(reducer) = fold_shared_board(&ndb, &txn, &addr, std::slice::from_ref(team_pubkey))
                 && let Some(view) = pick_board(&reducer, &owner.pubkey, "headway")
                 && view.columns[0].cards.len() == 1
                 && view.columns[1].cards.len() == 1

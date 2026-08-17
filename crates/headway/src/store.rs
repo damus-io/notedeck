@@ -1677,7 +1677,12 @@ mod tests {
         let view = loop {
             {
                 let txn = Transaction::new(&t.ndb).unwrap();
-                if let Some(v) = event::load_shared_board(&t.ndb, &txn, &board_addr, &team_pk) {
+                if let Some(v) = event::load_shared_board(
+                    &t.ndb,
+                    &txn,
+                    &board_addr,
+                    std::slice::from_ref(&team_pk),
+                ) {
                     break v;
                 }
             }
@@ -1790,8 +1795,12 @@ mod tests {
         for _ in 0..300 {
             {
                 let txn = Transaction::new(&t.ndb).unwrap();
-                if let Some(v) = event::load_shared_board(&t.ndb, &txn, &board_addr, &team_pk)
-                    && card_id_by_title(&v, "existing card").is_some()
+                if let Some(v) = event::load_shared_board(
+                    &t.ndb,
+                    &txn,
+                    &board_addr,
+                    std::slice::from_ref(&team_pk),
+                ) && card_id_by_title(&v, "existing card").is_some()
                 {
                     folded = Some(v);
                     break;
@@ -1875,9 +1884,14 @@ mod tests {
             for _ in 0..300 {
                 {
                     let txn = Transaction::new(&ndb).unwrap();
-                    if event::load_shared_board(&ndb, &txn, &board_addr, &team_pk)
-                        .and_then(|v| card_id_by_title(&v, "existing card"))
-                        .is_some()
+                    if event::load_shared_board(
+                        &ndb,
+                        &txn,
+                        &board_addr,
+                        std::slice::from_ref(&team_pk),
+                    )
+                    .and_then(|v| card_id_by_title(&v, "existing card"))
+                    .is_some()
                     {
                         ok = true;
                         break;
@@ -1892,8 +1906,9 @@ mod tests {
         let ndb = Ndb::new(&path, &Config::new()).unwrap();
         assert!(ndb.add_team_root(&root));
         let txn = Transaction::new(&ndb).unwrap();
-        let reopened = event::load_shared_board(&ndb, &txn, &board_addr, &team_pk)
-            .expect("migrated board must still fold via the shared path after reopen");
+        let reopened =
+            event::load_shared_board(&ndb, &txn, &board_addr, std::slice::from_ref(&team_pk))
+                .expect("migrated board must still fold via the shared path after reopen");
         assert!(
             card_id_by_title(&reopened, "existing card").is_some(),
             "the sealed card survives the reopen"
@@ -2703,7 +2718,9 @@ mod tests {
         // Exactly the subscription the app's `poll_shared` opens per channel.
         let sub = t
             .ndb
-            .subscribe(&[crate::teams::envelope_filter(&team_pubkey)])
+            .subscribe(&[crate::teams::envelope_filter(std::slice::from_ref(
+                &team_pubkey,
+            ))])
             .expect("envelope subscription");
 
         ingest_signed(
@@ -2804,7 +2821,9 @@ mod tests {
         loop {
             {
                 let txn = Transaction::new(ndb).unwrap();
-                if let Some(reducer) = event::fold_shared_board(ndb, &txn, addr, team_pubkey) {
+                if let Some(reducer) =
+                    event::fold_shared_board(ndb, &txn, addr, std::slice::from_ref(team_pubkey))
+                {
                     let found = reducer
                         .finalize()
                         .iter()

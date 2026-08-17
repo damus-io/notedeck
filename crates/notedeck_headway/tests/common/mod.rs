@@ -230,7 +230,7 @@ pub fn apply_sealed(
         app_ctx.ndb,
         &txn,
         shared_addr,
-        &channel.keys.team_keypair.pubkey,
+        std::slice::from_ref(&channel.keys.team_keypair.pubkey),
     )
     .expect("shared board folds before an edit is applied to it");
     store::apply(
@@ -256,7 +256,12 @@ pub fn shared_board(
     let egui_ctx = device.ctx.clone();
     let app_ctx = &mut device.state_mut().notedeck.app_context(&egui_ctx);
     let txn = Transaction::new(app_ctx.ndb).expect("txn");
-    event::load_shared_board(app_ctx.ndb, &txn, board_addr, team_pubkey)
+    event::load_shared_board(
+        app_ctx.ndb,
+        &txn,
+        board_addr,
+        std::slice::from_ref(team_pubkey),
+    )
 }
 
 /// The titles of every card on a device's view of the shared board at
