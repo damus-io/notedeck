@@ -44,6 +44,11 @@ pub struct AppContext<'a> {
     /// [`KindRenderer`](crate::KindRenderer) widget) for the shell to route after
     /// `render`. Push via [`AppActionQueue::push`](crate::AppActionQueue::push).
     pub app_actions: &'a mut crate::AppActionQueue,
+    /// Frame-local navigation request queue. Apps enqueue pushes/replaces/back/
+    /// forward here (never touching the real stack); the chrome drains it after
+    /// render and applies each request to its global
+    /// [`NavStack`](crate::NavStack). See [`Navigator`](crate::Navigator).
+    pub navigator: &'a mut crate::Navigator,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

@@ -21,8 +21,8 @@ use notedeck::DrawerRouter;
 use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
-    tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
-    TabNotifications, UserAccount, WalletType,
+    tr, App, AppAction, AppContext, ChromeNavEntry, Localization, NavStack, Notedeck,
+    NotedeckOptions, NotedeckTextStyle, TabNotifications, UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use oot_bitset::{bitset_clear, bitset_get, bitset_set};
@@ -78,6 +78,16 @@ pub struct Chrome {
 
     pub repaint_causes: HashMap<egui::RepaintCause, u64>,
     nav: DrawerRouter,
+
+    /// The single, browser-style global navigation history spanning every app,
+    /// where back/forward can cross app boundaries. The chrome is its sole
+    /// mutator: apps request navigation via
+    /// [`AppContext::navigator`](notedeck::AppContext) and the chrome applies
+    /// those requests here. `None` until it is seeded with the first route —
+    /// this subissue only lands the empty stack; rendering and the drain that
+    /// mutates it arrive with the global-nav controls in a later subissue.
+    #[allow(dead_code)]
+    global_nav: Option<NavStack<ChromeNavEntry>>,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -245,6 +255,7 @@ impl Chrome {
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
+            global_nav: None,
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 app_ref.app_ctx.path,
@@ -357,6 +368,7 @@ impl Chrome {
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
+            global_nav: None,
             updater: notedeck::updater::Updater::new(
                 ctx.path,
                 &ctx.ndb,

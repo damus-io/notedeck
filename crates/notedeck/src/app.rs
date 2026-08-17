@@ -188,6 +188,10 @@ pub struct Notedeck {
     /// [`KindRenderer`](crate::KindRenderer) widget), drained and routed by the
     /// shell after each app's `render`.
     app_actions: AppActionQueue,
+    /// Frame-local navigation requests apps enqueue this frame (see
+    /// [`Navigator`](crate::Navigator)), drained and applied to the chrome-owned
+    /// global history after render.
+    navigator: crate::Navigator,
 
     /// Embedded localhost nostr relay, when enabled. Held so it shuts down with
     /// the app (its `Drop` stops the accept loop). Gated behind the `local-relay`
@@ -520,6 +524,7 @@ impl Notedeck {
             sound,
             registries: crate::AppRegistries::default(),
             app_actions: AppActionQueue::default(),
+            navigator: crate::Navigator::default(),
             #[cfg(feature = "local-relay")]
             local_relay,
             #[cfg(target_os = "android")]
@@ -577,6 +582,7 @@ impl Notedeck {
                 sound: &self.sound,
                 registries: &self.registries,
                 app_actions: &mut self.app_actions,
+                navigator: &mut self.navigator,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
