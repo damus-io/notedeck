@@ -114,11 +114,9 @@ pub struct Engine {
     /// are derived; both devices sharing a session share this key. See the
     /// module docs.
     account: enostr::FullKeypair,
-    /// The relay outbound session events publish to, and the target of the PNS
-    /// discovery subscription when the engine installs its own (via
-    /// [`Engine::connect`]). An embedding host that manages its own subscription
-    /// sets just this via [`Engine::set_relay`]. `None` means "ingest locally,
-    /// don't publish".
+    /// The relay a standalone engine publishes to and points its PNS discovery
+    /// subscription at, set by [`Engine::connect`]. `None` means "ingest locally,
+    /// don't publish" — the state of an embedded engine, whose host owns sync.
     pns_relay: Option<NormRelayUrl>,
     /// The long-lived relay sync loop, present only for a standalone engine
     /// ([`Engine::open`] / [`Engine::with_ndb`]). An embedded engine
@@ -243,15 +241,6 @@ impl Engine {
         }
         self.pns_relay = Some(relay);
         Ok(())
-    }
-
-    /// Point outbound publishes at `relay` without installing a subscription.
-    ///
-    /// For an embedding host that runs its own PNS discovery subscription: the
-    /// engine still needs to know where to publish the events its write methods
-    /// produce. `None` reverts to "ingest locally, don't publish".
-    pub fn set_relay(&mut self, relay: Option<NormRelayUrl>) {
-        self.pns_relay = relay;
     }
 
     /// Tear down the discovery subscription on the engine's [`Session`] and forget
