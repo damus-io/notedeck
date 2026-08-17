@@ -233,6 +233,23 @@ pub fn build_canvas<'a>(
     b
 }
 
+/// Build a tombstone revision that deletes the canvas keyed by `canvas_id`: a
+/// superseding kind-31606 with an empty body tagged `del`/`1`. Because kind 31606
+/// is replaceable, the store stamps a strictly-later `created_at` so this wins
+/// latest-wins over the live canvas document, and [`parse_canvas`] surfaces it as
+/// [`CanvasEvent::deleted`] so [`CanvasReducer::finalize`] drops the canvas from
+/// the vault. Reversible: a later [`build_canvas`] revision under the same `d`
+/// restores it, mirroring [`build_longform_tombstone`].
+pub fn build_canvas_tombstone<'a>(canvas_id: &str) -> NoteBuilder<'a> {
+    base(KIND_CANVAS, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(canvas_id)
+        .start_tag()
+        .tag_str("del")
+        .tag_str("1")
+}
+
 /// Build a longform note (kind 30023, NIP-23) keyed by `d`. The markdown body is
 /// the note content; `title`/`summary`/`published_at` and one `t` tag per hashtag
 /// are the standard NIP-23 metadata. Addressable, so an edit republishes with the
@@ -486,6 +503,10 @@ pub struct CanvasEvent {
     pub members: Vec<[u8; 32]>,
     pub open: bool,
     pub created_at: u64,
+    /// Whether this revision is a delete tombstone (a `del`/`1` tag). The winning
+    /// revision of a deleted canvas carries this; [`CanvasReducer::finalize`] drops
+    /// such canvases so they leave the vault (a later revision revives them).
+    pub deleted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -558,10 +579,12 @@ fn parse_canvas(note: &Note) -> Option<CanvasEvent> {
     let mut title = String::new();
     let mut members = Vec::new();
     let mut open = false;
+    let mut deleted = false;
 
     for tag in note.tags() {
         match tag.get_str(0) {
             Some("d") => id = tag.get_str(1).map(|s| s.to_owned()),
+            Some("del") => deleted = tag.get_str(1) == Some("1"),
             Some("title") => {
                 if let Some(t) = tag.get_str(1) {
                     title = t.to_owned();
@@ -584,6 +607,7 @@ fn parse_canvas(note: &Note) -> Option<CanvasEvent> {
         members,
         open,
         created_at: note.created_at(),
+        deleted,
     })
 }
 
@@ -980,6 +1004,12 @@ impl CanvasReducer {
         let mut views: Vec<CanvasView> = Vec::new();
 
         for ((author, canvas_id), canvas) in &self.canvases {
+            // A deleted canvas leaves the vault: its winning revision is a
+            // tombstone, so skip building a view for it (a later revision revives
+            // it). Mirrors [`list_longform`] dropping deleted notes.
+            if canvas.deleted {
+                continue;
+            }
             // A node/overlay/edge is *surfaced* if the canvas is open, or its
             // author is the owner or a listed member. Strangers can still append;
             // their contributions just sit in `pending` until promoted.
@@ -1442,6 +1472,45 @@ mod tests {
         assert!(c.open);
         assert_eq!(c.members, vec![*member.pubkey.bytes()]);
         assert_eq!(c.author, *owner.pubkey.bytes());
+        // A normal canvas revision is not a tombstone.
+        assert!(!c.deleted);
+    }
+
+    #[test]
+    fn canvas_tombstone_parses_as_deleted() {
+        let author = FullKeypair::generate();
+        let NotebookEvent::Canvas(c) = parse_signed(build_canvas_tombstone("c1"), &author) else {
+            panic!("expected canvas");
+        };
+        // Keeps the `d` (so it supersedes that canvas) but is flagged deleted and
+        // carries no title/members — the reducer drops it rather than surfacing it.
+        assert_eq!(c.id, "c1");
+        assert!(c.deleted);
+        assert!(c.title.is_empty());
+        assert!(c.members.is_empty());
+    }
+
+    #[test]
+    fn reduce_drops_deleted_canvas() {
+        let author = FullKeypair::generate();
+        let keep = parse_signed(
+            build_canvas("keep", "Keep", &[], false).created_at(100),
+            &author,
+        );
+        let gone = parse_signed(
+            build_canvas("gone", "Gone", &[], false).created_at(100),
+            &author,
+        );
+        // A later revision of `gone` is a tombstone: latest-wins makes it the
+        // winning revision, so finalize drops that canvas from the vault while the
+        // untouched sibling survives.
+        let tomb = parse_signed(build_canvas_tombstone("gone").created_at(101), &author);
+
+        let ids: Vec<String> = reduce(&[keep, gone, tomb])
+            .into_iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(ids, ["keep"]);
     }
 
     #[test]
