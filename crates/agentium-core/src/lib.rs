@@ -25,12 +25,10 @@ pub mod session_reconstructor;
 mod test_support;
 pub mod tool;
 pub mod tools;
-pub mod transport;
 mod util;
 pub mod waker;
 pub mod wordid;
 
-pub use engine::{Engine, EngineError, EngineTransport, SessionWatch};
+pub use engine::{Engine, EngineError, SessionWatch};
 pub use tool::{ToolArg, ToolArgType, ToolSpec};
-pub use transport::{SubscriptionId, SubscriptionSpec, Transport};
 pub use waker::Waker;

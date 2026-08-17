@@ -15,8 +15,8 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use agentium_core::Engine;
 use agentium_core::session_loader::SessionState;
-use agentium_core::{Engine, Transport};
 use enostr::Pubkey;
 use nostrdb::Transaction;
 
@@ -159,17 +159,15 @@ async fn run() -> Result<()> {
     // inner events.
     let ndb = nostrdb_net::relay::sync::open_ndb(db.as_deref(), APP)?;
     let mut engine = Engine::with_ndb(ndb, secret)?;
-    let mut transport = engine
-        .transport_handle()
-        .ok_or("engine started without a relay loop")?;
 
-    // Connect installs the PNS discovery subscription — kind-1080 events authored
-    // by this identity's derived PNS pubkey — which streams the whole encrypted
-    // session corpus into the cache (where ndb decrypts it) and points publishes
-    // at the relay. Best-effort: an unreachable relay just leaves us reading
-    // whatever the cache already holds. A `--author` pointing at someone else
-    // still can't decrypt *their* private sessions — only they hold that key.
-    engine.connect(&mut transport, &relay)?;
+    // Connect installs the PNS discovery subscription on the engine's `Session` —
+    // kind-1080 events authored by this identity's derived PNS pubkey — which
+    // streams the whole encrypted session corpus into the cache (where ndb
+    // decrypts it) and points publishes at the relay. Best-effort: an unreachable
+    // relay just leaves us reading whatever the cache already holds. A `--author`
+    // pointing at someone else still can't decrypt *their* private sessions —
+    // only they hold that key.
+    engine.connect(&relay)?;
 
     // Let the initial reconcile finish before we read. `wait_for_sync` resolves
     // deterministically once the PNS history backfill has settled — i.e. every
@@ -199,11 +197,9 @@ async fn run() -> Result<()> {
         Command::Log { session, view } => {
             cmd_log(&engine, &read_pk, session.as_deref(), &view, cli.json)?
         }
-        Command::Resume { session } => {
-            cmd_resume(&engine, &mut transport, &read_pk, &session).await?
-        }
+        Command::Resume { session } => cmd_resume(&engine, &read_pk, &session).await?,
         Command::Send { session, text } => {
-            cmd_send(&engine, &mut transport, &read_pk, &session, &text, cli.json).await?
+            cmd_send(&engine, &read_pk, &session, &text, cli.json).await?
         }
         Command::Spawn {
             host,
@@ -221,11 +217,9 @@ async fn run() -> Result<()> {
                 prompt,
                 wait,
             };
-            cmd_spawn(&engine, &mut transport, &read_pk, &opts, cli.json).await?
+            cmd_spawn(&engine, &read_pk, &opts, cli.json).await?
         }
-        Command::Interrupt { session } => {
-            cmd_interrupt(&engine, &mut transport, &read_pk, &session).await?
-        }
+        Command::Interrupt { session } => cmd_interrupt(&engine, &read_pk, &session).await?,
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
 
@@ -243,12 +237,7 @@ async fn run() -> Result<()> {
 /// Errors early (before publishing) when nothing matches, or when the resolved
 /// session has no CLI session id to resume — i.e. its backend never started, so
 /// there is nothing for `--resume` to reconstruct.
-async fn cmd_resume(
-    engine: &Engine,
-    transport: &mut impl Transport,
-    author: &Pubkey,
-    selector: &str,
-) -> Result<()> {
+async fn cmd_resume(engine: &Engine, author: &Pubkey, selector: &str) -> Result<()> {
     use agentium_core::session_loader::{
         load_deleted_session_states_for_author, load_session_states_for_author,
         resolve_session_including_deleted,
@@ -289,14 +278,7 @@ async fn cmd_resume(
         return Err(format!("{uri} has no recorded host; cannot target a resume").into());
     }
 
-    engine.resume_session(
-        transport,
-        &target_host,
-        &cwd,
-        &backend,
-        &target_sid,
-        &cli_sid,
-    )?;
+    engine.resume_session(&target_host, &cwd, &backend, &target_sid, &cli_sid)?;
 
     // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
     // after it resolves once the loop has drained (sent) the publish. Bounded so
@@ -312,8 +294,8 @@ async fn cmd_resume(
 ///
 /// Resolves the selector against the **live** session set only, builds a
 /// kind-1988 `user` event threaded onto the session's existing conversation, and
-/// publishes it through `transport` so the session's running agent (local *or*
-/// remote) picks it up over relay sync. Reports the resulting event id.
+/// publishes it through the engine's [`Session`] so the session's running agent
+/// (local *or* remote) picks it up over relay sync. Reports the resulting event id.
 ///
 /// Live-only on purpose: a tombstoned (soft-deleted) session has no backend
 /// reading its conversation, so a message would just root a stray thread nobody
@@ -328,7 +310,6 @@ async fn cmd_resume(
 /// post-publish flush mirrors [`cmd_resume`].
 async fn cmd_send(
     engine: &Engine,
-    transport: &mut impl Transport,
     author: &Pubkey,
     selector: &str,
     text: &str,
@@ -364,7 +345,7 @@ async fn cmd_send(
 
     // Build + ingest + publish the kind-1988 `user` message; the returned event
     // carries the durable note id we report.
-    let built = engine.send_message(transport, &session_id, text)?;
+    let built = engine.send_message(&session_id, text)?;
     let event_id = hex::encode(built.note_id);
 
     // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
@@ -513,7 +494,6 @@ fn merge_spawn_target(
 /// as [`cmd_send`].
 async fn cmd_spawn(
     engine: &Engine,
-    transport: &mut impl Transport,
     author: &Pubkey,
     opts: &SpawnOpts,
     as_json: bool,
@@ -534,7 +514,6 @@ async fn cmd_spawn(
     };
 
     let spawn_id = engine.spawn_session(
-        transport,
         &target.host,
         &target.cwd,
         &target.backend,
@@ -598,7 +577,7 @@ async fn cmd_spawn(
     // reusing the send path. Report its event id alongside the spawn.
     let event_id = match &opts.prompt {
         Some(prompt) => {
-            let built = engine.send_message(transport, &state.claude_session_id, prompt)?;
+            let built = engine.send_message(&state.claude_session_id, prompt)?;
             let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
             Some(hex::encode(built.note_id))
         }
@@ -681,12 +660,7 @@ fn emit_spawn(
 ///
 /// Mirrors [`cmd_send`]'s resolve → engine-verb → bounded post-publish flush,
 /// minus the message body and reported event id — an interrupt is fire-and-forget.
-async fn cmd_interrupt(
-    engine: &Engine,
-    transport: &mut impl Transport,
-    author: &Pubkey,
-    selector: &str,
-) -> Result<()> {
+async fn cmd_interrupt(engine: &Engine, author: &Pubkey, selector: &str) -> Result<()> {
     use agentium_core::session_loader::{
         load_deleted_session_states_for_author, load_session_states_for_author, resolve_session,
     };
@@ -711,7 +685,7 @@ async fn cmd_interrupt(
         (state.claude_session_id.clone(), state.agentium_uri())
     };
 
-    engine.interrupt_session(transport, &session_id)?;
+    engine.interrupt_session(&session_id)?;
 
     // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
     // after it resolves once the loop has drained (sent) the publish. Bounded so
@@ -890,8 +864,9 @@ fn cmd_log(
 /// we re-read the whole ordered conversation and print only the suffix past the
 /// highest order already shown (via [`first_after`]) — never a message count, so
 /// a slightly-out-of-order live insert can't reprint or misorder. A status
-/// change (e.g. `-> needs_input`) is surfaced as a distinct line. The transport
-/// stays connected (as in [`run`]) so new relay envelopes keep firing the watch.
+/// change (e.g. `-> needs_input`) is surfaced as a distinct line. The engine's
+/// [`Session`] stays connected (as in [`run`]) so new relay envelopes keep firing
+/// the watch.
 ///
 /// A live stream can't be paged or reconstructed from the point-in-time archive,
 /// so `--pager`/`--jsonl` were already rejected in parsing (see

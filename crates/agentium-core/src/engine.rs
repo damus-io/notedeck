@@ -1,7 +1,8 @@
 //! The agentium engine: an owned [`Ndb`] plus session-protocol orchestration
-//! that speaks only to a [`Transport`], so the same engine drops into a desktop
-//! host (which brings its own relay stack) or a standalone/iOS process (which
-//! uses the engine's own relay-sync loop) with no host application context.
+//! over a long-lived [`nostrdb_net::relay::sync::Session`], so the same engine
+//! drops into a standalone/iOS process (which lets the engine own a relay-sync
+//! loop) or an embedding host (which drives sync itself) with no host application
+//! context.
 //!
 //! # Database ownership
 //!
@@ -13,18 +14,17 @@
 //! one stored type:
 //!
 //! - [`Engine::open`] — standalone/iOS: the engine creates its own database and
-//!   holds it, and spawns its own relay loop.
+//!   holds it, and spawns its own [`Session`] sync loop.
 //! - [`Engine::with_ndb`] — a standalone engine over a database the caller
-//!   already opened; also spawns the relay loop.
+//!   already opened; also spawns the [`Session`].
 //! - [`Engine::embedded`] — an embedding host passes a *clone* of its own
-//!   database and drives the relay itself; no loop is spawned. Both point at the
-//!   same db, and the engine dropping won't tear down the host's db because the
-//!   host still holds a clone.
+//!   database and drives sync itself; no [`Session`] is spawned. Both point at
+//!   the same db, and the engine dropping won't tear down the host's db because
+//!   the host still holds a clone.
 //!
-//! Holding by value is also *required* for the standalone loop, not merely
-//! convenient: the reconcile loop runs in a `tokio::spawn`ed task and needs a
-//! `'static` handle, so a borrowed `&Ndb` couldn't move into the task — a cloned
-//! `Ndb` is exactly right.
+//! Holding by value is also *required* for the standalone [`Session`], not merely
+//! convenient: the [`Session`] runs a `tokio::spawn`ed loop that needs a
+//! `'static` handle, so it takes a cloned `Ndb`.
 //!
 //! # Identity
 //!
@@ -37,67 +37,35 @@
 //! nostrdb's ingest threads unwrap inbound PNS envelopes into queryable inner
 //! events without any per-event work by the engine.
 //!
-//! # Relay loop
+//! # Relay sync
 //!
-//! A *standalone* engine ([`Engine::open`] / [`Engine::with_ndb`]) `tokio::spawn`s
-//! a background task ([`engine_loop`]) that owns a [`RelayPool`] for the live
-//! subscription stream and, per subscription, a NIP-77 negentropy [`backfill`]
-//! task for bounded history. [`Engine::transport_handle`] hands out an
-//! [`EngineTransport`] onto that loop — a thin [`Transport`] front end whose
-//! methods enqueue commands the loop drains — which the caller passes into the
-//! write/connect methods. Because the loop is spawned, `open`/`with_ndb` must be
-//! called from within a Tokio runtime.
+//! A *standalone* engine ([`Engine::open`] / [`Engine::with_ndb`]) owns a
+//! [`Session`] — nostrdb_net's long-lived client sync loop, shared with the
+//! notedeck host and the CLIs. [`Engine::connect`] declares the single PNS
+//! discovery subscription on it (a live `REQ` plus a NIP-77 negentropy backfill
+//! of bounded history), and the write methods publish their PNS envelopes through
+//! it. Because the [`Session`] spawns its loop, `open`/`with_ndb` must be called
+//! from within a Tokio runtime.
 //!
-//! An *embedded* engine ([`Engine::embedded`]) spawns no loop and needs no
-//! runtime: the host already owns a relay stack and passes its own [`Transport`]
-//! into the same write/connect methods. Either way the engine only ever speaks
-//! to a [`Transport`], so its logic is identical in both settings.
+//! An *embedded* engine ([`Engine::embedded`]) owns no [`Session`] and needs no
+//! runtime: the host already owns a relay stack, runs its own discovery
+//! subscription, and publishes the events the engine's `prepare_*` methods build.
+//! Its write methods still ingest locally, they just don't publish.
 //!
-//! The write/connect methods take the [`Transport`] as a `&mut` parameter rather
-//! than the engine owning one, so a standalone caller can borrow its own
-//! [`EngineTransport`] handle mutably *and* the engine for the same call without
-//! aliasing.
-//!
-//! ## Keeping the futures `Send`
-//!
-//! `nostrdb::Filter`/`Note`/`Transaction` wrap raw pointers and are `!Send`, so
-//! the loop and backfill tasks must never hold one across an `.await` (a value
-//! merely *in scope* across an await counts, even after an explicit `drop`).
-//! Two rules keep everything `Send` and spawnable on the shared multi-thread
-//! runtime:
-//!
-//! - Filters cross the command channel and live in the loop's state as
-//!   [`SendFilter`] (nostrdb's sendable, non-custom filter wrapper), converted
-//!   from the caller's `Filter`s on the caller's thread. They are turned back
-//!   into a transient `Filter` — only synchronously, never across an await — to
-//!   build a `REQ` or a negentropy fold. (A filter with a custom predicate can't
-//!   be a `SendFilter`, but such predicates are local-only and meaningless on
-//!   the wire, so dropping them for a remote subscription is correct.)
-//! - Fallible relay calls return `Box<dyn Error>` (also `!Send`); [`backfill`]
-//!   collapses each such `Result` into a `Send` value before the next await
-//!   rather than letting the error linger in scope.
-//!
-//! (nostrdb_net's [`sync::Relay::sync_into`] was likewise adjusted upstream to
-//! drop its parsed `Filter` before awaiting, so its future is `Send` too.)
-
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+//! The [`Session`] keeps its own futures `Send` (its `!Send` `nostrdb::Filter`s
+//! cross the loop as [`SendFilter`](nostrdb::SendFilter) and never linger across
+//! an await); the engine only hands it plain `Filter`s and pre-serialized event
+//! JSON, so none of that discipline leaks up here.
 
 use enostr::pns::PNS_KIND;
 use enostr::NormRelayUrl;
 use futures_util::StreamExt;
-use nostrdb::{Filter, Ndb, SendFilter, SubscriptionStream, Transaction};
-use nostrdb_net::relay::sync;
-use nostrdb_net::{ClientMessage, RelayPool, RelayStatus, WsEvent, WsMessage};
-use tokio::sync::{mpsc, oneshot, Notify};
-use tokio::time::interval;
+use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
+use nostrdb_net::relay::sync::Session;
 
 use crate::messages::Message;
 use crate::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
 use crate::session_loader::SessionState;
-use crate::transport::{SubscriptionId, SubscriptionSpec, Transport};
 
 /// An error from constructing or driving the [`Engine`].
 #[derive(Debug, thiserror::Error)]
@@ -131,83 +99,14 @@ const PNS_HISTORY_WINDOW_SECS: u64 = 7 * 86400;
 /// Cap on the number of live PNS events the discovery subscription replays.
 const PNS_LIVE_LIMIT: u64 = 500;
 
-/// How often the loop pings/reconnects relays to keep the pool alive.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
-
-/// A command from a [`Transport`] method to the background [`engine_loop`].
-///
-/// Every field is `Send`: filters are wrapped as [`SendFilter`] and relay urls
-/// are strings, converted on the caller's thread.
-enum EngineCmd {
-    SetSubscription {
-        id: SubscriptionId,
-        url: String,
-        live: Vec<SendFilter>,
-        history: Vec<SendFilter>,
-    },
-    DropSubscription(SubscriptionId),
-    Publish {
-        note_json: String,
-        relays: Vec<String>,
-    },
-    /// A settle barrier (see [`Engine::wait_for_sync`]). Because this rides the
-    /// same FIFO command channel, by the time the loop handles it every
-    /// previously-enqueued [`SetSubscription`](EngineCmd::SetSubscription) has
-    /// already spawned its backfill and bumped the started count — so the loop
-    /// can hand back a [`SyncSettle`] that resolves once exactly those backfills
-    /// have completed.
-    WaitForSync(oneshot::Sender<SyncSettle>),
-}
-
-/// Shared backfill-completion tracker owned by the [`engine_loop`] and observed
-/// by [`SyncSettle`] waiters.
-///
-/// `done` counts every backfill task that has *finished* — success, error, or
-/// panic all count, via a drop guard — so a settle wait can never hang on a task
-/// that died. `notify` wakes waiters on each completion. The started count is
-/// held loop-locally (only the loop spawns backfills), so it needs no atomic.
-#[derive(Default)]
-struct BackfillProgress {
-    done: AtomicU64,
-    notify: Notify,
-}
-
-/// A one-shot handle that resolves once the initial history backfill(s) have
-/// settled, returned by [`Engine::wait_for_sync`].
-///
-/// It captures a `target` snapshot of how many backfills had been started when
-/// the settle barrier reached the loop, and resolves once that many have
-/// completed. Deterministic because each backfill's `sync_into` returns only
-/// after its received events are queryable — so "settled" means the reconciled
-/// history is actually readable, not merely that a timer elapsed.
-pub struct SyncSettle {
-    progress: Arc<BackfillProgress>,
-    target: u64,
-}
-
-impl SyncSettle {
-    /// Resolve once the tracked backfills have completed. Returns immediately if
-    /// none were in flight at the barrier (e.g. a connect with no history
-    /// filters, or a relay that never got a subscription).
-    pub async fn settled(self) {
-        loop {
-            // Register for the wakeup *before* re-checking, so a completion that
-            // lands between the check and the await is not lost.
-            let notified = self.progress.notify.notified();
-            if self.progress.done.load(Ordering::Acquire) >= self.target {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
+/// The stable [`Session`] subscription id for the PNS discovery subscription.
+const PNS_DISCOVERY_SUB_ID: &str = "agentium/pns:discovery";
 
 /// The agentium engine.
 ///
-/// See the module docs for db ownership, identity, and the relay loop. Its
-/// write/connect methods take a [`Transport`]; a standalone engine hands out one
-/// onto its own loop via [`Engine::transport_handle`], and dropping the engine
-/// stops that loop (the command channel closes and the task returns).
+/// See the module docs for db ownership, identity, and relay sync. A standalone
+/// engine owns a [`Session`]; dropping the engine drops it, stopping its loop. An
+/// embedded engine owns none and lets its host drive sync.
 pub struct Engine {
     ndb: Ndb,
     /// The single device identity. Its secret key signs the inner session
@@ -221,18 +120,17 @@ pub struct Engine {
     /// sets just this via [`Engine::set_relay`]. `None` means "ingest locally,
     /// don't publish".
     pns_relay: Option<NormRelayUrl>,
-    /// The command channel to the self-driving relay loop, present only for a
-    /// standalone engine ([`Engine::open`] / [`Engine::with_ndb`]). An embedded
-    /// engine ([`Engine::embedded`]) has no loop — its host drives the relay and
-    /// passes its own [`Transport`] into the write/connect methods — so this is
-    /// `None`. [`Engine::transport_handle`] exposes an owned handle onto it.
-    cmd_tx: Option<mpsc::UnboundedSender<EngineCmd>>,
+    /// The long-lived relay sync loop, present only for a standalone engine
+    /// ([`Engine::open`] / [`Engine::with_ndb`]). An embedded engine
+    /// ([`Engine::embedded`]) has none — its host drives sync and publishes the
+    /// events the engine's `prepare_*` methods build — so this is `None`.
+    session: Option<Session>,
 }
 
 impl Engine {
     /// Open a standalone engine over its own nostrdb at `path` (created if
     /// absent). Use this on a host that has no existing database of its own.
-    /// Must be called from within a Tokio runtime (spawns the relay loop).
+    /// Must be called from within a Tokio runtime (spawns the [`Session`] loop).
     ///
     /// `device_key` is the 32-byte account secret — see [`Engine::with_ndb`].
     pub fn open(path: &str, device_key: [u8; 32]) -> Result<Self, EngineError> {
@@ -240,11 +138,11 @@ impl Engine {
         Self::with_ndb(ndb, device_key)
     }
 
-    /// Build an engine over an existing database, taking a cheap [`Ndb`] clone.
-    /// Use this on an embedding host: pass `host_ndb.clone()` so the engine and
-    /// host share one database and neither's drop tears it down while the other
-    /// still holds a handle. Must be called from within a Tokio runtime (spawns
-    /// the relay loop).
+    /// Build a standalone engine over an existing database, taking a cheap
+    /// [`Ndb`] clone. Use this when the caller already opened the database (e.g.
+    /// the CLIs, which share nostrdb_net's managed cache) but wants agentium-core
+    /// to own its own relay sync. Must be called from within a Tokio runtime
+    /// (spawns the [`Session`] loop).
     ///
     /// `device_key` is the 32-byte account secret. It is registered with the
     /// database via [`Ndb::add_key`] so nostrdb's ingest threads decrypt inbound
@@ -254,20 +152,19 @@ impl Engine {
     /// secret.
     pub fn with_ndb(ndb: Ndb, device_key: [u8; 32]) -> Result<Self, EngineError> {
         let mut engine = Self::embedded(ndb.clone(), device_key)?;
-        // Spawn the self-driving relay loop and keep its command channel so
-        // `transport_handle` can hand out owned handles onto it.
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        tokio::spawn(engine_loop(ndb, cmd_rx));
-        engine.cmd_tx = Some(cmd_tx);
+        // Own a `Session` over the same db so the standalone engine drives its own
+        // remote sync. `Session::new` `tokio::spawn`s its loop, hence the runtime
+        // requirement.
+        engine.session = Some(Session::new(ndb));
         Ok(engine)
     }
 
-    /// Build an engine over an existing database *without* a relay loop, for an
-    /// embedding host that already owns a relay stack. Reads work immediately;
-    /// the host drives sync itself and passes its own [`Transport`] into the
-    /// write/connect methods (and calls [`Engine::set_relay`] to point publishes
-    /// at its chosen relay). Unlike [`Engine::with_ndb`] this needs no Tokio
-    /// runtime and spawns no thread.
+    /// Build an engine over an existing database *without* a [`Session`], for an
+    /// embedding host that already owns the relay sync. Reads work immediately;
+    /// the host drives sync itself (its own [`Session`] pulls this identity's
+    /// PNS/SNS envelopes in and fans freshly-ingested ones back out), and the
+    /// engine only builds+ingests events via its `prepare_*` methods. Unlike
+    /// [`Engine::with_ndb`] this needs no Tokio runtime and spawns no thread.
     ///
     /// `device_key` is the 32-byte account secret, registered with the database
     /// via [`Ndb::add_key`] and used as the signing/derivation identity — see
@@ -285,17 +182,8 @@ impl Engine {
             ndb,
             account,
             pns_relay: None,
-            cmd_tx: None,
+            session: None,
         })
-    }
-
-    /// An owned [`Transport`] handle onto this engine's self-driving relay loop,
-    /// or `None` for an [`embedded`](Engine::embedded) engine (which has no
-    /// loop). Standalone callers pass `&mut` this handle into the write/connect
-    /// methods; taking an owned handle (a clone of the loop's command channel)
-    /// avoids aliasing the `&mut self` those methods also need.
-    pub fn transport_handle(&self) -> Option<EngineTransport> {
-        self.cmd_tx.clone().map(|cmd_tx| EngineTransport { cmd_tx })
     }
 
     /// The engine's database handle.
@@ -316,25 +204,20 @@ impl Engine {
         enostr::pns::derive_pns_keys(&self.account.secret_key.secret_bytes())
     }
 
-    /// Connect to a relay for remote sync.
+    /// Connect a standalone engine to a relay for remote sync.
     ///
-    /// Installs the single PNS discovery subscription — kind-1080 events authored
-    /// by this identity's PNS pubkey — which streams the whole identity's
-    /// encrypted corpus (every session's state and conversation) into the
-    /// database, where ndb's ingest threads decrypt it into queryable inner
-    /// events. The same relay becomes the publish target for outbound events.
-    /// Reconnecting to a different relay just re-points the subscription.
+    /// Installs the single PNS discovery subscription on the engine's [`Session`]
+    /// — kind-1080 events authored by this identity's PNS pubkey — which streams
+    /// the whole identity's encrypted corpus (every session's state and
+    /// conversation) into the database, where ndb's ingest threads decrypt it into
+    /// queryable inner events. The same relay becomes the publish target for
+    /// outbound events. Reconnecting to a different relay just re-points the
+    /// subscription.
     ///
-    /// `transport` is where the subscription is declared: a standalone engine
-    /// passes its own [`transport_handle`](Engine::transport_handle); an
-    /// embedding host that wants the engine to own the discovery subscription
-    /// passes its host transport. A host that manages that subscription itself
-    /// should skip `connect` and call [`Engine::set_relay`] instead.
-    pub fn connect(
-        &mut self,
-        transport: &mut impl Transport,
-        relay_url: &str,
-    ) -> Result<(), EngineError> {
+    /// A no-op for an [`embedded`](Engine::embedded) engine (no [`Session`]): its
+    /// host owns the discovery subscription. Such a host points the engine's
+    /// publishes at its relay via [`Engine::set_relay`] instead.
+    pub fn connect(&mut self, relay_url: &str) -> Result<(), EngineError> {
         let relay = NormRelayUrl::new(relay_url)?;
         let pns_author = self.pns_keys().keypair.pubkey;
         let since = now_secs().saturating_sub(PNS_HISTORY_WINDOW_SECS);
@@ -350,12 +233,14 @@ impl Engine {
             .since(since)
             .build();
 
-        transport.set_subscription(SubscriptionSpec {
-            id: pns_discovery_sub_id(),
-            relay: relay.clone(),
-            live_filters: vec![live],
-            history_filters: vec![history],
-        });
+        if let Some(session) = &self.session {
+            session.set_subscription(
+                PNS_DISCOVERY_SUB_ID,
+                relay.to_string(),
+                vec![live],
+                vec![history],
+            );
+        }
         self.pns_relay = Some(relay);
         Ok(())
     }
@@ -369,11 +254,14 @@ impl Engine {
         self.pns_relay = relay;
     }
 
-    /// Tear down the discovery subscription (via `transport`) and forget the
-    /// relay. Outbound events built after this are ingested locally but not
-    /// published until the next [`Engine::connect`].
-    pub fn disconnect(&mut self, transport: &mut impl Transport) {
-        transport.drop_subscription(&pns_discovery_sub_id());
+    /// Tear down the discovery subscription on the engine's [`Session`] and forget
+    /// the relay. Outbound events built after this are ingested locally but not
+    /// published until the next [`Engine::connect`]. A no-op for an embedded
+    /// engine (no [`Session`]).
+    pub fn disconnect(&mut self) {
+        if let Some(session) = &self.session {
+            session.drop_subscription(PNS_DISCOVERY_SUB_ID);
+        }
         self.pns_relay = None;
     }
 
@@ -387,29 +275,25 @@ impl Engine {
     ///
     /// Call it right after [`Engine::connect`]: the connect installs the PNS
     /// discovery subscription whose history filters spawn a NIP-77 negentropy
-    /// [`backfill`], and the returned future resolves once that backfill (and any
-    /// other in flight when this is called) has completed — meaning the
-    /// reconciled events are actually queryable, since each `sync_into` returns
-    /// only after its received events are ingested. Read the session snapshot
-    /// once this resolves and you see the whole synced batch, not a race with it.
+    /// negentropy backfill on the engine's [`Session`], and the returned future
+    /// resolves once that backfill (and any other in flight when this is called)
+    /// has completed — meaning the reconciled events are actually queryable, since
+    /// each `sync_into` returns only after its received events are ingested. Read
+    /// the session snapshot once this resolves and you see the whole synced batch,
+    /// not a race with it.
     ///
-    /// Ordering is exact, not best-effort: the settle barrier rides the same FIFO
-    /// command channel as `connect`'s subscription, so by the time the loop
-    /// handles it the backfill has already been counted. Resolves immediately for
-    /// a connect that requested no history, or once the relay's history is in.
+    /// Ordering is exact, not best-effort: the [`Session`]'s settle barrier rides
+    /// the same FIFO command channel as `connect`'s subscription, so by the time
+    /// its loop handles it the backfill has already been counted. Resolves
+    /// immediately for a connect that requested no history, or once the relay's
+    /// history is in.
     ///
     /// Returns `None` for an [`embedded`](Engine::embedded) engine — it has no
-    /// self-driving loop, so its host owns sync and observes settle its own way.
+    /// [`Session`], so its host owns sync and observes settle its own way.
     /// Standalone callers should still bound the wait with a timeout, since a
     /// reachable-but-silent relay could otherwise stall the reconcile.
     pub async fn wait_for_sync(&self) -> Option<()> {
-        let cmd_tx = self.cmd_tx.as_ref()?;
-        let (tx, rx) = oneshot::channel();
-        // A send error means the loop is gone (engine torn down); a recv error
-        // means it dropped the reply before answering. Either way there is
-        // nothing to wait on, so treat both as "no settle signal available".
-        cmd_tx.send(EngineCmd::WaitForSync(tx)).ok()?;
-        rx.await.ok()?.settled().await;
+        self.session.as_ref()?.wait_for_sync().await;
         Some(())
     }
 
@@ -482,21 +366,20 @@ impl Engine {
     /// Send a user message into a session.
     ///
     /// Builds a kind-1988 `user` event threaded onto the session's existing
-    /// conversation and publishes it. Works whether or not the session is known
-    /// locally (a brand-new session simply starts a fresh thread). `transport`
-    /// carries the PNS envelope to the relay — see [`Engine::transport_handle`].
+    /// conversation and publishes it through the engine's [`Session`]. Works
+    /// whether or not the session is known locally (a brand-new session simply
+    /// starts a fresh thread).
     ///
     /// Returns the [`BuiltEvent`](crate::session_events::BuiltEvent) it published
     /// so a caller (e.g. `agentium send`) can report the resulting event id;
     /// callers that don't need it just discard the value.
     pub fn send_message(
         &self,
-        transport: &mut impl Transport,
         session_id: &str,
         text: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
         let built = self.make_user_message(session_id, text)?;
-        self.publish_session_event(transport, &built)?;
+        self.publish_session_event(&built)?;
         Ok(built)
     }
 
@@ -551,7 +434,6 @@ impl Engine {
     /// [`build_spawn_command_event`]: crate::session_events::build_spawn_command_event
     pub fn spawn_session(
         &self,
-        transport: &mut impl Transport,
         target_host: &str,
         cwd: &str,
         backend: &str,
@@ -559,7 +441,7 @@ impl Engine {
     ) -> Result<String, EngineError> {
         let spawn_id = uuid::Uuid::new_v4().to_string();
         let built = self.make_spawn_command(target_host, cwd, backend, title, &spawn_id, None)?;
-        self.publish_session_event(transport, &built)?;
+        self.publish_session_event(&built)?;
         Ok(spawn_id)
     }
 
@@ -573,7 +455,6 @@ impl Engine {
     /// rather than creating a new one. Returns the `spawn_id` for symmetry.
     pub fn resume_session(
         &self,
-        transport: &mut impl Transport,
         target_host: &str,
         cwd: &str,
         backend: &str,
@@ -589,7 +470,7 @@ impl Engine {
         // the revived session keeps whatever title it already had.
         let built =
             self.make_spawn_command(target_host, cwd, backend, None, &spawn_id, Some(&resume))?;
-        self.publish_session_event(transport, &built)?;
+        self.publish_session_event(&built)?;
         Ok(spawn_id)
     }
 
@@ -671,7 +552,6 @@ impl Engine {
     /// if no request with `perm_id` is present in the session.
     pub fn respond_permission(
         &self,
-        transport: &mut impl Transport,
         session_id: &str,
         perm_id: &str,
         allow: bool,
@@ -685,7 +565,7 @@ impl Engine {
             message.as_deref(),
             cancel_turn,
         )?;
-        self.publish_session_event(transport, &built)
+        self.publish_session_event(&built)
     }
 
     /// Build a kind-1988 permission response, ingest it locally, and return it
@@ -769,7 +649,6 @@ impl Engine {
     /// `request_id` is present in the session.
     pub fn respond_question(
         &self,
-        transport: &mut impl Transport,
         session_id: &str,
         request_id: &str,
         answers: Vec<crate::messages::QuestionAnswer>,
@@ -815,20 +694,15 @@ impl Engine {
             &self.seckey(),
         )
         .map_err(|e| EngineError::Build(e.to_string()))?;
-        self.publish_session_event(transport, &built)
+        self.publish_session_event(&built)
     }
 
     /// Request a permission-mode change on a session's host (e.g. `"default"`,
     /// `"acceptEdits"`, `"plan"`). Publishes a kind-1988 command the host applies
     /// to its local backend.
-    pub fn set_permission_mode(
-        &self,
-        transport: &mut impl Transport,
-        session_id: &str,
-        mode: &str,
-    ) -> Result<(), EngineError> {
+    pub fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<(), EngineError> {
         let built = self.make_set_permission_mode(session_id, mode)?;
-        self.publish_session_event(transport, &built)
+        self.publish_session_event(&built)
     }
 
     /// Build a kind-1988 set-permission-mode command, ingest it locally, and
@@ -867,13 +741,9 @@ impl Engine {
     /// host applies to its local backend, aborting the current turn/tool loop —
     /// the remote-session counterpart to the local Escape interrupt. A no-op
     /// against a session that isn't currently running a turn.
-    pub fn interrupt_session(
-        &self,
-        transport: &mut impl Transport,
-        session_id: &str,
-    ) -> Result<(), EngineError> {
+    pub fn interrupt_session(&self, session_id: &str) -> Result<(), EngineError> {
         let built = self.make_interrupt(session_id)?;
-        self.publish_session_event(transport, &built)
+        self.publish_session_event(&built)
     }
 
     /// Build a kind-1988 interrupt command, ingest it locally, and return it for
@@ -957,17 +827,30 @@ impl Engine {
         Ok(wrapped)
     }
 
-    /// Wrap, ingest locally, and publish a freshly-built inner event. Local
-    /// ingest always happens; publishing is deferred if no publish relay is set.
+    /// Publish an event this engine already built (e.g. a host answering a spawn
+    /// command with a kind-31988 state) through its [`Session`]: wrap it in its PNS
+    /// envelope, ingest locally, and send it to the configured relay. A thin public
+    /// front for [`publish_session_event`](Self::publish_session_event); a no-op on
+    /// the wire for an engine with no [`Session`]/relay.
+    pub fn publish_event(
+        &self,
+        built: &crate::session_events::BuiltEvent,
+    ) -> Result<(), EngineError> {
+        self.publish_session_event(built)
+    }
+
+    /// Wrap, ingest locally, and publish a freshly-built inner event through the
+    /// engine's [`Session`]. Local ingest always happens; publishing is skipped
+    /// when there is no [`Session`] (an embedded engine — its host fans the
+    /// freshly-ingested envelope out) or no publish relay is set.
     fn publish_session_event(
         &self,
-        transport: &mut impl Transport,
         built: &crate::session_events::BuiltEvent,
     ) -> Result<(), EngineError> {
         let wrapped = self.wrap_and_ingest(built)?;
-        match self.pns_relay.clone() {
-            Some(relay) => transport.publish_event_json(wrapped, vec![relay]),
-            None => tracing::debug!("engine: no publish relay set; event ingested locally only"),
+        match (&self.session, self.pns_relay.as_ref()) {
+            (Some(session), Some(relay)) => session.publish(wrapped, vec![relay.to_string()]),
+            _ => tracing::debug!("engine: no session/publish relay; event ingested locally only"),
         }
         Ok(())
     }
@@ -994,11 +877,6 @@ impl SessionWatch {
     }
 }
 
-/// The stable transport subscription id for the PNS discovery subscription.
-fn pns_discovery_sub_id() -> SubscriptionId {
-    SubscriptionId::new("agentium/pns", "discovery")
-}
-
 /// The current Unix time in seconds.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -1007,283 +885,12 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Wrap caller filters as [`SendFilter`] so they can cross to the loop thread,
-/// dropping any with a custom predicate (not sendable, and not meaningful on the
-/// wire for a remote subscription).
-fn to_send_filters(filters: Vec<Filter>) -> Vec<SendFilter> {
-    filters
-        .into_iter()
-        .filter_map(|f| SendFilter::try_from_filter(f).ok())
-        .collect()
-}
-
-/// An owned [`Transport`] onto a standalone [`Engine`]'s self-driving relay
-/// loop, produced by [`Engine::transport_handle`].
-///
-/// It holds a clone of the loop's command channel, so it is `Send`, cheap to
-/// create, and — being a value distinct from the engine — can be borrowed
-/// `&mut` while the engine is borrowed for the same write call (the aliasing an
-/// `impl Transport for Engine` would otherwise cause). Every method just
-/// enqueues a command the loop drains, so nothing blocks.
-pub struct EngineTransport {
-    cmd_tx: mpsc::UnboundedSender<EngineCmd>,
-}
-
-impl Transport for EngineTransport {
-    fn publish_event_json(&mut self, note_json: String, relays: Vec<enostr::NormRelayUrl>) {
-        let relays = relays.iter().map(|r| r.to_string()).collect();
-        let _ = self.cmd_tx.send(EngineCmd::Publish { note_json, relays });
-    }
-
-    fn set_subscription(&mut self, spec: SubscriptionSpec) {
-        let _ = self.cmd_tx.send(EngineCmd::SetSubscription {
-            id: spec.id,
-            url: spec.relay.to_string(),
-            live: to_send_filters(spec.live_filters),
-            history: to_send_filters(spec.history_filters),
-        });
-    }
-
-    fn drop_subscription(&mut self, id: &SubscriptionId) {
-        let _ = self.cmd_tx.send(EngineCmd::DropSubscription(*id));
-    }
-}
-
-/// The relay subscription id for a [`SubscriptionId`] — the wire `REQ`/`CLOSE`
-/// subscription string.
-fn subid(id: &SubscriptionId) -> String {
-    format!("{}:{}", id.owner, id.key)
-}
-
-/// Build a `REQ` [`ClientMessage`] for `filters`. Cloning each [`SendFilter`]
-/// back to a transient `Filter` is done synchronously (never across an await),
-/// so the loop future stays `Send`.
-fn req_message(sid: String, filters: &[SendFilter]) -> ClientMessage {
-    ClientMessage::req(sid, filters.iter().map(|f| f.as_filter().clone()).collect())
-}
-
-/// Whether `url` is currently connected in the pool (so a `REQ`/`EVENT` can be
-/// sent now rather than deferred until its `Opened` event).
-fn relay_connected(pool: &RelayPool, url: &str) -> bool {
-    pool.relays
-        .iter()
-        .any(|r| r.relay.url == url && matches!(r.relay.status, RelayStatus::Connected))
-}
-
-/// The background relay loop: owns the [`RelayPool`], ingests inbound events into
-/// `ndb`, and applies [`EngineCmd`]s. Returns when the command channel closes
-/// (all [`Transport`] handles — i.e. the [`Engine`] — dropped).
-async fn engine_loop(ndb: Ndb, mut cmd_rx: mpsc::UnboundedReceiver<EngineCmd>) {
-    let notify = Arc::new(Notify::new());
-    let wakeup = {
-        let notify = notify.clone();
-        move || notify.notify_one()
-    };
-
-    let mut state = LoopState::default();
-    let mut keepalive = interval(KEEPALIVE_INTERVAL);
-
-    loop {
-        // Drain everything the pool has ready: ingest events, and flush desired
-        // subs / queued publishes to relays as they come up.
-        while let Some(ev) = state.pool.try_recv().map(|e| e.into_owned()) {
-            match ev.event {
-                WsEvent::Opened => {
-                    if let Some(subs) = state.desired.get(&ev.relay) {
-                        for (sid, filters) in subs {
-                            state
-                                .pool
-                                .send_to(&req_message(sid.clone(), filters), &ev.relay);
-                        }
-                    }
-                    if let Some(frames) = state.pending.remove(&ev.relay) {
-                        for frame in frames {
-                            state.pool.send_to(&ClientMessage::raw(frame), &ev.relay);
-                        }
-                    }
-                }
-                WsEvent::Message(WsMessage::Text(text)) => {
-                    // Only EVENT frames ingest; EOSE/NOTICE/OK aren't events, so
-                    // a parse/ingest failure here is expected, not an error.
-                    if let Err(e) = ndb.process_event(&text) {
-                        tracing::trace!("engine: skipped non-event relay message: {e}");
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        tokio::select! {
-            cmd = cmd_rx.recv() => {
-                let Some(cmd) = cmd else { break }; // engine dropped
-                apply_cmd(&ndb, &mut state, &wakeup, cmd);
-            }
-            // The pool signalled new data; loop back around to drain it.
-            _ = notify.notified() => {}
-            _ = keepalive.tick() => state.pool.keepalive_ping(wakeup.clone()),
-        }
-    }
-}
-
-/// The mutable state the [`engine_loop`] threads through each [`apply_cmd`]:
-/// the relay pool, the desired-subscription and pending-publish maps, and the
-/// backfill settle tracker. Bundled into one struct so commands are applied by
-/// `&mut LoopState` rather than a long argument list.
-#[derive(Default)]
-struct LoopState {
-    pool: RelayPool,
-    /// Desired live subscriptions per relay url (subid -> filters), re-sent
-    /// whenever a relay (re)connects.
-    desired: HashMap<String, HashMap<String, Vec<SendFilter>>>,
-    /// Publish frames queued until their target relay is connected.
-    pending: HashMap<String, Vec<String>>,
-    /// Backfill settle tracking (see [`Engine::wait_for_sync`]): the shared
-    /// done-counter the detached backfill tasks bump, paired with `started`.
-    progress: Arc<BackfillProgress>,
-    /// Count of backfills spawned so far, snapshotted by a `WaitForSync` barrier
-    /// as its settle target (against `progress.done`).
-    started: u64,
-}
-
-/// Apply one [`EngineCmd`] against the loop's [`LoopState`].
-fn apply_cmd(
-    ndb: &Ndb,
-    state: &mut LoopState,
-    wakeup: &(impl Fn() + Send + Sync + Clone + 'static),
-    cmd: EngineCmd,
-) {
-    match cmd {
-        EngineCmd::SetSubscription {
-            id,
-            url,
-            live,
-            history,
-        } => {
-            let sid = subid(&id);
-            let _ = state.pool.add_url(url.clone(), wakeup.clone());
-            // Send the live REQ now if the relay is already up; otherwise it is
-            // flushed from `desired` on the relay's `Opened` event.
-            if relay_connected(&state.pool, &url) {
-                state.pool.send_to(&req_message(sid.clone(), &live), &url);
-            }
-            state
-                .desired
-                .entry(url.clone())
-                .or_default()
-                .insert(sid, live);
-            // NIP-77 negentropy history backfill, off the loop on its own task.
-            // Track its completion (via a drop guard so a panic still counts)
-            // so a `WaitForSync` barrier can observe when history has settled.
-            if !history.is_empty() {
-                state.started += 1;
-                let ndb = ndb.clone();
-                let progress = state.progress.clone();
-                tokio::spawn(async move {
-                    let _guard = BackfillDoneGuard(progress);
-                    backfill(ndb, url, history).await;
-                });
-            }
-        }
-        EngineCmd::DropSubscription(id) => {
-            let sid = subid(&id);
-            for subs in state.desired.values_mut() {
-                subs.remove(&sid);
-            }
-            state.pool.unsubscribe(sid);
-        }
-        EngineCmd::Publish { note_json, relays } => {
-            let frame = format!(r#"["EVENT",{note_json}]"#);
-            for url in relays {
-                let _ = state.pool.add_url(url.clone(), wakeup.clone());
-                if relay_connected(&state.pool, &url) {
-                    state.pool.send_to(&ClientMessage::raw(frame.clone()), &url);
-                } else {
-                    state.pending.entry(url).or_default().push(frame.clone());
-                }
-            }
-        }
-        EngineCmd::WaitForSync(reply) => {
-            // Snapshot how many backfills have been started by now; the returned
-            // handle resolves once that many have completed. Because this command
-            // rode the FIFO channel behind every prior `SetSubscription`, that
-            // snapshot already includes their backfills. A dropped `reply` (the
-            // waiter went away) is harmless.
-            let _ = reply.send(SyncSettle {
-                progress: state.progress.clone(),
-                target: state.started,
-            });
-        }
-    }
-}
-
-/// Drop guard that records a backfill task's completion on the shared
-/// [`BackfillProgress`]. Using `Drop` (rather than a bump at the end of the
-/// task body) means an error return or a panic unwinding through the task still
-/// counts as done, so a [`SyncSettle`] wait can never hang on a dead backfill.
-struct BackfillDoneGuard(Arc<BackfillProgress>);
-
-impl Drop for BackfillDoneGuard {
-    fn drop(&mut self) {
-        self.0.done.fetch_add(1, Ordering::Release);
-        self.0.notify.notify_waiters();
-    }
-}
-
-/// Pull bounded history for a subscription from `url` using NIP-77 negentropy.
-///
-/// Opens a dedicated reconcile connection (separate from the live pool), and for
-/// each history filter reconciles the local set against the relay, then fetches
-/// the ids the relay holds that the local db lacks. If the relay can't
-/// reconcile, falls back to a plain `REQ` pull of the filter.
-async fn backfill(ndb: Ndb, url: String, filters: Vec<SendFilter>) {
-    let mut relay = match sync::Relay::connect(&url).await {
-        Ok(relay) => relay,
-        Err(e) => {
-            tracing::warn!("engine backfill: connect {url} failed: {e}");
-            return;
-        }
-    };
-
-    // Consume by value: an owned `SendFilter` is `Send` and may cross the awaits
-    // below, whereas a `&SendFilter` would require `SendFilter: Sync` (it isn't).
-    // Reduce each filter to its wire JSON and sealed local set *synchronously* —
-    // the transient `nostrdb::Filter` from `as_filter()` drops at each `;`, so it
-    // never crosses an await — then hand both to `pull_reconcile`, whose future
-    // stays `Send` precisely because it takes no `Filter`.
-    for filter in filters {
-        let Ok(filter_json) = filter.as_filter().json() else {
-            continue;
-        };
-        let local = match sync::local_set(&ndb, filter.as_filter()) {
-            Ok(local) => local,
-            Err(e) => {
-                tracing::warn!("engine backfill: local set failed: {e}");
-                continue;
-            }
-        };
-        if let Err(e) = sync::pull_reconcile(&mut relay, &ndb, &filter_json, local).await {
-            tracing::warn!("engine backfill: {url}: {e}");
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{
-        await_note, event_frame, signed_note, spawn_relay, temp_ndb, TEST_SECKEY,
-    };
+    use crate::test_support::{await_note, spawn_relay, temp_ndb, TEST_SECKEY};
+    use std::time::Duration;
     use tempfile::TempDir;
-
-    /// A test [`SubscriptionSpec`] targeting `url`.
-    fn spec(url: &str, live: Vec<Filter>, history: Vec<Filter>) -> SubscriptionSpec {
-        SubscriptionSpec {
-            id: SubscriptionId::new("test", "sub"),
-            relay: enostr::NormRelayUrl::new(url).expect("relay url"),
-            live_filters: live,
-            history_filters: history,
-        }
-    }
 
     /// PNS-wrap `inner_json` under the [`TEST_SECKEY`] identity and ingest the
     /// kind-1080 envelope, mirroring how an inbound relay event reaches ndb: the
@@ -1297,21 +904,18 @@ mod tests {
     }
 
     /// PNS-wrap a freshly-built inner event and publish its envelope through
-    /// `tx` to `relay`. Models both a host injecting a backend-produced event and
-    /// the controller's "prepare locally, then publish from my own queue" flow —
-    /// the `prepare_*` methods ingest but don't publish, so the caller wraps the
-    /// returned inner event and sends it itself, exactly as dave's drain does.
-    fn publish_prepared(
-        tx: &mut impl Transport,
-        built: &crate::session_events::BuiltEvent,
-        relay: &str,
-    ) {
+    /// `engine`'s [`Session`] to its connected relay. Models the controller's
+    /// "prepare locally, then publish it myself" flow — the `prepare_*` methods
+    /// ingest but don't publish, so the caller wraps the returned inner event and
+    /// sends it through the same [`Session`] a standalone engine owns.
+    fn publish_prepared(engine: &Engine, built: &crate::session_events::BuiltEvent, relay: &str) {
         let pns = enostr::pns::derive_pns_keys(&TEST_SECKEY);
         let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns).expect("wrap pns");
-        tx.publish_event_json(
-            wrapped,
-            vec![enostr::NormRelayUrl::new(relay).expect("relay url")],
-        );
+        engine
+            .session
+            .as_ref()
+            .expect("standalone engine has a session")
+            .publish(wrapped, vec![relay.to_string()]);
     }
 
     /// The `message` field from the newest `permission_response` event on
@@ -1504,16 +1108,13 @@ mod tests {
         let a_dir = TempDir::new().expect("tmp dir");
         let mut a =
             Engine::open(a_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine a");
-        let mut a_tx = a.transport_handle().expect("a transport");
-        a.connect(&mut a_tx, &url).expect("a connect");
-        a.send_message(&mut a_tx, session_id, "hi from A")
-            .expect("send");
+        a.connect(&url).expect("a connect");
+        a.send_message(session_id, "hi from A").expect("send");
 
         let b_dir = TempDir::new().expect("tmp dir");
         let mut b =
             Engine::open(b_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine b");
-        let mut b_tx = b.transport_handle().expect("b transport");
-        b.connect(&mut b_tx, &url).expect("b connect");
+        b.connect(&url).expect("b connect");
 
         // Check-then-wait so we catch the event whether it lands before or after
         // the watch is installed.
@@ -1557,8 +1158,7 @@ mod tests {
         let h_dir = TempDir::new().expect("tmp dir");
         let mut host =
             Engine::open(h_dir.path().to_str().expect("path"), TEST_SECKEY).expect("host engine");
-        let mut host_tx = host.transport_handle().expect("host transport");
-        host.connect(&mut host_tx, &url).expect("host connect");
+        host.connect(&url).expect("host connect");
 
         let mut threading = ThreadingState::new();
         let request = build_permission_request_event(
@@ -1570,16 +1170,13 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("request event");
-        publish_prepared(&mut host_tx, &request, &url);
+        publish_prepared(&host, &request, &url);
 
         // --- controller: connect and wait for the request to sync in ---------
         let c_dir = TempDir::new().expect("tmp dir");
         let mut controller = Engine::open(c_dir.path().to_str().expect("path"), TEST_SECKEY)
             .expect("controller engine");
-        let mut ctrl_tx = controller.transport_handle().expect("controller transport");
-        controller
-            .connect(&mut ctrl_tx, &url)
-            .expect("controller connect");
+        controller.connect(&url).expect("controller connect");
 
         let mut ctrl_watch = controller
             .watch_session(session_id)
@@ -1609,12 +1206,12 @@ mod tests {
         let response = controller
             .prepare_permission_response(session_id, &perm_id.to_string(), true, Some("ok"), false)
             .expect("prepare permission response");
-        publish_prepared(&mut ctrl_tx, &response, &url);
+        publish_prepared(&controller, &response, &url);
 
         let message = controller
             .prepare_message(session_id, "also add a test")
             .expect("prepare message");
-        publish_prepared(&mut ctrl_tx, &message, &url);
+        publish_prepared(&controller, &message, &url);
 
         // --- host: both the response and the follow-up message land ----------
         let mut host_watch = host.watch_session(session_id).expect("host watch");
@@ -1649,15 +1246,14 @@ mod tests {
     async fn respond_permission_requires_a_known_request() {
         let dir = TempDir::new().expect("tmp dir");
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
 
         let unknown = uuid::Uuid::new_v4().to_string();
         assert!(matches!(
-            engine.respond_permission(&mut tx, "s", &unknown, true, None, false),
+            engine.respond_permission("s", &unknown, true, None, false),
             Err(EngineError::UnknownPermission)
         ));
         assert!(matches!(
-            engine.respond_permission(&mut tx, "s", "not-a-uuid", true, None, false),
+            engine.respond_permission("s", "not-a-uuid", true, None, false),
             Err(EngineError::InvalidPermId)
         ));
     }
@@ -1670,7 +1266,6 @@ mod tests {
 
         let dir = TempDir::new().expect("tmp dir");
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
         let session_id = "perm-session";
         let perm_id = uuid::Uuid::new_v4();
 
@@ -1698,7 +1293,6 @@ mod tests {
 
         engine
             .respond_permission(
-                &mut tx,
                 session_id,
                 &perm_id.to_string(),
                 true,
@@ -1713,15 +1307,14 @@ mod tests {
     async fn respond_question_requires_a_known_request() {
         let dir = TempDir::new().expect("tmp dir");
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
 
         let unknown = uuid::Uuid::new_v4().to_string();
         assert!(matches!(
-            engine.respond_question(&mut tx, "s", &unknown, vec![]),
+            engine.respond_question("s", &unknown, vec![]),
             Err(EngineError::UnknownPermission)
         ));
         assert!(matches!(
-            engine.respond_question(&mut tx, "s", "not-a-uuid", vec![]),
+            engine.respond_question("s", "not-a-uuid", vec![]),
             Err(EngineError::InvalidPermId)
         ));
     }
@@ -1737,7 +1330,6 @@ mod tests {
 
         let dir = TempDir::new().expect("tmp dir");
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
         let session_id = "question-session";
         let perm_id = uuid::Uuid::new_v4();
 
@@ -1794,7 +1386,6 @@ mod tests {
         let mut watch = engine.watch_session(session_id).expect("watch");
         engine
             .respond_question(
-                &mut tx,
                 session_id,
                 &perm_id.to_string(),
                 vec![QuestionAnswer {
@@ -1886,9 +1477,8 @@ mod tests {
     async fn spawn_session_returns_a_uuid_spawn_id() {
         let dir = TempDir::new().expect("tmp dir");
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
         let spawn_id = engine
-            .spawn_session(&mut tx, "laptop", "/tmp/project", "claude", None)
+            .spawn_session("laptop", "/tmp/project", "claude", None)
             .expect("spawn");
         assert!(
             uuid::Uuid::parse_str(&spawn_id).is_ok(),
@@ -1900,26 +1490,13 @@ mod tests {
     async fn set_permission_mode_builds_and_ingests() {
         let dir = TempDir::new().expect("tmp dir");
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
         engine
-            .set_permission_mode(&mut tx, "some-session", "plan")
+            .set_permission_mode("some-session", "plan")
             .expect("set mode");
     }
 
-    /// An embedded engine drives no relay loop, so it hands out no transport
-    /// handle — its host publishes the events the `prepare_*` methods return.
-    #[test]
-    fn embedded_engine_has_no_transport_handle() {
-        let (_dir, ndb) = temp_ndb();
-        let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
-        assert!(
-            engine.transport_handle().is_none(),
-            "embedded engine has no loop to hand a transport onto"
-        );
-    }
-
     /// `prepare_set_permission_mode` ingests the event locally (so local reads
-    /// see it immediately) and returns it, without needing a transport.
+    /// see it immediately) and returns it, without needing a session.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prepare_set_permission_mode_ingests_without_publish() {
         let (_dir, ndb) = temp_ndb();
@@ -1995,170 +1572,15 @@ mod tests {
     async fn with_ndb_shares_one_database() {
         let (_dir, host) = temp_ndb();
 
-        // The host hands the engine a clone; dropping the engine (which stops the
-        // loop) must not tear down the shared db.
+        // The caller hands the engine a clone; dropping the engine (which drops
+        // its `Session` and stops that loop) must not tear down the shared db.
         let engine = Engine::with_ndb(host.clone(), TEST_SECKEY).expect("engine");
         drop(engine);
         Transaction::new(&host).expect("host db still usable after engine drop");
     }
 
-    #[test]
-    fn subid_is_stable_and_scoped() {
-        let id = SubscriptionId::new("discovery", "inbox");
-        assert_eq!(subid(&id), "discovery:inbox");
-    }
-
-    /// End-to-end: an [`Engine`] pointed at a real (in-process) relay via
-    /// [`Transport::set_subscription`] streams a matching stored event from that
-    /// relay into its own db. Exercises the live pool: connect → `REQ` → ingest.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn live_subscription_streams_events_from_relay() {
-        let (_relay_dir, relay_ndb) = temp_ndb();
-        let (note_json, id) = signed_note(1, "hello from the relay");
-        relay_ndb
-            .process_client_event(&event_frame(&note_json))
-            .expect("seed relay");
-        let relay = spawn_relay(relay_ndb.clone());
-        let url = relay.url();
-
-        let eng_dir = TempDir::new().expect("tmp dir");
-        let engine =
-            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
-        tx.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
-
-        assert!(
-            await_note(engine.ndb(), id, 1, Duration::from_secs(10)).await,
-            "the relay's event should stream into the engine db"
-        );
-        relay.shutdown();
-    }
-
-    /// End-to-end publish path: one engine `publish_event_json`s an event to a
-    /// relay, and a second engine `set_subscription`d to that relay receives it.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn publish_then_subscribe_round_trip() {
-        let (_relay_dir, relay_ndb) = temp_ndb();
-        let relay = spawn_relay(relay_ndb.clone());
-        let url = relay.url();
-
-        // Engine A publishes a kind-1 event to the relay.
-        let a_dir = TempDir::new().expect("tmp dir");
-        let engine_a =
-            Engine::open(a_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine a");
-        let mut tx_a = engine_a.transport_handle().expect("transport");
-        let (note_json, id) = signed_note(1, "round trip");
-        tx_a.publish_event_json(
-            note_json,
-            vec![enostr::NormRelayUrl::new(&url).expect("url")],
-        );
-
-        // The relay ingests the published event.
-        assert!(
-            await_note(&relay_ndb, id, 1, Duration::from_secs(10)).await,
-            "relay should store the published event"
-        );
-
-        // Engine B subscribes and receives it via `REQ` replay.
-        let b_dir = TempDir::new().expect("tmp dir");
-        let engine_b =
-            Engine::open(b_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine b");
-        let mut tx_b = engine_b.transport_handle().expect("transport");
-        tx_b.set_subscription(spec(&url, vec![Filter::new().kinds([1]).build()], vec![]));
-
-        assert!(
-            await_note(engine_b.ndb(), id, 1, Duration::from_secs(10)).await,
-            "engine B should receive the published event from the relay"
-        );
-        relay.shutdown();
-    }
-
-    /// End-to-end NIP-77 negentropy backfill: the live filter deliberately does
-    /// not match (kind 9999) while the history filter does (kind 1), so the
-    /// seeded event can only reach the engine through the negentropy [`backfill`]
-    /// reconcile — the relay speaks `NEG-OPEN`, so this hits the real reconcile
-    /// path, not the plain-`REQ` fallback.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn negentropy_backfill_pulls_history() {
-        let (_relay_dir, relay_ndb) = temp_ndb();
-        let (note_json, id) = signed_note(1, "historical");
-        relay_ndb
-            .process_client_event(&event_frame(&note_json))
-            .expect("seed relay");
-        let relay = spawn_relay(relay_ndb.clone());
-        let url = relay.url();
-        // Make sure the seed is queryable before the engine reconciles against it.
-        assert!(await_note(&relay_ndb, id, 1, Duration::from_secs(5)).await);
-
-        let eng_dir = TempDir::new().expect("tmp dir");
-        let engine =
-            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
-        tx.set_subscription(spec(
-            &url,
-            vec![Filter::new().kinds([9999]).build()],
-            vec![Filter::new().kinds([1]).build()],
-        ));
-
-        assert!(
-            await_note(engine.ndb(), id, 1, Duration::from_secs(10)).await,
-            "the historical event should arrive via the negentropy backfill"
-        );
-        relay.shutdown();
-    }
-
-    /// The settle signal is deterministic: once [`Engine::wait_for_sync`]
-    /// resolves, the reconciled history is already queryable — so a read taken
-    /// immediately afterward, with *no* polling, sees it. This is exactly what
-    /// lets a caller replace a quiet-timer drain heuristic with a single read.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn wait_for_sync_settles_after_history_is_queryable() {
-        let (_relay_dir, relay_ndb) = temp_ndb();
-        let (note_json, id) = signed_note(1, "settled history");
-        relay_ndb
-            .process_client_event(&event_frame(&note_json))
-            .expect("seed relay");
-        let relay = spawn_relay(relay_ndb.clone());
-        let url = relay.url();
-        assert!(await_note(&relay_ndb, id, 1, Duration::from_secs(5)).await);
-
-        let eng_dir = TempDir::new().expect("tmp dir");
-        let engine =
-            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
-        let mut tx = engine.transport_handle().expect("transport");
-        // History-only (live filter matches nothing) so the event can arrive
-        // solely through the tracked backfill, then settle on it.
-        tx.set_subscription(spec(
-            &url,
-            vec![Filter::new().kinds([9999]).build()],
-            vec![Filter::new().kinds([1]).build()],
-        ));
-
-        // The barrier is enqueued after the subscription on the same FIFO
-        // channel, so it waits for that backfill specifically. Bound it so a
-        // regression can't hang the suite.
-        let settled = tokio::time::timeout(Duration::from_secs(10), engine.wait_for_sync())
-            .await
-            .expect("wait_for_sync should not time out");
-        assert_eq!(
-            settled,
-            Some(()),
-            "standalone engine yields a settle signal"
-        );
-
-        // Deterministic: no await/poll between settle and read — the note must
-        // already be present, proving settle means "history is queryable".
-        let txn = Transaction::new(engine.ndb()).expect("txn");
-        assert!(
-            engine.ndb().get_note_by_id(&txn, &id).is_ok(),
-            "reconciled history must be queryable the instant wait_for_sync resolves"
-        );
-        drop(txn);
-        relay.shutdown();
-    }
-
-    /// An embedded engine has no self-driving loop, so it exposes no settle
-    /// signal — the host owns sync and observes settle its own way.
+    /// An embedded engine has no [`Session`], so it exposes no settle signal —
+    /// the host owns sync and observes settle its own way.
     #[tokio::test]
     async fn wait_for_sync_is_none_for_embedded_engine() {
         let (_dir, ndb) = temp_ndb();

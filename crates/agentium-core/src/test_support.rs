@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use nostrdb::{Config, Filter, Ndb, NoteBuilder, SubscriptionStream, Transaction};
+use nostrdb::{Config, Filter, Ndb, SubscriptionStream, Transaction};
 use nostrdb_net::relay::server::{self, RelayHandle};
 use tempfile::TempDir;
 
@@ -24,25 +24,6 @@ pub(crate) fn temp_ndb() -> (TempDir, Ndb) {
     let dir = TempDir::new().expect("tmp dir");
     let ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
     (dir, ndb)
-}
-
-/// Build a signed note, returning its bare event JSON (the `{...}` object, ready
-/// for [`Transport::publish_event_json`](crate::Transport::publish_event_json))
-/// and its 32-byte id.
-pub(crate) fn signed_note(kind: u32, content: &str) -> (String, [u8; 32]) {
-    let note = NoteBuilder::new()
-        .kind(kind)
-        .content(content)
-        .sign(&TEST_SECKEY)
-        .build()
-        .expect("build note");
-    (note.json().expect("note json"), *note.id())
-}
-
-/// The `["EVENT", {...}]` client frame for a bare event JSON, for seeding a db
-/// via [`Ndb::process_client_event`].
-pub(crate) fn event_frame(note_json: &str) -> String {
-    format!(r#"["EVENT",{note_json}]"#)
 }
 
 /// Spawn an in-process hermetic relay backed by `ndb` on an ephemeral port. Pass

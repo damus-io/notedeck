@@ -126,18 +126,6 @@ const CWD: &str = "/home/u/proj";
 /// The d-tag the helper host mints for the new session.
 const SPAWNED_SID: &str = "spawned-session-1";
 
-/// PNS-wrap an inner event and publish its kind-1080 envelope through `tx` to
-/// `relay` — how the helper host puts a state (built with the account key) on the
-/// wire, exactly as a real host's publish drain does.
-fn publish_wrapped(tx: &mut impl agentium_core::Transport, note_json: &str, relay: &str) {
-    let pns = enostr::pns::derive_pns_keys(&SECKEY);
-    let wrapped = session_events::wrap_pns(note_json, &pns).expect("wrap pns");
-    tx.publish_event_json(
-        wrapped,
-        vec![enostr::NormRelayUrl::new(relay).expect("relay url")],
-    );
-}
-
 /// Wait (bounded) for the helper host to see a kind-31989 spawn command in its
 /// synced cache, then return its `spawn_id`. `None` if none arrived in time.
 async fn await_spawn_id(host: &Engine) -> Option<String> {
@@ -175,8 +163,7 @@ async fn spawn_wait_resolves_and_prompt_lands() {
     let host_dir = TempDir::new().expect("host tmp");
     let mut host =
         Engine::open(host_dir.path().to_str().expect("path"), SECKEY).expect("host engine");
-    let mut host_tx = host.transport_handle().expect("host transport");
-    host.connect(&mut host_tx, &url).expect("host connect");
+    host.connect(&url).expect("host connect");
 
     // The CLI needs a cache dir of its own; nothing to seed (the target comes from
     // the explicit flags, not a current session).
@@ -233,7 +220,9 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         &SECKEY,
     )
     .expect("build state");
-    publish_wrapped(&mut host_tx, &state.note_json, &url);
+    host.publish_event(&state).expect("publish state");
+    // Flush the publish through the Session's FIFO so it reaches the relay.
+    let _ = tokio::time::timeout(Duration::from_secs(5), host.wait_for_sync()).await;
 
     // The CLI resolves the ref and exits 0.
     let out = cli.await.expect("join cli");

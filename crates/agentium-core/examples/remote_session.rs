@@ -15,16 +15,17 @@
 //! The `desktop_*` helpers here stand in for what the real host (notedeck_dave)
 //! publishes — session state, a permission request. That host side is NOT part
 //! of this API; the API is the phone's observer/controller surface. The desktop
-//! uses only the public `Transport::publish_event_json` to seed those events.
+//! seeds those envelopes with its own [`Session`], the same private-note pipe a
+//! standalone engine owns internally.
 
 use agentium_core::messages::Message;
 use agentium_core::session_events::{
     build_permission_request_event, build_session_state_event, now_secs, wrap_pns, ThreadingState,
 };
-use agentium_core::{Engine, SessionWatch, Transport};
-use enostr::NormRelayUrl;
+use agentium_core::{Engine, SessionWatch};
 use nostrdb::{Config, Ndb};
 use nostrdb_net::relay::server;
+use nostrdb_net::relay::sync::Session;
 use tempfile::TempDir;
 
 /// The one device key both engines share (see the crate's identity docs).
@@ -41,23 +42,26 @@ async fn main() {
     println!("relay listening at {url}\n");
 
     // --- two engines on the same identity ------------------------------------
-    // Each standalone engine self-drives its relay loop; `transport_handle()`
-    // hands out an owned Transport onto that loop to pass into the write methods.
+    // Each standalone engine owns its `Session` — the private-note sync pipe —
+    // and `connect` points it at the relay; its write methods publish through it.
     let desk_dir = TempDir::new().unwrap();
     let mut desktop = Engine::open(desk_dir.path().to_str().unwrap(), DEVICE_KEY).unwrap();
-    let mut desk_tx = desktop.transport_handle().unwrap();
-    desktop.connect(&mut desk_tx, &url).unwrap();
+    desktop.connect(&url).unwrap();
 
     let phone_dir = TempDir::new().unwrap();
     let mut phone = Engine::open(phone_dir.path().to_str().unwrap(), DEVICE_KEY).unwrap();
-    let mut phone_tx = phone.transport_handle().unwrap();
-    phone.connect(&mut phone_tx, &url).unwrap();
+    phone.connect(&url).unwrap();
     println!("desktop + phone connected as {}\n", phone.account_pubkey());
 
     // --- desktop (host) opens a session and asks for permission --------------
-    let relay_url = NormRelayUrl::new(&url).unwrap();
-    desktop_open_session(&mut desk_tx, &relay_url);
-    let perm_id = desktop_request_permission(&mut desk_tx, &relay_url);
+    // The host stand-in seeds its backend-produced envelopes with its own
+    // `Session` — the same pipe a standalone engine owns internally — over a
+    // throwaway db it only publishes from (its inbound leg is never subscribed).
+    let seeder_dir = TempDir::new().unwrap();
+    let seeder_ndb = Ndb::new(seeder_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+    let seeder = Session::new(seeder_ndb);
+    desktop_open_session(&seeder, &url);
+    let perm_id = desktop_request_permission(&seeder, &url);
     println!("desktop published a session + a `Bash` permission request\n");
 
     // === from here on, everything is the PHONE using the public API ==========
@@ -87,7 +91,6 @@ async fn main() {
     // 3. approve it, then send a follow-up
     phone
         .respond_permission(
-            &mut phone_tx,
             SESSION_ID,
             &perm_id.to_string(),
             true,
@@ -97,11 +100,7 @@ async fn main() {
         .unwrap();
     println!("phone.respond_permission(allow) — approved {perm_id}");
     phone
-        .send_message(
-            &mut phone_tx,
-            SESSION_ID,
-            "also add a test while you're in there",
-        )
+        .send_message(SESSION_ID, "also add a test while you're in there")
         .unwrap();
     println!("phone.send_message(\"also add a test…\")\n");
 
@@ -118,13 +117,7 @@ async fn main() {
 
     // 5. spawn a brand-new session on another host
     let spawn_id = phone
-        .spawn_session(
-            &mut phone_tx,
-            "build-server",
-            "/home/dev/project",
-            "claude",
-            None,
-        )
+        .spawn_session("build-server", "/home/dev/project", "claude", None)
         .unwrap();
     println!("phone.spawn_session(\"build-server\") -> spawn_id {spawn_id}");
 
@@ -171,7 +164,7 @@ fn print_messages(messages: &[Message]) {
 // --- desktop/host stand-ins (not part of the public API) --------------------
 
 /// Publish a kind-31988 session state so the phone can list it.
-fn desktop_open_session(transport: &mut impl Transport, relay: &NormRelayUrl) {
+fn desktop_open_session(seeder: &Session, relay: &str) {
     let state = build_session_state_event(
         SESSION_ID,
         "Refactor the engine",
@@ -189,11 +182,11 @@ fn desktop_open_session(transport: &mut impl Transport, relay: &NormRelayUrl) {
         &DEVICE_KEY,
     )
     .unwrap();
-    desktop_publish(transport, &state.note_json, relay);
+    desktop_publish(seeder, &state.note_json, relay);
 }
 
 /// Publish a kind-1988 permission request; returns its id for the phone to answer.
-fn desktop_request_permission(transport: &mut impl Transport, relay: &NormRelayUrl) -> uuid::Uuid {
+fn desktop_request_permission(seeder: &Session, relay: &str) -> uuid::Uuid {
     let perm_id = uuid::Uuid::new_v4();
     let mut threading = ThreadingState::new();
     let req = build_permission_request_event(
@@ -205,14 +198,14 @@ fn desktop_request_permission(transport: &mut impl Transport, relay: &NormRelayU
         &DEVICE_KEY,
     )
     .unwrap();
-    desktop_publish(transport, &req.note_json, relay);
+    desktop_publish(seeder, &req.note_json, relay);
     perm_id
 }
 
-/// PNS-wrap a freshly-built inner event and publish it through the engine's
-/// transport — the same envelope the engine's own write methods produce.
-fn desktop_publish(transport: &mut impl Transport, inner_json: &str, relay: &NormRelayUrl) {
+/// PNS-wrap a freshly-built inner event and publish it through the seeder
+/// [`Session`] — the same envelope the engine's own write methods produce.
+fn desktop_publish(seeder: &Session, inner_json: &str, relay: &str) {
     let pns = enostr::pns::derive_pns_keys(&DEVICE_KEY);
     let wrapped = wrap_pns(inner_json, &pns).unwrap();
-    transport.publish_event_json(wrapped, vec![relay.clone()]);
+    seeder.publish(wrapped, vec![relay.to_string()]);
 }
