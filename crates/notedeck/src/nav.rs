@@ -128,6 +128,36 @@ impl<R: Clone> NavStack<R> {
         }
     }
 
+    /// Jump directly to the back-stack entry at `index`, sending every route
+    /// above it onto the forward stack (so a later [`go_forward`](Self::go_forward)
+    /// replays them) and making it the current route. Unlike
+    /// [`go_back`](Self::go_back) this runs no transition — it lands instantly —
+    /// so it suits a history dropdown that jumps several steps at once. An
+    /// out-of-range or already-current `index` is a no-op.
+    pub fn go_to_route(&mut self, index: usize) {
+        if index + 1 >= self.routes.len() {
+            return;
+        }
+        // Clear any in-flight transition: this is an instant jump, not an
+        // animated step.
+        self.returning = false;
+        self.navigating = false;
+        // `pop` records each popped route on the forward stack, so redo still
+        // works after a multi-step jump back.
+        while self.routes.len() > index + 1 && self.pop().is_some() {}
+    }
+
+    /// True if a [`go_back`](Self::go_back) can make progress: there is a route
+    /// beneath the top and no back transition is already animating.
+    pub fn can_go_back(&self) -> bool {
+        self.routes.len() > 1 && !self.returning
+    }
+
+    /// True if a [`go_forward`](Self::go_forward) can replay a popped route.
+    pub fn can_go_forward(&self) -> bool {
+        !self.forward_stack.is_empty()
+    }
+
     /// Pop the top route. Should only be called on a `NavResponse::Returned`.
     /// A non-overlay pop is pushed onto the forward stack so it can be replayed.
     pub fn pop(&mut self) -> Option<R> {
@@ -523,6 +553,76 @@ mod nav_stack_tests {
         assert!(stack.go_forward());
         assert_eq!(stack.routes(), &vec![1, 2, 3]);
         assert!(!stack.go_forward());
+    }
+
+    #[test]
+    fn can_go_back_tracks_depth_and_returning() {
+        let mut stack = NavStack::new(vec![1]);
+        // at the root there is nowhere to go back to
+        assert!(!stack.can_go_back());
+
+        stack.route_to(2);
+        assert!(stack.can_go_back());
+
+        // while a back transition is animating, a second back is a no-op, so
+        // the control reports itself unavailable
+        stack.go_back();
+        assert!(stack.returning());
+        assert!(!stack.can_go_back());
+    }
+
+    #[test]
+    fn can_go_forward_tracks_forward_stack() {
+        let mut stack = NavStack::new(vec![1]);
+        assert!(!stack.can_go_forward());
+
+        stack.route_to(2);
+        // a fresh navigation cleared any forward history
+        assert!(!stack.can_go_forward());
+
+        stack.pop(); // 2 lands on the forward stack
+        assert!(stack.can_go_forward());
+
+        stack.go_forward(); // replays 2, draining the forward stack
+        assert!(!stack.can_go_forward());
+    }
+
+    #[test]
+    fn go_to_route_jumps_and_preserves_forward_replay() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to(3);
+        stack.route_to(4);
+        assert_eq!(stack.routes(), &vec![1, 2, 3, 4]);
+
+        // jump straight back to the root, skipping the intermediate routes
+        stack.go_to_route(0);
+        assert_eq!(stack.routes(), &vec![1]);
+        assert!(!stack.returning());
+        assert!(!stack.navigating());
+
+        // everything above the target is redo-able, replayed in original order
+        assert!(stack.can_go_forward());
+        assert!(stack.go_forward());
+        assert!(stack.go_forward());
+        assert!(stack.go_forward());
+        assert_eq!(stack.routes(), &vec![1, 2, 3, 4]);
+        assert!(!stack.go_forward());
+    }
+
+    #[test]
+    fn go_to_route_current_or_out_of_range_is_noop() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+
+        // index of the current top: nothing to do
+        stack.go_to_route(1);
+        assert_eq!(stack.routes(), &vec![1, 2]);
+        assert!(!stack.can_go_forward());
+
+        // past the end: also a no-op
+        stack.go_to_route(9);
+        assert_eq!(stack.routes(), &vec![1, 2]);
     }
 
     #[test]
