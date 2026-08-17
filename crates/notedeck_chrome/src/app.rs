@@ -165,6 +165,41 @@ impl notedeck::App for NotedeckApp {
         }
     }
 
+    /// Fan a global-nav entry's title request out to the app that owns it, so the
+    /// chrome history dropdown can label the entry with the specific view its
+    /// `token` names (see [`notedeck::App::nav_title`]). Non-navigating apps
+    /// inherit the trait default (`None`) and the chrome falls back to their label.
+    fn nav_title(&self, token: &Rc<dyn Any>) -> Option<String> {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => dave.nav_title(token),
+            NotedeckApp::Columns(columns) => columns.nav_title(token),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.nav_title(token),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.nav_title(token),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.nav_title(token),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.nav_title(token),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.nav_title(token),
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.nav_title(token),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.nav_title(token),
+
+            NotedeckApp::Other(_name, other) => other.nav_title(token),
+        }
+    }
+
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
         match self {
             #[cfg(feature = "dave")]

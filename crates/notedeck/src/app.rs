@@ -127,6 +127,23 @@ pub trait App {
         self.render(ctx, ui)
     }
 
+    /// A short human-readable title for one entry of the chrome-owned global
+    /// navigation history, shown in the chrome's history dropdown.
+    ///
+    /// `token` is the same opaque route token handed to [`render_nav`](Self::render_nav):
+    /// the app downcasts it and returns the title of *that specific view* (e.g. a
+    /// thread's subject), or `None` to let the chrome fall back to the app's
+    /// label. Defaults to `None` — a single-view app that never pushes routes has
+    /// no per-route title, so every one of its entries reads as the app itself.
+    ///
+    /// Like every `*_ui`-adjacent path this may be called per frame while a
+    /// dropdown is open; keep it cheap and avoid allocating beyond the returned
+    /// title.
+    fn nav_title(&self, token: &Rc<dyn Any>) -> Option<String> {
+        let _ = token;
+        None
+    }
+
     /// Notification badge state for this app's chrome tab. Defaults to none.
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> TabNotifications {
         TabNotifications::default()
