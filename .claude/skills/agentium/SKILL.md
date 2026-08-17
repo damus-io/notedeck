@@ -218,9 +218,50 @@ Notes:
 - `--json` emits `{ "session": "agentium:…", "event_id": "<64-hex>" }`; the plain
   output is `sent to <agentium:ref> (event <hex8>…)`.
 
+## `spawn` — create a new session on a host
+
+`spawn` tells a (local or remote) Dave **host** to create a fresh session, then —
+with `--wait` — blocks until that host answers with the new session's kind-31988
+state and prints its durable `agentium:` ref. This is how you start a *new*
+session you can then drive with `send`. The host must be a running `notedeck_dave`
+on the target host; nothing answers otherwise (the wait times out cleanly).
+
+```bash
+agentium spawn                                   # sibling in this session's own host+cwd
+agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium: ref
+agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
+agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
+agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
+```
+
+Flags:
+
+- `--host <name>` / `--cwd <path>` / `--backend claude|codex` — the spawn target.
+  **Omitted, they default to the current session's own state**
+  (`$AGENTIUM_SESSION`), so a bare `agentium spawn` starts a sibling in the same
+  worktree on the same host. `--backend` falls back to `claude`. If you're not
+  inside a session, `--host`/`--cwd` are required.
+- `--title <text>` — an explicit, **sticky** session title. Without it the title
+  derives from (and churns with) the first message; `--title` lands in the
+  session's `custom_title` so it shows immediately and survives later messages.
+- `--wait` — block (bounded, a few seconds) until the host answers with the new
+  session's state, then print its `agentium:` ref. Without it you only get the
+  provisional `spawn_id` (the session doesn't exist yet).
+- `--prompt <text>` — deliver `<text>` as the session's first `user` message once
+  it's up. **Implies `--wait`** (you can't send to a session that doesn't exist),
+  and also reports the message event id. Equivalent to `spawn --wait` then `send`.
+
+Output: plain, no `--wait` → `spawn command sent to <host> (spawn <id8>…)`; with
+`--wait` → `spawned <agentium:ref> on <host> (spawn <id8>…)`, plus
+`, sent prompt (event <hex8>…)` when `--prompt` seeded a message. `--json` emits
+`{ "spawn_id", "host", "session", "event_id" }` — `session` is null until `--wait`
+resolves it, `event_id` present only with `--prompt`. On a `--wait` timeout the
+command was still published (a later `list` finds the session if the host was just
+slow); the error names the `spawn_id`.
+
 ## Command surface
 
 Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
-`resume`, `send` (plus `login`/`logout`). Further control verbs (watch dashboard,
-approve/deny, permission-mode, spawn, run-config management) are planned but
+`resume`, `send`, `spawn` (plus `login`/`logout`). Further control verbs (watch
+dashboard, approve/deny, permission-mode, run-config management) are planned but
 **not yet implemented** — don't invoke them until they land.

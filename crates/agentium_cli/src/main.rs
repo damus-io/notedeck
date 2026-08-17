@@ -35,6 +35,13 @@ const SYNC_MAX: Duration = Duration::from_secs(6);
 /// command — the initial [`SYNC_MAX`] reconcile already settled the backfill.
 const PUBLISH_FLUSH: Duration = Duration::from_secs(2);
 
+/// Bound on `spawn --wait` (see [`cmd_spawn`]): how long to wait for the target
+/// host to answer a spawn command with the new session's kind-31988 state. A
+/// host that never answers (none running on `target_host`, or one stuck
+/// `pending`) can't hang exit past this — the spawn command was still published,
+/// so a later `list` finds the session if the host was merely slow.
+const SPAWN_WAIT: Duration = Duration::from_secs(8);
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`agentium list | head`) instead of
@@ -85,6 +92,22 @@ enum Command {
     Send {
         session: String,
         text: String,
+    },
+    /// Publish a kind-31989 spawn command telling a (local or remote) Dave host
+    /// to create a fresh session, then optionally block until the host answers
+    /// with its kind-31988 state and print the new session's durable `agentium:`
+    /// ref. `host`/`cwd`/`backend` default to the *current* session's own state
+    /// (`$AGENTIUM_SESSION`) so a bare `agentium spawn` starts a sibling in the
+    /// same worktree on the same host. `--title` gives the session an explicit,
+    /// sticky title; `--prompt` (which implies `--wait`) delivers a first `user`
+    /// message once the session exists.
+    Spawn {
+        host: Option<String>,
+        cwd: Option<String>,
+        backend: Option<String>,
+        title: Option<String>,
+        prompt: Option<String>,
+        wait: bool,
     },
     Login {
         nsec: String,
@@ -175,6 +198,24 @@ async fn run() -> Result<()> {
         }
         Command::Send { session, text } => {
             cmd_send(&engine, &mut transport, &read_pk, &session, &text, cli.json).await?
+        }
+        Command::Spawn {
+            host,
+            cwd,
+            backend,
+            title,
+            prompt,
+            wait,
+        } => {
+            let opts = SpawnOpts {
+                host,
+                cwd,
+                backend,
+                title,
+                prompt,
+                wait,
+            };
+            cmd_spawn(&engine, &mut transport, &read_pk, &opts, cli.json).await?
         }
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
@@ -332,6 +373,291 @@ async fn cmd_send(
     // A short id prefix reads cleanly at a glance; the full hex is in `--json`.
     let short = &event_id[..event_id.len().min(8)];
     println!("sent to {uri} (event {short}…)");
+    Ok(())
+}
+
+/// The resolved flags for `agentium spawn`. `host`/`cwd`/`backend` are still the
+/// *raw* flags here (each `None` when omitted); [`resolve_spawn_target`] fills the
+/// gaps from the current session before the command is built.
+struct SpawnOpts {
+    host: Option<String>,
+    cwd: Option<String>,
+    backend: Option<String>,
+    /// `--title`: an explicit, sticky session title (rides the command as a
+    /// `custom_title` tag). `None` lets the host derive one from the first message.
+    title: Option<String>,
+    /// `--prompt`: a first `user` message to deliver once the session exists.
+    /// Implies `--wait` (you can't send to a session that isn't up yet).
+    prompt: Option<String>,
+    /// `--wait`: block (bounded by [`SPAWN_WAIT`]) until the host answers with the
+    /// new session's kind-31988 state, then print its durable `agentium:` ref.
+    wait: bool,
+}
+
+impl SpawnOpts {
+    /// Whether the spawn should wait for the host's answer: the explicit `--wait`,
+    /// or implicitly whenever `--prompt` is set (a first message can't be
+    /// delivered to a session that isn't up yet).
+    fn effective_wait(&self) -> bool {
+        self.wait || self.prompt.is_some()
+    }
+}
+
+/// The fully-resolved spawn target: which host to create the session on, the cwd
+/// it runs in, and the backend to launch. Every field is concrete (the raw
+/// [`SpawnOpts`] `Option`s have been defaulted).
+struct SpawnTarget {
+    host: String,
+    cwd: String,
+    backend: String,
+}
+
+/// Resolve the spawn target, defaulting each omitted flag to the *current*
+/// session's own kind-31988 state (`$AGENTIUM_SESSION`) so a bare `agentium
+/// spawn` starts a sibling in the same worktree on the same host. `--backend`
+/// falls back to `"claude"` when neither a flag nor a current-session backend is
+/// available. Errors when `host`/`cwd` can't be determined (not inside a session
+/// and no flag) — there is nothing to target.
+fn resolve_spawn_target(engine: &Engine, author: &Pubkey, opts: &SpawnOpts) -> Result<SpawnTarget> {
+    use agentium_core::session_loader::{
+        load_deleted_session_states_for_author, load_session_states_for_author,
+        resolve_session_including_deleted,
+    };
+
+    // The current session's state, if we're running inside one — resolved the way
+    // `cmd_show` does with no selector (the `$AGENTIUM_SESSION` ref). Its host/cwd/
+    // backend seed the defaults. Absent (not in a session) just means every field
+    // must come from a flag.
+    let current = std::env::var("AGENTIUM_SESSION")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let (self_host, self_cwd, self_backend) = match current {
+        Some(selector) => {
+            let txn = Transaction::new(engine.ndb())?;
+            let live = load_session_states_for_author(engine.ndb(), &txn, author);
+            let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+            match resolve_session_including_deleted(&live, &deleted, &selector) {
+                Ok(state) => (
+                    Some(state.hostname.clone()),
+                    Some(state.cwd.clone()),
+                    state.backend.clone(),
+                ),
+                // A stale/unknown $AGENTIUM_SESSION isn't fatal — fall back to flags.
+                Err(_) => (None, None, None),
+            }
+        }
+        None => (None, None, None),
+    };
+
+    merge_spawn_target(
+        opts,
+        self_host.as_deref(),
+        self_cwd.as_deref(),
+        self_backend.as_deref(),
+    )
+}
+
+/// Merge the raw `--host`/`--cwd`/`--backend` flags with the current session's
+/// values (each `cur_*` is `Some` only when we're running inside a session that
+/// resolved). A flag wins; otherwise the current-session value fills the gap.
+/// `backend` further falls back to `"claude"` when neither is available. Errors
+/// when `host`/`cwd` end up empty — there's nothing to target. Pure over its
+/// inputs so the defaulting is unit-testable without an ndb.
+fn merge_spawn_target(
+    opts: &SpawnOpts,
+    cur_host: Option<&str>,
+    cur_cwd: Option<&str>,
+    cur_backend: Option<&str>,
+) -> Result<SpawnTarget> {
+    let pick = |flag: &Option<String>, cur: Option<&str>| -> Option<String> {
+        flag.clone()
+            .or_else(|| cur.map(str::to_string))
+            .filter(|v| !v.is_empty())
+    };
+
+    let host = pick(&opts.host, cur_host).ok_or(
+        "no host — pass --host (or run inside a session so $AGENTIUM_SESSION supplies it)",
+    )?;
+    let cwd = pick(&opts.cwd, cur_cwd)
+        .ok_or("no cwd — pass --cwd (or run inside a session so $AGENTIUM_SESSION supplies it)")?;
+    let backend = pick(&opts.backend, cur_backend).unwrap_or_else(|| "claude".to_string());
+
+    Ok(SpawnTarget { host, cwd, backend })
+}
+
+/// `agentium spawn` — tell a (local or remote) Dave host to create a fresh
+/// session, then optionally wait for it and hand it a first prompt.
+///
+/// Publishes a kind-31989 `spawn_session` command
+/// ([`Engine::spawn_session`](agentium_core::Engine::spawn_session)) targeting
+/// the resolved host+cwd, carrying `--title` as a `custom_title` override. The
+/// host materializes the session and publishes back a kind-31988 state echoing
+/// the `spawn_id` we got here.
+///
+/// Without `--wait` we only know the `spawn_id` (the session doesn't exist yet),
+/// so we report just that. With `--wait` (also implied by `--prompt`) we install
+/// [`Engine::watch_sessions`](agentium_core::Engine::watch_sessions) *before*
+/// publishing — so a fast host answer can't slip through the gap — then re-read
+/// the session list on each wake until one carries our `spawn_id`, bounded by
+/// [`SPAWN_WAIT`]. That row is the new session; its `agentium_uri` is the ref we
+/// print. `--prompt` then delivers a first `user` message via the same send path
+/// as [`cmd_send`].
+async fn cmd_spawn(
+    engine: &Engine,
+    transport: &mut impl Transport,
+    author: &Pubkey,
+    opts: &SpawnOpts,
+    as_json: bool,
+) -> Result<()> {
+    use agentium_core::session_loader::load_session_states_for_author;
+
+    let target = resolve_spawn_target(engine, author, opts)?;
+
+    // `--prompt` can only reach a session that exists, so it implies `--wait`.
+    let wait = opts.effective_wait();
+
+    // Install the session-list watch *before* publishing so the host's kind-31988
+    // answer can't land between the publish and our first read (only when waiting).
+    let mut watch = if wait {
+        Some(engine.watch_sessions()?)
+    } else {
+        None
+    };
+
+    let spawn_id = engine.spawn_session(
+        transport,
+        &target.host,
+        &target.cwd,
+        &target.backend,
+        opts.title.as_deref(),
+    )?;
+
+    // Flush the publish (bounded) so an unreachable relay can't stall exit; the
+    // command is ingested locally regardless.
+    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+
+    // No `--wait`: only the spawn_id is known — report it and return.
+    let Some(watch) = watch.as_mut() else {
+        emit_spawn(&target.host, &spawn_id, None, None, as_json)?;
+        return Ok(());
+    };
+
+    // Wait (bounded) for a kind-31988 state carrying our spawn_id. `check, then
+    // wait`: re-read the list, match the spawn_id, else block on the watch.
+    let resolved = tokio::time::timeout(SPAWN_WAIT, async {
+        loop {
+            {
+                let txn = Transaction::new(engine.ndb())?;
+                let live = load_session_states_for_author(engine.ndb(), &txn, author);
+                if let Some(state) = live
+                    .iter()
+                    .find(|s| s.spawn_id.as_deref() == Some(&spawn_id))
+                {
+                    return Ok::<Option<SessionState>, Box<dyn std::error::Error>>(Some(
+                        state.clone(),
+                    ));
+                }
+            }
+            // Watch ending (db torn down) resolves the wait with nothing found.
+            if !watch.changed().await {
+                return Ok(None);
+            }
+        }
+    })
+    .await;
+
+    let state = match resolved {
+        Ok(Ok(Some(state))) => state,
+        // The read/loop itself errored — surface it.
+        Ok(Err(e)) => return Err(e),
+        // Timed out, or the watch ended before an answer arrived.
+        Ok(Ok(None)) | Err(_) => {
+            let short = short_id(&spawn_id);
+            return Err(format!(
+                "no host answered on {} within {}s (spawn {short}…) — the command was \
+                 published, so `agentium list` will find the session if the host was just slow",
+                target.host,
+                SPAWN_WAIT.as_secs(),
+            )
+            .into());
+        }
+    };
+
+    let uri = state.agentium_uri();
+
+    // `--prompt`: deliver the first user message now that the session is up,
+    // reusing the send path. Report its event id alongside the spawn.
+    let event_id = match &opts.prompt {
+        Some(prompt) => {
+            let built = engine.send_message(transport, &state.claude_session_id, prompt)?;
+            let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+            Some(hex::encode(built.note_id))
+        }
+        None => None,
+    };
+
+    emit_spawn(
+        &target.host,
+        &spawn_id,
+        Some(&uri),
+        event_id.as_deref(),
+        as_json,
+    )?;
+    Ok(())
+}
+
+/// A short (8-char) prefix of an id, for the scannable one-line spawn report.
+fn short_id(id: &str) -> &str {
+    &id[..id.len().min(8)]
+}
+
+/// The `spawn --json` object: `{ spawn_id, host, session, event_id }`. `session`
+/// is `null` until `--wait` resolves the new session's `agentium:` ref;
+/// `event_id` is present only when `--prompt` sent a first message. Built here
+/// (rather than inline in [`emit_spawn`]) so the shape is unit-testable.
+fn spawn_json(
+    host: &str,
+    spawn_id: &str,
+    session: Option<&str>,
+    event_id: Option<&str>,
+) -> serde_json::Value {
+    let mut obj = serde_json::json!({ "spawn_id": spawn_id, "host": host, "session": session });
+    if let Some(event_id) = event_id {
+        obj["event_id"] = serde_json::Value::String(event_id.to_string());
+    }
+    obj
+}
+
+/// Report a spawn's result. Plain text mirrors [`cmd_send`]'s style; `--json`
+/// emits `{ spawn_id, host, session, event_id }` — `session` is `null` until
+/// `--wait` resolves it, and `event_id` is present only when `--prompt` sent a
+/// first message. `session` is the sayable `agentium:` ref, `event_id` the hex
+/// note id.
+fn emit_spawn(
+    host: &str,
+    spawn_id: &str,
+    session: Option<&str>,
+    event_id: Option<&str>,
+    as_json: bool,
+) -> Result<()> {
+    if as_json {
+        let obj = spawn_json(host, spawn_id, session, event_id);
+        println!("{}", serde_json::to_string_pretty(&obj)?);
+        return Ok(());
+    }
+
+    let short = short_id(spawn_id);
+    match session {
+        None => println!("spawn command sent to {host} (spawn {short}…)"),
+        Some(uri) => {
+            let mut line = format!("spawned {uri} on {host} (spawn {short}…)");
+            if let Some(event_id) = event_id {
+                let ev = short_id(event_id);
+                line.push_str(&format!(", sent prompt (event {ev}…)"));
+            }
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 
@@ -1663,6 +1989,11 @@ impl Cli {
         let mut color = ColorWhen::Auto;
         let mut pager = PagerMode::Auto;
         let mut follow = false;
+        // `spawn` flags. `--title`/`--prompt` are values; `--wait` is a switch
+        // (also implied by `--prompt`, resolved in `cmd_spawn`).
+        let mut title = None;
+        let mut prompt = None;
+        let mut wait = false;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -1709,6 +2040,9 @@ impl Cli {
                 "--pager" => pager = PagerMode::Always,
                 "--no-pager" => pager = PagerMode::Never,
                 "--follow" | "-f" => follow = true,
+                "--title" => title = Some(value("--title")?),
+                "--prompt" => prompt = Some(value("--prompt")?),
+                "--wait" => wait = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -1731,7 +2065,22 @@ impl Cli {
         // A live follow can't be paged or reconstructed from the archive, so
         // reject those combinations here (before any relay work spins up).
         view.check_follow()?;
-        let command = parse_command(name, rest, view)?;
+        // `spawn` reuses the shared `--host`/`--cwd`/`--backend` flags as its
+        // target (they double as `list` filters), plus its own
+        // `--title`/`--prompt`/`--wait`, so it's assembled here where those flags
+        // live rather than threading them all through `parse_command`.
+        let command = if name == "spawn" {
+            Command::Spawn {
+                host: host.clone(),
+                cwd: cwd.clone(),
+                backend: backend.clone(),
+                title,
+                prompt,
+                wait,
+            }
+        } else {
+            parse_command(name, rest, view)?
+        };
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
@@ -1858,6 +2207,15 @@ COMMANDS:
                       the text); the message is the remaining words joined with
                       spaces (quote to preserve exact spacing). Reopen a deleted
                       session with `resume` first. --json emits the event id.
+    spawn             Tell a (local or remote) Dave host to create a fresh
+                      session, then print its new agentium: ref. --host/--cwd/
+                      --backend pick the target; omitted, they default to the
+                      current session ($AGENTIUM_SESSION) so a bare `spawn`
+                      starts a sibling in the same worktree. --title sets a
+                      sticky session title; --wait blocks until the host answers;
+                      --prompt <text> (implies --wait) sends a first message once
+                      the session is up. --json emits {{ spawn_id, host, session,
+                      event_id }}.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
@@ -1901,6 +2259,14 @@ OPTIONS:
                       `tail -f`) until Ctrl-C. Also surfaces status changes.
                       Conflicts with --pager/--jsonl (can't page/reconstruct a
                       live stream); with --json, streams newline-delimited objects.
+
+  spawn options (also uses --host/--cwd/--backend above as the target):
+    --title <text>    Explicit, sticky session title (else it derives from — and
+                      churns with — the first message)
+    --wait            Block (bounded) until the host answers with the new
+                      session's state, then print its agentium: ref
+    --prompt <text>   Deliver <text> as the session's first user message once
+                      it's up (implies --wait; also reports the message event id)
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -2594,5 +2960,181 @@ mod tests {
         assert_eq!(v["role"], "tool_result");
         assert_eq!(v["tool"], "Read");
         assert_eq!(v["summary"], "154 lines");
+    }
+
+    // -- `agentium spawn`: flag capture, target defaulting, wait/json shape -----
+
+    /// `[7u8; 32]` as an nsec — passed to `Cli::parse` so key resolution is
+    /// deterministic (overrides any stored/env key on the test machine).
+    const TEST_NSEC: &str = "nsec1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursl6edet";
+
+    /// Parse a full arg vector (without the program name) through [`Cli::parse`].
+    fn parse_cli(args: &[&str]) -> Result<Option<Cli>> {
+        Cli::parse(args.iter().map(|s| s.to_string()))
+    }
+
+    /// A [`SpawnOpts`] with the target flags set and no title/prompt/wait.
+    fn spawn_opts(host: Option<&str>, cwd: Option<&str>, backend: Option<&str>) -> SpawnOpts {
+        SpawnOpts {
+            host: host.map(str::to_string),
+            cwd: cwd.map(str::to_string),
+            backend: backend.map(str::to_string),
+            title: None,
+            prompt: None,
+            wait: false,
+        }
+    }
+
+    #[test]
+    fn spawn_captures_flags() {
+        // The shared --host/--cwd/--backend plus spawn's own --title/--wait land
+        // on the Spawn variant; --json is the global flag.
+        let cli = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "--json",
+            "--host",
+            "mac",
+            "--cwd",
+            "/x/y",
+            "--backend",
+            "codex",
+            "--title",
+            "My Task",
+            "--wait",
+            "spawn",
+        ])
+        .unwrap()
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Command::Spawn {
+                host,
+                cwd,
+                backend,
+                title,
+                prompt,
+                wait,
+            } => {
+                assert_eq!(host.as_deref(), Some("mac"));
+                assert_eq!(cwd.as_deref(), Some("/x/y"));
+                assert_eq!(backend.as_deref(), Some("codex"));
+                assert_eq!(title.as_deref(), Some("My Task"));
+                assert_eq!(prompt, None);
+                assert!(wait);
+            }
+            _ => panic!("expected Spawn"),
+        }
+    }
+
+    #[test]
+    fn spawn_with_no_flags_defaults_everything() {
+        // A bare `spawn` captures all-None target flags (defaulted later from the
+        // current session) and no title/prompt/wait.
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "spawn"]).unwrap().unwrap();
+        match cli.command {
+            Command::Spawn {
+                host,
+                cwd,
+                backend,
+                title,
+                prompt,
+                wait,
+            } => {
+                assert!(host.is_none() && cwd.is_none() && backend.is_none());
+                assert!(title.is_none() && prompt.is_none() && !wait);
+            }
+            _ => panic!("expected Spawn"),
+        }
+    }
+
+    #[test]
+    fn spawn_prompt_is_captured() {
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "--prompt", "do the thing", "spawn"])
+            .unwrap()
+            .unwrap();
+        match cli.command {
+            Command::Spawn { prompt, .. } => assert_eq!(prompt.as_deref(), Some("do the thing")),
+            _ => panic!("expected Spawn"),
+        }
+    }
+
+    #[test]
+    fn prompt_implies_wait() {
+        // --wait alone waits; --prompt alone also waits (can't send to a session
+        // that isn't up); neither means fire-and-forget.
+        let mut opts = spawn_opts(Some("h"), Some("/c"), None);
+        assert!(!opts.effective_wait());
+        opts.wait = true;
+        assert!(opts.effective_wait());
+        opts.wait = false;
+        opts.prompt = Some("hi".into());
+        assert!(opts.effective_wait());
+    }
+
+    #[test]
+    fn merge_spawn_target_flag_wins_over_current() {
+        let opts = spawn_opts(Some("flaghost"), Some("/flag"), Some("codex"));
+        let t = merge_spawn_target(&opts, Some("curhost"), Some("/cur"), Some("claude")).unwrap();
+        assert_eq!(t.host, "flaghost");
+        assert_eq!(t.cwd, "/flag");
+        assert_eq!(t.backend, "codex");
+    }
+
+    #[test]
+    fn merge_spawn_target_current_fills_gaps() {
+        // No flags → default to the current session's own host/cwd/backend.
+        let opts = spawn_opts(None, None, None);
+        let t = merge_spawn_target(&opts, Some("curhost"), Some("/cur"), Some("codex")).unwrap();
+        assert_eq!(t.host, "curhost");
+        assert_eq!(t.cwd, "/cur");
+        assert_eq!(t.backend, "codex");
+    }
+
+    #[test]
+    fn merge_spawn_target_backend_falls_back_to_claude() {
+        // Neither a --backend flag nor a current-session backend → "claude".
+        let t =
+            merge_spawn_target(&spawn_opts(Some("h"), Some("/c"), None), None, None, None).unwrap();
+        assert_eq!(t.backend, "claude");
+    }
+
+    #[test]
+    fn merge_spawn_target_missing_host_or_cwd_errors() {
+        // Not inside a session and no flag → nothing to target.
+        assert!(merge_spawn_target(&spawn_opts(None, Some("/c"), None), None, None, None).is_err());
+        assert!(merge_spawn_target(&spawn_opts(Some("h"), None, None), None, None, None).is_err());
+        // An empty current value counts as absent (a session with no recorded
+        // host can't seed the default).
+        assert!(
+            merge_spawn_target(
+                &spawn_opts(None, Some("/c"), None),
+                Some(""),
+                Some("/c"),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn spawn_json_shape_tracks_wait_and_prompt() {
+        // Pre-wait: session is null, no event_id key.
+        let pre = spawn_json("mac", "spawn-1", None, None);
+        assert_eq!(pre["spawn_id"], "spawn-1");
+        assert_eq!(pre["host"], "mac");
+        assert!(pre["session"].is_null());
+        assert!(pre.get("event_id").is_none());
+
+        // Resolved with --prompt: session ref + event_id both present.
+        let full = spawn_json("mac", "spawn-1", Some("agentium:a-b-c"), Some("deadbeef"));
+        assert_eq!(full["session"], "agentium:a-b-c");
+        assert_eq!(full["event_id"], "deadbeef");
+    }
+
+    #[test]
+    fn short_id_prefixes_to_eight() {
+        assert_eq!(short_id("0123456789abcdef"), "01234567");
+        assert_eq!(short_id("abc"), "abc");
     }
 }

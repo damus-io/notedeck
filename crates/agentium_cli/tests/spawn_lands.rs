@@ -1,0 +1,235 @@
+//! End-to-end check that the real `agentium spawn --wait` publishes a kind-31989
+//! spawn command, waits for a host to answer with the new session's kind-31988
+//! state, and prints its durable `agentium:` ref — plus that `--prompt` delivers
+//! a first `user` message once the session is up.
+//!
+//! The engine's `spawn_session_returns_a_uuid_spawn_id` already covers the plain
+//! publish; the value here is the `--wait` *resolution*. We stand up an in-process
+//! relay and run the actual binary, then simulate a Dave host with a same-key
+//! helper engine on the same relay: it watches for the kind-31989 command, reads
+//! its `spawn_id`, and publishes a kind-31988 state carrying that same `spawn_id`
+//! (the correlation the CLI waits on). Same identity + relay, so the CLI's own
+//! cache syncs the answer and its watch fires.
+
+use std::time::Duration;
+
+use agentium_core::Engine;
+use agentium_core::messages::Message;
+use agentium_core::session_events::{self, AI_SESSION_COMMAND_KIND, build_session_state_event};
+use nostrdb::{Config, Ndb};
+use tempfile::TempDir;
+
+/// `[7u8; 32]` as an nsec — the identity the CLI signs/decrypts as, and the same
+/// key the helper host uses so their PNS envelopes round-trip.
+const NSEC: &str = "nsec1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursl6edet";
+const SECKEY: [u8; 32] = [7u8; 32];
+
+/// The spawn target the CLI names and the helper host answers on.
+const HOST: &str = "test-host";
+const CWD: &str = "/home/u/proj";
+/// The d-tag the helper host mints for the new session.
+const SPAWNED_SID: &str = "spawned-session-1";
+
+/// PNS-wrap an inner event and publish its kind-1080 envelope through `tx` to
+/// `relay` — how the helper host puts a state (built with the account key) on the
+/// wire, exactly as a real host's publish drain does.
+fn publish_wrapped(tx: &mut impl agentium_core::Transport, note_json: &str, relay: &str) {
+    let pns = enostr::pns::derive_pns_keys(&SECKEY);
+    let wrapped = session_events::wrap_pns(note_json, &pns).expect("wrap pns");
+    tx.publish_event_json(
+        wrapped,
+        vec![enostr::NormRelayUrl::new(relay).expect("relay url")],
+    );
+}
+
+/// Wait (bounded) for the helper host to see a kind-31989 spawn command in its
+/// synced cache, then return its `spawn_id`. `None` if none arrived in time.
+async fn await_spawn_id(host: &Engine) -> Option<String> {
+    let filter = nostrdb::Filter::new()
+        .kinds([AI_SESSION_COMMAND_KIND as u64])
+        .build();
+    let sub = host.ndb().subscribe(std::slice::from_ref(&filter)).ok()?;
+    // The CLI only publishes the command after its own connect + settle, so give
+    // the round-trip generous headroom.
+    tokio::time::timeout(Duration::from_secs(25), host.ndb().wait_for_notes(sub, 1))
+        .await
+        .ok()?
+        .ok()?;
+    let txn = nostrdb::Transaction::new(host.ndb()).ok()?;
+    let results = host.ndb().query(&txn, &[filter], 1).ok()?;
+    let note = &results.first()?.note;
+    session_events::get_tag_value(note, "spawn_id").map(|s| s.to_string())
+}
+
+/// The real `agentium spawn --wait --prompt` resolves the new session's ref, and
+/// its seeded first message lands on the host — driven by a same-key helper host
+/// answering the command over a live relay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spawn_wait_resolves_and_prompt_lands() {
+    // A real relay backed by its own ndb — the seam every envelope crosses.
+    let relay_dir = TempDir::new().expect("relay tmp");
+    let relay_ndb =
+        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+    let relay =
+        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let url = relay.url();
+
+    // The helper "host": a same-identity engine on the same relay that will answer
+    // the spawn command. Connect so it both receives the command and can publish.
+    let host_dir = TempDir::new().expect("host tmp");
+    let mut host =
+        Engine::open(host_dir.path().to_str().expect("path"), SECKEY).expect("host engine");
+    let mut host_tx = host.transport_handle().expect("host transport");
+    host.connect(&mut host_tx, &url).expect("host connect");
+
+    // The CLI needs a cache dir of its own; nothing to seed (the target comes from
+    // the explicit flags, not a current session).
+    let cli_dir = TempDir::new().expect("cli tmp");
+    let db_path = cli_dir.path().to_str().expect("path").to_string();
+    let url_for_cli = url.clone();
+
+    // Run the real binary in a blocking task so the host-answer loop runs
+    // concurrently on this task.
+    let cli = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_agentium"))
+            .args([
+                "--nsec",
+                NSEC,
+                "--db",
+                &db_path,
+                "--relay",
+                &url_for_cli,
+                "spawn",
+                "--host",
+                HOST,
+                "--cwd",
+                CWD,
+                "--prompt",
+                "do the first thing",
+                "--wait",
+            ])
+            .env("XDG_DATA_HOME", cli_dir.path())
+            .env("HOME", cli_dir.path())
+            .output()
+            .expect("run agentium spawn")
+    });
+
+    // Host side: wait for the command, then publish a kind-31988 state echoing its
+    // spawn_id — the correlation the CLI's --wait keys on.
+    let spawn_id = await_spawn_id(&host)
+        .await
+        .expect("host should see the spawn command");
+    let state = build_session_state_event(
+        SPAWNED_SID,
+        "Connecting...",
+        None,
+        CWD,
+        "working",
+        None,
+        HOST,
+        "/home/u",
+        "claude",
+        "default",
+        Some(""),
+        Some(&spawn_id),
+        1_770_000_000,
+        &SECKEY,
+    )
+    .expect("build state");
+    publish_wrapped(&mut host_tx, &state.note_json, &url);
+
+    // The CLI resolves the ref and exits 0.
+    let out = cli.await.expect("join cli");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "nonzero exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status
+    );
+    assert!(
+        stdout.contains("spawned agentium:") && stdout.contains(&format!("on {HOST}")),
+        "spawn --wait should print the resolved ref on the host:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("sent prompt"),
+        "spawn --prompt should report the seeded message:\n{stdout}"
+    );
+
+    // The seeded first message lands on the host (same key, same relay).
+    let mut watch = host.watch_session(SPAWNED_SID).expect("watch");
+    let received = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(Message::User(u)) = host.session_messages(SPAWNED_SID).first()
+                && u.text == "do the first thing"
+            {
+                return true;
+            }
+            if !watch.changed().await {
+                return false;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(
+        received,
+        "host should receive the seeded first user message"
+    );
+
+    relay.shutdown();
+}
+
+/// With no host answering, `spawn --wait` fails loudly (bounded) rather than
+/// hanging: the command is still published, but the wait times out with a clear
+/// "no host answered" error and a nonzero exit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_wait_times_out_without_a_host() {
+    // A reachable but host-less relay: the command publishes fine, nothing answers.
+    let relay_dir = TempDir::new().expect("relay tmp");
+    let relay_ndb =
+        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+    let relay =
+        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let url = relay.url();
+
+    let cli_dir = TempDir::new().expect("cli tmp");
+    let db_path = cli_dir.path().to_str().expect("path").to_string();
+    let url_for_cli = url.clone();
+
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_agentium"))
+            .args([
+                "--nsec",
+                NSEC,
+                "--db",
+                &db_path,
+                "--relay",
+                &url_for_cli,
+                "spawn",
+                "--host",
+                HOST,
+                "--cwd",
+                CWD,
+                "--wait",
+            ])
+            .env("XDG_DATA_HOME", cli_dir.path())
+            .env("HOME", cli_dir.path())
+            .output()
+            .expect("run agentium spawn")
+    })
+    .await
+    .expect("join cli");
+
+    assert!(
+        !out.status.success(),
+        "a --wait with no host must exit nonzero"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no host answered"),
+        "should surface the bounded-wait timeout:\n{stderr}"
+    );
+
+    relay.shutdown();
+}
