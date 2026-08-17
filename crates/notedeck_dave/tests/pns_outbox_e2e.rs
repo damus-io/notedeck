@@ -431,13 +431,21 @@ async fn run_pns_retry_backfill_case(mode: NegentropyRelayMode, context: &str) {
 fn captured_event_count(relay: &NegentropyRelay) -> usize {
     relay.count_captured_prefix("[\"EVENT\",")
 }
+/// Count captured outbound PNS (kind-1080) envelopes, ignoring the relay-list
+/// management event `set_private_relay` publishes to the same relay. The
+/// outbound leg now rides the host's per-frame fan-out rather than dave's old
+/// immediate publish, so a plain "any EVENT captured" wait races the relay-list
+/// event and can let the publisher shut down before the PNS envelope lands.
+fn captured_pns_event_count(relay: &NegentropyRelay) -> usize {
+    relay.count_captured_events_containing("\"kind\":1080")
+}
 fn wait_for_event_publish(device: &mut DeviceHarness, relay: &NegentropyRelay, context: &str) {
-    wait_for_device_condition(device, Duration::from_secs(5), context, |_| {
-        let event_count = captured_event_count(relay);
+    wait_for_device_condition(device, Duration::from_secs(10), context, |_| {
+        let event_count = captured_pns_event_count(relay);
         if event_count > 0 {
             Ok(())
         } else {
-            Err(format!("captured {event_count} outbound EVENT frames"))
+            Err(format!("captured {event_count} outbound PNS envelopes"))
         }
     });
 }
@@ -1083,7 +1091,7 @@ async fn dave_pns_no_private_relay_does_not_publish_to_account_relays_e2e() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn dave_pns_no_private_relay_retains_outbound_events_until_marked_e2e() {
+async fn dave_pns_no_private_relay_keeps_backlog_local_until_relay_marked_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
@@ -1111,13 +1119,26 @@ async fn dave_pns_no_private_relay_retains_outbound_events_until_marked_e2e() {
 
     select_account_on_device(&mut device, &account);
 
-    // Mark the relay private: Dave now syncs the retained backlog to it.
+    // Retiring dave's outbox moved the outbound leg onto the host's per-frame
+    // fan-out, which publishes only freshly-authored envelopes and drains-and-
+    // drops the local backlog while no private relay is set (see the
+    // `fan_out_local_envelopes` doc in notedeck/src/private_sync.rs). So marking
+    // the relay private does NOT replay the pre-mark backlog: nothing lands yet.
     set_private_relay(&mut device, relay.url());
+    step_device_for(&mut device, Duration::from_millis(200));
+    assert_eq!(captured_pns_event_count(&relay), 0);
 
+    // An event authored *after* the relay is live does fan out normally.
+    pns_relay_tx
+        .send(ControllableDaveCommand::AddUserMessage {
+            session_id,
+            text: "authored after private relay marked".to_owned(),
+        })
+        .expect("queue post-mark outbound PNS event");
     wait_for_event_publish(
         &mut device,
         &relay,
-        "Dave outbound PNS event publish after marking relay private",
+        "Dave outbound PNS event publish for a post-mark event",
     );
 }
 #[cfg(unix)]
