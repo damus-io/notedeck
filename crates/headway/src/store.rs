@@ -9,14 +9,16 @@
 //! the CLI keeps its own nostrdb and publishes each event to the running app's
 //! relay over its websocket.
 
+use std::collections::HashSet;
+
 use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
-    board_address, build_archive_placement, build_board, build_comment, build_cover_note,
-    build_field, build_issue, build_labels, build_placement, build_relation, build_sequence,
-    build_subject_edit, rank_between,
+    board_address, build_archive_placement, build_blockers, build_board, build_comment,
+    build_cover_note, build_field, build_issue, build_labels, build_placement, build_relation,
+    build_sequence, build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -77,6 +79,12 @@ pub enum BoardAction {
         card: NoteId,
         parent: Option<NoteId>,
     },
+    /// Add `on` to `card`'s blocker set (a dependency edge: `card` is blocked by
+    /// `on`). A no-op when the edge already exists or would create a cycle. The
+    /// edge is independent of the parent axis and may point at another board.
+    Block { card: NoteId, on: NoteId },
+    /// Remove `on` from `card`'s blocker set. A no-op when the edge isn't present.
+    Unblock { card: NoteId, on: NoteId },
     /// Post a NIP-22 comment on `card`. `reply_to`, when set, is another comment
     /// on the same card that this one threads under.
     AddComment {
@@ -659,6 +667,39 @@ pub fn apply(
                 ingest_signed(ndb, build_relation(&card, None), signer, publisher);
             }
         }
+        BoardAction::Block { card, on } => {
+            // Refuse an edge that would close a dependency loop (same-board only;
+            // see `would_block_cycle`).
+            if would_block_cycle(view, card, on) {
+                return;
+            }
+            // Rebuild from the *raw* stored set, not the folded `blocked_by`: the
+            // fold drops edges it couldn't resolve (e.g. a cross-board blocker),
+            // so editing the resolved view would silently discard them.
+            let cur = event::current_blockers(ndb, author, &card);
+            let mut set: Vec<NoteId> = cur
+                .as_ref()
+                .map(|b| b.blockers.iter().map(|id| NoteId::new(*id)).collect())
+                .unwrap_or_default();
+            if set.contains(&on) {
+                return;
+            }
+            set.push(on);
+            republish_blockers(ndb, &card, &set, cur, signer, publisher);
+        }
+        BoardAction::Unblock { card, on } => {
+            let cur = event::current_blockers(ndb, author, &card);
+            let mut set: Vec<NoteId> = cur
+                .as_ref()
+                .map(|b| b.blockers.iter().map(|id| NoteId::new(*id)).collect())
+                .unwrap_or_default();
+            let before = set.len();
+            set.retain(|id| *id != on);
+            if set.len() == before {
+                return;
+            }
+            republish_blockers(ndb, &card, &set, cur, signer, publisher);
+        }
         BoardAction::AddComment {
             card,
             body,
@@ -953,6 +994,58 @@ fn find_card(view: &BoardView, card: NoteId) -> Option<&CardView> {
 /// on an archived card is still valid, so it needs the wider search.
 fn find_card_any(view: &BoardView, card: NoteId) -> Option<&CardView> {
     find_card(view, card).or_else(|| view.archived.iter().map(|a| &a.card).find(|c| c.id == card))
+}
+
+/// Publish `card`'s complete blocker set, superseding its previous one. Blocker
+/// sets resolve latest-authorised-wins and nostr timestamps are whole seconds, so
+/// the new event is stamped strictly past the one it replaces (`prev`) — a
+/// same-second re-block/unblock still wins (mirrors [`next_after`]'s use for
+/// comments/placements).
+fn republish_blockers(
+    ndb: &Ndb,
+    card: &NoteId,
+    set: &[NoteId],
+    prev: Option<event::BlockerSet>,
+    signer: &Signer,
+    publisher: &mut dyn Publisher,
+) {
+    let after = prev.map_or(0, |b| b.created_at);
+    ingest_signed(
+        ndb,
+        build_blockers(card, set).created_at(next_after(after)),
+        signer,
+        publisher,
+    );
+}
+
+/// Would blocking `card` on `on` create a dependency cycle? A cycle would form
+/// iff `on` is already (transitively) blocked by `card`, so this walks the
+/// blocked-by graph outward from `on` looking for `card`. Refuses a self-block.
+/// Like [`would_cycle`] it sees only this board's folded view; a blocker on
+/// another board is treated as a leaf (its edges aren't followed), so cross-board
+/// cycles aren't detected — the reducer renders any slipped-through cycle
+/// harmlessly as mutual edges. Public so a GUI blocker picker can pre-filter its
+/// candidates with the same rule the write path enforces.
+pub fn would_block_cycle(view: &BoardView, card: NoteId, on: NoteId) -> bool {
+    if card == on {
+        return true;
+    }
+    let mut visited: HashSet<NoteId> = HashSet::new();
+    let mut stack = vec![on];
+    while let Some(id) = stack.pop() {
+        if id == card {
+            return true;
+        }
+        if !visited.insert(id) {
+            continue;
+        }
+        // A blocker we can't resolve on this board (e.g. cross-board) is a leaf:
+        // we can't follow its edges, so it can't extend a cycle we'd catch here.
+        if let Some(c) = find_card_any(view, id) {
+            stack.extend(c.blocked_by.iter().map(|e| e.id));
+        }
+    }
+    false
 }
 
 /// Would parenting `card` under `parent` create a cycle? Walks the ancestor
@@ -1433,6 +1526,97 @@ mod tests {
             .find(|c| c.title == "Tagged idea")
             .unwrap();
         assert_eq!(card.labels, vec!["bug".to_string(), "ux".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn block_and_unblock_edit_the_dependency_set() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let mut view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+
+        // Three fresh cards to wire edges between.
+        for title in ["blocked", "dep one", "dep two"] {
+            t.apply(
+                &view,
+                BoardAction::AddCard {
+                    col: 0,
+                    title: title.to_string(),
+                    labels: vec![],
+                    parent: None,
+                },
+            );
+            view = t.wait(|v| card_id_by_title(v, title).is_some()).await;
+        }
+        let blocked = card_id_by_title(&view, "blocked").unwrap();
+        let d1 = card_id_by_title(&view, "dep one").unwrap();
+        let d2 = card_id_by_title(&view, "dep two").unwrap();
+
+        // Block on two deps: the set accumulates rather than replacing.
+        t.apply(
+            &view,
+            BoardAction::Block {
+                card: blocked,
+                on: d1,
+            },
+        );
+        let view = t
+            .wait(|v| {
+                find_card(v, blocked).is_some_and(|c| c.blocked_by.iter().any(|e| e.id == d1))
+            })
+            .await;
+        t.apply(
+            &view,
+            BoardAction::Block {
+                card: blocked,
+                on: d2,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, blocked).is_some_and(|c| c.blocked_by.len() == 2))
+            .await;
+
+        let card = find_card(&view, blocked).unwrap();
+        assert!(card.is_blocked());
+        let ids: Vec<NoteId> = card.blocked_by.iter().map(|e| e.id).collect();
+        assert!(ids.contains(&d1) && ids.contains(&d2));
+        // The reverse edge resolves on the blocker.
+        assert_eq!(
+            find_card(&view, d1)
+                .unwrap()
+                .blocks
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>(),
+            vec![blocked]
+        );
+
+        // Cycle guard: blocking d1 on `blocked` would close a loop, so it's
+        // refused and d1 stays free (the set above is unchanged).
+        t.apply(
+            &view,
+            BoardAction::Block {
+                card: d1,
+                on: blocked,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, blocked).is_some_and(|c| c.blocked_by.len() == 2))
+            .await;
+        assert!(find_card(&view, d1).unwrap().blocked_by.is_empty());
+
+        // Unblock one dep: the other survives (the edit rebuilds from the raw set,
+        // so removing d1 doesn't drop d2).
+        t.apply(
+            &view,
+            BoardAction::Unblock {
+                card: blocked,
+                on: d1,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, blocked).is_some_and(|c| c.blocked_by.len() == 1))
+            .await;
+        assert_eq!(find_card(&view, blocked).unwrap().blocked_by[0].id, d2);
     }
 
     #[tokio::test]
