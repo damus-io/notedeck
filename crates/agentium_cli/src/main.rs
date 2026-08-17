@@ -60,6 +60,16 @@ enum Command {
     Show {
         session: Option<String>,
     },
+    /// Print one session's kind-1988 conversation, one entry per message, in the
+    /// order [`load_session_messages_for_author`] returns (millisecond
+    /// wall-clock via `EventOrder` — *not* the `seq` tag). Like `show`, the
+    /// selector is optional and defaults to `$AGENTIUM_SESSION`.
+    ///
+    /// [`load_session_messages_for_author`]: agentium_core::session_loader::load_session_messages_for_author
+    Messages {
+        session: Option<String>,
+        view: MessageView,
+    },
     /// Reopen a closed (possibly soft-deleted) session on its host so a new
     /// message drives its backend again. The argument is any session selector
     /// `list` accepts (a d-tag, cli-session id, or `agentium:` word-id).
@@ -144,6 +154,9 @@ async fn run() -> Result<()> {
     match cli.command {
         Command::List => cmd_list(&engine, &read_pk, &filters, cli.list_scope, cli.json)?,
         Command::Show { session } => cmd_show(&engine, &read_pk, session.as_deref(), cli.json)?,
+        Command::Messages { session, view } => {
+            cmd_messages(&engine, &read_pk, session.as_deref(), &view, cli.json)?
+        }
         Command::Resume { session } => {
             cmd_resume(&engine, &mut transport, &read_pk, &session).await?
         }
@@ -295,6 +308,81 @@ fn cmd_show(engine: &Engine, author: &Pubkey, selector: Option<&str>, as_json: b
             color
         )
     );
+    Ok(())
+}
+
+/// `agentium messages <session>` — print one session's kind-1988 conversation,
+/// one entry per message, in order.
+///
+/// Resolves the selector across the live *and* tombstoned sets (so a deleted
+/// session's transcript still reads), then loads its messages with
+/// [`load_session_messages_for_author`] — which already orders them by
+/// [`EventOrder`] (millisecond wall-clock) and applies the single shared
+/// note→message mapping ([`render_conversation_note`]). We render in the order
+/// returned; we do **not** re-sort by `seq` (that axis was refactored out of the
+/// display order) or reimplement the mapping.
+///
+/// `--role`/`--last`/`--tools` filter the rendered stream (see [`MessageView`]);
+/// `--json` emits structured [`MessageJson`] views; `--jsonl` short-circuits to
+/// the reconstructed claude-code JSONL (a different, `seq`-ordered axis — see
+/// below).
+///
+/// [`load_session_messages_for_author`]: agentium_core::session_loader::load_session_messages_for_author
+/// [`EventOrder`]: agentium_core::session_loader::EventOrder
+/// [`render_conversation_note`]: agentium_core::session_loader::render_conversation_note
+fn cmd_messages(
+    engine: &Engine,
+    author: &Pubkey,
+    selector: Option<&str>,
+    view: &MessageView,
+    as_json: bool,
+) -> Result<()> {
+    use agentium_core::session_loader::{
+        load_deleted_session_states_for_author, load_session_messages_for_author,
+        load_session_states_for_author, resolve_session_including_deleted,
+    };
+    use agentium_core::session_reconstructor::reconstruct_jsonl_lines;
+
+    let selector = selector
+        .ok_or("no session — pass a selector (see `agentium list`) or set $AGENTIUM_SESSION")?;
+
+    let txn = Transaction::new(engine.ndb())?;
+    let live = load_session_states_for_author(engine.ndb(), &txn, author);
+    let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+    let state = resolve_session_including_deleted(&live, &deleted, selector)?;
+
+    // `--jsonl`: emit the reconstructed claude-code JSONL from the lossless
+    // kind-1989 archive, raw. This is a *different* ordering axis than the
+    // display stream — `reconstruct_jsonl_lines` sorts by `seq` to reproduce the
+    // original claude-code line order of the source archive, which is correct
+    // here. The function is not author-scoped, but the engine's cache only holds
+    // this identity's own PNS-decrypted events (the device key registered at
+    // `open_ndb` is the only one whose kind-1080 envelopes ndb can decrypt), so
+    // it only ever sees our own kind-1989 events. Display filters don't apply.
+    if view.jsonl {
+        let lines = reconstruct_jsonl_lines(engine.ndb(), &txn, &state.claude_session_id)
+            .map_err(|e| e.to_string())?;
+        for line in lines {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+
+    // The loader already returns messages in `EventOrder` and applies the shared
+    // mapping; `MessageView` only slices/hides, never re-sorts.
+    let messages =
+        load_session_messages_for_author(engine.ndb(), &txn, author, &state.claude_session_id)
+            .messages;
+    let selected = view.select(&messages);
+
+    if as_json {
+        let rows: Vec<MessageJson> = selected.iter().map(|m| MessageJson::from(*m)).collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+
+    let color = std::io::stdout().is_terminal();
+    print!("{}", render_messages(&selected, color));
     Ok(())
 }
 
@@ -542,6 +630,361 @@ fn render_detail(
     }
 
     out
+}
+
+// ---------------------------------------------------------------------------
+// `agentium messages` — transcript filtering, rendering, and JSON view
+// ---------------------------------------------------------------------------
+
+use agentium_core::messages::{Message, PermissionResponseType, SubagentStatus};
+use agentium_core::tools::{ToolCall, ToolResponse, ToolResponses};
+
+/// The transcript-shaping flags for `agentium messages`: which roles to keep,
+/// whether to fold tool-call/result noise, and how many trailing messages to
+/// show. `jsonl` selects the reconstructed-archive path instead (see
+/// [`cmd_messages`]); it's carried here so the whole command's shape lives in
+/// one value.
+struct MessageView {
+    /// `--role <r>`: keep only messages whose canonical role token (see
+    /// [`message_role`]) equals this, case-insensitively. `None` keeps all.
+    role: Option<String>,
+    /// `--last N`: after role/tool filtering, keep only the trailing `N`.
+    last: Option<usize>,
+    /// `--tools`/`--no-tools`: when `false`, drop `tool_call`/`tool_result`
+    /// messages so the human turns read cleanly. Defaults to `true` (show).
+    show_tools: bool,
+    /// `--jsonl`: emit reconstructed claude-code JSONL instead of the rendered
+    /// transcript. Mutually exclusive in effect with the filters above.
+    jsonl: bool,
+}
+
+impl MessageView {
+    /// Apply the role/tool/last filters to an ordered message slice, returning
+    /// borrowed references in the same order. Order of operations: role filter,
+    /// then tool fold, then the `--last` tail — so `--last N` counts the
+    /// messages actually shown, not ones a filter already dropped.
+    fn select<'a>(&self, messages: &'a [Message]) -> Vec<&'a Message> {
+        let mut kept: Vec<&Message> = messages
+            .iter()
+            .filter(|m| {
+                self.role
+                    .as_deref()
+                    .is_none_or(|r| message_role(m).eq_ignore_ascii_case(r))
+            })
+            .filter(|m| self.show_tools || !is_tool_message(m))
+            .collect();
+        if let Some(n) = self.last {
+            let start = kept.len().saturating_sub(n);
+            kept.drain(..start);
+        }
+        kept
+    }
+}
+
+/// The canonical role token for a message — the axis `--role` filters on and the
+/// `role` tag the `--json` view carries. Collapses each [`Message`] variant to
+/// the kind-1988 role vocabulary a reader would type.
+fn message_role(m: &Message) -> &'static str {
+    match m {
+        Message::User(_) => "user",
+        Message::Assistant(_) => "assistant",
+        Message::ToolCalls(_) => "tool_call",
+        Message::ToolResponse(_) => "tool_result",
+        Message::PermissionRequest(_) => "permission_request",
+        Message::CompactionComplete(_) => "compaction",
+        Message::Subagent(_) => "subagent",
+        Message::System(_) => "system",
+        Message::Error(_) => "error",
+        Message::TodoUpdate(_) => "todo",
+    }
+}
+
+/// Whether a message is tool-call/result noise that `--no-tools` folds away.
+fn is_tool_message(m: &Message) -> bool {
+    matches!(m, Message::ToolCalls(_) | Message::ToolResponse(_))
+}
+
+/// Terminal presentation for a message role: a human label and an SGR color.
+/// Mirrors [`message_role`]'s vocabulary; used to head each rendered entry.
+fn role_style(m: &Message) -> (&'static str, &'static str) {
+    match m {
+        Message::User(_) => ("user", "36"),
+        Message::Assistant(_) => ("assistant", "32"),
+        Message::ToolCalls(_) => ("tool", "35"),
+        Message::ToolResponse(_) => ("result", "90"),
+        Message::PermissionRequest(_) => ("permission", SGR_NEEDS_INPUT),
+        Message::CompactionComplete(_) => ("compaction", "90"),
+        Message::Subagent(_) => ("subagent", "34"),
+        Message::System(_) => ("system", "90"),
+        Message::Error(_) => ("error", "31"),
+        Message::TodoUpdate(_) => ("todo", "90"),
+    }
+}
+
+/// Render a filtered message stream as plain text, one entry per message
+/// separated by a blank line. Returns an owned `String` (like [`render_detail`])
+/// so the layout is unit-testable; ANSI color is applied only via [`paint`] when
+/// `color` (stdout is a tty).
+fn render_messages(messages: &[&Message], color: bool) -> String {
+    let mut out = String::new();
+    for (i, m) in messages.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&render_message(m, color));
+    }
+    out
+}
+
+/// Render a single message: a colored role header line, then its body indented
+/// two spaces. Every [`Message`] variant is handled so the transcript never
+/// silently drops an entry.
+fn render_message(m: &Message, color: bool) -> String {
+    let (label, sgr) = role_style(m);
+    let body = match m {
+        Message::User(u) => {
+            let mut b = u.text.clone();
+            if !u.images.is_empty() {
+                if !b.is_empty() {
+                    b.push('\n');
+                }
+                b.push_str(&format!("[{} image(s)]", u.images.len()));
+            }
+            b
+        }
+        Message::Assistant(a) => a.text().to_string(),
+        Message::ToolCalls(calls) => calls
+            .iter()
+            .map(render_tool_call)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Message::ToolResponse(tr) => render_tool_response(tr),
+        Message::PermissionRequest(p) => {
+            format!("{}  [{}]", p.tool_name, decision_label(p.response))
+        }
+        Message::CompactionComplete(c) => format!("{} tokens before compaction", c.pre_tokens),
+        Message::Subagent(s) => format!(
+            "{}: {}  [{}]",
+            s.subagent_type,
+            s.description,
+            subagent_status_label(s.status)
+        ),
+        Message::System(s) => s.clone(),
+        Message::Error(e) => e.clone(),
+        Message::TodoUpdate(v) => todo_summary(v),
+    };
+
+    let mut out = paint(color, sgr, label);
+    out.push('\n');
+    for line in body.lines() {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// One line for a tool call: its registry name plus a one-line summary of the
+/// arguments JSON (whitespace-flattened and truncated).
+fn render_tool_call(call: &ToolCall) -> String {
+    let name = call.calls().tool_name();
+    let args = one_line(&call.calls().arguments(), 100);
+    if args.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}  {args}")
+    }
+}
+
+/// One line for a tool response, keyed on the underlying [`ToolResponses`]
+/// variant. The loader's message stream only ever builds `ExecutedTool`, but the
+/// other variants are handled so a directly-rendered `ToolResponse` never
+/// silently vanishes.
+fn render_tool_response(tr: &ToolResponse) -> String {
+    match tr.responses() {
+        ToolResponses::ExecutedTool(e) => {
+            if e.summary.is_empty() {
+                e.tool_name.clone()
+            } else {
+                format!("{}: {}", e.tool_name, one_line(&e.summary, 200))
+            }
+        }
+        ToolResponses::Error(msg) => format!("error: {}", one_line(msg, 200)),
+        ToolResponses::Query(q) => format!("query: {} notes", q.notes.len()),
+        ToolResponses::PresentNotes(n) => format!("present: {n} notes"),
+    }
+}
+
+/// The bracketed decision shown on a permission request row.
+fn decision_label(response: Option<PermissionResponseType>) -> &'static str {
+    match response {
+        Some(PermissionResponseType::Allowed) => "allowed",
+        Some(PermissionResponseType::Denied) => "denied",
+        None => "pending",
+    }
+}
+
+/// A subagent's status as a lowercase word.
+fn subagent_status_label(status: SubagentStatus) -> &'static str {
+    match status {
+        SubagentStatus::Running => "running",
+        SubagentStatus::Completed => "completed",
+        SubagentStatus::Failed => "failed",
+    }
+}
+
+/// A one-line summary of a `TodoWrite` payload: the number of items, plus the
+/// content of the in-progress one when the payload has the expected shape.
+/// Falls back to a flattened one-line dump for anything unexpected.
+fn todo_summary(v: &serde_json::Value) -> String {
+    let Some(todos) = v.get("todos").and_then(|t| t.as_array()) else {
+        return one_line(&v.to_string(), 120);
+    };
+    let active = todos
+        .iter()
+        .find(|t| t.get("status").and_then(|s| s.as_str()) == Some("in_progress"))
+        .and_then(|t| t.get("content").and_then(|c| c.as_str()));
+    match active {
+        Some(content) => format!("{} item(s), doing: {}", todos.len(), one_line(content, 80)),
+        None => format!("{} item(s)", todos.len()),
+    }
+}
+
+/// Flatten `s` to a single line (runs of whitespace, including newlines,
+/// collapse to one space) and truncate to `max` display chars with an ellipsis.
+/// Keeps a summary scannable on one row regardless of the source's line breaks.
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    col_ellipsis(&flat, max)
+}
+
+/// Truncate to `max` chars with a trailing `…` when cut; unlike [`col`], does
+/// not pad (transcript bodies aren't columnar).
+fn col_ellipsis(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let mut t: String = chars[..max.saturating_sub(1)].iter().collect();
+    t.push('…');
+    t
+}
+
+/// The `--json` view of one conversation message: internally tagged by `role`
+/// (the [`message_role`] token), each variant carrying just its own fields.
+/// [`Message`] isn't `Serialize`, so this mirrors it the way `SessionJson`
+/// mirrors `SessionState`. Emitted as a `Vec` by `messages --json`.
+#[derive(serde::Serialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
+enum MessageJson {
+    User {
+        text: String,
+        #[serde(skip_serializing_if = "is_zero")]
+        images: usize,
+    },
+    Assistant {
+        text: String,
+    },
+    ToolCall {
+        calls: Vec<ToolCallJson>,
+    },
+    ToolResult {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        summary: String,
+    },
+    PermissionRequest {
+        tool: String,
+        decision: &'static str,
+    },
+    Compaction {
+        pre_tokens: u64,
+    },
+    Subagent {
+        subagent_type: String,
+        description: String,
+        status: &'static str,
+    },
+    System {
+        text: String,
+    },
+    Error {
+        text: String,
+    },
+    Todo {
+        todos: serde_json::Value,
+    },
+}
+
+/// Whether a `usize` is zero — the skip predicate for `MessageJson::User.images`
+/// so a text-only user message omits the field entirely.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// The `--json` shape of a single tool call: its registry name and the parsed
+/// argument JSON (falling back to the raw string when it doesn't parse).
+#[derive(serde::Serialize)]
+struct ToolCallJson {
+    tool: &'static str,
+    input: serde_json::Value,
+}
+
+impl From<&Message> for MessageJson {
+    fn from(m: &Message) -> Self {
+        match m {
+            Message::User(u) => MessageJson::User {
+                text: u.text.clone(),
+                images: u.images.len(),
+            },
+            Message::Assistant(a) => MessageJson::Assistant {
+                text: a.text().to_string(),
+            },
+            Message::ToolCalls(calls) => MessageJson::ToolCall {
+                calls: calls
+                    .iter()
+                    .map(|c| ToolCallJson {
+                        tool: c.calls().tool_name(),
+                        input: serde_json::from_str(&c.calls().arguments())
+                            .unwrap_or_else(|_| serde_json::Value::String(c.calls().arguments())),
+                    })
+                    .collect(),
+            },
+            Message::ToolResponse(tr) => match tr.responses() {
+                ToolResponses::ExecutedTool(e) => MessageJson::ToolResult {
+                    tool: Some(e.tool_name.clone()),
+                    summary: e.summary.clone(),
+                },
+                ToolResponses::Error(msg) => MessageJson::ToolResult {
+                    tool: None,
+                    summary: format!("error: {msg}"),
+                },
+                ToolResponses::Query(q) => MessageJson::ToolResult {
+                    tool: None,
+                    summary: format!("query: {} notes", q.notes.len()),
+                },
+                ToolResponses::PresentNotes(n) => MessageJson::ToolResult {
+                    tool: None,
+                    summary: format!("present: {n} notes"),
+                },
+            },
+            Message::PermissionRequest(p) => MessageJson::PermissionRequest {
+                tool: p.tool_name.clone(),
+                decision: decision_label(p.response),
+            },
+            Message::CompactionComplete(c) => MessageJson::Compaction {
+                pre_tokens: c.pre_tokens,
+            },
+            Message::Subagent(s) => MessageJson::Subagent {
+                subagent_type: s.subagent_type.clone(),
+                description: s.description.clone(),
+                status: subagent_status_label(s.status),
+            },
+            Message::System(s) => MessageJson::System { text: s.clone() },
+            Message::Error(e) => MessageJson::Error { text: e.clone() },
+            Message::TodoUpdate(v) => MessageJson::Todo { todos: v.clone() },
+        }
+    }
 }
 
 /// Which sessions `list` shows. Tombstoned sessions are hidden by default so the
@@ -878,6 +1321,12 @@ impl Cli {
         let mut backend = None;
         let mut deleted = false;
         let mut all = false;
+        // `messages` transcript flags. `show_tools` defaults on; `--no-tools`
+        // folds tool noise and `--tools` re-asserts the default.
+        let mut role = None;
+        let mut last = None;
+        let mut show_tools = true;
+        let mut jsonl = false;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -900,6 +1349,17 @@ impl Cli {
                 "--backend" => backend = Some(value("--backend")?),
                 "--deleted" => deleted = true,
                 "--all" => all = true,
+                "--role" => role = Some(value("--role")?),
+                "--last" => {
+                    last = Some(
+                        value("--last")?
+                            .parse::<usize>()
+                            .map_err(|_| "--last needs a non-negative integer")?,
+                    )
+                }
+                "--tools" => show_tools = true,
+                "--no-tools" => show_tools = false,
+                "--jsonl" => jsonl = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -910,7 +1370,13 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
-        let command = parse_command(name, rest)?;
+        let view = MessageView {
+            role,
+            last,
+            show_tools,
+            jsonl,
+        };
+        let command = parse_command(name, rest, view)?;
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
@@ -945,18 +1411,15 @@ impl Cli {
     }
 }
 
-fn parse_command(name: &str, rest: &[String]) -> Result<Command> {
+fn parse_command(name: &str, rest: &[String], view: MessageView) -> Result<Command> {
     Ok(match name {
         "list" => Command::List,
         "show" => Command::Show {
-            // The selector is optional: fall back to `$AGENTIUM_SESSION` (the
-            // `agentium:` ref a running Dave session exports) so `agentium show`
-            // with no argument describes the current session. An empty env var
-            // is treated as unset. `cmd_show` errors if neither is present.
-            session: rest
-                .first()
-                .cloned()
-                .or_else(|| env::var("AGENTIUM_SESSION").ok().filter(|s| !s.is_empty())),
+            session: optional_session(rest),
+        },
+        "messages" => Command::Messages {
+            session: optional_session(rest),
+            view,
         },
         "resume" => Command::Resume {
             session: arg(rest, 0, name)?,
@@ -967,6 +1430,16 @@ fn parse_command(name: &str, rest: &[String]) -> Result<Command> {
         "logout" => Command::Logout,
         other => return Err(format!("unknown command '{other}' (try `agentium --help`)").into()),
     })
+}
+
+/// The optional session selector for `show`/`messages`: the first positional if
+/// present, else `$AGENTIUM_SESSION` (the `agentium:` ref a running Dave session
+/// exports) so the command with no argument targets the current session. An
+/// empty env var is treated as unset; the command errors if neither is present.
+fn optional_session(rest: &[String]) -> Option<String> {
+    rest.first()
+        .cloned()
+        .or_else(|| env::var("AGENTIUM_SESSION").ok().filter(|s| !s.is_empty()))
 }
 
 /// The `idx`th positional argument to a command, or an error naming the command.
@@ -995,6 +1468,13 @@ COMMANDS:
                       selector `list` accepts; defaults to $AGENTIUM_SESSION so a
                       running Dave session can just run `agentium show`. --json
                       emits the structured detail object.
+    messages [session]
+                      Print one session's full conversation, one entry per
+                      message, in order (millisecond wall-clock, not seq). Takes
+                      any selector `list` accepts; defaults to $AGENTIUM_SESSION.
+                      Filter/shape with --role/--last/--tools/--no-tools; --json
+                      emits structured message objects, --jsonl the reconstructed
+                      claude-code JSONL from the source archive.
     resume <session>  Reopen a closed (even soft-deleted) session on its host so
                       a new message drives its backend again. Takes any selector
                       `list` accepts (d-tag, cli-session id, or agentium: ref);
@@ -1024,6 +1504,15 @@ OPTIONS:
     --backend <b>     Only sessions whose backend contains <b>
     --deleted         Show only soft-deleted (tombstoned) sessions
     --all             Show live and deleted sessions together
+
+  messages options:
+    --role <r>        Only messages with this role (user|assistant|tool_call|
+                      tool_result|permission_request|subagent|system|error|
+                      compaction|todo)
+    --last <n>        Only the last <n> messages (after other filters)
+    --tools           Show tool_call/tool_result messages (default)
+    --no-tools        Fold away tool_call/tool_result noise
+    --jsonl           Emit reconstructed claude-code JSONL (source archive)
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -1185,9 +1674,29 @@ mod tests {
         // An explicit positional is used verbatim (the $AGENTIUM_SESSION
         // fallback only applies when none is given — exercised end-to-end, not
         // here, to avoid mutating process env in a shared test binary).
-        match parse_command("show", &["agentium:a-b-c".to_string()]).unwrap() {
+        match parse_command("show", &["agentium:a-b-c".to_string()], view_all()).unwrap() {
             Command::Show { session } => assert_eq!(session.as_deref(), Some("agentium:a-b-c")),
             _ => panic!("expected Show"),
+        }
+    }
+
+    #[test]
+    fn messages_command_carries_selector_and_view() {
+        let view = MessageView {
+            role: Some("assistant".into()),
+            last: Some(5),
+            show_tools: false,
+            jsonl: true,
+        };
+        match parse_command("messages", &["agentium:a-b-c".to_string()], view).unwrap() {
+            Command::Messages { session, view } => {
+                assert_eq!(session.as_deref(), Some("agentium:a-b-c"));
+                assert_eq!(view.role.as_deref(), Some("assistant"));
+                assert_eq!(view.last, Some(5));
+                assert!(!view.show_tools);
+                assert!(view.jsonl);
+            }
+            _ => panic!("expected Messages"),
         }
     }
 
@@ -1295,5 +1804,234 @@ mod tests {
         );
         let summary = ConversationSummary::from_messages(&[Message::PermissionRequest(responded)]);
         assert!(summary.pending_permission.is_none());
+    }
+
+    // -- `agentium messages`: transcript rendering, filtering, JSON view -------
+
+    use agentium_core::messages::{
+        AssistantMessage, CompactionInfo, ExecutedTool, Message, PermissionRequest,
+        PermissionResponseType, SubagentInfo, SubagentStatus,
+    };
+    use agentium_core::tools::{QueryCall, ToolCall, ToolCalls, ToolResponse};
+
+    /// A `tool_result` message carrying an [`ExecutedTool`], as the loader builds.
+    fn tool_result(name: &str, summary: &str) -> Message {
+        Message::ToolResponse(ToolResponse::executed_tool(ExecutedTool {
+            tool_name: name.into(),
+            summary: summary.into(),
+            parent_task_id: None,
+            file_update: None,
+        }))
+    }
+
+    /// The default (show-everything) view: no role filter, no tail, tools shown.
+    fn view_all() -> MessageView {
+        MessageView {
+            role: None,
+            last: None,
+            show_tools: true,
+            jsonl: false,
+        }
+    }
+
+    #[test]
+    fn message_role_tokens_cover_every_variant() {
+        assert_eq!(message_role(&Message::User("x".into())), "user");
+        assert_eq!(
+            message_role(&Message::Assistant(AssistantMessage::from_text("x".into()))),
+            "assistant"
+        );
+        assert_eq!(message_role(&tool_result("Bash", "ok")), "tool_result");
+        assert_eq!(message_role(&Message::System("x".into())), "system");
+        assert_eq!(message_role(&Message::Error("x".into())), "error");
+        assert_eq!(
+            message_role(&Message::CompactionComplete(CompactionInfo {
+                pre_tokens: 1
+            })),
+            "compaction"
+        );
+        assert_eq!(
+            message_role(&Message::TodoUpdate(serde_json::json!({}))),
+            "todo"
+        );
+    }
+
+    #[test]
+    fn select_filters_by_role_case_insensitively() {
+        let msgs = vec![
+            Message::User("hello".into()),
+            Message::Assistant(AssistantMessage::from_text("hi".into())),
+            Message::User("again".into()),
+        ];
+        let view = MessageView {
+            role: Some("USER".into()),
+            ..view_all()
+        };
+        let kept = view.select(&msgs);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|m| message_role(m) == "user"));
+    }
+
+    #[test]
+    fn select_folds_tool_noise_with_no_tools() {
+        let msgs = vec![
+            Message::User("hello".into()),
+            tool_result("Bash", "exit 0"),
+            Message::Assistant(AssistantMessage::from_text("done".into())),
+        ];
+        // Default keeps the tool_result; --no-tools drops it.
+        assert_eq!(view_all().select(&msgs).len(), 3);
+        let folded = MessageView {
+            show_tools: false,
+            ..view_all()
+        };
+        let kept = folded.select(&msgs);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|m| !is_tool_message(m)));
+    }
+
+    #[test]
+    fn select_last_tails_after_other_filters() {
+        let msgs = vec![
+            Message::User("1".into()),
+            tool_result("Bash", "ok"),
+            Message::User("2".into()),
+            Message::User("3".into()),
+        ];
+        // --no-tools leaves 3 user messages; --last 2 keeps the final two.
+        let view = MessageView {
+            last: Some(2),
+            show_tools: false,
+            ..view_all()
+        };
+        let kept = view.select(&msgs);
+        let texts: Vec<&str> = kept
+            .iter()
+            .filter_map(|m| match m {
+                Message::User(u) => Some(u.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["2", "3"]);
+    }
+
+    #[test]
+    fn render_messages_plain_handles_every_variant() {
+        let subagent = SubagentInfo {
+            task_id: "t1".into(),
+            description: "explore the tree".into(),
+            subagent_type: "Explore".into(),
+            status: SubagentStatus::Completed,
+            output: String::new(),
+            max_output_size: 0,
+            tool_results: vec![],
+            background: false,
+        };
+        let msgs = vec![
+            Message::System("session started".into()),
+            Message::User("hi dave".into()),
+            Message::Assistant(AssistantMessage::from_text("**hello**".into())),
+            Message::ToolCalls(vec![ToolCall::new(
+                "id1".into(),
+                ToolCalls::Query(QueryCall::default()),
+            )]),
+            tool_result("Bash", "exit 0"),
+            Message::PermissionRequest(PermissionRequest::new(
+                uuid::Uuid::nil(),
+                "Write".into(),
+                serde_json::Value::Null,
+                None,
+                Some(PermissionResponseType::Denied),
+                None,
+            )),
+            Message::CompactionComplete(CompactionInfo { pre_tokens: 12000 }),
+            Message::Subagent(subagent),
+            Message::TodoUpdate(serde_json::json!({
+                "todos": [
+                    {"content": "first", "status": "completed"},
+                    {"content": "second", "status": "in_progress"},
+                ]
+            })),
+            Message::Error("kaboom".into()),
+        ];
+        let refs: Vec<&Message> = msgs.iter().collect();
+        let out = render_messages(&refs, false);
+
+        assert!(!out.contains('\x1b'), "no ANSI when color=false: {out:?}");
+        // Each role header renders.
+        for label in [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "result",
+            "permission",
+            "compaction",
+            "subagent",
+            "todo",
+            "error",
+        ] {
+            assert!(out.contains(label), "missing {label:?} header in:\n{out}");
+        }
+        // Bodies render (indented) — assistant markdown kept raw.
+        assert!(out.contains("  hi dave"));
+        assert!(out.contains("  **hello**"));
+        assert!(out.contains("Write  [denied]"));
+        assert!(out.contains("12000 tokens before compaction"));
+        assert!(out.contains("Explore: explore the tree  [completed]"));
+        assert!(out.contains("2 item(s), doing: second"));
+        assert!(out.contains("  kaboom"));
+    }
+
+    #[test]
+    fn render_message_colored_wraps_only_the_header() {
+        let out = render_message(&Message::User("body".into()), true);
+        // The header is colored; the indented body is not repainted.
+        assert!(out.starts_with("\x1b[36muser\x1b[0m\n"));
+        assert!(out.contains("\n  body\n"));
+    }
+
+    #[test]
+    fn one_line_flattens_whitespace_and_truncates() {
+        assert_eq!(one_line("a\n  b\tc", 100), "a b c");
+        assert_eq!(one_line("abcdef", 4), "abc…");
+        assert_eq!(one_line("abc", 3), "abc");
+    }
+
+    #[test]
+    fn todo_summary_reports_count_and_active() {
+        let none_active = serde_json::json!({"todos": [{"content": "x", "status": "pending"}]});
+        assert_eq!(todo_summary(&none_active), "1 item(s)");
+        let no_shape = serde_json::json!({"unexpected": true});
+        assert!(todo_summary(&no_shape).contains("unexpected"));
+    }
+
+    #[test]
+    fn message_json_is_tagged_by_role() {
+        let user = MessageJson::from(&Message::User("hi".into()));
+        let v = serde_json::to_value(&user).unwrap();
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["text"], "hi");
+        // A text-only user message omits the images field.
+        assert!(v.get("images").is_none());
+
+        let perm = MessageJson::from(&Message::PermissionRequest(PermissionRequest::new(
+            uuid::Uuid::nil(),
+            "Bash".into(),
+            serde_json::Value::Null,
+            None,
+            Some(PermissionResponseType::Allowed),
+            None,
+        )));
+        let v = serde_json::to_value(&perm).unwrap();
+        assert_eq!(v["role"], "permission_request");
+        assert_eq!(v["tool"], "Bash");
+        assert_eq!(v["decision"], "allowed");
+
+        let res = MessageJson::from(&tool_result("Read", "154 lines"));
+        let v = serde_json::to_value(&res).unwrap();
+        assert_eq!(v["role"], "tool_result");
+        assert_eq!(v["tool"], "Read");
+        assert_eq!(v["summary"], "154 lines");
     }
 }
