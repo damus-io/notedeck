@@ -18,7 +18,7 @@ use headway::event::{
     self, BoardView, CardView, CommentView, Container, Date, Priority, resolve_card,
 };
 use headway::store::{self, BoardAction, Publisher};
-use headway::{traversal, wordid};
+use headway::{teams, traversal, wordid};
 
 use nostrdb_net::relay::sync::Result;
 
@@ -309,6 +309,17 @@ async fn run() -> Result<()> {
 
     let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
 
+    // Register the signing key so nostrdb unwraps gift-wraps addressed to us —
+    // notably the kind-1082 key-shares a new shared board arrives as. Without it
+    // a board shared with us since the last app run stays unjoinable here.
+    if let Some((secret, _)) = &cli.secret {
+        ndb.add_key(secret);
+    }
+    // Join every shared board we hold a key for, *before* the sync below: with
+    // the roots registered, envelopes pulled from the relay auto-unwrap as they
+    // arrive instead of sitting sealed until the next run.
+    let roster = Roster::load(&ndb, &author);
+
     // Reconcile the local cache against the relay both ways so the cache and the
     // app converge regardless of which side an edit happened on. Best-effort: an
     // unreachable relay leaves us working offline against the cache.
@@ -338,10 +349,10 @@ async fn run() -> Result<()> {
         // `--all` fans the render across every board in the cache, ignoring any
         // card selectors (which address a single board).
         Command::Show { .. } if show_all => {
-            print_all_boards(&list_boards(&ndb, &author), as_json, show_archived)
+            print_all_boards(&list_boards(&ndb, &roster, &author), as_json, show_archived)
         }
 
-        Command::Show { cards } => match load_board(&ndb, &author, &board) {
+        Command::Show { cards } => match load_board(&ndb, &roster, &author, &board) {
             Some(view) if cards.is_empty() => print_board(&view, as_json, show_archived),
             Some(view) => print_cards(&view, &cards, as_json)?,
             None if as_json => println!("null"),
@@ -354,7 +365,7 @@ async fn run() -> Result<()> {
 
         Command::Seed => {
             let secret = secret.ok_or("seed needs --nsec to sign")?;
-            if load_board(&ndb, &author, &board).is_some() {
+            if load_board(&ndb, &roster, &author, &board).is_some() {
                 return Err(format!("board '{board}' already exists").into());
             }
             let mut sink = Collect::default();
@@ -372,7 +383,7 @@ async fn run() -> Result<()> {
             // already exists so the next step (seed vs. use) is obvious.
             Some(id) => {
                 nostrdb_net::relay::sync::write_config(APP, "board", &id)?;
-                match load_board(&ndb, &author, &id) {
+                match load_board(&ndb, &roster, &author, &id) {
                     Some(view) => {
                         println!("switched to board '{id}' ({} cards)", card_count(&view))
                     }
@@ -382,21 +393,22 @@ async fn run() -> Result<()> {
                 }
             }
             // List: every board in the cache, the current selection marked.
-            None => print_boards(&list_boards(&ndb, &author), &board),
+            None => print_boards(&list_boards(&ndb, &roster, &author), &board),
         },
 
         // Cross-board: place/move a card from the current board onto another.
         // These touch two boards, so they sidestep the single-board `apply` path.
         Command::Link { card, to_board } => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
-            let source = load_board(&ndb, &author, &board)
+            let source = load_board(&ndb, &roster, &author, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
-            let target = load_board(&ndb, &author, &to_board).ok_or_else(|| {
+            let target = load_board(&ndb, &roster, &author, &to_board).ok_or_else(|| {
                 format!("no target board '{to_board}' — switch to it and `headway seed` first")
             })?;
             let card_id = resolve_card(&source, &card)?;
 
             let mut sink = Collect::default();
+            let channel = roster.channel(&board);
             store::link_card(
                 &ndb,
                 store::BoardRef {
@@ -407,7 +419,7 @@ async fn run() -> Result<()> {
                     id: &to_board,
                     view: &target,
                 },
-                &store::Signer::new(&secret, None),
+                &store::Signer::new(&secret, channel.as_ref()),
                 card_id,
                 &mut sink,
             );
@@ -421,14 +433,15 @@ async fn run() -> Result<()> {
 
         Command::MoveBoard { card, to_board } => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
-            let source = load_board(&ndb, &author, &board)
+            let source = load_board(&ndb, &roster, &author, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
-            let target = load_board(&ndb, &author, &to_board).ok_or_else(|| {
+            let target = load_board(&ndb, &roster, &author, &to_board).ok_or_else(|| {
                 format!("no target board '{to_board}' — switch to it and `headway seed` first")
             })?;
             let card_id = resolve_card(&source, &card)?;
 
             let mut sink = Collect::default();
+            let channel = roster.channel(&board);
             store::move_card_between_boards(
                 &ndb,
                 store::BoardRef {
@@ -439,7 +452,7 @@ async fn run() -> Result<()> {
                     id: &to_board,
                     view: &target,
                 },
-                &store::Signer::new(&secret, None),
+                &store::Signer::new(&secret, channel.as_ref()),
                 card_id,
                 &mut sink,
             );
@@ -466,7 +479,7 @@ async fn run() -> Result<()> {
                         .into(),
                 );
             }
-            let view = load_board(&ndb, &author, &board)
+            let view = load_board(&ndb, &roster, &author, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             let container = match container.as_deref() {
                 Some(sel) => resolve_container(&view, sel)?,
@@ -477,7 +490,7 @@ async fn run() -> Result<()> {
 
         edit => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
-            let view = load_board(&ndb, &author, &board)
+            let view = load_board(&ndb, &roster, &author, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             // `add` mints a new card whose id we only learn by re-folding the
             // board and finding the id that wasn't there before; snapshot the
@@ -492,12 +505,13 @@ async fn run() -> Result<()> {
             let action = build_action(&view, edit)?;
 
             let mut sink = Collect::default();
+            let channel = roster.channel(&board);
             store::apply(
                 &ndb,
                 &board,
                 &view,
                 &author,
-                &store::Signer::new(&secret, None),
+                &store::Signer::new(&secret, channel.as_ref()),
                 action,
                 &mut sink,
             );
@@ -511,7 +525,7 @@ async fn run() -> Result<()> {
             // have to re-`show` to recover it. `apply` ingested locally, so a
             // re-fold sees the new card — the one id absent from `before`.
             let new_card = added
-                .then(|| load_board(&ndb, &author, &board))
+                .then(|| load_board(&ndb, &roster, &author, &board))
                 .flatten()
                 .and_then(|after| {
                     event::all_cards(&after)
@@ -695,19 +709,94 @@ fn parse_clearable<T>(s: &str, parse: impl Fn(&str) -> Result<T>) -> Result<Opti
 // board loading
 // ---------------------------------------------------------------------------
 
-fn load_board(ndb: &Ndb, author: &Pubkey, board_id: &str) -> Option<BoardView> {
+/// The shared boards this account holds keys for, resolved once per run.
+///
+/// A shared board isn't a different kind of board, it's a different *transport*:
+/// its edits are sealed into an SNS channel (kind-1081 envelopes under a team
+/// key) instead of published as plaintext nostr events, and
+/// [`event::fold_shared_board`] reads back only what was sealed. So every read
+/// and every write here has to ask the roster which world a board lives in
+/// first. Getting it wrong is silent both ways: folding a shared board the
+/// plaintext way omits every co-member's edit, and writing plaintext to one
+/// produces events no other front end will ever fold.
+///
+/// Note what this does *not* add: a sync leg for the envelopes themselves. The
+/// CLI already pulls a shared board's content, because nostrdb stores the peeled
+/// rumor beside the envelope and those rumors are ordinary events matching the
+/// plaintext [`event::headway_filter`] the reconcile in `run` already syncs. What
+/// was missing was never the events, only the keys to recognise and seal them.
+/// The envelope pipe proper belongs to `relay::sync::Session`
+/// (headway:notedeck/clap-matrix-machine), not to a fourth one-shot leg here.
+struct Roster {
+    /// Joined channels, each naming the board coordinate its key unlocks.
+    teams: Vec<teams::Team>,
+    /// Whose boards we address — the owner half of a board coordinate. The CLI
+    /// is single-author (`--author`, else the signing key), so one suffices.
+    author: Pubkey,
+}
+
+impl Roster {
+    /// Derive the roster from nostrdb and register every `team_root` with it.
+    ///
+    /// Registration is what makes the channel readable *and writable*: our own
+    /// sealed edits are ingested as envelopes and only become board events once
+    /// nostrdb peels them, so an unregistered root means a write we can't even
+    /// read back ourselves.
+    fn load(ndb: &Ndb, author: &Pubkey) -> Self {
+        let teams = teams::teams_from_ndb(ndb, author);
+        teams::register_teams(ndb, &teams);
+        Self {
+            teams,
+            author: *author,
+        }
+    }
+
+    /// The channel `board_id` is shared into, or `None` for a private board.
+    fn channel(&self, board_id: &str) -> Option<store::SnsChannel> {
+        let addr = event::board_address(&self.author, board_id);
+        let team = self.teams.iter().find(|t| t.board_addr == addr)?;
+        Some(store::SnsChannel {
+            keys: team.sns_keys()?,
+        })
+    }
+}
+
+/// Fold one board, by whichever transport it uses: a joined shared board folds
+/// by *coordinate* (gathering every member's sealed edits), a private one folds
+/// from `author`'s own plaintext events.
+fn load_board(ndb: &Ndb, roster: &Roster, author: &Pubkey, board_id: &str) -> Option<BoardView> {
     let txn = Transaction::new(ndb).ok()?;
-    event::load_board(ndb, &txn, author, board_id)
+    let Some(channel) = roster.channel(board_id) else {
+        return event::load_board(ndb, &txn, author, board_id);
+    };
+    event::load_shared_board(
+        ndb,
+        &txn,
+        &event::board_address(author, board_id),
+        &channel.keys.team_keypair.pubkey,
+    )
 }
 
 /// All of `author`'s boards in the cache, sorted by id for a stable listing.
-fn list_boards(ndb: &Ndb, author: &Pubkey) -> Vec<BoardView> {
+/// Each shared board is re-folded by coordinate so its card counts match what
+/// the app draws, rather than the plaintext-only subset the author fold sees.
+fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
     let mut boards = event::fold_board(ndb, &txn, author)
         .map(|r| r.finalize())
         .unwrap_or_default();
+    for board in &mut boards {
+        // Only the shared ones: the author fold above already produced every
+        // private board, and re-folding those would pay a whole extra walk each.
+        if roster.channel(&board.id).is_none() {
+            continue;
+        }
+        if let Some(shared) = load_board(ndb, roster, author, &board.id) {
+            *board = shared;
+        }
+    }
     boards.sort_by(|a, b| a.id.cmp(&b.id));
     boards
 }
@@ -1591,6 +1680,48 @@ mod tests {
             }
             _ => panic!("expected a Priority command"),
         }
+    }
+
+    /// A board is shared iff the roster holds a key for its full *coordinate*.
+    /// Matching on the slug alone would be wrong in both directions: it would
+    /// seal edits to our own private board because a *co-member's* board happens
+    /// to share its slug, and — the case that actually bites — it would let a
+    /// board we own but never shared fold through the team-key path, which
+    /// ingests only sealed rumors and would show it empty.
+    #[test]
+    fn a_board_is_shared_only_at_its_own_coordinate() {
+        let owner = enostr::FullKeypair::generate().pubkey;
+        let other = enostr::FullKeypair::generate().pubkey;
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x42;
+        let roster = Roster {
+            teams: vec![
+                // A board we own and shared.
+                teams::Team {
+                    team_root: hex::encode(root),
+                    board_addr: event::board_address(&owner, "shared"),
+                    epoch: None,
+                },
+                // Someone else's board that happens to use a slug we also use.
+                teams::Team {
+                    team_root: hex::encode(root),
+                    board_addr: event::board_address(&other, "private"),
+                    epoch: None,
+                },
+            ],
+            author: owner,
+        };
+
+        assert!(
+            roster.channel("shared").is_some(),
+            "our own shared board must resolve to its channel"
+        );
+        assert!(
+            roster.channel("private").is_none(),
+            "a slug match under a different owner is not our board"
+        );
+        assert!(roster.channel("never-shared").is_none());
     }
 
     /// `--all` is an independent flag on `show`, off unless passed.

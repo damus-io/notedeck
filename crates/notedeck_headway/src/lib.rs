@@ -315,18 +315,6 @@ pub fn is_headway_kind(kind: u32) -> bool {
     matches!(kind, event::KIND_BOARD | event::KIND_ISSUE)
 }
 
-/// Filter for a shared channel's kind-1081 envelopes, authored by `team_pk` (the
-/// team keypair whose pubkey *is* the channel). Every shared-board edit is one
-/// such envelope, so this is both the inbound sync filter and the local
-/// re-fold trigger.
-fn sns_envelope_filter(team_pk: &Pubkey) -> Filter {
-    Filter::new()
-        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
-        .authors([team_pk.bytes()])
-        .limit(5000)
-        .build()
-}
-
 /// One entry in the board switcher: a board's `owner` + `id` (slug) — together its
 /// coordinate — and its display `title`. Carrying the owner keeps two boards that
 /// share a slug (yours and a joined one, or two joined ones) distinct entries that
@@ -409,7 +397,7 @@ impl App for Headway {
         let mut inbound = vec![event::headway_filter(&author)];
         for team in &self.teams {
             if let Some(keys) = team.sns_keys() {
-                inbound.push(sns_envelope_filter(&keys.team_keypair.pubkey));
+                inbound.push(teams::envelope_filter(&keys.team_keypair.pubkey));
             }
         }
         let private_relays = self.private_sync.update(ctx, inbound);
@@ -917,7 +905,7 @@ impl BoardCache {
             let entry = self.shared.entry(team.board_addr.clone()).or_default();
             if entry.sub.is_none() {
                 entry.sub = ndb
-                    .subscribe(&[sns_envelope_filter(&keys.team_keypair.pubkey)])
+                    .subscribe(&[teams::envelope_filter(&keys.team_keypair.pubkey)])
                     .ok();
             }
             let polled = match entry.sub {

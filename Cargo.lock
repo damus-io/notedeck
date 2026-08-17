@@ -3636,6 +3636,7 @@ dependencies = [
  "enostr",
  "futures-util",
  "headway",
+ "hex",
  "nostrdb",
  "nostrdb_net",
  "nostrdb_relay",

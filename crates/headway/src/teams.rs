@@ -73,6 +73,23 @@ pub fn keyshare_filter() -> Filter {
         .build()
 }
 
+/// Filter for one channel's kind-1081 SNS envelopes — every sealed edit to the
+/// board, addressed to (and signed by) the team keypair.
+///
+/// The envelope, not the rumor inside it, is the sync unit: nostrdb stores both,
+/// but only the envelope carries the sealed bytes a *non*-keyholder relay can
+/// pass along. Every shared-board edit is exactly one envelope, so a subscription
+/// on this doubles as the board's change signal — new envelope means re-fold.
+///
+/// Deliberately unbounded: a `limit` is inert for subscription matching, and a
+/// walk that a `limit` truncates would silently under-report the channel.
+pub fn envelope_filter(team_pubkey: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+        .authors([team_pubkey.bytes()])
+        .build()
+}
+
 /// The shared boards `author` has joined, reconstructed from nostrdb.
 ///
 /// The roster lives in the db, not on disk: every joined board arrived as a
