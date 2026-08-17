@@ -2458,11 +2458,18 @@ pub const HEADWAY_KINDS: [u32; 9] = [
 /// Headway is single-author per board for now, so filtering by author captures
 /// the board, its cards and all metadata in one query. Collaborative boards will
 /// additionally need `#a`/`#e` filters to pull in other authors' events.
+///
+/// Deliberately unbounded. This drives [`fold_board`]'s visitor walk, where a
+/// `limit` is a cap on notes *visited*, not a page size — so the fold would stop
+/// mid-history and silently resolve the board from a truncated event set. Headway
+/// events only accumulate (nostrdb never replaces an addressable event, it keeps
+/// every revision), so any fixed cap is a bomb on a timer: the board would start
+/// losing its oldest cards once an account crossed it, with no error. The board
+/// is the whole history or it is wrong.
 pub fn headway_filter(author: &Pubkey) -> Filter {
     Filter::new()
         .authors([author.bytes()])
         .kinds(HEADWAY_KINDS.iter().map(|k| *k as u64))
-        .limit(5000)
         .build()
 }
 
