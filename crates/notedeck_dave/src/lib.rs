@@ -17,7 +17,6 @@ pub mod render;
 pub mod session;
 pub mod session_cache;
 pub mod session_discovery;
-mod transport;
 
 // The pure, egui-free engine modules live in the platform-neutral
 // `agentium-core` crate. Re-export them under their historical `crate::` paths
@@ -33,7 +32,6 @@ mod vec3;
 pub mod worktree;
 
 use agent_status::AgentStatus;
-use agentium_core::transport::Transport;
 use backend::{
     AiBackend, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend, RemoteOnlyBackend,
 };
@@ -51,7 +49,6 @@ use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
-use transport::RemoteApiTransport;
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
@@ -4660,12 +4657,17 @@ impl notedeck::App for Dave {
                     match NormRelayUrl::new(&pns_relay_url) {
                         Ok(relay) => {
                             let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                            let mut transport =
-                                RemoteApiTransport::new(&mut ctx.remote, ctx.accounts);
+                            // The host owns the PNS discovery subscription; dave's
+                            // side is publish-only, so it just fans each wrapped
+                            // envelope out to the private relay via the explicit
+                            // publisher.
                             for event in std::mem::take(&mut self.pending_relay_events) {
                                 match session_events::wrap_pns(&event.note_json, &pns_keys) {
                                     Ok(pns_json) => {
-                                        transport.publish_event_json(pns_json, vec![relay.clone()]);
+                                        ctx.remote.publisher_explicit().publish_event_json(
+                                            pns_json,
+                                            vec![RelayId::Websocket(relay.clone())],
+                                        );
                                     }
                                     Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                                 }
