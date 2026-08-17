@@ -596,24 +596,16 @@ struct PendingMessageLoad {
     claude_session_id: String,
 }
 
-/// PNS-wrap an event and ingest the 1080 wrapper into ndb.
+/// Hand a freshly-built inner event to the host's private-note write path
+/// ([`notedeck::write_private_note`]).
 ///
-/// ndb's `process_pns` will unwrap it internally, making the inner
-/// event queryable. This ensures 1080 events exist in ndb for relay sync.
+/// The host PNS-wraps the event into a kind-1080 envelope, ingests it locally
+/// (nostrdb unwraps the inner event so dave can query it at once), and fans the
+/// envelope out to the account's private relays. dave authors the inner event and
+/// no longer wraps 1080 envelopes or runs a publish queue itself.
 fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8; 32]) {
-    let pns_keys = enostr::pns::derive_pns_keys(secret_key);
-    match session_events::wrap_pns(event_json, &pns_keys) {
-        Ok(pns_json) => {
-            // wrap_pns returns bare {…} JSON; use relay format
-            // ["EVENT", "subid", {…}] so ndb triggers PNS unwrapping
-            let wrapped = format!("[\"EVENT\", \"_pns\", {}]", pns_json);
-            if let Err(e) = ndb.process_event(&wrapped) {
-                tracing::warn!("failed to ingest PNS event: {:?}", e);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("failed to PNS-wrap for local ingest: {}", e);
-        }
+    if let Err(e) = notedeck::write_private_note(ndb, secret_key, event_json) {
+        tracing::warn!("failed to write private note: {e}");
     }
 }
 

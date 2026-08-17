@@ -31,6 +31,60 @@ use crate::{
     SubOwnerKey,
 };
 
+/// Errors from [`write_private_note`], the host-owned outbound write path.
+#[derive(Debug, thiserror::Error)]
+pub enum PrivateWriteError {
+    /// PNS encryption or 1080-envelope signing failed (see [`enostr::pns::wrap`]).
+    #[error("PNS wrap failed")]
+    Wrap,
+    /// Serializing the signed 1080 envelope back to JSON failed.
+    #[error("envelope serialization failed: {0}")]
+    Serialize(String),
+    /// nostrdb rejected the envelope ingest frame.
+    #[error("ndb ingest failed: {0}")]
+    Ingest(String),
+}
+
+/// Author a private note for the selected account: PNS-wrap a signed inner event
+/// into a kind-1080 envelope and ingest it into the local nostrdb.
+///
+/// This is the host-owned outbound write path. Apps author an inner event (a
+/// fully signed nostr note JSON) and hand it here; **no app wraps 1080 envelopes
+/// or runs a publish queue itself**. The single local ingest does double duty:
+///
+/// - nostrdb's `process_pns` unwraps the envelope, making the inner event
+///   immediately queryable on this device (a local read reflects the write at
+///   once, exactly as an inbound relay envelope would); and
+/// - [`HostPrivateSync`] picks the freshly-ingested envelope up off its local
+///   subscription poll and fans it out to the account's private relays
+///   ([`HostPrivateSync::fan_out_local_envelopes`]), so the user's other devices
+///   see it.
+///
+/// `secret_key` is the account's 32-byte device secret; its PNS keypair is
+/// derived here ([`enostr::pns::derive_pns_keys`]). With no private relay marked
+/// the fan-out is a no-op and the note simply stays local.
+///
+/// The 3-element `["EVENT","_pns",{…}]` relay frame drives nostrdb's PNS-unwrap
+/// ingest path; the `"_pns"` subid is a local marker (the envelope carries no
+/// seen-on relay, so the fan-out publishes it to every private relay).
+///
+/// Designed as the convergence point for every app's private write: dave's
+/// session events today, notebook/headway private documents later.
+pub fn write_private_note(
+    ndb: &Ndb,
+    secret_key: &[u8; 32],
+    inner_json: &str,
+) -> Result<(), PrivateWriteError> {
+    let pns_keys = enostr::pns::derive_pns_keys(secret_key);
+    let envelope = enostr::pns::wrap(&pns_keys, inner_json, crate::time::unix_time_secs())
+        .ok_or(PrivateWriteError::Wrap)?;
+    let envelope_json = envelope
+        .json()
+        .map_err(|e| PrivateWriteError::Serialize(e.to_string()))?;
+    ndb.process_event(&format!("[\"EVENT\",\"_pns\",{envelope_json}]"))
+        .map_err(|e| PrivateWriteError::Ingest(e.to_string()))
+}
+
 /// Fan a single locally-ingested `["EVENT", {…}]` frame out to `relays` as a
 /// bare-event publish. The outbox re-frames the bare event per relay.
 ///
