@@ -1009,10 +1009,16 @@ pub struct ResumeSpawn<'a> {
 /// a new session). With `resume` = `Some`, it is a resume command
 /// (`command = "resume_session"`) that reopens the session named by
 /// [`ResumeSpawn::target_session_id`] — see [`ResumeSpawn`].
+///
+/// A non-empty `title` stamps a `custom_title` tag on the command (mirroring the
+/// tag on kind-31988 state); the host materializes the new session with that
+/// value as its `custom_title` so it shows immediately and survives later
+/// messages. `None`/empty omits the tag and the host derives the title as before.
 pub fn build_spawn_command_event(
     target_host: &str,
     cwd: &str,
     backend: &str,
+    title: Option<&str>,
     spawn_id: &str,
     resume: Option<&ResumeSpawn<'_>>,
     secret_key: &[u8; 32],
@@ -1034,6 +1040,14 @@ pub fn build_spawn_command_event(
         .tag_str(target_host);
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
     builder = builder.start_tag().tag_str("backend").tag_str(backend);
+
+    // An explicit session title, when the spawner set one. The host stamps it
+    // into the new session's `custom_title` (not the derived `title`) so it
+    // displays at once and no later message overwrites it.
+    if let Some(title) = title.filter(|t| !t.is_empty()) {
+        builder = builder.start_tag().tag_str("custom_title").tag_str(title);
+    }
+
     builder = builder.start_tag().tag_str("spawn_id").tag_str(spawn_id);
 
     // Resume commands carry the identity of the session to revive plus the CLI
@@ -1924,7 +1938,7 @@ mod tests {
     fn spawn_command_has_no_resume_tags() {
         let sk = test_secret_key();
         let event =
-            build_spawn_command_event("host-a", "/tmp/proj", "claude", "spawn-1", None, &sk)
+            build_spawn_command_event("host-a", "/tmp/proj", "claude", None, "spawn-1", None, &sk)
                 .unwrap();
 
         assert_eq!(event.kind, AI_SESSION_COMMAND_KIND);
@@ -1937,6 +1951,48 @@ mod tests {
         // A plain spawn never carries resume identity.
         assert!(!json.contains("resume_session_id"), "json: {json}");
         assert!(!json.contains(r#""session_id"#), "json: {json}");
+        // No title override → no custom_title tag on the command.
+        assert!(!json.contains("custom_title"), "json: {json}");
+    }
+
+    #[test]
+    fn spawn_command_carries_custom_title_when_set() {
+        let sk = test_secret_key();
+        // A non-empty title rides the command as a custom_title tag...
+        let titled = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            Some("Fix the parser"),
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            titled
+                .note_json
+                .contains(r#""custom_title","Fix the parser"#),
+            "json: {}",
+            titled.note_json
+        );
+
+        // ...but an empty title is treated as absent (no stray tag).
+        let empty = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            Some(""),
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !empty.note_json.contains("custom_title"),
+            "json: {}",
+            empty.note_json
+        );
     }
 
     #[test]
@@ -1950,6 +2006,7 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
+            None,
             "spawn-2",
             Some(&resume),
             &sk,

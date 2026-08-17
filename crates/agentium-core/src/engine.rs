@@ -543,15 +543,22 @@ impl Engine {
     /// discovers it, creates the session, and publishes back a kind-31988 state
     /// event that later shows up in [`Engine::list_sessions`]. Returns the
     /// `spawn_id` that links this request to that eventual state.
+    ///
+    /// A non-empty `title` rides the command as a `custom_title` tag so the host
+    /// gives the new session an explicit, sticky title rather than deriving one
+    /// from its first message (see [`build_spawn_command_event`]).
+    ///
+    /// [`build_spawn_command_event`]: crate::session_events::build_spawn_command_event
     pub fn spawn_session(
         &self,
         transport: &mut impl Transport,
         target_host: &str,
         cwd: &str,
         backend: &str,
+        title: Option<&str>,
     ) -> Result<String, EngineError> {
         let spawn_id = uuid::Uuid::new_v4().to_string();
-        let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id, None)?;
+        let built = self.make_spawn_command(target_host, cwd, backend, title, &spawn_id, None)?;
         self.publish_session_event(transport, &built)?;
         Ok(spawn_id)
     }
@@ -578,7 +585,10 @@ impl Engine {
             target_session_id,
             cli_session_id,
         };
-        let built = self.make_spawn_command(target_host, cwd, backend, &spawn_id, Some(&resume))?;
+        // A resume reopens an existing session, so it carries no title override —
+        // the revived session keeps whatever title it already had.
+        let built =
+            self.make_spawn_command(target_host, cwd, backend, None, &spawn_id, Some(&resume))?;
         self.publish_session_event(transport, &built)?;
         Ok(spawn_id)
     }
@@ -595,7 +605,7 @@ impl Engine {
         backend: &str,
         spawn_id: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        let built = self.make_spawn_command(target_host, cwd, backend, spawn_id, None)?;
+        let built = self.make_spawn_command(target_host, cwd, backend, None, spawn_id, None)?;
         self.wrap_and_ingest(&built)?;
         Ok(built)
     }
@@ -622,7 +632,8 @@ impl Engine {
             target_session_id,
             cli_session_id,
         };
-        let built = self.make_spawn_command(target_host, cwd, backend, spawn_id, Some(&resume))?;
+        let built =
+            self.make_spawn_command(target_host, cwd, backend, None, spawn_id, Some(&resume))?;
         self.wrap_and_ingest(&built)?;
         Ok(built)
     }
@@ -636,6 +647,7 @@ impl Engine {
         target_host: &str,
         cwd: &str,
         backend: &str,
+        title: Option<&str>,
         spawn_id: &str,
         resume: Option<&crate::session_events::ResumeSpawn<'_>>,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
@@ -643,6 +655,7 @@ impl Engine {
             target_host,
             cwd,
             backend,
+            title,
             spawn_id,
             resume,
             &self.seckey(),
@@ -1837,7 +1850,7 @@ mod tests {
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
         let mut tx = engine.transport_handle().expect("transport");
         let spawn_id = engine
-            .spawn_session(&mut tx, "laptop", "/tmp/project", "claude")
+            .spawn_session(&mut tx, "laptop", "/tmp/project", "claude", None)
             .expect("spawn");
         assert!(
             uuid::Uuid::parse_str(&spawn_id).is_ok(),

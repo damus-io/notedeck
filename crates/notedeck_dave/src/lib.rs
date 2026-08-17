@@ -336,6 +336,11 @@ enum SessionCommand {
         backend: BackendType,
         /// UUID linking the session back to the sender's placeholder.
         spawn_id: Option<String>,
+        /// Explicit session title from the command's `custom_title` tag, when the
+        /// spawner set one. Stamped into the new session's `custom_title` so it
+        /// shows immediately and no later message overwrites it; `None` lets the
+        /// title derive from the first message as before.
+        custom_title: Option<String>,
     },
     /// Reopen + revive + resume an existing session (`command = "resume_session"`),
     /// named by its kind-31988 d-tag.
@@ -386,11 +391,15 @@ fn decode_session_command(
                 .and_then(BackendType::from_tag_str)
                 .unwrap_or(default_backend);
             let spawn_id = session_events::get_tag_value(note, "spawn_id").map(|s| s.to_string());
+            let custom_title = session_events::get_tag_value(note, "custom_title")
+                .filter(|t| !t.is_empty())
+                .map(|s| s.to_string());
             Some(SessionCommand::Spawn {
                 command_id,
                 cwd,
                 backend,
                 spawn_id,
+                custom_title,
             })
         }
         "resume_session" => {
@@ -3046,13 +3055,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         cwd,
                         backend,
                         spawn_id,
+                        custom_title,
                     } => {
                         tracing::info!(
-                            "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}",
+                            "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}, title={:?}",
                             command_id,
                             cwd,
                             backend,
                             spawn_id,
+                            custom_title,
                         );
 
                         self.processed_commands.insert(command_id);
@@ -3070,9 +3081,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                         // Store spawn_id so it's echoed in kind-31988 state events,
                         // letting the sender match this session to its placeholder.
-                        if let Some(spawn_id) = spawn_id {
-                            if let Some(session) = self.session_manager.get_mut(sid) {
+                        // A supplied title lands in `custom_title` (not `title`) so
+                        // `display_title` shows it at once and
+                        // `update_title_from_last_message` — which only ever writes
+                        // `title` — can't clobber it as messages arrive.
+                        if let Some(session) = self.session_manager.get_mut(sid) {
+                            if let Some(spawn_id) = spawn_id {
                                 session.spawn_id = Some(spawn_id);
+                            }
+                            if let Some(title) = custom_title {
+                                session.details.custom_title = Some(title);
                             }
                         }
                     }
@@ -6748,6 +6766,7 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
+            None,
             "spawn-1",
             Some(&resume),
             &sk,
@@ -6757,6 +6776,7 @@ mod tests {
             "host-a",
             "/work/dir",
             "claude",
+            Some("Wire the widget"),
             "spawn-2",
             None,
             &sk,
@@ -6769,7 +6789,10 @@ mod tests {
             ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
                 .unwrap();
         }
-        let _ = ndb.wait_for_notes(sub, 2).await.unwrap();
+        // `wait_for_all_notes` accumulates to the full count; `wait_for_notes` can
+        // return after the first note key, before both are queryable by id (a race
+        // that made the `get_note_by_id` lookups below intermittently NotFound).
+        ndb.wait_for_all_notes(sub, 2).await.unwrap();
 
         let txn = Transaction::new(&ndb).unwrap();
         let resume_note = ndb.get_note_by_id(&txn, &resume_cmd.note_id).unwrap();
@@ -6783,11 +6806,12 @@ mod tests {
         };
         assert_eq!(session_id, "sess-42", "reads the session_id tag");
 
-        // Spawn command decodes with its cwd / backend / spawn_id.
+        // Spawn command decodes with its cwd / backend / spawn_id / title.
         let Some(SessionCommand::Spawn {
             cwd,
             backend,
             spawn_id,
+            custom_title,
             ..
         }) = decode_session_command(&spawn_note, "host-a", BackendType::Claude)
         else {
@@ -6796,6 +6820,7 @@ mod tests {
         assert_eq!(cwd, "/work/dir");
         assert_eq!(backend, BackendType::Claude);
         assert_eq!(spawn_id.as_deref(), Some("spawn-2"));
+        assert_eq!(custom_title.as_deref(), Some("Wire the widget"));
 
         // The target-host gate drops commands meant for another host.
         assert!(
