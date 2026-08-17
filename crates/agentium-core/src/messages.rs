@@ -751,6 +751,86 @@ impl Message {
     pub fn tool_error(id: String, msg: String) -> Self {
         Self::ToolResponse(ToolResponse::error(id, msg))
     }
+
+    /// A lossy, role-tagged JSON view of this message for machine consumers
+    /// (e.g. `agentium log --json`). Internally tagged by `role`; each variant
+    /// carries only its own fields, so the union of shapes stays flat and
+    /// self-describing.
+    ///
+    /// This is a *display* projection, not a lossless serialization: streaming
+    /// parser state, raw image bytes, and the permission UI model are dropped
+    /// (the kind-1989 archive is the lossless record). It exists so consumers
+    /// don't reimplement the variant→JSON mapping, and it can't simply be a
+    /// `#[derive(Serialize)]`: several fields aren't `Serialize`, and the
+    /// role-tagged shape can't be derived for the `String`/`Value` newtype
+    /// variants (`System`/`Error`/`TodoUpdate`).
+    pub fn to_json(&self) -> Value {
+        use crate::tools::ToolResponses;
+        use serde_json::json;
+        match self {
+            Message::User(u) => {
+                let mut v = json!({ "role": "user", "text": u.text });
+                if !u.images.is_empty() {
+                    v["images"] = json!(u.images.len());
+                }
+                v
+            }
+            Message::Assistant(a) => json!({ "role": "assistant", "text": a.text() }),
+            Message::ToolCalls(calls) => json!({
+                "role": "tool_call",
+                "calls": calls
+                    .iter()
+                    .map(|c| {
+                        let args = c.calls().arguments();
+                        // Prefer the parsed argument object; fall back to the raw
+                        // string when it isn't valid JSON.
+                        let input = serde_json::from_str::<Value>(&args)
+                            .unwrap_or(Value::String(args));
+                        json!({ "tool": c.calls().tool_name(), "input": input })
+                    })
+                    .collect::<Vec<_>>(),
+            }),
+            Message::ToolResponse(tr) => match tr.responses() {
+                ToolResponses::ExecutedTool(e) => {
+                    json!({ "role": "tool_result", "tool": e.tool_name, "summary": e.summary })
+                }
+                ToolResponses::Error(msg) => {
+                    json!({ "role": "tool_result", "summary": format!("error: {msg}") })
+                }
+                ToolResponses::Query(q) => {
+                    json!({ "role": "tool_result", "summary": format!("query: {} notes", q.notes.len()) })
+                }
+                ToolResponses::PresentNotes(n) => {
+                    json!({ "role": "tool_result", "summary": format!("present: {n} notes") })
+                }
+            },
+            Message::PermissionRequest(p) => json!({
+                "role": "permission_request",
+                "tool": p.tool_name,
+                "decision": match p.response {
+                    Some(PermissionResponseType::Allowed) => "allowed",
+                    Some(PermissionResponseType::Denied) => "denied",
+                    None => "pending",
+                },
+            }),
+            Message::CompactionComplete(c) => {
+                json!({ "role": "compaction", "pre_tokens": c.pre_tokens })
+            }
+            Message::Subagent(s) => json!({
+                "role": "subagent",
+                "subagent_type": s.subagent_type,
+                "description": s.description,
+                "status": match s.status {
+                    SubagentStatus::Running => "running",
+                    SubagentStatus::Completed => "completed",
+                    SubagentStatus::Failed => "failed",
+                },
+            }),
+            Message::System(s) => json!({ "role": "system", "text": s }),
+            Message::Error(e) => json!({ "role": "error", "text": e }),
+            Message::TodoUpdate(v) => json!({ "role": "todo", "todos": v }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -835,5 +915,36 @@ mod tests {
     fn permission_view_empty_question_set_falls_back_to_raw() {
         let view = PermissionView::infer("AskUserQuestion", &json!({ "questions": [] }));
         assert!(matches!(view, PermissionView::RawFallback));
+    }
+
+    #[test]
+    fn to_json_is_role_tagged_and_drops_non_serializable_fields() {
+        use super::{CompactionInfo, Message};
+
+        // Each variant is internally tagged by `role`, carrying only its fields.
+        let v = Message::User("hi".into()).to_json();
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["text"], "hi");
+        // Text-only user: no image field (raw bytes are dropped, never serialized).
+        assert!(v.get("images").is_none());
+
+        let v = Message::CompactionComplete(CompactionInfo { pre_tokens: 42 }).to_json();
+        assert_eq!(v["role"], "compaction");
+        assert_eq!(v["pre_tokens"], 42);
+
+        let v = Message::PermissionRequest(PermissionRequest::new(
+            Uuid::nil(),
+            "Bash".into(),
+            json!(null),
+            None,
+            Some(PermissionResponseType::Denied),
+            None,
+        ))
+        .to_json();
+        assert_eq!(v["role"], "permission_request");
+        assert_eq!(v["tool"], "Bash");
+        assert_eq!(v["decision"], "denied");
+        // The permission UI view isn't serialized.
+        assert!(v.get("view").is_none());
     }
 }

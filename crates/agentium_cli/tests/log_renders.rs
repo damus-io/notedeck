@@ -1,4 +1,4 @@
-//! End-to-end check that the real `agentium` binary renders a session's
+//! End-to-end check that the real `agentium log` renders a session's
 //! kind-1988 conversation transcript.
 //!
 //! It seeds a signed kind-31988 session-state event (so the selector resolves)
@@ -111,9 +111,9 @@ fn ingest(ndb: &Ndb, note: &nostrdb::Note) {
 
 /// Run the real `agentium` binary against the seeded cache `db_path` (with `dir`
 /// redirecting XDG/HOME so the run can't touch real config), passing `args` after
-/// `messages`. Asserts a clean exit and returns stdout. The relay port is closed
-/// so connect fails fast and the bounded sync-settle elapses into a cache read.
-fn run_messages(db_path: &str, dir: &TempDir, args: &[&str]) -> String {
+/// `log`. Asserts a clean exit and returns stdout. The relay port is closed so
+/// connect fails fast and the bounded sync-settle elapses into a cache read.
+fn run_log(db_path: &str, dir: &TempDir, args: &[&str]) -> String {
     let mut argv = vec![
         "--nsec",
         NSEC,
@@ -121,7 +121,7 @@ fn run_messages(db_path: &str, dir: &TempDir, args: &[&str]) -> String {
         db_path,
         "--relay",
         "ws://127.0.0.1:1",
-        "messages",
+        "log",
     ];
     argv.extend_from_slice(args);
     let out = Command::new(env!("CARGO_BIN_EXE_agentium"))
@@ -183,11 +183,11 @@ fn assert_before(haystack: &str, first: &str, second: &str) {
 }
 
 #[tokio::test]
-async fn messages_render_in_event_order_not_seq() {
+async fn log_renders_in_event_order_not_seq() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = seed_conversation(&dir).await;
 
-    let stdout = run_messages(&db_path, &dir, &["sess-conv"]);
+    let stdout = run_log(&db_path, &dir, &["sess-conv"]);
 
     // All three bodies render, each under its role header.
     for needle in [
@@ -205,33 +205,104 @@ async fn messages_render_in_event_order_not_seq() {
 }
 
 #[tokio::test]
-async fn messages_role_and_last_filters() {
+async fn log_role_and_last_filters() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = seed_conversation(&dir).await;
 
     // --role user keeps only the two user messages, dropping the assistant one.
-    let only_users = run_messages(&db_path, &dir, &["sess-conv", "--role", "user"]);
+    let only_users = run_log(&db_path, &dir, &["sess-conv", "--role", "user"]);
     assert!(only_users.contains("first question") && only_users.contains("again please"));
     assert!(
         !only_users.contains("the answer"),
         "--role user must drop the assistant message:\n{only_users}"
     );
 
-    // --last 1 keeps only the final (ms-newest) message.
-    let last_one = run_messages(&db_path, &dir, &["sess-conv", "--last", "1"]);
+    // Comma-separated roles select the union: user OR assistant is all three.
+    let both = run_log(&db_path, &dir, &["sess-conv", "--role", "user,assistant"]);
+    assert!(
+        both.contains("first question")
+            && both.contains("the answer")
+            && both.contains("again please"),
+        "--role user,assistant keeps every message here:\n{both}"
+    );
+
+    // -n 1 (short for --last) keeps only the final (ms-newest) message.
+    let last_one = run_log(&db_path, &dir, &["sess-conv", "-n", "1"]);
     assert!(last_one.contains("again please"));
     assert!(
         !last_one.contains("first question"),
-        "--last 1 keeps only the trailing message:\n{last_one}"
+        "-n 1 keeps only the trailing message:\n{last_one}"
     );
 }
 
 #[tokio::test]
-async fn messages_json_emits_role_tagged_objects() {
+async fn log_color_flag_overrides_tty_detection() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = seed_conversation(&dir).await;
 
-    let stdout = run_messages(&db_path, &dir, &["sess-conv", "--json"]);
+    // Piped (non-tty) stdout: default `auto` stays plain, so the transcript is
+    // safe to grep or redirect.
+    let plain = run_log(&db_path, &dir, &["sess-conv"]);
+    assert!(
+        !plain.contains('\x1b'),
+        "auto color must stay off when piped:\n{plain:?}"
+    );
+
+    // `--color always` keeps ANSI even when piped — the "pipe into my own less"
+    // case. `--no-pager` is a harmless explicit here (already unpaged when piped).
+    let colored = run_log(
+        &db_path,
+        &dir,
+        &["sess-conv", "--color", "always", "--no-pager"],
+    );
+    assert!(
+        colored.contains('\x1b'),
+        "--color always must emit ANSI even when piped:\n{colored:?}"
+    );
+    // Still the same transcript, just painted.
+    assert!(colored.contains("first question"));
+}
+
+#[tokio::test]
+async fn log_pager_routes_output_through_the_pager_command() {
+    let dir = TempDir::new().expect("tmp dir");
+    let db_path = seed_conversation(&dir).await;
+
+    // Force paging with a transparent pager (`cat`), exercising the real
+    // spawn → write → wait path even though stdout is a pipe. The transcript
+    // must reach us through the pager unchanged.
+    let out = Command::new(env!("CARGO_BIN_EXE_agentium"))
+        .args([
+            "--nsec",
+            NSEC,
+            "--db",
+            &db_path,
+            "--relay",
+            "ws://127.0.0.1:1",
+            "log",
+            "sess-conv",
+            "--pager",
+        ])
+        .env("XDG_DATA_HOME", dir.path())
+        .env("HOME", dir.path())
+        .env("AGENTIUM_PAGER", "cat")
+        .output()
+        .expect("run agentium");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "nonzero exit:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("first question") && stdout.contains("again please"),
+        "paged output must carry the transcript:\n{stdout}"
+    );
+}
+
+#[tokio::test]
+async fn log_json_emits_role_tagged_objects() {
+    let dir = TempDir::new().expect("tmp dir");
+    let db_path = seed_conversation(&dir).await;
+
+    let stdout = run_log(&db_path, &dir, &["sess-conv", "--json"]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON array");
     let rows = parsed.as_array().expect("array");
     assert_eq!(rows.len(), 3);
@@ -245,7 +316,7 @@ async fn messages_json_emits_role_tagged_objects() {
 }
 
 #[tokio::test]
-async fn messages_jsonl_reconstructs_source_archive_in_seq_order() {
+async fn log_jsonl_reconstructs_source_archive_in_seq_order() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = dir.path().to_str().expect("path").to_string();
 
@@ -266,7 +337,7 @@ async fn messages_jsonl_reconstructs_source_archive_in_seq_order() {
             .expect("ingest seeded events");
     }
 
-    let stdout = run_messages(&db_path, &dir, &["sess-src", "--jsonl"]);
+    let stdout = run_log(&db_path, &dir, &["sess-src", "--jsonl"]);
     // Raw source lines, emitted verbatim in original (seq) order.
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(

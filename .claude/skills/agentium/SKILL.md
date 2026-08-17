@@ -1,6 +1,6 @@
 ---
 name: agentium
-description: Query and control Dave agentic sessions from the command line via the `agentium` CLI (crates/agentium_cli), and find your OWN session's agentium: reference. Use when an agent running inside a Dave session needs its own ref (e.g. for a headway done-comment), or to list sibling sessions — e.g. "what's my agentium ref", "list the running agent sessions", "show sessions in this cwd".
+description: Query and control Dave agentic sessions from the command line via the `agentium` CLI (crates/agentium_cli), and find your OWN session's agentium: reference. Use when an agent running inside a Dave session needs its own ref (e.g. for a headway done-comment), to list sibling sessions, or to pull another session's detail or full conversation transcript — e.g. "what's my agentium ref", "list the running agent sessions", "show sessions in this cwd", "read session X's transcript".
 ---
 
 # Agentium session CLI
@@ -115,8 +115,80 @@ Note the id distinction: `claude_session_id` is agentium's own stable identity
 (what the word-id hashes), **not** the backend CLI's session id — that's
 `cli_session_id`, a separate value used for resuming the underlying CLI.
 
+## Selecting a session
+
+`show`, `log`, and `resume` take a **session selector** — any of: the raw
+`claude_session_id` (d-tag), the `cli_session_id`, an `agentium:<word-id>` ref
+(with or without the `agentium:` prefix), a unique id prefix, or a unique
+title substring. For `show` and `log` the selector is **optional** and defaults
+to `$AGENTIUM_SESSION`, so an agent running inside a session can address itself:
+
+```bash
+agentium show                    # this session (via $AGENTIUM_SESSION)
+agentium log agentium:maple-river-canyon
+agentium show "Fix relay reconnect"   # unique title substring
+```
+
+Selectors resolve across live **and** soft-deleted sessions, so a durable
+`agentium:` ref still reads after its session was closed.
+
+## `show` — session detail
+
+`show` prints one session's detail: its kind-31988 state, the run-configs on its
+host+cwd, its latest token usage, and a conversation summary (message count +
+any pending permission request). `--json` emits the structured detail object.
+
+```bash
+agentium show                          # detail for the current session
+agentium show maple-river-canyon --json
+```
+
+## `log` — conversation transcript
+
+`log` prints one session's full conversation, **one entry per message, in
+order** (millisecond wall-clock — the display order Dave itself uses). This is
+the command for pulling context out of another session. Named after `git log`,
+and like it, long output is paged.
+
+```bash
+agentium log                           # this session's transcript
+agentium log maple-river-canyon        # another session's transcript
+agentium log X --role user,assistant   # only the human turns + Dave's replies
+agentium log X -n 20                    # just the last 20 messages
+agentium log X --no-tools              # fold away tool_call/tool_result noise
+agentium log X --json                  # structured, role-tagged message objects
+agentium log X --jsonl                 # raw reconstructed claude-code JSONL
+```
+
+Flags:
+
+| flag                       | effect                                                         |
+|----------------------------|----------------------------------------------------------------|
+| `--role <r[,r…]>`          | keep only these roles (comma-separated and/or repeatable); one of `user`, `assistant`, `tool_call`, `tool_result`, `permission_request`, `subagent`, `system`, `error`, `compaction`, `todo` |
+| `--last <n>`, `-n <n>`     | only the last `n` messages (after other filters)               |
+| `--tools` / `--no-tools`   | show (default) or fold `tool_call`/`tool_result` messages       |
+| `--json`                   | one role-tagged JSON object per message (a lossy display view)  |
+| `--jsonl`                  | raw reconstructed claude-code JSONL from the kind-1989 archive (the lossless source, in original `seq` order — a different axis than the display stream) |
+| `--color auto\|always\|never` | ANSI color; `auto` (default) follows the sink. Use `always` to keep color when piping into your own pager (e.g. `\| less -SR`) |
+| `--pager` / `--no-pager`   | force/disable paging. Default: page when stdout is a terminal   |
+
+The pager command is `$AGENTIUM_PAGER`, then `$PAGER`, else `less -R`. When
+scripting (parsing output), prefer `--json`/`--jsonl`; piping to a non-terminal
+already disables the pager and color automatically.
+
+## `resume` — reopen a closed session
+
+`resume <session>` reopens a closed (even soft-deleted) session on its host so a
+new message drives its backend again, reviving its `agentium:` ref in place. It
+needs a session whose backend actually started (a non-empty `cli_session_id`).
+
+```bash
+agentium resume maple-river-canyon
+```
+
 ## Command surface
 
-Today the CLI exposes `list` (plus `login`/`logout`). Richer read/monitor and
-control verbs (show, messages, tail, watch, send, approve/deny, mode, spawn)
-are planned but **not yet implemented** — don't invoke them until they land.
+Implemented: `list`, `show`, `log`, `resume` (plus `login`/`logout`). Further
+control verbs (tail -f, watch dashboard, send, approve/deny, permission-mode,
+spawn, run-config management) are planned but **not yet implemented** — don't
+invoke them until they land.

@@ -62,11 +62,12 @@ enum Command {
     },
     /// Print one session's kind-1988 conversation, one entry per message, in the
     /// order [`load_session_messages_for_author`] returns (millisecond
-    /// wall-clock via `EventOrder` — *not* the `seq` tag). Like `show`, the
-    /// selector is optional and defaults to `$AGENTIUM_SESSION`.
+    /// wall-clock via `EventOrder` — *not* the `seq` tag). Named `log` after
+    /// `git log`. Like `show`, the selector is optional and defaults to
+    /// `$AGENTIUM_SESSION`.
     ///
     /// [`load_session_messages_for_author`]: agentium_core::session_loader::load_session_messages_for_author
-    Messages {
+    Log {
         session: Option<String>,
         view: MessageView,
     },
@@ -154,8 +155,8 @@ async fn run() -> Result<()> {
     match cli.command {
         Command::List => cmd_list(&engine, &read_pk, &filters, cli.list_scope, cli.json)?,
         Command::Show { session } => cmd_show(&engine, &read_pk, session.as_deref(), cli.json)?,
-        Command::Messages { session, view } => {
-            cmd_messages(&engine, &read_pk, session.as_deref(), &view, cli.json)?
+        Command::Log { session, view } => {
+            cmd_log(&engine, &read_pk, session.as_deref(), &view, cli.json)?
         }
         Command::Resume { session } => {
             cmd_resume(&engine, &mut transport, &read_pk, &session).await?
@@ -311,7 +312,7 @@ fn cmd_show(engine: &Engine, author: &Pubkey, selector: Option<&str>, as_json: b
     Ok(())
 }
 
-/// `agentium messages <session>` — print one session's kind-1988 conversation,
+/// `agentium log <session>` — print one session's kind-1988 conversation,
 /// one entry per message, in order.
 ///
 /// Resolves the selector across the live *and* tombstoned sets (so a deleted
@@ -323,14 +324,18 @@ fn cmd_show(engine: &Engine, author: &Pubkey, selector: Option<&str>, as_json: b
 /// display order) or reimplement the mapping.
 ///
 /// `--role`/`--last`/`--tools` filter the rendered stream (see [`MessageView`]);
-/// `--json` emits structured [`MessageJson`] views; `--jsonl` short-circuits to
-/// the reconstructed claude-code JSONL (a different, `seq`-ordered axis — see
-/// below).
+/// `--json` emits each message's structured [`Message::to_json`] view; `--jsonl`
+/// short-circuits to the reconstructed claude-code JSONL (a different,
+/// `seq`-ordered axis — see below). The whole thing is built into one string and
+/// handed to [`emit`], which routes it through a pager (like `git log`) when
+/// appropriate.
+///
+/// [`Message::to_json`]: agentium_core::messages::Message::to_json
 ///
 /// [`load_session_messages_for_author`]: agentium_core::session_loader::load_session_messages_for_author
 /// [`EventOrder`]: agentium_core::session_loader::EventOrder
 /// [`render_conversation_note`]: agentium_core::session_loader::render_conversation_note
-fn cmd_messages(
+fn cmd_log(
     engine: &Engine,
     author: &Pubkey,
     selector: Option<&str>,
@@ -351,38 +356,105 @@ fn cmd_messages(
     let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
     let state = resolve_session_including_deleted(&live, &deleted, selector)?;
 
-    // `--jsonl`: emit the reconstructed claude-code JSONL from the lossless
-    // kind-1989 archive, raw. This is a *different* ordering axis than the
-    // display stream — `reconstruct_jsonl_lines` sorts by `seq` to reproduce the
-    // original claude-code line order of the source archive, which is correct
-    // here. The function is not author-scoped, but the engine's cache only holds
-    // this identity's own PNS-decrypted events (the device key registered at
-    // `open_ndb` is the only one whose kind-1080 envelopes ndb can decrypt), so
-    // it only ever sees our own kind-1989 events. Display filters don't apply.
-    if view.jsonl {
+    // Resolve pager/color up front (both are output concerns). `auto` color
+    // follows the effective sink: a real tty *or* a color-aware pager — so the
+    // default built-in pager (`less -R`) still shows color, and piping raw needs
+    // `--color always` to keep it. Bounded by the pager decision so a
+    // non-terminal run (a pipe) is plain and unpaged.
+    let stdout_tty = std::io::stdout().is_terminal();
+    let use_pager = view.pager.enabled(stdout_tty);
+    let color = view.color.enabled(stdout_tty || use_pager);
+
+    let output = if view.jsonl {
+        // `--jsonl`: emit the reconstructed claude-code JSONL from the lossless
+        // kind-1989 archive, raw. This is a *different* ordering axis than the
+        // display stream — `reconstruct_jsonl_lines` sorts by `seq` to reproduce
+        // the original claude-code line order of the source archive, which is
+        // correct here. The function is not author-scoped, but the engine's cache
+        // only holds this identity's own PNS-decrypted events (the device key
+        // registered at `open_ndb` is the only one whose kind-1080 envelopes ndb
+        // can decrypt), so it only ever sees our own kind-1989 events. Display
+        // filters and color don't apply.
         let lines = reconstruct_jsonl_lines(engine.ndb(), &txn, &state.claude_session_id)
             .map_err(|e| e.to_string())?;
-        for line in lines {
-            println!("{line}");
+        join_lines(lines)
+    } else {
+        // The loader already returns messages in `EventOrder` and applies the
+        // shared mapping; `MessageView` only slices/hides, never re-sorts.
+        let messages =
+            load_session_messages_for_author(engine.ndb(), &txn, author, &state.claude_session_id)
+                .messages;
+        let selected = view.select(&messages);
+
+        if as_json {
+            let rows: Vec<serde_json::Value> = selected.iter().map(|m| m.to_json()).collect();
+            let mut json = serde_json::to_string_pretty(&rows)?;
+            json.push('\n');
+            json
+        } else {
+            render_messages(&selected, color)
         }
+    };
+
+    emit(&output, use_pager)
+}
+
+/// Join JSONL lines into a single newline-terminated block (empty stays empty),
+/// so the whole archive rides the same [`emit`] path as the rendered transcript.
+fn join_lines(lines: Vec<String>) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Write `output` to stdout, or through a pager when `use_pager`.
+///
+/// The pager command comes from `$AGENTIUM_PAGER`, then `$PAGER`, else the
+/// built-in default `less -R` (`-R` so the rendered ANSI color survives —
+/// answering "keep color when it's long"). If the pager can't be spawned (not
+/// installed, empty command), we fall back to printing plainly rather than
+/// failing. A broken pipe (the user quit the pager early) is ignored.
+fn emit(output: &str, use_pager: bool) -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    if !use_pager {
+        print!("{output}");
         return Ok(());
     }
 
-    // The loader already returns messages in `EventOrder` and applies the shared
-    // mapping; `MessageView` only slices/hides, never re-sorts.
-    let messages =
-        load_session_messages_for_author(engine.ndb(), &txn, author, &state.claude_session_id)
-            .messages;
-    let selected = view.select(&messages);
-
-    if as_json {
-        let rows: Vec<MessageJson> = selected.iter().map(|m| MessageJson::from(*m)).collect();
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+    let pager = env::var("AGENTIUM_PAGER")
+        .ok()
+        .or_else(|| env::var("PAGER").ok())
+        .unwrap_or_else(|| "less -R".to_string());
+    let mut parts = pager.split_whitespace();
+    let Some(program) = parts.next() else {
+        print!("{output}");
         return Ok(());
-    }
+    };
 
-    let color = std::io::stdout().is_terminal();
-    print!("{}", render_messages(&selected, color));
+    let child = Command::new(program)
+        .args(parts)
+        .stdin(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        // No usable pager (e.g. `less` absent) — degrade to a plain print.
+        Err(_) => {
+            print!("{output}");
+            return Ok(());
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Ignore the write result: a pager the user quits early closes the pipe,
+        // and that EPIPE is expected, not an error worth surfacing.
+        let _ = stdin.write_all(output.as_bytes());
+    }
+    let _ = child.wait();
     Ok(())
 }
 
@@ -639,16 +711,17 @@ fn render_detail(
 use agentium_core::messages::{Message, PermissionResponseType, SubagentStatus};
 use agentium_core::tools::{ToolCall, ToolResponse, ToolResponses};
 
-/// The transcript-shaping flags for `agentium messages`: which roles to keep,
+/// The transcript-shaping flags for `agentium log`: which roles to keep,
 /// whether to fold tool-call/result noise, and how many trailing messages to
 /// show. `jsonl` selects the reconstructed-archive path instead (see
-/// [`cmd_messages`]); it's carried here so the whole command's shape lives in
+/// [`cmd_log`]); it's carried here so the whole command's shape lives in
 /// one value.
 struct MessageView {
-    /// `--role <r>`: keep only messages whose canonical role token (see
-    /// [`message_role`]) equals this, case-insensitively. `None` keeps all.
-    role: Option<String>,
-    /// `--last N`: after role/tool filtering, keep only the trailing `N`.
+    /// `--role <r>[,<r>…]`: keep only messages whose canonical role token (see
+    /// [`message_role`]) matches one of these, case-insensitively. Accumulates
+    /// across repeated flags and comma-separated lists; empty keeps all roles.
+    roles: Vec<String>,
+    /// `--last N` (`-n N`): after role/tool filtering, keep only the trailing `N`.
     last: Option<usize>,
     /// `--tools`/`--no-tools`: when `false`, drop `tool_call`/`tool_result`
     /// messages so the human turns read cleanly. Defaults to `true` (show).
@@ -656,6 +729,63 @@ struct MessageView {
     /// `--jsonl`: emit reconstructed claude-code JSONL instead of the rendered
     /// transcript. Mutually exclusive in effect with the filters above.
     jsonl: bool,
+    /// `--color <when>`: whether to ANSI-color the rendered transcript.
+    color: ColorWhen,
+    /// `--pager`/`--no-pager`: whether to route output through a pager, like
+    /// `git log`.
+    pager: PagerMode,
+}
+
+/// When to ANSI-color the rendered transcript (`--color`). `Auto` follows the
+/// effective sink (a tty or a color-aware pager); `Always`/`Never` force it —
+/// `Always` is how you keep color when piping into your own `less -R`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ColorWhen {
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorWhen {
+    /// Parse the `--color` value; anything else is an error naming the choices.
+    fn parse(s: &str) -> Result<ColorWhen> {
+        match s {
+            "auto" => Ok(ColorWhen::Auto),
+            "always" => Ok(ColorWhen::Always),
+            "never" => Ok(ColorWhen::Never),
+            other => Err(format!("--color must be auto|always|never, got '{other}'").into()),
+        }
+    }
+
+    /// Resolve to on/off. `sink_supports_color` is whether the effective output
+    /// (tty or color-aware pager) can render ANSI — the `Auto` signal.
+    fn enabled(self, sink_supports_color: bool) -> bool {
+        match self {
+            ColorWhen::Auto => sink_supports_color,
+            ColorWhen::Always => true,
+            ColorWhen::Never => false,
+        }
+    }
+}
+
+/// Whether to page `log` output (`--pager`/`--no-pager`). `Auto` pages only when
+/// stdout is a tty (so a pipe stays unpaged); the flags force it either way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PagerMode {
+    Auto,
+    Always,
+    Never,
+}
+
+impl PagerMode {
+    /// Resolve to on/off given whether stdout is a terminal.
+    fn enabled(self, stdout_tty: bool) -> bool {
+        match self {
+            PagerMode::Auto => stdout_tty,
+            PagerMode::Always => true,
+            PagerMode::Never => false,
+        }
+    }
 }
 
 impl MessageView {
@@ -667,9 +797,11 @@ impl MessageView {
         let mut kept: Vec<&Message> = messages
             .iter()
             .filter(|m| {
-                self.role
-                    .as_deref()
-                    .is_none_or(|r| message_role(m).eq_ignore_ascii_case(r))
+                self.roles.is_empty()
+                    || self
+                        .roles
+                        .iter()
+                        .any(|r| message_role(m).eq_ignore_ascii_case(r))
             })
             .filter(|m| self.show_tools || !is_tool_message(m))
             .collect();
@@ -868,123 +1000,6 @@ fn col_ellipsis(s: &str, max: usize) -> String {
     let mut t: String = chars[..max.saturating_sub(1)].iter().collect();
     t.push('…');
     t
-}
-
-/// The `--json` view of one conversation message: internally tagged by `role`
-/// (the [`message_role`] token), each variant carrying just its own fields.
-/// [`Message`] isn't `Serialize`, so this mirrors it the way `SessionJson`
-/// mirrors `SessionState`. Emitted as a `Vec` by `messages --json`.
-#[derive(serde::Serialize)]
-#[serde(tag = "role", rename_all = "snake_case")]
-enum MessageJson {
-    User {
-        text: String,
-        #[serde(skip_serializing_if = "is_zero")]
-        images: usize,
-    },
-    Assistant {
-        text: String,
-    },
-    ToolCall {
-        calls: Vec<ToolCallJson>,
-    },
-    ToolResult {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tool: Option<String>,
-        summary: String,
-    },
-    PermissionRequest {
-        tool: String,
-        decision: &'static str,
-    },
-    Compaction {
-        pre_tokens: u64,
-    },
-    Subagent {
-        subagent_type: String,
-        description: String,
-        status: &'static str,
-    },
-    System {
-        text: String,
-    },
-    Error {
-        text: String,
-    },
-    Todo {
-        todos: serde_json::Value,
-    },
-}
-
-/// Whether a `usize` is zero — the skip predicate for `MessageJson::User.images`
-/// so a text-only user message omits the field entirely.
-fn is_zero(n: &usize) -> bool {
-    *n == 0
-}
-
-/// The `--json` shape of a single tool call: its registry name and the parsed
-/// argument JSON (falling back to the raw string when it doesn't parse).
-#[derive(serde::Serialize)]
-struct ToolCallJson {
-    tool: &'static str,
-    input: serde_json::Value,
-}
-
-impl From<&Message> for MessageJson {
-    fn from(m: &Message) -> Self {
-        match m {
-            Message::User(u) => MessageJson::User {
-                text: u.text.clone(),
-                images: u.images.len(),
-            },
-            Message::Assistant(a) => MessageJson::Assistant {
-                text: a.text().to_string(),
-            },
-            Message::ToolCalls(calls) => MessageJson::ToolCall {
-                calls: calls
-                    .iter()
-                    .map(|c| ToolCallJson {
-                        tool: c.calls().tool_name(),
-                        input: serde_json::from_str(&c.calls().arguments())
-                            .unwrap_or_else(|_| serde_json::Value::String(c.calls().arguments())),
-                    })
-                    .collect(),
-            },
-            Message::ToolResponse(tr) => match tr.responses() {
-                ToolResponses::ExecutedTool(e) => MessageJson::ToolResult {
-                    tool: Some(e.tool_name.clone()),
-                    summary: e.summary.clone(),
-                },
-                ToolResponses::Error(msg) => MessageJson::ToolResult {
-                    tool: None,
-                    summary: format!("error: {msg}"),
-                },
-                ToolResponses::Query(q) => MessageJson::ToolResult {
-                    tool: None,
-                    summary: format!("query: {} notes", q.notes.len()),
-                },
-                ToolResponses::PresentNotes(n) => MessageJson::ToolResult {
-                    tool: None,
-                    summary: format!("present: {n} notes"),
-                },
-            },
-            Message::PermissionRequest(p) => MessageJson::PermissionRequest {
-                tool: p.tool_name.clone(),
-                decision: decision_label(p.response),
-            },
-            Message::CompactionComplete(c) => MessageJson::Compaction {
-                pre_tokens: c.pre_tokens,
-            },
-            Message::Subagent(s) => MessageJson::Subagent {
-                subagent_type: s.subagent_type.clone(),
-                description: s.description.clone(),
-                status: subagent_status_label(s.status),
-            },
-            Message::System(s) => MessageJson::System { text: s.clone() },
-            Message::Error(e) => MessageJson::Error { text: e.clone() },
-            Message::TodoUpdate(v) => MessageJson::Todo { todos: v.clone() },
-        }
-    }
 }
 
 /// Which sessions `list` shows. Tombstoned sessions are hidden by default so the
@@ -1321,12 +1336,15 @@ impl Cli {
         let mut backend = None;
         let mut deleted = false;
         let mut all = false;
-        // `messages` transcript flags. `show_tools` defaults on; `--no-tools`
-        // folds tool noise and `--tools` re-asserts the default.
-        let mut role = None;
+        // `log` transcript flags. `show_tools` defaults on; `--no-tools`
+        // folds tool noise and `--tools` re-asserts the default. Color/pager
+        // default to `Auto` (tty detection), like `git log`.
+        let mut roles: Vec<String> = Vec::new();
         let mut last = None;
         let mut show_tools = true;
         let mut jsonl = false;
+        let mut color = ColorWhen::Auto;
+        let mut pager = PagerMode::Auto;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -1349,10 +1367,19 @@ impl Cli {
                 "--backend" => backend = Some(value("--backend")?),
                 "--deleted" => deleted = true,
                 "--all" => all = true,
-                "--role" => role = Some(value("--role")?),
-                "--last" => {
+                // Accumulate roles across repeated `--role` flags and
+                // comma-separated lists, so `--role user,assistant` and
+                // `--role user --role assistant` both select multiple roles.
+                "--role" => roles.extend(
+                    value("--role")?
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                ),
+                "--last" | "-n" => {
                     last = Some(
-                        value("--last")?
+                        value(arg.as_str())?
                             .parse::<usize>()
                             .map_err(|_| "--last needs a non-negative integer")?,
                     )
@@ -1360,6 +1387,9 @@ impl Cli {
                 "--tools" => show_tools = true,
                 "--no-tools" => show_tools = false,
                 "--jsonl" => jsonl = true,
+                "--color" => color = ColorWhen::parse(&value("--color")?)?,
+                "--pager" => pager = PagerMode::Always,
+                "--no-pager" => pager = PagerMode::Never,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -1371,10 +1401,12 @@ impl Cli {
             return Ok(None);
         };
         let view = MessageView {
-            role,
+            roles,
             last,
             show_tools,
             jsonl,
+            color,
+            pager,
         };
         let command = parse_command(name, rest, view)?;
 
@@ -1417,7 +1449,7 @@ fn parse_command(name: &str, rest: &[String], view: MessageView) -> Result<Comma
         "show" => Command::Show {
             session: optional_session(rest),
         },
-        "messages" => Command::Messages {
+        "log" => Command::Log {
             session: optional_session(rest),
             view,
         },
@@ -1432,7 +1464,7 @@ fn parse_command(name: &str, rest: &[String], view: MessageView) -> Result<Comma
     })
 }
 
-/// The optional session selector for `show`/`messages`: the first positional if
+/// The optional session selector for `show`/`log`: the first positional if
 /// present, else `$AGENTIUM_SESSION` (the `agentium:` ref a running Dave session
 /// exports) so the command with no argument targets the current session. An
 /// empty env var is treated as unset; the command errors if neither is present.
@@ -1468,8 +1500,7 @@ COMMANDS:
                       selector `list` accepts; defaults to $AGENTIUM_SESSION so a
                       running Dave session can just run `agentium show`. --json
                       emits the structured detail object.
-    messages [session]
-                      Print one session's full conversation, one entry per
+    log [session]     Print one session's full conversation, one entry per
                       message, in order (millisecond wall-clock, not seq). Takes
                       any selector `list` accepts; defaults to $AGENTIUM_SESSION.
                       Filter/shape with --role/--last/--tools/--no-tools; --json
@@ -1505,14 +1536,19 @@ OPTIONS:
     --deleted         Show only soft-deleted (tombstoned) sessions
     --all             Show live and deleted sessions together
 
-  messages options:
-    --role <r>        Only messages with this role (user|assistant|tool_call|
-                      tool_result|permission_request|subagent|system|error|
-                      compaction|todo)
-    --last <n>        Only the last <n> messages (after other filters)
+  log options:
+    --role <r[,r…]>   Only messages with these roles, comma-separated and/or
+                      repeatable (user|assistant|tool_call|tool_result|
+                      permission_request|subagent|system|error|compaction|todo)
+    -n, --last <n>    Only the last <n> messages (after other filters)
     --tools           Show tool_call/tool_result messages (default)
     --no-tools        Fold away tool_call/tool_result noise
     --jsonl           Emit reconstructed claude-code JSONL (source archive)
+    --color <when>    auto (default) | always | never. `always` keeps color
+                      when piping into your own pager (e.g. `less -SR`).
+    --pager           Force paging even when stdout isn't a terminal
+    --no-pager        Never page; write straight to stdout
+                      (pager command: $AGENTIUM_PAGER, $PAGER, else `less -R`)
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -1681,22 +1717,23 @@ mod tests {
     }
 
     #[test]
-    fn messages_command_carries_selector_and_view() {
+    fn log_command_carries_selector_and_view() {
         let view = MessageView {
-            role: Some("assistant".into()),
+            roles: vec!["assistant".into()],
             last: Some(5),
             show_tools: false,
             jsonl: true,
+            ..view_all()
         };
-        match parse_command("messages", &["agentium:a-b-c".to_string()], view).unwrap() {
-            Command::Messages { session, view } => {
+        match parse_command("log", &["agentium:a-b-c".to_string()], view).unwrap() {
+            Command::Log { session, view } => {
                 assert_eq!(session.as_deref(), Some("agentium:a-b-c"));
-                assert_eq!(view.role.as_deref(), Some("assistant"));
+                assert_eq!(view.roles, vec!["assistant".to_string()]);
                 assert_eq!(view.last, Some(5));
                 assert!(!view.show_tools);
                 assert!(view.jsonl);
             }
-            _ => panic!("expected Messages"),
+            _ => panic!("expected Log"),
         }
     }
 
@@ -1825,13 +1862,16 @@ mod tests {
         }))
     }
 
-    /// The default (show-everything) view: no role filter, no tail, tools shown.
+    /// The default (show-everything) view: no role filter, no tail, tools shown,
+    /// auto color/pager.
     fn view_all() -> MessageView {
         MessageView {
-            role: None,
+            roles: vec![],
             last: None,
             show_tools: true,
             jsonl: false,
+            color: ColorWhen::Auto,
+            pager: PagerMode::Auto,
         }
     }
 
@@ -1865,12 +1905,32 @@ mod tests {
             Message::User("again".into()),
         ];
         let view = MessageView {
-            role: Some("USER".into()),
+            roles: vec!["USER".into()],
             ..view_all()
         };
         let kept = view.select(&msgs);
         assert_eq!(kept.len(), 2);
         assert!(kept.iter().all(|m| message_role(m) == "user"));
+    }
+
+    #[test]
+    fn select_keeps_any_of_multiple_roles() {
+        let msgs = vec![
+            Message::User("hello".into()),
+            Message::Assistant(AssistantMessage::from_text("hi".into())),
+            Message::System("boot".into()),
+        ];
+        // `--role user,assistant` (or repeated flags) keeps both, drops system.
+        let view = MessageView {
+            roles: vec!["user".into(), "assistant".into()],
+            ..view_all()
+        };
+        let kept = view.select(&msgs);
+        assert_eq!(kept.len(), 2);
+        assert!(
+            kept.iter()
+                .all(|m| matches!(message_role(m), "user" | "assistant"))
+        );
     }
 
     #[test]
@@ -1993,6 +2053,32 @@ mod tests {
     }
 
     #[test]
+    fn color_when_resolves_against_sink() {
+        // auto follows the sink; always/never override it.
+        assert!(ColorWhen::Auto.enabled(true));
+        assert!(!ColorWhen::Auto.enabled(false));
+        assert!(ColorWhen::Always.enabled(false));
+        assert!(!ColorWhen::Never.enabled(true));
+        assert_eq!(ColorWhen::parse("always").unwrap(), ColorWhen::Always);
+        assert!(ColorWhen::parse("technicolor").is_err());
+    }
+
+    #[test]
+    fn pager_mode_resolves_against_tty() {
+        // auto pages only for a tty; the flags force it either way.
+        assert!(PagerMode::Auto.enabled(true));
+        assert!(!PagerMode::Auto.enabled(false));
+        assert!(PagerMode::Always.enabled(false));
+        assert!(!PagerMode::Never.enabled(true));
+    }
+
+    #[test]
+    fn join_lines_terminates_and_keeps_empty() {
+        assert_eq!(join_lines(vec![]), "");
+        assert_eq!(join_lines(vec!["a".into(), "b".into()]), "a\nb\n");
+    }
+
+    #[test]
     fn one_line_flattens_whitespace_and_truncates() {
         assert_eq!(one_line("a\n  b\tc", 100), "a b c");
         assert_eq!(one_line("abcdef", 4), "abc…");
@@ -2008,29 +2094,29 @@ mod tests {
     }
 
     #[test]
-    fn message_json_is_tagged_by_role() {
-        let user = MessageJson::from(&Message::User("hi".into()));
-        let v = serde_json::to_value(&user).unwrap();
+    fn message_to_json_is_tagged_by_role() {
+        // The CLI's `--json` output is `Message::to_json` per message; check the
+        // role-tagged shape the integration test relies on.
+        let v = Message::User("hi".into()).to_json();
         assert_eq!(v["role"], "user");
         assert_eq!(v["text"], "hi");
         // A text-only user message omits the images field.
         assert!(v.get("images").is_none());
 
-        let perm = MessageJson::from(&Message::PermissionRequest(PermissionRequest::new(
+        let v = Message::PermissionRequest(PermissionRequest::new(
             uuid::Uuid::nil(),
             "Bash".into(),
             serde_json::Value::Null,
             None,
             Some(PermissionResponseType::Allowed),
             None,
-        )));
-        let v = serde_json::to_value(&perm).unwrap();
+        ))
+        .to_json();
         assert_eq!(v["role"], "permission_request");
         assert_eq!(v["tool"], "Bash");
         assert_eq!(v["decision"], "allowed");
 
-        let res = MessageJson::from(&tool_result("Read", "154 lines"));
-        let v = serde_json::to_value(&res).unwrap();
+        let v = tool_result("Read", "154 lines").to_json();
         assert_eq!(v["role"], "tool_result");
         assert_eq!(v["tool"], "Read");
         assert_eq!(v["summary"], "154 lines");
