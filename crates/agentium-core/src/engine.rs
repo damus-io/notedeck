@@ -848,6 +848,44 @@ impl Engine {
         .map_err(|e| EngineError::Build(e.to_string()))
     }
 
+    /// Interrupt a session's in-flight turn on its host.
+    ///
+    /// Publishes a kind-1988 interrupt command (`role = "interrupt"`) that the
+    /// host applies to its local backend, aborting the current turn/tool loop —
+    /// the remote-session counterpart to the local Escape interrupt. A no-op
+    /// against a session that isn't currently running a turn.
+    pub fn interrupt_session(
+        &self,
+        transport: &mut impl Transport,
+        session_id: &str,
+    ) -> Result<(), EngineError> {
+        let built = self.make_interrupt(session_id)?;
+        self.publish_session_event(transport, &built)
+    }
+
+    /// Build a kind-1988 interrupt command, ingest it locally, and return it for
+    /// the caller to publish through its own transport — for a host that batches
+    /// its own relay writes. Unlike [`interrupt_session`](Engine::interrupt_session),
+    /// this does not publish.
+    pub fn prepare_interrupt(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let built = self.make_interrupt(session_id)?;
+        self.wrap_and_ingest(&built)?;
+        Ok(built)
+    }
+
+    /// Build the inner kind-1988 interrupt event (no ingest, no publish).
+    fn make_interrupt(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let mut threading = self.session_threading(session_id);
+        crate::session_events::build_interrupt_event(session_id, &mut threading, &self.seckey())
+            .map_err(|e| EngineError::Build(e.to_string()))
+    }
+
     /// The 32-byte account secret that signs inner session events.
     fn seckey(&self) -> [u8; 32] {
         self.account.secret_key.secret_bytes()
