@@ -320,11 +320,6 @@ async fn run() -> Result<()> {
     if let Some((secret, _)) = &cli.secret {
         ndb.add_key(secret);
     }
-    // Join every shared board we hold a key for, *before* the sync below: with
-    // the roots registered, envelopes pulled from the relay auto-unwrap as they
-    // arrive instead of sitting sealed until the next run.
-    let roster = Roster::load(&ndb, &author);
-
     // Reconcile the local cache against the relay both ways so the cache and the
     // app converge regardless of which side an edit happened on. Best-effort: an
     // unreachable relay leaves us working offline against the cache.
@@ -342,6 +337,20 @@ async fn run() -> Result<()> {
         &is_addressable,
     )
     .await?;
+
+    // Pull the account's gift-wraps before deriving the roster: a key-share only
+    // ever travels as a kind-1059, and nostrdb peels it into the queryable 1082
+    // the roster is built from. Skipping this is not a missing *feature* — it
+    // silently empties the roster, and an empty roster makes every shared board
+    // look private, so this CLI would fold it the plaintext way and write
+    // plaintext edits no other client can read.
+    if let Some(relay) = relay.as_mut() {
+        pull_giftwraps(relay, &ndb, &author).await;
+    }
+    // Join every shared board we hold a key for. `register_teams` re-peels any
+    // envelope that arrived before its root was registered, so it is safe for this
+    // to run after the sync above rather than before it.
+    let roster = Roster::load(&ndb, &author);
 
     let board = cli.board;
     let board_explicit = cli.board_explicit;
@@ -836,6 +845,52 @@ impl Roster {
             .first()?
             .root_bytes()
     }
+}
+
+/// Pull the kind-1059 gift-wraps addressed to `author` into the local cache, so
+/// nostrdb can peel out the key-shares the roster is derived from.
+///
+/// Pull-only and best-effort: gift-wraps are addressed *to* us, so there is
+/// nothing of ours to push back, and a relay that can't serve them just leaves us
+/// with the boards we already knew about.
+async fn pull_giftwraps(relay: &mut nostrdb_net::relay::sync::Relay, ndb: &Ndb, author: &Pubkey) {
+    let filter = teams::giftwrap_filter(author);
+    let wire = json!({ "kinds": [1059], "#p": [author.hex()] }).to_string();
+    let local = match nostrdb_net::relay::sync::local_set(ndb, &filter) {
+        Ok(local) => local,
+        Err(e) => {
+            eprintln!("warning: couldn't index local key-shares: {e}");
+            return;
+        }
+    };
+    let before = count_matching(ndb, &filter);
+    if let Err(e) = nostrdb_net::relay::sync::pull_reconcile(relay, ndb, &wire, local).await {
+        eprintln!("warning: couldn't sync shared-board key-shares: {e}");
+    }
+    // Peel what just arrived, but only if something did. A gift-wrap is unwrapped
+    // against the registered account keys as it is ingested; one that landed in an
+    // earlier run — before this key was registered, or before the peel existed —
+    // stays sealed and invisible to the roster until this catch-up pass, the
+    // giftwrap counterpart of `register_teams`' `process_sns`. It walks *every*
+    // stored wrap and attempts a decrypt per wrap, so running it unconditionally
+    // would re-try thousands of other people's wraps on every command, printing a
+    // failure line for each. Gated on new arrivals it runs at most once per sync
+    // that actually brought something.
+    if count_matching(ndb, &filter) > before
+        && let Ok(txn) = Transaction::new(ndb)
+    {
+        ndb.process_giftwraps(&txn);
+    }
+}
+
+/// How many stored notes match `filter`, counted through the index walk rather
+/// than by materialising them.
+fn count_matching(ndb: &Ndb, filter: &nostrdb::Filter) -> usize {
+    let Ok(txn) = Transaction::new(ndb) else {
+        return 0;
+    };
+    ndb.fold(&txn, std::slice::from_ref(filter), 0usize, |n, _note| n + 1)
+        .unwrap_or(0)
 }
 
 /// Fold one board, by whichever transport it uses: a joined shared board folds

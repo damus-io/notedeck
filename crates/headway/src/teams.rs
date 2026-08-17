@@ -95,6 +95,25 @@ pub fn envelope_filter(team_pubkeys: &[Pubkey]) -> Filter {
         .build()
 }
 
+/// Filter for the kind-1059 gift-wraps addressed to `author` — the wire form of a
+/// key-share, and the only way a *new* shared board can reach a cache.
+///
+/// [`keyshare_filter`] matches the 1082 rumor nostrdb peeled out of one of these,
+/// which is a purely local artefact: it never travels, so a client that syncs only
+/// the 1082 kind pulls nothing and derives an empty roster — and an empty roster
+/// means every shared board silently looks private. A client that reads shared
+/// boards must sync *this* and let nostrdb unwrap (its account key registered via
+/// `Ndb::add_key`).
+///
+/// Unbounded, like [`envelope_filter`]: the roster is not a feed to page through,
+/// and a truncated walk drops channels.
+pub fn giftwrap_filter(author: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([1059])
+        .pubkeys([author.bytes()])
+        .build()
+}
+
 /// The shared boards `author` has joined, reconstructed from nostrdb.
 ///
 /// The roster lives in the db, not on disk: every joined board arrived as a
