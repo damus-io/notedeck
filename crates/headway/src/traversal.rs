@@ -46,8 +46,8 @@ pub fn work_order<'v>(view: &'v BoardView, container: &Container) -> Vec<&'v Car
 /// picked up *now*, in work-order. More than one card can be ready at once — that
 /// is the parallel-dispatch signal an AI acts on. A card is ready when it is:
 /// - not done (not sitting in its board's last column), and
-/// - not blocked ([`is_blocked`] — always false until blocking relations land),
-///   and
+/// - not blocked ([`is_blocked`] — no dependency edge points at an unfinished
+///   blocker), and
 /// - not a parent with unfinished subissues: its real work is those children,
 ///   which are already in the frontier, so the branch itself isn't dispatchable.
 pub fn ready<'v>(view: &'v BoardView, container: &Container) -> Vec<&'v CardView> {
@@ -130,13 +130,13 @@ fn has_open_subissue(card: &CardView) -> bool {
     card.subissues.iter().any(|s| !s.done && !s.archived)
 }
 
-/// Blocking seam: is `card` held back by an unfinished blocker? A single, well
-/// named hook that returns false until blocking relations exist
-/// (headway:notedeck/bronze-walk-until). When they land this becomes the "every
-/// effective blocker done" test — a card's own blockers unioned with those it
-/// inherits from ancestor containers — so [`ready`] needs no other change.
-fn is_blocked(_view: &BoardView, _card: &CardView) -> bool {
-    false
+/// Blocking seam: is `card` held back by an unfinished blocker? A card is blocked
+/// while any of its dependency edges points at a card that isn't cleared (done or
+/// archived) — the reducer resolves that per-edge state, so this is a pure read
+/// (see [`CardView::is_blocked`]). Inheriting an ancestor container's blockers is
+/// a future refinement; today only a card's own edges hold it back.
+fn is_blocked(_view: &BoardView, card: &CardView) -> bool {
+    card.is_blocked()
 }
 
 #[cfg(test)]
@@ -166,6 +166,18 @@ mod tests {
             activity: vec![],
             parent: None,
             subissues: vec![],
+            blocked_by: vec![],
+            blocks: vec![],
+        }
+    }
+
+    /// A resolved blocker edge as the reducer would attach it: `done` marks the
+    /// blocker cleared (so it no longer holds the card back).
+    fn blocker(n: u8, done: bool) -> crate::event::EdgeRef {
+        crate::event::EdgeRef {
+            id: NoteId::new([n; 32]),
+            title: format!("card {n}"),
+            done,
         }
     }
 
@@ -316,10 +328,34 @@ mod tests {
     }
 
     #[test]
-    fn is_blocked_is_a_false_stub_until_blocking_lands() {
-        // The blocking seam is wired but inert in v1: nothing is blocked yet, so
-        // ready is governed purely by doneness and the branch rule above.
-        let view = board(vec![card(1, None, 1)], &[]);
-        assert!(!is_blocked(&view, view.card(NoteId::new([1; 32])).unwrap()));
+    fn is_blocked_tracks_unfinished_blocker_edges() {
+        // No edges: not blocked. An unfinished blocker edge holds the card back;
+        // a cleared (done) one does not.
+        let mut plain = card(1, None, 1);
+        assert!(!is_blocked(&board(vec![plain.clone()], &[]), &plain));
+
+        plain.blocked_by = vec![blocker(2, false)];
+        assert!(is_blocked(&board(vec![plain.clone()], &[]), &plain));
+
+        plain.blocked_by = vec![blocker(2, true)];
+        assert!(!is_blocked(&board(vec![plain.clone()], &[]), &plain));
+
+        // Mixed: one still-open blocker is enough to block.
+        plain.blocked_by = vec![blocker(2, true), blocker(3, false)];
+        assert!(is_blocked(&board(vec![plain.clone()], &[]), &plain));
+    }
+
+    #[test]
+    fn ready_excludes_blocked_cards() {
+        // Card 2 is blocked by an unfinished card 3; the ready frontier skips it
+        // even though it isn't done and has no open subissues.
+        let mut blocked = card(2, Some("b"), 2);
+        blocked.blocked_by = vec![blocker(3, false)];
+        let view = board(
+            vec![card(1, Some("a"), 1), blocked, card(3, Some("c"), 3)],
+            &[],
+        );
+        let root = Container::BoardRoot("b".to_string());
+        assert_eq!(ids(&ready(&view, &root)), [1, 3]);
     }
 }
