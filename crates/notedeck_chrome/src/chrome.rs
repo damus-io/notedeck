@@ -11,7 +11,7 @@ use egui::{
 };
 use egui_extras::{Size, StripBuilder};
 use egui_nav::RouteResponse;
-use egui_nav::{NavAction, NavDrawer};
+use egui_nav::{NavAction, NavDrawer, NavUiType};
 use nostrdb::{ProfileRecord, Transaction};
 use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
@@ -21,8 +21,9 @@ use notedeck::DrawerRouter;
 use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
-    tr, App, AppAction, AppContext, ChromeNavEntry, Localization, NavStack, Notedeck,
-    NotedeckOptions, NotedeckTextStyle, TabNotifications, UserAccount, WalletType,
+    nav_frame, tr, App, AppAction, AppContext, AppId, ChromeNavEntry, Localization, NavRequest,
+    NavStack, Notedeck, NotedeckOptions, NotedeckTextStyle, TabNotifications, UserAccount,
+    WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use oot_bitset::{bitset_clear, bitset_get, bitset_set};
@@ -44,6 +45,7 @@ use notedeck_ui::expanding_button;
 
 use notedeck_ui::{app_images, galley_centered_pos, ProfilePic};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Upper bound on the number of apps the running-app bitset can track. One bit
 /// per app index; see [`Chrome::tools_snapshot`].
@@ -82,11 +84,15 @@ pub struct Chrome {
     /// The single, browser-style global navigation history spanning every app,
     /// where back/forward can cross app boundaries. The chrome is its sole
     /// mutator: apps request navigation via
-    /// [`AppContext::navigator`](notedeck::AppContext) and the chrome applies
-    /// those requests here. `None` until it is seeded with the first route —
-    /// this subissue only lands the empty stack; rendering and the drain that
-    /// mutates it arrive with the global-nav controls in a later subissue.
-    #[allow(dead_code)]
+    /// [`AppContext::navigator`](notedeck::AppContext) and the chrome drains and
+    /// applies those requests each frame (see [`Chrome::apply_nav_requests`]).
+    ///
+    /// The stack top names the *active* app, so `active` is derived from it (see
+    /// [`Chrome::sync_active_from_nav`]) and rendered through
+    /// [`nav_frame`](notedeck::nav_frame) so app→app switches animate. Seeded
+    /// with the initial app's route at construction, so it is never `None` in
+    /// practice — the `Option` only lets the field be built before the first
+    /// route is known.
     global_nav: Option<NavStack<ChromeNavEntry>>,
 
     #[cfg(feature = "auto-update")]
@@ -216,6 +222,15 @@ fn setup_app_registries(notedeck: &mut Notedeck, apps: &[NotedeckApp]) {
     }
 }
 
+/// Seed the chrome-global navigation history with the initial app's route
+/// (slot 0). [`NavStack::new`] panics on an empty stack, so the chrome is born
+/// with exactly this one entry. The route token is a placeholder `Rc::new(())`:
+/// no app reads its own token yet (that lands with Columns' `render_nav`
+/// override in a later subissue) and the chrome never inspects it.
+fn seed_global_nav() -> NavStack<ChromeNavEntry> {
+    NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))])
+}
+
 impl Chrome {
     /// Create a new chrome with the default app setup
     pub fn new_with_apps(
@@ -255,7 +270,7 @@ impl Chrome {
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
-            global_nav: None,
+            global_nav: Some(seed_global_nav()),
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 app_ref.app_ctx.path,
@@ -368,7 +383,7 @@ impl Chrome {
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
-            global_nav: None,
+            global_nav: Some(seed_global_nav()),
             updater: notedeck::updater::Updater::new(
                 ctx.path,
                 &ctx.ndb,
@@ -581,9 +596,70 @@ impl Chrome {
         }
     }
 
+    /// Switch the active app to `app`.
+    ///
+    /// Every app-switch path funnels through here, so this is where the switch
+    /// is recorded in the global history: unless `app` already owns the top
+    /// entry (guarding a redundant duplicate), a new [`ChromeNavEntry`] is
+    /// pushed via [`NavStack::route_to`], which sets the `navigating` flag so
+    /// [`nav_frame`](notedeck::nav_frame) animates the transition. `active` and
+    /// the `opened` bitset are updated to match — they stay authoritative for
+    /// `update()`-gating, the tab strip, and focus-restore, and always agree
+    /// with the stack top (see [`Chrome::sync_active_from_nav`]).
     pub fn set_active(&mut self, app: i32) {
+        if let Some(nav) = self.global_nav.as_mut() {
+            if nav.top().app != AppId(app as usize) {
+                nav.route_to(ChromeNavEntry::new(AppId(app as usize), Rc::new(())));
+            }
+        }
         self.active = app;
         self.set_opened(app as usize);
+    }
+
+    /// Re-derive `active` (and its `opened` bit) from the global history's top
+    /// entry. Called after every stack mutation the chrome doesn't drive through
+    /// [`set_active`](Chrome::set_active) — the per-frame [`nav_frame`] reconcile
+    /// (which may pop on a completed back) and the [`Navigator`](notedeck::Navigator)
+    /// drain — so the active app tracks whichever app owns the current route,
+    /// including after a global back/forward crossed an app boundary.
+    fn sync_active_from_nav(&mut self) {
+        let Some(nav) = self.global_nav.as_ref() else {
+            return;
+        };
+        let slot = nav.top().app.slot();
+        self.active = slot as i32;
+        self.set_opened(slot);
+    }
+
+    /// Apply the navigation `requests` an app enqueued this frame (drained from
+    /// [`AppContext::navigator`](notedeck::AppContext)) to the global history,
+    /// then re-derive the active app from the new top.
+    ///
+    /// This is the chrome's half of the [`Navigator`](notedeck::Navigator)
+    /// contract: apps never touch the authoritative stack, they queue intent and
+    /// the chrome applies it here. Empty in practice until an app starts pushing
+    /// routes (a later subissue), but wired now so it is ready and testable.
+    fn apply_nav_requests(&mut self, requests: Vec<NavRequest>) {
+        if requests.is_empty() {
+            return;
+        }
+
+        if let Some(nav) = self.global_nav.as_mut() {
+            for request in requests {
+                match request {
+                    NavRequest::Push(entry) => nav.route_to(entry),
+                    NavRequest::Replace(entry) => nav.route_to_replaced(entry),
+                    NavRequest::Back => {
+                        nav.go_back();
+                    }
+                    NavRequest::Forward => {
+                        nav.go_forward();
+                    }
+                }
+            }
+        }
+
+        self.sync_active_from_nav();
     }
 
     /// Close the active app's tab and switch to the nearest opened app.
@@ -677,22 +753,70 @@ impl Chrome {
                     .inner
             }
             ChromeRoute::App => {
-                let resp = self.apps[self.active as usize].render(app_ctx, ui);
+                let animate = app_ctx.settings.get_settings_mut().animate_nav_transitions;
 
-                if let Some(action) = resp.action {
+                // `nav_frame` needs `&mut global_nav` while the render callback
+                // needs `&mut apps` — split-borrow the two fields so both can be
+                // lent at once. The app's action is bubbled out via the frame
+                // response and routed *after* `nav_frame` returns, since the
+                // callback can't reborrow the whole `self` that
+                // `chrome_handle_app_action` wants.
+                let (app_action, can_take_drag_from) = {
+                    let Chrome {
+                        global_nav, apps, ..
+                    } = &mut *self;
+                    let nav = global_nav
+                        .as_mut()
+                        .expect("global nav is seeded at construction");
+
+                    let frame = nav_frame(
+                        ui,
+                        egui::Id::new("chrome_global_nav"),
+                        nav,
+                        animate,
+                        |ui, ui_type, frame_nav| match ui_type {
+                            NavUiType::Body => {
+                                let entry =
+                                    frame_nav.routes().last().expect("stack always has a top");
+                                let resp =
+                                    apps[entry.app.slot()].render_nav(app_ctx, ui, &entry.token);
+                                RouteResponse {
+                                    response: resp.action,
+                                    can_take_drag_from: resp.can_take_drag_from,
+                                }
+                            }
+
+                            // The global-nav header (back button, breadcrumb)
+                            // lands with the nav controls in a later subissue.
+                            NavUiType::Title => RouteResponse {
+                                response: None,
+                                can_take_drag_from: Vec::new(),
+                            },
+                        },
+                    );
+
+                    (frame.response, frame.can_take_drag_from)
+                };
+
+                // Split borrows released — route the bubbled app action.
+                if let Some(action) = app_action {
                     chrome_handle_app_action(self, app_ctx, action, ui);
                 }
 
                 // Actions raised imperatively mid-render (e.g. a clicked inline
                 // widget drawn by another app's KindRenderer) arrive here rather
-                // than via `resp.action`; route them the same way.
+                // than via the bubbled action; route them the same way.
                 for action in app_ctx.app_actions.take() {
                     chrome_handle_app_action(self, app_ctx, action, ui);
                 }
 
+                // A completed back may have popped the top inside `nav_frame`;
+                // re-derive the active app so it tracks the new top.
+                self.sync_active_from_nav();
+
                 RouteResponse {
                     response: None,
-                    can_take_drag_from: resp.can_take_drag_from,
+                    can_take_drag_from,
                 }
             }
         });
@@ -1016,6 +1140,12 @@ impl notedeck::App for Chrome {
             action.process(ctx, self, ui);
             self.nav.close();
         }
+
+        // Apply any navigation requests apps enqueued while rendering to the
+        // global history, then re-derive the active app. Empty until an app
+        // starts pushing routes (a later subissue), but wired now so it's ready.
+        let nav_requests = ctx.navigator.take();
+        self.apply_nav_requests(nav_requests);
 
         // Fallback keybindings — only fire if no app consumed the key.
         self.handle_fallback_keybindings(ui.ctx());
@@ -2599,5 +2729,138 @@ mod tab_cycle_tests {
     fn lone_flag_cycles_to_itself_and_empty_finds_nothing() {
         assert_eq!(bitset_find(&bitset(&[2]), 2, FORWARD), Some(2));
         assert_eq!(bitset_find(&bitset(&[]), 0, FORWARD), None);
+    }
+}
+
+// The global-nav wiring exercised here is independent of the auto-update
+// `updater` field, which needs a live egui/ndb context to build. Gating on
+// `not(auto-update)` lets these tests construct a bare `Chrome` with no context
+// (the field is compiled out) while still running under the default feature set
+// CI uses for `notedeck_chrome`. The render half (the `nav_frame` body) is
+// exercised by compilation; the reconcile state machine it drives is covered by
+// `notedeck::nav`'s own `NavStack` tests.
+#[cfg(all(test, not(feature = "auto-update")))]
+mod global_nav_tests {
+    use super::*;
+    use egui_nav::{NavAction, ReturnType};
+
+    /// Build a bare chrome with a seeded global history and no apps — enough to
+    /// drive the stack machinery (`set_active`, the `Navigator` drain, and the
+    /// active-app derive) without an egui/ndb context. Mirrors the real
+    /// constructors' seeding via [`seed_global_nav`].
+    fn nav_test_chrome() -> Chrome {
+        Chrome {
+            active: 0,
+            options: ChromeOptions::default(),
+            apps: Vec::new(),
+            opened: [0u16; MAX_APPS / 16],
+            app_focus: HashMap::new(),
+            prev_active: 0,
+            tools_snapshot: [0u16; MAX_APPS / 16],
+            soft_kb_anim_state: AnimState::default(),
+            repaint_causes: HashMap::new(),
+            nav: DrawerRouter::default(),
+            global_nav: Some(seed_global_nav()),
+        }
+    }
+
+    #[test]
+    fn seed_starts_at_app_zero() {
+        let chrome = nav_test_chrome();
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.len(), 1);
+        assert_eq!(nav.top().app, AppId(0));
+        assert_eq!(chrome.active, 0);
+    }
+
+    #[test]
+    fn set_active_pushes_a_route_and_derives_active() {
+        let mut chrome = nav_test_chrome();
+
+        chrome.set_active(1);
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.len(), 2, "switching apps pushes a global-history entry");
+        assert_eq!(nav.top().app, AppId(1));
+        assert_eq!(chrome.active, 1);
+        assert!(
+            nav.navigating(),
+            "route_to arms the forward-transition flag"
+        );
+        assert!(chrome.is_opened(1), "the switched-to app is marked opened");
+    }
+
+    #[test]
+    fn set_active_guards_the_no_op_switch() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        assert_eq!(chrome.global_nav.as_ref().unwrap().len(), 2);
+
+        // switching to the already-active app must not push a duplicate entry
+        chrome.set_active(1);
+        assert_eq!(chrome.global_nav.as_ref().unwrap().len(), 2);
+        assert_eq!(chrome.active, 1);
+    }
+
+    #[test]
+    fn drained_push_request_advances_the_stack() {
+        let mut chrome = nav_test_chrome();
+
+        chrome.apply_nav_requests(vec![NavRequest::Push(ChromeNavEntry::new(
+            AppId(2),
+            Rc::new(()),
+        ))]);
+
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.len(), 2);
+        assert_eq!(nav.top().app, AppId(2));
+        assert_eq!(chrome.active, 2, "active derives from the new stack top");
+    }
+
+    #[test]
+    fn drained_replace_request_drops_the_previous_route() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1); // [app0, app1]
+
+        chrome.apply_nav_requests(vec![NavRequest::Replace(ChromeNavEntry::new(
+            AppId(2),
+            Rc::new(()),
+        ))]);
+        // route_to_replaced defers the drop until the transition completes
+        chrome
+            .global_nav
+            .as_mut()
+            .unwrap()
+            .reconcile(NavAction::Navigated);
+
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.len(), 1, "replace collapses the history to the new top");
+        assert_eq!(nav.top().app, AppId(2));
+        assert_eq!(chrome.active, 2);
+    }
+
+    #[test]
+    fn global_back_and_forward_cross_app_boundaries() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1); // [app0, app1], active app1
+
+        // A back navigation only pops once the transition completes; the chrome
+        // reconciles that in `nav_frame`, so drive the same reconcile here.
+        chrome.apply_nav_requests(vec![NavRequest::Back]);
+        chrome
+            .global_nav
+            .as_mut()
+            .unwrap()
+            .reconcile(NavAction::Returned(ReturnType::Click));
+        chrome.sync_active_from_nav();
+
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.top().app, AppId(0));
+        assert_eq!(chrome.active, 0, "back crossed the boundary to app0");
+
+        // Forward replays app1 and re-derives it as active immediately.
+        chrome.apply_nav_requests(vec![NavRequest::Forward]);
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.top().app, AppId(1));
+        assert_eq!(chrome.active, 1, "forward crossed back to app1");
     }
 }
