@@ -8,8 +8,9 @@
 //! currently-selected account — the pubkey that authors this user's boards.
 
 use enostr::{Pubkey, RelayId};
-use headway::event::{self, BoardView, CardView, Priority, resolve_card};
+use headway::event::{self, BoardView, CardView, Container, Priority, resolve_card};
 use headway::store::{self, BoardAction};
+use headway::{traversal, wordid};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
     AppTool, ExplicitPublishApi, RegisteredTool, ToolArg, ToolArgType, ToolContext, ToolSpec,
@@ -26,6 +27,7 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(ListBoards),
         RegisteredTool::new(ShowBoard),
         RegisteredTool::new(ShowCard),
+        RegisteredTool::new(ReadyItems),
         // Write.
         RegisteredTool::new(AddCard),
         RegisteredTool::new(MoveCard),
@@ -164,7 +166,7 @@ impl AppTool for ShowCard {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_show_card",
-            "Show a single headway card in full — description, labels, priority, comments, activity, and subissues — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
+            "Show a single headway card in full — description, labels, priority, comments, activity, subissues, and its blocking edges (`blocked` = held back by an unfinished prerequisite; `blocked_by` = the cards it depends on; `blocks` = the cards depending on it, each edge flagged `done` when cleared) — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
             vec![
                 ToolArg::new(
                     "card",
@@ -195,6 +197,95 @@ impl AppTool for ShowCard {
             Some(card) => Ok(event::card_json(&view.id, card)),
             None => Err(format!("no card matching '{}'", args.card)),
         }
+    }
+}
+
+/// `headway_ready_items`: the ready frontier of a board — the cards workable now.
+struct ReadyItems;
+
+/// One entry in [`ReadyItems`]' output: a ready card, in work-order. Mirrors the
+/// CLI's `next --ready --json` surface (`{ref, id, title}`) so an agent copies the
+/// same refs the CLI prints.
+#[derive(Serialize, Debug)]
+struct ReadyItem {
+    /// The card's `headway:<board>/<word-id>` ref, ready to paste into other tools.
+    #[serde(rename = "ref")]
+    card_ref: String,
+    /// The card's hex event id.
+    id: String,
+    title: String,
+}
+
+/// Arguments for [`ReadyItems`].
+#[derive(Deserialize)]
+struct ReadyItemsArgs {
+    /// Scope the frontier to a container: a card ref (its subtree) or the board id
+    /// (the whole board). The board root when omitted.
+    #[serde(default)]
+    container: Option<String>,
+    /// Cap the number of items returned; the whole frontier when omitted.
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    board: Option<String>,
+}
+
+impl AppTool for ReadyItems {
+    type Args = ReadyItemsArgs;
+    type Output = Vec<ReadyItem>;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "headway_ready_items",
+            "List the ready frontier of a headway board: the cards workable right now — not done, not blocked by an unfinished prerequisite, and not a parent whose real work is its subissues — in work-order (seq-ranked, then creation order). This is the parallel-dispatch set a pool of agents can fan out over so they respect blocking prerequisites. Omit `container` for the whole board, or pass a card ref to scope to that card's subtree.",
+            vec![
+                ToolArg::new(
+                    "container",
+                    ToolArgType::String,
+                    "Scope the frontier to a container: a card ref (`headway:<board>/<word-id>`) for its subtree, or the board id for the whole board. Defaults to the board root.",
+                ),
+                ToolArg::new(
+                    "limit",
+                    ToolArgType::Number,
+                    "Cap the number of items returned. Defaults to the whole ready frontier.",
+                ),
+                board_arg(),
+            ],
+        )
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let board_id = board_of(&args.board);
+        let author = *cx.accounts.selected_account_pubkey();
+        let Some(reducer) = fold(cx)? else {
+            return Err(format!("no board '{board_id}'"));
+        };
+        let Some(view) = event::pick_board(&reducer, &author, board_id) else {
+            return Err(format!("no board '{board_id}'"));
+        };
+        let container = match args.container.as_deref() {
+            Some(sel) => resolve_container(&view, sel)?,
+            None => Container::BoardRoot(view.id.clone()),
+        };
+        Ok(traversal::ready(&view, &container)
+            .into_iter()
+            .take(args.limit.unwrap_or(usize::MAX))
+            .map(|c| ReadyItem {
+                card_ref: wordid::card_ref(&view.id, c.id.bytes()),
+                id: c.id.hex(),
+                title: c.title.clone(),
+            })
+            .collect())
+    }
+}
+
+/// Resolve a container selector — a card ref (its subtree) or the board id (the
+/// whole board) — to a [`Container`], mirroring the CLI's `next --in` resolution.
+fn resolve_container(view: &BoardView, sel: &str) -> Result<Container, String> {
+    match resolve_card(view, sel) {
+        Ok(id) => Ok(Container::Card(*id.bytes())),
+        Err(_) if sel.eq_ignore_ascii_case(&view.id) => Ok(Container::BoardRoot(view.id.clone())),
+        Err(e) => Err(e),
     }
 }
 
@@ -1154,6 +1245,112 @@ mod tests {
             .next()
             .expect("card");
         wordid::card_ref(store::BOARD_ID, card.id.bytes())
+    }
+
+    #[test]
+    fn ready_items_excludes_blocked_cards() {
+        // The demo board wires a dependency chain: "Sync cards across relays" is
+        // blocked by the still-open "Nostr event model", and "Card detail /
+        // comments view" is blocked by sync. Both must be held out of the ready
+        // frontier so an agent fanning out over it respects the prerequisites.
+        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let mut cx = tool_context(&ndb, &mut nc, &accounts);
+
+        let out = ReadyItems
+            .call(
+                &mut cx,
+                ReadyItemsArgs {
+                    container: None,
+                    limit: None,
+                    board: None,
+                },
+            )
+            .unwrap();
+
+        let titles: Vec<&str> = out.iter().map(|i| i.title.as_str()).collect();
+        assert!(!out.is_empty(), "the seeded board has workable cards");
+        assert!(
+            !titles.contains(&"Sync cards across relays"),
+            "a blocked card must not be ready: {titles:?}"
+        );
+        assert!(
+            !titles.contains(&"Card detail / comments view"),
+            "a blocked card must not be ready: {titles:?}"
+        );
+        // Every item carries a full `headway:<board>/…` ref and a 64-char hex id.
+        assert!(
+            out.iter()
+                .all(|i| i.card_ref.starts_with("headway:") && i.id.len() == 64),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn ready_items_limit_caps_the_frontier() {
+        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let mut cx = tool_context(&ndb, &mut nc, &accounts);
+
+        let full = ReadyItems
+            .call(
+                &mut cx,
+                ReadyItemsArgs {
+                    container: None,
+                    limit: None,
+                    board: None,
+                },
+            )
+            .unwrap();
+        assert!(full.len() > 1, "need a multi-card frontier to cap");
+
+        let capped = ReadyItems
+            .call(
+                &mut cx,
+                ReadyItemsArgs {
+                    container: None,
+                    limit: Some(1),
+                    board: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(capped.len(), 1);
+        // `limit` caps the head of the same work-order, so it's the first item.
+        assert_eq!(capped[0].id, full[0].id);
+    }
+
+    #[test]
+    fn ready_items_errors_on_unknown_board() {
+        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let mut cx = tool_context(&ndb, &mut nc, &accounts);
+
+        let err = ReadyItems
+            .call(
+                &mut cx,
+                ReadyItemsArgs {
+                    container: None,
+                    limit: None,
+                    board: Some("nope".to_string()),
+                },
+            )
+            .unwrap_err();
+        assert!(err.contains("no board 'nope'"), "{err}");
+    }
+
+    #[test]
+    fn ready_items_errors_on_unknown_container() {
+        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let mut cx = tool_context(&ndb, &mut nc, &accounts);
+
+        let err = ReadyItems
+            .call(
+                &mut cx,
+                ReadyItemsArgs {
+                    container: Some("no-such-card".to_string()),
+                    limit: None,
+                    board: None,
+                },
+            )
+            .unwrap_err();
+        assert!(err.contains("no card matching"), "{err}");
     }
 
     #[test]
