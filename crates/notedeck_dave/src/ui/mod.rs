@@ -1061,6 +1061,8 @@ pub enum UiActionResult {
     Compact,
     /// Permission mode command needs relay publishing (observer → host).
     PublishModeCommand(update::ModeCommandPublish),
+    /// Interrupt command needs relay publishing (observer → host).
+    PublishInterruptCommand(update::InterruptPublish),
     /// Navigate to next focus queue item (mobile)
     FocusQueueNext,
 }
@@ -1096,10 +1098,10 @@ pub fn handle_ui_action(
             UiActionResult::Handled,
             UiActionResult::PublishPermissionResponse,
         ),
-        DaveAction::Interrupt => {
-            update::execute_interrupt(session_manager, backend, ctx);
-            UiActionResult::Handled
-        }
+        DaveAction::Interrupt => match update::execute_interrupt(session_manager, backend, ctx) {
+            Some(cmd) => UiActionResult::PublishInterruptCommand(cmd),
+            None => UiActionResult::Handled,
+        },
         DaveAction::ExitToolCall { request_id } => {
             update::exit_tool_call(session_manager, request_id).map_or(
                 UiActionResult::Handled,

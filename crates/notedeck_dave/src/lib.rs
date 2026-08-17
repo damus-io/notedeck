@@ -202,6 +202,7 @@ struct PnsLocalRuntime {
     pending_resume_commands: Vec<PendingResumeCommand>,
     pending_perm_responses: Vec<PermissionPublish>,
     pending_mode_commands: Vec<update::ModeCommandPublish>,
+    pending_interrupt_commands: Vec<update::InterruptPublish>,
     pending_deletions: Vec<session_loader::SessionState>,
     pending_worktree_removals: Vec<PendingWorktreeRemoval>,
     pending_summaries: Vec<enostr::NoteId>,
@@ -238,6 +239,7 @@ impl PnsLocalRuntime {
             pending_resume_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
+            pending_interrupt_commands: Vec::new(),
             pending_deletions: Vec::new(),
             pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
@@ -295,6 +297,30 @@ fn pns_remote_sub_config(
         live_filters: vec![pns_filter],
         history_filters: vec![pns_history_filter],
     })
+}
+
+/// A permission-mode change decoded from a remote command, to apply on the local
+/// backend. See [`Dave::poll_remote_conversation_actions`].
+struct ModeApply {
+    backend_sid: String,
+    backend_type: BackendType,
+    mode: claude_agent_sdk_rs::PermissionMode,
+}
+
+/// An interrupt decoded from a remote command, to apply on the local backend by
+/// aborting the session's in-flight turn. See
+/// [`Dave::poll_remote_conversation_actions`].
+struct InterruptApply {
+    backend_sid: String,
+    backend_type: BackendType,
+}
+
+/// The backend applications a poll of remote conversation actions produces:
+/// permission-mode changes and interrupts destined for the local CLI backend.
+#[derive(Default)]
+struct RemoteActionApplies {
+    mode_changes: Vec<ModeApply>,
+    interrupts: Vec<InterruptApply>,
 }
 
 /// A pending spawn command waiting to be built and published.
@@ -535,6 +561,8 @@ pub struct Dave {
     pending_perm_responses: Vec<PermissionPublish>,
     /// Permission mode commands queued for relay publishing (observer → host).
     pending_mode_commands: Vec<update::ModeCommandPublish>,
+    /// Interrupt commands queued for relay publishing (observer → host).
+    pending_interrupt_commands: Vec<update::InterruptPublish>,
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
     pending_deletions: Vec<session_loader::SessionState>,
@@ -1097,6 +1125,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_resume_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
+            pending_interrupt_commands: Vec::new(),
             pending_deletions: Vec::new(),
             pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
@@ -2212,24 +2241,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Dispatches kind-1988 events by `role` tag:
     /// - `permission_response`: route through oneshot channel (first-response-wins)
     /// - `set_permission_mode`: apply mode change locally
+    /// - `interrupt`: abort the session's in-flight turn on the local backend
     ///
-    /// Returns (backend_session_id, backend_type, mode) tuples for mode changes
-    /// that need to be applied to the local CLI backend.
-    fn poll_remote_conversation_actions(
-        &mut self,
-        ndb: &nostrdb::Ndb,
-    ) -> Vec<(String, BackendType, claude_agent_sdk_rs::PermissionMode)> {
-        let mut mode_applies = Vec::new();
+    /// Returns the backend applications (mode changes and interrupts) that the
+    /// caller forwards to the local CLI backend.
+    fn poll_remote_conversation_actions(&mut self, ndb: &nostrdb::Ndb) -> RemoteActionApplies {
+        let mut applies = RemoteActionApplies::default();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
-            return mode_applies;
+            return applies;
         };
         let Some(sub) = self.conversation_action_sub else {
-            return mode_applies;
+            return applies;
         };
 
         let note_keys = ndb.poll_for_notes(sub, 256);
         if note_keys.is_empty() {
-            return mode_applies;
+            return applies;
         }
 
         // Route each conversation event to its session by `d`-tag. Only local
@@ -2238,7 +2265,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let txn = match Transaction::new(ndb) {
             Ok(txn) => txn,
-            Err(_) => return mode_applies,
+            Err(_) => return applies,
         };
 
         for key in note_keys {
@@ -2279,11 +2306,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     agentic.permission_mode = new_mode;
                     session.state_dirty = true;
 
-                    mode_applies.push((
-                        format!("dave-session-{}", session_id),
-                        session.backend_type,
-                        new_mode,
-                    ));
+                    applies.mode_changes.push(ModeApply {
+                        backend_sid: format!("dave-session-{}", session_id),
+                        backend_type: session.backend_type,
+                        mode: new_mode,
+                    });
 
                     tracing::info!(
                         "remote command: set permission mode to {:?} for session {}",
@@ -2291,10 +2318,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         session_id,
                     );
                 }
+                Some("interrupt") => {
+                    applies.interrupts.push(InterruptApply {
+                        backend_sid: format!("dave-session-{}", session_id),
+                        backend_type: session.backend_type,
+                    });
+
+                    tracing::info!("remote command: interrupt session {}", session_id);
+                }
                 _ => {}
             }
         }
-        mode_applies
+        applies
     }
 
     /// Map each session's live-event `d`-tag (its `event_session_id`) to the
@@ -2514,6 +2549,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 Err(e) => tracing::error!(
                     "failed to build mode command for {}: {:?}",
+                    cmd.session_id,
+                    e
+                ),
+            }
+        }
+    }
+
+    /// Publish interrupt command events for remote sessions.
+    /// Called in the update loop where AppContext is available.
+    fn publish_pending_interrupt_commands(&mut self, ctx: &AppContext<'_>) {
+        if self.pending_interrupt_commands.is_empty() {
+            return;
+        }
+
+        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
+            tracing::warn!("no secret key for publishing interrupt commands");
+            self.pending_interrupt_commands.clear();
+            return;
+        };
+        let Some(engine) = embedded_engine(ctx.ndb, &sk) else {
+            self.pending_interrupt_commands.clear();
+            return;
+        };
+
+        for cmd in std::mem::take(&mut self.pending_interrupt_commands) {
+            match engine.prepare_interrupt(&cmd.session_id) {
+                Ok(evt) => {
+                    tracing::info!("publishing interrupt command for {}", cmd.session_id);
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => tracing::error!(
+                    "failed to build interrupt command for {}: {:?}",
                     cmd.session_id,
                     e
                 ),
@@ -3267,12 +3334,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .get_active()
             .map(|s| s.backend_type)
             .unwrap_or(BackendType::Remote);
-        self.interrupt_pending_since = update::handle_interrupt_request(
+        let outcome = update::handle_interrupt_request(
             &self.session_manager,
             get_backend(&self.backends, bt),
             self.interrupt_pending_since,
             ctx,
         );
+        self.interrupt_pending_since = outcome.pending_since;
+        if let Some(publish) = outcome.publish {
+            self.pending_interrupt_commands.push(publish);
+        }
     }
 
     /// Check if interrupt confirmation has timed out and clear it
@@ -3859,6 +3930,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             UiActionResult::PublishModeCommand(cmd) => {
                 self.pending_mode_commands.push(cmd);
+                None
+            }
+            UiActionResult::PublishInterruptCommand(cmd) => {
+                self.pending_interrupt_commands.push(cmd);
                 None
             }
             UiActionResult::ToggleAutoSteal => {
@@ -4462,6 +4537,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_resume_commands: std::mem::take(&mut self.pending_resume_commands),
             pending_perm_responses: std::mem::take(&mut self.pending_perm_responses),
             pending_mode_commands: std::mem::take(&mut self.pending_mode_commands),
+            pending_interrupt_commands: std::mem::take(&mut self.pending_interrupt_commands),
             pending_deletions: std::mem::take(&mut self.pending_deletions),
             pending_worktree_removals: std::mem::take(&mut self.pending_worktree_removals),
             pending_summaries: std::mem::take(&mut self.pending_summaries),
@@ -4507,6 +4583,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pending_resume_commands = runtime.pending_resume_commands;
         self.pending_perm_responses = runtime.pending_perm_responses;
         self.pending_mode_commands = runtime.pending_mode_commands;
+        self.pending_interrupt_commands = runtime.pending_interrupt_commands;
         self.pending_deletions = runtime.pending_deletions;
         self.pending_worktree_removals = runtime.pending_worktree_removals;
         self.pending_summaries = runtime.pending_summaries;
@@ -4730,6 +4807,9 @@ impl notedeck::App for Dave {
         // Build permission mode command events for remote sessions
         self.publish_pending_mode_commands(ctx);
 
+        // Build interrupt command events for remote sessions
+        self.publish_pending_interrupt_commands(ctx);
+
         self.pending_relay_events.extend(events_to_publish);
         // Only publish to a remote relay when one is configured in the private
         // relay list (and its PNS subscription is live). With no private relay
@@ -4765,13 +4845,17 @@ impl notedeck::App for Dave {
         }
 
         // Poll for remote conversation actions (permission responses, commands).
-        let mode_applies = self.poll_remote_conversation_actions(ctx.ndb);
-        for (backend_sid, bt, mode) in mode_applies {
-            get_backend(&self.backends, bt).set_permission_mode(
-                backend_sid,
-                mode,
+        let applies = self.poll_remote_conversation_actions(ctx.ndb);
+        for apply in applies.mode_changes {
+            get_backend(&self.backends, apply.backend_type).set_permission_mode(
+                apply.backend_sid,
+                apply.mode,
                 crate::backend::egui_waker(egui_ctx),
             );
+        }
+        for apply in applies.interrupts {
+            get_backend(&self.backends, apply.backend_type)
+                .interrupt_session(apply.backend_sid, crate::backend::egui_waker(egui_ctx));
         }
 
         // Poll git status for local agentic sessions
