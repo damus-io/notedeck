@@ -117,12 +117,13 @@ Note the id distinction: `claude_session_id` is agentium's own stable identity
 
 ## Selecting a session
 
-`show`, `log`, `resume`, and `send` take a **session selector** — any of: the raw
-`claude_session_id` (d-tag), the `cli_session_id`, an `agentium:<word-id>` ref
-(with or without the `agentium:` prefix), a unique id prefix, or a unique
-title substring. For `show` and `log` the selector is **optional** and defaults
-to `$AGENTIUM_SESSION`, so an agent running inside a session can address itself
-(`resume`/`send` always require an explicit selector):
+`show`, `log`, `resume`, `send`, and `interrupt` take a **session selector** —
+any of: the raw `claude_session_id` (d-tag), the `cli_session_id`, an
+`agentium:<word-id>` ref (with or without the `agentium:` prefix), a unique id
+prefix, or a unique title substring. For `show` and `log` the selector is
+**optional** and defaults to `$AGENTIUM_SESSION`, so an agent running inside a
+session can address itself (`resume`/`send`/`interrupt` always require an
+explicit selector):
 
 ```bash
 agentium show                    # this session (via $AGENTIUM_SESSION)
@@ -218,9 +219,30 @@ Notes:
 - `--json` emits `{ "session": "agentium:…", "event_id": "<64-hex>" }`; the plain
   output is `sent to <agentium:ref> (event <hex8>…)`.
 
+## `interrupt` — abort a session's in-flight turn
+
+`interrupt <session>` aborts whatever turn/tool loop a **live** session is
+running on its host — the CLI companion to pressing Esc in Dave. It publishes a
+kind-1988 interrupt command the host applies to its backend (the same
+`client.interrupt()` mechanism as the local Esc), then returns.
+
+```bash
+agentium interrupt maple-river-canyon
+```
+
+Notes:
+
+- The selector is **required** (a specific session to interrupt); pass any form
+  `list` accepts. There is no `$AGENTIUM_SESSION` default.
+- Only **live** sessions can be interrupted. A soft-deleted session has no
+  running backend, so `interrupt` refuses and points you at `resume`.
+- Fire-and-forget: it reports `interrupt sent to <agentium:ref>`. The session
+  drops back to idle once the host publishes its next state event after the turn
+  aborts (watch it with `log --follow`).
+
 ## Command surface
 
 Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
-`resume`, `send` (plus `login`/`logout`). Further control verbs (watch dashboard,
-approve/deny, permission-mode, spawn, run-config management) are planned but
-**not yet implemented** — don't invoke them until they land.
+`resume`, `send`, `interrupt` (plus `login`/`logout`). Further control verbs
+(watch dashboard, approve/deny, permission-mode, spawn, run-config management)
+are planned but **not yet implemented** — don't invoke them until they land.
