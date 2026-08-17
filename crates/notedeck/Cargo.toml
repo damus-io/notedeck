@@ -20,6 +20,7 @@ nostr = { workspace = true }
 # (disabled for Android builds).
 nostrdb_relay = { workspace = true, optional = true }
 egui = { workspace = true }
+egui_nav = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true }
 image = { workspace = true }

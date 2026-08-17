@@ -1,5 +1,6 @@
 use crate::route::ReplacementType;
 use egui::scroll_area::ScrollAreaOutput;
+use egui_nav::{Nav, NavAction, NavResponse, NavUiType, ReturnType, RouteResponse};
 use std::ops::Range;
 
 /// A reusable, business-logic-free navigation stack.
@@ -204,6 +205,42 @@ impl<R: Clone> NavStack<R> {
         self.replacing.is_some()
     }
 
+    /// Fold an `egui_nav` [`NavAction`] back into the stack, applying the stack
+    /// half of the transition and returning the resulting [`NavStackEvent`] (if
+    /// any) for the caller to react to.
+    ///
+    /// This is the single, business-logic-free bridge between egui-nav's
+    /// animation state machine and the nav stack. It performs only stack
+    /// bookkeeping and never touches app state — any cleanup that a popped route
+    /// needs is left to the caller, which drives it off the returned event:
+    ///
+    /// - [`NavAction::Returned`] pops the top route and surfaces it as
+    ///   [`NavStackEvent::Popped`] so the caller can free the route's resources.
+    /// - [`NavAction::Navigated`] clears the `navigating` flag and resolves any
+    ///   pending replacement, surfacing [`NavStackEvent::Navigated`].
+    /// - [`NavAction::Navigating`] surfaces [`NavStackEvent::Navigating`]
+    ///   without mutating the stack.
+    /// - [`NavAction::Returning`], [`NavAction::Dragging`] and
+    ///   [`NavAction::Resetting`] are in-flight animation states with no stack
+    ///   effect, and return `None`.
+    pub fn reconcile(&mut self, action: NavAction) -> Option<NavStackEvent<R>> {
+        match action {
+            NavAction::Returned(return_type) => {
+                let route = self.pop();
+                Some(NavStackEvent::Popped { route, return_type })
+            }
+            NavAction::Navigated => {
+                self.navigating_mut(false);
+                if self.is_replacing() {
+                    self.complete_replacement();
+                }
+                Some(NavStackEvent::Navigated)
+            }
+            NavAction::Navigating => Some(NavStackEvent::Navigating),
+            NavAction::Returning(_) | NavAction::Dragging | NavAction::Resetting => None,
+        }
+    }
+
     /// Extend the active overlay group to include the new top route, or start a
     /// group if the previous route isn't already the tail of one.
     fn set_overlaying(&mut self) {
@@ -273,6 +310,95 @@ impl<R: Clone> NavStack<R> {
     /// forbids constructing an empty stack).
     pub fn is_empty(&self) -> bool {
         self.routes.is_empty()
+    }
+}
+
+/// A business-logic-free navigation event surfaced by [`nav_frame`] (or
+/// [`NavStack::reconcile`]) after the egui-nav transition has already been
+/// applied to the stack. Callers react to it to run the app-specific cleanup
+/// that the core layer deliberately knows nothing about (freeing subscriptions,
+/// timeline caches, and so on).
+#[derive(Debug)]
+pub enum NavStackEvent<R> {
+    /// A back navigation completed and the top route was popped. `route` is the
+    /// popped route — surfaced so the caller can free the resources it owned,
+    /// and `None` only if the stack was already at its root — while
+    /// `return_type` records whether the pop came from a drag or a click.
+    Popped {
+        route: Option<R>,
+        return_type: ReturnType,
+    },
+    /// A forward navigation completed. The stack has already cleared its
+    /// `navigating` flag and resolved any pending replacement.
+    Navigated,
+    /// A forward navigation began.
+    Navigating,
+}
+
+/// The result of a [`nav_frame`] render pass: the actions produced by the body
+/// and title render callbacks, the drag ids the frame can accept, and the
+/// reconciled [`NavStackEvent`] (already applied to the stack) that the caller
+/// drives its cleanup off of.
+pub struct NavFrameResponse<R, A> {
+    /// The action returned by rendering the body of the top route.
+    pub response: A,
+    /// The action returned by rendering the title of the top route.
+    pub title_response: A,
+    /// egui ids from which this frame is willing to accept a drag.
+    pub can_take_drag_from: Vec<egui::Id>,
+    /// The stack event produced by reconciling egui-nav's transition, if any.
+    pub event: Option<NavStackEvent<R>>,
+}
+
+/// Render `stack` through [`egui_nav::Nav`] and reconcile the resulting
+/// transition back onto the stack, returning a [`NavFrameResponse`].
+///
+/// This is the shared, business-logic-free nav render loop. It wires the
+/// stack's routes and transition flags into egui-nav, renders each route via
+/// the caller-supplied `render` callback, and then folds egui-nav's
+/// [`NavAction`] back into the stack via [`NavStack::reconcile`]. All
+/// app-specific work stays in the caller: what a route looks like lives in
+/// `render`, and any cleanup a pop needs is driven off the returned
+/// [`NavFrameResponse::event`].
+///
+/// `id_source` disambiguates this nav's egui state from other navs in the same
+/// context; `animate` toggles the slide transitions.
+///
+/// Note the caller must own `stack` separately from whatever `render` borrows —
+/// this suits a chrome that owns the global history and calls into an app to
+/// draw each route. A caller whose stack lives inside the same state that
+/// `render` mutates (as columns' per-column router does) cannot lend both here
+/// at once; it renders with [`egui_nav::Nav`] directly and reconciles afterward
+/// via [`NavStack::reconcile`].
+pub fn nav_frame<R, A>(
+    ui: &mut egui::Ui,
+    id_source: egui::Id,
+    stack: &mut NavStack<R>,
+    animate: bool,
+    render: impl FnMut(&mut egui::Ui, NavUiType, &Nav<R>) -> RouteResponse<A>,
+) -> NavFrameResponse<R, A>
+where
+    R: Clone,
+{
+    let NavResponse {
+        response,
+        title_response,
+        action,
+        can_take_drag_from,
+    } = Nav::new(stack.routes())
+        .id_source(id_source)
+        .navigating(stack.navigating())
+        .returning(stack.returning())
+        .animate_transitions(animate)
+        .show_mut(ui, render);
+
+    let event = action.and_then(|action| stack.reconcile(action));
+
+    NavFrameResponse {
+        response,
+        title_response,
+        can_take_drag_from,
+        event,
     }
 }
 
@@ -359,7 +485,8 @@ impl<R> DragResponse<R> {
 
 #[cfg(test)]
 mod nav_stack_tests {
-    use super::NavStack;
+    use super::{NavStack, NavStackEvent};
+    use egui_nav::{NavAction, ReturnType};
 
     #[test]
     #[should_panic(expected = "routes can't be empty")]
@@ -469,5 +596,79 @@ mod nav_stack_tests {
         stack.complete_replacement();
         assert!(!stack.is_replacing());
         assert_eq!(stack.routes(), &vec![3]);
+    }
+
+    #[test]
+    fn reconcile_returned_pops_and_surfaces_route() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+
+        let event = stack.reconcile(NavAction::Returned(ReturnType::Click));
+        assert!(matches!(
+            event,
+            Some(NavStackEvent::Popped {
+                route: Some(2),
+                return_type: ReturnType::Click,
+            })
+        ));
+        assert_eq!(stack.routes(), &vec![1]);
+    }
+
+    #[test]
+    fn reconcile_returned_at_root_surfaces_no_route() {
+        let mut stack = NavStack::new(vec![1]);
+        let event = stack.reconcile(NavAction::Returned(ReturnType::Drag));
+        assert!(matches!(
+            event,
+            Some(NavStackEvent::Popped {
+                route: None,
+                return_type: ReturnType::Drag,
+            })
+        ));
+        assert_eq!(stack.routes(), &vec![1]);
+    }
+
+    #[test]
+    fn reconcile_navigated_clears_flag_and_completes_replacement() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to_replaced(3);
+        assert!(stack.navigating());
+        assert!(stack.is_replacing());
+
+        let event = stack.reconcile(NavAction::Navigated);
+        assert!(matches!(event, Some(NavStackEvent::Navigated)));
+        assert!(!stack.navigating());
+        assert!(!stack.is_replacing());
+        assert_eq!(stack.routes(), &vec![3]);
+    }
+
+    #[test]
+    fn reconcile_navigating_surfaces_event_without_mutating() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+
+        let before = stack.routes().clone();
+        let event = stack.reconcile(NavAction::Navigating);
+        assert!(matches!(event, Some(NavStackEvent::Navigating)));
+        // still navigating, stack unchanged: only Navigated clears the flag
+        assert!(stack.navigating());
+        assert_eq!(stack.routes(), &before);
+    }
+
+    #[test]
+    fn reconcile_in_flight_actions_are_noops() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        let before = stack.routes().clone();
+
+        for action in [
+            NavAction::Returning(ReturnType::Click),
+            NavAction::Dragging,
+            NavAction::Resetting,
+        ] {
+            assert!(stack.reconcile(action).is_none());
+            assert_eq!(stack.routes(), &before);
+        }
     }
 }

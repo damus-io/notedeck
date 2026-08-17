@@ -5354,6 +5354,7 @@ dependencies = [
  "egui-winit",
  "egui_extras",
  "egui_kittest",
+ "egui_nav",
  "ehttp",
  "enostr",
  "flate2",

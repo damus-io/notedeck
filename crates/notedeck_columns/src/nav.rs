@@ -37,7 +37,8 @@ use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
-    FilterState, NavStack, NoteAction, NoteCache, NoteContext, NoteDetail, RelayAction,
+    FilterState, NavStack, NavStackEvent, NoteAction, NoteCache, NoteContext, NoteDetail,
+    RelayAction,
 };
 use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
 use tracing::error;
@@ -263,18 +264,21 @@ fn process_nav_resp(
     }
 
     if let Some(action) = response.action {
-        match action {
-            NavAction::Returned(return_type) => {
+        // Fold the egui-nav transition back onto the stack with the core,
+        // business-logic-free reconcile primitive, then run columns' cleanup off
+        // the surfaced event.
+        let event = app
+            .columns_mut(ctx.i18n, ctx.accounts)
+            .column_mut(col)
+            .router_mut()
+            .reconcile(action);
+
+        match event {
+            Some(NavStackEvent::Popped { route, return_type }) => {
                 //ctx.sound.play(notedeck::SoundEffect::Closed);
 
-                let r = app
-                    .columns_mut(ctx.i18n, ctx.accounts)
-                    .column_mut(col)
-                    .router_mut()
-                    .pop();
-
                 // Clean up resources for the popped route
-                if let Some(route) = &r {
+                if let Some(route) = &route {
                     cleanup_popped_route(
                         route,
                         &mut app.timeline_cache,
@@ -291,7 +295,7 @@ fn process_nav_resp(
                 process_result = Some(ProcessNavResult::SwitchOccurred);
             }
 
-            NavAction::Navigated => {
+            Some(NavStackEvent::Navigated) => {
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
                 {
                     let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
@@ -305,22 +309,10 @@ fn process_nav_resp(
                     );
                 }
 
-                let cur_router = app
-                    .columns_mut(ctx.i18n, ctx.accounts)
-                    .column_mut(col)
-                    .router_mut();
-                cur_router.navigating_mut(false);
-                if cur_router.is_replacing() {
-                    cur_router.complete_replacement();
-                }
-
                 process_result = Some(ProcessNavResult::SwitchOccurred);
             }
 
-            NavAction::Dragging => {}
-            NavAction::Returning(_) => {}
-            NavAction::Resetting => {}
-            NavAction::Navigating => {
+            Some(NavStackEvent::Navigating) => {
                 // since we are navigating, we should set this column as
                 // the selected one
                 app.columns_mut(ctx.i18n, ctx.accounts)
@@ -339,6 +331,8 @@ fn process_nav_resp(
                     );
                 }
             }
+
+            None => {}
         }
     }
 
