@@ -358,6 +358,7 @@ async fn run() -> Result<()> {
     let show_archived = cli.archived;
     let show_all = cli.all;
     let dry_run = cli.dry_run;
+    let new_channel = cli.new_channel;
     let secret = cli.secret.map(|(s, _)| s);
 
     match cli.command {
@@ -420,9 +421,25 @@ async fn run() -> Result<()> {
             // one, so every device holding the account key agrees on it.
             let (root, reused) = match roster.team_root(&board) {
                 Some(root) => (root, true),
+                // Creating a channel is a one-way door, so never infer it. "This
+                // board has no channel" and "I couldn't see its channel" look
+                // identical from here — an unsynced cache, an unregistered account
+                // key, a key-share that never arrived — and guessing wrong splits a
+                // live board across two roots that can never be merged back. Make
+                // the caller say so.
+                None if !new_channel => {
+                    return Err(format!(
+                        "board '{board}' has no channel in this cache, so migrate \
+                         would create one. If it is already shared, that would split \
+                         it in two — sync first and re-check `headway board`. If it \
+                         really is a plaintext board, pass --new-channel to seal it \
+                         into a new channel."
+                    )
+                    .into());
+                }
                 None => (enostr::sns::derive_board_root(&secret, &board), false),
             };
-            let channel = if reused { "existing" } else { "derived" };
+            let channel = if reused { "existing" } else { "NEW" };
             if dry_run {
                 println!(
                     "dry run: would re-seal {} of {} notes on '{board}' into its {channel} channel\n\
@@ -1403,6 +1420,9 @@ struct Cli {
     /// `migrate` reports what it would re-seal and publishes nothing. The seal is
     /// irreversible once it reaches a relay, so the dry run is how you look first.
     dry_run: bool,
+    /// `migrate` may create a channel for a board that has none. Off by default:
+    /// a board whose channel this cache merely can't *see* would be split in two.
+    new_channel: bool,
     command: Command,
 }
 
@@ -1429,6 +1449,7 @@ impl Cli {
         let mut archived = false;
         let mut all = false;
         let mut dry_run = false;
+        let mut new_channel = false;
         let mut col = None;
         let mut row = None;
         let mut to = None;
@@ -1492,6 +1513,7 @@ impl Cli {
                 "--archived" => archived = true,
                 "--all" => all = true,
                 "--dry-run" => dry_run = true,
+                "--new-channel" => new_channel = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -1557,6 +1579,7 @@ impl Cli {
             archived,
             all,
             dry_run,
+            new_channel,
             command,
         }))
     }
