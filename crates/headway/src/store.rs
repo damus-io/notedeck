@@ -482,12 +482,20 @@ pub fn share_board(
 /// anchored to `author`'s real pubkey), so every card keeps its id/word-id.
 ///
 /// Registers the root, self-shares it (so the board joins the roster and becomes
-/// shareable — see [`share_board`]), then re-seals **every** existing note of the
-/// board: it re-wraps each as a rumor in an SNS envelope ([`enostr::sns::wrap_rumor`])
-/// and ingests it. nostrdb promotes each already-stored plaintext note to a
-/// team-sealed rumor in place (same note_key — see `ndb_write_note`), so the board
-/// then folds via the shared/team-key path. Idempotent: a note already sealed is a
-/// no-op, so re-running is safe.
+/// shareable — see [`share_board`]), then re-seals every still-plaintext note of
+/// the board: it re-wraps each as a rumor in an SNS envelope
+/// ([`enostr::sns::wrap_rumor`]) and ingests it. nostrdb promotes each already-stored
+/// plaintext note to a team-sealed rumor in place (same note_key — see
+/// `ndb_write_note`), so the board then folds via the shared/team-key path.
+/// Idempotent, and cheap to re-run: already-sealed notes are skipped, so a second
+/// run seals only what was written plaintext since the first — which is exactly
+/// how a board that a plaintext writer has edited since is repaired. See
+/// [`preview_migration`] to see what a run would touch before running it.
+///
+/// Pass the board's **existing** root if it already has one: an already-sealed
+/// note cannot be moved to a second channel (the promote path fires only on a
+/// plaintext note), so a fresh root would strand the sealed half of the board in
+/// the old channel.
 ///
 /// Returns the number of notes re-sealed. Pass a freshly-[minted](mint_team_root)
 /// `team_root`. As sole author of a single-writer board, `author` can validly seal
@@ -517,10 +525,18 @@ pub fn migrate_board_to_sns(
         return 0;
     }
 
-    // Re-seal every existing note of the board under the channel.
+    // Re-seal the board's still-plaintext notes under the channel. Notes already
+    // stored as rumors are skipped rather than re-wrapped: ingest promotes a note
+    // to sealed only while it is still *plaintext*, so re-wrapping one is a no-op
+    // locally — and republishing it would push the whole board's history to the
+    // relay again on every run instead of just the part that changed.
     let mut sealed = 0;
-    for (json, created_at) in collect_board_notes(ndb, &board_addr) {
-        let Some(envelope) = enostr::sns::wrap_rumor(&channel.keys, &member, &json, created_at)
+    for note in collect_board_notes(ndb, &board_addr) {
+        if note.sealed {
+            continue;
+        }
+        let Some(envelope) =
+            enostr::sns::wrap_rumor(&channel.keys, &member, &note.json, note.created_at)
         else {
             continue;
         };
@@ -541,14 +557,56 @@ pub fn migrate_board_to_sns(
     sealed
 }
 
-/// Every existing note belonging to the board at `board_addr`, as
-/// `(event_json, created_at)` to re-seal — both fold phases: the board definition,
+/// One of a board's existing notes, as [`collect_board_notes`] hands it to the
+/// re-seal: the wire JSON to re-wrap, the `created_at` the envelope must carry,
+/// and whether it is *already* a team-sealed rumor.
+struct BoardNote {
+    /// The stored event's JSON — re-wrapped verbatim, which is what keeps the
+    /// rumor id (and so the card id and its word-id) identical across the seal.
+    json: String,
+    /// The original event's timestamp, carried onto the envelope so the re-seal
+    /// doesn't reorder history.
+    created_at: u64,
+    /// Already a rumor nostrdb peeled from an envelope. Re-wrapping one is a
+    /// no-op at ingest (the promote path only fires on a *plaintext* stored
+    /// note), so this is what separates the notes a migration would really
+    /// change from the ones it would merely re-send.
+    sealed: bool,
+}
+
+/// What a [`migrate_board_to_sns`] run would change, without changing anything —
+/// the dry run behind `headway migrate --dry-run`.
+///
+/// Worth having because the operation is irreversible in the way that matters:
+/// the sealed envelopes it publishes can't be unpublished. Seeing "19 of 441
+/// notes are still plaintext" before committing to that is the difference
+/// between a migration and a leap.
+pub struct MigrationPreview {
+    /// Every note belonging to the board, across both fold phases.
+    pub total: usize,
+    /// Of those, the ones still plaintext — the notes the run would actually
+    /// promote to team-sealed rumors, and so the cards that would reappear on a
+    /// shared fold of this board.
+    pub unsealed: usize,
+}
+
+/// Report what [`migrate_board_to_sns`] would re-seal on `author`'s `board_id`,
+/// touching nothing. See [`MigrationPreview`].
+pub fn preview_migration(ndb: &Ndb, author: &Pubkey, board_id: &str) -> MigrationPreview {
+    let notes = collect_board_notes(ndb, &board_address(author, board_id));
+    MigrationPreview {
+        total: notes.len(),
+        unsealed: notes.iter().filter(|n| !n.sealed).count(),
+    }
+}
+
+/// Every existing note belonging to the board at `board_addr` to re-seal — both fold phases: the board definition,
 /// issues and placements ([`event::board_scoped_filters`]), plus each card's
 /// metadata overlays and comments keyed by card id ([`event::card_meta_filter`] +
 /// [`event::comment_filter`]). Deduped by note id (a comment can match more than one
 /// phase-B filter). Used by [`migrate_board_to_sns`]; not filtered by `team_sealed`
 /// because on a plaintext board none are sealed yet.
-fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<(String, u64)> {
+fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<BoardNote> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
@@ -557,7 +615,7 @@ fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<(String, u64)> {
     };
 
     let mut seen: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
-    let mut out: Vec<(String, u64)> = Vec::new();
+    let mut out: Vec<BoardNote> = Vec::new();
     let mut card_ids: Vec<[u8; 32]> = Vec::new();
 
     if let Ok(results) = ndb.query(&txn, &phase_a, 5000) {
@@ -568,7 +626,11 @@ fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<(String, u64)> {
             if seen.insert(*res.note.id())
                 && let Ok(json) = res.note.json()
             {
-                out.push((json, res.note.created_at()));
+                out.push(BoardNote {
+                    json,
+                    created_at: res.note.created_at(),
+                    sealed: res.note.is_rumor(),
+                });
             }
         }
     }
@@ -583,7 +645,11 @@ fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<(String, u64)> {
                 if seen.insert(*res.note.id())
                     && let Ok(json) = res.note.json()
                 {
-                    out.push((json, res.note.created_at()));
+                    out.push(BoardNote {
+                        json,
+                        created_at: res.note.created_at(),
+                        sealed: res.note.is_rumor(),
+                    });
                 }
             }
         }
@@ -2616,6 +2682,49 @@ mod tests {
         let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1).await;
         assert_eq!(dst.columns[0].id, "inbox");
         assert_eq!(dst.columns[0].cards[0].id, card);
+    }
+
+    /// The app re-folds a shared board only when its kind-1081 subscription
+    /// reports a new envelope (`BoardCache::poll_shared`), so that notification is
+    /// load-bearing: if a locally-authored seal never fires it, the edit is stored
+    /// and folded correctly yet the open board keeps drawing its memoized view —
+    /// you add a card in the UI and nothing happens.
+    #[tokio::test]
+    async fn a_local_seal_notifies_the_envelope_subscription() {
+        let t = TestNdb::new();
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x77;
+        assert!(t.ndb.add_team_root(&root));
+        let keys = enostr::sns::derive_sns_keys(&root).expect("keys");
+        let team_pubkey = keys.team_keypair.pubkey;
+        let channel = SnsChannel { keys };
+
+        // Exactly the subscription the app's `poll_shared` opens per channel.
+        let sub = t
+            .ndb
+            .subscribe(&[crate::teams::envelope_filter(&team_pubkey)])
+            .expect("envelope subscription");
+
+        ingest_signed(
+            &t.ndb,
+            build_board(BOARD_ID, "Headway", "", &default_columns()),
+            &Signer::shared(&t.secret(), &channel),
+            &mut NoPublish,
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if !t.ndb.poll_for_notes(sub, 64).is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a locally-ingested envelope never notified the 1081 subscription, \
+                 so the open board would never re-fold"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     /// An edit applied with a [`Signer::shared`] channel is sealed into a kind-1081

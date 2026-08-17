@@ -348,6 +348,7 @@ async fn run() -> Result<()> {
     let as_json = cli.json;
     let show_archived = cli.archived;
     let show_all = cli.all;
+    let dry_run = cli.dry_run;
     let secret = cli.secret.map(|(s, _)| s);
 
     match cli.command {
@@ -396,17 +397,39 @@ async fn run() -> Result<()> {
                 );
             }
             let secret = secret.ok_or("migrate needs --nsec to sign")?;
-            if load_board(&ndb, &author, &board).is_none() {
+            if load_board(&ndb, &roster, &author, &board).is_none() {
                 return Err(format!("no board '{board}' to migrate — nothing to seal").into());
             }
-            // Fresh per-board root; the board coordinate (and every card id) is
-            // unchanged, so this seals history in place rather than recreating it.
-            let root = store::mint_team_root();
+            let preview = store::preview_migration(&ndb, &author, &board);
+            // Which channel to seal into. A board already in the roster MUST
+            // reuse its existing root: its already-sealed notes cannot be moved
+            // to a second channel (nostrdb promotes a stored note to a rumor only
+            // while it is still plaintext, so re-wrapping a sealed one under a new
+            // root is a no-op), and minting a fresh root would leave the board
+            // split across two channels with the roster picking between them
+            // arbitrarily. An unshared board derives its root instead of minting
+            // one, so every device holding the account key agrees on it.
+            let (root, reused) = match roster.team_root(&board) {
+                Some(root) => (root, true),
+                None => (enostr::sns::derive_board_root(&secret, &board), false),
+            };
+            let channel = if reused { "existing" } else { "derived" };
+            if dry_run {
+                println!(
+                    "dry run: would re-seal {} of {} notes on '{board}' into its {channel} channel\n\
+                     (the other {} are already sealed — re-wrapping those is a no-op)\n\
+                     re-run without --dry-run to publish; sealed events cannot be unpublished",
+                    preview.unsealed,
+                    preview.total,
+                    preview.total - preview.unsealed,
+                );
+                return Ok(());
+            }
             let mut sink = Collect::default();
             let n = store::migrate_board_to_sns(&ndb, &author, &secret, &board, &root, &mut sink);
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
-                "migrated board '{board}' to SNS ({n} notes re-sealed){}",
+                "migrated board '{board}' to SNS ({n} notes re-sealed into its {channel} channel){}",
                 nostrdb_net::relay::sync::offline_note(&relay)
             );
         }
@@ -792,6 +815,17 @@ impl Roster {
         Some(store::SnsChannel {
             keys: team.sns_keys()?,
         })
+    }
+
+    /// The raw `team_root` behind `board_id`'s channel — what a re-seal needs in
+    /// order to keep sealing a shared board into the channel it already has,
+    /// rather than minting a second one (see the `migrate` command).
+    fn team_root(&self, board_id: &str) -> Option<[u8; 32]> {
+        let addr = event::board_address(&self.author, board_id);
+        self.teams
+            .iter()
+            .find(|t| t.board_addr == addr)?
+            .root_bytes()
     }
 }
 
@@ -1301,6 +1335,9 @@ struct Cli {
     archived: bool,
     /// `show` renders every board in the cache instead of just the current one.
     all: bool,
+    /// `migrate` reports what it would re-seal and publishes nothing. The seal is
+    /// irreversible once it reaches a relay, so the dry run is how you look first.
+    dry_run: bool,
     command: Command,
 }
 
@@ -1326,6 +1363,7 @@ impl Cli {
         let mut json = false;
         let mut archived = false;
         let mut all = false;
+        let mut dry_run = false;
         let mut col = None;
         let mut row = None;
         let mut to = None;
@@ -1388,6 +1426,7 @@ impl Cli {
                 "--json" => json = true,
                 "--archived" => archived = true,
                 "--all" => all = true,
+                "--dry-run" => dry_run = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -1452,6 +1491,7 @@ impl Cli {
             json,
             archived,
             all,
+            dry_run,
             command,
         }))
     }
