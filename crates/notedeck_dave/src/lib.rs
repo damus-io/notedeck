@@ -3133,20 +3133,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         &mut self,
         ndb: &nostrdb::Ndb,
         secret_key: Option<&[u8; 32]>,
-    ) -> (Vec<(SessionId, String)>, Vec<session_events::BuiltEvent>) {
+    ) -> Vec<(SessionId, String)> {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
-        let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
         let mut rebuild_ids: Vec<SessionId> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
-            return (remote_user_messages, events_to_publish);
+            return remote_user_messages;
         };
         let Some(sub) = self.conversation_sub else {
-            return (remote_user_messages, events_to_publish);
+            return remote_user_messages;
         };
 
         let note_keys = ndb.poll_for_notes(sub, 256);
         if note_keys.is_empty() {
-            return (remote_user_messages, events_to_publish);
+            return remote_user_messages;
         }
 
         // Route each polled conversation event to its session by `d`-tag. Both
@@ -3156,7 +3155,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let txn = match Transaction::new(ndb) {
             Ok(txn) => txn,
-            Err(_) => return (remote_user_messages, events_to_publish),
+            Err(_) => return remote_user_messages,
         };
 
         // Group polled notes by their target session, preserving arrival order
@@ -3191,7 +3190,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let result =
                 process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
             remote_user_messages.extend(result.remote_user_messages);
-            events_to_publish.extend(result.events_to_publish);
             if result.rebuild_chat {
                 rebuild_ids.push(session_id);
             }
@@ -3221,7 +3219,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
         }
 
-        (remote_user_messages, events_to_publish)
+        remote_user_messages
     }
 
     fn rename_session(&mut self, id: SessionId, new_title: String) {
@@ -4568,9 +4566,7 @@ impl notedeck::App for Dave {
         // the message is already in chat, so it will be included when the
         // current stream finishes and we re-dispatch.
         let sk_bytes = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
-        let (remote_user_msgs, conv_events) =
-            self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref());
-        self.pending_relay_events.extend(conv_events);
+        let remote_user_msgs = self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref());
         for (sid, _msg) in remote_user_msgs {
             let should_dispatch = self
                 .session_manager
@@ -5116,8 +5112,6 @@ fn handle_permission_request(
 pub(crate) struct ProcessedNotes {
     /// User messages received from remote clients (for local sessions).
     pub remote_user_messages: Vec<(SessionId, String)>,
-    /// Events that should be published to relays.
-    pub events_to_publish: Vec<session_events::BuiltEvent>,
     /// True if this batch needs the caller to rebuild the remote session's chat
     /// from ndb (see [`rebuild_remote_chat`]) — set only on the slow path, when
     /// a new displayable note sorts at or before what's already shown. In-order
@@ -5159,7 +5153,6 @@ pub(crate) fn process_conversation_notes<'a>(
     ndb: &nostrdb::Ndb,
 ) -> ProcessedNotes {
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
-    let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
     let mut rebuild_chat = false;
     // Newest `created_at` of a displayable remote note in this batch, applied
     // to `last_activity` after the loop (can't call `session.mark_activity`
@@ -5229,13 +5222,7 @@ pub(crate) fn process_conversation_notes<'a>(
         // in-place updates (marking a permission responded).
         match role {
             Some("permission_request") => {
-                handle_remote_permission_request(
-                    note,
-                    content,
-                    agentic,
-                    secret_key,
-                    &mut events_to_publish,
-                );
+                handle_remote_permission_request(note, content, agentic, secret_key, ndb);
             }
             Some("permission_response") => {
                 // Track that this permission was responded to, and reflect it on
@@ -5287,11 +5274,12 @@ pub(crate) fn process_conversation_notes<'a>(
             }
         }
 
-        // Handle proceed after compaction for remote sessions.
-        // Published as a relay event so the desktop backend picks it up.
+        // Handle proceed after compaction for remote sessions. Ingested locally;
+        // the host's private-sync Session fans it out so the desktop backend
+        // picks it up.
         if session.take_compact_and_proceed() {
             if let Some(sk) = secret_key {
-                if let Some(evt) = ingest_live_event(
+                ingest_live_event(
                     session,
                     ndb,
                     sk,
@@ -5299,9 +5287,7 @@ pub(crate) fn process_conversation_notes<'a>(
                     "user",
                     None,
                     None,
-                ) {
-                    events_to_publish.push(evt);
-                }
+                );
             }
         }
     }
@@ -5337,7 +5323,6 @@ pub(crate) fn process_conversation_notes<'a>(
 
     ProcessedNotes {
         remote_user_messages,
-        events_to_publish,
         rebuild_chat,
     }
 }
@@ -5461,7 +5446,7 @@ fn handle_remote_permission_request(
     content: &str,
     agentic: &mut session::AgenticSessionData,
     secret_key: Option<&[u8; 32]>,
-    events_to_publish: &mut Vec<session_events::BuiltEvent>,
+    ndb: &nostrdb::Ndb,
 ) {
     let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) else {
         return;
@@ -5494,7 +5479,7 @@ fn handle_remote_permission_request(
         tool_name,
     );
     // Record the decision in memory so the rebuild overlay renders it as allowed
-    // (and expanded) even before the published response round-trips back through
+    // (and expanded) even before the ingested response round-trips back through
     // the relay.
     agentic.permissions.responded.insert(
         perm_id,
@@ -5516,7 +5501,9 @@ fn handle_remote_permission_request(
             &mut agentic.live_threading,
             sk,
         ) {
-            events_to_publish.push(evt);
+            // Ingest locally; the host's private-sync Session fans the envelope
+            // out to the relay so the remote backend sees the auto-accept.
+            pns_ingest(ndb, &evt.note_json, sk);
         }
     }
 }
