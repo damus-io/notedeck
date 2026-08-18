@@ -452,8 +452,13 @@ pub struct ExecutedTool {
     /// Raw textual output to surface inline (e.g. bash stdout/stderr), trimmed
     /// to a bounded tail. `None` when the tool has no free-form output worth
     /// showing (a diff-bearing edit, or a result already captured by `summary`).
-    /// Live-only — reconstructed from the summary note on reload, never
-    /// serialized.
+    ///
+    /// Skipped by the JSONL serde (this struct is stored in kind-1988 notes as
+    /// tags + `content`, not as a serialized blob), but the output is *not*
+    /// lost to remote observers: it is encoded into the note `content` alongside
+    /// the summary via [`ToolResultContent`](crate::session_loader::ToolResultContent)
+    /// on the live path, and decoded back here when a session is reconstructed
+    /// from notes.
     #[serde(skip)]
     pub output: Option<String>,
     /// Which subagent (Task tool_use_id) produced this result, if any

@@ -1362,7 +1362,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let live_event: Option<(String, &str, Option<&str>)> = match &res {
                     DaveApiResponse::Failed(err) => Some((err.clone(), "error", None)),
                     DaveApiResponse::ToolResult(result) => Some((
-                        format!("{}: {}", result.tool_name, result.summary),
+                        // Encode summary + raw output so a remote observer can
+                        // reconstruct the full result, not just the one-line
+                        // summary (headway:dave/sting-february-sausage). The
+                        // tool name travels in the `tool-name` tag below.
+                        session_loader::ToolResultContent::encode(
+                            &result.summary,
+                            result.output.as_deref(),
+                        ),
                         "tool_result",
                         Some(result.tool_name.as_str()),
                     )),
