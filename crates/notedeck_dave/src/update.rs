@@ -450,8 +450,16 @@ pub fn handle_permission_response(
     // `session_loader::render_conversation_note`). `permission_reply_message`
     // drops empty and canned-placeholder reasons so a plain allow/deny adds no
     // bubble.
-    if let Some(reply) = crate::messages::permission_reply_message(message.as_deref()) {
-        session.chat.push(Message::User(reply.into()));
+    //
+    // Gate this optimistic push on `!is_remote`. A local host never renders its
+    // own `permission_response` note live (`process_conversation_notes` takes
+    // the `!is_remote` early-return), so it needs the push. A remote issuer,
+    // however, gets the reply appended when the echoed-back note ingests via
+    // `process_conversation_notes`; pushing here too would render it twice.
+    if !is_remote {
+        if let Some(reply) = crate::messages::permission_reply_message(message.as_deref()) {
+            session.chat.push(Message::User(reply.into()));
+        }
     }
 
     // Clear permission message state (agentic only)
@@ -1904,6 +1912,74 @@ mod tests {
                 .responded
                 .contains_key(&request_id),
             "missing metadata must not mark request as responded"
+        );
+    }
+
+    #[test]
+    fn remote_permission_response_does_not_optimistically_push_reply() {
+        // Regression: on the client that *issues* the response to a remote
+        // session, the reply must not render twice. The echoed-back
+        // `permission_response` note appends via `process_conversation_notes`,
+        // so `handle_permission_response` must NOT also push it locally.
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_remote_agent_session(&mut sm, &mut picker, &mut scene);
+        let request_id = uuid::Uuid::new_v4();
+        let request_note_id = [9_u8; 32];
+
+        let session = sm.get_mut(id).expect("session should exist");
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::new(
+                request_id,
+                "Bash".to_owned(),
+                serde_json::json!({"command": "echo hi"}),
+                Some(PermissionView::RawFallback),
+                None,
+                None,
+            )));
+        session
+            .agentic
+            .as_mut()
+            .expect("agentic session")
+            .permissions
+            .request_note_ids
+            .insert(request_id, request_note_id);
+
+        let user_messages_before = sm
+            .get(id)
+            .expect("session should exist")
+            .chat
+            .iter()
+            .filter(|msg| matches!(msg, Message::User(_)))
+            .count();
+
+        let publish = handle_permission_response(
+            &mut sm,
+            request_id,
+            PermissionResponse::Allow {
+                message: Some("looks good, go ahead".to_owned()),
+            },
+        )
+        .expect("remote response with metadata should return publish payload");
+        assert_eq!(
+            publish.message.as_deref(),
+            Some("looks good, go ahead"),
+            "the reply text still rides the publish payload onto the wire"
+        );
+
+        let user_messages_after = sm
+            .get(id)
+            .expect("session should exist")
+            .chat
+            .iter()
+            .filter(|msg| matches!(msg, Message::User(_)))
+            .count();
+        assert_eq!(
+            user_messages_after, user_messages_before,
+            "remote issuer must not optimistically push the reply (the echoed-back \
+             note appends it instead), else it renders twice"
         );
     }
 
