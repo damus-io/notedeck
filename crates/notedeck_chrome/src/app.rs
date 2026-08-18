@@ -200,6 +200,41 @@ impl notedeck::App for NotedeckApp {
         }
     }
 
+    /// Fan a completed global-nav pop out to the app that owned the popped entry,
+    /// handing back the same route `token` so it can free that route's resources
+    /// (see [`notedeck::App::cleanup_nav`]). Non-navigating apps inherit the
+    /// trait default (a no-op).
+    fn cleanup_nav(&mut self, ctx: &mut AppContext, token: &Rc<dyn Any>) {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => dave.cleanup_nav(ctx, token),
+            NotedeckApp::Columns(columns) => columns.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.cleanup_nav(ctx, token),
+
+            NotedeckApp::Other(_name, other) => other.cleanup_nav(ctx, token),
+        }
+    }
+
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
         match self {
             #[cfg(feature = "dave")]

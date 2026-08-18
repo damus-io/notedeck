@@ -22,8 +22,8 @@ use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
     nav_frame, tr, App, AppAction, AppContext, AppId, ChromeNavEntry, Localization, NavRequest,
-    NavStack, Notedeck, NotedeckOptions, NotedeckTextStyle, TabNotifications, UserAccount,
-    WalletType,
+    NavStack, NavStackEvent, Notedeck, NotedeckOptions, NotedeckTextStyle, TabNotifications,
+    UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use oot_bitset::{bitset_clear, bitset_get, bitset_set};
@@ -798,7 +798,7 @@ impl Chrome {
                 // response and routed *after* `nav_frame` returns, since the
                 // callback can't reborrow the whole `self` that
                 // `chrome_handle_app_action` wants.
-                let (app_action, can_take_drag_from) = {
+                let (app_action, can_take_drag_from, popped) = {
                     let Chrome {
                         global_nav, apps, ..
                     } = &mut *self;
@@ -850,10 +850,30 @@ impl Chrome {
                         },
                     );
 
-                    (frame.response, frame.can_take_drag_from)
+                    // A completed global-back popped the top entry inside
+                    // `nav_frame`. Surface the popped entry (its owning app + the
+                    // opaque route token) so we can hand it to that app's
+                    // `cleanup_nav` once the split borrows above are released —
+                    // the chrome itself never inspects the token. The token is an
+                    // `Rc`, so cloning it out is a refcount bump.
+                    let popped = match frame.event {
+                        Some(NavStackEvent::Popped {
+                            route: Some(entry), ..
+                        }) => Some((entry.app, entry.token)),
+                        _ => None,
+                    };
+
+                    (frame.response, frame.can_take_drag_from, popped)
                 };
 
-                // Split borrows released — route the bubbled app action.
+                // Split borrows released — free the popped entry's resources by
+                // routing the pop back to the app that owned it (e.g. columns
+                // closes a deep-linked thread's subscription).
+                if let Some((app, token)) = popped {
+                    self.apps[app.slot()].cleanup_nav(app_ctx, &token);
+                }
+
+                // Route the bubbled app action.
                 if let Some(action) = app_action {
                     chrome_handle_app_action(self, app_ctx, action, ui);
                 }
