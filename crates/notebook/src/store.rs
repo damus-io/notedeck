@@ -21,7 +21,7 @@
 //! `next_after`.
 
 use enostr::{NoteId, Pubkey};
-use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder};
+use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
 
 use crate::event::{
     self, CanvasView, EdgeEnds, Geometry, NodeContent, NodeKind, NodeView, build_canvas,
@@ -100,10 +100,100 @@ impl Publisher for NoPublish {
     fn publish(&mut self, _event_frame: &str) {}
 }
 
-/// Sign `builder` with `secret` and ingest the resulting note into the local
-/// nostrdb, then hand its `["EVENT", {...}]` frame to `publisher`. Returns the
-/// note id, or `None` if building/ingesting failed (in which case nothing is
-/// published).
+// ---------------------------------------------------------------------------
+// SNS vault workspace
+// ---------------------------------------------------------------------------
+//
+// The whole vault — canvases *and* longform notes — is one team-of-one SNS
+// channel (NIP-SNS sealed shared storage), the notebook analogue of headway's
+// team-of-one boards. Every write is sealed into a kind-1081 envelope
+// ([`enostr::sns::wrap_rumor`]); nostrdb auto-unwraps it back to the inner rumor
+// once the workspace root is registered, so the rumor stays queryable by its own
+// author/kind and every fold below is unchanged. On a relay only the opaque
+// envelope is visible — no plaintext note or public NIP-23 article ever leaks.
+//
+// The root is **derived** from the account secret ([`workspace_root`]) rather
+// than minted, so every device holding that secret converges on one channel with
+// zero coordination (a per-device mint would fork a channel that never folds).
+// "Team-of-one" means the single member holds the derived root; adding co-members
+// later is a metadata hand-off ([`enostr::sns::wrap_keyshare`]) with no history
+// re-seal, since the notes are already sealed under the shared root.
+//
+// Sync is owned by the notedeck host. The app hands the host the derived root
+// each frame via `AppContext::register_team_root([`workspace_root`])`; the host's
+// private `Session` ([`notedeck::HostPrivateSync`]) registers it and syncs the
+// channel's 1081 envelopes *both* directions off-foreground — pulling remote
+// edits in and fanning locally-sealed ones out. So the notebook itself runs no
+// private sub and no fan-out; it only seals writes and names its root.
+//
+// The CLI has no host, so it registers the root itself ([`register_workspace`])
+// and drives its own reconcile + publish of the 1081 stream.
+
+/// The label the account's single notebook workspace root is derived under. One
+/// vault per account, so the label is fixed; a future named-workspace feature
+/// would vary it to isolate each workspace's channel.
+const WORKSPACE_LABEL: &str = "notebook";
+
+/// The SNS channel the vault is sealed into: the team keys derived from the
+/// account's [`workspace_root`]. Only the keys live here — the authoring member
+/// is the account's own secret, so the seal inside each envelope attributes the
+/// edit to the real author while the envelope itself is signed by (and addressed
+/// to) the shared team keypair.
+pub struct SnsChannel {
+    /// Team keypair + envelope key, from [`enostr::sns::derive_sns_keys`].
+    pub keys: enostr::sns::SnsKeys,
+}
+
+/// Derive the account's notebook workspace `team_root` from its `secret`.
+/// Deterministic: every device holding the secret derives the same root, so the
+/// vault is one channel across devices with no cross-device coordination.
+pub fn workspace_root(secret: &[u8; 32]) -> [u8; 32] {
+    enostr::sns::derive_board_root(secret, WORKSPACE_LABEL)
+}
+
+/// Derive the account's notebook [`SnsChannel`] from its `secret`, or `None` if
+/// the derived root isn't a usable secp256k1 key (negligible — the derivation
+/// rehashes any invalid candidate away).
+pub fn workspace_channel(secret: &[u8; 32]) -> Option<SnsChannel> {
+    Some(SnsChannel {
+        keys: enostr::sns::derive_sns_keys(&workspace_root(secret))?,
+    })
+}
+
+/// The team public key that authors this account's vault envelopes — what the
+/// CLI's kind-1081 reconcile filter is keyed on. `None` mirrors
+/// [`workspace_channel`].
+pub fn workspace_team_pubkey(secret: &[u8; 32]) -> Option<Pubkey> {
+    Some(workspace_channel(secret)?.keys.team_keypair.pubkey)
+}
+
+/// Register the account's [`workspace_root`] with nostrdb so it auto-unwraps the
+/// vault's kind-1081 envelopes, then run one catch-up peel for envelopes ingested
+/// before the root was registered.
+///
+/// For the **CLI**, which has no notedeck host to sync the channel for it: it
+/// registers the root here, then reconciles + publishes the 1081 stream itself.
+/// The egui app does *not* call this — it hands the root to the host via
+/// [`AppContext::register_team_root`], and the host registers + syncs both
+/// directions off-foreground. Idempotent, and registered roots don't survive a
+/// restart, so call it each run (mirrors [`nostrdb::Ndb::add_key`]).
+///
+/// [`AppContext::register_team_root`]: notedeck::AppContext::register_team_root
+pub fn register_workspace(ndb: &Ndb, secret: &[u8; 32]) {
+    let root = workspace_root(secret);
+    // The catch-up peel is only worth a txn when the root was newly registered.
+    if ndb.add_team_root(&root)
+        && let Ok(txn) = Transaction::new(ndb)
+    {
+        ndb.process_sns(&txn);
+    }
+}
+
+/// Sign `builder` with `secret`, seal the resulting note into the account's SNS
+/// workspace, and ingest the envelope into the local nostrdb, then hand its
+/// `["EVENT", {...}]` frame to `publisher`. Returns the sealed note's (rumor's)
+/// id, or `None` if building/ingesting failed (in which case nothing is
+/// published). Every canvas write goes through here.
 pub fn ingest(
     ndb: &Ndb,
     builder: NoteBuilder,
@@ -111,51 +201,43 @@ pub fn ingest(
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
     let note = builder.sign(secret).build()?;
-    ingest_signed(ndb, &note, publisher)
+    ingest_sealed(ndb, &note, secret, publisher)
 }
 
-/// Ingest an already-signed `note` into the local nostrdb, then hand its
-/// `["EVENT", {...}]` frame to `publisher`. Split out of [`ingest`] so callers
-/// that need the signed note's own fields — notably its `created_at` — can read
-/// them off `note` before it's ingested. Returns the note id, or `None` if
-/// building the frame or ingesting failed (in which case nothing is published).
-fn ingest_signed(ndb: &Ndb, note: &Note, publisher: &mut dyn Publisher) -> Option<NoteId> {
-    let id = NoteId::new(*note.id());
-    let json = enostr::ClientMessage::event(note).ok()?.to_json().ok()?;
-    ndb.process_event_with(&json, IngestMetadata::new().client(true))
-        .ok()?;
-    publisher.publish(&json);
-    Some(id)
-}
-
-/// PNS-wrap a signed inner note (NIP-PNS, kind 1080) and ingest the *wrapper*
-/// into the local nostrdb, then publish the wrapper frame. The inner note is
-/// NIP-44-encrypted with PNS keys derived from `device_secret` — the account key
-/// nostrdb was already seeded with via [`nostrdb::Ndb::add_key`] at sign-in — so
-/// nostrdb transparently unwraps it on read and the inner note stays queryable by
-/// its own author/kind (canvas subscriptions, [`load_longform`], the reducer).
-/// On a relay, though, only the opaque kind-1080 envelope is ever visible: a
-/// private note can't surface as a public NIP-23 article in anyone's feed, and
-/// its contents don't leak in plaintext.
+/// Seal an already-signed `note` (the *rumor*) into the account's kind-1081 SNS
+/// workspace envelope, ingest the envelope into the local nostrdb, then publish
+/// the envelope frame. Split out of [`ingest`] so callers that need the signed
+/// note's own fields — notably its `created_at` — can read them off `note` before
+/// it's sealed (the longform paths do this).
 ///
-/// Returns the **inner** note's id (what callers and every longform query key on;
-/// the wrapper's own id is an implementation detail). Used for longform notes;
-/// canvas events still go through the plaintext [`ingest`] for now (their custom
-/// kinds are never feed-rendered — encrypting them too is a separate change).
-fn ingest_pns(
+/// nostrdb auto-unwraps the envelope back to the rumor once the workspace root is
+/// registered (by the host for the app, or [`register_workspace`] for the CLI), so
+/// the rumor stays queryable by its own author/kind (canvas subscriptions,
+/// [`load_longform`], the reducer). The returned id is the **rumor's**, which
+/// nostrdb recomputes identically on unwrap — so a document's coordinate/word-id
+/// is stable whether sealed or not. [`enostr::sns::wrap_rumor`] re-parses the rumor
+/// on the seal peel and requires every field including the id, which
+/// `builder.sign(...).build()` guarantees. Returns `None` (publishing nothing) if
+/// the account can't sign or a wrap/ingest step fails.
+fn ingest_sealed(
     ndb: &Ndb,
-    inner: &Note,
-    device_secret: &[u8; 32],
+    note: &Note,
+    secret: &[u8; 32],
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let inner_id = NoteId::new(*inner.id());
-    // The crypto + kind-1080 wrapper construction lives in `enostr::pns::wrap`
-    // (signed by the derived PNS keypair, unlinkable to the account); here we only
-    // ingest + publish the resulting envelope.
-    let pns_keys = enostr::pns::derive_pns_keys(device_secret);
-    let wrapper = enostr::pns::wrap(&pns_keys, &inner.json().ok()?, now_secs())?;
-    ingest_signed(ndb, &wrapper, publisher)?;
-    Some(inner_id)
+    let id = NoteId::new(*note.id());
+    let channel = workspace_channel(secret)?;
+    let member = enostr::FullKeypair::from_secret_bytes(secret)?;
+    let rumor_json = note.json().ok()?;
+    let envelope = enostr::sns::wrap_rumor(&channel.keys, &member, &rumor_json, note.created_at())?;
+    let frame = enostr::ClientMessage::event(&envelope)
+        .ok()?
+        .to_json()
+        .ok()?;
+    ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+        .ok()?;
+    publisher.publish(&frame);
+    Some(id)
 }
 
 /// Seed a fresh, closed canvas document for `author` (no nodes). The canvas is
@@ -271,7 +353,7 @@ pub fn create_longform(
     // PNS-wrap + ingest so relays only ever see the opaque envelope.
     let note = build_longform(&d, input).sign(secret).build()?;
     let created_at = note.created_at();
-    let id = ingest_pns(ndb, &note, secret, publisher)?;
+    let id = ingest_sealed(ndb, &note, secret, publisher)?;
     Some(LongformSaved { id, d, created_at })
 }
 
@@ -297,7 +379,7 @@ pub fn edit_longform(
         .sign(secret)
         .build()?;
     let created_at = note.created_at();
-    let id = ingest_pns(ndb, &note, secret, publisher)?;
+    let id = ingest_sealed(ndb, &note, secret, publisher)?;
     Some(LongformSaved {
         id,
         d: d.to_string(),
@@ -329,7 +411,7 @@ pub fn delete_longform(
         .sign(secret)
         .build()?;
     let created_at = note.created_at();
-    let id = ingest_pns(ndb, &note, secret, publisher)?;
+    let id = ingest_sealed(ndb, &note, secret, publisher)?;
     Some(LongformSaved {
         id,
         d: d.to_string(),
@@ -619,6 +701,11 @@ mod tests {
             let dir = tempfile::TempDir::new().unwrap();
             let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
             let kp = FullKeypair::generate();
+            // The vault is sealed into the account's SNS workspace, so register its
+            // derived root — production registers via the host / CLI, tests do it
+            // directly — or nostrdb keeps the kind-1081 envelopes opaque and the
+            // canvas rumors never surface to the fold.
+            register_workspace(&ndb, &kp.secret_key.secret_bytes());
             let sub = ndb
                 .subscribe(&[event::notebook_filter(&kp.pubkey)])
                 .unwrap();
@@ -1003,11 +1090,11 @@ mod tests {
             let dir = tempfile::TempDir::new().unwrap();
             let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
             let kp = FullKeypair::generate();
-            // Longform notes are ingested PNS-wrapped (kind 1080); nostrdb only
-            // unwraps them — exposing the inner kind-30023 to queries and this
-            // subscription — once the device key is registered. The app does this
-            // when the account is added; here we do it directly.
-            assert!(ndb.add_key(&kp.secret_key.secret_bytes()));
+            // Longform notes are sealed into the vault's SNS workspace (kind 1081);
+            // nostrdb only unwraps them — exposing the inner kind-30023 to queries
+            // and this subscription — once the workspace root is registered.
+            // Production registers via the host / CLI; here we do it directly.
+            register_workspace(&ndb, &kp.secret_key.secret_bytes());
             let sub = ndb
                 .subscribe(&[event::longform_filter(&kp.pubkey)])
                 .unwrap();
@@ -1229,13 +1316,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_vault_merges_notes_and_canvases() {
-        // Both stores in one listing: a canvas (plaintext kind-31606 events) and a
-        // longform note (PNS-wrapped kind-30023). The note is unwrapped only once
-        // the device key is registered; canvas events need no key.
+        // Both document types in one listing — a canvas (kind-31606) and a longform
+        // note (kind-30023) — now that both are sealed into the same SNS workspace
+        // (kind-1081) and only surface to the fold once its root is registered.
         let dir = tempfile::TempDir::new().unwrap();
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
         let kp = FullKeypair::generate();
-        assert!(ndb.add_key(&kp.secret_key.secret_bytes()));
+        register_workspace(&ndb, &kp.secret_key.secret_bytes());
         let secret = kp.secret_key.secret_bytes();
 
         let (canvas_d, _) = create_canvas(&ndb, &kp.pubkey, &secret, "Board", &mut NoPublish)
@@ -1294,6 +1381,94 @@ mod tests {
         assert!(
             docs[0].edited_at >= docs[1].edited_at,
             "vault sorted newest-edited first"
+        );
+    }
+
+    /// A [`Publisher`] that records every ingested frame, so a test can replay one
+    /// device's sealed writes into another device's nostrdb.
+    #[derive(Default)]
+    struct Collect(Vec<String>);
+
+    impl Publisher for Collect {
+        fn publish(&mut self, event_frame: &str) {
+            self.0.push(event_frame.to_string());
+        }
+    }
+
+    /// Two devices sharing one account secret converge on the same vault with zero
+    /// coordination: both derive the *same* [`workspace_root`], so a canvas and a
+    /// longform note device A seals + publishes unwrap and fold identically on
+    /// device B — no key-share crossed, no channel forked. The notebook analogue of
+    /// headway's `default_board_converges_across_devices`.
+    #[tokio::test]
+    async fn vault_converges_across_devices() {
+        let make = || {
+            let dir = tempfile::TempDir::new().unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            (dir, ndb)
+        };
+        let kp = FullKeypair::generate();
+        let secret = kp.secret_key.secret_bytes();
+
+        // Device A seals a canvas and a longform note, capturing the 1081 envelope
+        // frames it would publish to the private relays.
+        let (_dir_a, ndb_a) = make();
+        register_workspace(&ndb_a, &secret);
+        let mut sink = Collect::default();
+        let (canvas_d, _) =
+            create_canvas(&ndb_a, &kp.pubkey, &secret, "Shared", &mut sink).expect("canvas");
+        let note = create_longform(
+            &ndb_a,
+            &kp.pubkey,
+            &secret,
+            &LongformInput {
+                title: "Note".to_string(),
+                content: "body".to_string(),
+                ..Default::default()
+            },
+            None,
+            &mut sink,
+        )
+        .expect("note");
+        assert_eq!(sink.0.len(), 2, "two sealed envelopes captured");
+
+        // Device B derives the same root from the same secret and replays A's
+        // envelopes; nostrdb unwraps them (root registered) into the inner rumors.
+        let (_dir_b, ndb_b) = make();
+        register_workspace(&ndb_b, &secret);
+        let sub = ndb_b
+            .subscribe(&[
+                event::notebook_filter(&kp.pubkey),
+                event::longform_filter(&kp.pubkey),
+            ])
+            .unwrap();
+        let mut stream = SubscriptionStream::new(ndb_b.clone(), sub).notes_per_await(64);
+        for frame in &sink.0 {
+            ndb_b
+                .process_event_with(frame, IngestMetadata::new().client(true))
+                .expect("replay envelope");
+        }
+
+        // Both documents fold into device B's vault, keyed by the same coordinates.
+        let docs = loop {
+            {
+                let txn = Transaction::new(&ndb_b).unwrap();
+                let docs = list_vault(&ndb_b, &txn, &kp.pubkey);
+                if docs.len() == 2 {
+                    break docs;
+                }
+            }
+            stream.next().await.expect("subscription open");
+        };
+        assert!(
+            docs.iter()
+                .any(|d| d.kind == VaultDocKind::Canvas && d.d == canvas_d && d.title == "Shared"),
+            "device B folded A's sealed canvas"
+        );
+        assert!(
+            docs.iter()
+                .any(|d| d.kind == VaultDocKind::Note && d.d == note.d && d.title == "Note"),
+            "device B folded A's sealed longform note"
         );
     }
 }
