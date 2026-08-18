@@ -279,12 +279,22 @@ pub fn render_conversation_note(
         )),
         Some("tool_result") => {
             let decoded = ToolResultContent::decode(content);
-            let summary = crate::util::truncate(&decoded.summary, 200);
+            let tool_name = get_tag_value(note, "tool-name")
+                .unwrap_or("tool")
+                .to_string();
+            // Pre-encoding (and any legacy/plaintext) notes stored content as
+            // `"{tool_name}: {summary}"`, which `decode` keeps whole as the
+            // summary. The renderer prepends `tool_name` again, so the raw
+            // summary would double the name ("Bash Bash: ..."). Strip a
+            // redundant leading "<tool_name>: " so the name shows exactly once.
+            let summary_text = decoded
+                .summary
+                .strip_prefix(&format!("{tool_name}: "))
+                .unwrap_or(&decoded.summary);
+            let summary = crate::util::truncate(summary_text, 200);
             Some(Message::ToolResponse(ToolResponse::executed_tool(
                 ExecutedTool {
-                    tool_name: get_tag_value(note, "tool-name")
-                        .unwrap_or("tool")
-                        .to_string(),
+                    tool_name,
                     summary,
                     output: decoded.output,
                     parent_task_id: None,
@@ -1403,6 +1413,54 @@ mod tests {
             tool.output.as_deref(),
             Some("build succeeded\n"),
             "raw output must survive the note round-trip for remote observers",
+        );
+    }
+
+    /// A legacy/plaintext `tool_result` note stored its content as
+    /// `"{tool_name}: {summary}"`. Since the renderer prepends the tool name
+    /// again, the redundant `"Bash: "` prefix must be stripped at render time so
+    /// the row reads `"Bash exit 0"`, not the doubled `"Bash Bash: exit 0"`.
+    #[tokio::test]
+    async fn legacy_tool_result_strips_doubled_tool_name() {
+        let sk = test_secret_key();
+        let session_id = "legacy-doubled-name";
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "run the build", 1_000, 0, &[]),
+            // Pre-encoding content: a bare "tool_name: summary" line, not JSON.
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "tool_result",
+                "Bash: exit 0",
+                1_001,
+                1,
+                &[("tool-name", "Bash")],
+            ),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        let tool = loaded
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                Message::ToolResponse(r) => match r.responses() {
+                    crate::tools::ToolResponses::ExecutedTool(t) => Some(t),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("tool_result note should load as an ExecutedTool");
+        assert_eq!(tool.tool_name, "Bash");
+        assert_eq!(
+            tool.summary, "exit 0",
+            "redundant \"Bash: \" prefix must be stripped so the name isn't doubled",
         );
     }
 
