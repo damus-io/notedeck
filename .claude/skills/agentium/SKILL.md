@@ -233,6 +233,7 @@ agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium
 agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
 agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
 agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
+agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
 agentium spawn --title "Fix the parser" --prompt-file - <<'EOF'   # heredoc a long first message
 Fix the parser so it handles multi-line input.
 See the failing test in crates/tokenator.
@@ -249,9 +250,16 @@ Flags:
 - `--title <text>` — an explicit, **sticky** session title. Without it the title
   derives from (and churns with) the first message; `--title` lands in the
   session's `custom_title` so it shows immediately and survives later messages.
-- `--wait` — block (bounded, a few seconds) until the host answers with the new
-  session's state, then print its `agentium:` ref. Without it you only get the
-  provisional `spawn_id` (the session doesn't exist yet).
+- `--wait` — block (bounded) until the host answers with the new session's state,
+  then print its `agentium:` ref. Without it you only get the provisional
+  `spawn_id` (the session doesn't exist yet). The bound defaults to 30s (a
+  backgrounded Dave host answers on its own frame cadence, so a slow spawn can
+  take ~20s); override it per run with `--wait-timeout <secs>` or
+  `$AGENTIUM_SPAWN_WAIT`. After 8s a one-time `still waiting…` note prints on
+  **stderr** (stdout/`--json` stays clean for scripting).
+- `--wait-timeout <secs>` — override the `--wait` bound for this run (flag beats
+  `$AGENTIUM_SPAWN_WAIT` beats the 30s default). Handy when a host is known slow
+  (bump it) or you want a snappier failure against a host you expect to be up.
 - `--prompt <text>` — deliver `<text>` as the session's first `user` message once
   it's up. **Implies `--wait`** (you can't send to a session that doesn't exist),
   and also reports the message event id. Equivalent to `spawn --wait` then `send`.

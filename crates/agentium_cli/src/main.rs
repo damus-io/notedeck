@@ -35,12 +35,42 @@ const SYNC_MAX: Duration = Duration::from_secs(6);
 /// command — the initial [`SYNC_MAX`] reconcile already settled the backfill.
 const PUBLISH_FLUSH: Duration = Duration::from_secs(2);
 
-/// Bound on `spawn --wait` (see [`cmd_spawn`]): how long to wait for the target
-/// host to answer a spawn command with the new session's kind-31988 state. A
-/// host that never answers (none running on `target_host`, or one stuck
+/// Default bound on `spawn --wait` (see [`cmd_spawn`]): how long to wait for the
+/// target host to answer a spawn command with the new session's kind-31988 state.
+/// A host that never answers (none running on `target_host`, or one stuck
 /// `pending`) can't hang exit past this — the spawn command was still published,
 /// so a later `list` finds the session if the host was merely slow.
-const SPAWN_WAIT: Duration = Duration::from_secs(8);
+///
+/// Sized to real latency, not the happy path: a host processes the kind-31989 and
+/// fans its state back only on an egui frame, so an idle/backgrounded Dave app
+/// (which repaints reactively) is regularly slower than the sub-2s local case —
+/// answers around ~20s have been observed. 30s covers that with headroom while
+/// still bounding a genuinely dead host. Override per-run with `--wait-timeout`
+/// or `$AGENTIUM_SPAWN_WAIT` (see [`resolve_spawn_wait`]).
+const SPAWN_WAIT_DEFAULT: Duration = Duration::from_secs(30);
+
+/// How long into a `spawn --wait` to print a one-time "still waiting…" note on
+/// stderr, so a human isn't left staring at a silent block while a slow host
+/// warms up. Stays on stderr so `--json`/scripted stdout is untouched.
+const SPAWN_WAIT_PROGRESS: Duration = Duration::from_secs(8);
+
+/// Resolve the `spawn --wait` bound from the `--wait-timeout <secs>` flag, the
+/// `$AGENTIUM_SPAWN_WAIT` env var (seconds), else [`SPAWN_WAIT_DEFAULT`]. The
+/// flag wins over the env, which wins over the default; a zero or unparseable env
+/// value is ignored (falls through to the default) so a stray export can't pin
+/// the wait to nothing. Pure over its inputs so the precedence is unit-testable.
+fn resolve_spawn_wait(flag_secs: Option<u64>, env_secs: Option<&str>) -> Duration {
+    if let Some(secs) = flag_secs.filter(|s| *s > 0) {
+        return Duration::from_secs(secs);
+    }
+    if let Some(secs) = env_secs
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+    {
+        return Duration::from_secs(secs);
+    }
+    SPAWN_WAIT_DEFAULT
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -111,6 +141,7 @@ enum Command {
         title: Option<String>,
         prompt: Option<String>,
         wait: bool,
+        wait_timeout: Option<u64>,
     },
     /// Abort a session's in-flight turn on its host — the CLI companion to
     /// pressing Esc in Dave. The selector is required (a specific live session to
@@ -211,6 +242,7 @@ async fn run() -> Result<()> {
             title,
             prompt,
             wait,
+            wait_timeout,
         } => {
             let opts = SpawnOpts {
                 host,
@@ -219,6 +251,7 @@ async fn run() -> Result<()> {
                 title,
                 prompt,
                 wait,
+                wait_timeout,
             };
             cmd_spawn(&engine, &read_pk, &opts, cli.json).await?
         }
@@ -384,9 +417,14 @@ struct SpawnOpts {
     /// so delivery is independent of `--wait`. Still implies `--wait` so the
     /// resolved `agentium:` ref gets reported when the host answers in time.
     prompt: Option<String>,
-    /// `--wait`: block (bounded by [`SPAWN_WAIT`]) until the host answers with the
-    /// new session's kind-31988 state, then print its durable `agentium:` ref.
+    /// `--wait`: block (bounded by [`resolve_spawn_wait`]) until the host answers
+    /// with the new session's kind-31988 state, then print its durable `agentium:`
+    /// ref.
     wait: bool,
+    /// `--wait-timeout <secs>`: override the wait bound for this run (else
+    /// `$AGENTIUM_SPAWN_WAIT`, else [`SPAWN_WAIT_DEFAULT`]). `None` leaves the
+    /// resolution to the env/default; see [`resolve_spawn_wait`].
+    wait_timeout: Option<u64>,
 }
 
 impl SpawnOpts {
@@ -496,7 +534,7 @@ fn merge_spawn_target(
 /// [`Engine::watch_sessions`](agentium_core::Engine::watch_sessions) *before*
 /// publishing — so a fast host answer can't slip through the gap — then re-read
 /// the session list on each wake until one carries our `spawn_id`, bounded by
-/// [`SPAWN_WAIT`]. That row is the new session; its `agentium_uri` is the ref we
+/// [`resolve_spawn_wait`]. That row is the new session; its `agentium_uri` is the ref we
 /// print. `--prompt` then delivers a first `user` message via the same send path
 /// as [`cmd_send`].
 async fn cmd_spawn(
@@ -543,9 +581,23 @@ async fn cmd_spawn(
         return Ok(());
     };
 
+    // Resolve the wait bound: `--wait-timeout` flag, else `$AGENTIUM_SPAWN_WAIT`,
+    // else the default. A slow-but-alive host regularly needs more than the old
+    // fixed 8s, so this is sized to real latency and tunable per run.
+    let wait_bound = resolve_spawn_wait(
+        opts.wait_timeout,
+        std::env::var("AGENTIUM_SPAWN_WAIT").ok().as_deref(),
+    );
+
     // Wait (bounded) for a kind-31988 state carrying our spawn_id. `check, then
-    // wait`: re-read the list, match the spawn_id, else block on the watch.
-    let resolved = tokio::time::timeout(SPAWN_WAIT, async {
+    // wait`: re-read the list, match the spawn_id, else block on the watch. A
+    // one-shot timer surfaces a "still waiting…" note on stderr partway through,
+    // so a slow host's warmup doesn't look like a silent hang; the note stays off
+    // stdout so `--json`/scripted output is untouched.
+    let resolved = tokio::time::timeout(wait_bound, async {
+        let progress = tokio::time::sleep(SPAWN_WAIT_PROGRESS);
+        tokio::pin!(progress);
+        let mut noted = false;
         loop {
             {
                 let txn = Transaction::new(engine.ndb())?;
@@ -559,9 +611,23 @@ async fn cmd_spawn(
                     ));
                 }
             }
-            // Watch ending (db torn down) resolves the wait with nothing found.
-            if !watch.changed().await {
-                return Ok(None);
+            tokio::select! {
+                // First crossing of the progress threshold: reassure once, then
+                // fall back to re-check + wait (the branch is disabled afterwards).
+                _ = &mut progress, if !noted => {
+                    noted = true;
+                    eprintln!(
+                        "still waiting for {} to answer (spawn {}…)",
+                        target.host,
+                        short_id(&spawn_id),
+                    );
+                }
+                // Watch ending (db torn down) resolves the wait with nothing found.
+                changed = watch.changed() => {
+                    if !changed {
+                        return Ok(None);
+                    }
+                }
             }
         }
     })
@@ -584,9 +650,10 @@ async fn cmd_spawn(
             }
             return Err(format!(
                 "no host answered on {} within {}s (spawn {short}…) — the command was \
-                 published, so `agentium list` will find the session if the host was just slow",
+                 published, so `agentium list` will find the session if the host was just slow \
+                 (raise the bound with --wait-timeout <secs> or $AGENTIUM_SPAWN_WAIT)",
                 target.host,
-                SPAWN_WAIT.as_secs(),
+                wait_bound.as_secs(),
             )
             .into());
         }
@@ -2030,6 +2097,7 @@ impl Cli {
         let mut prompt = None;
         let mut prompt_file = None;
         let mut wait = false;
+        let mut wait_timeout = None;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -2080,6 +2148,13 @@ impl Cli {
                 "--prompt" => prompt = Some(value("--prompt")?),
                 "--prompt-file" => prompt_file = Some(value("--prompt-file")?),
                 "--wait" => wait = true,
+                "--wait-timeout" => {
+                    wait_timeout = Some(
+                        value("--wait-timeout")?
+                            .parse::<u64>()
+                            .map_err(|_| "--wait-timeout needs a non-negative integer (seconds)")?,
+                    )
+                }
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -2127,6 +2202,7 @@ impl Cli {
                 title,
                 prompt,
                 wait,
+                wait_timeout,
             }
         } else {
             parse_command(name, rest, view)?
@@ -2323,6 +2399,10 @@ OPTIONS:
                       churns with — the first message)
     --wait            Block (bounded) until the host answers with the new
                       session's state, then print its agentium: ref
+    --wait-timeout <secs>
+                      Override the --wait bound for this run (default 30s, else
+                      $AGENTIUM_SPAWN_WAIT). A still-waiting note hits stderr
+                      after 8s so a slow host doesn't look like a hang.
     --prompt <text>   The session's first user message. It rides the spawn command
                       and the host delivers it when the session comes up, so it
                       lands even if a slow host outlasts --wait (which --prompt
@@ -3057,6 +3137,7 @@ mod tests {
             title: None,
             prompt: None,
             wait: false,
+            wait_timeout: None,
         }
     }
 
@@ -3077,6 +3158,8 @@ mod tests {
             "--title",
             "My Task",
             "--wait",
+            "--wait-timeout",
+            "45",
             "spawn",
         ])
         .unwrap()
@@ -3090,6 +3173,7 @@ mod tests {
                 title,
                 prompt,
                 wait,
+                wait_timeout,
             } => {
                 assert_eq!(host.as_deref(), Some("mac"));
                 assert_eq!(cwd.as_deref(), Some("/x/y"));
@@ -3097,6 +3181,7 @@ mod tests {
                 assert_eq!(title.as_deref(), Some("My Task"));
                 assert_eq!(prompt, None);
                 assert!(wait);
+                assert_eq!(wait_timeout, Some(45));
             }
             _ => panic!("expected Spawn"),
         }
@@ -3115,9 +3200,11 @@ mod tests {
                 title,
                 prompt,
                 wait,
+                wait_timeout,
             } => {
                 assert!(host.is_none() && cwd.is_none() && backend.is_none());
                 assert!(title.is_none() && prompt.is_none() && !wait);
+                assert!(wait_timeout.is_none());
             }
             _ => panic!("expected Spawn"),
         }
@@ -3155,6 +3242,37 @@ mod tests {
             }
             _ => panic!("expected Spawn"),
         }
+    }
+
+    #[test]
+    fn spawn_wait_timeout_rejects_non_integer() {
+        let err = match parse_cli(&["--nsec", TEST_NSEC, "--wait-timeout", "soon", "spawn"]) {
+            Err(e) => e,
+            Ok(_) => panic!("--wait-timeout should reject a non-integer"),
+        };
+        assert!(err.to_string().contains("--wait-timeout"), "{err}");
+    }
+
+    #[test]
+    fn resolve_spawn_wait_precedence() {
+        // Flag wins over env wins over default.
+        assert_eq!(
+            resolve_spawn_wait(Some(45), Some("20")),
+            Duration::from_secs(45),
+        );
+        assert_eq!(
+            resolve_spawn_wait(None, Some("20")),
+            Duration::from_secs(20),
+        );
+        assert_eq!(resolve_spawn_wait(None, None), SPAWN_WAIT_DEFAULT);
+        // A zero or garbage value at either level falls through, never pinning the
+        // wait to nothing.
+        assert_eq!(
+            resolve_spawn_wait(Some(0), Some("20")),
+            Duration::from_secs(20)
+        );
+        assert_eq!(resolve_spawn_wait(None, Some("0")), SPAWN_WAIT_DEFAULT);
+        assert_eq!(resolve_spawn_wait(None, Some("nope")), SPAWN_WAIT_DEFAULT);
     }
 
     #[test]
