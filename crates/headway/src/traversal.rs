@@ -168,6 +168,7 @@ mod tests {
             subissues: vec![],
             blocked_by: vec![],
             blocks: vec![],
+            related: vec![],
         }
     }
 
