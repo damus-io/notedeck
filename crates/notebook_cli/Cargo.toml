@@ -8,7 +8,7 @@ name = "notebook"
 path = "src/main.rs"
 
 [dependencies]
-notedeck_notebook = { workspace = true }
+notebook = { workspace = true }
 nostrdb_net = { workspace = true }
 enostr = { workspace = true }
 nostrdb = { workspace = true }

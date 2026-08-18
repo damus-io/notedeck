@@ -7,8 +7,8 @@
 //! `relay::sync` module. This file is just the canvas's command surface: parsing,
 //! resolving node and edge arguments against the folded canvas, and rendering.
 //! The canvas itself
-//! is folded by the same reducer the egui app uses ([`notedeck_notebook::event`]),
-//! and edits are produced by the same store ([`notedeck_notebook::store`]).
+//! is folded by the same reducer the egui app uses ([`notebook::event`]),
+//! and edits are produced by the same store ([`notebook::store`]).
 
 use std::env;
 use std::process::ExitCode;
@@ -17,12 +17,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck_notebook::event::{
+use notebook::event::{
     self, CanvasView, EdgeView, Geometry, NodeContent, NodeKind, NodeView, NotebookTarget,
     VaultDoc, VaultDocKind,
 };
-use notedeck_notebook::store::{self, CanvasAction, Publisher};
-use notedeck_notebook::wordid;
+use notebook::store::{self, CanvasAction, Publisher};
+use notebook::wordid;
 
 use nostrdb_net::relay::sync::Result;
 
@@ -1069,7 +1069,7 @@ impl Cli {
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
         // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
-        // (and the `notedeck_notebook` store/event layer) speaks `enostr::Pubkey`.
+        // (and the `notebook` store/event layer) speaks `enostr::Pubkey`.
         // Both are `[u8; 32]` newtypes, so bridge at this boundary and keep
         // everything downstream in enostr terms.
         let secret = match (&command, nsec) {

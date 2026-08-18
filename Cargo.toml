@@ -9,6 +9,7 @@ members = [
     "crates/notedeck_columns",
     "crates/notedeck_dave",
     "crates/notedeck_messages",
+    "crates/notebook",
     "crates/notedeck_notebook",
     "crates/headway",
     "crates/headway_cli",
@@ -94,6 +95,7 @@ nostr_calsync = { path = "crates/nostr_calsync" }
 notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
+notebook = { path = "crates/notebook" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 headway = { path = "crates/headway" }
 notedeck_headway = { path = "crates/notedeck_headway" }

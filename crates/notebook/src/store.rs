@@ -32,10 +32,10 @@ use crate::event::{
 
 /// A fixed canvas `d` used only as a fixture id in tests. Neither the egui app nor
 /// the CLI depends on it in production anymore: the app tracks an active canvas
-/// ([`crate::Notebook::active_canvas`]) and mints a fresh `d` per canvas via
-/// [`create_canvas`], and the CLI resolves `--canvas <ref|d>` through the unified
-/// ref resolver (no default). It stays a valid opaque `d`, so existing accounts
-/// that already hold this canvas need no migration.
+/// (its `active_canvas`) and mints a fresh `d` per canvas via [`create_canvas`],
+/// and the CLI resolves `--canvas <ref|d>` through the unified ref resolver (no
+/// default). It stays a valid opaque `d`, so existing accounts that already hold
+/// this canvas need no migration.
 pub const CANVAS_ID: &str = "notebook";
 
 /// A UI intent to mutate the canvas. Collected during rendering and applied

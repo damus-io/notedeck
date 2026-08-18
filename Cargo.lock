@@ -5303,6 +5303,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook"
+version = "0.11.0-beta.1"
+dependencies = [
+ "enostr",
+ "futures-util",
+ "nostr 0.37.0",
+ "nostrdb",
+ "pollster",
+ "profiling",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "wordid",
+]
+
+[[package]]
 name = "notebook_cli"
 version = "0.11.0-beta.1"
 dependencies = [
@@ -5310,7 +5326,7 @@ dependencies = [
  "enostr",
  "nostrdb",
  "nostrdb_net",
- "notedeck_notebook",
+ "notebook",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5696,6 +5712,7 @@ dependencies = [
  "jsoncanvas",
  "nostr 0.37.0",
  "nostrdb",
+ "notebook",
  "notedeck",
  "notedeck_ui",
  "pollster",

@@ -1,11 +1,14 @@
 pub mod convert;
 mod editor;
-pub mod event;
 mod reference;
 pub mod render;
-pub mod store;
 mod ui;
-pub mod wordid;
+
+// The nostr-backed model, persistence, and word-id refs live in the `notebook`
+// core crate (shared with `notebook_cli`, which can't depend on this GUI crate).
+// Re-export them so this crate's own modules and downstream code keep using
+// `crate::event` / `crate::store` / `crate::wordid` unchanged.
+pub use notebook::{event, store, wordid};
 
 use crate::convert::view_to_canvas;
 use crate::editor::{
