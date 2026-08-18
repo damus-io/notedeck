@@ -31,6 +31,9 @@ async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`headway show | head`) instead of
     // panicking in println! on EPIPE.
     nostrdb_net::relay::sync::reset_sigpipe();
+    // Select the rustls CryptoProvider before any wss:// relay handshake; the
+    // standalone CLIs never run notedeck's startup init that does this.
+    enostr::install_crypto();
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -57,6 +60,9 @@ enum Command {
         labels: Vec<String>,
         /// A card to parent the new one under (created as a subissue).
         parent: Option<String>,
+        /// Initial description (cover note), already resolved from `--desc` or
+        /// `--desc-file`. `None` means no description event is emitted.
+        description: Option<String>,
     },
     Move {
         card: String,
@@ -112,6 +118,17 @@ enum Command {
     Unblock {
         card: String,
         on: String,
+    },
+    /// Relate `card` to `other` (an undirected "see also" edge — symmetric,
+    /// carries no ordering or readiness meaning, and allowed to cross boards).
+    Relate {
+        card: String,
+        other: String,
+    },
+    /// Remove the `card`-relates-`other` edge (symmetric: from either endpoint).
+    Unrelate {
+        card: String,
+        other: String,
     },
     /// Print what to work on next: walk a container's work-order and show the
     /// ready frontier (see [`traversal`]). A read command — it never signs.
@@ -230,6 +247,10 @@ impl Command {
             Command::Block { card, on } | Command::Unblock { card, on } => {
                 selectors.push(card);
                 selectors.push(on);
+            }
+            Command::Relate { card, other } | Command::Unrelate { card, other } => {
+                selectors.push(card);
+                selectors.push(other);
             }
             Command::Seq {
                 card,
@@ -647,6 +668,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             col,
             labels,
             parent,
+            description,
         } => {
             let col = col.as_deref().map_or(Ok(0), |c| resolve_col(view, c))?;
             let parent = parent
@@ -656,6 +678,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             BoardAction::AddCard {
                 col,
                 title,
+                description: description.unwrap_or_default(),
                 labels,
                 parent,
             }
@@ -713,6 +736,14 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Unblock { card, on } => BoardAction::Unblock {
             card: resolve_card(view, &card)?,
             on: resolve_card(view, &on)?,
+        },
+        Command::Relate { card, other } => BoardAction::Relate {
+            card: resolve_card(view, &card)?,
+            other: resolve_card(view, &other)?,
+        },
+        Command::Unrelate { card, other } => BoardAction::Unrelate {
+            card: resolve_card(view, &card)?,
+            other: resolve_card(view, &other)?,
         },
         Command::Seq {
             card,
@@ -1281,6 +1312,7 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
 
     print_edges(view, "blocked by", &card.blocked_by);
     print_edges(view, "blocks", &card.blocks);
+    print_related(view, &card.related);
 
     if !card.comments.is_empty() {
         println!("\ncomments ({})", card.comments.len());
@@ -1378,6 +1410,20 @@ fn print_edges(view: &BoardView, label: &str, edges: &[headway::event::EdgeRef])
     }
 }
 
+/// Print a card-detail `related` section — one `<title>  <ref>` line per edge.
+/// Unlike [`print_edges`] there is no cleared marker: the relation is undirected
+/// and semantics-free ("see also"), so a partner's doneness is irrelevant.
+/// Nothing is printed when there are no related edges.
+fn print_related(view: &BoardView, edges: &[headway::event::EdgeRef]) {
+    if edges.is_empty() {
+        return;
+    }
+    println!("\nrelated ({})", edges.len());
+    for e in edges {
+        println!("    {}  {}", e.title, card_ref(view, &e.id));
+    }
+}
+
 /// A dim ⊘ glyph flagging a card as blocked (held back by an unfinished blocker)
 /// on the board listing; empty when the card is free to work on.
 fn blocked_prefix(card: &CardView) -> String {
@@ -1455,6 +1501,10 @@ impl Cli {
         let mut to = None;
         let mut reply_to = None;
         let mut parent = None;
+        // `add` description, from either the inline `--desc` or the escaping-free
+        // `--desc-file` (a path, or `-` for stdin); folded into one value below.
+        let mut desc = None;
+        let mut desc_file = None;
         let mut on = None;
         let mut labels: Vec<String> = Vec::new();
         let mut seq = SeqFlags::default();
@@ -1481,6 +1531,8 @@ impl Cli {
                 "--to" => to = Some(value("--to")?),
                 "--reply-to" => reply_to = Some(value("--reply-to")?),
                 "--parent" => parent = Some(value("--parent")?),
+                "--desc" => desc = Some(value("--desc")?),
+                "--desc-file" => desc_file = Some(value("--desc-file")?),
                 "--on" => on = Some(value("--on")?),
                 "--after" => seq.after = Some(value("--after")?),
                 "--before" => seq.before = Some(value("--before")?),
@@ -1524,8 +1576,32 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
+        // Fold `--desc`/`--desc-file` into one description: they name the same
+        // thing (the new card's cover note), so passing both is a contradiction. A
+        // file value of `-` means stdin, which lets a heredoc pipe a long markdown
+        // description in with no shell-escaping.
+        let description = match (desc, desc_file) {
+            (Some(_), Some(_)) => {
+                return Err("pass either --desc or --desc-file, not both".into());
+            }
+            (Some(text), None) => Some(text),
+            (None, Some(path)) => Some(read_desc_source(&path)?),
+            (None, None) => None,
+        };
         let command = parse_command(
-            name, rest, col, row, to, reply_to, parent, on, labels, seq, ready, count,
+            name,
+            rest,
+            col,
+            row,
+            to,
+            reply_to,
+            parent,
+            description,
+            on,
+            labels,
+            seq,
+            ready,
+            count,
         )?;
 
         // A card selector like `headway:commerce/purse-metal-toilet` already names
@@ -1594,6 +1670,7 @@ fn parse_command(
     to: Option<String>,
     reply_to: Option<String>,
     parent: Option<String>,
+    description: Option<String>,
     on: Option<String>,
     labels: Vec<String>,
     seq: SeqFlags,
@@ -1612,6 +1689,7 @@ fn parse_command(
             col,
             labels,
             parent,
+            description,
         },
         "move" => Command::Move {
             card: card()?,
@@ -1672,6 +1750,20 @@ fn parse_command(
                 .or_else(|| rest.get(1).cloned())
                 .ok_or("unblock needs --on <card>")?,
         },
+        // `relate <card> --to <other>`; the partner may also be a second positional
+        // so `relate <card> <other>` works too.
+        "relate" => Command::Relate {
+            card: card()?,
+            other: to
+                .or_else(|| rest.get(1).cloned())
+                .ok_or("relate needs --to <card>")?,
+        },
+        "unrelate" => Command::Unrelate {
+            card: card()?,
+            other: to
+                .or_else(|| rest.get(1).cloned())
+                .ok_or("unrelate needs --to <card>")?,
+        },
         "comment" => Command::Comment {
             card: card()?,
             body: joined(rest, 1, name)?,
@@ -1718,6 +1810,21 @@ fn joined(rest: &[String], idx: usize, cmd: &str) -> Result<String> {
     Ok(parts.join(" "))
 }
 
+/// Read a `--desc-file` value into description text: `-` reads stdin (so a long
+/// markdown description can heredoc in with no shell-escaping), anything else is
+/// a file path. Trailing whitespace is trimmed so a heredoc's closing newline
+/// doesn't ride along.
+fn read_desc_source(path: &str) -> Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    if path == "-" {
+        std::io::stdin().read_to_string(&mut text)?;
+    } else {
+        text = std::fs::read_to_string(path)?;
+    }
+    Ok(text.trim_end().to_string())
+}
+
 fn print_usage() {
     eprintln!(
         "\
@@ -1735,7 +1842,8 @@ COMMANDS:
                                per-board key so it can be shared, re-sealing
                                existing notes in place (no data loss)
     add <title...>             Add a card (--col <c> column, -l <labels> to tag,
-                               --parent <card> to create it as a subissue)
+                               --parent <card> to create it as a subissue,
+                               --desc <text>/--desc-file <path> for a description)
     move <card> --col <c>      Move a card to a column (--row to position)
     title <card> <title...>    Edit a card's title
     desc <card> <text...>      Edit a card's description
@@ -1757,6 +1865,9 @@ COMMANDS:
     block <card> --on <b>      Mark <card> as blocked by <b> (a dependency edge,
                                may cross boards; cycles are refused)
     unblock <card> --on <b>    Remove the <card>-blocked-by-<b> edge
+    relate <card> --to <o>     Relate <card> to <o> (undirected \"see also\"; shows
+                               on both, may cross boards, no ordering meaning)
+    unrelate <card> --to <o>   Remove the <card>-relates-<o> edge (either endpoint)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
                                another comment)
     delete <card>              Remove a card (reversible tombstone)
@@ -1788,9 +1899,15 @@ OPTIONS:
     --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
     -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
     --col <c>         Column for `add`/`move` (id or name)
-    --to <board>      Target board for `link`/`move-board`
+    --to <board>      Target board for `link`/`move-board`; or the partner card
+                      for `relate`/`unrelate`
     --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
     --parent <card>   Parent card for `add` (created as its subissue)
+    --desc <text>     Initial description for `add` (mutually exclusive with
+                      --desc-file)
+    --desc-file <p>   Like --desc, but read the description from file <p> (or
+                      stdin when <p> is `-`) — pass a long/multi-line markdown
+                      description with no shell-escaping (heredoc)
     --on <card>       Blocker card for `block`/`unblock`
     --in <c>          Container for `seq`/`next` (card ref or board slug)
     --ready           Print the whole ready set for `next` (not just the first)
@@ -1846,6 +1963,64 @@ mod tests {
             }
             _ => panic!("expected a Priority command"),
         }
+    }
+
+    /// `add --desc <text>` folds the inline text into the card's description.
+    #[test]
+    fn add_desc_inline_sets_description() {
+        let cli = parse(&["add", "a card", "--desc", "the details"]);
+        match cli.command {
+            Command::Add {
+                title, description, ..
+            } => {
+                assert_eq!(title, "a card");
+                assert_eq!(description.as_deref(), Some("the details"));
+            }
+            _ => panic!("expected an Add command"),
+        }
+    }
+
+    /// `add --desc-file <path>` reads the description from a file, trimming the
+    /// trailing whitespace a heredoc's closing newline leaves behind while
+    /// keeping interior newlines.
+    #[test]
+    fn add_desc_file_is_read_and_trimmed() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "## Heading\n\nbody line\n\n").unwrap();
+        let cli = parse(&["add", "a card", "--desc-file", f.path().to_str().unwrap()]);
+        match cli.command {
+            Command::Add { description, .. } => {
+                assert_eq!(description.as_deref(), Some("## Heading\n\nbody line"))
+            }
+            _ => panic!("expected an Add command"),
+        }
+    }
+
+    /// `--desc` and `--desc-file` name the same thing, so passing both errors
+    /// rather than silently letting one win.
+    #[test]
+    fn add_desc_and_desc_file_conflict() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "from file").unwrap();
+        let res = Cli::parse(
+            [
+                "add",
+                "a card",
+                "--desc",
+                "inline",
+                "--desc-file",
+                f.path().to_str().unwrap(),
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+        let err = match res {
+            Err(e) => e,
+            Ok(_) => panic!("--desc + --desc-file should conflict"),
+        };
+        assert!(err.to_string().contains("not both"), "{err}");
     }
 
     /// A board is shared iff the roster holds a key for its full *coordinate*.

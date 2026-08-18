@@ -375,8 +375,8 @@ async fn follow_streams_a_live_message() {
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
         Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
-    let relay =
-        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
     let url = relay.url();
 
     // Seed the child's cache with the session state + one message, so the
@@ -426,10 +426,9 @@ async fn follow_streams_a_live_message() {
     let pub_dir = TempDir::new().expect("pub tmp");
     let mut publisher =
         Engine::open(pub_dir.path().to_str().expect("path"), SECKEY).expect("publisher engine");
-    let mut pub_tx = publisher.transport_handle().expect("pub transport");
-    publisher.connect(&mut pub_tx, &url).expect("pub connect");
+    publisher.connect(&url).expect("pub connect");
     publisher
-        .send_message(&mut pub_tx, "sess-follow", "live streamed msg")
+        .send_message("sess-follow", "live streamed msg")
         .expect("send live message");
     // Flush the publish through the loop's FIFO so it actually reaches the relay.
     let _ = tokio::time::timeout(Duration::from_secs(5), publisher.wait_for_sync()).await;

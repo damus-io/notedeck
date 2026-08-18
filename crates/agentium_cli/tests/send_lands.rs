@@ -83,8 +83,8 @@ async fn send_publishes_user_message_to_the_relay() {
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
         Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
-    let relay =
-        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
     let url = relay.url();
 
     // Seed the SENDER's cache with just the state, so the selector resolves; the
@@ -97,10 +97,7 @@ async fn send_publishes_user_message_to_the_relay() {
     let verifier_dir = TempDir::new().expect("verifier tmp");
     let mut verifier =
         Engine::open(verifier_dir.path().to_str().expect("path"), SECKEY).expect("verifier engine");
-    let mut ver_tx = verifier.transport_handle().expect("verifier transport");
-    verifier
-        .connect(&mut ver_tx, &url)
-        .expect("verifier connect");
+    verifier.connect(&url).expect("verifier connect");
     let mut watch = verifier.watch_session("sess-send").expect("watch");
 
     // Run the real binary: connect → settle → publish the user message → exit

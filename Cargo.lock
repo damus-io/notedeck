@@ -198,7 +198,6 @@ dependencies = [
  "hex",
  "nostrdb",
  "nostrdb_net",
- "nostrdb_relay",
  "serde",
  "serde_json",
  "tempfile",
@@ -2605,6 +2604,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "profiling",
+ "rustls",
  "serde",
  "serde_derive",
  "serde_json",
@@ -3639,7 +3639,6 @@ dependencies = [
  "hex",
  "nostrdb",
  "nostrdb_net",
- "nostrdb_relay",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5263,7 +5262,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.10.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=f3cd6dd18c96#f3cd6dd18c96d59927ad09cfbbc491396c0f0502"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=c23591d5edaa#c23591d5edaa6094dc5da080c94f3c930d074aa8"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -5279,7 +5278,7 @@ dependencies = [
 [[package]]
 name = "nostrdb_net"
 version = "0.1.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=f3cd6dd18c96#f3cd6dd18c96d59927ad09cfbbc491396c0f0502"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=c23591d5edaa#c23591d5edaa6094dc5da080c94f3c930d074aa8"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -5304,21 +5303,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nostrdb_relay"
-version = "0.11.0-beta.1"
-dependencies = [
- "futures-util",
- "hex",
- "negentropy 0.5.0",
- "nostrdb",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.24.0",
- "tracing",
-]
-
-[[package]]
 name = "notebook_cli"
 version = "0.11.0-beta.1"
 dependencies = [
@@ -5326,7 +5310,6 @@ dependencies = [
  "enostr",
  "nostrdb",
  "nostrdb_net",
- "nostrdb_relay",
  "notedeck_notebook",
  "serde_json",
  "tempfile",
@@ -5380,7 +5363,7 @@ dependencies = [
  "nostr 0.37.0",
  "nostr-relay-builder",
  "nostrdb",
- "nostrdb_relay",
+ "nostrdb_net",
  "nwc",
  "once_cell",
  "poll-promise",

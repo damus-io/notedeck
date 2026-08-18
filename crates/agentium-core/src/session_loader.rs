@@ -213,6 +213,49 @@ fn load_session_messages_with_author(
     }
 }
 
+/// Wire form of a `tool_result` note's `content`: the one-line human `summary`
+/// plus the optional raw `output` tail (e.g. bash stdout/stderr).
+///
+/// The live host holds both on its in-memory [`ExecutedTool`], but only the
+/// summary used to reach the wire (the note carried `"tool_name: summary"` and
+/// [`ExecutedTool::output`] is `#[serde(skip)]`), so a client reconstructing a
+/// remote session purely from notes lost all tool output. Encoding both as JSON
+/// here lets [`render_conversation_note`] rebuild the same `ExecutedTool` a
+/// remote observer — or a local reload — would otherwise never see
+/// (headway:dave/sting-february-sausage).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolResultContent {
+    /// Human summary, e.g. `"exit 0"`, `"154 lines"`, `"3 matches"`.
+    pub summary: String,
+    /// Raw textual output to surface inline; `None` when the tool has none
+    /// worth showing (already captured by `summary`, or a diff-bearing edit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl ToolResultContent {
+    /// Serialize a tool result into a note's `content` field.
+    pub fn encode(summary: &str, output: Option<&str>) -> String {
+        serde_json::to_string(&Self {
+            summary: summary.to_string(),
+            output: output.map(str::to_string),
+        })
+        // A `String` and an `Option<String>` always serialize; never panic the
+        // render loop over it — the bare summary is a lossless-enough fallback.
+        .unwrap_or_else(|_| summary.to_string())
+    }
+
+    /// Parse a note's `content`. Falls back to treating the whole string as the
+    /// `summary` with no `output`, which keeps pre-encoding notes (their content
+    /// was a plain `"tool_name: summary"` line) rendering as before.
+    pub fn decode(content: &str) -> Self {
+        serde_json::from_str::<Self>(content).unwrap_or_else(|_| Self {
+            summary: content.to_string(),
+            output: None,
+        })
+    }
+}
+
 /// Render one conversation note into a chat [`Message`], or `None` for roles
 /// that carry no display message (permission_response, progress, …).
 ///
@@ -233,14 +276,15 @@ pub fn render_conversation_note(
             AssistantMessage::from_text(content.to_string()),
         )),
         Some("tool_result") => {
-            let summary = crate::util::truncate(content, 200);
+            let decoded = ToolResultContent::decode(content);
+            let summary = crate::util::truncate(&decoded.summary, 200);
             Some(Message::ToolResponse(ToolResponse::executed_tool(
                 ExecutedTool {
                     tool_name: get_tag_value(note, "tool-name")
                         .unwrap_or("tool")
                         .to_string(),
                     summary,
-                    output: None,
+                    output: decoded.output,
                     parent_task_id: None,
                     file_update: None,
                 },
@@ -1275,5 +1319,77 @@ mod tests {
         // Missing in both sets reports the live-set error, not the deleted one.
         let err = resolve_session_including_deleted(&live, &deleted, "zzz").unwrap_err();
         assert!(err.contains("no session matching 'zzz'"), "{err}");
+    }
+
+    /// A tool result's raw output round-trips through the note content, so a
+    /// remote observer (which reconstructs purely from notes) sees the same
+    /// output the live host held instead of just the summary.
+    #[test]
+    fn tool_result_content_round_trips_output() {
+        let encoded = ToolResultContent::encode("exit 0", Some("hello\nworld\n"));
+        let decoded = ToolResultContent::decode(&encoded);
+        assert_eq!(decoded.summary, "exit 0");
+        assert_eq!(decoded.output.as_deref(), Some("hello\nworld\n"));
+
+        // No output: encodes without an `output` key, decodes back to None.
+        let encoded = ToolResultContent::encode("3 matches", None);
+        assert!(!encoded.contains("output"), "output key omitted: {encoded}");
+        assert_eq!(ToolResultContent::decode(&encoded).output, None);
+    }
+
+    /// Pre-encoding notes carried a plain `"tool_name: summary"` content line
+    /// (not JSON). Decoding must treat the whole string as the summary so old
+    /// sessions keep rendering rather than showing raw text as garbage.
+    #[test]
+    fn tool_result_content_decodes_legacy_plaintext() {
+        let decoded = ToolResultContent::decode("Bash: exit 0");
+        assert_eq!(decoded.summary, "Bash: exit 0");
+        assert_eq!(decoded.output, None);
+    }
+
+    /// Loading a `tool_result` note whose content encodes both summary and
+    /// output surfaces the output on the reconstructed [`ExecutedTool`] — the
+    /// remote-observer path that previously lost all tool output.
+    #[tokio::test]
+    async fn loads_tool_result_output_from_note() {
+        let sk = test_secret_key();
+        let session_id = "tool-output-test";
+        let content = ToolResultContent::encode("exit 0", Some("build succeeded\n"));
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "run the build", 1_000, 0, &[]),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "tool_result",
+                &content,
+                1_001,
+                1,
+                &[("tool-name", "Bash")],
+            ),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        let tool = loaded.messages.iter().find_map(|m| match m {
+            Message::ToolResponse(r) => match r.responses() {
+                crate::tools::ToolResponses::ExecutedTool(t) => Some(t),
+                _ => None,
+            },
+            _ => None,
+        });
+        let tool = tool.expect("tool_result note should load as an ExecutedTool");
+        assert_eq!(tool.tool_name, "Bash");
+        assert_eq!(tool.summary, "exit 0");
+        assert_eq!(
+            tool.output.as_deref(),
+            Some("build succeeded\n"),
+            "raw output must survive the note round-trip for remote observers",
+        );
     }
 }

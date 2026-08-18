@@ -15,6 +15,7 @@ use crate::{JobPool, MediaJobs};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
+use enostr::{NormRelayUrl, RelayId};
 use nostrdb::{Config, Ndb, Transaction};
 use std::any::Any;
 use std::cell::RefCell;
@@ -260,6 +261,16 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
     sound: crate::SoundManager,
+    /// Account-wide private-note (PNS kind-1080) sync over the account's private
+    /// relays, pumped from [`tick`](Self::tick) independent of the foregrounded
+    /// app. `None` under the test harness (no Tokio runtime, must not open a
+    /// dedicated relay pool), matching the embedded `local_relay` gating.
+    host_private_sync: Option<crate::HostPrivateSync>,
+    /// SNS team roots apps registered for the host to sync (see
+    /// [`AppContext::register_team_root`](crate::AppContext::register_team_root)).
+    /// Handed to each frame's `AppContext` as a `&mut` field and read by
+    /// [`pump_host_private_sync`](Self::pump_host_private_sync).
+    private_channels: crate::PrivateChannels,
     /// Read-only, app-contributed registries handed to each frame's
     /// [`AppContext`](crate::AppContext): inline kind renderers (populated at
     /// startup) and agent tools (reset per-frame from the running apps).
@@ -278,7 +289,7 @@ pub struct Notedeck {
     /// feature, which is disabled for Android builds.
     #[cfg(feature = "local-relay")]
     #[allow(dead_code)]
-    local_relay: Option<nostrdb_relay::RelayHandle>,
+    local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -350,6 +361,7 @@ impl Notedeck {
             self.remote.service_relays(&mut self.job_pool);
             self.remote.process_events(ctx, &self.ndb);
         }
+        self.pump_host_private_sync();
         self.nip05_cache.poll();
         self.zap_verifier.poll(&self.ndb, self.zaps.pay_cache());
         let Some(app) = &self.app else {
@@ -401,6 +413,47 @@ impl Notedeck {
 
         #[cfg(feature = "puffin")]
         puffin_egui::profiler_window(ctx);
+    }
+
+    /// Drive the host's account-wide private-note (PNS kind-1080) sync for the
+    /// selected account. Runs every frame regardless of the foregrounded app, so
+    /// private notes sync whether or not the app that owns them is open. A no-op
+    /// when the host is disabled (tests) or the selected account has no secret (a
+    /// pubkey-only account cannot derive its PNS keypair).
+    fn pump_host_private_sync(&mut self) {
+        let Some(host) = self.host_private_sync.as_mut() else {
+            return;
+        };
+        let Some(filled) = self.accounts.selected_filled() else {
+            return;
+        };
+        let account = *filled.pubkey;
+        let secret = filled.secret_key.secret_bytes();
+        // The private set only ever holds websocket relays (built from the
+        // kind-10013 url list); the match is just exhaustiveness.
+        let urls: Vec<NormRelayUrl> = self
+            .accounts
+            .selected_account_private_relays()
+            .into_iter()
+            .filter_map(|relay| match relay {
+                RelayId::Websocket(url) => Some(url),
+                RelayId::Multicast => None,
+            })
+            .collect();
+        // SNS channels apps asked the host to sync (e.g. the notebook's derived
+        // vault) — unioned onto the account's key-share roster inside `update`.
+        let app_roots = self.private_channels.roots();
+        host.update(&mut self.ndb, &account, &secret, &urls, &app_roots);
+    }
+
+    /// Force-enable the host private-note sync even under the test harness, where
+    /// it is off by default. PNS end-to-end tests call this to exercise the host as
+    /// the account's inbound sync path (production enables it unconditionally when
+    /// not in test mode). Idempotent; the `Session` is still spawned lazily on the
+    /// first pumped frame, so this must run within a Tokio runtime to take effect.
+    pub fn enable_host_private_sync_for_test(&mut self) {
+        self.host_private_sync
+            .get_or_insert_with(crate::HostPrivateSync::new);
     }
 
     /// Shuts down app-owned runtime state before dropping the host.
@@ -559,6 +612,14 @@ impl Notedeck {
             crate::SoundManager::new(s.sounds_enabled, s.sound_volume)
         };
 
+        // Tests run no Tokio runtime and must not open a private relay pool; leave
+        // the host inert there (mirrors the `local_relay` gating below).
+        let host_private_sync = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            None
+        } else {
+            Some(crate::HostPrivateSync::new())
+        };
+
         // Embedded localhost relay for dogfooding tooling. On by default; tests
         // never start it (no Tokio runtime, and it must not open a port).
         #[cfg(feature = "local-relay")]
@@ -569,7 +630,7 @@ impl Notedeck {
                 .local_relay
                 .as_ref()
                 .and_then(|addr| match addr.parse() {
-                    Ok(socket_addr) => nostrdb_relay::spawn(ndb.clone(), socket_addr)
+                    Ok(socket_addr) => nostrdb_net::relay::server::spawn(ndb.clone(), socket_addr)
                         .map_err(|err| error!("failed to start local relay on {addr}: {err}"))
                         .ok(),
                     Err(err) => {
@@ -602,6 +663,8 @@ impl Notedeck {
             nip05_cache: Nip05Cache::new(),
             i18n,
             sound,
+            host_private_sync,
+            private_channels: crate::PrivateChannels::default(),
             registries: crate::AppRegistries::default(),
             app_actions: AppActionQueue::default(),
             navigator: crate::Navigator::default(),
@@ -639,6 +702,12 @@ impl Notedeck {
 
     pub fn notedeck_ref<'a>(&'a mut self, ui_ctx: &egui::Context) -> NotedeckRef<'a> {
         let remote = self.remote.api(ui_ctx);
+        // No host (tests) or nothing declared ⇒ nothing to reconcile ⇒ settled, so
+        // an app that gates on this is never blocked by a sync that isn't running.
+        let private_sync_settled = self
+            .host_private_sync
+            .as_ref()
+            .is_none_or(crate::HostPrivateSync::settled);
         NotedeckRef {
             app_ctx: AppContext {
                 ndb: &mut self.ndb,
@@ -647,6 +716,7 @@ impl Notedeck {
                 remote,
                 note_cache: &mut self.note_cache,
                 accounts: &mut self.accounts,
+                private_sync_settled,
                 global_wallet: &mut self.global_wallet,
                 path: &self.path,
                 args: &self.args,
@@ -663,6 +733,7 @@ impl Notedeck {
                 registries: &self.registries,
                 app_actions: &mut self.app_actions,
                 navigator: &mut self.navigator,
+                private_channels: &mut self.private_channels,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },

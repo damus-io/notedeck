@@ -18,14 +18,72 @@
 //! relay marked the relay set is empty and both directions are no-ops, so the
 //! app stays purely local.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+
 use enostr::{NormRelayUrl, Pubkey, RelayId};
 use hashbrown::HashSet;
-use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb_net::relay::sync::Session;
 
 use crate::{
     AppContext, ExplicitPublishApi, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey,
     SubOwnerKey,
 };
+
+/// Errors from [`write_private_note`], the host-owned outbound write path.
+#[derive(Debug, thiserror::Error)]
+pub enum PrivateWriteError {
+    /// PNS encryption or 1080-envelope signing failed (see [`enostr::pns::wrap`]).
+    #[error("PNS wrap failed")]
+    Wrap,
+    /// Serializing the signed 1080 envelope back to JSON failed.
+    #[error("envelope serialization failed: {0}")]
+    Serialize(String),
+    /// nostrdb rejected the envelope ingest frame.
+    #[error("ndb ingest failed: {0}")]
+    Ingest(String),
+}
+
+/// Author a private note for the selected account: PNS-wrap a signed inner event
+/// into a kind-1080 envelope and ingest it into the local nostrdb.
+///
+/// This is the host-owned outbound write path. Apps author an inner event (a
+/// fully signed nostr note JSON) and hand it here; **no app wraps 1080 envelopes
+/// or runs a publish queue itself**. The single local ingest does double duty:
+///
+/// - nostrdb's `process_pns` unwraps the envelope, making the inner event
+///   immediately queryable on this device (a local read reflects the write at
+///   once, exactly as an inbound relay envelope would); and
+/// - [`HostPrivateSync`] picks the freshly-ingested envelope up off its local
+///   subscription poll and fans it out to the account's private relays
+///   ([`HostPrivateSync::fan_out_local_envelopes`]), so the user's other devices
+///   see it.
+///
+/// `secret_key` is the account's 32-byte device secret; its PNS keypair is
+/// derived here ([`enostr::pns::derive_pns_keys`]). With no private relay marked
+/// the fan-out is a no-op and the note simply stays local.
+///
+/// The 3-element `["EVENT","_pns",{…}]` relay frame drives nostrdb's PNS-unwrap
+/// ingest path; the `"_pns"` subid is a local marker (the envelope carries no
+/// seen-on relay, so the fan-out publishes it to every private relay).
+///
+/// Designed as the convergence point for every app's private write: dave's
+/// session events today, notebook/headway private documents later.
+pub fn write_private_note(
+    ndb: &Ndb,
+    secret_key: &[u8; 32],
+    inner_json: &str,
+) -> Result<(), PrivateWriteError> {
+    let pns_keys = enostr::pns::derive_pns_keys(secret_key);
+    let envelope = enostr::pns::wrap(&pns_keys, inner_json, crate::time::unix_time_secs())
+        .ok_or(PrivateWriteError::Wrap)?;
+    let envelope_json = envelope
+        .json()
+        .map_err(|e| PrivateWriteError::Serialize(e.to_string()))?;
+    ndb.process_event(&format!("[\"EVENT\",\"_pns\",{envelope_json}]"))
+        .map_err(|e| PrivateWriteError::Ingest(e.to_string()))
+}
 
 /// Fan a single locally-ingested `["EVENT", {…}]` frame out to `relays` as a
 /// bare-event publish. The outbox re-frames the bare event per relay.
@@ -70,6 +128,24 @@ pub fn fan_out_unseen_notes(
     keys: &[NoteKey],
     relays: &[RelayId],
 ) {
+    fan_out_unseen_notes_with(ndb, txn, keys, relays, |json, targets| {
+        api.publish_event_json(json, targets)
+    });
+}
+
+/// The seen-on/`is_rumor` fan-out logic shared by the outbox path
+/// ([`fan_out_unseen_notes`]) and the host [`Session`] path
+/// ([`HostPrivateSync`]). For each key it resolves the note, skips unwrapped
+/// rumors, computes the private relays it hasn't been seen on, and hands the
+/// note's JSON plus those targets to `publish` — the only difference between the
+/// two callers being which transport `publish` writes to.
+fn fan_out_unseen_notes_with(
+    ndb: &Ndb,
+    txn: &Transaction,
+    keys: &[NoteKey],
+    relays: &[RelayId],
+    mut publish: impl FnMut(String, Vec<RelayId>),
+) {
     if relays.is_empty() || keys.is_empty() {
         return;
     }
@@ -82,8 +158,10 @@ pub fn fan_out_unseen_notes(
         // unit, and nostrdb attributes the envelope's relay to the inner rumor, so
         // without this guard a sealed shared-board edit would be rebroadcast in
         // plaintext to every *other* private relay it hasn't been seen on. The
-        // envelope itself is published by the app that authored it (see the SNS
-        // publish path); this fan-out only carries plaintext app events.
+        // sealed 1080/1081 *envelope* is the note that actually gets fanned (by the
+        // host's [`HostPrivateSync::fan_out_local_envelopes`] over its envelope
+        // subs); the app-outbox caller only ever carries plaintext app events. The
+        // guard makes both paths safe against a rumor key slipping in either way.
         if note.is_rumor() {
             continue;
         }
@@ -115,7 +193,519 @@ pub fn fan_out_unseen_notes(
         let Ok(json) = note.json() else {
             continue;
         };
-        api.publish_event_json(json, targets);
+        publish(json, targets);
+    }
+}
+
+/// The stable subscription id the host's [`Session`] declares on every private
+/// relay. It is a single logical subscription (one filter set) fanned across the
+/// relay set, so dropping it closes the account's private `REQ` on all of them.
+/// The one filter set carries the account's PNS 1080 stream *and* every joined
+/// SNS channel's 1081/1082 streams, so one id closes everything.
+const HOST_PRIVATE_SUB_ID: &str = "host/private";
+
+/// The unlinkable pubkey that signs (and thus authors) the account's kind-1080
+/// PNS envelopes, HKDF-derived from the account secret
+/// (`enostr::pns::derive_pns_keys`). Every device for the same account derives the
+/// same pubkey, so this names the account's private-note stream. A PNS envelope
+/// wraps an account-private inner note — notebook longform, a dave session state,
+/// a headway board-pref — NIP-44 encrypted to that keypair; relays only ever see
+/// the opaque envelope, and nostrdb (seeded with the account key at sign-in)
+/// auto-unwraps it on ingest so the inner note becomes queryable by its own kind.
+fn pns_author(account_secret: &[u8; 32]) -> Pubkey {
+    enostr::pns::derive_pns_keys(account_secret).keypair.pubkey
+}
+
+/// Filter for the account's kind-1080 PNS envelope stream, authored by
+/// [`pns_author`]. Full-history: no `since`/time window — the negentropy backfill
+/// only transfers the envelopes this device lacks, so bounding the window would
+/// just risk dropping older private notes for no bandwidth saving. Because the
+/// derived author is a pure function of the account secret, this single filter
+/// pulls back *every* app's private notes for the account.
+fn pns_envelope_filter(pns_pubkey: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([enostr::pns::PNS_KIND as u64])
+        .authors([pns_pubkey.bytes()])
+        .build()
+}
+
+// ===== SNS (sealed shared session) roster + channel sync =====
+//
+// An SNS `team_root` is a shared channel secret: possession is membership in a
+// shared board/session, and registering the root with [`Ndb::add_team_root`]
+// makes nostrdb auto-unwrap that channel's kind-1081 envelopes. A member is added
+// by gift-wrapping them a kind-1082 key-share, which nostrdb unwraps into a
+// durable, queryable `1082` rumor — so the roster already lives in the db and
+// rides the account's NIP-59 inbox across devices, with no disk config. Registered
+// roots are ephemeral in nostrdb (they don't survive a restart), so the roster
+// must be re-registered each boot/account-switch, mirroring `add_key`.
+//
+// These are the *sync mechanism*, generalized out of `notedeck_headway`'s `teams`
+// module so the host can register roots and subscribe to their envelopes for
+// *every* SNS app centrally. App-level *policy* — which board coordinate a root
+// unlocks, its epoch/rotation, folding a board's edits — stays in the owning app.
+// For sync we only need the root itself, so unlike headway's board-bearing `Team`
+// roster these keep every key-shared root, including ones that name no board
+// (harmless to register).
+
+/// Filter for unwrapped SNS key-share rumors (kind-1082) — the shares nostrdb has
+/// peeled out of gift-wraps addressed to one of our account keys. The roster is
+/// derived from these (see [`registered_roots`]); a live subscription on the same
+/// filter surfaces new joins from the account's other devices.
+fn keyshare_filter() -> Filter {
+    Filter::new()
+        .kinds([enostr::sns::KEYSHARE_KIND as u64])
+        .limit(500)
+        .build()
+}
+
+/// Filter for a shared channel's kind-1081 envelopes, authored by `team_pubkey`
+/// (the team keypair whose pubkey *is* the channel). Every sealed edit is one such
+/// envelope, so this is the inbound sync stream for that channel.
+fn team_envelope_filter(team_pubkey: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+        .authors([team_pubkey.bytes()])
+        .limit(5000)
+        .build()
+}
+
+/// The kind-1081 envelope stream of *every* roster channel at once, authored by
+/// any of `team_pubkeys`. One local subscription over this drives the outbound
+/// fan-out of freshly-authored sealed envelopes across all channels (see
+/// [`HostPrivateSync::fan_out_local_envelopes`]); a `limit` is inert for a
+/// subscription, so it is left unbounded.
+fn team_envelopes_filter(team_pubkeys: &[Pubkey]) -> Filter {
+    Filter::new()
+        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+        .authors(team_pubkeys.iter().map(|k| k.bytes()))
+        .build()
+}
+
+/// The team keypair pubkey that seals (and thus authors) `root`'s kind-1081
+/// envelopes — the channel to subscribe to. `None` if the root is unusable.
+fn team_pubkey(root: &[u8; 32]) -> Option<Pubkey> {
+    Some(enostr::sns::derive_sns_keys(root)?.team_keypair.pubkey)
+}
+
+/// Every SNS `team_root` `author` has been key-shared, reconstructed from nostrdb.
+///
+/// Reads the unwrapped kind-1082 rumors (see [`keyshare_filter`]), keeps the ones
+/// gift-wrapped to `author` (nostrdb records the recipient on the rumor), and
+/// returns each share's raw 32-byte `team_root`, de-duplicated. Membership thus
+/// survives restarts and rides the NIP-59 inbox across devices with no config file.
+///
+/// Unlike headway's board-bearing roster this keeps shares that name no board: for
+/// sync we only need the root to register + subscribe, and registering an extra
+/// root is harmless. App-level board semantics filter the roster themselves.
+fn registered_roots(ndb: &Ndb, author: &Pubkey) -> Vec<[u8; 32]> {
+    let Ok(txn) = Transaction::new(ndb) else {
+        return Vec::new();
+    };
+    let Ok(results) = ndb.query(&txn, &[keyshare_filter()], 500) else {
+        return Vec::new();
+    };
+    let mut roots: Vec<[u8; 32]> = Vec::new();
+    for res in results {
+        // A `1082` unwrapped for another local account isn't ours.
+        if res.note.rumor_receiver_pubkey() != Some(author.bytes()) {
+            continue;
+        }
+        let Some(share) = enostr::sns::parse_keyshare(&res.note) else {
+            continue;
+        };
+        if !roots.contains(&share.team_root) {
+            roots.push(share.team_root);
+        }
+    }
+    roots
+}
+
+/// Register every `root` with nostrdb so it auto-unwraps that channel's kind-1081
+/// envelopes, then run one [`Ndb::process_sns`] catch-up peel for envelopes that
+/// were ingested before the root was registered. Idempotent — call on boot and
+/// after every account switch (mirrors `add_key`). The catch-up walk is only paid
+/// when a root was actually newly registered.
+fn register_roots(ndb: &Ndb, roots: &[[u8; 32]]) {
+    let mut registered = false;
+    for root in roots {
+        registered |= ndb.add_team_root(root);
+    }
+    if !registered {
+        return;
+    }
+    let Ok(txn) = Transaction::new(ndb) else {
+        return;
+    };
+    ndb.process_sns(&txn);
+}
+
+/// The inputs the host's private [`Session`] subscription was last declared for.
+/// Re-declaration is deduped on this value: only a new account, a changed private
+/// relay set, or a grown/shrunk SNS roster warrants tearing down and reopening the
+/// `REQ`. The roster roots are held sorted so equality is order-independent.
+#[derive(PartialEq, Eq)]
+struct DeclaredSync {
+    account: Pubkey,
+    relays: Vec<NormRelayUrl>,
+    roots: Vec<[u8; 32]>,
+}
+
+/// The SNS team roots apps have asked the host to sync this session — the seam
+/// [`AppContext::register_team_root`](crate::AppContext::register_team_root)
+/// writes into and [`HostPrivateSync`] reads from its off-foreground pump.
+///
+/// It exists because some SNS channels have no kind-1082 key-share to discover
+/// them from: the notebook's vault is a *derived* team-of-one channel
+/// (`derive_board_root(secret, "notebook")`), so an app that owns such a channel
+/// hands the host its root directly instead of via the roster. Roots accumulate
+/// (registering an extra one is harmless — see [`registered_roots`]); an app
+/// re-registers its root each frame and the set is simply deduped.
+///
+/// Held by [`Notedeck`](crate::Notedeck) and handed to each frame's `AppContext`
+/// as a `&mut` field (like [`AppActionQueue`](crate::AppActionQueue)): the app
+/// registers through it during `update`/`render`, and the host reads the
+/// accumulated set from its pump — a different, non-overlapping borrow — so a
+/// plain owned set suffices with no interior mutability.
+#[derive(Default)]
+pub struct PrivateChannels {
+    roots: HashSet<[u8; 32]>,
+}
+
+impl PrivateChannels {
+    /// Register an SNS `team_root` for the host to register with nostrdb, sync
+    /// inbound, and fan outbound. Idempotent; call each frame the channel is live.
+    pub fn register_team_root(&mut self, root: [u8; 32]) {
+        self.roots.insert(root);
+    }
+
+    /// A snapshot of the registered roots, for the host's pump to union into its
+    /// roster.
+    pub fn roots(&self) -> Vec<[u8; 32]> {
+        self.roots.iter().copied().collect()
+    }
+}
+
+/// The host's account-wide private-note sync, run from [`Notedeck`](crate::Notedeck)
+/// independent of whichever app is foregrounded.
+///
+/// The host owns a long-lived [`Session`] over its own [`RelayPool`] — a small,
+/// dedicated pool for the account's 1–2 private-sync relays, separate from the
+/// app read/write outbox — and feeds it one filter set covering the account's
+/// whole private surface:
+///
+/// - the account's kind-1080 PNS envelope stream ([`pns_envelope_filter`]);
+/// - one kind-1081 envelope stream per SNS channel in the account's roster
+///   ([`team_envelope_filter`]), so a co-member's sealed shared-board edits land
+///   off-foreground. The roster is the union of the channels key-shared to the
+///   account (from nostrdb — see [`registered_roots`]) and the roots apps
+///   registered this session ([`PrivateChannels`]), e.g. the notebook's derived
+///   team-of-one vault, which has no key-share of its own;
+/// - the account's kind-1082 key-share stream ([`keyshare_filter`]), so a new
+///   join accepted on *another* of the account's devices arrives here and grows
+///   the roster (the closed loop: relay → 1082 in ndb → roster poll → re-derive →
+///   new 1081 filter).
+///
+/// That covers *both* directions for the account's private notes at once:
+///
+/// - **inbound** — a live `REQ` plus a NIP-77 negentropy backfill pull the
+///   account's envelopes into the local nostrdb, where nostrdb auto-unwraps them
+///   (PNS via the seeded account key, SNS once the root is registered); apps then
+///   read the inner notes with plain local queries.
+/// - **outbound** — local subscriptions over the account's PNS 1080 stream *and*
+///   every roster channel's SNS 1081 stream drive an
+///   [`is_rumor`](nostrdb::Note::is_rumor)-guarded fan-out of freshly-authored
+///   envelopes (e.g. a notebook longform, or a headway shared-board edit made on
+///   this device) out to the private relays via [`Session::publish`]. The host
+///   owns the whole private wire — both kinds, both directions — so an SNS app
+///   never publishes its own sealed envelopes.
+///
+/// Which filters to sync and the fan-out guard are host policy and live here; the
+/// [`Session`] itself is kind-agnostic. With no private relay marked the relay set
+/// is empty and both directions are no-ops, so the account stays purely local.
+pub struct HostPrivateSync {
+    /// The long-lived sync loop over the account's private relays. Lazily spawned
+    /// on the first [`update`](Self::update) where a Tokio runtime exists (it is
+    /// absent under the test harness, which keeps the host inert there). Held
+    /// behind an `Arc` so a settle watcher can be spawned onto the runtime with
+    /// its own handle.
+    session: Option<Arc<Session>>,
+    /// Local subscription over the account's kind-1080 envelope stream, re-created
+    /// when the selected account changes. Polled each frame to drive the outbound
+    /// fan-out.
+    local_sub: Option<Subscription>,
+    /// Local subscription over the account's kind-1082 key-share stream, re-created
+    /// when the selected account changes. Polled each frame purely as a cheap
+    /// change-detector: a fresh 1082 means a channel was joined (on this or another
+    /// device), so re-derive the SNS roster from ndb rather than querying it every
+    /// frame.
+    roster_sub: Option<Subscription>,
+    /// Local subscription over *every* roster channel's kind-1081 envelope stream
+    /// (all team pubkeys at once), re-created when the roster changes. Polled each
+    /// frame to drive the outbound fan-out of freshly-authored SNS envelopes — the
+    /// 1081 twin of [`local_sub`](Self::local_sub)'s 1080 PNS fan-out, so an app
+    /// (notebook, headway) never fans its own sealed envelopes.
+    local_sns_sub: Option<Subscription>,
+    /// The SNS roster derived from the account's kind-1082 key-shares
+    /// ([`registered_roots`]), cached between the roster-change signals so the ndb
+    /// walk is only paid when the key-share sub reports a join or the account
+    /// switches. The app-registered roots ([`update`](Self::update)'s `app_roots`)
+    /// are unioned onto this each frame; the union is what gets registered,
+    /// declared inbound, and fanned outbound.
+    roster_roots: Vec<[u8; 32]>,
+    /// What the remote subscription was last declared for, so we only re-declare
+    /// (and re-arm the settle watcher) on a real change — a new account, a changed
+    /// private relay set, or a grown/shrunk roster — rather than every frame.
+    declared: Option<DeclaredSync>,
+    /// Whether the history backfill for the current declaration has settled — read
+    /// by apps via [`AppContext::private_sync_settled`](crate::AppContext). Starts
+    /// `true` (nothing declared ⇒ nothing pending), flips `false` on each
+    /// (re)declaration, and latches back `true` when that declaration's backfill
+    /// completes. Shared with the settle watcher task.
+    settled: Arc<AtomicBool>,
+    /// Monotonic declaration generation. Each (re)declaration bumps it and spawns a
+    /// watcher capturing the new value; a watcher only latches [`settled`](Self::settled)
+    /// if its generation is still current, so a stale watcher from a superseded
+    /// declaration (e.g. after an account switch) can't mark a fresh sync settled.
+    settle_gen: Arc<AtomicU64>,
+}
+
+impl Default for HostPrivateSync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostPrivateSync {
+    /// A host sync that has not yet declared anything: inert until the first
+    /// [`update`](Self::update) resolves an account and (optionally) its relays.
+    pub fn new() -> Self {
+        Self {
+            session: None,
+            local_sub: None,
+            roster_sub: None,
+            local_sns_sub: None,
+            roster_roots: Vec::new(),
+            declared: None,
+            // Nothing declared yet ⇒ nothing to reconcile ⇒ settled.
+            settled: Arc::new(AtomicBool::new(true)),
+            settle_gen: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Whether the current private declaration's history backfill has settled.
+    ///
+    /// `true` when local-only (no private relay) or once the backfill has
+    /// reconciled; `false` in the window between (re)declaring the subscription
+    /// and its settle. Apps gate work that must not act on a mid-sync view (e.g.
+    /// dave's deleted-session litter avoidance) on this via
+    /// [`AppContext::private_sync_settled`](crate::AppContext).
+    pub fn settled(&self) -> bool {
+        self.settled.load(Ordering::Acquire)
+    }
+
+    /// Bring the host sync in line with the selected account: (re)declare the
+    /// private subscription over `private_urls` — the account's PNS 1080 stream, its
+    /// joined SNS channels' 1081 streams, and its 1082 key-share stream — and fan
+    /// any freshly-authored local PNS envelopes out to them. Cheap to call every
+    /// frame — the remote declaration is deduped on `(account, urls, roster)` and
+    /// only the small fan-out + roster-change polls run otherwise.
+    ///
+    /// `account`/`account_secret` are the selected account's pubkey and secret;
+    /// `private_urls` its marked private-sync relays (empty ⇒ local-only). Must be
+    /// called from within a Tokio runtime for the first, session-spawning call to
+    /// take effect; without one it is a no-op (the test harness runs no runtime).
+    pub fn update(
+        &mut self,
+        ndb: &mut Ndb,
+        account: &Pubkey,
+        account_secret: &[u8; 32],
+        private_urls: &[NormRelayUrl],
+        app_roots: &[[u8; 32]],
+    ) {
+        // Lazily spawn the session loop. `Session::new` `tokio::spawn`s, so it
+        // needs a runtime; under the test harness there is none, so the host stays
+        // inert (and `settled` stays `true`, i.e. never blocks an app).
+        if self.session.is_none() {
+            if tokio::runtime::Handle::try_current().is_err() {
+                return;
+            }
+            self.session = Some(Arc::new(Session::new(ndb.clone())));
+        }
+        let session = self.session.clone().expect("session just ensured");
+        let pns_pubkey = pns_author(account_secret);
+
+        // Re-create the account-keyed local subs when the account changes: the PNS
+        // sub's filter is keyed on the account-derived PNS author (a switch renames
+        // the stream), and the roster change-detector must observe only the new
+        // account's incoming key-shares.
+        let account_changed = self.declared.as_ref().map(|d| &d.account) != Some(account);
+        if account_changed {
+            if let Some(old) = self.local_sub.take() {
+                let _ = ndb.unsubscribe(old);
+            }
+            self.local_sub = ndb.subscribe(&[pns_envelope_filter(&pns_pubkey)]).ok();
+            if let Some(old) = self.roster_sub.take() {
+                let _ = ndb.unsubscribe(old);
+            }
+            self.roster_sub = ndb.subscribe(&[keyshare_filter()]).ok();
+        }
+
+        // Refresh the base SNS roster (the account's kind-1082 key-shares). Walking
+        // ndb for it is only paid when the account changed or the key-share sub
+        // reports a fresh 1082 (a channel joined here or on another device);
+        // otherwise the cached roster is reused.
+        let roster_dirty = account_changed
+            || self
+                .roster_sub
+                .is_some_and(|sub| !ndb.poll_for_notes(sub, 64).is_empty());
+        if roster_dirty {
+            self.roster_roots = registered_roots(ndb, account);
+        }
+
+        // The channels to sync are the key-shared roster *plus* the roots apps
+        // registered this session ([`AppContext::register_team_root`]) — e.g. the
+        // notebook's derived team-of-one vault, which has no key-share of its own.
+        // Registering an extra root is harmless, so the union is just deduped, not
+        // account-scoped.
+        let mut roots = self.roster_roots.clone();
+        for root in app_roots {
+            if !roots.contains(root) {
+                roots.push(*root);
+            }
+        }
+        roots.sort_unstable();
+
+        // On any change to the effective root set, register the roots (so nostrdb
+        // auto-unwraps their 1081 envelopes even off-foreground) and re-open the
+        // local 1081 sub that drives the outbound fan over *all* channels at once.
+        let roots_changed = self.declared.as_ref().map(|d| d.roots.as_slice()) != Some(&roots);
+        if roots_changed {
+            register_roots(ndb, &roots);
+            if let Some(old) = self.local_sns_sub.take() {
+                let _ = ndb.unsubscribe(old);
+            }
+            let team_pubkeys: Vec<Pubkey> = roots.iter().filter_map(team_pubkey).collect();
+            self.local_sns_sub = (!team_pubkeys.is_empty())
+                .then(|| ndb.subscribe(&[team_envelopes_filter(&team_pubkeys)]).ok())
+                .flatten();
+        }
+
+        // (Re)declare the remote subscription on any account / relay-set / roster
+        // change. Folding the sorted roster into the dedup key makes a joined
+        // channel re-declare (adding its 1081 filter) even when account + relays held.
+        let next = DeclaredSync {
+            account: *account,
+            relays: private_urls.to_vec(),
+            roots,
+        };
+        if self.declared.as_ref() != Some(&next) {
+            self.redeclare(&session, &pns_pubkey, private_urls, &next.roots);
+            self.declared = Some(next);
+        }
+
+        self.fan_out_local_envelopes(ndb, &session, private_urls);
+    }
+
+    /// Replace the private declaration: close the prior `REQ` on every relay and,
+    /// when the account still has private relays, open a fresh live + backfilling
+    /// subscription over the current set, arming a generation-guarded settle
+    /// watcher. With no private relays this is the teardown to local-only.
+    ///
+    /// The filter set is the account's whole private surface: the PNS 1080 stream,
+    /// one 1081 envelope stream per registered SNS `root`, and the 1082 key-share
+    /// stream. They ride one logical sub per relay under [`HOST_PRIVATE_SUB_ID`], so
+    /// the single drop above closes all of them.
+    fn redeclare(
+        &mut self,
+        session: &Arc<Session>,
+        pns_pubkey: &Pubkey,
+        urls: &[NormRelayUrl],
+        roots: &[[u8; 32]],
+    ) {
+        session.drop_subscription(HOST_PRIVATE_SUB_ID);
+        if urls.is_empty() {
+            // Local-only: nothing to reconcile, so the view is trivially settled.
+            self.settled.store(true, Ordering::Release);
+            return;
+        }
+
+        // One logical subscription (same id + filter set) fanned across the relay
+        // set; the same filters drive the live `REQ` and the history backfill.
+        let mut filters = vec![pns_envelope_filter(pns_pubkey)];
+        for root in roots {
+            if let Some(team_pk) = team_pubkey(root) {
+                filters.push(team_envelope_filter(&team_pk));
+            }
+        }
+        // The 1082 key-share stream: a join accepted on another of the account's
+        // devices arrives here and (via the roster poll) grows the roster.
+        filters.push(keyshare_filter());
+        for url in urls {
+            session.set_subscription(
+                HOST_PRIVATE_SUB_ID,
+                url.to_string(),
+                filters.clone(),
+                filters.clone(),
+            );
+        }
+
+        // Mid-sync until the backfill settles. Bump the generation and spawn a
+        // watcher that latches `settled` only if it is still the current
+        // declaration when the backfill completes.
+        self.settled.store(false, Ordering::Release);
+        let gen = self.settle_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let session = session.clone();
+        let settled = self.settled.clone();
+        let settle_gen = self.settle_gen.clone();
+        tokio::spawn(async move {
+            session.wait_for_sync().await;
+            if settle_gen.load(Ordering::Acquire) == gen {
+                settled.store(true, Ordering::Release);
+            }
+        });
+    }
+
+    /// Poll the local envelope subscriptions — the account's kind-1080 PNS stream
+    /// *and* every roster channel's kind-1081 SNS stream — and fan freshly-authored
+    /// envelopes out to the private relays they have not been seen on yet, via
+    /// [`Session::publish`].
+    ///
+    /// The seen-on check ([`fan_out_unseen_notes_with`]) keeps an envelope pulled
+    /// *in* by the inbound leg from being echoed straight back out, and the
+    /// `is_rumor` guard keeps a sealed rumor from ever leaking in the clear. Even
+    /// with no private relay we still drain the polls so a later-marked relay does
+    /// not receive an unbounded backlog dump in one frame. Fanning both streams
+    /// here is what lets an SNS app (notebook, headway) never publish its own
+    /// sealed 1081 envelopes — the host owns the whole private wire, both kinds and
+    /// both directions.
+    fn fan_out_local_envelopes(&self, ndb: &Ndb, session: &Session, urls: &[NormRelayUrl]) {
+        let mut keys = self
+            .local_sub
+            .map(|sub| ndb.poll_for_notes(sub, 64))
+            .unwrap_or_default();
+        if let Some(sns_sub) = self.local_sns_sub {
+            keys.extend(ndb.poll_for_notes(sns_sub, 64));
+        }
+        if keys.is_empty() || urls.is_empty() {
+            return;
+        }
+        let relays: Vec<RelayId> = urls.iter().cloned().map(RelayId::Websocket).collect();
+        let Ok(txn) = Transaction::new(ndb) else {
+            return;
+        };
+        fan_out_unseen_notes_with(ndb, &txn, &keys, &relays, |json, targets| {
+            let target_urls: Vec<String> = targets
+                .into_iter()
+                .filter_map(|relay| match relay {
+                    RelayId::Websocket(url) => Some(url.to_string()),
+                    RelayId::Multicast => None,
+                })
+                .collect();
+            if !target_urls.is_empty() {
+                session.publish(json, target_urls);
+            }
+        });
     }
 }
 
@@ -465,5 +1055,387 @@ mod tests {
         let keys = waiter.await.expect("await");
 
         assert!(relays_fanned_for(&ndb, &keys, vec![]).is_empty());
+    }
+
+    // ===== HostPrivateSync =====
+
+    /// Fixed timestamp for the test envelope so its id is deterministic and no
+    /// wall clock is read.
+    const HOST_TEST_TS: u64 = 1_700_000_000;
+
+    /// Build the kind-1080 PNS envelope wrapping a signed inner kind-1 note for
+    /// `secret`'s account, returning the `["EVENT", {…}]` ingest frame, the
+    /// envelope id, and the inner note id.
+    fn pns_envelope_frame(secret: &[u8; 32]) -> (String, [u8; 32], [u8; 32]) {
+        let pns_keys = enostr::pns::derive_pns_keys(secret);
+        let inner = NoteBuilder::new()
+            .kind(1)
+            .content("private longform body")
+            .created_at(HOST_TEST_TS)
+            .sign(secret)
+            .build()
+            .expect("inner note");
+        let inner_id = *inner.id();
+        let envelope =
+            enostr::pns::wrap(&pns_keys, &inner.json().expect("inner json"), HOST_TEST_TS)
+                .expect("pns envelope");
+        let envelope_id = *envelope.id();
+        let frame = format!("[\"EVENT\",{}]", envelope.json().expect("envelope json"));
+        (frame, envelope_id, inner_id)
+    }
+
+    /// Whether `ndb` holds note `id` yet (queryable == committed).
+    fn ndb_has(ndb: &Ndb, id: &[u8; 32]) -> bool {
+        Transaction::new(ndb)
+            .ok()
+            .is_some_and(|txn| ndb.get_note_by_id(&txn, id).is_ok())
+    }
+
+    /// End-to-end host sync over a shared private relay: device A fans a freshly
+    /// authored PNS envelope out to the relay, device B backfills it and
+    /// auto-unwraps the inner note — the notebook-longform cross-device path,
+    /// exercised at the `HostPrivateSync` level with the source device backgrounded
+    /// (we just pump `update`, no app).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_sync_delivers_pns_envelope_between_devices() {
+        use nostrdb_net::relay::server;
+        use std::time::Duration;
+
+        // A shared private relay backed by its own opaque db (never seeded with the
+        // account key, so it only ever holds the envelope, never the inner note).
+        let (_relay_dir, relay_ndb) = test_ndb();
+        let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
+            .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+        let (frame, envelope_id, inner_id) = pns_envelope_frame(&secret);
+
+        // Device A: declare the host sub first (so its fan-out poll observes the
+        // envelope), then author the envelope into the local db.
+        let (_a_dir, mut ndb_a) = test_ndb();
+        ndb_a.add_key(&secret);
+        let mut host_a = HostPrivateSync::new();
+        host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, &[]);
+        // A 2-element client frame (`["EVENT",{…}]`) is a locally-authored event,
+        // so ingest it as one — `process_event` expects the 3-element relay form.
+        ndb_a
+            .process_client_event(&frame)
+            .expect("ingest envelope on A");
+
+        // Pump A until the relay has stored the fanned-out envelope.
+        let mut fanned = false;
+        for _ in 0..500 {
+            host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, &[]);
+            if ndb_has(&relay_ndb, &envelope_id) {
+                fanned = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            fanned,
+            "device A should fan its PNS envelope out to the private relay"
+        );
+
+        // Device B: backfill the account's private stream; nostrdb auto-unwraps the
+        // envelope (B is seeded with the account key) so the inner note is queryable.
+        let (_b_dir, mut ndb_b) = test_ndb();
+        ndb_b.add_key(&secret);
+        let mut host_b = HostPrivateSync::new();
+        let mut delivered = false;
+        for _ in 0..500 {
+            host_b.update(&mut ndb_b, &account.pubkey, &secret, relays, &[]);
+            if ndb_has(&ndb_b, &inner_id) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered,
+            "device B should backfill the envelope and auto-unwrap the inner note"
+        );
+
+        relay.shutdown();
+    }
+
+    /// With no private relay marked the host stays local-only and immediately
+    /// reports settled — an app gating on it is never blocked by a sync that isn't
+    /// running.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_sync_local_only_is_settled() {
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+        let (_dir, mut ndb) = test_ndb();
+
+        let mut host = HostPrivateSync::new();
+        assert!(host.settled(), "a fresh host has nothing pending");
+        host.update(&mut ndb, &account.pubkey, &secret, &[], &[]);
+        assert!(
+            host.settled(),
+            "no private relay ⇒ nothing to reconcile ⇒ still settled"
+        );
+    }
+
+    // ===== SNS roster =====
+
+    /// A distinct 32-byte team root per `seed`.
+    fn test_root(seed: u8) -> [u8; 32] {
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = seed;
+        root
+    }
+
+    /// NIP-59 seal + gift-wrap a kind-1082 key-share to `recipient` and return the
+    /// kind-1059 giftwrap JSON — what a sharer publishes and nostrdb unwraps back
+    /// into a queryable `1082` rumor. `board_addr = None` builds a (board-less)
+    /// share that headway would drop but the sync roster keeps.
+    fn gift_wrapped_keyshare(
+        sender: &FullKeypair,
+        recipient: &Pubkey,
+        root: &[u8; 32],
+        board_addr: Option<&str>,
+    ) -> String {
+        enostr::sns::wrap_keyshare(
+            sender,
+            recipient,
+            root,
+            board_addr.unwrap_or(""),
+            None,
+            HOST_TEST_TS,
+        )
+        .expect("keyshare giftwrap")
+        .json()
+        .expect("giftwrap json")
+    }
+
+    /// Ingest a kind-1059 giftwrap as if it arrived from a relay; nostrdb unwraps it
+    /// into the durable kind-1082 rumor when the recipient key is seeded.
+    fn ingest_giftwrap(ndb: &Ndb, giftwrap_json: &str) {
+        ndb.process_event(&format!("[\"EVENT\",\"_gw\",{giftwrap_json}]"))
+            .expect("ingest giftwrap");
+    }
+
+    /// Poll the (async-ingested) roster until it has at least `n` roots, or time out.
+    async fn wait_roots(ndb: &Ndb, author: &Pubkey, n: usize) -> Vec<[u8; 32]> {
+        for _ in 0..250 {
+            let roots = registered_roots(ndb, author);
+            if roots.len() >= n {
+                return roots;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("roster never reached {n} root(s)");
+    }
+
+    /// The roster reads a share gift-wrapped to the account (and never one wrapped
+    /// to a different account), including a board-less share the sync path keeps.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn roster_reads_shares_for_recipient_only() {
+        let (_dir, ndb) = test_ndb();
+        let author = FullKeypair::generate();
+        let other = FullKeypair::generate();
+        let sender = FullKeypair::generate();
+        ndb.add_key(&author.secret_key.secret_bytes());
+
+        let with_board = test_root(0x22);
+        let board_less = test_root(0x33);
+        ingest_giftwrap(
+            &ndb,
+            &gift_wrapped_keyshare(&sender, &author.pubkey, &with_board, Some("30619:owner:x")),
+        );
+        // A board-less share headway drops — the sync roster still registers it.
+        ingest_giftwrap(
+            &ndb,
+            &gift_wrapped_keyshare(&sender, &author.pubkey, &board_less, None),
+        );
+
+        let roots = wait_roots(&ndb, &author.pubkey, 2).await;
+        assert!(roots.contains(&with_board));
+        assert!(roots.contains(&board_less));
+        // Wrapped to `author`; never counts as `other`'s.
+        assert!(registered_roots(&ndb, &other.pubkey).is_empty());
+    }
+
+    /// End-to-end host sync of a *sealed shared-board* (SNS) edit over a shared
+    /// private relay: device A's headway authors a kind-1081 envelope and publishes
+    /// it (modelled by seeding the relay directly, since the host's outbound leg is
+    /// PNS-only); device B's host derives the channel from its key-share roster,
+    /// backfills the envelope, and nostrdb auto-unwraps the inner rumor — all with
+    /// headway backgrounded (we just pump `update`, no app). This is the inbound SNS
+    /// leg the host takes over from headway in Stage 3.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_sync_delivers_sns_envelope_between_devices() {
+        use nostrdb_net::relay::server;
+        use std::time::Duration;
+
+        // The shared board root and its channel keypair (the 1081 author).
+        let root = test_root(0x55);
+        let sns_keys = enostr::sns::derive_sns_keys(&root).expect("sns keys");
+
+        // A shared private relay over its own opaque db — never seeded with the root,
+        // so it only ever holds the opaque 1081 envelope, never the inner rumor.
+        let (_relay_dir, relay_ndb) = test_ndb();
+        let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
+            .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        // Device A seals a board edit and its envelope reaches the relay. This test
+        // isolates the inbound leg, so we model A's publish by ingesting the
+        // envelope straight into the relay's db (the host's own 1081 fan-out is
+        // exercised separately in `host_fans_app_registered_channel_between_devices`).
+        let author = FullKeypair::generate();
+        let secret = author.secret_key.secret_bytes();
+        let member = FullKeypair::generate();
+        let rumor = NoteBuilder::new()
+            .kind(1)
+            .content("sealed shared-board edit")
+            .created_at(HOST_TEST_TS)
+            .sign(&member.secret_key.secret_bytes())
+            .build()
+            .expect("rumor");
+        let inner_id = *rumor.id();
+        let envelope = enostr::sns::wrap_rumor(
+            &sns_keys,
+            &member,
+            &rumor.json().expect("rumor json"),
+            HOST_TEST_TS,
+        )
+        .expect("sns envelope");
+        relay_ndb
+            .process_event(&format!(
+                "[\"EVENT\",\"a\",{}]",
+                envelope.json().expect("envelope json")
+            ))
+            .expect("seed relay with envelope");
+
+        // Device B: seed the account key and a key-share for the root (as its NIP-59
+        // inbox would carry), so the host derives the channel from the roster,
+        // registers the root, backfills the 1081, and auto-unwraps the inner rumor.
+        let (_b_dir, mut ndb_b) = test_ndb();
+        ndb_b.add_key(&secret);
+        let sharer = FullKeypair::generate();
+        ingest_giftwrap(
+            &ndb_b,
+            &gift_wrapped_keyshare(&sharer, &author.pubkey, &root, Some("30619:owner:board")),
+        );
+
+        let mut host_b = HostPrivateSync::new();
+        let mut delivered = false;
+        for _ in 0..500 {
+            host_b.update(&mut ndb_b, &author.pubkey, &secret, relays, &[]);
+            if ndb_has(&ndb_b, &inner_id) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered,
+            "device B's host should backfill the 1081 envelope and auto-unwrap it"
+        );
+
+        relay.shutdown();
+    }
+
+    /// The app-registered-root path end to end: a channel with **no key-share**
+    /// (a derived team-of-one vault, registered via `app_roots` — the seam
+    /// [`AppContext::register_team_root`] feeds), synced both ways by the host.
+    /// Device A registers the root, seals an edit, and *its host* fans the 1081
+    /// envelope out (no app publishes it); device B registers the same derived root
+    /// and backfills + auto-unwraps it. Proves both new host halves at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_fans_app_registered_channel_between_devices() {
+        use nostrdb_net::relay::server;
+        use std::time::Duration;
+
+        // A derived-style team-of-one root apps register directly — never key-shared.
+        let root = test_root(0x66);
+        let sns_keys = enostr::sns::derive_sns_keys(&root).expect("sns keys");
+        let app_roots = std::slice::from_ref(&root);
+
+        let (_relay_dir, relay_ndb) = test_ndb();
+        let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
+            .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+
+        // Device A: register the root (opens the local 1081 sub), then locally
+        // ingest a sealed envelope exactly as the notebook store's `ingest_sealed`
+        // does — the host, not the app, fans it out on the next pump.
+        let (_a_dir, mut ndb_a) = test_ndb();
+        ndb_a.add_key(&secret);
+        let mut host_a = HostPrivateSync::new();
+        host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, app_roots);
+
+        let rumor = NoteBuilder::new()
+            .kind(1)
+            .content("app-registered channel edit")
+            .created_at(HOST_TEST_TS)
+            .sign(&secret)
+            .build()
+            .expect("rumor");
+        let inner_id = *rumor.id();
+        let envelope = enostr::sns::wrap_rumor(
+            &sns_keys,
+            &account,
+            &rumor.json().expect("json"),
+            HOST_TEST_TS,
+        )
+        .expect("sns envelope");
+        ndb_a
+            .process_event(&format!(
+                "[\"EVENT\",\"_local\",{}]",
+                envelope.json().expect("envelope json")
+            ))
+            .expect("local envelope ingest");
+
+        // Device B: register the SAME derived root (no key-share) and backfill.
+        let (_b_dir, mut ndb_b) = test_ndb();
+        ndb_b.add_key(&secret);
+        let mut host_b = HostPrivateSync::new();
+
+        let mut delivered = false;
+        for _ in 0..500 {
+            // A's host fans its locally-ingested envelope; B's host backfills it.
+            host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, app_roots);
+            host_b.update(&mut ndb_b, &account.pubkey, &secret, relays, app_roots);
+            if ndb_has(&ndb_b, &inner_id) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered,
+            "an app-registered channel's 1081 envelope should fan from A's host and \
+             auto-unwrap on B's"
+        );
+
+        relay.shutdown();
+    }
+
+    /// A registered root derives a stable team pubkey and a well-formed envelope
+    /// filter; registration is idempotent.
+    #[test]
+    fn registers_roots_and_derives_channel() {
+        let (_dir, ndb) = test_ndb();
+        let root = test_root(0x44);
+        // First registration reports newly-added; a repeat is a no-op.
+        register_roots(&ndb, &[root]);
+        register_roots(&ndb, &[root]);
+
+        let pk = team_pubkey(&root).expect("team pubkey");
+        let filter = team_envelope_filter(&pk);
+        // The filter targets the channel's 1081 stream authored by the team pubkey.
+        assert!(filter.json().expect("filter json").contains("1081"));
     }
 }

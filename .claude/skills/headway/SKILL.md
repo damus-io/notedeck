@@ -161,7 +161,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | --- | --- |
 | `show [cards...] [--archived] [--all] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards; `--all` prints every board) |
 | `seed` | Create the default board if none exists |
-| `add <title...> [--col <c>] [-l <labels>] [--parent <card>]` | Add a card (defaults to the first column; `-l`/`--label` tags it; `--parent` creates it as a subissue) |
+| `add <title...> [--col <c>] [-l <labels>] [--parent <card>] [--desc <text>\|--desc-file <path>]` | Add a card (defaults to the first column; `-l`/`--label` tags it; `--parent` creates it as a subissue; `--desc`/`--desc-file` sets its description at creation) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |
 | `title <card> <title...>` | Edit a card's title |
 | `desc <card> <text...>` | Edit a card's description |
@@ -184,6 +184,24 @@ repeatable and each value may be comma-separated, so `-l a,b --label c` and
 
 ```bash
 headway add "Fix the relay reconnect" --col todo -l bug,p1
+```
+
+`add` can also set the new card's description at creation, saving a follow-up
+`headway desc <card> …` (and the need to learn the new card's id first).
+`--desc <text>` takes the description inline; `--desc-file <path>` reads it from
+a file, or from stdin when `<path>` is `-`, so a long multi-line markdown
+description can heredoc in with no shell-escaping. The two are mutually exclusive
+and trailing whitespace is trimmed (so a heredoc's closing newline doesn't ride
+along). Both compose with `--col`/`-l`/`--parent`:
+
+```bash
+headway add "Rework the sync engine" --col todo --desc "Backfill stalls past the maxSyncEvents cap."
+headway add "Migration plan" --col todo --desc-file - <<'EOF'
+## Migration plan
+
+1. Fork the session loop
+2. Retire the per-app poller
+EOF
 ```
 
 Other flags: `--board <id>` (target another board for one run; see Multiple

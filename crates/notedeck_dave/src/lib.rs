@@ -17,7 +17,6 @@ pub mod render;
 pub mod session;
 pub mod session_cache;
 pub mod session_discovery;
-mod transport;
 
 // The pure, egui-free engine modules live in the platform-neutral
 // `agentium-core` crate. Re-export them under their historical `crate::` paths
@@ -33,25 +32,23 @@ mod vec3;
 pub mod worktree;
 
 use agent_status::AgentStatus;
-use agentium_core::transport::{SubscriptionId, SubscriptionSpec, Transport};
 use backend::{
     AiBackend, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend, RemoteOnlyBackend,
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
-use enostr::{KeypairUnowned, NormRelayUrl, RelayId};
+use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
-use nostrdb::{Subscription, Transaction};
+use nostrdb::{NoteKey, Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType, ScopedSubEoseStatus,
+    DataPathType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
-use transport::{scoped_identity, RemoteApiTransport};
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
@@ -76,29 +73,8 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
-/// Dave PNS history window retained from the previous negentropy sync path.
-const PNS_HISTORY_WINDOW_SECS: u64 = 7 * 86400;
-
-/// Normalize a relay URL to always have a trailing slash.
-fn normalize_relay_url(url: String) -> String {
-    if url.ends_with('/') {
-        url
-    } else {
-        url + "/"
-    }
-}
-
 /// How long a pending placeholder session waits before being removed.
 const PENDING_SESSION_TIMEOUT_SECS: f64 = 15.0;
-
-/// How long the PNS discovery subscription may stay un-settled before the
-/// [latch](Dave::discovery_settled) is forced on anyway. The settle signals
-/// (live EOSE + full-history reconcile) never fire against a relay that never
-/// connects or never EOSEs, which would otherwise defer remote session
-/// discovery, status and deletion updates for the entire app run. Forcing the
-/// latch after this deadline degrades to processing the mid-sync snapshot
-/// (idempotent guards still apply) rather than freezing remote updates.
-const DISCOVERY_SETTLE_TIMEOUT_SECS: f64 = 20.0;
 
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
@@ -114,8 +90,8 @@ fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
 ///
 /// Dave drives its own relay stack, so it takes the *embedded* engine (no relay
 /// loop, no Tokio requirement) and uses the engine's `prepare_*` methods to
-/// build + locally-ingest its remote-session write events, then publishes them
-/// from its own batched [`Dave::pending_relay_events`] queue. Constructed on
+/// build + locally-ingest its remote-session write events; the host's
+/// private-sync Session fans the freshly-ingested envelopes out. Constructed on
 /// demand at each drain from the current account, so it always signs and
 /// author-scopes with whichever account is selected. `None` if the secret is
 /// rejected (logged).
@@ -161,13 +137,6 @@ fn route_new_session(ai_mode: AiMode, has_remote_hosts: bool) -> NewSessionRoute
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PnsRemoteSubState {
-    account: enostr::Pubkey,
-    relay_url: String,
-    pns_author: enostr::Pubkey,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 struct PnsLocalState {
     account: enostr::Pubkey,
     has_secret_key: bool,
@@ -187,7 +156,6 @@ struct PnsLocalRuntime {
     active_overlay: DaveOverlay,
     pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
     pending_message_load: Option<PendingMessageLoad>,
-    pending_relay_events: Vec<session_events::BuiltEvent>,
     session_state_sub: Option<nostrdb::Subscription>,
     session_command_sub: Option<nostrdb::Subscription>,
     /// One shared per-account subscription for live conversation events across
@@ -229,7 +197,6 @@ impl PnsLocalRuntime {
             active_overlay: DaveOverlay::DirectoryPicker,
             pending_archive_convert: None,
             pending_message_load: None,
-            pending_relay_events: Vec::new(),
             session_state_sub: None,
             session_command_sub: None,
             conversation_sub: None,
@@ -261,42 +228,6 @@ impl PnsLocalRuntime {
             kill_process_tree(child);
         }
     }
-}
-
-/// Stable transport identity for the selected account's PNS discovery
-/// subscription.
-fn pns_remote_sub_id() -> SubscriptionId {
-    SubscriptionId::new("dave/pns", "pns")
-}
-
-fn pns_remote_sub_author(secret_key: &[u8; 32]) -> enostr::Pubkey {
-    enostr::pns::derive_pns_keys(secret_key).keypair.pubkey
-}
-
-/// Build the PNS discovery subscription spec for the engine's [`Transport`].
-fn pns_remote_sub_config(
-    pns_relay_url: &str,
-    pns_author: enostr::Pubkey,
-    now: u64,
-) -> Result<SubscriptionSpec, enostr::Error> {
-    let relay = NormRelayUrl::new(pns_relay_url)?;
-    let since = now.saturating_sub(PNS_HISTORY_WINDOW_SECS);
-    let pns_filter = nostrdb::Filter::new()
-        .kinds([enostr::pns::PNS_KIND as u64])
-        .authors([pns_author.bytes()])
-        .limit(500)
-        .build();
-    let pns_history_filter = nostrdb::Filter::new()
-        .kinds([enostr::pns::PNS_KIND as u64])
-        .authors([pns_author.bytes()])
-        .since(since)
-        .build();
-    Ok(SubscriptionSpec {
-        id: pns_remote_sub_id(),
-        relay,
-        live_filters: vec![pns_filter],
-        history_filters: vec![pns_history_filter],
-    })
 }
 
 /// A permission-mode change decoded from a remote command, to apply on the local
@@ -542,7 +473,6 @@ pub struct Dave {
     /// Waiting for ndb to finish indexing 1988 events so we can load messages.
     pending_message_load: Option<PendingMessageLoad>,
     /// Events waiting to be published to relays (queued from non-pool contexts).
-    pending_relay_events: Vec<session_events::BuiltEvent>,
     /// Local ndb subscription for kind-31988 session state events.
     /// Fires when new session states are unwrapped from PNS events.
     session_state_sub: Option<nostrdb::Subscription>,
@@ -581,25 +511,6 @@ pub struct Dave {
     pending_summaries: Vec<enostr::NoteId>,
     /// Local machine hostname, included in session state events.
     hostname: String,
-    /// PNS sync relay. Sourced from the selected account's first "private"
-    /// NIP-65 relay each frame. `None` means local-only (no cross-device sync);
-    /// dave still ingests its events into nostrdb either way.
-    pns_relay_url: Option<String>,
-    /// Last selected account/relay/PNS-author tuple declared through scoped subscriptions.
-    pns_remote_sub_state: Option<PnsRemoteSubState>,
-    /// Whether the PNS discovery subscription has reached EOSE on every tracked
-    /// relay, i.e. the relay has replayed its stored head (including the latest
-    /// replaceable session-state revisions, so deletions are present) and the
-    /// synced view has settled. Gates acting on a mid-sync ndb snapshot — see
-    /// [`Dave::poll_discovery_settled`]. Reset to `false` whenever the discovery
-    /// subscription is (re)declared (e.g. account/relay switch).
-    discovery_settled: bool,
-    /// When the current discovery subscription was declared, i.e. when the
-    /// [settle](Dave::discovery_settled) wait began. Drives the
-    /// [`DISCOVERY_SETTLE_TIMEOUT_SECS`] fallback so an unreachable or
-    /// never-EOSE relay can't defer remote discovery forever. `None` while no
-    /// remote subscription is declared.
-    discovery_pending_since: Option<Instant>,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
@@ -669,8 +580,6 @@ impl PendingWorktreeRemoval {
 struct ProcessEventsResult {
     /// Sessions that need to dispatch queued user messages.
     needs_send: HashSet<SessionId>,
-    /// Nostr events to publish to relays.
-    events_to_publish: Vec<session_events::BuiltEvent>,
     /// Sessions that need a compact query dispatched (compact-and-proceed).
     needs_compact: HashSet<SessionId>,
 }
@@ -687,42 +596,32 @@ struct PendingMessageLoad {
     claude_session_id: String,
 }
 
-/// PNS-wrap an event and ingest the 1080 wrapper into ndb.
+/// Hand a freshly-built inner event to the host's private-note write path
+/// ([`notedeck::write_private_note`]).
 ///
-/// ndb's `process_pns` will unwrap it internally, making the inner
-/// event queryable. This ensures 1080 events exist in ndb for relay sync.
+/// The host PNS-wraps the event into a kind-1080 envelope, ingests it locally
+/// (nostrdb unwraps the inner event so dave can query it at once), and fans the
+/// envelope out to the account's private relays. dave authors the inner event and
+/// no longer wraps 1080 envelopes or runs a publish queue itself.
 fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8; 32]) {
-    let pns_keys = enostr::pns::derive_pns_keys(secret_key);
-    match session_events::wrap_pns(event_json, &pns_keys) {
-        Ok(pns_json) => {
-            // wrap_pns returns bare {…} JSON; use relay format
-            // ["EVENT", "subid", {…}] so ndb triggers PNS unwrapping
-            let wrapped = format!("[\"EVENT\", \"_pns\", {}]", pns_json);
-            if let Err(e) = ndb.process_event(&wrapped) {
-                tracing::warn!("failed to ingest PNS event: {:?}", e);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("failed to PNS-wrap for local ingest: {}", e);
-        }
+    if let Err(e) = notedeck::write_private_note(ndb, secret_key, event_json) {
+        tracing::warn!("failed to write private note: {e}");
     }
 }
 
 /// Ingest a freshly-built event: PNS-wrap into local ndb and push to the
 /// relay publish queue. Logs on success with `event_desc` and on failure.
 /// Returns `true` if the event was queued successfully.
-fn queue_built_event(
+fn ingest_built_event(
     result: Result<session_events::BuiltEvent, session_events::EventBuildError>,
     event_desc: &str,
     ndb: &nostrdb::Ndb,
     sk: &[u8; 32],
-    queue: &mut Vec<session_events::BuiltEvent>,
 ) -> bool {
     match result {
         Ok(evt) => {
             tracing::info!("{}", event_desc);
             pns_ingest(ndb, &evt.note_json, sk);
-            queue.push(evt);
             true
         }
         Err(e) => {
@@ -1062,11 +961,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
-        // The PNS sync relay is derived from the selected account's "private"
-        // NIP-65 relay each frame (see `update`). None means local-only: dave
-        // still ingests its events into nostrdb, just without cross-device sync.
-        let pns_relay_url = None;
-
         let directory_picker = DirectoryPicker::new();
 
         // Create IPC listener for external spawn-agent commands
@@ -1124,7 +1018,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             notification_state: notifications::NotificationState::new(),
             pending_archive_convert: None,
             pending_message_load: None,
-            pending_relay_events: Vec::new(),
             session_state_sub: None,
             session_command_sub: None,
             conversation_sub: None,
@@ -1139,10 +1032,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
             hostname,
-            pns_relay_url,
-            pns_remote_sub_state: None,
-            discovery_settled: false,
-            discovery_pending_since: None,
             pns_local_state: None,
             pns_local_runtimes: HashMap::new(),
             settings_serializer,
@@ -1163,8 +1052,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
-        // pns_relay_url is sourced from the account's kind-10013 NIP-37 private
-        // relay list in `update`, not from settings.
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
@@ -1424,7 +1311,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Process incoming tokens from the ai backend for ALL sessions.
     fn process_events(&mut self, app_ctx: &AppContext) -> ProcessEventsResult {
         let mut needs_send: HashSet<SessionId> = HashSet::new();
-        let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
         let mut needs_compact: HashSet<SessionId> = HashSet::new();
         let active_id = self.session_manager.active_id();
 
@@ -1476,7 +1362,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let live_event: Option<(String, &str, Option<&str>)> = match &res {
                     DaveApiResponse::Failed(err) => Some((err.clone(), "error", None)),
                     DaveApiResponse::ToolResult(result) => Some((
-                        format!("{}: {}", result.tool_name, result.summary),
+                        // Encode summary + raw output so a remote observer can
+                        // reconstruct the full result, not just the one-line
+                        // summary (headway:dave/sting-february-sausage). The
+                        // tool name travels in the `tool-name` tag below.
+                        session_loader::ToolResultContent::encode(
+                            &result.summary,
+                            result.output.as_deref(),
+                        ),
                         "tool_result",
                         Some(result.tool_name.as_str()),
                     )),
@@ -1493,7 +1386,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 if let Some((content, role, tool_name)) = live_event {
                     if let Some(sk) = &secret_key {
-                        if let Some(evt) = ingest_live_event(
+                        ingest_live_event(
                             session,
                             app_ctx.ndb,
                             sk,
@@ -1501,9 +1394,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             role,
                             None,
                             tool_name,
-                        ) {
-                            events_to_publish.push(evt);
-                        }
+                        );
                     }
                 }
 
@@ -1533,13 +1424,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                     DaveApiResponse::PermissionRequest(pending) => {
-                        handle_permission_request(
-                            session,
-                            pending,
-                            &secret_key,
-                            app_ctx.ndb,
-                            &mut events_to_publish,
-                        );
+                        handle_permission_request(session, pending, &secret_key, app_ctx.ndb);
                     }
                     DaveApiResponse::ToolResult(result) => {
                         handle_tool_result(session, result);
@@ -1601,7 +1486,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             session_id,
                             &secret_key,
                             app_ctx.ndb,
-                            &mut events_to_publish,
                             &mut needs_send,
                             &mut needs_compact,
                         );
@@ -1619,7 +1503,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 session_id,
                                 &secret_key,
                                 app_ctx.ndb,
-                                &mut events_to_publish,
                                 &mut needs_send,
                                 &mut needs_compact,
                             );
@@ -1641,7 +1524,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         ProcessEventsResult {
             needs_send,
-            events_to_publish,
             needs_compact,
         }
     }
@@ -2401,7 +2283,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             };
 
-            queue_built_event(
+            ingest_built_event(
                 state.build_event(&sk),
                 &format!(
                     "publishing session state: {} -> {}",
@@ -2409,7 +2291,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 ),
                 ctx.ndb,
                 &sk,
-                &mut self.pending_relay_events,
             );
 
             session.state_dirty = false;
@@ -2471,7 +2352,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     latest.unwrap_or(0),
                 )
             };
-            queue_built_event(
+            ingest_built_event(
                 state.build_event(&sk),
                 &format!(
                     "publishing deleted session state: {}",
@@ -2479,7 +2360,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 ),
                 ctx.ndb,
                 &sk,
-                &mut self.pending_relay_events,
             );
         }
     }
@@ -2488,7 +2368,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Called in the update loop where AppContext is available.
     ///
     /// The engine builds + locally-ingests each response (resolving the request's
-    /// note id from ndb); we publish it from [`Dave::pending_relay_events`].
+    /// note id from ndb); the host's private-sync Session fans it out.
     fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
         if self.pending_perm_responses.is_empty() {
             return;
@@ -2512,13 +2392,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 resp.message.as_deref(),
                 resp.cancel_turn,
             ) {
-                Ok(evt) => {
+                Ok(_) => {
                     tracing::info!(
                         "queued permission response for {} ({})",
                         resp.perm_id,
                         if resp.allowed { "allow" } else { "deny" }
                     );
-                    self.pending_relay_events.push(evt);
                 }
                 Err(e) => tracing::error!(
                     "failed to build permission response for {}: {:?}",
@@ -2548,13 +2427,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         for cmd in std::mem::take(&mut self.pending_mode_commands) {
             match engine.prepare_set_permission_mode(&cmd.session_id, cmd.mode) {
-                Ok(evt) => {
+                Ok(_) => {
                     tracing::info!(
                         "publishing permission mode command: {} -> {}",
                         cmd.session_id,
                         cmd.mode
                     );
-                    self.pending_relay_events.push(evt);
                 }
                 Err(e) => tracing::error!(
                     "failed to build mode command for {}: {:?}",
@@ -2584,9 +2462,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         for cmd in std::mem::take(&mut self.pending_interrupt_commands) {
             match engine.prepare_interrupt(&cmd.session_id) {
-                Ok(evt) => {
+                Ok(_) => {
                     tracing::info!("publishing interrupt command for {}", cmd.session_id);
-                    self.pending_relay_events.push(evt);
                 }
                 Err(e) => tracing::error!(
                     "failed to build interrupt command for {}: {:?}",
@@ -2741,23 +2618,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         };
 
-        // Defer materializing discovered sessions until the discovery
-        // subscription has settled (see `poll_discovery_settled`). Negentropy
-        // history reconciliation streams events in over several rounds, so a
-        // mid-sync snapshot can hold a session's `create` revision while its
-        // newer `deleted` revision is still pending — draining now would
-        // materialize an already-deleted "litter" session that vanishes a few
-        // frames later. We return *before* `poll_for_notes` so the notes stay
-        // queued on the subscription; once settled, the drain sees the netted
-        // head (ndb has collapsed each replaceable session-state event to its
-        // latest revision, and the creation path re-queries that latest
-        // revision, so deleted sessions never surface).
+        // Defer materializing discovered sessions until the host's account-wide
+        // private-note sync has settled (`AppContext::private_sync_settled`, driven
+        // by `notedeck::HostPrivateSync`). Negentropy history reconciliation streams
+        // events in over several rounds, so a mid-sync snapshot can hold a session's
+        // `create` revision while its newer `deleted` revision is still pending —
+        // draining now would materialize an already-deleted "litter" session that
+        // vanishes a few frames later. We return *before* `poll_for_notes` so the
+        // notes stay queued on the subscription; once settled, the drain sees the
+        // netted head (ndb has collapsed each replaceable session-state event to its
+        // latest revision, and the creation path re-queries that latest revision, so
+        // deleted sessions never surface).
         //
-        // Only gate when a remote discovery sync is actually pending: with no
-        // remote subscription (local-only) there is nothing to reconcile and
-        // `discovery_settled` never latches, so processing immediately is
-        // correct.
-        if self.discovery_sync_pending() {
+        // `private_sync_settled` is `true` when local-only (no private relay ⇒
+        // nothing to reconcile), so processing runs immediately in that case.
+        if !ctx.private_sync_settled {
             return;
         }
 
@@ -2777,12 +2652,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .iter()
             .filter_map(|s| s.agentic.as_ref().map(|a| a.event_session_id().to_string()))
             .collect();
-
-        // Remote sessions whose heartbeat landed this poll — reconciled against
-        // ndb after the txn drops (see `reconcile_remote_chat_from_ndb`), to pull
-        // in any conversation note that reached ndb out-of-band and so was never
-        // delivered through the live conversation poll.
-        let mut reconcile_ids: Vec<SessionId> = Vec::new();
 
         for key in note_keys {
             let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
@@ -2879,7 +2748,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     agentic.permission_mode =
                                         crate::session::permission_mode_from_str(pm);
                                 }
-                                reconcile_ids.push(session.id);
                             }
                         }
                     }
@@ -2979,17 +2847,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
                 self.active_overlay = DaveOverlay::None;
             }
-        }
-
-        // Drop the read txn before reconciling — `reconcile_remote_chat_from_ndb`
-        // opens its own transaction per session (avoids nested transactions).
-        drop(txn);
-
-        for id in reconcile_ids {
-            let Some(session) = self.session_manager.get_mut(id) else {
-                continue;
-            };
-            reconcile_remote_chat_from_ndb(session, ctx.ndb, &account);
         }
     }
 
@@ -3207,24 +3064,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// For local sessions: only process `role=user` messages arriving from
     /// remote clients (phone), collecting them for backend dispatch.
+    /// Poll freshly-arrived conversation events and route them to their
+    /// sessions.
+    ///
+    /// `fan_out_keys` is an out-param collecting the **wrapping PNS envelope**
+    /// (kind-1080) note key of each account-authored conversation note seen this
+    /// poll, resolved from the unwrapped rumor via
+    /// [`rumor_giftwrap_id`](nostrdb::Note::rumor_giftwrap_id). The caller fans
+    /// these out to the account's private relays: an event injected by the
+    /// `agentium` CLI lands only on the local embedded relay (its default publish
+    /// target), so without this re-broadcast the host renders it but the
+    /// account's *other* devices never receive it. The envelope, not the
+    /// plaintext rumor, is the sync unit (and the rumor would be dropped by
+    /// [`fan_out_unseen_notes`](notedeck::fan_out_unseen_notes)'s `is_rumor`
+    /// guard, never leaking cleartext).
     fn poll_remote_conversation_events(
         &mut self,
         ndb: &nostrdb::Ndb,
         secret_key: Option<&[u8; 32]>,
-    ) -> (Vec<(SessionId, String)>, Vec<session_events::BuiltEvent>) {
+        fan_out_keys: &mut Vec<NoteKey>,
+    ) -> Vec<(SessionId, String)> {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
-        let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
         let mut rebuild_ids: Vec<SessionId> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
-            return (remote_user_messages, events_to_publish);
+            return remote_user_messages;
         };
         let Some(sub) = self.conversation_sub else {
-            return (remote_user_messages, events_to_publish);
+            return remote_user_messages;
         };
 
         let note_keys = ndb.poll_for_notes(sub, 256);
         if note_keys.is_empty() {
-            return (remote_user_messages, events_to_publish);
+            return remote_user_messages;
         }
 
         // Route each polled conversation event to its session by `d`-tag. Both
@@ -3234,7 +3105,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let txn = match Transaction::new(ndb) {
             Ok(txn) => txn,
-            Err(_) => return (remote_user_messages, events_to_publish),
+            Err(_) => return remote_user_messages,
         };
 
         // Group polled notes by their target session, preserving arrival order
@@ -3248,9 +3119,31 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if *note.pubkey() != *account.bytes() {
                 continue;
             }
-            let Some(session_id) = session_events::get_tag_value(&note, "d")
-                .and_then(|dtag| by_dtag.get(dtag).copied())
-            else {
+            let session_id = session_events::get_tag_value(&note, "d")
+                .and_then(|dtag| by_dtag.get(dtag).copied());
+
+            // Collect the wrapping envelope for the caller's outbound fan-out
+            // (see the doc on this fn), but only for a note we did not publish
+            // ourselves. Notes dave builds ride `pending_relay_events` and are
+            // marked in `seen_note_ids` at build time, so skipping them avoids a
+            // second, redundant envelope on the relay; a note absent from the set
+            // reached ndb some other way — chiefly an agentium-CLI injection into
+            // the local embedded relay, which nothing else propagates. A note
+            // whose session isn't materialized here can't be matched against a
+            // dedup set, so fan it out (it isn't one of ours).
+            let self_published = session_id
+                .and_then(|sid| self.session_manager.get(sid))
+                .and_then(|s| s.agentic.as_ref())
+                .is_some_and(|a| a.seen_note_ids.contains(note.id()));
+            if !self_published {
+                if let Some(gw_id) = note.rumor_giftwrap_id() {
+                    if let Ok(gw_key) = ndb.get_notekey_by_id(&txn, gw_id) {
+                        fan_out_keys.push(gw_key);
+                    }
+                }
+            }
+
+            let Some(session_id) = session_id else {
                 continue;
             };
             by_session.entry(session_id).or_default().push(key);
@@ -3269,7 +3162,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let result =
                 process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
             remote_user_messages.extend(result.remote_user_messages);
-            events_to_publish.extend(result.events_to_publish);
             if result.rebuild_chat {
                 rebuild_ids.push(session_id);
             }
@@ -3299,7 +3191,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
         }
 
-        (remote_user_messages, events_to_publish)
+        remote_user_messages
     }
 
     fn rename_session(&mut self, id: SessionId, new_title: String) {
@@ -3535,7 +3427,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ndb: &nostrdb::Ndb,
         sk: &[u8; 32],
     ) {
-        queue_built_event(
+        ingest_built_event(
             session_events::build_run_config_event(
                 config,
                 &cwd.to_string_lossy(),
@@ -3545,7 +3437,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             "run-config",
             ndb,
             sk,
-            &mut self.pending_relay_events,
         );
     }
 
@@ -3557,7 +3448,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ndb: &nostrdb::Ndb,
         sk: &[u8; 32],
     ) {
-        queue_built_event(
+        ingest_built_event(
             session_events::build_run_config_delete_event(
                 config_id,
                 &cwd.to_string_lossy(),
@@ -3567,7 +3458,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             "run-config-delete",
             ndb,
             sk,
-            &mut self.pending_relay_events,
         );
     }
 
@@ -4029,9 +3919,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-            if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
-                self.pending_relay_events.push(evt);
-            }
+            build_user_send_event(session, app_ctx.ndb, &sk, &user_text);
         }
 
         session
@@ -4094,9 +3982,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Generate the kind-1988 `user` event (remote sends route through
             // the engine, local sends archive the host turn in-place).
             if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-                if let Some(evt) = build_user_send_event(session, app_ctx.ndb, &sk, &user_text) {
-                    self.pending_relay_events.push(evt);
-                }
+                build_user_send_event(session, app_ctx.ndb, &sk, &user_text);
             }
 
             let images = std::mem::take(&mut session.pending_images);
@@ -4334,153 +4220,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.load_resumed_session_history(ndb, account, dave_sid, &claude_sid);
     }
 
-    /// Point the PNS sync relay at the selected account's first "private"
-    /// NIP-65 relay. `None` (no private relay marked) keeps dave local-only.
-    ///
-    /// Multiple private relays are out of scope here: dave uses the first.
-    fn refresh_pns_relay_url(&mut self, ctx: &mut AppContext<'_>) {
-        let next = ctx
-            .accounts
-            .selected_account_private_relays()
-            .into_iter()
-            .find_map(|relay| match relay {
-                RelayId::Websocket(url) => Some(normalize_relay_url(url.to_string())),
-                _ => None,
-            });
-
-        if self.pns_relay_url != next {
-            tracing::info!(
-                previous_relay = ?self.pns_relay_url,
-                next_relay = ?next,
-                "Dave PNS relay changed"
-            );
-            self.pns_relay_url = next;
-        }
-    }
-
-    /// Declare the selected account's PNS discovery subscription through RemoteApi.
-    fn ensure_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
-        let account = *ctx.accounts.selected_account_pubkey();
-        let Some(secret_key) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
-        else {
-            self.clear_pns_remote_subscription(ctx);
-            return;
-        };
-        // No private relay marked -> local-only, no remote PNS subscription.
-        let Some(relay_url) = self.pns_relay_url.clone() else {
-            self.clear_pns_remote_subscription(ctx);
-            return;
-        };
-        let pns_author = pns_remote_sub_author(&secret_key);
-        let next_state = PnsRemoteSubState {
-            account,
-            relay_url: relay_url.clone(),
-            pns_author,
-        };
-        if self.pns_remote_sub_state.as_ref() == Some(&next_state) {
-            return;
-        }
-
-        let Ok(spec) = pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
-        else {
-            self.clear_pns_remote_subscription(ctx);
-            return;
-        };
-
-        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts).set_subscription(spec);
-        self.pns_remote_sub_state = Some(next_state);
-        // Fresh subscription: its EOSE has not been observed yet, so the synced
-        // view is once again mid-sync until `poll_discovery_settled` sees EOSE.
-        self.discovery_settled = false;
-        self.discovery_pending_since = Some(Instant::now());
-    }
-
-    /// Remove Dave's PNS discovery subscription via the engine [`Transport`].
-    fn clear_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
-        if self.pns_remote_sub_state.is_none() {
-            return;
-        }
-
-        RemoteApiTransport::new(&mut ctx.remote, ctx.accounts)
-            .drop_subscription(&pns_remote_sub_id());
-        self.pns_remote_sub_state = None;
-        self.discovery_settled = false;
-        self.discovery_pending_since = None;
-    }
-
-    /// Whether the remote discovery sync is still pending: a remote discovery
-    /// subscription is declared but its synced view has not
-    /// [settled](Dave::discovery_settled) yet.
-    ///
-    /// This is the single "is the ndb view still mid-sync?" predicate that
-    /// consumers gate on. It is `false` when there is no remote subscription
-    /// (local-only — nothing to reconcile) and once the sync has settled, and
-    /// `true` only in the window between (re)declaring the subscription and its
-    /// settle. [`Dave::poll_discovery_settled`] runs while this holds; snapshot
-    /// consumers defer while this holds.
-    fn discovery_sync_pending(&self) -> bool {
-        self.pns_remote_sub_state.is_some() && !self.discovery_settled
-    }
-
-    /// Latch [`Dave::discovery_settled`] once the PNS discovery subscription's
-    /// synced view has stopped churning.
-    ///
-    /// The discovery subscription has two independent lifecycles, and both must
-    /// quiesce before the ndb view is trustworthy:
-    ///
-    /// - **live EOSE** — the relay has replayed all stored events matching the
-    ///   live filter (the recent head, including the latest replaceable
-    ///   session-state revisions).
-    /// - **full-history settle** — the NIP-77 negentropy backfill over the
-    ///   history window has finished reconciling. This is the one that matters
-    ///   for litter: negentropy converges over *multiple rounds*, and a
-    ///   session's `create` can arrive in an early round with its `deleted`
-    ///   revision only in a later one. Until the rounds drain, materializing
-    ///   sessions from the snapshot resurrects already-deleted ones.
-    ///
-    /// Until both hold, the view is mid-sync: acting on it can materialize a
-    /// session whose `deleted` event has not arrived yet. Consumers gate that
-    /// work on this latch.
-    ///
-    /// Neither signal fires against a relay that never connects or never EOSEs,
-    /// so the latch is also forced on after [`DISCOVERY_SETTLE_TIMEOUT_SECS`] to
-    /// avoid deferring remote discovery, status and deletion updates for the
-    /// entire app run. The idempotent snapshot guards still apply after a forced
-    /// settle, so the worst case is a brief litter flicker on a relay that is
-    /// still reconciling past the deadline — not stale-forever remote state.
-    ///
-    /// Cheap to call every frame: it short-circuits once latched, and each query
-    /// is a small hashmap lookup over tracked-relay / tracked-sub state.
-    fn poll_discovery_settled(&mut self, ctx: &mut AppContext<'_>) {
-        if !self.discovery_sync_pending() {
-            return;
-        }
-        let identity = scoped_identity(&pns_remote_sub_id());
-        let scoped = ctx.remote.scoped_subs(ctx.accounts);
-        let live_eosed = matches!(
-            scoped.sub_eose_status(identity),
-            ScopedSubEoseStatus::Live(s) if s.all_eosed
-        );
-        if live_eosed && scoped.full_history_settled(identity) {
-            self.discovery_settled = true;
-            self.discovery_pending_since = None;
-            tracing::info!("dave discovery subscription settled (live EOSE + history reconciled)");
-            return;
-        }
-
-        let timed_out = self
-            .discovery_pending_since
-            .is_some_and(|since| since.elapsed().as_secs_f64() > DISCOVERY_SETTLE_TIMEOUT_SECS);
-        if timed_out {
-            self.discovery_settled = true;
-            self.discovery_pending_since = None;
-            tracing::warn!(
-                "dave discovery subscription settle timed out after {DISCOVERY_SETTLE_TIMEOUT_SECS}s \
-                 (relay unreachable or slow); processing mid-sync snapshot"
-            );
-        }
-    }
-
     /// Keep the selected account's PNS session state (workspace + ndb
     /// subscriptions + restored sessions) in sync with the account picker.
     ///
@@ -4563,7 +4302,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             active_overlay: std::mem::take(&mut self.active_overlay),
             pending_archive_convert: self.pending_archive_convert.take(),
             pending_message_load: self.pending_message_load.take(),
-            pending_relay_events: std::mem::take(&mut self.pending_relay_events),
             session_state_sub: self.session_state_sub.take(),
             session_command_sub: self.session_command_sub.take(),
             conversation_sub: self.conversation_sub.take(),
@@ -4609,7 +4347,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.active_overlay = runtime.active_overlay;
         self.pending_archive_convert = runtime.pending_archive_convert;
         self.pending_message_load = runtime.pending_message_load;
-        self.pending_relay_events = runtime.pending_relay_events;
         self.session_state_sub = runtime.session_state_sub;
         self.session_command_sub = runtime.session_command_sub;
         self.conversation_sub = runtime.conversation_sub;
@@ -4725,14 +4462,13 @@ pub fn is_agentium_kind(kind: u32) -> bool {
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        self.refresh_pns_relay_url(ctx);
         // Focus a session whose inline chip was clicked in another app.
         self.process_pending_open(ctx.ndb);
         self.ensure_pns_local_state(ctx);
-        self.ensure_pns_remote_subscription(ctx);
-        // Track whether the discovery sub's synced view has settled, so
-        // downstream polls can avoid acting on a mid-sync ndb snapshot.
-        self.poll_discovery_settled(ctx);
+        // The account's inbound PNS 1080 sync (and its settle signal, read via
+        // `ctx.private_sync_settled`) is now owned by the notedeck host, running
+        // off-foreground for every app. Dave keeps only its own outbound publish
+        // (below) and its local session-state fold.
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
@@ -4769,9 +4505,34 @@ impl notedeck::App for Dave {
         // the message is already in chat, so it will be included when the
         // current stream finishes and we re-dispatch.
         let sk_bytes = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
-        let (remote_user_msgs, conv_events) =
-            self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref());
-        self.pending_relay_events.extend(conv_events);
+        let mut fan_out_keys: Vec<NoteKey> = Vec::new();
+        let remote_user_msgs =
+            self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref(), &mut fan_out_keys);
+
+        // Re-broadcast each freshly-arrived conversation envelope to the account's
+        // private relays it hasn't reached yet. This is the outbound half of
+        // cross-device sync for conversation events that never passed through
+        // dave's own publish queue — chiefly a user message injected by the
+        // `agentium` CLI, which publishes only to the local embedded relay. Our
+        // own events already ride `pending_relay_events`; the relay dedupes the
+        // overlap by event id. `fan_out_unseen_notes` skips notes already seen on
+        // each target relay (and the plaintext rumor, via its `is_rumor` guard).
+        if !fan_out_keys.is_empty() {
+            let private_relays = ctx.accounts.selected_account_private_relays();
+            if !private_relays.is_empty() {
+                if let Ok(txn) = Transaction::new(ctx.ndb) {
+                    let mut api = ctx.remote.publisher_explicit();
+                    notedeck::fan_out_unseen_notes(
+                        &mut api,
+                        ctx.ndb,
+                        &txn,
+                        &fan_out_keys,
+                        &private_relays,
+                    );
+                }
+            }
+        }
+
         for (sid, _msg) in remote_user_msgs {
             let should_dispatch = self
                 .session_manager
@@ -4788,10 +4549,12 @@ impl notedeck::App for Dave {
         // Check if interrupt confirmation has timed out
         self.check_interrupt_timeout();
 
-        // Process incoming AI responses for all sessions
+        // Process incoming AI responses for all sessions. Every event these
+        // handlers build is ingested locally into nostrdb; the host's
+        // private-sync Session fans the freshly-ingested PNS envelopes out to the
+        // private relays, so dave keeps no outbound publish queue of its own.
         let ProcessEventsResult {
             needs_send: sessions_needing_send,
-            events_to_publish,
             needs_compact: sessions_needing_compact,
         } = self.process_events(ctx);
 
@@ -4799,33 +4562,33 @@ impl notedeck::App for Dave {
         self.publish_pending_perm_responses(ctx);
 
         // Build spawn command events through the engine (needs the selected
-        // account's secret from AppContext); publish them from our own queue.
+        // account's secret from AppContext). The engine ingests each event
+        // locally; the host fans it out to the private relays.
         if !self.pending_spawn_commands.is_empty() {
             if let Some(engine) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
                 .and_then(|sk| embedded_engine(ctx.ndb, &sk))
             {
                 for cmd in std::mem::take(&mut self.pending_spawn_commands) {
-                    match engine.prepare_spawn_command(
+                    if let Err(e) = engine.prepare_spawn_command(
                         &cmd.target_host,
                         &cmd.cwd.to_string_lossy(),
                         cmd.backend.as_str(),
                         &cmd.spawn_id,
                     ) {
-                        Ok(evt) => self.pending_relay_events.push(evt),
-                        Err(e) => tracing::warn!("failed to build spawn command: {:?}", e),
+                        tracing::warn!("failed to build spawn command: {:?}", e);
                     }
                 }
             }
         }
 
         // Build resume command events (deleted-chip resume of a session on
-        // another host) the same way; publish them from our own queue.
+        // another host) the same way; the engine ingests, the host fans out.
         if !self.pending_resume_commands.is_empty() {
             if let Some(engine) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
                 .and_then(|sk| embedded_engine(ctx.ndb, &sk))
             {
                 for cmd in std::mem::take(&mut self.pending_resume_commands) {
-                    match engine.prepare_resume_command(
+                    if let Err(e) = engine.prepare_resume_command(
                         &cmd.target_host,
                         &cmd.cwd.to_string_lossy(),
                         cmd.backend.as_str(),
@@ -4833,8 +4596,7 @@ impl notedeck::App for Dave {
                         &cmd.target_session_id,
                         &cmd.cli_session_id,
                     ) {
-                        Ok(evt) => self.pending_relay_events.push(evt),
-                        Err(e) => tracing::warn!("failed to build resume command: {:?}", e),
+                        tracing::warn!("failed to build resume command: {:?}", e);
                     }
                 }
             }
@@ -4845,40 +4607,6 @@ impl notedeck::App for Dave {
 
         // Build interrupt command events for remote sessions
         self.publish_pending_interrupt_commands(ctx);
-
-        self.pending_relay_events.extend(events_to_publish);
-        // Only publish to a remote relay when one is configured in the private
-        // relay list (and its PNS subscription is live). With no private relay
-        // dave is local-only:
-        // these events are already ingested into nostrdb at build time, and we
-        // retain the remote-publish queue so a later-configured private relay
-        // can sync the backlog.
-        if !self.pending_relay_events.is_empty() && self.pns_remote_sub_state.is_some() {
-            if let Some(pns_relay_url) = self.pns_relay_url.clone() {
-                if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-                    match NormRelayUrl::new(&pns_relay_url) {
-                        Ok(relay) => {
-                            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                            let mut transport =
-                                RemoteApiTransport::new(&mut ctx.remote, ctx.accounts);
-                            for event in std::mem::take(&mut self.pending_relay_events) {
-                                match session_events::wrap_pns(&event.note_json, &pns_keys) {
-                                    Ok(pns_json) => {
-                                        transport.publish_event_json(pns_json, vec![relay.clone()]);
-                                    }
-                                    Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to parse PNS relay {}: {:?}", pns_relay_url, e);
-                        }
-                    }
-                } else {
-                    tracing::warn!("no secret key for publishing pending Dave PNS events");
-                }
-            }
-        }
 
         // Poll for remote conversation actions (permission responses, commands).
         let applies = self.poll_remote_conversation_actions(ctx.ndb);
@@ -5236,14 +4964,14 @@ fn handle_tool_calls(
 
 /// Handle a permission request from the AI backend.
 ///
-/// Builds and publishes a permission request event for remote clients,
-/// stores the response sender for later, and adds the request to chat.
+/// Builds and locally-ingests a permission request event for remote clients
+/// (the host fans it out), stores the response sender for later, and adds the
+/// request to chat.
 fn handle_permission_request(
     session: &mut session::ChatSession,
     pending: messages::PendingPermission,
     secret_key: &Option<[u8; 32]>,
     ndb: &nostrdb::Ndb,
-    events_to_publish: &mut Vec<session_events::BuiltEvent>,
 ) {
     tracing::info!(
         "Permission request for tool '{}': {:?}",
@@ -5286,7 +5014,6 @@ fn handle_permission_request(
                         .permissions
                         .request_note_ids
                         .insert(pending.request.id, evt.note_id);
-                    events_to_publish.push(evt);
                 }
                 Err(e) => {
                     tracing::warn!("failed to build permission request event: {}", e);
@@ -5313,8 +5040,6 @@ fn handle_permission_request(
 pub(crate) struct ProcessedNotes {
     /// User messages received from remote clients (for local sessions).
     pub remote_user_messages: Vec<(SessionId, String)>,
-    /// Events that should be published to relays.
-    pub events_to_publish: Vec<session_events::BuiltEvent>,
     /// True if this batch needs the caller to rebuild the remote session's chat
     /// from ndb (see [`rebuild_remote_chat`]) — set only on the slow path, when
     /// a new displayable note sorts at or before what's already shown. In-order
@@ -5356,7 +5081,6 @@ pub(crate) fn process_conversation_notes<'a>(
     ndb: &nostrdb::Ndb,
 ) -> ProcessedNotes {
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
-    let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
     let mut rebuild_chat = false;
     // Newest `created_at` of a displayable remote note in this batch, applied
     // to `last_activity` after the loop (can't call `session.mark_activity`
@@ -5426,13 +5150,7 @@ pub(crate) fn process_conversation_notes<'a>(
         // in-place updates (marking a permission responded).
         match role {
             Some("permission_request") => {
-                handle_remote_permission_request(
-                    note,
-                    content,
-                    agentic,
-                    secret_key,
-                    &mut events_to_publish,
-                );
+                handle_remote_permission_request(note, content, agentic, secret_key, ndb);
             }
             Some("permission_response") => {
                 // Track that this permission was responded to, and reflect it on
@@ -5484,11 +5202,12 @@ pub(crate) fn process_conversation_notes<'a>(
             }
         }
 
-        // Handle proceed after compaction for remote sessions.
-        // Published as a relay event so the desktop backend picks it up.
+        // Handle proceed after compaction for remote sessions. Ingested locally;
+        // the host's private-sync Session fans it out so the desktop backend
+        // picks it up.
         if session.take_compact_and_proceed() {
             if let Some(sk) = secret_key {
-                if let Some(evt) = ingest_live_event(
+                ingest_live_event(
                     session,
                     ndb,
                     sk,
@@ -5496,9 +5215,7 @@ pub(crate) fn process_conversation_notes<'a>(
                     "user",
                     None,
                     None,
-                ) {
-                    events_to_publish.push(evt);
-                }
+                );
             }
         }
     }
@@ -5534,7 +5251,6 @@ pub(crate) fn process_conversation_notes<'a>(
 
     ProcessedNotes {
         remote_user_messages,
-        events_to_publish,
         rebuild_chat,
     }
 }
@@ -5591,62 +5307,6 @@ pub(crate) fn rebuild_remote_chat(
     }
 }
 
-/// Reconcile a remote session's chat with ndb when the live conversation poll
-/// may have missed notes.
-///
-/// The fast-path append in [`process_conversation_notes`] trusts that every note
-/// ordering at or before `tail_order` has already been displayed — an invariant
-/// that holds only when every such note was delivered through the live
-/// conversation subscription. A note that reaches ndb out-of-band — a negentropy
-/// backfill, or a note ingested before the subscription existed for an
-/// already-built chat — breaks it: the note is in ndb but never entered
-/// `seen_note_ids`, and because it sorts *before* the tail no later live note
-/// triggers the out-of-order rebuild that would recover it (an injected first
-/// user message is exactly this case — it is the thread root, so it sorts before
-/// every assistant reply that streams in after it). Driven off the kind-31988
-/// state-event heartbeat, this pulls any such note into the chat by rebuilding
-/// from ndb.
-///
-/// `seen_note_ids` only ever holds this session's ingested notes, so the note
-/// count in ndb exceeding it is a cheap, exact signal that an out-of-band note
-/// is waiting — an up-to-date session pays just one bounded id query and skips
-/// the rebuild.
-pub(crate) fn reconcile_remote_chat_from_ndb(
-    session: &mut session::ChatSession,
-    ndb: &nostrdb::Ndb,
-    author: &enostr::Pubkey,
-) {
-    if !session.is_remote() {
-        return;
-    }
-    let Some((claude_sid, seen)) = session
-        .agentic
-        .as_ref()
-        .map(|a| (a.event_session_id().to_string(), a.seen_note_ids.len()))
-    else {
-        return;
-    };
-
-    let Ok(txn) = Transaction::new(ndb) else {
-        return;
-    };
-    let filter = nostrdb::Filter::new()
-        .kinds([session_events::AI_CONVERSATION_KIND as u64])
-        .authors([author.bytes()])
-        .tags([claude_sid.as_str()], 'd')
-        .build();
-    let ndb_count = ndb
-        .query(&txn, &[filter], 10_000)
-        .map(|r| r.len())
-        .unwrap_or(0);
-    // Nothing in ndb we haven't already incorporated — the fast-path chat is
-    // complete, so skip the rebuild.
-    if ndb_count <= seen {
-        return;
-    }
-    rebuild_remote_chat(session, ndb, &txn, author);
-}
-
 /// Handle a remote permission request from a kind-1988 conversation event.
 ///
 /// Runs only the side effects — records the request note id and, if the runtime
@@ -5658,7 +5318,7 @@ fn handle_remote_permission_request(
     content: &str,
     agentic: &mut session::AgenticSessionData,
     secret_key: Option<&[u8; 32]>,
-    events_to_publish: &mut Vec<session_events::BuiltEvent>,
+    ndb: &nostrdb::Ndb,
 ) {
     let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) else {
         return;
@@ -5691,7 +5351,7 @@ fn handle_remote_permission_request(
         tool_name,
     );
     // Record the decision in memory so the rebuild overlay renders it as allowed
-    // (and expanded) even before the published response round-trips back through
+    // (and expanded) even before the ingested response round-trips back through
     // the relay.
     agentic.permissions.responded.insert(
         perm_id,
@@ -5713,7 +5373,9 @@ fn handle_remote_permission_request(
             &mut agentic.live_threading,
             sk,
         ) {
-            events_to_publish.push(evt);
+            // Ingest locally; the host's private-sync Session fans the envelope
+            // out to the relay so the remote backend sees the auto-accept.
+            pns_ingest(ndb, &evt.note_json, sk);
         }
     }
 }
@@ -5880,14 +5542,13 @@ fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo) {
 
 /// Handle stream-end for a session after the AI backend disconnects.
 ///
-/// Finalizes the assistant message, publishes the live event,
-/// and checks whether queued messages need redispatch.
+/// Finalizes the assistant message, ingests the live event locally (the host
+/// fans it out), and checks whether queued messages need redispatch.
 fn handle_stream_end(
     session: &mut session::ChatSession,
     session_id: SessionId,
     secret_key: &Option<[u8; 32]>,
     ndb: &nostrdb::Ndb,
-    events_to_publish: &mut Vec<session_events::BuiltEvent>,
     needs_send: &mut HashSet<SessionId>,
     needs_compact: &mut HashSet<SessionId>,
 ) {
@@ -5896,9 +5557,7 @@ fn handle_stream_end(
     // Generate live event for the finalized assistant message
     if let Some(sk) = secret_key {
         if let Some(text) = session.last_assistant_text() {
-            if let Some(evt) = ingest_live_event(session, ndb, sk, &text, "assistant", None, None) {
-                events_to_publish.push(evt);
-            }
+            ingest_live_event(session, ndb, sk, &text, "assistant", None, None);
         }
     }
 
@@ -6185,6 +5844,74 @@ mod tests {
         key
     }
 
+    /// Outbound fan-out primitive (headway:dave/light-hobby-upgrade): a
+    /// conversation note injected by the `agentium` CLI reaches only the local
+    /// embedded relay, so the host re-broadcasts its *wrapping* PNS envelope to
+    /// the account's private relays. This guards the mechanism that makes that
+    /// possible — an unwrapped rumor resolves to its kind-1080 envelope note key,
+    /// and that envelope is a non-rumor note that
+    /// [`notedeck::fan_out_unseen_notes`] will actually publish (it skips the
+    /// plaintext rumor via its `is_rumor` guard, so the inner note must not be
+    /// what we fan out).
+    #[tokio::test]
+    async fn conversation_rumor_resolves_to_fannable_envelope() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let user_evt = build_live_event(
+            "hello from the CLI",
+            "user",
+            "envelope-fanout-test",
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        // Register the account key so ndb's ingester unwraps the kind-1080
+        // envelope into its inner rumor (mirrors how notedeck configures ndb).
+        assert!(ndb.add_key(&sk), "ndb must accept the giftwrap key");
+
+        // Ingest the PNS-wrapped note exactly as it arrives over a relay and wait
+        // for the ingester to produce the inner rumor.
+        let sub = ndb
+            .subscribe(&[nostrdb::Filter::new()
+                .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                .build()])
+            .unwrap();
+        pns_ingest(&ndb, &user_evt.note_json, &sk);
+        let keys = ndb.wait_for_notes(sub, 1).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let inner = ndb.get_note_by_key(&txn, keys[0]).unwrap();
+        // The inner note is a rumor: fanning it out would leak plaintext, and
+        // `fan_out_unseen_notes` deliberately skips it — which is exactly why the
+        // fix fans out the envelope instead.
+        assert!(inner.is_rumor(), "unwrapped conversation note is a rumor");
+        assert_eq!(inner.content(), "hello from the CLI");
+
+        // Resolve the wrapping envelope the fix collects and fans out.
+        let gw_id = inner
+            .rumor_giftwrap_id()
+            .expect("rumor carries its giftwrap id");
+        let gw_key = ndb
+            .get_notekey_by_id(&txn, gw_id)
+            .expect("wrapping envelope is in ndb");
+        let envelope = ndb.get_note_by_key(&txn, gw_key).unwrap();
+        assert_eq!(
+            u64::from(envelope.kind()),
+            enostr::pns::PNS_KIND as u64,
+            "the resolved envelope is the kind-1080 PNS wrapper"
+        );
+        assert!(
+            !envelope.is_rumor(),
+            "the envelope is a real note fan_out_unseen_notes will publish"
+        );
+    }
+
     /// The selected account's pubkey alongside the author pubkeys of every
     /// note the shared conversation subscription matched.
     struct ConversationSubAuthors {
@@ -6281,292 +6008,6 @@ mod tests {
                 _ => None,
             })
             .collect()
-    }
-
-    /// Every `Message::User` body in a chat, in order.
-    fn user_texts(chat: &[Message]) -> Vec<&str> {
-        chat.iter()
-            .filter_map(|m| match m {
-                Message::User(u) => Some(u.as_str()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Observer regression (headway:dave/light-hobby-upgrade): a user message
-    /// injected into a running session via `agentium send` must render on a
-    /// remote observer even when the host backend's assistant reply streams in
-    /// and is processed first.
-    ///
-    /// This drives the observer's live-conversation loop faithfully: a real
-    /// author-scoped conversation subscription, PNS-unwrapped externally-authored
-    /// notes, and the exact `poll_for_notes` -> `process_conversation_notes` ->
-    /// `rebuild_remote_chat` sequence `poll_remote_conversation_events` runs. The
-    /// interleaving is the adversarial one from the card: the session is
-    /// discovered and hydrated from an *empty* ndb snapshot (the kind-31988 state
-    /// event beat the conversation notes to the observer), then the assistant
-    /// reply lands and is polled *before* the user message — seeding
-    /// `tail_order` past where the user message sorts.
-    #[tokio::test]
-    async fn observer_renders_injected_first_user_message() {
-        let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
-        let mut threading = ThreadingState::new();
-        let session_id_str = "inject-observer-test";
-
-        // The injected user message (published by the CLI via `agentium send`)
-        // is authored first; the host backend's assistant reply follows it.
-        let user_evt = build_live_event(
-            "Work on the thing",
-            "user",
-            session_id_str,
-            None,
-            None,
-            None,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
-        let asst_evt = build_live_event(
-            "On it",
-            "assistant",
-            session_id_str,
-            None,
-            None,
-            None,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
-
-        let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
-
-        // The observer's live conversation subscription (author-scoped, exactly
-        // as `subscribe_conversation_events` builds it).
-        let sub = subscribe_conversation_events(&ndb, author).unwrap();
-
-        // A freshly discovered remote session, hydrated from an empty ndb
-        // snapshot — the state event reached the observer before any
-        // conversation note did.
-        let mut session = session::ChatSession::new(
-            1,
-            PathBuf::from("/tmp"),
-            AiMode::Agentic,
-            BackendType::Claude,
-        );
-        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
-        {
-            let txn = Transaction::new(&ndb).unwrap();
-            let loaded = session_loader::load_session_messages_for_author(
-                &ndb,
-                &txn,
-                &author,
-                session_id_str,
-            );
-            let state = hydrate_test_state(session_id_str, Some("cli-uuid"));
-            hydrate_session_from_state(&mut session, &state, loaded, "observer-host");
-        }
-        assert!(session.is_remote(), "differing hostname makes this remote");
-        assert!(
-            session.chat.is_empty(),
-            "no conversation notes have synced to the observer yet"
-        );
-
-        // Ingest the inner kind-1988 note (as it exists after ndb unwraps the
-        // PNS envelope) and wait for the ingest thread, so the conversation
-        // subscription has it queued for the next poll. A throwaway sub gates on
-        // ingest without draining `sub`.
-        async fn ingest(ndb: &Ndb, evt: &session_events::BuiltEvent) {
-            let gate = ndb
-                .subscribe(&[nostrdb::Filter::new()
-                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
-                    .build()])
-                .unwrap();
-            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
-                .expect("ingest failed");
-            ndb.wait_for_notes(gate, 1).await.unwrap();
-        }
-
-        // One faithful observer poll: drain the conversation sub, process the
-        // batch, and rebuild from ndb when asked — mirroring
-        // `poll_remote_conversation_events`.
-        fn conv_poll(
-            session: &mut session::ChatSession,
-            ndb: &Ndb,
-            sub: nostrdb::Subscription,
-            author: &enostr::Pubkey,
-            sk: &[u8; 32],
-        ) {
-            let keys = ndb.poll_for_notes(sub, 256);
-            if keys.is_empty() {
-                return;
-            }
-            let txn = Transaction::new(ndb).unwrap();
-            let notes: Vec<_> = keys
-                .iter()
-                .filter_map(|k| ndb.get_note_by_key(&txn, *k).ok())
-                .collect();
-            let result = process_conversation_notes(notes, session, 1, true, Some(sk), ndb);
-            if result.rebuild_chat {
-                rebuild_remote_chat(session, ndb, &txn, author);
-            }
-        }
-
-        // The assistant reply lands and is polled first, seeding tail_order.
-        ingest(&ndb, &asst_evt).await;
-        conv_poll(&mut session, &ndb, sub, &author, &sk);
-        assert_eq!(
-            assistant_texts(&session.chat),
-            vec!["On it"],
-            "assistant reply renders"
-        );
-
-        // The injected user message arrives afterwards and must still render.
-        ingest(&ndb, &user_evt).await;
-        conv_poll(&mut session, &ndb, sub, &author, &sk);
-
-        assert_eq!(
-            user_texts(&session.chat),
-            vec!["Work on the thing"],
-            "the injected user message must render on the observer"
-        );
-        assert!(
-            matches!(session.chat.first(), Some(Message::User(_))),
-            "the user message sorts first (it is the thread root)"
-        );
-    }
-
-    /// Observer regression (headway:dave/light-hobby-upgrade): a conversation
-    /// note that reaches the observer's ndb *without being delivered through the
-    /// live conversation subscription* — an out-of-band negentropy backfill, or a
-    /// note ingested before the subscription existed for an already-built chat —
-    /// must still render.
-    ///
-    /// The injected user message is the thread root, so it sorts *before* the
-    /// assistant replies that stream live. Those replies append via the fast
-    /// path (they sort after `tail_order`), which never reloads from ndb — so a
-    /// user message that landed in ndb out-of-band is silently skipped forever:
-    /// it is not in `session.chat`, and because it sorts before the tail no
-    /// subsequent live note triggers the out-of-order rebuild that would recover
-    /// it. Only the state-event heartbeat reconciliation
-    /// ([`Dave::poll_session_state_events`]) closes this gap.
-    #[tokio::test]
-    async fn observer_reconciles_backfilled_note_not_delivered_live() {
-        let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
-        let mut threading = ThreadingState::new();
-        let session_id_str = "backfill-hole-test";
-
-        // Authored order: user message first (thread root), then two assistant
-        // replies.
-        let user_evt = build_live_event(
-            "Do the thing",
-            "user",
-            session_id_str,
-            None,
-            None,
-            None,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
-        let asst1 = build_live_event(
-            "Working on it",
-            "assistant",
-            session_id_str,
-            None,
-            None,
-            None,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
-        let asst2 = build_live_event(
-            "Done",
-            "assistant",
-            session_id_str,
-            None,
-            None,
-            None,
-            &mut threading,
-            &sk,
-        )
-        .unwrap();
-
-        let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
-        let filter = nostrdb::Filter::new()
-            .kinds([session_events::AI_CONVERSATION_KIND as u64])
-            .build();
-        let ingest = |ndb: &Ndb, evt: &session_events::BuiltEvent| {
-            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
-            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
-                .expect("ingest failed");
-            sub
-        };
-
-        let mut session = session::ChatSession::new(
-            1,
-            PathBuf::from("/tmp"),
-            AiMode::Agentic,
-            BackendType::Claude,
-        );
-        session.source = SessionSource::Remote;
-        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
-
-        // The first assistant reply arrives live and seeds the chat + tail_order.
-        // The user message has not reached this observer yet.
-        {
-            let sub = ingest(&ndb, &asst1);
-            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
-            let txn = Transaction::new(&ndb).unwrap();
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
-        }
-        assert_eq!(assistant_texts(&session.chat), vec!["Working on it"]);
-        assert!(user_texts(&session.chat).is_empty());
-
-        // The user message backfills into ndb out-of-band (it was never delivered
-        // through the live poll), then the second assistant reply arrives live and
-        // is appended via the fast path.
-        {
-            let sub = ingest(&ndb, &user_evt);
-            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
-        }
-        {
-            let sub = ingest(&ndb, &asst2);
-            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
-            let txn = Transaction::new(&ndb).unwrap();
-            let batch: Vec<_> = ndb
-                .query(&txn, std::slice::from_ref(&filter), 128)
-                .unwrap()
-                .iter()
-                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
-                .filter(|n| n.content() == "Done")
-                .collect();
-            let result = process_conversation_notes(batch, &mut session, 1, true, Some(&sk), &ndb);
-            // The live note appends without a rebuild, so the backfilled user
-            // message is still absent at this point.
-            assert!(!result.rebuild_chat);
-        }
-        assert_eq!(
-            assistant_texts(&session.chat),
-            vec!["Working on it", "Done"],
-            "assistant replies rendered via the fast-path append"
-        );
-
-        // The state-event heartbeat reconciles the chat from ndb, recovering the
-        // backfilled user message that the live poll never delivered.
-        reconcile_remote_chat_from_ndb(&mut session, &ndb, &author);
-        assert_eq!(
-            user_texts(&session.chat),
-            vec!["Do the thing"],
-            "the backfilled user message must render after heartbeat reconciliation"
-        );
-        assert!(
-            matches!(session.chat.first(), Some(Message::User(_))),
-            "the user message sorts first (it is the thread root)"
-        );
     }
 
     /// Integration test for the remote conversation display path: events

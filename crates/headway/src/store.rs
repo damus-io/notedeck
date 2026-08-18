@@ -17,8 +17,8 @@ use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
     board_address, build_archive_placement, build_blockers, build_board, build_comment,
-    build_cover_note, build_field, build_issue, build_labels, build_placement, build_relation,
-    build_sequence, build_subject_edit, rank_between,
+    build_cover_note, build_field, build_issue, build_labels, build_placement, build_related,
+    build_relation, build_sequence, build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -41,6 +41,10 @@ pub enum BoardAction {
     AddCard {
         col: usize,
         title: String,
+        /// Initial description (cover note). Empty string means none, so the
+        /// create path emits no cover-note event — same as an `add` with no
+        /// `--desc`.
+        description: String,
         labels: Vec<String>,
         parent: Option<NoteId>,
     },
@@ -85,6 +89,15 @@ pub enum BoardAction {
     Block { card: NoteId, on: NoteId },
     /// Remove `on` from `card`'s blocker set. A no-op when the edge isn't present.
     Unblock { card: NoteId, on: NoteId },
+    /// Relate `card` to `other` (an undirected "see also" edge). A no-op when the
+    /// edge already exists (in either direction) or is a self-relation. The edge is
+    /// independent of the parent/blocking axes, carries no ordering or readiness
+    /// meaning, and may point at another board.
+    Relate { card: NoteId, other: NoteId },
+    /// Remove the `card`-relates-`other` edge. Symmetric: it clears the edge from
+    /// whichever endpoint stored it, so unrelating from either side removes it. A
+    /// no-op when the edge isn't present.
+    Unrelate { card: NoteId, other: NoteId },
     /// Post a NIP-22 comment on `card`. `reply_to`, when set, is another comment
     /// on the same card that this one threads under.
     AddComment {
@@ -867,6 +880,7 @@ pub fn apply(
         BoardAction::AddCard {
             col,
             title,
+            description,
             labels,
             parent,
         } => {
@@ -888,6 +902,17 @@ pub fn apply(
                 signer,
                 publisher,
             );
+            // Fold an optional initial description into the same publish as the
+            // create, reusing the exact cover-note builder `EditDescription`
+            // forwards, so `add --desc` needs no separate `desc` round-trip.
+            if !description.is_empty() {
+                ingest_signed(
+                    ndb,
+                    build_cover_note(&id, author, &description),
+                    signer,
+                    publisher,
+                );
+            }
             if !labels.is_empty() {
                 ingest_signed(ndb, build_labels(&id, &labels), signer, publisher);
             }
@@ -1003,6 +1028,33 @@ pub fn apply(
                 return;
             }
             republish_blockers(ndb, &card, &set, cur, signer, publisher);
+        }
+        BoardAction::Relate { card, other } => {
+            // Self-relation is meaningless; the reducer skips it anyway.
+            if card == other {
+                return;
+            }
+            // Symmetric: skip if the edge already exists on *either* endpoint, so
+            // the pair is stored once. Rebuild from the raw stored set (the fold
+            // unions both directions), then add `other` to `card`'s endpoint.
+            let cur = event::current_related(ndb, author, &card);
+            let mut set: Vec<NoteId> = cur
+                .as_ref()
+                .map(|r| r.related.iter().map(|id| NoteId::new(*id)).collect())
+                .unwrap_or_default();
+            let reverse_has = event::current_related(ndb, author, &other)
+                .is_some_and(|r| r.related.contains(other.bytes()));
+            if set.contains(&other) || reverse_has {
+                return;
+            }
+            set.push(other);
+            republish_related(ndb, &card, &set, cur, signer, publisher);
+        }
+        BoardAction::Unrelate { card, other } => {
+            // Symmetric: the edge may live on either endpoint, so drop it from both
+            // stored sets, republishing only the side(s) that actually change.
+            unrelate_endpoint(ndb, author, &card, &other, signer, publisher);
+            unrelate_endpoint(ndb, author, &other, &card, signer, publisher);
         }
         BoardAction::AddComment {
             card,
@@ -1320,6 +1372,51 @@ fn republish_blockers(
         signer,
         publisher,
     );
+}
+
+/// Publish `card`'s complete related-to set, superseding its previous one.
+/// Stamped strictly past `prev` for the same latest-authorised-wins reasons as
+/// [`republish_blockers`].
+fn republish_related(
+    ndb: &Ndb,
+    card: &NoteId,
+    set: &[NoteId],
+    prev: Option<event::RelatedSet>,
+    signer: &Signer,
+    publisher: &mut dyn Publisher,
+) {
+    let after = prev.map_or(0, |r| r.created_at);
+    ingest_signed(
+        ndb,
+        build_related(card, set).created_at(next_after(after)),
+        signer,
+        publisher,
+    );
+}
+
+/// Drop `other` from `card`'s stored related-to set, republishing the superseding
+/// set only when the edge was actually present. One half of the symmetric
+/// [`BoardAction::Unrelate`]: called for both endpoints so the edge is cleared
+/// wherever it was stored.
+fn unrelate_endpoint(
+    ndb: &Ndb,
+    author: &Pubkey,
+    card: &NoteId,
+    other: &NoteId,
+    signer: &Signer,
+    publisher: &mut dyn Publisher,
+) {
+    let cur = event::current_related(ndb, author, card);
+    let mut set: Vec<NoteId> = cur
+        .as_ref()
+        .map(|r| r.related.iter().map(|id| NoteId::new(*id)).collect())
+        .unwrap_or_default();
+    let before = set.len();
+    set.retain(|id| id != other);
+    if set.len() == before {
+        return;
+    }
+    republish_related(ndb, card, &set, cur, signer, publisher);
 }
 
 /// Would blocking `card` on `on` create a dependency cycle? A cycle would form
@@ -1760,6 +1857,105 @@ mod tests {
         assert!(!rec.frames[0].contains("\"kind\":1081"));
     }
 
+    /// The auto-seeded default board converges across an account's devices. Each
+    /// device seeds the default independently at the same coordinate; because its
+    /// root is *derived* from the account secret (not a per-device random mint),
+    /// both devices arrive at the identical SNS channel, so device B adopts device
+    /// A's board instead of forking a second channel that never folds together.
+    /// This is exactly why the default uses [`enostr::sns::derive_board_root`]
+    /// rather than [`mint_team_root`] (see the auto-seed path in `notedeck_headway`).
+    #[tokio::test]
+    async fn default_board_converges_across_devices() {
+        #[derive(Default)]
+        struct Recorder {
+            frames: Vec<String>,
+        }
+        impl Publisher for Recorder {
+            fn publish(&mut self, frame: &str) {
+                self.frames.push(frame.to_owned());
+            }
+        }
+
+        // One account, two devices (separate dbs) sharing its secret.
+        let kp = FullKeypair::generate();
+        let secret = kp.secret_key.secret_bytes();
+
+        // The load-bearing property: both devices derive the SAME default root. A
+        // random mint would differ per device and fork the channel (shown for
+        // contrast) — which is the divergence the derivation exists to prevent.
+        let root_a = enostr::sns::derive_board_root(&secret, BOARD_ID);
+        let root_b = enostr::sns::derive_board_root(&secret, BOARD_ID);
+        assert_eq!(
+            root_a, root_b,
+            "derived default root is stable across devices"
+        );
+        assert_ne!(
+            mint_team_root(),
+            mint_team_root(),
+            "a random mint would fork the channel per device"
+        );
+
+        let team_pk = enostr::sns::derive_sns_keys(&root_a)
+            .unwrap()
+            .team_keypair
+            .pubkey;
+        let board_addr = board_address(&kp.pubkey, BOARD_ID);
+
+        // Device A seeds the default under the derived root and publishes it.
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let ndb_a = Ndb::new(dir_a.path().to_str().unwrap(), &Config::new()).unwrap();
+        ndb_a.add_key(&secret);
+        let mut wire = Recorder::default();
+        assert!(create_shared_board(
+            &ndb_a, &kp.pubkey, &secret, BOARD_ID, "Headway", &root_a, &mut wire,
+        ));
+
+        // Device B seeds the default independently, before it has synced A's board.
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let ndb_b = Ndb::new(dir_b.path().to_str().unwrap(), &Config::new()).unwrap();
+        ndb_b.add_key(&secret);
+        assert!(create_shared_board(
+            &ndb_b,
+            &kp.pubkey,
+            &secret,
+            BOARD_ID,
+            "Headway",
+            &root_b,
+            &mut NoPublish,
+        ));
+
+        // B now syncs A's published board events. Both sealed the board-def at the
+        // same coordinate under the same channel key (B registered the identical
+        // root, so it unwraps A's envelope), so it is the same replaceable event —
+        // B still folds exactly one board under the shared channel, not two.
+        for frame in &wire.frames {
+            let _ = ndb_b.process_event_with(frame, IngestMetadata::new().client(true));
+        }
+
+        let mut ok = false;
+        for _ in 0..300 {
+            {
+                let txn = Transaction::new(&ndb_b).unwrap();
+                if event::load_shared_board(
+                    &ndb_b,
+                    &txn,
+                    &board_addr,
+                    std::slice::from_ref(&team_pk),
+                )
+                .is_some()
+                {
+                    ok = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            ok,
+            "device B folds the default board under the one shared derived channel"
+        );
+    }
+
     /// Migrating a plaintext board re-seals it in place: its existing card folds via
     /// the shared/team-key path afterward, with the **same id** (no delete/recreate).
     /// Exercises the nostrdb promote-in-place path end to end. (Uses a bounded poll,
@@ -1778,6 +1974,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 0,
                 title: "existing card".into(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -1882,6 +2079,7 @@ mod tests {
                 BoardAction::AddCard {
                     col: 0,
                     title: "existing card".into(),
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 },
@@ -1944,6 +2142,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "epic".into(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -1957,6 +2156,7 @@ mod tests {
                 BoardAction::AddCard {
                     col: 1,
                     title: title.into(),
+                    description: String::new(),
                     labels: vec![],
                     parent: Some(epic),
                 },
@@ -2061,6 +2261,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "New idea".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -2081,6 +2282,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "Tagged idea".to_string(),
+                description: String::new(),
                 labels: vec!["bug".to_string(), "ux".to_string()],
                 parent: None,
             },
@@ -2103,6 +2305,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_card_with_description_sets_cover_note() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+
+        // A non-empty description on `AddCard` should surface as the card's
+        // description, exactly as a follow-up `EditDescription` would — proving
+        // the create path emits the same cover note in one publish.
+        t.apply(
+            &view,
+            BoardAction::AddCard {
+                col: 1,
+                title: "Documented idea".to_string(),
+                description: "the details".to_string(),
+                labels: vec![],
+                parent: None,
+            },
+        );
+
+        let view = t
+            .wait(|v| {
+                v.columns[1]
+                    .cards
+                    .iter()
+                    .any(|c| c.title == "Documented idea" && c.description == "the details")
+            })
+            .await;
+        // An empty description, by contrast, emits no cover note at all.
+        let card = view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.title == "Documented idea")
+            .unwrap();
+        assert_eq!(card.description, "the details");
+    }
+
+    #[tokio::test]
     async fn block_and_unblock_edit_the_dependency_set() {
         let t = TestNdb::new();
         seed_demo(&t);
@@ -2115,6 +2354,7 @@ mod tests {
                 BoardAction::AddCard {
                     col: 0,
                     title: title.to_string(),
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 },
@@ -2194,6 +2434,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relate_and_unrelate_edit_the_related_set() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let mut view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+
+        // Three fresh cards to wire relations between.
+        for title in ["hub", "sib one", "sib two"] {
+            t.apply(
+                &view,
+                BoardAction::AddCard {
+                    col: 0,
+                    title: title.to_string(),
+                    description: String::new(),
+                    labels: vec![],
+                    parent: None,
+                },
+            );
+            view = t.wait(|v| card_id_by_title(v, title).is_some()).await;
+        }
+        let hub = card_id_by_title(&view, "hub").unwrap();
+        let s1 = card_id_by_title(&view, "sib one").unwrap();
+        let s2 = card_id_by_title(&view, "sib two").unwrap();
+
+        // Relate hub to two siblings; the set accumulates.
+        t.apply(
+            &view,
+            BoardAction::Relate {
+                card: hub,
+                other: s1,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.iter().any(|e| e.id == s1)))
+            .await;
+        t.apply(
+            &view,
+            BoardAction::Relate {
+                card: hub,
+                other: s2,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.len() == 2))
+            .await;
+
+        // Symmetric: both siblings list hub back, and hub is never "blocked" by a
+        // relation (it's context only).
+        let hub_card = find_card(&view, hub).unwrap();
+        assert!(!hub_card.is_blocked());
+        assert_eq!(
+            find_card(&view, s1)
+                .unwrap()
+                .related
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>(),
+            vec![hub]
+        );
+
+        // Relating an existing pair from the reverse endpoint is a no-op — the edge
+        // is stored once, so s2 gains no second entry.
+        t.apply(
+            &view,
+            BoardAction::Relate {
+                card: s2,
+                other: hub,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.len() == 2))
+            .await;
+        assert_eq!(find_card(&view, s2).unwrap().related.len(), 1);
+
+        // Unrelate from the endpoint that did NOT store the edge (s1): symmetric
+        // removal still clears it from both sides, while the hub↔s2 edge survives.
+        t.apply(
+            &view,
+            BoardAction::Unrelate {
+                card: s1,
+                other: hub,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.len() == 1))
+            .await;
+        assert!(find_card(&view, s1).unwrap().related.is_empty());
+        assert_eq!(find_card(&view, hub).unwrap().related[0].id, s2);
+    }
+
+    #[tokio::test]
     async fn publisher_receives_a_frame_per_ingested_event() {
         #[derive(Default)]
         struct Collect(Vec<String>);
@@ -2219,6 +2549,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "Tracked".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -2535,6 +2866,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 0,
                 title: "Roamer".to_string(),
+                description: String::new(),
                 labels: vec!["wandering".to_string()],
                 parent: None,
             },
@@ -2686,6 +3018,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 2, // in-progress
                 title: "Homeless".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -2797,6 +3130,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 0,
                 title: "Sealed card".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },

@@ -166,7 +166,7 @@ impl AppTool for ShowCard {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_show_card",
-            "Show a single headway card in full — description, labels, priority, comments, activity, subissues, and its blocking edges (`blocked` = held back by an unfinished prerequisite; `blocked_by` = the cards it depends on; `blocks` = the cards depending on it, each edge flagged `done` when cleared) — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
+            "Show a single headway card in full — description, labels, priority, comments, activity, subissues, its blocking edges (`blocked` = held back by an unfinished prerequisite; `blocked_by` = the cards it depends on; `blocks` = the cards depending on it, each edge flagged `done` when cleared), and its `related` edges (undirected \"see also\" links — purely informational context, never a prerequisite or work-order) — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
             vec![
                 ToolArg::new(
                     "card",
@@ -538,6 +538,7 @@ impl AppTool for AddCard {
             Ok(BoardAction::AddCard {
                 col,
                 title: args.title.clone(),
+                description: String::new(),
                 labels: args.labels.as_deref().map(split_labels).unwrap_or_default(),
                 parent,
             })

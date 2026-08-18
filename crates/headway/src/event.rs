@@ -16,6 +16,7 @@
 //! | relation          | `30621` | addressable; `d` = child, `parent` tag     |
 //! | sequence          | `30622` | addressable; `d` = `<container>:<issue>`   |
 //! | blockers          | `30624` | addressable; `d` = blocked, `blocked-by` tags |
+//! | related           | `30625` | addressable; `d` = a card, `related` tags |
 //!
 //! Effective state is resolved as **latest-authorised-wins** for every overlay
 //! (placement, subject, cover note, and labels — each label event carries the
@@ -79,6 +80,22 @@ const BOARD_PREF_D: &str = "selected-board";
 /// card may have both. The blockers reference event ids, so they may point at
 /// cards on other boards. See `headway:headway/goat-couple-flush`.
 pub const KIND_BLOCKERS: u32 = 30624;
+
+/// Headway card related-to relations: addressable, `d` = one endpoint card's id,
+/// carrying zero or more `related` tags each naming another card's event id. The
+/// set is a snapshot (like [`KIND_BLOCKERS`]), so the newest authorised event is
+/// that endpoint's complete related set — republishing without an id removes it.
+///
+/// The *undirected, semantics-free* sibling of the blocking edges ([`KIND_BLOCKERS`])
+/// and the parent axis ([`KIND_RELATION`]): "A relates to B" is Linear's "Relates"
+/// — purely informational "see also," never a prerequisite (that's blocking), a
+/// decomposition (that's a subissue), or a work-order (that's a sequence). Because
+/// it is symmetric, the edge is stored on *one* endpoint and rendered on both: the
+/// reducer unions each card's own set with every set that names it (see
+/// [`BoardReducer::resolve_card`]). It never feeds the ready set, sequence rank or
+/// any rollup — context only. The related ids reference event ids, so they may
+/// point at cards on other boards. See `headway:headway/obscure-demand-actor`.
+pub const KIND_RELATED: u32 = 30625;
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
@@ -442,6 +459,26 @@ pub fn current_blockers(ndb: &Ndb, author: &Pubkey, blocked: &NoteId) -> Option<
     parse_blockers(&note)
 }
 
+/// The `author`'s current [`RelatedSet`] for `card`, read straight from `ndb`, or
+/// `None` when it has none. Like [`current_blockers`], edits rebuild from this
+/// *raw* stored set rather than the folded [`CardView::related`] — the fold unions
+/// both edge directions and drops edges it couldn't resolve (e.g. a cross-board
+/// partner), so editing the resolved view would double-count or silently discard
+/// them. Keyed by the `#e` id-tag (the card's 64-hex `d` value is stored as a
+/// 32-byte id, so a string `#d` filter matches nothing — the same trap as
+/// [`current_blockers`]).
+pub fn current_related(ndb: &Ndb, author: &Pubkey, card: &NoteId) -> Option<RelatedSet> {
+    let txn = Transaction::new(ndb).ok()?;
+    let filter = Filter::new()
+        .kinds([KIND_RELATED as u64])
+        .authors([author.bytes()])
+        .events(std::iter::once(card.bytes()))
+        .limit(1)
+        .build();
+    let note = ndb.query(&txn, &[filter], 1).ok()?.into_iter().next()?.note;
+    parse_related(&note)
+}
+
 /// Build a card (NIP-34 issue, kind 1621) anchored to `board_addr`. The body is
 /// the event content; `subject` is the initial title.
 pub fn build_issue<'a>(board_addr: &str, subject: &str, body: &'a str) -> NoteBuilder<'a> {
@@ -591,6 +628,29 @@ pub fn build_blockers<'a>(blocked: &NoteId, blockers: &[NoteId]) -> NoteBuilder<
 
     for blocker in blockers {
         b = b.start_tag().tag_str("blocked-by").tag_id(blocker.bytes());
+    }
+
+    b
+}
+
+/// Build a related-to event (kind 30625) recording the complete set of cards
+/// `card` is related to, one `related` tag per partner. Addressable on `card`
+/// (`d` = its id), so the newest authorised set wins — passing an empty `related`
+/// clears every relation on this endpoint. The `e` tag mirrors `d` so the
+/// card-anchored fan-out ([`card_meta_filter`]) can reach it by `card`. The
+/// relation is symmetric, so it is stored on one endpoint only and the reducer
+/// renders it on both.
+pub fn build_related<'a>(card: &NoteId, related: &[NoteId]) -> NoteBuilder<'a> {
+    let mut b = base(KIND_RELATED, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(&card.hex())
+        .start_tag()
+        .tag_str("e")
+        .tag_id(card.bytes());
+
+    for other in related {
+        b = b.start_tag().tag_str("related").tag_id(other.bytes());
     }
 
     b
@@ -834,6 +894,21 @@ pub struct BlockerSet {
     pub created_at: u64,
 }
 
+/// A card's related-to set: the cards it is *related to* on this endpoint. The
+/// addressable slot is keyed on the storing card (`card_id`), and `related` is the
+/// complete set (snapshot semantics like [`BlockerSet`]). The relation is
+/// undirected, so the reducer unions this with the reverse edges (sets naming
+/// `card_id`) when rendering. See [`build_related`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RelatedSet {
+    pub author: [u8; 32],
+    /// The card storing this set (the addressable `d` slot / one endpoint).
+    pub card_id: [u8; 32],
+    /// The related card ids, in the order the event listed them.
+    pub related: Vec<[u8; 32]>,
+    pub created_at: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentEvent {
     pub id: [u8; 32],
@@ -861,6 +936,7 @@ pub enum HeadwayEvent {
     Relation(RelationEvent),
     Sequence(SequenceEvent),
     Blockers(BlockerSet),
+    Related(RelatedSet),
 }
 
 /// Parse a note into a [`HeadwayEvent`], or `None` if it isn't a recognised /
@@ -876,6 +952,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_RELATION => parse_relation(note).map(HeadwayEvent::Relation),
         KIND_SEQUENCE => parse_sequence(note).map(HeadwayEvent::Sequence),
         KIND_BLOCKERS => parse_blockers(note).map(HeadwayEvent::Blockers),
+        KIND_RELATED => parse_related(note).map(HeadwayEvent::Related),
         _ => None,
     }
 }
@@ -1134,6 +1211,35 @@ fn parse_blockers(note: &Note) -> Option<BlockerSet> {
     })
 }
 
+/// Parse a related-to set (kind 30625). The storing endpoint is the `e` tag; each
+/// `related` tag names one partner's event id. A related event with no `related`
+/// tags is a cleared set, not malformed. See [`build_related`].
+fn parse_related(note: &Note) -> Option<RelatedSet> {
+    let mut card_id = None;
+    let mut related = Vec::new();
+
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            Some("e") => card_id = tag.get_id(1).copied(),
+            // `related` values are 32-byte event ids, so they read via `get_id`,
+            // not `get_str` (id tags are stored as raw bytes).
+            Some("related") => {
+                if let Some(id) = tag.get_id(1) {
+                    related.push(*id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(RelatedSet {
+        author: *note.pubkey(),
+        card_id: card_id?,
+        related,
+        created_at: note.created_at(),
+    })
+}
+
 fn parse_sequence(note: &Note) -> Option<SequenceEvent> {
     let mut issue_id = None;
     let mut container = None;
@@ -1328,6 +1434,13 @@ pub struct CardView {
     /// The reverse edges: cards that name this one as a blocker. Only those the
     /// reducer has folded (same or, cross-board, another folded board) appear.
     pub blocks: Vec<EdgeRef>,
+    /// Cards this one is *related to* — the undirected, semantics-free "see also"
+    /// relation ([`RelatedSet`]). Symmetric: the reducer unions this card's own
+    /// stored set with every set that names it, so both endpoints list each other.
+    /// Purely informational — never consulted by [`is_blocked`](Self::is_blocked),
+    /// the ready set, sequence rank or any rollup. Each edge carries the partner's
+    /// cleared state for display only. See [`KIND_RELATED`].
+    pub related: Vec<EdgeRef>,
 }
 
 impl CardView {
@@ -1429,6 +1542,7 @@ pub fn card_json(board: &str, card: &CardView) -> serde_json::Value {
         "blocked": card.is_blocked(),
         "blocked_by": card.blocked_by.iter().map(|e| edge_json(board, e)).collect::<Vec<_>>(),
         "blocks": card.blocks.iter().map(|e| edge_json(board, e)).collect::<Vec<_>>(),
+        "related": card.related.iter().map(|e| edge_json(board, e)).collect::<Vec<_>>(),
         "subissues": card.subissues.iter().map(|s| serde_json::json!({
             "id": s.id.hex(),
             "ref": crate::wordid::card_ref(board, s.id.bytes()),
@@ -1597,6 +1711,13 @@ pub struct BoardReducer {
     /// republish without the edge). Latest-authorised-wins; authority is checked
     /// at resolve time against the issue maps, not here.
     blockers: HashMap<[u8; 32], BlockerSet>,
+    /// Latest related-to set per *storing* card — its complete related edge set on
+    /// that endpoint (snapshot semantics like [`blockers`](Self::blockers), so
+    /// removal is a republish without the edge). The relation is undirected, so at
+    /// resolve time a card's rendered set unions its own entry with every entry
+    /// naming it. Latest-authorised-wins; authority is checked at resolve time
+    /// against the issue maps, not here.
+    related: HashMap<[u8; 32], RelatedSet>,
     /// Latest sequence overlay per `(container, issue)` — the card's fractional
     /// work-order rank within that container (board root or parent card).
     /// Latest-authorised-wins; authority needs the issue maps so it's checked at
@@ -1739,6 +1860,18 @@ impl BoardReducer {
                     .is_none_or(|cur| newer(b.created_at, &b.author, cur.created_at, &cur.author))
                 {
                     self.blockers.insert(b.blocked_id, b);
+                }
+            }
+            HeadwayEvent::Related(r) => {
+                // Not remembered into activity history for now: like blocker
+                // edits, related-to edits are lower-signal than moves/renames and
+                // the timeline has no related row yet.
+                if self
+                    .related
+                    .get(&r.card_id)
+                    .is_none_or(|cur| newer(r.created_at, &r.author, cur.created_at, &cur.author))
+                {
+                    self.related.insert(r.card_id, r);
                 }
             }
         }
@@ -1987,6 +2120,19 @@ impl BoardReducer {
                 .issues
                 .get(&b.blocked_id)
                 .is_some_and(|c| c.author == b.author)
+    }
+
+    /// Whether a related-to set is authorised: like a blocker set, honoured when
+    /// authored by the board owner, by the storing card's author, or — on a shared
+    /// board — any team-key holder. Authority is over the storing card's slot; the
+    /// partners it names may live on other boards and belong to anyone.
+    fn related_authorised(&self, r: &RelatedSet, board_author: &[u8; 32]) -> bool {
+        self.trusts_all()
+            || &r.author == board_author
+            || self
+                .issues
+                .get(&r.card_id)
+                .is_some_and(|c| c.author == r.author)
     }
 
     /// Resolve one child of a parent card into a [`SubissueView`], deriving its
@@ -2272,6 +2418,33 @@ impl BoardReducer {
             .collect();
         blocks.sort_by(|a, b| a.id.bytes().cmp(b.id.bytes()));
 
+        // This card's related-to edges. The relation is undirected, so the set
+        // unions both directions — the card's own stored set and every authorised
+        // set that names it — collecting the partner ids first, then resolving.
+        // Deduped by id (a pair related from both endpoints) and skipping the card
+        // itself, then sorted by id so hash iteration order doesn't churn the
+        // output. Purely informational: never consulted by readiness or ordering.
+        let mut partner_ids: Vec<[u8; 32]> = Vec::new();
+        if let Some(set) = self
+            .related
+            .get(&issue.id)
+            .filter(|r| self.related_authorised(r, board_author))
+        {
+            partner_ids.extend(set.related.iter().copied());
+        }
+        for set in self.related.values() {
+            if set.related.contains(&issue.id) && self.related_authorised(set, board_author) {
+                partner_ids.push(set.card_id);
+            }
+        }
+        let mut seen: HashSet<[u8; 32]> = HashSet::new();
+        let mut related: Vec<EdgeRef> = partner_ids
+            .into_iter()
+            .filter(|id| *id != issue.id && seen.insert(*id))
+            .filter_map(|id| edge(&id))
+            .collect();
+        related.sort_by(|a, b| a.id.bytes().cmp(b.id.bytes()));
+
         CardView {
             id: NoteId::new(issue.id),
             author: issue.author,
@@ -2292,6 +2465,7 @@ impl BoardReducer {
             subissues,
             blocked_by,
             blocks,
+            related,
         }
     }
 
@@ -2441,7 +2615,7 @@ fn newer(a_at: u64, a_who: &[u8; 32], b_at: u64, b_who: &[u8; 32]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 9] = [
+pub const HEADWAY_KINDS: [u32; 10] = [
     KIND_BOARD,
     KIND_ISSUE,
     KIND_PLACEMENT,
@@ -2451,6 +2625,7 @@ pub const HEADWAY_KINDS: [u32; 9] = [
     KIND_RELATION,
     KIND_SEQUENCE,
     KIND_BLOCKERS,
+    KIND_RELATED,
 ];
 
 /// A filter for every headway event authored by `author`.
@@ -2532,8 +2707,8 @@ pub fn board_scoped_filters(board_addr: &str) -> Option<Vec<Filter>> {
 
 /// The card-anchored half of the shared-board read fan-out: a filter for every
 /// member's per-card metadata (subject/label edits, cover notes, relations,
-/// sequences, blocker sets and comments), keyed by the `e` tag pointing at each
-/// card.
+/// sequences, blocker sets, related-to sets and comments), keyed by the `e` tag
+/// pointing at each card.
 ///
 /// These overlays name their card by `e` tag and carry no board reference, so
 /// they can't be reached by the board coordinate — they're gathered by the set
@@ -2553,6 +2728,7 @@ pub fn card_meta_filter(card_ids: &[[u8; 32]]) -> Filter {
             KIND_SEQUENCE as u64,
             KIND_COVER_NOTE as u64,
             KIND_BLOCKERS as u64,
+            KIND_RELATED as u64,
         ])
         .events(card_ids.iter())
         .limit(5000)
@@ -4341,6 +4517,187 @@ mod tests {
         let view = &reduce(&events)[0];
         assert!(view.card(a).unwrap().blocked_by.is_empty());
         assert!(!view.card(a).unwrap().is_blocked());
+    }
+
+    /// A related-to set round-trips through build/parse, preserving the storing
+    /// card and every listed partner; an empty set is a well-formed cleared set.
+    #[test]
+    fn related_roundtrips_set_and_clear() {
+        let kp = FullKeypair::generate();
+        let addr = board_address(&kp.pubkey, "b1");
+        let card = note_id(&kp, build_issue(&addr, "card", ""));
+        let r1 = note_id(&kp, build_issue(&addr, "r1", ""));
+        let r2 = note_id(&kp, build_issue(&addr, "r2", ""));
+
+        let HeadwayEvent::Related(set) = roundtrip(build_related(&card, &[r1, r2]), &kp) else {
+            panic!("related");
+        };
+        assert_eq!(set.card_id, *card.bytes());
+        assert_eq!(set.related, vec![*r1.bytes(), *r2.bytes()]);
+
+        // No `related` tags = a cleared set, still well-formed.
+        let HeadwayEvent::Related(set) = roundtrip(build_related(&card, &[]), &kp) else {
+            panic!("related");
+        };
+        assert!(set.related.is_empty());
+    }
+
+    /// A related-to edge is undirected: storing it on one endpoint surfaces it on
+    /// both cards' `related` sets, it never feeds `is_blocked`/readiness, relating
+    /// the pair from the other endpoint too doesn't duplicate it, and republishing
+    /// an empty set removes it from both ends.
+    #[test]
+    fn reduce_resolves_related_edges_symmetrically() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let a = note_id(&owner, build_issue(&addr, "A", "").created_at(1_000));
+        let b = note_id(&owner, build_issue(&addr, "B", "").created_at(1_001));
+
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "A", "").created_at(1_000), &owner),
+            parse_owned(build_issue(&addr, "B", "").created_at(1_001), &owner),
+            parse_owned(
+                build_placement("b1", &addr, &a, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            parse_owned(
+                build_placement("b1", &addr, &b, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            // A relates to B — stored on A's endpoint only.
+            parse_owned(build_related(&a, &[b]).created_at(1_200), &owner),
+        ];
+
+        let view = &reduce(&events)[0];
+        let card_a = view.card(a).unwrap();
+        let card_b = view.card(b).unwrap();
+        // Both endpoints list each other, despite the edge living on A alone.
+        assert_eq!(
+            card_a.related.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![b]
+        );
+        assert_eq!(
+            card_b.related.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![a]
+        );
+        // Purely informational: never touches blocking/readiness.
+        assert!(card_a.blocked_by.is_empty());
+        assert!(!card_a.is_blocked());
+        assert!(!card_b.is_blocked());
+
+        // Redundantly relate the same pair from B: the reverse-scan union dedupes,
+        // so neither side gains a duplicate entry.
+        events.push(parse_owned(
+            build_related(&b, &[a]).created_at(1_300),
+            &owner,
+        ));
+        let view = &reduce(&events)[0];
+        assert_eq!(view.card(a).unwrap().related.len(), 1);
+        assert_eq!(view.card(b).unwrap().related.len(), 1);
+
+        // Clear both stored sets: the relation is gone from both ends.
+        events.push(parse_owned(
+            build_related(&a, &[]).created_at(2_000),
+            &owner,
+        ));
+        events.push(parse_owned(
+            build_related(&b, &[]).created_at(2_001),
+            &owner,
+        ));
+        let view = &reduce(&events)[0];
+        assert!(view.card(a).unwrap().related.is_empty());
+        assert!(view.card(b).unwrap().related.is_empty());
+    }
+
+    /// A related-to set from someone who is neither the storing card's author nor
+    /// the board owner is ignored, exactly like every other overlay.
+    #[test]
+    fn reduce_ignores_unauthorised_related() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let a = note_id(&owner, build_issue(&addr, "A", "").created_at(1_000));
+        let b = note_id(&owner, build_issue(&addr, "B", "").created_at(1_001));
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "A", "").created_at(1_000), &owner),
+            parse_owned(build_issue(&addr, "B", "").created_at(1_001), &owner),
+            parse_owned(
+                build_placement("b1", &addr, &a, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            parse_owned(
+                build_placement("b1", &addr, &b, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            // The stranger tries to relate A to B — unauthorised over A's slot.
+            parse_owned(build_related(&a, &[b]).created_at(1_200), &stranger),
+        ];
+
+        let view = &reduce(&events)[0];
+        assert!(view.card(a).unwrap().related.is_empty());
+        assert!(view.card(b).unwrap().related.is_empty());
+    }
+
+    #[test]
+    fn current_related_reads_latest_set_from_ndb() {
+        use nostrdb::{Config, IngestMetadata, Ndb};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+
+        let ingest = |b: NoteBuilder| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            let json = enostr::ClientMessage::event(&note)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            ndb.process_event_with(&json, IngestMetadata::new().client(true))
+                .unwrap();
+        };
+
+        let a = NoteId::new([1; 32]);
+        let b = NoteId::new([2; 32]);
+        let c = NoteId::new([3; 32]);
+        ingest(build_related(&a, &[b]).created_at(1_000));
+        ingest(build_related(&a, &[b, c]).created_at(2_000));
+
+        // Poll until the newer set is queryable (ndb ingests on a writer thread).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(set) = current_related(&ndb, &kp.pubkey, &a)
+                && set.created_at == 2_000
+            {
+                assert_eq!(set.related, vec![*b.bytes(), *c.bytes()]);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "current_related never saw the latest set"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// A sequence event round-trips through build/parse for both container kinds,
