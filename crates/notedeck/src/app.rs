@@ -144,6 +144,29 @@ pub trait App {
         None
     }
 
+    /// Free the resources a popped global-history entry owned.
+    ///
+    /// The chrome owns the single browser-style
+    /// [`NavStack<ChromeNavEntry>`](crate::NavStack); when a back navigation
+    /// completes it pops the top entry and, off that
+    /// [`NavStackEvent::Popped`](crate::NavStackEvent::Popped), calls
+    /// `cleanup_nav` on the app the popped entry belonged to, handing back the
+    /// same [`ChromeNavEntry::token`](crate::ChromeNavEntry) that
+    /// [`render_nav`](Self::render_nav) drew. This is the app's chance to tear
+    /// down whatever that route opened — a thread/timeline subscription, view
+    /// state — mirroring how a per-pane nav frees a popped route (see columns'
+    /// `cleanup_popped_route`). The chrome stays business-logic-free: it never
+    /// inspects the token, it only routes the pop back to the owning app.
+    ///
+    /// Same [`token`](Self::render_nav) contract: downcast to the app's own route
+    /// type and, for a token it doesn't recognize (a plain app-switch entry
+    /// carries a `()` token, or a different app's type), do nothing. The default
+    /// is a no-op, so an app whose routes own no external resources — or that
+    /// never pushes routes — needs no cleanup at all.
+    fn cleanup_nav(&mut self, ctx: &mut AppContext<'_>, token: &Rc<dyn Any>) {
+        let _ = (ctx, token);
+    }
+
     /// Notification badge state for this app's chrome tab. Defaults to none.
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> TabNotifications {
         TabNotifications::default()
@@ -838,6 +861,32 @@ mod render_nav_tests {
         assert!(
             app.borrow().rendered,
             "default render_nav must delegate to render()"
+        );
+    }
+
+    /// The default `cleanup_nav` ignores its token and does nothing, so an app
+    /// whose routes own no external resources (or that never pushes a route)
+    /// needs no cleanup — a popped `()` app-switch entry, or any token it
+    /// doesn't recognize, is a safe no-op that never touches `render`.
+    #[tokio::test]
+    async fn default_cleanup_nav_is_a_noop() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let ui_ctx = egui::Context::default();
+        let mut notedeck = Notedeck::init(
+            &ui_ctx,
+            tmp.path(),
+            &["notedeck".to_owned(), "--testrunner".to_owned()],
+        );
+
+        let mut app = FlagApp::default();
+        let mut ctx = notedeck.app_context(&ui_ctx);
+        let token: Rc<dyn Any> = Rc::new(());
+
+        app.cleanup_nav(&mut ctx, &token);
+
+        assert!(
+            !app.rendered,
+            "default cleanup_nav must not render or otherwise touch the app"
         );
     }
 }
