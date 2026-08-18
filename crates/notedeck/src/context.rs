@@ -21,6 +21,15 @@ pub struct AppContext<'a> {
     pub remote: RemoteApi<'a>,
     pub note_cache: &'a mut NoteCache,
     pub accounts: &'a mut Accounts,
+    /// Whether the host's account-wide private-note (PNS kind-1080) sync has
+    /// settled — see [`HostPrivateSync`](crate::HostPrivateSync). `true` when
+    /// local-only (no private relay) or once the initial NIP-77 history backfill
+    /// has reconciled; `false` in the window between (re)declaring the account's
+    /// private subscription and its settle. Apps gate work that must not act on a
+    /// mid-sync view on this (e.g. dave defers materializing discovered sessions
+    /// until it holds, so a `create` whose newer `deleted` revision is still in
+    /// flight does not resurrect an already-deleted session).
+    pub private_sync_settled: bool,
     pub global_wallet: &'a mut GlobalWallet,
     pub path: &'a DataPath,
     pub args: &'a Args,

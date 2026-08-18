@@ -444,13 +444,23 @@ async fn handle_client_text(
             let filter = *filter;
             probe.capture_neg_open(session_key.clone(), filter.clone());
             tracing::debug!("proxy NEG-OPEN for session {session_key}");
+            // The one-shot failure modes target the account's private (kind-1080
+            // PNS) negentropy stream — the host Session backfill under test.
+            // A device also runs unrelated negentropy syncs against this same relay
+            // (e.g. an enostr outbox full-history sub over other kinds); without
+            // this gate a *global* one-shot failure could be consumed by one of
+            // those first, so the PNS backfill would never see it and the retry
+            // cases would be non-deterministic. The persistent [`NegErrOnOpen`] and
+            // [`SilentOnOpen`] modes are not gated: they fail every NEG-OPEN, so the
+            // PNS backfill sees them regardless.
+            let targets_pns = neg_open_targets_pns(&filter);
             match mode {
                 NegentropyRelayMode::Normal => {}
                 NegentropyRelayMode::NegErrOnOpen(reason) => {
                     let reply = capture_neg_err(probe, &session_key, reason);
                     return Ok(ClientTextAction::Respond(Some(reply)));
                 }
-                NegentropyRelayMode::NegErrOnOpenOnce(reason) => {
+                NegentropyRelayMode::NegErrOnOpenOnce(reason) if targets_pns => {
                     if !probe.did_neg_err_once.swap(true, Ordering::SeqCst) {
                         let reply = capture_neg_err(probe, &session_key, reason);
                         return Ok(ClientTextAction::Respond(Some(reply)));
@@ -459,7 +469,7 @@ async fn handle_client_text(
                 NegentropyRelayMode::SilentOnOpen => {
                     return Ok(ClientTextAction::Respond(None));
                 }
-                NegentropyRelayMode::DisconnectOnOpenOnce => {
+                NegentropyRelayMode::DisconnectOnOpenOnce if targets_pns => {
                     if !probe.did_disconnect_once.swap(true, Ordering::SeqCst) {
                         tracing::debug!(
                             "proxy NEG-OPEN disconnecting once for session {session_key}"
@@ -467,6 +477,8 @@ async fn handle_client_text(
                         return Ok(ClientTextAction::Disconnect);
                     }
                 }
+                NegentropyRelayMode::NegErrOnOpenOnce(_)
+                | NegentropyRelayMode::DisconnectOnOpenOnce => {}
             }
             let (session, reply_hex) =
                 match open_negentropy_session(relay_db, filter, &initial_message).await {
@@ -534,6 +546,20 @@ async fn handle_client_text(
         }
         _ => Ok(ClientTextAction::Forward),
     }
+}
+
+/// The account-private note kind (PNS envelope, kind 1080) whose negentropy stream
+/// the failure-injection modes target — see the gate in [`handle_client_text`].
+const PNS_KIND: u16 = 1080;
+
+/// Whether a `NEG-OPEN` filter targets the account's private (kind-1080 PNS)
+/// stream, i.e. the host Session's history backfill rather than an unrelated
+/// negentropy sync sharing the relay.
+fn neg_open_targets_pns(filter: &Filter) -> bool {
+    filter
+        .kinds
+        .as_ref()
+        .is_some_and(|kinds| kinds.contains(&nostr::Kind::Custom(PNS_KIND)))
 }
 
 async fn open_negentropy_session(

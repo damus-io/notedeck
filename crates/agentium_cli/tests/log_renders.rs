@@ -426,10 +426,9 @@ async fn follow_streams_a_live_message() {
     let pub_dir = TempDir::new().expect("pub tmp");
     let mut publisher =
         Engine::open(pub_dir.path().to_str().expect("path"), SECKEY).expect("publisher engine");
-    let mut pub_tx = publisher.transport_handle().expect("pub transport");
-    publisher.connect(&mut pub_tx, &url).expect("pub connect");
+    publisher.connect(&url).expect("pub connect");
     publisher
-        .send_message(&mut pub_tx, "sess-follow", "live streamed msg")
+        .send_message("sess-follow", "live streamed msg")
         .expect("send live message");
     // Flush the publish through the loop's FIFO so it actually reaches the relay.
     let _ = tokio::time::timeout(Duration::from_secs(5), publisher.wait_for_sync()).await;

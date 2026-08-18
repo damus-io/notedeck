@@ -5263,7 +5263,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.10.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=f3cd6dd18c96#f3cd6dd18c96d59927ad09cfbbc491396c0f0502"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=c23591d5edaa#c23591d5edaa6094dc5da080c94f3c930d074aa8"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -5279,7 +5279,7 @@ dependencies = [
 [[package]]
 name = "nostrdb_net"
 version = "0.1.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=f3cd6dd18c96#f3cd6dd18c96d59927ad09cfbbc491396c0f0502"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=c23591d5edaa#c23591d5edaa6094dc5da080c94f3c930d074aa8"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -5380,6 +5380,7 @@ dependencies = [
  "nostr 0.37.0",
  "nostr-relay-builder",
  "nostrdb",
+ "nostrdb_net",
  "nostrdb_relay",
  "nwc",
  "once_cell",

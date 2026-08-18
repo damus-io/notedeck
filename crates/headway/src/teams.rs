@@ -225,10 +225,7 @@ pub fn register_teams(ndb: &Ndb, teams: &[Team]) {
 mod tests {
     use super::*;
     use enostr::FullKeypair;
-    use nostr::key::PublicKey;
-    use nostr::nips::nip44;
-    use nostr::secp256k1::rand::rngs::OsRng;
-    use nostrdb::{Config, NoteBuilder};
+    use nostrdb::Config;
     use std::time::{Duration, Instant};
 
     fn test_root(seed: u8) -> [u8; 32] {
@@ -244,12 +241,14 @@ mod tests {
         (dir, ndb)
     }
 
-    /// Build a kind-1082 key-share rumor (all notes via nostrdb [`NoteBuilder`]),
-    /// NIP-59 seal + gift-wrap it to `recipient`, and return the kind-1059 giftwrap
-    /// JSON — what a sharer publishes and nostrdb unwraps back into a queryable
-    /// `1082` rumor. Mirrors the app's real inbound path so the receiver filter and
-    /// tag parsing are exercised end to end. Pass `board_addr = None` for a
-    /// (malformed) share that names no board.
+    /// Gift-wrap a kind-1082 key-share to `recipient` via the production
+    /// [`enostr::sns::wrap_keyshare`] and return the kind-1059 giftwrap JSON — what a
+    /// sharer publishes and nostrdb unwraps back into a queryable `1082` rumor. Using
+    /// the real builder means these ndb-backed tests exercise `wrap_keyshare`'s output
+    /// through nostrdb's actual auto-unwrap (never an in-process peel), plus the
+    /// receiver filter and tag parsing, end to end. Pass `board_addr = None` for a
+    /// (malformed) share that names no board — [`wrap_keyshare`] emits an empty `a`
+    /// tag, which [`enostr::sns::parse_keyshare`] resolves to "no board".
     fn gift_wrapped_keyshare(
         sender: &FullKeypair,
         recipient: &Pubkey,
@@ -257,66 +256,8 @@ mod tests {
         board_addr: Option<&str>,
         epoch: Option<u32>,
     ) -> String {
-        let mut rumor = NoteBuilder::new()
-            .kind(enostr::sns::KEYSHARE_KIND)
-            .content("")
-            .start_tag()
-            .tag_str("team_root")
-            .tag_str(&hex::encode(root));
-        if let Some(addr) = board_addr {
-            rumor = rumor.start_tag().tag_str("a").tag_str(addr);
-        }
-        if let Some(epoch) = epoch {
-            rumor = rumor
-                .start_tag()
-                .tag_str("epoch")
-                .tag_str(&epoch.to_string());
-        }
-        let rumor_json = rumor
-            .sign(&sender.secret_key.secret_bytes())
-            .build()
-            .expect("rumor")
-            .json()
-            .expect("rumor json");
-
-        let recipient_pk = PublicKey::from_slice(recipient.bytes()).expect("recipient pk");
-        let mut rng = OsRng;
-        // NIP-44 seals the rumor to the recipient, then a random wrap key seals the
-        // kind-13 seal into the 1059 (encryption only — the notes are NoteBuilder).
-        let encrypted_rumor = nip44::encrypt_with_rng(
-            &mut rng,
-            &sender.secret_key,
-            &recipient_pk,
-            &rumor_json,
-            nip44::Version::V2,
-        )
-        .expect("encrypt rumor");
-        let seal_json = NoteBuilder::new()
-            .kind(13)
-            .content(&encrypted_rumor)
-            .sign(&sender.secret_key.secret_bytes())
-            .build()
-            .expect("seal")
-            .json()
-            .expect("seal json");
-        let wrap_keys = FullKeypair::generate();
-        let encrypted_seal = nip44::encrypt_with_rng(
-            &mut rng,
-            &wrap_keys.secret_key,
-            &recipient_pk,
-            &seal_json,
-            nip44::Version::V2,
-        )
-        .expect("encrypt seal");
-        NoteBuilder::new()
-            .kind(1059)
-            .content(&encrypted_seal)
-            .start_tag()
-            .tag_str("p")
-            .tag_str(&recipient.hex())
-            .sign(&wrap_keys.secret_key.secret_bytes())
-            .build()
-            .expect("giftwrap")
+        enostr::sns::wrap_keyshare(sender, recipient, root, board_addr.unwrap_or(""), epoch, 1)
+            .expect("keyshare giftwrap")
             .json()
             .expect("giftwrap json")
     }
@@ -409,5 +350,28 @@ mod tests {
         let mut boards: Vec<&str> = teams.iter().map(|t| t.board_addr.as_str()).collect();
         boards.sort();
         assert_eq!(boards, vec!["30619:owner:alpha", "30619:owner:beta"]);
+    }
+
+    /// A self-share (sender == recipient) joins your own board — the team-of-one
+    /// building block. A freshly-created board mints a root and gift-wraps it to the
+    /// creator, so the creator's own board joins the roster exactly like a share from
+    /// someone else, and rides the account's NIP-59 inbox across devices.
+    #[test]
+    fn self_share_joins_own_board() {
+        let (_dir, ndb) = ndb();
+        let me = FullKeypair::generate();
+        ndb.add_key(&me.secret_key.secret_bytes());
+
+        let root = test_root(0x42);
+        let board_addr = format!("30619:{}:headway", me.pubkey.hex());
+        ingest(
+            &ndb,
+            &gift_wrapped_keyshare(&me, &me.pubkey, &root, Some(&board_addr), None),
+        );
+
+        let teams = wait_teams(&ndb, &me.pubkey, 1);
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].board_addr, board_addr);
+        assert_eq!(teams[0].root_bytes(), Some(root));
     }
 }

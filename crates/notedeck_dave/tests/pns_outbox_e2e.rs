@@ -1,4 +1,11 @@
-//! End-to-end coverage for Dave PNS discovery through the shared outbox path.
+//! End-to-end coverage for Dave PNS discovery. Inbound sync of the account's
+//! kind-1080 stream is now owned by the notedeck host (`HostPrivateSync`), which
+//! these tests force-enable via `build_dave_device`; Dave reads the resulting
+//! local nostrdb state and keeps only its own outbound publish. The
+//! outbox-scoped-sub mechanics those tests exercised — backfill retry after a
+//! transient NEG-ERR/disconnect, and NEG-CLOSE on cancel — now live in the host
+//! `Session` (fork nostrdb_net), so the cases run unignored again
+//! (headway:notedeck/remember-liar-now).
 
 use std::{
     path::Path,
@@ -257,6 +264,13 @@ fn build_dave_device(
     account: &FullKeypair,
     app_factory: AppFactory,
 ) -> DeviceHarness {
+    // Dave's inbound PNS sync is now owned by the notedeck host, which is off
+    // under the test harness by default — force it on so these tests exercise the
+    // account's inbound path (dave reads the resulting local nostrdb state).
+    let app_factory: AppFactory = Box::new(move |notedeck, egui_ctx| {
+        notedeck.enable_host_private_sync_for_test();
+        app_factory(notedeck, egui_ctx);
+    });
     notedeck_testing::device::build_device_in_tmpdir_with_relays(
         relay_urls,
         account,
@@ -418,13 +432,21 @@ async fn run_pns_retry_backfill_case(mode: NegentropyRelayMode, context: &str) {
 fn captured_event_count(relay: &NegentropyRelay) -> usize {
     relay.count_captured_prefix("[\"EVENT\",")
 }
+/// Count captured outbound PNS (kind-1080) envelopes, ignoring the relay-list
+/// management event `set_private_relay` publishes to the same relay. The
+/// outbound leg now rides the host's per-frame fan-out rather than dave's old
+/// immediate publish, so a plain "any EVENT captured" wait races the relay-list
+/// event and can let the publisher shut down before the PNS envelope lands.
+fn captured_pns_event_count(relay: &NegentropyRelay) -> usize {
+    relay.count_captured_events_containing("\"kind\":1080")
+}
 fn wait_for_event_publish(device: &mut DeviceHarness, relay: &NegentropyRelay, context: &str) {
-    wait_for_device_condition(device, Duration::from_secs(5), context, |_| {
-        let event_count = captured_event_count(relay);
+    wait_for_device_condition(device, Duration::from_secs(10), context, |_| {
+        let event_count = captured_pns_event_count(relay);
         if event_count > 0 {
             Ok(())
         } else {
-            Err(format!("captured {event_count} outbound EVENT frames"))
+            Err(format!("captured {event_count} outbound PNS envelopes"))
         }
     });
 }
@@ -740,6 +762,8 @@ async fn dave_pns_blocked_relay_does_not_retry_e2e() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
+// The host Session's backfill now retries a transient NEG-ERR (`closed: retry
+// later`) with backoff, so the full history lands on a later attempt.
 async fn dave_pns_closed_retry_backfills_beyond_live_limit_e2e() {
     init_tracing();
     run_pns_retry_backfill_case(
@@ -750,12 +774,17 @@ async fn dave_pns_closed_retry_backfills_beyond_live_limit_e2e() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
+// The host Session's backfill now reconnects and retries after a mid-negentropy
+// disconnect, so the full history reconciles on a later attempt.
 async fn dave_pns_disconnect_retry_backfills_beyond_live_limit_e2e() {
     init_tracing();
     run_pns_retry_backfill_case(NegentropyRelayMode::DisconnectOnOpenOnce, "disconnect").await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
+// On account switch the host drops+redeclares its sub; the old backfill's
+// reconcile connection now emits a NEG-CLOSE the relay captures, making the cancel
+// observable.
 async fn dave_pns_account_switch_cancels_old_active_session_e2e() {
     init_tracing();
 
@@ -1057,7 +1086,7 @@ async fn dave_pns_no_private_relay_does_not_publish_to_account_relays_e2e() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn dave_pns_no_private_relay_retains_outbound_events_until_marked_e2e() {
+async fn dave_pns_no_private_relay_keeps_backlog_local_until_relay_marked_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
@@ -1085,13 +1114,26 @@ async fn dave_pns_no_private_relay_retains_outbound_events_until_marked_e2e() {
 
     select_account_on_device(&mut device, &account);
 
-    // Mark the relay private: Dave now syncs the retained backlog to it.
+    // Retiring dave's outbox moved the outbound leg onto the host's per-frame
+    // fan-out, which publishes only freshly-authored envelopes and drains-and-
+    // drops the local backlog while no private relay is set (see the
+    // `fan_out_local_envelopes` doc in notedeck/src/private_sync.rs). So marking
+    // the relay private does NOT replay the pre-mark backlog: nothing lands yet.
     set_private_relay(&mut device, relay.url());
+    step_device_for(&mut device, Duration::from_millis(200));
+    assert_eq!(captured_pns_event_count(&relay), 0);
 
+    // An event authored *after* the relay is live does fan out normally.
+    pns_relay_tx
+        .send(ControllableDaveCommand::AddUserMessage {
+            session_id,
+            text: "authored after private relay marked".to_owned(),
+        })
+        .expect("queue post-mark outbound PNS event");
     wait_for_event_publish(
         &mut device,
         &relay,
-        "Dave outbound PNS event publish after marking relay private",
+        "Dave outbound PNS event publish for a post-mark event",
     );
 }
 #[cfg(unix)]
