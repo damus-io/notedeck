@@ -39,3 +39,30 @@ pub type Result<T> = std::result::Result<T, error::Error>;
 pub trait Wakeup: Send + Sync + Clone + 'static {
     fn wake(&self);
 }
+
+/// Install the process-wide rustls [`CryptoProvider`] used for `wss://` relay
+/// connections.
+///
+/// rustls 0.23 requires an explicit process-level provider whenever the
+/// aws-lc-rs vs ring backend is ambiguous; the first TLS handshake otherwise
+/// panics in `get_default_or_install_from_crate_features`. The notedeck app
+/// installs one during its own startup (`notedeck::install_crypto`), but the
+/// standalone CLIs (agentium/headway/notebook) drive enostr's relay/sync stack
+/// directly and never run that init, so they must install it themselves before
+/// opening any relay. Call this once at the top of `main`.
+///
+/// Idempotent: the [`Err`] returned when a provider is already installed is
+/// ignored, so calling it more than once (or after notedeck already installed
+/// one) is harmless.
+///
+/// Matches notedeck's platform choice: ring on Windows (fewer build
+/// requirements than aws-lc-rs, which needs cmake/NASM), aws-lc-rs elsewhere.
+///
+/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
+pub fn install_crypto() {
+    #[cfg(windows)]
+    let provider = rustls::crypto::ring::default_provider();
+    #[cfg(not(windows))]
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let _ = provider.install_default();
+}

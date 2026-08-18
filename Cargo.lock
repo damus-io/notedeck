@@ -2605,6 +2605,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "profiling",
+ "rustls",
  "serde",
  "serde_derive",
  "serde_json",

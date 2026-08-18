@@ -31,6 +31,9 @@ async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`headway show | head`) instead of
     // panicking in println! on EPIPE.
     nostrdb_net::relay::sync::reset_sigpipe();
+    // Select the rustls CryptoProvider before any wss:// relay handshake; the
+    // standalone CLIs never run notedeck's startup init that does this.
+    enostr::install_crypto();
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;

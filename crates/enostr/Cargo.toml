@@ -45,6 +45,19 @@ profiling = { workspace = true }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 if-watch = { workspace = true }
 
+# rustls 0.23 needs a process-level CryptoProvider selected for wss:// TLS. We
+# depend on rustls directly (matching notedeck's platform choice) so exactly one
+# provider is compiled into standalone consumers like the CLIs — without it the
+# first wss:// handshake panics in get_default_or_install_from_crate_features.
+# `install_crypto()` installs it explicitly; see crate::install_crypto.
+# Use ring on Windows (fewer build requirements than aws-lc-rs, which needs cmake/NASM).
+[target.'cfg(windows)'.dependencies]
+rustls = { version = "0.23.28", default-features = false, features = ["std", "tls12", "logging", "ring"] }
+
+# Use aws-lc-rs on non-Windows platforms for better performance.
+[target.'cfg(not(windows))'.dependencies]
+rustls = { version = "0.23.28", default-features = false, features = ["std", "tls12", "logging", "aws_lc_rs"] }
+
 [dev-dependencies]
 nostr-database = "0.37"
 nostr-relay-builder = "0.37"
