@@ -589,6 +589,14 @@ impl HostPrivateSync {
             self.local_sns_sub = (!team_pubkeys.is_empty())
                 .then(|| ndb.subscribe(&[team_envelopes_filter(&team_pubkeys)]).ok())
                 .flatten();
+            // Catch up: fan any channel envelope already in ndb that the private
+            // relays haven't seen. The live sub above only reports *future* commits,
+            // so an envelope sealed before its root was registered — e.g. a board
+            // definition, or the notebook's first canvas, ingested before the app
+            // registered the channel — would otherwise never leave this device.
+            // Bounded to a roster change (rare), and the seen-on check skips
+            // anything already sent, so this is not a per-frame rescan.
+            self.fan_out_channel_catchup(ndb, &session, private_urls, &team_pubkeys);
         }
 
         // (Re)declare the remote subscription on any account / relay-set / roster
@@ -690,23 +698,69 @@ impl HostPrivateSync {
         if keys.is_empty() || urls.is_empty() {
             return;
         }
-        let relays: Vec<RelayId> = urls.iter().cloned().map(RelayId::Websocket).collect();
         let Ok(txn) = Transaction::new(ndb) else {
             return;
         };
-        fan_out_unseen_notes_with(ndb, &txn, &keys, &relays, |json, targets| {
-            let target_urls: Vec<String> = targets
-                .into_iter()
-                .filter_map(|relay| match relay {
-                    RelayId::Websocket(url) => Some(url.to_string()),
-                    RelayId::Multicast => None,
-                })
-                .collect();
-            if !target_urls.is_empty() {
-                session.publish(json, target_urls);
-            }
-        });
+        fan_keys_to_relays(session, ndb, &txn, &keys, urls);
     }
+
+    /// Fan every kind-1081 envelope currently in ndb for `team_pubkeys`' channels
+    /// that the private relays haven't been seen on yet. Complements the live
+    /// [`local_sns_sub`](Self::local_sns_sub), which only reports envelopes
+    /// committed *after* it was opened: an envelope sealed and locally-ingested
+    /// before its root was registered (a board definition, the notebook's first
+    /// canvas) predates the sub and would never be fanned otherwise. Run only on a
+    /// roster change, and the seen-on check ([`fan_out_unseen_notes_with`]) skips
+    /// envelopes the relays already hold, so a co-member's inbound edits are not
+    /// echoed back and a re-run costs only the query.
+    fn fan_out_channel_catchup(
+        &self,
+        ndb: &Ndb,
+        session: &Session,
+        urls: &[NormRelayUrl],
+        team_pubkeys: &[Pubkey],
+    ) {
+        if urls.is_empty() || team_pubkeys.is_empty() {
+            return;
+        }
+        let Ok(txn) = Transaction::new(ndb) else {
+            return;
+        };
+        let Ok(results) = ndb.query(&txn, &[team_envelopes_filter(team_pubkeys)], 5000) else {
+            return;
+        };
+        let keys: Vec<NoteKey> = results.iter().map(|r| r.note_key).collect();
+        if keys.is_empty() {
+            return;
+        }
+        fan_keys_to_relays(session, ndb, &txn, &keys, urls);
+    }
+}
+
+/// Publish each note in `keys` the private relays haven't seen to the ones missing
+/// it, over the host [`Session`]. The shared tail of both host fan paths (the live
+/// [`HostPrivateSync::fan_out_local_envelopes`] poll and the roster-change
+/// [`HostPrivateSync::fan_out_channel_catchup`]); only the key source differs.
+fn fan_keys_to_relays(
+    session: &Session,
+    ndb: &Ndb,
+    txn: &Transaction,
+    keys: &[NoteKey],
+    urls: &[NormRelayUrl],
+) {
+    let relays: Vec<RelayId> = urls.iter().cloned().map(RelayId::Websocket).collect();
+    fan_out_unseen_notes_with(ndb, txn, keys, &relays, |json, targets| {
+        let target_urls: Vec<String> = targets
+            .into_iter()
+            .filter_map(|relay| match relay {
+                RelayId::Websocket(url) => Some(url.to_string()),
+                RelayId::Multicast => None,
+            })
+            .collect();
+        if !target_urls.is_empty() {
+            session.publish(json, target_urls);
+        }
+    });
 }
 
 /// Declares (and tears down) the inbound private-sync subscription for one GUI
@@ -1418,6 +1472,84 @@ mod tests {
             delivered,
             "an app-registered channel's 1081 envelope should fan from A's host and \
              auto-unwrap on B's"
+        );
+
+        relay.shutdown();
+    }
+
+    /// The catch-up path: an envelope sealed and locally-ingested *before* its root
+    /// is registered still fans out. This is the shape of a board definition or the
+    /// notebook's first canvas — authored, then the app registers the channel — and
+    /// the live outbound sub (future-commits-only) misses it, so without
+    /// [`HostPrivateSync::fan_out_channel_catchup`] the very first sealed write of
+    /// every channel would silently never leave the device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_catches_up_envelope_sealed_before_registration() {
+        use nostrdb_net::relay::server;
+        use std::time::Duration;
+
+        let root = test_root(0x77);
+        let sns_keys = enostr::sns::derive_sns_keys(&root).expect("sns keys");
+        let app_roots = std::slice::from_ref(&root);
+
+        let (_relay_dir, relay_ndb) = test_ndb();
+        let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
+            .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+
+        // Device A: seal + locally ingest an envelope FIRST, register the root only
+        // afterwards (the app-registers-after-write ordering). add_team_root up front
+        // just lets nostrdb unwrap it locally; the outbound fan must still catch it.
+        let (_a_dir, mut ndb_a) = test_ndb();
+        ndb_a.add_key(&secret);
+        assert!(ndb_a.add_team_root(&root));
+        let rumor = NoteBuilder::new()
+            .kind(1)
+            .content("definition sealed before registration")
+            .created_at(HOST_TEST_TS)
+            .sign(&secret)
+            .build()
+            .expect("rumor");
+        let inner_id = *rumor.id();
+        let envelope = enostr::sns::wrap_rumor(
+            &sns_keys,
+            &account,
+            &rumor.json().expect("json"),
+            HOST_TEST_TS,
+        )
+        .expect("sns envelope");
+        ndb_a
+            .process_event(&format!(
+                "[\"EVENT\",\"_local\",{}]",
+                envelope.json().expect("envelope json")
+            ))
+            .expect("local envelope ingest");
+        // Only now does the app register the channel with the host — the envelope
+        // already predates the outbound sub this opens.
+        let mut host_a = HostPrivateSync::new();
+
+        let (_b_dir, mut ndb_b) = test_ndb();
+        ndb_b.add_key(&secret);
+        let mut host_b = HostPrivateSync::new();
+
+        let mut delivered = false;
+        for _ in 0..500 {
+            host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, app_roots);
+            host_b.update(&mut ndb_b, &account.pubkey, &secret, relays, app_roots);
+            if ndb_has(&ndb_b, &inner_id) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered,
+            "an envelope sealed before its root was registered should still catch up \
+             and fan to the other device"
         );
 
         relay.shutdown();
