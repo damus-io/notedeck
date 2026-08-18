@@ -1976,6 +1976,21 @@ fn resolve_db(flag: Option<String>) -> Result<Option<String>> {
     Ok(nostrdb_net::relay::sync::read_config(APP, "db"))
 }
 
+/// Read a `--prompt-file` value into the prompt text: `-` reads stdin (so a
+/// handoff can heredoc a multi-line prompt with no shell-escaping), anything else
+/// is a file path. Trailing whitespace is trimmed so a heredoc's closing newline
+/// doesn't ride along.
+fn read_prompt_source(path: &str) -> Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    if path == "-" {
+        std::io::stdin().read_to_string(&mut text)?;
+    } else {
+        text = std::fs::read_to_string(path)?;
+    }
+    Ok(text.trim_end().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // argument parsing
 // ---------------------------------------------------------------------------
@@ -2030,9 +2045,12 @@ impl Cli {
         let mut pager = PagerMode::Auto;
         let mut follow = false;
         // `spawn` flags. `--title`/`--prompt` are values; `--wait` is a switch
-        // (also implied by `--prompt`, resolved in `cmd_spawn`).
+        // (also implied by `--prompt`, resolved in `cmd_spawn`). `--prompt-file`
+        // is the escaping-free alternative to `--prompt`: a path (or `-` for
+        // stdin) whose contents become the prompt, resolved once the loop ends.
         let mut title = None;
         let mut prompt = None;
+        let mut prompt_file = None;
         let mut wait = false;
         let mut positionals: Vec<String> = Vec::new();
 
@@ -2082,6 +2100,7 @@ impl Cli {
                 "--follow" | "-f" => follow = true,
                 "--title" => title = Some(value("--title")?),
                 "--prompt" => prompt = Some(value("--prompt")?),
+                "--prompt-file" => prompt_file = Some(value("--prompt-file")?),
                 "--wait" => wait = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
@@ -2105,6 +2124,19 @@ impl Cli {
         // A live follow can't be paged or reconstructed from the archive, so
         // reject those combinations here (before any relay work spins up).
         view.check_follow()?;
+        // Fold `--prompt-file` into `prompt`: the two name the same thing (the
+        // first message), so passing both is a contradiction. A file value of `-`
+        // means stdin, which is what lets a handoff pipe a multi-line prompt in
+        // via a heredoc without shell-escaping.
+        let prompt = match (prompt, prompt_file) {
+            (Some(_), Some(_)) => {
+                return Err("pass either --prompt or --prompt-file, not both".into());
+            }
+            (Some(text), None) => Some(text),
+            (None, Some(path)) => Some(read_prompt_source(&path)?),
+            (None, None) => None,
+        };
+
         // `spawn` reuses the shared `--host`/`--cwd`/`--backend` flags as its
         // target (they double as `list` filters), plus its own
         // `--title`/`--prompt`/`--wait`, so it's assembled here where those flags
@@ -2314,6 +2346,9 @@ OPTIONS:
                       session's state, then print its agentium: ref
     --prompt <text>   Deliver <text> as the session's first user message once
                       it's up (implies --wait; also reports the message event id)
+    --prompt-file <p> Like --prompt, but read the message from file <p> (or stdin
+                      when <p> is `-`) — pass a long/multi-line prompt with no
+                      shell-escaping. Mutually exclusive with --prompt.
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -3116,6 +3151,50 @@ mod tests {
             Command::Spawn { prompt, .. } => assert_eq!(prompt.as_deref(), Some("do the thing")),
             _ => panic!("expected Spawn"),
         }
+    }
+
+    #[test]
+    fn spawn_prompt_file_is_read_and_trimmed() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "do the thing\nwith newlines\n\n").unwrap();
+        let cli = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "--prompt-file",
+            f.path().to_str().unwrap(),
+            "spawn",
+        ])
+        .unwrap()
+        .unwrap();
+        match cli.command {
+            // The file's trailing newlines are trimmed; interior ones survive.
+            Command::Spawn { prompt, .. } => {
+                assert_eq!(prompt.as_deref(), Some("do the thing\nwith newlines"))
+            }
+            _ => panic!("expected Spawn"),
+        }
+    }
+
+    #[test]
+    fn spawn_prompt_and_prompt_file_conflict() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "from file").unwrap();
+        let res = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "--prompt",
+            "inline",
+            "--prompt-file",
+            f.path().to_str().unwrap(),
+            "spawn",
+        ]);
+        let err = match res {
+            Err(e) => e,
+            Ok(_) => panic!("--prompt + --prompt-file should conflict"),
+        };
+        assert!(err.to_string().contains("not both"), "{err}");
     }
 
     #[test]
