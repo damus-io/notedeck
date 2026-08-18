@@ -1559,6 +1559,7 @@ mod tests {
                 store::BoardAction::AddCard {
                     col: 1,
                     title: "Fresh card".to_string(),
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 },
@@ -1665,6 +1666,7 @@ mod tests {
                 store::BoardAction::AddCard {
                     col: 1,
                     title: "Delta card".to_string(),
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 },
@@ -2111,6 +2113,7 @@ mod tests {
             store::BoardAction::AddCard {
                 col: 0,
                 title: "Sealed".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },

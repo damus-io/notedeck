@@ -1427,6 +1427,7 @@ fn add_card_ui(
                 *action = Some(BoardAction::AddCard {
                     col: col_idx,
                     title,
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 });
@@ -3249,6 +3250,7 @@ fn resolve_detail_outcome(
                     // `add --parent` default.
                     col: 0,
                     title,
+                    description: String::new(),
                     labels: vec![],
                     parent: Some(ctx.card_id),
                 });

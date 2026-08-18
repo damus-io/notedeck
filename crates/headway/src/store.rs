@@ -41,6 +41,10 @@ pub enum BoardAction {
     AddCard {
         col: usize,
         title: String,
+        /// Initial description (cover note). Empty string means none, so the
+        /// create path emits no cover-note event — same as an `add` with no
+        /// `--desc`.
+        description: String,
         labels: Vec<String>,
         parent: Option<NoteId>,
     },
@@ -876,6 +880,7 @@ pub fn apply(
         BoardAction::AddCard {
             col,
             title,
+            description,
             labels,
             parent,
         } => {
@@ -897,6 +902,17 @@ pub fn apply(
                 signer,
                 publisher,
             );
+            // Fold an optional initial description into the same publish as the
+            // create, reusing the exact cover-note builder `EditDescription`
+            // forwards, so `add --desc` needs no separate `desc` round-trip.
+            if !description.is_empty() {
+                ingest_signed(
+                    ndb,
+                    build_cover_note(&id, author, &description),
+                    signer,
+                    publisher,
+                );
+            }
             if !labels.is_empty() {
                 ingest_signed(ndb, build_labels(&id, &labels), signer, publisher);
             }
@@ -1859,6 +1875,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 0,
                 title: "existing card".into(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -1963,6 +1980,7 @@ mod tests {
                 BoardAction::AddCard {
                     col: 0,
                     title: "existing card".into(),
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 },
@@ -2025,6 +2043,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "epic".into(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -2038,6 +2057,7 @@ mod tests {
                 BoardAction::AddCard {
                     col: 1,
                     title: title.into(),
+                    description: String::new(),
                     labels: vec![],
                     parent: Some(epic),
                 },
@@ -2142,6 +2162,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "New idea".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -2162,6 +2183,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "Tagged idea".to_string(),
+                description: String::new(),
                 labels: vec!["bug".to_string(), "ux".to_string()],
                 parent: None,
             },
@@ -2184,6 +2206,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_card_with_description_sets_cover_note() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+
+        // A non-empty description on `AddCard` should surface as the card's
+        // description, exactly as a follow-up `EditDescription` would — proving
+        // the create path emits the same cover note in one publish.
+        t.apply(
+            &view,
+            BoardAction::AddCard {
+                col: 1,
+                title: "Documented idea".to_string(),
+                description: "the details".to_string(),
+                labels: vec![],
+                parent: None,
+            },
+        );
+
+        let view = t
+            .wait(|v| {
+                v.columns[1]
+                    .cards
+                    .iter()
+                    .any(|c| c.title == "Documented idea" && c.description == "the details")
+            })
+            .await;
+        // An empty description, by contrast, emits no cover note at all.
+        let card = view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.title == "Documented idea")
+            .unwrap();
+        assert_eq!(card.description, "the details");
+    }
+
+    #[tokio::test]
     async fn block_and_unblock_edit_the_dependency_set() {
         let t = TestNdb::new();
         seed_demo(&t);
@@ -2196,6 +2255,7 @@ mod tests {
                 BoardAction::AddCard {
                     col: 0,
                     title: title.to_string(),
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 },
@@ -2287,6 +2347,7 @@ mod tests {
                 BoardAction::AddCard {
                     col: 0,
                     title: title.to_string(),
+                    description: String::new(),
                     labels: vec![],
                     parent: None,
                 },
@@ -2389,6 +2450,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "Tracked".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -2705,6 +2767,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 0,
                 title: "Roamer".to_string(),
+                description: String::new(),
                 labels: vec!["wandering".to_string()],
                 parent: None,
             },
@@ -2856,6 +2919,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 2, // in-progress
                 title: "Homeless".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -2967,6 +3031,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 0,
                 title: "Sealed card".to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },

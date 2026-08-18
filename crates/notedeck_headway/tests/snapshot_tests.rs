@@ -1165,6 +1165,7 @@ fn own_shared_board_folds_teammate_card_in_render() {
             store::BoardAction::AddCard {
                 col: 0,
                 title: TEAMMATE_CARD.to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },
@@ -1215,6 +1216,7 @@ fn restart_reopens_saved_board_coordinate() {
             store::BoardAction::AddCard {
                 col: 0,
                 title: ROADMAP_CARD.to_string(),
+                description: String::new(),
                 labels: vec![],
                 parent: None,
             },

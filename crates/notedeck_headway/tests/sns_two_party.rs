@@ -177,6 +177,7 @@ async fn owner_sealed_edits_converge_to_member_over_relay() {
         BoardAction::AddCard {
             col: 0,
             title: "owner-sentinel-card".to_owned(),
+            description: String::new(),
             labels: vec![],
             parent: None,
         },
@@ -227,6 +228,7 @@ async fn member_own_card_folds_into_owners_shared_board_over_relay() {
         BoardAction::AddCard {
             col: 0,
             title: "member-own-card".to_owned(),
+            description: String::new(),
             labels: vec![],
             parent: None,
         },
@@ -318,6 +320,7 @@ async fn sealed_rumors_never_cross_the_wire_in_plaintext() {
         BoardAction::AddCard {
             col: 0,
             title: "plaintext-sentinel-card".to_owned(),
+            description: String::new(),
             labels: vec![],
             parent: None,
         },
@@ -392,6 +395,7 @@ async fn member_editing_owners_card_counts_over_relay() {
         BoardAction::AddCard {
             col: 0,
             title: "owner-card".to_owned(),
+            description: String::new(),
             labels: vec![],
             parent: None,
         },

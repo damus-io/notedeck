@@ -538,6 +538,7 @@ impl AppTool for AddCard {
             Ok(BoardAction::AddCard {
                 col,
                 title: args.title.clone(),
+                description: String::new(),
                 labels: args.labels.as_deref().map(split_labels).unwrap_or_default(),
                 parent,
             })
