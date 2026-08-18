@@ -233,6 +233,10 @@ agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium
 agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
 agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
 agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
+agentium spawn --title "Fix the parser" --prompt-file - <<'EOF'   # heredoc a long first message
+Fix the parser so it handles multi-line input.
+See the failing test in crates/tokenator.
+EOF
 ```
 
 Flags:
@@ -251,6 +255,13 @@ Flags:
 - `--prompt <text>` — deliver `<text>` as the session's first `user` message once
   it's up. **Implies `--wait`** (you can't send to a session that doesn't exist),
   and also reports the message event id. Equivalent to `spawn --wait` then `send`.
+- `--prompt-file <path>` — the escaping-free alternative to `--prompt`: read the
+  first message from a file, or from stdin when `<path>` is `-`, so a long
+  multi-line prompt can heredoc in with no shell-escaping (the `/handoff` flow
+  uses `--prompt-file -`). It resolves into the same first message as `--prompt`
+  (so it likewise **implies `--wait`** and reports the message event id), trims
+  trailing whitespace (so a heredoc's closing newline doesn't ride along), and is
+  **mutually exclusive** with `--prompt`.
 
 Output: plain, no `--wait` → `spawn command sent to <host> (spawn <id8>…)`; with
 `--wait` → `spawned <agentium:ref> on <host> (spawn <id8>…)`, plus
