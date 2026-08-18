@@ -60,6 +60,9 @@ enum Command {
         labels: Vec<String>,
         /// A card to parent the new one under (created as a subissue).
         parent: Option<String>,
+        /// Initial description (cover note), already resolved from `--desc` or
+        /// `--desc-file`. `None` means no description event is emitted.
+        description: Option<String>,
     },
     Move {
         card: String,
@@ -665,6 +668,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             col,
             labels,
             parent,
+            description,
         } => {
             let col = col.as_deref().map_or(Ok(0), |c| resolve_col(view, c))?;
             let parent = parent
@@ -674,6 +678,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             BoardAction::AddCard {
                 col,
                 title,
+                description: description.unwrap_or_default(),
                 labels,
                 parent,
             }
@@ -1496,6 +1501,10 @@ impl Cli {
         let mut to = None;
         let mut reply_to = None;
         let mut parent = None;
+        // `add` description, from either the inline `--desc` or the escaping-free
+        // `--desc-file` (a path, or `-` for stdin); folded into one value below.
+        let mut desc = None;
+        let mut desc_file = None;
         let mut on = None;
         let mut labels: Vec<String> = Vec::new();
         let mut seq = SeqFlags::default();
@@ -1522,6 +1531,8 @@ impl Cli {
                 "--to" => to = Some(value("--to")?),
                 "--reply-to" => reply_to = Some(value("--reply-to")?),
                 "--parent" => parent = Some(value("--parent")?),
+                "--desc" => desc = Some(value("--desc")?),
+                "--desc-file" => desc_file = Some(value("--desc-file")?),
                 "--on" => on = Some(value("--on")?),
                 "--after" => seq.after = Some(value("--after")?),
                 "--before" => seq.before = Some(value("--before")?),
@@ -1565,8 +1576,32 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
+        // Fold `--desc`/`--desc-file` into one description: they name the same
+        // thing (the new card's cover note), so passing both is a contradiction. A
+        // file value of `-` means stdin, which lets a heredoc pipe a long markdown
+        // description in with no shell-escaping.
+        let description = match (desc, desc_file) {
+            (Some(_), Some(_)) => {
+                return Err("pass either --desc or --desc-file, not both".into());
+            }
+            (Some(text), None) => Some(text),
+            (None, Some(path)) => Some(read_desc_source(&path)?),
+            (None, None) => None,
+        };
         let command = parse_command(
-            name, rest, col, row, to, reply_to, parent, on, labels, seq, ready, count,
+            name,
+            rest,
+            col,
+            row,
+            to,
+            reply_to,
+            parent,
+            description,
+            on,
+            labels,
+            seq,
+            ready,
+            count,
         )?;
 
         // A card selector like `headway:commerce/purse-metal-toilet` already names
@@ -1635,6 +1670,7 @@ fn parse_command(
     to: Option<String>,
     reply_to: Option<String>,
     parent: Option<String>,
+    description: Option<String>,
     on: Option<String>,
     labels: Vec<String>,
     seq: SeqFlags,
@@ -1653,6 +1689,7 @@ fn parse_command(
             col,
             labels,
             parent,
+            description,
         },
         "move" => Command::Move {
             card: card()?,
@@ -1773,6 +1810,21 @@ fn joined(rest: &[String], idx: usize, cmd: &str) -> Result<String> {
     Ok(parts.join(" "))
 }
 
+/// Read a `--desc-file` value into description text: `-` reads stdin (so a long
+/// markdown description can heredoc in with no shell-escaping), anything else is
+/// a file path. Trailing whitespace is trimmed so a heredoc's closing newline
+/// doesn't ride along.
+fn read_desc_source(path: &str) -> Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    if path == "-" {
+        std::io::stdin().read_to_string(&mut text)?;
+    } else {
+        text = std::fs::read_to_string(path)?;
+    }
+    Ok(text.trim_end().to_string())
+}
+
 fn print_usage() {
     eprintln!(
         "\
@@ -1790,7 +1842,8 @@ COMMANDS:
                                per-board key so it can be shared, re-sealing
                                existing notes in place (no data loss)
     add <title...>             Add a card (--col <c> column, -l <labels> to tag,
-                               --parent <card> to create it as a subissue)
+                               --parent <card> to create it as a subissue,
+                               --desc <text>/--desc-file <path> for a description)
     move <card> --col <c>      Move a card to a column (--row to position)
     title <card> <title...>    Edit a card's title
     desc <card> <text...>      Edit a card's description
@@ -1850,6 +1903,11 @@ OPTIONS:
                       for `relate`/`unrelate`
     --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
     --parent <card>   Parent card for `add` (created as its subissue)
+    --desc <text>     Initial description for `add` (mutually exclusive with
+                      --desc-file)
+    --desc-file <p>   Like --desc, but read the description from file <p> (or
+                      stdin when <p> is `-`) — pass a long/multi-line markdown
+                      description with no shell-escaping (heredoc)
     --on <card>       Blocker card for `block`/`unblock`
     --in <c>          Container for `seq`/`next` (card ref or board slug)
     --ready           Print the whole ready set for `next` (not just the first)
@@ -1905,6 +1963,64 @@ mod tests {
             }
             _ => panic!("expected a Priority command"),
         }
+    }
+
+    /// `add --desc <text>` folds the inline text into the card's description.
+    #[test]
+    fn add_desc_inline_sets_description() {
+        let cli = parse(&["add", "a card", "--desc", "the details"]);
+        match cli.command {
+            Command::Add {
+                title, description, ..
+            } => {
+                assert_eq!(title, "a card");
+                assert_eq!(description.as_deref(), Some("the details"));
+            }
+            _ => panic!("expected an Add command"),
+        }
+    }
+
+    /// `add --desc-file <path>` reads the description from a file, trimming the
+    /// trailing whitespace a heredoc's closing newline leaves behind while
+    /// keeping interior newlines.
+    #[test]
+    fn add_desc_file_is_read_and_trimmed() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "## Heading\n\nbody line\n\n").unwrap();
+        let cli = parse(&["add", "a card", "--desc-file", f.path().to_str().unwrap()]);
+        match cli.command {
+            Command::Add { description, .. } => {
+                assert_eq!(description.as_deref(), Some("## Heading\n\nbody line"))
+            }
+            _ => panic!("expected an Add command"),
+        }
+    }
+
+    /// `--desc` and `--desc-file` name the same thing, so passing both errors
+    /// rather than silently letting one win.
+    #[test]
+    fn add_desc_and_desc_file_conflict() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "from file").unwrap();
+        let res = Cli::parse(
+            [
+                "add",
+                "a card",
+                "--desc",
+                "inline",
+                "--desc-file",
+                f.path().to_str().unwrap(),
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+        let err = match res {
+            Err(e) => e,
+            Ok(_) => panic!("--desc + --desc-file should conflict"),
+        };
+        assert!(err.to_string().contains("not both"), "{err}");
     }
 
     /// A board is shared iff the roster holds a key for its full *coordinate*.
