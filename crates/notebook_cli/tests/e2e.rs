@@ -98,15 +98,15 @@ fn first_node_id(canvas: &Value) -> String {
         .to_string()
 }
 
-/// The vault is a *local* read — longform never syncs over the relay — so this
-/// exercises the browse path directly: write a PNS-wrapped longform note into the
-/// CLI's own db (as the app would), then drive the real binary to list it and
-/// print its body. A dummy relay is passed but never dialed: `vault` short-circuits
-/// before the reconcile.
+/// The `vault` command is a *local* read (it skips the relay reconcile), so this
+/// exercises the browse path directly: seal a longform note into the CLI's own db
+/// via the SNS workspace (as the app would), then drive the real binary to list it
+/// and print its body. A dummy relay is passed but never dialed: `vault`
+/// short-circuits before the reconcile.
 #[test]
 fn vault_lists_and_prints_local_longform() {
-    use notedeck_notebook::event;
-    use notedeck_notebook::store::{self, LongformInput, NoPublish};
+    use notebook::event;
+    use notebook::store::{self, LongformInput, NoPublish};
     use std::time::Instant;
 
     let cli_dir = tempfile::tempdir().expect("cli dir");
@@ -117,11 +117,12 @@ fn vault_lists_and_prints_local_longform() {
     let author = enostr::Pubkey::new(*pk.bytes());
 
     // Populate the CLI db in-process, then drop the handle so the binary opens it
-    // cleanly. nostrdb only unwraps the PNS envelope once the device key is
-    // registered — mirror the app's account-add before creating the note.
+    // cleanly. The vault is sealed into the account's SNS workspace, so register
+    // its derived root — nostrdb only unwraps the kind-1081 envelopes once it is
+    // registered — mirroring what the CLI/app does before reading.
     let d = {
         let ndb = Ndb::new(db, &Config::new().set_ingester_threads(1)).expect("ndb");
-        assert!(ndb.add_key(&SECRET), "register the device key");
+        store::register_workspace(&ndb, &SECRET);
         let input = LongformInput {
             title: "My Article".to_string(),
             summary: Some("a short summary".to_string()),
@@ -247,15 +248,17 @@ fn seed_show_and_add_round_trip() {
 /// binary process can read it. Returns the note's `d`. Longform never syncs over the
 /// relay, so this is the only way a note reaches the CLI's vault.
 fn write_local_longform(db: &str, title: &str, summary: Option<&str>, content: &str) -> String {
-    use notedeck_notebook::event;
-    use notedeck_notebook::store::{self, LongformInput, NoPublish};
+    use notebook::event;
+    use notebook::store::{self, LongformInput, NoPublish};
     use std::time::Instant;
 
     let (_sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec()).expect("nsec");
     let author = enostr::Pubkey::new(*pk.bytes());
 
     let ndb = Ndb::new(db, &Config::new().set_ingester_threads(1)).expect("ndb");
-    assert!(ndb.add_key(&SECRET), "register the device key");
+    // Register the vault's derived SNS workspace root so nostrdb unwraps the sealed
+    // kind-1081 longform envelope this injects.
+    store::register_workspace(&ndb, &SECRET);
     let input = LongformInput {
         title: title.to_string(),
         summary: summary.map(str::to_string),
