@@ -813,6 +813,24 @@ impl Chrome {
                         animate,
                         |ui, ui_type, frame_nav| match ui_type {
                             NavUiType::Body => {
+                                // Paint an opaque panel background before the app
+                                // draws. During an egui_nav slide the incoming
+                                // route renders in a foreground layer over the
+                                // outgoing one; the outgoing app's floating
+                                // `egui::Area`s (popups, tooltips, side panels)
+                                // escape egui_nav's route clip and would otherwise
+                                // show through an app whose `render` doesn't fill
+                                // its whole rect (e.g. Dave). This fill occludes
+                                // whatever sits beneath the incoming route so every
+                                // app switch clips cleanly. It lives here rather
+                                // than in the shared, business-logic-free
+                                // `nav_frame` (columns paints its own column
+                                // backgrounds and has its own nav path).
+                                ui.painter().rect_filled(
+                                    ui.max_rect(),
+                                    CornerRadius::ZERO,
+                                    ui.visuals().panel_fill,
+                                );
                                 let entry =
                                     frame_nav.routes().last().expect("stack always has a top");
                                 let resp =
