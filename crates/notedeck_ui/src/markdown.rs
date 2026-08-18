@@ -572,7 +572,7 @@ fn render_element(
         }
 
         MdElement::Table { headers, rows } => {
-            render_table(headers, rows, theme, buffer, ui);
+            render_table(headers, rows, theme, buffer, ctx, ui);
         }
 
         MdElement::ThematicBreak => {
@@ -1128,7 +1128,63 @@ fn render_list_item(
     });
 }
 
-fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+/// Draw a single table header/cell span, splicing inline reference widgets
+/// wherever a registered parser resolves one — the same seam paragraphs use
+/// ([`append_text_with_refs`]) — so an `agentium:`/`headway:`/`nostr:` reference
+/// in a cell renders as its chip instead of raw text.
+///
+/// The reference-free span (the common case) keeps the plain `ui.strong`/`ui.label`
+/// fast path with no per-frame allocation; only a span that actually contains a
+/// reference (probed cheaply via [`contains_reference`]) is flushed through a
+/// per-cell `horizontal_wrapped` so a chip splices mid-text and wraps within the
+/// cell. A ref-bearing header drops the bold weight around its text, mirroring how
+/// emphasis is dropped around a chip in [`render_inlines`].
+fn render_table_span(
+    span: &Span,
+    buffer: &str,
+    strong: bool,
+    ctx: Option<&mut RefCtx>,
+    ui: &mut Ui,
+) {
+    let text = span.resolve(buffer);
+
+    let ctx = match ctx {
+        Some(ctx) if contains_reference(text, &ctx.note.registries.reference_parsers) => ctx,
+        _ => {
+            if strong {
+                ui.strong(text);
+            } else {
+                ui.label(text);
+            }
+            return;
+        }
+    };
+
+    let font_size = ui.style().text_styles[&egui::TextStyle::Body].size;
+    let fmt = TextFormat {
+        font_id: FontId::new(font_size, FontFamily::Proportional),
+        color: ui.visuals().text_color(),
+        ..Default::default()
+    };
+
+    ui.horizontal_wrapped(|ui| {
+        // Inline runs carry their own spaces; zero the gap so a spliced chip
+        // doesn't gain stray spaces (see the same note in `render_inlines`).
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let mut job = LayoutJob::default();
+        append_text_with_refs(&mut job, text, &fmt, ctx.note, ctx.txn, ui);
+        flush_job(&mut job, ui);
+    });
+}
+
+fn render_table(
+    headers: &[Span],
+    rows: &[Vec<Span>],
+    theme: &MdTheme,
+    buffer: &str,
+    mut ctx: Option<&mut RefCtx>,
+    ui: &mut Ui,
+) {
     let num_cols = headers.len();
     if num_cols == 0 {
         return;
@@ -1170,7 +1226,7 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
                     // Header row
                     for h in headers {
                         egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                            ui.strong(h.resolve(buffer));
+                            render_table_span(h, buffer, true, ctx.as_deref_mut(), ui);
                         });
                     }
                     ui.end_row();
@@ -1180,7 +1236,7 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
                         for i in 0..num_cols {
                             egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
                                 if let Some(cell) = row.get(i) {
-                                    ui.label(cell.resolve(buffer));
+                                    render_table_span(cell, buffer, false, ctx.as_deref_mut(), ui);
                                 }
                             });
                         }
@@ -1255,7 +1311,7 @@ fn render_partial(
             seen_separator,
         } => {
             if *seen_separator {
-                render_table(headers, rows, theme, buffer, ui);
+                render_table(headers, rows, theme, buffer, ctx.as_deref_mut(), ui);
             } else {
                 ui.label(content);
             }
