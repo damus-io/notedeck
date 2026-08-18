@@ -375,8 +375,8 @@ async fn follow_streams_a_live_message() {
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
         Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
-    let relay =
-        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
     let url = relay.url();
 
     // Seed the child's cache with the session state + one message, so the

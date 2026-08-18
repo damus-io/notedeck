@@ -166,8 +166,8 @@ async fn spawn_wait_resolves_and_prompt_lands() {
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
         Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
-    let relay =
-        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
     let url = relay.url();
 
     // The helper "host": a same-identity engine on the same relay that will answer
@@ -286,8 +286,8 @@ async fn spawn_wait_times_out_without_a_host() {
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
         Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
-    let relay =
-        nostrdb_relay::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr")).expect("spawn relay");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
     let url = relay.url();
 
     let cli_dir = TempDir::new().expect("cli tmp");

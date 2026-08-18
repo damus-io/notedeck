@@ -14,7 +14,6 @@ members = [
     "crates/headway_cli",
     "crates/notebook_cli",
     "crates/notedeck_headway",
-    "crates/nostrdb_relay",
     "crates/notedeck_nostrverse",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
@@ -83,9 +82,9 @@ md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip44", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "f3cd6dd18c96" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "5b446ed6ab02" }
 #nostrdb = "0.6.1"
-nostrdb_net = { git = "https://github.com/damus-io/nostrdb-rs", rev = "f3cd6dd18c96" }
+nostrdb_net = { git = "https://github.com/damus-io/nostrdb-rs", rev = "5b446ed6ab02" }
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
@@ -98,7 +97,6 @@ notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 headway = { path = "crates/headway" }
 notedeck_headway = { path = "crates/notedeck_headway" }
-nostrdb_relay = { path = "crates/nostrdb_relay" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }

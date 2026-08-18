@@ -194,7 +194,7 @@ pub struct Notedeck {
     /// feature, which is disabled for Android builds.
     #[cfg(feature = "local-relay")]
     #[allow(dead_code)]
-    local_relay: Option<nostrdb_relay::RelayHandle>,
+    local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -485,7 +485,7 @@ impl Notedeck {
                 .local_relay
                 .as_ref()
                 .and_then(|addr| match addr.parse() {
-                    Ok(socket_addr) => nostrdb_relay::spawn(ndb.clone(), socket_addr)
+                    Ok(socket_addr) => nostrdb_net::relay::server::spawn(ndb.clone(), socket_addr)
                         .map_err(|err| error!("failed to start local relay on {addr}: {err}"))
                         .ok(),
                     Err(err) => {

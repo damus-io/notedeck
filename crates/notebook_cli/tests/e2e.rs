@@ -201,7 +201,8 @@ fn seed_show_and_add_round_trip() {
     )
     .expect("app ndb");
     let _guard = rt.enter();
-    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
     let url = relay.url();
 
     // The CLI keeps its own separate nostrdb cache.
@@ -295,7 +296,8 @@ fn show_lists_mixed_vault() {
     )
     .expect("app ndb");
     let _guard = rt.enter();
-    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
     let url = relay.url();
 
     let cli_dir = tempfile::tempdir().expect("cli dir");
@@ -356,7 +358,8 @@ fn show_ref_dispatches_by_type() {
     )
     .expect("app ndb");
     let _guard = rt.enter();
-    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
     let url = relay.url();
 
     let cli_dir = tempfile::tempdir().expect("cli dir");
@@ -441,7 +444,8 @@ fn reconcile_converges_after_replacing_a_transform() {
     )
     .expect("app ndb");
     let _guard = rt.enter();
-    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
     let url = relay.url();
 
     let cli_dir = tempfile::tempdir().expect("cli dir");
