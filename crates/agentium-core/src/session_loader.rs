@@ -770,6 +770,7 @@ pub fn latest_state_created_at(
 /// still reads as fresh here. Used to fade a stale status indicator. Both kinds
 /// tag their session id under `d`, so a single filter ordered by `created_at`
 /// yields the global newest with `limit(1)`.
+#[profiling::function]
 pub fn latest_activity_created_at(
     ndb: &Ndb,
     txn: &Transaction,

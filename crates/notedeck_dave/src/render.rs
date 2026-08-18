@@ -142,6 +142,7 @@ impl KindRenderer for AgentiumSessionRenderer {
 /// the session isn't folded locally. Reads through the memoized
 /// [`session`](AgentiumSessionCache::session), keyed by the note's author + its
 /// `claude_session_id` d-tag, so a chip reuses this frame's fold.
+#[profiling::function]
 fn live_session(
     cache: &Rc<RefCell<AgentiumSessionCache>>,
     ndb: &Ndb,
@@ -190,6 +191,7 @@ fn status_color(theme: &ColorTheme, session: &LiveSession) -> egui::Color32 {
 /// A compact, single-line inline reference to a session: a live status dot
 /// followed by the session's title, in a small rounded pill — the in-prose shape
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
+#[profiling::function]
 fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
     let color = status_color(theme, live);
     // A tombstoned session reads as resumable: a small "resume" play triangle
@@ -215,6 +217,7 @@ fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) ->
 /// The block embed of a session ([`notedeck::RenderContext::Embed`]): its title, a
 /// status line (dot + label), and its working directory. Borrowed text keeps the
 /// path light.
+#[profiling::function]
 fn session_card_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
     ui.vertical(|ui| {
         ui.label(egui::RichText::new(session_title(live)).heading().strong());
