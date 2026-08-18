@@ -57,6 +57,36 @@ impl ChromeNavEntry {
     }
 }
 
+/// A route owned by whichever app is active, still missing its [`AppId`].
+///
+/// The counterpart of [`ChromeNavEntry`] for an app navigating *within itself*:
+/// such an app doesn't know its own slot, so it enqueues just the opaque route
+/// token (via [`Navigator::push_active`]). The chrome completes it into a full
+/// [`ChromeNavEntry`] by [`tag`](Self::tag)ging it with the active slot when it
+/// drains the request. Kept a distinct type — rather than a bare `Rc<dyn Any>`
+/// in the [`NavRequest`] variants — so the "token still awaiting its owning app"
+/// state is named and self-documenting at the call sites.
+#[derive(Clone)]
+pub struct ActiveNavEntry {
+    /// Opaque, app-defined route token, identical in contract to
+    /// [`ChromeNavEntry::token`]; the owning app downcasts it back to its route
+    /// type once the chrome hands the completed entry to `render_nav`.
+    pub token: Rc<dyn Any>,
+}
+
+impl ActiveNavEntry {
+    /// Wrap an untagged route `token` awaiting the active [`AppId`].
+    pub fn new(token: Rc<dyn Any>) -> Self {
+        Self { token }
+    }
+
+    /// Complete this active-owned entry into a full [`ChromeNavEntry`] by tagging
+    /// its token with the app slot the chrome resolved as active.
+    pub fn tag(self, app: AppId) -> ChromeNavEntry {
+        ChromeNavEntry::new(app, self.token)
+    }
+}
+
 /// A single navigation request an app enqueues during a frame, drained and
 /// applied to the real [`NavStack`](crate::NavStack) by the chrome after render.
 pub enum NavRequest {
@@ -65,6 +95,25 @@ pub enum NavRequest {
 
     /// Replace the current top route with a new one.
     Replace(ChromeNavEntry),
+
+    /// Push a new route owned by the *currently active* app onto the global
+    /// history, letting the chrome fill in the [`AppId`].
+    ///
+    /// Unlike [`Push`](Self::Push), the app doesn't name the owning slot — it
+    /// carries only its opaque route token. The chrome tags it with the active
+    /// [`AppId`] when it drains the request (see
+    /// [`Navigator::push_active`]). This is how an app navigates *within itself*:
+    /// a plain app-switch entry carries a `()` token with no [`AppId`] to read,
+    /// and `render_nav` isn't handed the app's own slot, so an app that
+    /// originates its own pushes (rather than being deep-linked into from
+    /// outside) has no other way to learn which slot to tag.
+    PushToActive(ActiveNavEntry),
+
+    /// Replace the current top route with a new route owned by the *currently
+    /// active* app, letting the chrome fill in the [`AppId`]. The
+    /// self-owned-push counterpart of [`Replace`](Self::Replace); see
+    /// [`Navigator::replace_active`].
+    ReplaceActive(ActiveNavEntry),
 
     /// Go back one step in the global history.
     Back,
@@ -101,6 +150,39 @@ impl Navigator {
     pub fn replace(&mut self, app: AppId, token: Rc<dyn Any>) {
         self.requests
             .push(NavRequest::Replace(ChromeNavEntry::new(app, token)));
+    }
+
+    /// Enqueue a push of `token` onto the global history, owned by whichever
+    /// app is active when the chrome drains this request.
+    ///
+    /// Use this — not [`push`](Self::push) — when an app navigates *within
+    /// itself* and doesn't know its own [`AppId`]. The chrome tags the token
+    /// with the active slot on drain (see [`NavRequest::PushToActive`]), so the
+    /// owning app downcasts the same token back to its route type when
+    /// `render_nav` hands it back.
+    pub fn push_active(&mut self, token: Rc<dyn Any>) {
+        self.requests
+            .push(NavRequest::PushToActive(ActiveNavEntry::new(token)));
+    }
+
+    /// Enqueue a replacement of the current top route with `token`, owned by the
+    /// active app, with the chrome filling in the [`AppId`] on drain. The
+    /// self-owned counterpart of [`replace`](Self::replace).
+    pub fn replace_active(&mut self, token: Rc<dyn Any>) {
+        self.requests
+            .push(NavRequest::ReplaceActive(ActiveNavEntry::new(token)));
+    }
+
+    /// Typed helper: enqueue a [`push_active`](Self::push_active) of an app's
+    /// own `route` value, boxing it into `Rc<dyn Any>`.
+    pub fn push_active_route<R: Any>(&mut self, route: R) {
+        self.push_active(Rc::new(route));
+    }
+
+    /// Typed helper: enqueue a [`replace_active`](Self::replace_active) of an
+    /// app's own `route` value, boxed like [`push_active_route`](Self::push_active_route).
+    pub fn replace_active_route<R: Any>(&mut self, route: R) {
+        self.replace_active(Rc::new(route));
     }
 
     /// Enqueue a back navigation.
@@ -188,5 +270,37 @@ mod navigator_tests {
         ));
         assert!(matches!(requests[3], NavRequest::Back));
         assert!(matches!(requests[4], NavRequest::Forward));
+    }
+
+    #[test]
+    fn active_helpers_enqueue_untagged_requests() {
+        let mut nav = Navigator::default();
+
+        // The active-owned helpers carry only the route token — no AppId, since
+        // the chrome fills in the active slot on drain.
+        nav.push_active_route(TestRoute::Home);
+        nav.replace_active(Rc::new(TestRoute::Thread(3)));
+
+        let requests = nav.take();
+        assert_eq!(requests.len(), 2);
+
+        assert!(matches!(
+            &requests[0],
+            NavRequest::PushToActive(entry)
+                if entry.token.downcast_ref::<TestRoute>() == Some(&TestRoute::Home)
+        ));
+        assert!(matches!(
+            &requests[1],
+            NavRequest::ReplaceActive(entry)
+                if entry.token.downcast_ref::<TestRoute>() == Some(&TestRoute::Thread(3))
+        ));
+
+        // `tag` completes an untagged entry into a full ChromeNavEntry.
+        let tagged = ActiveNavEntry::new(Rc::new(TestRoute::Home)).tag(AppId(4));
+        assert_eq!(tagged.app, AppId(4));
+        assert_eq!(
+            tagged.token.downcast_ref::<TestRoute>(),
+            Some(&TestRoute::Home)
+        );
     }
 }
