@@ -542,11 +542,13 @@ impl App for Headway {
         }
 
         // Advance joined shared boards (multi-writer fold, driven by each channel's
-        // kind-1081 envelope stream), and fan those fresh envelopes out to the
-        // private relays. The envelope — not the plaintext rumor nostrdb unwraps
-        // from it — is the sync unit; the rumor is skipped by fan_out_unseen_notes'
-        // is_rumor guard, so publishing here is what actually propagates our sealed
-        // edits to co-members (and re-propagates theirs).
+        // kind-1081 envelope stream) and wake on a fresh sealed edit so the open
+        // board re-folds. The sealed envelopes are *not* fanned out here anymore:
+        // the notedeck host now owns the SNS 1081 outbound leg (it fans every
+        // roster channel's locally-authored envelopes — see
+        // `notedeck::HostPrivateSync`), so publishing them here too would just
+        // double-send. The plaintext-board fan above stays app-owned (the host
+        // only carries private envelopes, not plaintext board events).
         if !self.teams.is_empty()
             && let Ok(txn) = Transaction::new(ctx.ndb)
         {
@@ -556,16 +558,6 @@ impl App for Headway {
                     .poll_shared(ctx.ndb, &txn, &self.teams);
             if !fresh_envelopes.is_empty() {
                 self.wake();
-                if !private_relays.is_empty() {
-                    let mut api = ctx.remote.publisher_explicit();
-                    fan_out_unseen_notes(
-                        &mut api,
-                        ctx.ndb,
-                        &txn,
-                        &fresh_envelopes,
-                        &private_relays,
-                    );
-                }
             }
         }
 

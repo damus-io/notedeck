@@ -45,10 +45,11 @@ pub const CONVERGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Installs the Headway app on a freshly booted device.
 ///
-/// The sealed shared-board (kind-1081/1082) inbound leg is now owned by the
-/// notedeck host's private `Session` (`notedeck::HostPrivateSync`), which is off
-/// under the test harness by default — force it on so these two-party tests
-/// exercise the account's inbound path (headway folds the resulting local nostrdb
+/// The sealed shared-board (kind-1081/1082) leg is now owned end to end by the
+/// notedeck host's private `Session` (`notedeck::HostPrivateSync`) — both the
+/// inbound pull and the outbound fan of this device's locally-sealed edits — which
+/// is off under the test harness by default, so force it on or these two-party
+/// tests have no transport at all (headway folds only the resulting local nostrdb
 /// state). The `Session` is spawned lazily on the first pumped frame, so this
 /// takes effect because the tests run under a multi-thread Tokio runtime.
 pub fn headway_app_factory() -> AppFactory {
@@ -192,8 +193,8 @@ pub fn join_shared_board(
 /// ingest it on `device`, authored by `owner`. Shared boards have no plaintext
 /// leg the members subscribe to, so the definition itself must travel sealed for a
 /// co-member's [`event::fold_shared_board`] to ever resolve the board — this is
-/// what a member subscribes to a coordinate *for*. The device's `update` fans the
-/// resulting 1081 envelope out to the relay on a following frame.
+/// what a member subscribes to a coordinate *for*. The device's notedeck host
+/// fans the resulting 1081 envelope out to the relay on a following frame.
 pub fn seal_board_definition(
     device: &mut DeviceHarness,
     owner_secret: &[u8; 32],
@@ -215,8 +216,8 @@ pub fn seal_board_definition(
 /// Apply a [`BoardAction`] on `device` as `author`, sealed into `channel`, against
 /// the shared board folded at `shared_addr` — the production render-path shape: the
 /// acting member folds the *shared* coordinate's view (columns, cards) and writes
-/// a sealed edit off it. The device's `update` fans the resulting 1081 envelope out
-/// to the relay next frame.
+/// a sealed edit off it. The device's notedeck host fans the resulting 1081
+/// envelope out to the relay next frame.
 ///
 /// `author` is what stamps the edit's board coordinate (`store::apply` derives it
 /// as `board_address(author, board_id)`), which is the acting member's own pubkey

@@ -6,9 +6,11 @@
 //! *transport*: sealed kind-1081 envelopes actually leaving one member's Headway
 //! device, crossing a real in-process relay, and folding into another member's
 //! board. Two full `notedeck_headway::Headway` app instances are driven against
-//! one `MemoryNegentropyRelay`, so every assertion rides the production sync path
-//! (`PrivateRelaySync` inbound, `fan_out_unseen_notes` outbound, nostrdb's
-//! 1081→rumor auto-unwrap).
+//! one `MemoryNegentropyRelay`, so every assertion rides the production sync path.
+//! The sealed 1081 leg is owned end to end by the notedeck host's private
+//! `Session` (`notedeck::HostPrivateSync`) — it both pulls the channel's envelopes
+//! inbound and fans this device's locally-sealed edits outbound — and nostrdb
+//! auto-unwraps 1081→rumor once the root is registered.
 //!
 //! Scope note: this is the "arrival + convergence" slice of
 //! `headway:headway/unfold-kiwi-bonus`. Rotation (multiple `team_root` epochs) and
@@ -65,9 +67,10 @@ const BOARD_TITLE: &str = "Two-party shared board";
 /// edit has a view to apply against). Returns the two devices, the shared board
 /// coordinate, and the channel.
 ///
-/// Both members mark the relay private, so their Headway instances subscribe to
-/// the channel's kind-1081 envelope stream and fan their own sealed edits out to
-/// it — the wiring the convergence assertions depend on.
+/// Both members mark the relay private, so each device's notedeck host syncs the
+/// channel's kind-1081 envelope stream both ways — pulling the other member's
+/// sealed edits inbound and fanning its own outbound — the wiring the convergence
+/// assertions depend on.
 struct SharedBoardFixture {
     owner: FullKeypair,
     member: FullKeypair,
