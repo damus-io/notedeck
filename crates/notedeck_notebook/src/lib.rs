@@ -22,7 +22,7 @@ use egui::{Pos2, Rect};
 use enostr::{NoteId, Pubkey};
 use jsoncanvas::{JsonCanvas, NodeId, edge::Side};
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
-use notedeck::{AppContext, AppResponse, PrivateRelaySync, fan_out_unseen_notes};
+use notedeck::{AppContext, AppResponse};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -131,10 +131,6 @@ pub struct Notebook {
     /// render and edit path read without re-folding. `None` until the first fold,
     /// or when the account has no canvas yet.
     view: Option<CanvasView>,
-    /// Inbound cross-device sync: declares a live + full-history subscription to
-    /// the account's private relays each frame, and resolves the outbound
-    /// publish targets.
-    private_sync: PrivateRelaySync,
     /// The folded canvas converted to `jsoncanvas` for rendering. Rebuilt
     /// whenever the sync reports a change.
     canvas: JsonCanvas,
@@ -743,11 +739,11 @@ impl Notebook {
     /// editor's clean baseline advances and a repaint burst is scheduled so the
     /// async ingest is polled promptly.
     ///
-    /// Longform is ingested **local-only** ([`store::NoPublish`]): the note is
-    /// PNS-wrapped, and the canvas fan-out path ([`fan_out_unseen_notes`]) fans
-    /// *unwrapped* notes, so routing longform through it would leak the plaintext
-    /// article. Cross-device longform sync (fanning the kind-1080 wrapper, plus an
-    /// inbound 1080 subscription) is tracked as `headway:notebook/merry-patch-boost`.
+    /// Ingested with [`store::NoPublish`]: the longform note is sealed into the
+    /// vault's SNS workspace like every other write, and the notedeck host fans the
+    /// resulting kind-1081 envelope out — no app-level publish. Longform now rides
+    /// the same channel as canvases, so it syncs across devices too (which is what
+    /// `headway:notebook/merry-patch-boost` tracked).
     fn save_editor(&mut self, ctx: &mut AppContext, author: &Pubkey, signer: &Option<[u8; 32]>) {
         let Some(secret) = signer else { return };
         let Some(editor) = self.editor.as_ref() else {
@@ -1053,7 +1049,6 @@ impl Default for Notebook {
             cache: Rc::new(RefCell::new(NotebookCache::default())),
             vault_sync: VaultSync::default(),
             view: None,
-            private_sync: PrivateRelaySync::new("notebook"),
             canvas: JsonCanvas::default(),
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
@@ -1107,10 +1102,10 @@ impl notedeck::App for Notebook {
     }
 
     /// Background sync, run every frame for all *opened* apps (not just the
-    /// foreground one) — which is what lets edits ingested by the `notebook` CLI
-    /// while the user is on another tab still sync out. Polls the account's canvas
-    /// subscription, fans freshly-ingested events out to its private relays, and
-    /// auto-seeds a default canvas. Rendering happens separately in [`render`].
+    /// foreground one). Registers the vault's SNS workspace root with the notedeck
+    /// host (which syncs the sealed channel both directions off-foreground), pumps
+    /// the local canvas + vault folds, and auto-seeds a default canvas. Rendering
+    /// happens separately in [`render`].
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         let author = *ctx.accounts.selected_account_pubkey();
         // Copy the secret out so we don't hold a borrow on `accounts` while we
@@ -1120,12 +1115,16 @@ impl notedeck::App for Notebook {
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
-        // Declare the inbound cross-device subscription (catch-up + realtime)
-        // against the account's private relays, and resolve the same set as our
-        // outbound publish targets. Empty => local-only.
-        let private_relays = self
-            .private_sync
-            .update(ctx, vec![event::notebook_filter(&author)]);
+        // Register the vault's derived SNS workspace root with the notedeck host.
+        // The host registers it with nostrdb and syncs the channel's kind-1081
+        // envelopes *both* directions off-foreground — inbound remote edits and the
+        // outbound fan of our own sealed writes (including ones the `notebook` CLI
+        // ingested straight into the embedded relay). So the notebook declares no
+        // private subscription and fans nothing itself. A pubkey-only (watch)
+        // account has no secret to derive a root from, so it stays read-only.
+        if let Some(secret) = &signer {
+            ctx.register_team_root(store::workspace_root(secret));
+        }
 
         // Advance the longform vault first (its own subscription + list): it may
         // resubscribe on an account switch, which needs `&mut Ndb`, so it must run
@@ -1198,17 +1197,9 @@ impl notedeck::App for Notebook {
             self.wake();
         }
 
-        // Fan every freshly-ingested canvas event out to the private relays it
-        // hasn't reached yet. This is the outbound half of cross-device sync: it
-        // covers our own edits *and* events written straight into nostrdb by the
-        // `notebook` CLI, which never pass through the app's edit path.
-        if !poll.fresh.is_empty()
-            && !private_relays.is_empty()
-            && let Ok(txn) = Transaction::new(ctx.ndb)
-        {
-            let mut api = ctx.remote.publisher_explicit();
-            fan_out_unseen_notes(&mut api, ctx.ndb, &txn, &poll.fresh, &private_relays);
-        }
+        // (No app-level fan-out: every vault write is a sealed kind-1081 envelope,
+        // and the notedeck host fans those — plus ones the `notebook` CLI ingested
+        // into the embedded relay — out to the private relays for us.)
 
         // No canvas yet: auto-seed one for an account that can sign, minting a fresh
         // opaque `d` and adopting it as the active canvas — no well-known default id.
