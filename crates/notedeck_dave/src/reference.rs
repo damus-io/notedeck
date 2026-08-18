@@ -111,10 +111,10 @@ impl ReferenceParser for AgentiumRefParser {
         // Author gap: no pubkey in the ref, so fold the current account's sessions.
         let author = ctx.selected_account?;
 
-        // Fold (memoized) the account's sessions, then re-encode each session's
-        // stable id to match the word id, returning the note id of the *current*
-        // state event. Resolving through the shared fold means a chip drawn right
-        // after reuses this frame's fold instead of re-folding.
+        // Fold (memoized) the account's sessions, then look the word id up in the
+        // fold's reverse index (O(1), no re-hashing per session), returning the note
+        // id of the *current* state event. Resolving through the shared fold means a
+        // chip drawn right after reuses this frame's fold instead of re-folding.
         let note_id = self
             .cache
             .borrow_mut()

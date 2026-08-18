@@ -67,6 +67,15 @@ pub struct SessionView {
 pub struct SessionReducer {
     /// Keyed by `claude_session_id`; the value is the latest revision seen.
     latest: HashMap<String, SessionView>,
+    /// Reverse index `word-id → claude_session_id`, so
+    /// [`resolve_wordid_including_deleted`](Self::resolve_wordid_including_deleted)
+    /// is an O(1) lookup rather than a per-call linear scan that re-hashes every
+    /// folded session. A word-id is a deterministic SHA-256 → BIP-39 encoding of
+    /// the stable `claude_session_id`, so an entry is computed exactly once — when
+    /// a session id is first folded — and never changes as the session's
+    /// replaceable revision (and its note id) churns. Tombstones stay indexed:
+    /// a session id is only ever added, never removed, mirroring [`latest`](Self::latest).
+    wordid_index: HashMap<String, String>,
 }
 
 impl SessionReducer {
@@ -85,12 +94,18 @@ impl SessionReducer {
         let Some(state) = SessionState::from_note(note, None) else {
             return; // no d-tag: not a session-state event we can key.
         };
-        if self
-            .latest
-            .get(&state.claude_session_id)
-            .is_some_and(|held| held.state.created_at > state.created_at)
-        {
+        let held = self.latest.get(&state.claude_session_id);
+        if held.is_some_and(|held| held.state.created_at > state.created_at) {
             return; // an older revision than the one we hold — ignore.
+        }
+        // First time we see this session id: compute its word-id once (SHA-256 →
+        // BIP-39) and record the reverse mapping. On later revisions the mapping
+        // already exists, so `resolve` never re-hashes.
+        if held.is_none() {
+            self.wordid_index.insert(
+                agentium_core::wordid::encode_session_id(&state.claude_session_id),
+                state.claude_session_id.clone(),
+            );
         }
         let note_id = NoteId::new(*note.id());
         self.latest.insert(
@@ -111,20 +126,20 @@ impl SessionReducer {
 
     /// The state-event note id of the session whose word-id is `words`,
     /// **including tombstones**. A session's stable identity is its
-    /// `claude_session_id`, so each candidate is matched by re-encoding that id
-    /// (SHA-256 → BIP-39 — see [`agentium_core::wordid::encode_session_id`]),
-    /// exactly how the CLI resolver matches a word-id.
+    /// `claude_session_id`, whose word-id (SHA-256 → BIP-39 — see
+    /// [`agentium_core::wordid::encode_session_id`]) is precomputed into
+    /// [`wordid_index`](Self::wordid_index) at fold time, so this is an O(1) map
+    /// lookup — no per-call scan or re-hash. Called per visible chip per frame in
+    /// the immediate-mode UI, so it must not hash or allocate.
     ///
-    /// Unlike [`views`](Self::views), this searches every folded revision, deleted
+    /// Unlike [`views`](Self::views), this resolves every folded revision, deleted
     /// ones included: a durable `agentium:` ref (e.g. quoted in a headway
     /// done-comment) must keep resolving so a closed session can still be reopened.
     /// `None` if no session matches. Reads the fold directly rather than the
     /// projected views precisely because the projection drops tombstones.
     fn resolve_wordid_including_deleted(&self, words: &str) -> Option<NoteId> {
-        self.latest
-            .values()
-            .find(|v| agentium_core::wordid::encode_session_id(&v.state.claude_session_id) == words)
-            .map(|v| v.note_id)
+        let session_id = self.wordid_index.get(words)?;
+        self.latest.get(session_id).map(|v| v.note_id)
     }
 }
 
@@ -429,6 +444,31 @@ mod tests {
 
         // A well-formed but unknown word-id resolves to nothing.
         assert!(t.resolve("maple-river-canyon").is_none());
+    }
+
+    /// The reverse word-id index keeps distinct sessions distinct: each word-id
+    /// resolves to its own session's note id, never another's — a guard against
+    /// the index conflating sessions once resolution stopped scanning-and-hashing.
+    #[tokio::test]
+    async fn distinct_sessions_resolve_through_the_index() {
+        let mut t = TestCache::new();
+        let sid_a = "session-a";
+        let sid_b = "session-b";
+        let words_a = agentium_core::wordid::encode_session_id(sid_a);
+        let words_b = agentium_core::wordid::encode_session_id(sid_b);
+
+        t.write_state(sid_a, "Alpha", "working", 1_000);
+        t.write_state(sid_b, "Bravo", "working", 1_000);
+        t.await_notes(2).await;
+        let (id_a, id_b) = loop {
+            t.poll();
+            if let (Some(a), Some(b)) = (t.resolve(&words_a), t.resolve(&words_b)) {
+                break (a, b);
+            }
+        };
+        assert_ne!(id_a, id_b, "each session resolves to its own note id");
+        assert_eq!(t.session(sid_a).unwrap().state.display_title(), "Alpha");
+        assert_eq!(t.session(sid_b).unwrap().state.display_title(), "Bravo");
     }
 
     /// A `deleted` tombstone drops a session from the *projected* views (so it
