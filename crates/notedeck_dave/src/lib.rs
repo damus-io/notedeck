@@ -39,7 +39,7 @@ use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
-use nostrdb::{Subscription, Transaction};
+use nostrdb::{NoteKey, Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
     DataPathType,
@@ -3057,10 +3057,25 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// For local sessions: only process `role=user` messages arriving from
     /// remote clients (phone), collecting them for backend dispatch.
+    /// Poll freshly-arrived conversation events and route them to their
+    /// sessions.
+    ///
+    /// `fan_out_keys` is an out-param collecting the **wrapping PNS envelope**
+    /// (kind-1080) note key of each account-authored conversation note seen this
+    /// poll, resolved from the unwrapped rumor via
+    /// [`rumor_giftwrap_id`](nostrdb::Note::rumor_giftwrap_id). The caller fans
+    /// these out to the account's private relays: an event injected by the
+    /// `agentium` CLI lands only on the local embedded relay (its default publish
+    /// target), so without this re-broadcast the host renders it but the
+    /// account's *other* devices never receive it. The envelope, not the
+    /// plaintext rumor, is the sync unit (and the rumor would be dropped by
+    /// [`fan_out_unseen_notes`](notedeck::fan_out_unseen_notes)'s `is_rumor`
+    /// guard, never leaking cleartext).
     fn poll_remote_conversation_events(
         &mut self,
         ndb: &nostrdb::Ndb,
         secret_key: Option<&[u8; 32]>,
+        fan_out_keys: &mut Vec<NoteKey>,
     ) -> Vec<(SessionId, String)> {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let mut rebuild_ids: Vec<SessionId> = Vec::new();
@@ -3097,9 +3112,31 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if *note.pubkey() != *account.bytes() {
                 continue;
             }
-            let Some(session_id) = session_events::get_tag_value(&note, "d")
-                .and_then(|dtag| by_dtag.get(dtag).copied())
-            else {
+            let session_id = session_events::get_tag_value(&note, "d")
+                .and_then(|dtag| by_dtag.get(dtag).copied());
+
+            // Collect the wrapping envelope for the caller's outbound fan-out
+            // (see the doc on this fn), but only for a note we did not publish
+            // ourselves. Notes dave builds ride `pending_relay_events` and are
+            // marked in `seen_note_ids` at build time, so skipping them avoids a
+            // second, redundant envelope on the relay; a note absent from the set
+            // reached ndb some other way — chiefly an agentium-CLI injection into
+            // the local embedded relay, which nothing else propagates. A note
+            // whose session isn't materialized here can't be matched against a
+            // dedup set, so fan it out (it isn't one of ours).
+            let self_published = session_id
+                .and_then(|sid| self.session_manager.get(sid))
+                .and_then(|s| s.agentic.as_ref())
+                .is_some_and(|a| a.seen_note_ids.contains(note.id()));
+            if !self_published {
+                if let Some(gw_id) = note.rumor_giftwrap_id() {
+                    if let Ok(gw_key) = ndb.get_notekey_by_id(&txn, gw_id) {
+                        fan_out_keys.push(gw_key);
+                    }
+                }
+            }
+
+            let Some(session_id) = session_id else {
                 continue;
             };
             by_session.entry(session_id).or_default().push(key);
@@ -4461,7 +4498,34 @@ impl notedeck::App for Dave {
         // the message is already in chat, so it will be included when the
         // current stream finishes and we re-dispatch.
         let sk_bytes = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
-        let remote_user_msgs = self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref());
+        let mut fan_out_keys: Vec<NoteKey> = Vec::new();
+        let remote_user_msgs =
+            self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref(), &mut fan_out_keys);
+
+        // Re-broadcast each freshly-arrived conversation envelope to the account's
+        // private relays it hasn't reached yet. This is the outbound half of
+        // cross-device sync for conversation events that never passed through
+        // dave's own publish queue — chiefly a user message injected by the
+        // `agentium` CLI, which publishes only to the local embedded relay. Our
+        // own events already ride `pending_relay_events`; the relay dedupes the
+        // overlap by event id. `fan_out_unseen_notes` skips notes already seen on
+        // each target relay (and the plaintext rumor, via its `is_rumor` guard).
+        if !fan_out_keys.is_empty() {
+            let private_relays = ctx.accounts.selected_account_private_relays();
+            if !private_relays.is_empty() {
+                if let Ok(txn) = Transaction::new(ctx.ndb) {
+                    let mut api = ctx.remote.publisher_explicit();
+                    notedeck::fan_out_unseen_notes(
+                        &mut api,
+                        ctx.ndb,
+                        &txn,
+                        &fan_out_keys,
+                        &private_relays,
+                    );
+                }
+            }
+        }
+
         for (sid, _msg) in remote_user_msgs {
             let should_dispatch = self
                 .session_manager
@@ -5771,6 +5835,74 @@ mod tests {
         let mut key = [0u8; 32];
         key[0] = 1;
         key
+    }
+
+    /// Outbound fan-out primitive (headway:dave/light-hobby-upgrade): a
+    /// conversation note injected by the `agentium` CLI reaches only the local
+    /// embedded relay, so the host re-broadcasts its *wrapping* PNS envelope to
+    /// the account's private relays. This guards the mechanism that makes that
+    /// possible — an unwrapped rumor resolves to its kind-1080 envelope note key,
+    /// and that envelope is a non-rumor note that
+    /// [`notedeck::fan_out_unseen_notes`] will actually publish (it skips the
+    /// plaintext rumor via its `is_rumor` guard, so the inner note must not be
+    /// what we fan out).
+    #[tokio::test]
+    async fn conversation_rumor_resolves_to_fannable_envelope() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let user_evt = build_live_event(
+            "hello from the CLI",
+            "user",
+            "envelope-fanout-test",
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        // Register the account key so ndb's ingester unwraps the kind-1080
+        // envelope into its inner rumor (mirrors how notedeck configures ndb).
+        assert!(ndb.add_key(&sk), "ndb must accept the giftwrap key");
+
+        // Ingest the PNS-wrapped note exactly as it arrives over a relay and wait
+        // for the ingester to produce the inner rumor.
+        let sub = ndb
+            .subscribe(&[nostrdb::Filter::new()
+                .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                .build()])
+            .unwrap();
+        pns_ingest(&ndb, &user_evt.note_json, &sk);
+        let keys = ndb.wait_for_notes(sub, 1).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let inner = ndb.get_note_by_key(&txn, keys[0]).unwrap();
+        // The inner note is a rumor: fanning it out would leak plaintext, and
+        // `fan_out_unseen_notes` deliberately skips it — which is exactly why the
+        // fix fans out the envelope instead.
+        assert!(inner.is_rumor(), "unwrapped conversation note is a rumor");
+        assert_eq!(inner.content(), "hello from the CLI");
+
+        // Resolve the wrapping envelope the fix collects and fans out.
+        let gw_id = inner
+            .rumor_giftwrap_id()
+            .expect("rumor carries its giftwrap id");
+        let gw_key = ndb
+            .get_notekey_by_id(&txn, gw_id)
+            .expect("wrapping envelope is in ndb");
+        let envelope = ndb.get_note_by_key(&txn, gw_key).unwrap();
+        assert_eq!(
+            u64::from(envelope.kind()),
+            enostr::pns::PNS_KIND as u64,
+            "the resolved envelope is the kind-1080 PNS wrapper"
+        );
+        assert!(
+            !envelope.is_rumor(),
+            "the envelope is a real note fan_out_unseen_notes will publish"
+        );
     }
 
     /// The selected account's pubkey alongside the author pubkeys of every
