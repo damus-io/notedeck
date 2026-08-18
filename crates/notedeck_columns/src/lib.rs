@@ -11,6 +11,7 @@ mod args;
 pub mod column;
 mod deck_state;
 mod decks;
+pub mod deeplink;
 mod draft;
 mod key_parsing;
 pub mod login_manager;
@@ -41,6 +42,7 @@ mod test_utils;
 pub mod storage;
 
 pub use app::Damus;
+pub use deeplink::{ColumnsNavToken, DeepLink};
 pub use error::Error;
 pub use route::Route;
 

@@ -589,4 +589,72 @@ mod tests {
             "closing the last scope should unsubscribe the local thread sub"
         );
     }
+
+    /// A deep-linked thread's subscription lifecycle runs through the same
+    /// `threads.open` / `cleanup_popped_route` pair a deck column uses — only
+    /// keyed by a deep-link's dedicated high `col`. Opening then routing the
+    /// popped `Route::Thread` through `cleanup_popped_route` (exactly what
+    /// [`Damus::cleanup_nav`](crate::Damus) does on a global-back) must leave no
+    /// dangling sub, so a deep-link entry frees its thread when it leaves the
+    /// global history.
+    #[tokio::test]
+    async fn deeplink_thread_cleanup_closes_the_sub() {
+        use crate::route::cleanup_popped_route;
+        use crate::Route;
+
+        let mut h = ThreadHostHarness::new();
+        let selection = thread_selection(0x44);
+        // A deep-link col lives in the disjoint high range, never a real column.
+        let col = usize::MAX / 2;
+
+        {
+            let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            let _ = h.threads.open(
+                app_ctx.ndb,
+                &txn,
+                &mut scoped_subs,
+                &selection,
+                false,
+                col,
+                0.0,
+            );
+        }
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(h.notedeck.app_context(&h.ui_ctx).accounts, col)
+                .is_some(),
+            "opening the deep-link thread installs its local sub under the deep-link col"
+        );
+
+        // Free it via the deep-link cleanup path (not a direct threads.close).
+        let route = Route::Thread(selection.clone());
+        let mut timeline_cache = crate::timeline::TimelineCache::default();
+        let mut onboarding = crate::onboarding::Onboarding::default();
+        let mut view_state = crate::view_state::ViewState::default();
+        {
+            let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            cleanup_popped_route(
+                &route,
+                &mut timeline_cache,
+                &mut h.threads,
+                &mut onboarding,
+                &mut view_state,
+                app_ctx.ndb,
+                &mut scoped_subs,
+                ReturnType::Click,
+                col,
+            );
+        }
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(h.notedeck.app_context(&h.ui_ctx).accounts, col)
+                .is_none(),
+            "cleanup_popped_route must unsubscribe the deep-link thread's local sub"
+        );
+    }
 }

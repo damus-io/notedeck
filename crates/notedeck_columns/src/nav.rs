@@ -4,13 +4,14 @@ use crate::{
     column::ColumnsAction,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
+    deeplink::{ColumnsNavToken, DeepLink},
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
     route::{cleanup_popped_route, Route, SingletonRouter},
     timeline::{
         route::{render_thread_route, render_timeline_route},
-        TimelineCache,
+        ThreadSelection, TimelineCache, TimelineKind,
     },
     ui::{
         self,
@@ -36,11 +37,12 @@ use egui_nav::{
 use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
-    FilterState, NavStack, NavStackEvent, NoteAction, NoteCache, NoteContext, NoteDetail,
-    RelayAction,
+    get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppAction,
+    AppContext, FilterState, NavStack, NavStackEvent, NoteAction, NoteCache, NoteContext,
+    NoteDetail, RelayAction,
 };
 use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
+use std::rc::Rc;
 use tracing::error;
 
 /// The result of processing a nav response
@@ -1534,4 +1536,180 @@ pub fn render_nav(
         });
 
     RenderNavResponse::new(col, NotedeckNavResponse::Nav(Box::new(nav_response)))
+}
+
+/// Render a single deep-linked route as its own transient global-nav pane, then
+/// process whatever the pane produced.
+///
+/// Unlike a deck column this pane owns **no** private nav stack: a drill-in
+/// (tapping a reply, or an author) pushes a *new* global deep-link and `Back`
+/// steps the global history — both via the chrome-owned
+/// [`Navigator`](notedeck::Navigator). Only actions that don't map to a
+/// deep-link route (posting, zaps, reactions) bubble up as an [`AppAction`] for
+/// the chrome's existing note handler. The body itself is drawn by the same
+/// [`render_nav_body`] a deck column uses, keyed by the deep-link's dedicated
+/// [`col`](DeepLink::col) so its subscription bookkeeping stays isolated.
+pub(crate) fn render_deeplink(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    ui: &mut egui::Ui,
+    deeplink: &DeepLink,
+) -> Option<AppAction> {
+    let inner_rect = ui.available_rect_before_wrap();
+    // A single route, so depth is 1 (no in-pane back button — global-back owns
+    // returning from a deep-link).
+    let resp = render_nav_body(ui, app, ctx, &deeplink.route, 1, deeplink.col, inner_rect);
+    let action = resp.output?;
+    process_deeplink_action(app, ctx, deeplink, action)
+}
+
+/// Route a deep-link pane's [`RenderNavAction`] to the global history (drill-in
+/// pushes, back pops) or bubble it to the chrome. See [`render_deeplink`].
+fn process_deeplink_action(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    deeplink: &DeepLink,
+    action: RenderNavAction,
+) -> Option<AppAction> {
+    match action {
+        // Global-back handles returning: the chrome pops this entry and routes
+        // the pop to `cleanup_nav`, which closes the pane's subscription. A pfp
+        // tap at a deep-link's root behaves the same (there's no in-pane header).
+        RenderNavAction::Back | RenderNavAction::PfpClicked => {
+            ctx.navigator.back();
+            None
+        }
+
+        // Opening a note's thread or an author's profile drills in as a *new*
+        // global deep-link; any other note action (zap, react, media, context)
+        // has no deep-link route, so it bubbles to the chrome's note handler.
+        RenderNavAction::NoteAction(note_action) => {
+            deeplink_drill_in(app, ctx, deeplink, note_action)
+        }
+
+        // The rest can't originate from a thread/profile deep-link's surface
+        // (they belong to deck columns, sheets, or the composer). Log rather
+        // than silently drop, so a future deep-link surface that does raise one
+        // gets wired explicitly.
+        _ => {
+            tracing::debug!("unhandled deep-link nav action");
+            None
+        }
+    }
+}
+
+/// Handle a note action raised inside a deep-link pane: a navigable action opens
+/// its subscription and pushes a fresh global deep-link (carrying the same app
+/// slot); anything else bubbles to the chrome's note handler.
+fn deeplink_drill_in(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    deeplink: &DeepLink,
+    note_action: NoteAction,
+) -> Option<AppAction> {
+    if !matches!(
+        note_action,
+        NoteAction::Note { .. } | NoteAction::Profile(_)
+    ) {
+        return Some(AppAction::Note(note_action));
+    }
+
+    let col = app.alloc_deeplink_col();
+    let Some(route) = open_deeplink_route(app, ctx, col, &note_action) else {
+        // The note's thread root wasn't resolvable; let the chrome try instead.
+        return Some(AppAction::Note(note_action));
+    };
+
+    ctx.navigator.push(
+        deeplink.app,
+        Rc::new(ColumnsNavToken::DeepLink(DeepLink {
+            app: deeplink.app,
+            route,
+            col,
+        })),
+    );
+    None
+}
+
+/// Open the subscription for a navigable note action under `col` and return the
+/// [`Route`] a deep-link pane should render for it, or `None` if the action names
+/// no navigable route (or its thread root can't be resolved).
+///
+/// This is the deep-link counterpart to a deck column's on-navigate subscription
+/// setup (see [`crate::actionbar::execute_and_process_note_action`]): it opens
+/// the thread/timeline sub keyed by the deep-link's own `col`, so a later
+/// [`cleanup_popped_route`] under the same `col` tears down exactly what this
+/// opened. Shared by [`deeplink_drill_in`] and
+/// [`Damus::open_deeplink`](crate::Damus::open_deeplink).
+pub(crate) fn open_deeplink_route(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    col: usize,
+    action: &NoteAction,
+) -> Option<Route> {
+    let txn = Transaction::new(ctx.ndb).ok()?;
+    match action {
+        NoteAction::Note {
+            note_id,
+            preview,
+            scroll_offset,
+        } => {
+            let selection =
+                ThreadSelection::from_note_id(ctx.ndb, ctx.note_cache, &txn, *note_id).ok()?;
+
+            let opened = {
+                let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+                app.threads.open(
+                    ctx.ndb,
+                    &txn,
+                    &mut scoped_subs,
+                    &selection,
+                    *preview,
+                    col,
+                    *scroll_offset,
+                )
+            };
+            if let Some(new_notes) = opened {
+                new_notes.process(
+                    &mut app.threads,
+                    ctx.ndb,
+                    &txn,
+                    ctx.unknown_ids,
+                    ctx.note_cache,
+                );
+            }
+
+            Some(Route::Thread(selection))
+        }
+
+        NoteAction::Profile(pubkey) => {
+            let kind = TimelineKind::Profile(*pubkey);
+
+            let opened = {
+                let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+                app.timeline_cache.open(
+                    ctx.ndb,
+                    ctx.note_cache,
+                    &txn,
+                    &mut scoped_subs,
+                    &kind,
+                    *ctx.accounts.selected_account_pubkey(),
+                    false,
+                )
+            };
+            if let Some(result) = opened {
+                result.process(
+                    ctx.ndb,
+                    ctx.note_cache,
+                    &txn,
+                    &mut app.timeline_cache,
+                    ctx.unknown_ids,
+                );
+            }
+
+            Some(Route::Timeline(kind))
+        }
+
+        _ => None,
+    }
 }

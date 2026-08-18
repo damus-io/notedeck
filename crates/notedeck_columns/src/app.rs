@@ -67,7 +67,19 @@ pub struct Damus {
 
     /// Track which column is hovered for mouse back/forward navigation
     hovered_column: Option<usize>,
+
+    /// Next subscription-scope key to hand a deep-link pane (see
+    /// [`Damus::alloc_deeplink_col`]). Deep-links rendered as global-nav entries
+    /// must not share a `col` with a deck column (small, 0-based) or with each
+    /// other, so they draw from a disjoint high range instead.
+    next_deeplink_col: usize,
 }
+
+/// Base subscription-scope key for deep-link panes. Deck columns index from 0
+/// upward and never reach here, so allocating deep-link `col`s from this base
+/// keeps their thread/timeline subscription bookkeeping from ever colliding with
+/// a real column's. See [`Damus::alloc_deeplink_col`].
+const DEEPLINK_COL_BASE: usize = usize::MAX / 2;
 
 #[profiling::function]
 fn handle_egui_events(
@@ -575,6 +587,7 @@ impl Damus {
             threads,
             onboarding: Onboarding::default(),
             hovered_column: None,
+            next_deeplink_col: DEEPLINK_COL_BASE,
             timeline_loader: TimelineLoader::default(),
         }
     }
@@ -618,12 +631,53 @@ impl Damus {
             threads: Threads::default(),
             onboarding: Onboarding::default(),
             hovered_column: None,
+            next_deeplink_col: DEEPLINK_COL_BASE,
             timeline_loader: TimelineLoader::default(),
         }
     }
 
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {
         &self.unrecognized_args
+    }
+
+    /// Allocate a fresh subscription-scope key for a deep-link pane.
+    ///
+    /// Each deep-link (see [`crate::deeplink::DeepLink`]) gets its own `col`,
+    /// disjoint from every deck column and from every other deep-link, so the
+    /// thread/timeline subscription it opens is torn down independently when its
+    /// global-history entry is popped. Keys are drawn from
+    /// [`DEEPLINK_COL_BASE`] upward and never reused within a session.
+    pub fn alloc_deeplink_col(&mut self) -> usize {
+        let col = self.next_deeplink_col;
+        self.next_deeplink_col = self.next_deeplink_col.wrapping_add(1);
+        col
+    }
+
+    /// Open a deep-link for a cross-app navigation and return the token to push
+    /// onto the chrome's global history, or `None` if `action` names no navigable
+    /// route (only a note-open or a profile-open deep-links).
+    ///
+    /// This opens the route's subscription up front (keyed by a freshly
+    /// [allocated](Self::alloc_deeplink_col) `col`), so the entry renders
+    /// immediately and [`cleanup_nav`](notedeck::App::cleanup_nav) can close
+    /// exactly that subscription when the entry is later popped. `app` is the
+    /// Columns chrome slot, carried in the token so a drill-in from inside the
+    /// pane can push further deep-links onto the same app's history.
+    pub fn open_deeplink(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        app: notedeck::AppId,
+        action: &notedeck::NoteAction,
+    ) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        let col = self.alloc_deeplink_col();
+        let route = nav::open_deeplink_route(self, ctx, col, action)?;
+        Some(std::rc::Rc::new(
+            crate::deeplink::ColumnsNavToken::DeepLink(crate::deeplink::DeepLink {
+                app,
+                route,
+                col,
+            }),
+        ))
     }
 
     /// Navigate to the Home (contact list) timeline.
@@ -1028,6 +1082,56 @@ impl notedeck::App for Damus {
     #[profiling::function]
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         render_damus(self, ctx, ui)
+    }
+
+    /// Draw one chrome global-history entry. A [`DeepLink`](crate::deeplink::DeepLink)
+    /// token renders that single thread/profile as its own transient pane; the
+    /// `Deck` token — and any token this app doesn't recognize, such as the `()`
+    /// a plain app-switch entry carries — renders the normal multi-column deck,
+    /// exactly like [`render`](Self::render). The deck's own per-column in-pane
+    /// nav is untouched and stays private to the deck path.
+    #[profiling::function]
+    fn render_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        token: &std::rc::Rc<dyn std::any::Any>,
+    ) -> AppResponse {
+        match token
+            .downcast_ref::<crate::deeplink::ColumnsNavToken>()
+            .and_then(|t| t.deeplink())
+        {
+            Some(deeplink) => AppResponse::action(nav::render_deeplink(self, ctx, ui, deeplink)),
+            None => render_damus(self, ctx, ui),
+        }
+    }
+
+    /// Free a popped deep-link's subscription. The chrome calls this off a
+    /// completed global-back with the same token [`render_nav`](Self::render_nav)
+    /// drew; a deck-token (or unrecognized token) owns no per-entry resources, so
+    /// it's a no-op. Runs the deck's own [`cleanup_popped_route`](crate::route::cleanup_popped_route)
+    /// under the deep-link's `col`, tearing down exactly what
+    /// [`open_deeplink`](Self::open_deeplink) opened.
+    fn cleanup_nav(&mut self, ctx: &mut AppContext<'_>, token: &std::rc::Rc<dyn std::any::Any>) {
+        let Some(deeplink) = token
+            .downcast_ref::<crate::deeplink::ColumnsNavToken>()
+            .and_then(|t| t.deeplink())
+        else {
+            return;
+        };
+
+        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+        crate::route::cleanup_popped_route(
+            &deeplink.route,
+            &mut self.timeline_cache,
+            &mut self.threads,
+            &mut self.onboarding,
+            &mut self.view_state,
+            ctx.ndb,
+            &mut scoped_subs,
+            egui_nav::ReturnType::Click,
+            deeplink.col,
+        );
     }
 
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
