@@ -58,6 +58,13 @@ pub struct AppContext<'a> {
     /// render and applies each request to its global
     /// [`NavStack`](crate::NavStack). See [`Navigator`](crate::Navigator).
     pub navigator: &'a mut crate::Navigator,
+    /// SNS channels an app wants the host to sync. An app that owns a channel with
+    /// no kind-1082 key-share to discover it from — e.g. the notebook's derived
+    /// team-of-one vault — registers its root here each frame via
+    /// [`register_team_root`](AppContext::register_team_root); the host's
+    /// [`HostPrivateSync`](crate::HostPrivateSync) unions these onto its key-share
+    /// roster and owns both directions of the wire from there.
+    pub private_channels: &'a mut crate::PrivateChannels,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,
@@ -78,6 +85,16 @@ impl SoftKeyboardContext {
 }
 
 impl<'a> AppContext<'a> {
+    /// Ask the host to sync the SNS channel identified by `root`: register it with
+    /// nostrdb (so its kind-1081 envelopes auto-unwrap), pull it inbound, and fan
+    /// its locally-authored envelopes outbound — the app never touches the wire.
+    /// For a channel with no kind-1082 key-share to discover it from (the
+    /// notebook's derived team-of-one vault); call each frame the channel is live.
+    /// Idempotent.
+    pub fn register_team_root(&mut self, root: [u8; 32]) {
+        self.private_channels.register_team_root(root);
+    }
+
     /// Borrow the note-rendering dependencies as a [`NoteContext`], for code
     /// that wants to draw notes with notedeck_ui widgets (e.g. `NoteView`).
     ///

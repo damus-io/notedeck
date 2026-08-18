@@ -122,7 +122,7 @@ pub use options::NotedeckOptions;
 pub use persist::*;
 pub use private_sync::{
     fan_out_event_frame, fan_out_unseen_notes, write_private_note, HostPrivateSync,
-    PrivateRelaySync, PrivateWriteError,
+    PrivateChannels, PrivateRelaySync, PrivateWriteError,
 };
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};

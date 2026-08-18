@@ -243,6 +243,11 @@ pub struct Notedeck {
     /// app. `None` under the test harness (no Tokio runtime, must not open a
     /// dedicated relay pool), matching the embedded `local_relay` gating.
     host_private_sync: Option<crate::HostPrivateSync>,
+    /// SNS team roots apps registered for the host to sync (see
+    /// [`AppContext::register_team_root`](crate::AppContext::register_team_root)).
+    /// Handed to each frame's `AppContext` as a `&mut` field and read by
+    /// [`pump_host_private_sync`](Self::pump_host_private_sync).
+    private_channels: crate::PrivateChannels,
     /// Read-only, app-contributed registries handed to each frame's
     /// [`AppContext`](crate::AppContext): inline kind renderers (populated at
     /// startup) and agent tools (reset per-frame from the running apps).
@@ -412,7 +417,10 @@ impl Notedeck {
                 RelayId::Multicast => None,
             })
             .collect();
-        host.update(&mut self.ndb, &account, &secret, &urls);
+        // SNS channels apps asked the host to sync (e.g. the notebook's derived
+        // vault) — unioned onto the account's key-share roster inside `update`.
+        let app_roots = self.private_channels.roots();
+        host.update(&mut self.ndb, &account, &secret, &urls, &app_roots);
     }
 
     /// Force-enable the host private-note sync even under the test harness, where
@@ -633,6 +641,7 @@ impl Notedeck {
             i18n,
             sound,
             host_private_sync,
+            private_channels: crate::PrivateChannels::default(),
             registries: crate::AppRegistries::default(),
             app_actions: AppActionQueue::default(),
             navigator: crate::Navigator::default(),
@@ -701,6 +710,7 @@ impl Notedeck {
                 registries: &self.registries,
                 app_actions: &mut self.app_actions,
                 navigator: &mut self.navigator,
+                private_channels: &mut self.private_channels,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
