@@ -5136,6 +5136,11 @@ pub(crate) fn process_conversation_notes<'a>(
                 | Some("tool_call")
                 | Some("tool_result")
                 | Some("permission_request")
+                // A permission_response renders only when it carries a
+                // user-authored reply (render_conversation_note drops the
+                // rest); listing it here lets that reply append on the live
+                // remote path instead of waiting for a full rebuild.
+                | Some("permission_response")
                 | Some("compaction_complete")
         );
         if displayable {

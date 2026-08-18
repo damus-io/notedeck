@@ -15,7 +15,7 @@ use crate::{
     messages::{
         ApprovalPromptInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
         Message, PermissionRequest, PermissionResponse, PermissionResponseType, PermissionView,
-        QuestionAnswer, SubagentInfo, SubagentStatus,
+        QuestionAnswer, SubagentInfo, SubagentStatus, DEFAULT_DENY_REASON,
     },
     session::{PermissionMessageState, SessionDetails, SessionId},
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse, ToolResponses},
@@ -950,7 +950,7 @@ impl<'a> DaveUi<'a> {
                         *action = Some(DaveAction::PermissionResponse {
                             request_id: request.id,
                             response: PermissionResponse::Deny {
-                                reason: "User denied".into(),
+                                reason: DEFAULT_DENY_REASON.into(),
                             },
                         });
                     }

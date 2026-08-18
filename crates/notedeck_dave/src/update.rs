@@ -444,11 +444,14 @@ pub fn handle_permission_response(
         }
     };
 
-    // If Allow has a message, add it as a User message to the chat
-    if let PermissionResponse::Allow { message: Some(msg) } = &response {
-        if !msg.is_empty() {
-            session.chat.push(Message::User(msg.clone().into()));
-        }
+    // Surface the user's approve/deny reply text inline as a user message so
+    // there's a visible record of what was said, matching the note-render path
+    // that reconstructs it on reload / for a remote observer (see
+    // `session_loader::render_conversation_note`). `permission_reply_message`
+    // drops empty and canned-placeholder reasons so a plain allow/deny adds no
+    // bubble.
+    if let Some(reply) = crate::messages::permission_reply_message(message.as_deref()) {
+        session.chat.push(Message::User(reply.into()));
     }
 
     // Clear permission message state (agentic only)
