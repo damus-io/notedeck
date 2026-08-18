@@ -177,6 +177,7 @@ dependencies = [
  "md-stream",
  "nostrdb",
  "nostrdb_net",
+ "profiling",
  "serde",
  "serde_json",
  "similar",

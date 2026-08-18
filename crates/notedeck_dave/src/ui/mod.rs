@@ -1024,7 +1024,7 @@ pub fn handle_send_action(
                     .get_active()
                     .map(|s| s.input.clone())
                     .filter(|m| !m.is_empty())
-                    .unwrap_or_else(|| "User denied".into());
+                    .unwrap_or_else(|| crate::messages::DEFAULT_DENY_REASON.into());
                 if let Some(session) = session_manager.get_active_mut() {
                     session.input.clear();
                 }

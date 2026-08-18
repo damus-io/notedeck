@@ -287,7 +287,6 @@ pub struct Notedeck {
     /// Embedded localhost nostr relay, when enabled. Held so it shuts down with
     /// the app (its `Drop` stops the accept loop). Gated behind the `local-relay`
     /// feature, which is disabled for Android builds.
-    #[cfg(feature = "local-relay")]
     #[allow(dead_code)]
     local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
 
@@ -622,7 +621,6 @@ impl Notedeck {
 
         // Embedded localhost relay for dogfooding tooling. On by default; tests
         // never start it (no Tokio runtime, and it must not open a port).
-        #[cfg(feature = "local-relay")]
         let local_relay = if parsed_args.options.contains(NotedeckOptions::Tests) {
             None
         } else {
@@ -668,7 +666,6 @@ impl Notedeck {
             registries: crate::AppRegistries::default(),
             app_actions: AppActionQueue::default(),
             navigator: crate::Navigator::default(),
-            #[cfg(feature = "local-relay")]
             local_relay,
             #[cfg(target_os = "android")]
             android_app: None,

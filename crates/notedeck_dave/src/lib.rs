@@ -298,6 +298,12 @@ enum SessionCommand {
         /// shows immediately and no later message overwrites it; `None` lets the
         /// title derive from the first message as before.
         custom_title: Option<String>,
+        /// The new session's first `user` message, from the command's `prompt`
+        /// tag. Delivered locally the moment the session is materialized, so a
+        /// spawner's first message lands even when this host answered too slowly
+        /// for the spawner's own delivery to reach the session. `None` leaves the
+        /// session idle awaiting a message.
+        prompt: Option<String>,
     },
     /// Reopen + revive + resume an existing session (`command = "resume_session"`),
     /// named by its kind-31988 d-tag.
@@ -351,12 +357,16 @@ fn decode_session_command(
             let custom_title = session_events::get_tag_value(note, "custom_title")
                 .filter(|t| !t.is_empty())
                 .map(|s| s.to_string());
+            let prompt = session_events::get_tag_value(note, "prompt")
+                .filter(|t| !t.is_empty())
+                .map(|s| s.to_string());
             Some(SessionCommand::Spawn {
                 command_id,
                 cwd,
                 backend,
                 spawn_id,
                 custom_title,
+                prompt,
             })
         }
         "resume_session" => {
@@ -2949,27 +2959,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// a kind-31989 event with `target_host` matching our hostname. We pick it up
     /// here: `spawn_session` creates a new session locally; `resume_session`
     /// reopens (and revives) an existing one via [`reopen_session`](Self::reopen_session).
-    fn poll_session_command_events(&mut self, ctx: &mut AppContext<'_>) {
+    ///
+    /// Returns the sessions a spawn command asked to start with a first message
+    /// (its `prompt` tag): the message is already appended to each session's chat
+    /// here, and the caller dispatches it to the backend (it holds the
+    /// [`egui::Context`] that dispatch needs).
+    fn poll_session_command_events(&mut self, ctx: &mut AppContext<'_>) -> Vec<SessionId> {
         let Some(sub) = self.session_command_sub else {
-            return;
+            return Vec::new();
         };
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
-            return;
+            return Vec::new();
         };
 
         let note_keys = ctx.ndb.poll_for_notes(sub, 16);
         if note_keys.is_empty() {
-            return;
+            return Vec::new();
         }
 
         // Sessions to reopen after the read txn closes — reopen_session needs its
         // own ndb access, so it can't run while `txn` borrows ctx.ndb.
         let mut to_reopen: Vec<String> = Vec::new();
 
+        // First messages carried by spawn commands (their `prompt` tag), paired
+        // with the freshly-created session. Appended to chat + dispatched after
+        // the read txn closes, since both need `&AppContext`/`&mut self` free of
+        // the txn's borrow on `ctx.ndb`.
+        let mut first_prompts: Vec<(SessionId, String)> = Vec::new();
+
         {
             let txn = match Transaction::new(ctx.ndb) {
                 Ok(t) => t,
-                Err(_) => return,
+                Err(_) => return Vec::new(),
             };
 
             for key in note_keys {
@@ -2998,14 +3019,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         backend,
                         spawn_id,
                         custom_title,
+                        prompt,
                     } => {
                         tracing::info!(
-                            "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}, title={:?}",
+                            "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}, title={:?}, prompt={}",
                             command_id,
                             cwd,
                             backend,
                             spawn_id,
                             custom_title,
+                            prompt.is_some(),
                         );
 
                         self.processed_commands.insert(command_id);
@@ -3035,6 +3058,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 session.details.custom_title = Some(title);
                             }
                         }
+
+                        // Defer the first message until the read txn closes:
+                        // appending it builds a kind-1988 event (a fresh ndb read).
+                        if let Some(prompt) = prompt {
+                            first_prompts.push((sid, prompt));
+                        }
                     }
                     SessionCommand::Resume {
                         command_id,
@@ -3055,6 +3084,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         for selector in to_reopen {
             self.reopen_session(ctx.ndb, account, &selector);
         }
+
+        // Append each spawn command's first message to its new session's chat.
+        // `add_user_message_for_session` builds the outbound kind-1988 event and
+        // returns whether the backend should be dispatched now (true for a fresh,
+        // idle local session). Actual dispatch is the caller's job — it holds the
+        // `egui::Context`.
+        let mut needs_dispatch = Vec::new();
+        for (sid, prompt) in first_prompts {
+            if self.add_user_message_for_session(sid, ctx, prompt, Vec::new()) {
+                needs_dispatch.push(sid);
+            }
+        }
+        needs_dispatch
     }
 
     /// Poll for new kind-1988 conversation events.
@@ -4493,8 +4535,13 @@ impl notedeck::App for Dave {
         // Advance the shared inline-session cache backing `agentium:` chips.
         self.pump_session_cache(ctx, egui_ctx);
 
-        // Poll for spawn commands targeting this host
-        self.poll_session_command_events(ctx);
+        // Poll for spawn commands targeting this host. A spawn carrying a `prompt`
+        // tag returns its new session with the first message already in chat;
+        // dispatch it to the backend now (we hold the egui context it needs).
+        let spawned_with_prompt = self.poll_session_command_events(ctx);
+        for sid in spawned_with_prompt {
+            self.send_user_message_for(sid, ctx, egui_ctx);
+        }
 
         // Poll for live run-config updates from PNS relay
         self.poll_run_config_events(ctx.ndb);
@@ -5136,6 +5183,11 @@ pub(crate) fn process_conversation_notes<'a>(
                 | Some("tool_call")
                 | Some("tool_result")
                 | Some("permission_request")
+                // A permission_response renders only when it carries a
+                // user-authored reply (render_conversation_note drops the
+                // rest); listing it here lets that reply append on the live
+                // remote path instead of waiting for a full rebuild.
+                | Some("permission_response")
                 | Some("compaction_complete")
         );
         if displayable {
@@ -6652,6 +6704,7 @@ mod tests {
             "/tmp/proj",
             "claude",
             None,
+            None,
             "spawn-1",
             Some(&resume),
             &sk,
@@ -6662,6 +6715,7 @@ mod tests {
             "/work/dir",
             "claude",
             Some("Wire the widget"),
+            None,
             "spawn-2",
             None,
             &sk,

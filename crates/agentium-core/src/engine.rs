@@ -420,6 +420,11 @@ impl Engine {
     /// gives the new session an explicit, sticky title rather than deriving one
     /// from its first message (see [`build_spawn_command_event`]).
     ///
+    /// A non-empty `prompt` rides the command as a `prompt` tag: the host delivers
+    /// it as the new session's first `user` message the moment it materializes the
+    /// session, so a first message lands even if the host answers long after the
+    /// caller stopped waiting for it.
+    ///
     /// [`build_spawn_command_event`]: crate::session_events::build_spawn_command_event
     pub fn spawn_session(
         &self,
@@ -427,9 +432,11 @@ impl Engine {
         cwd: &str,
         backend: &str,
         title: Option<&str>,
+        prompt: Option<&str>,
     ) -> Result<String, EngineError> {
         let spawn_id = uuid::Uuid::new_v4().to_string();
-        let built = self.make_spawn_command(target_host, cwd, backend, title, &spawn_id, None)?;
+        let built =
+            self.make_spawn_command(target_host, cwd, backend, title, prompt, &spawn_id, None)?;
         self.publish_session_event(&built)?;
         Ok(spawn_id)
     }
@@ -457,8 +464,15 @@ impl Engine {
         };
         // A resume reopens an existing session, so it carries no title override —
         // the revived session keeps whatever title it already had.
-        let built =
-            self.make_spawn_command(target_host, cwd, backend, None, &spawn_id, Some(&resume))?;
+        let built = self.make_spawn_command(
+            target_host,
+            cwd,
+            backend,
+            None,
+            None,
+            &spawn_id,
+            Some(&resume),
+        )?;
         self.publish_session_event(&built)?;
         Ok(spawn_id)
     }
@@ -475,7 +489,8 @@ impl Engine {
         backend: &str,
         spawn_id: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        let built = self.make_spawn_command(target_host, cwd, backend, None, spawn_id, None)?;
+        let built =
+            self.make_spawn_command(target_host, cwd, backend, None, None, spawn_id, None)?;
         self.wrap_and_ingest(&built)?;
         Ok(built)
     }
@@ -502,8 +517,15 @@ impl Engine {
             target_session_id,
             cli_session_id,
         };
-        let built =
-            self.make_spawn_command(target_host, cwd, backend, None, spawn_id, Some(&resume))?;
+        let built = self.make_spawn_command(
+            target_host,
+            cwd,
+            backend,
+            None,
+            None,
+            spawn_id,
+            Some(&resume),
+        )?;
         self.wrap_and_ingest(&built)?;
         Ok(built)
     }
@@ -512,12 +534,14 @@ impl Engine {
     ///
     /// `resume` = `None` builds a plain spawn; `Some` builds a resume command
     /// (see [`build_spawn_command_event`](crate::session_events::build_spawn_command_event)).
+    #[allow(clippy::too_many_arguments)]
     fn make_spawn_command(
         &self,
         target_host: &str,
         cwd: &str,
         backend: &str,
         title: Option<&str>,
+        prompt: Option<&str>,
         spawn_id: &str,
         resume: Option<&crate::session_events::ResumeSpawn<'_>>,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
@@ -526,6 +550,7 @@ impl Engine {
             cwd,
             backend,
             title,
+            prompt,
             spawn_id,
             resume,
             &self.seckey(),
@@ -1467,7 +1492,7 @@ mod tests {
         let dir = TempDir::new().expect("tmp dir");
         let engine = Engine::open(dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
         let spawn_id = engine
-            .spawn_session("laptop", "/tmp/project", "claude", None)
+            .spawn_session("laptop", "/tmp/project", "claude", None, None)
             .expect("spawn");
         assert!(
             uuid::Uuid::parse_str(&spawn_id).is_ok(),

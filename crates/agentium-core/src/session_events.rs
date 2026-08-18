@@ -1014,11 +1014,19 @@ pub struct ResumeSpawn<'a> {
 /// tag on kind-31988 state); the host materializes the new session with that
 /// value as its `custom_title` so it shows immediately and survives later
 /// messages. `None`/empty omits the tag and the host derives the title as before.
+///
+/// A non-empty `prompt` stamps a `prompt` tag carrying the session's first `user`
+/// message. The host injects it locally the moment it materializes the session,
+/// so delivery never depends on the spawner still waiting — a slow host that
+/// answers after the CLI has given up still starts the session with its prompt.
+/// `None`/empty omits the tag and the session comes up idle. Ignored on a resume.
+#[allow(clippy::too_many_arguments)]
 pub fn build_spawn_command_event(
     target_host: &str,
     cwd: &str,
     backend: &str,
     title: Option<&str>,
+    prompt: Option<&str>,
     spawn_id: &str,
     resume: Option<&ResumeSpawn<'_>>,
     secret_key: &[u8; 32],
@@ -1046,6 +1054,15 @@ pub fn build_spawn_command_event(
     // displays at once and no later message overwrites it.
     if let Some(title) = title.filter(|t| !t.is_empty()) {
         builder = builder.start_tag().tag_str("custom_title").tag_str(title);
+    }
+
+    // The first `user` message, delivered by the host when it materializes the
+    // session. A resume reopens an existing conversation, so it carries no
+    // prompt (guarded here rather than at the call site for defence in depth).
+    if resume.is_none() {
+        if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
+            builder = builder.start_tag().tag_str("prompt").tag_str(prompt);
+        }
     }
 
     builder = builder.start_tag().tag_str("spawn_id").tag_str(spawn_id);
@@ -1996,9 +2013,17 @@ mod tests {
     #[test]
     fn spawn_command_has_no_resume_tags() {
         let sk = test_secret_key();
-        let event =
-            build_spawn_command_event("host-a", "/tmp/proj", "claude", None, "spawn-1", None, &sk)
-                .unwrap();
+        let event = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            None,
+            None,
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
 
         assert_eq!(event.kind, AI_SESSION_COMMAND_KIND);
         let json = &event.note_json;
@@ -2012,6 +2037,8 @@ mod tests {
         assert!(!json.contains(r#""session_id"#), "json: {json}");
         // No title override → no custom_title tag on the command.
         assert!(!json.contains("custom_title"), "json: {json}");
+        // No prompt → no prompt tag on the command.
+        assert!(!json.contains(r#""prompt"#), "json: {json}");
     }
 
     #[test]
@@ -2023,6 +2050,7 @@ mod tests {
             "/tmp/proj",
             "claude",
             Some("Fix the parser"),
+            None,
             "spawn-1",
             None,
             &sk,
@@ -2042,6 +2070,7 @@ mod tests {
             "/tmp/proj",
             "claude",
             Some(""),
+            None,
             "spawn-1",
             None,
             &sk,
@@ -2051,6 +2080,69 @@ mod tests {
             !empty.note_json.contains("custom_title"),
             "json: {}",
             empty.note_json
+        );
+    }
+
+    #[test]
+    fn spawn_command_carries_prompt_when_set() {
+        let sk = test_secret_key();
+        // A non-empty prompt rides the command as a `prompt` tag, so the host can
+        // start the new session with its first message.
+        let prompted = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            None,
+            Some("do the thing"),
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            prompted.note_json.contains(r#""prompt","do the thing"#),
+            "json: {}",
+            prompted.note_json
+        );
+
+        // An empty prompt is treated as absent (no stray tag).
+        let empty = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            None,
+            Some(""),
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !empty.note_json.contains(r#""prompt"#),
+            "json: {}",
+            empty.note_json
+        );
+
+        // A resume never carries a prompt even if one is passed.
+        let resume = ResumeSpawn {
+            target_session_id: "dead-session",
+            cli_session_id: "cli-uuid",
+        };
+        let resumed = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            None,
+            Some("ignored on resume"),
+            "spawn-2",
+            Some(&resume),
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !resumed.note_json.contains(r#""prompt"#),
+            "json: {}",
+            resumed.note_json
         );
     }
 
@@ -2065,6 +2157,7 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
+            None,
             None,
             "spawn-2",
             Some(&resume),

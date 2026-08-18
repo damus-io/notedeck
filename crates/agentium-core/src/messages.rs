@@ -421,6 +421,37 @@ impl PermissionResponse {
     }
 }
 
+/// The placeholder reason stored for a plain "Deny" the user issued without
+/// typing any text. It exists only to give the backend a non-empty denial
+/// message; it is not something the user authored, so
+/// [`permission_reply_message`] suppresses it from the transcript (the
+/// permission row already renders the "Denied" decision on its own).
+pub const DEFAULT_DENY_REASON: &str = "User denied";
+
+/// The user-authored reply text to surface in the conversation for an
+/// approve/deny decision, or `None` when there is nothing worth showing.
+///
+/// A permission decision can carry an optional message: text typed on
+/// "allow with message" / "deny with message". That text is a genuine part of
+/// the conversation — an allow message is injected as a user turn the model
+/// replies to, and a deny reason is the feedback attached to the denial — so it
+/// is rendered inline as a user message. Empty strings and the canned
+/// [`DEFAULT_DENY_REASON`] placeholder are dropped so a plain allow/deny (no
+/// user text) adds no noise.
+///
+/// Shared by the local live push ([`update::handle_permission_response`]) and
+/// the note renderer ([`session_loader::render_conversation_note`]) so both the
+/// in-memory path and a reconstruct-from-notes render agree on what shows.
+///
+/// [`update::handle_permission_response`]: crate::messages
+/// [`session_loader::render_conversation_note`]: crate::session_loader::render_conversation_note
+pub fn permission_reply_message(message: Option<&str>) -> Option<String> {
+    message
+        .map(str::trim)
+        .filter(|m| !m.is_empty() && *m != DEFAULT_DENY_REASON)
+        .map(str::to_owned)
+}
+
 /// The recorded response type for display purposes (without channel details)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionResponseType {
@@ -841,10 +872,26 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionRequest, PermissionResponseType, PermissionView, QuestionSetInput, UserQuestion,
+        permission_reply_message, PermissionRequest, PermissionResponseType, PermissionView,
+        QuestionSetInput, UserQuestion, DEFAULT_DENY_REASON,
     };
     use serde_json::json;
     use uuid::Uuid;
+
+    #[test]
+    fn permission_reply_message_surfaces_only_user_text() {
+        // Nothing to show: absent, empty, whitespace, or the canned placeholder.
+        assert_eq!(permission_reply_message(None), None);
+        assert_eq!(permission_reply_message(Some("")), None);
+        assert_eq!(permission_reply_message(Some("   ")), None);
+        assert_eq!(permission_reply_message(Some(DEFAULT_DENY_REASON)), None);
+
+        // Genuine user-authored text is surfaced (and trimmed).
+        assert_eq!(
+            permission_reply_message(Some("  use ripgrep instead  ")).as_deref(),
+            Some("use ripgrep instead")
+        );
+    }
 
     #[test]
     fn permission_view_infers_compact_approval_prompt_shape() {

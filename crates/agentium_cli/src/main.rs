@@ -379,8 +379,10 @@ struct SpawnOpts {
     /// `--title`: an explicit, sticky session title (rides the command as a
     /// `custom_title` tag). `None` lets the host derive one from the first message.
     title: Option<String>,
-    /// `--prompt`: a first `user` message to deliver once the session exists.
-    /// Implies `--wait` (you can't send to a session that isn't up yet).
+    /// `--prompt`: the session's first `user` message. It rides the spawn command
+    /// (as its `prompt` tag) and the host delivers it when the session comes up,
+    /// so delivery is independent of `--wait`. Still implies `--wait` so the
+    /// resolved `agentium:` ref gets reported when the host answers in time.
     prompt: Option<String>,
     /// `--wait`: block (bounded by [`SPAWN_WAIT`]) until the host answers with the
     /// new session's kind-31988 state, then print its durable `agentium:` ref.
@@ -389,8 +391,10 @@ struct SpawnOpts {
 
 impl SpawnOpts {
     /// Whether the spawn should wait for the host's answer: the explicit `--wait`,
-    /// or implicitly whenever `--prompt` is set (a first message can't be
-    /// delivered to a session that isn't up yet).
+    /// or implicitly whenever `--prompt` is set. `--prompt` no longer *needs* the
+    /// wait for delivery (the host delivers it off the command), but implying it
+    /// means the common prompted spawn still reports the resolved `agentium:` ref
+    /// when the host answers promptly.
     fn effective_wait(&self) -> bool {
         self.wait || self.prompt.is_some()
     }
@@ -505,7 +509,9 @@ async fn cmd_spawn(
 
     let target = resolve_spawn_target(engine, author, opts)?;
 
-    // `--prompt` can only reach a session that exists, so it implies `--wait`.
+    // `--wait` (also implied by `--prompt`) blocks to *report* the resolved
+    // `agentium:` ref. Delivery no longer needs it — a `--prompt` rides the
+    // command and the host delivers it — so a slow host is not a failure here.
     let wait = opts.effective_wait();
 
     // Install the session-list watch *before* publishing so the host's kind-31988
@@ -516,11 +522,15 @@ async fn cmd_spawn(
         None
     };
 
+    // The first message rides the command as a `prompt` tag: the host delivers it
+    // when it materializes the session, so it lands even if this CLI stops waiting
+    // before the host answers.
     let spawn_id = engine.spawn_session(
         &target.host,
         &target.cwd,
         &target.backend,
         opts.title.as_deref(),
+        opts.prompt.as_deref(),
     )?;
 
     // Flush the publish (bounded) so an unreachable relay can't stall exit; the
@@ -529,7 +539,7 @@ async fn cmd_spawn(
 
     // No `--wait`: only the spawn_id is known — report it and return.
     let Some(watch) = watch.as_mut() else {
-        emit_spawn(&target.host, &spawn_id, None, None, as_json)?;
+        emit_spawn(&target.host, &spawn_id, None, as_json)?;
         return Ok(());
     };
 
@@ -561,9 +571,17 @@ async fn cmd_spawn(
         Ok(Ok(Some(state))) => state,
         // The read/loop itself errored — surface it.
         Ok(Err(e)) => return Err(e),
-        // Timed out, or the watch ended before an answer arrived.
+        // Timed out, or the watch ended before an answer arrived. When a `--prompt`
+        // rode the command the host will still deliver it whenever it processes the
+        // spawn, so a slow host is not a failure: report the spawn_id (no ref yet)
+        // and exit cleanly. A bare `--wait` had no other purpose than the ref, so it
+        // stays an error.
         Ok(Ok(None)) | Err(_) => {
             let short = short_id(&spawn_id);
+            if opts.prompt.is_some() {
+                emit_spawn(&target.host, &spawn_id, None, as_json)?;
+                return Ok(());
+            }
             return Err(format!(
                 "no host answered on {} within {}s (spawn {short}…) — the command was \
                  published, so `agentium list` will find the session if the host was just slow",
@@ -575,25 +593,7 @@ async fn cmd_spawn(
     };
 
     let uri = state.agentium_uri();
-
-    // `--prompt`: deliver the first user message now that the session is up,
-    // reusing the send path. Report its event id alongside the spawn.
-    let event_id = match &opts.prompt {
-        Some(prompt) => {
-            let built = engine.send_message(&state.claude_session_id, prompt)?;
-            let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
-            Some(hex::encode(built.note_id))
-        }
-        None => None,
-    };
-
-    emit_spawn(
-        &target.host,
-        &spawn_id,
-        Some(&uri),
-        event_id.as_deref(),
-        as_json,
-    )?;
+    emit_spawn(&target.host, &spawn_id, Some(&uri), as_json)?;
     Ok(())
 }
 
@@ -602,37 +602,22 @@ fn short_id(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
-/// The `spawn --json` object: `{ spawn_id, host, session, event_id }`. `session`
-/// is `null` until `--wait` resolves the new session's `agentium:` ref;
-/// `event_id` is present only when `--prompt` sent a first message. Built here
-/// (rather than inline in [`emit_spawn`]) so the shape is unit-testable.
-fn spawn_json(
-    host: &str,
-    spawn_id: &str,
-    session: Option<&str>,
-    event_id: Option<&str>,
-) -> serde_json::Value {
-    let mut obj = serde_json::json!({ "spawn_id": spawn_id, "host": host, "session": session });
-    if let Some(event_id) = event_id {
-        obj["event_id"] = serde_json::Value::String(event_id.to_string());
-    }
-    obj
+/// The `spawn --json` object: `{ spawn_id, host, session }`. `session` is `null`
+/// until `--wait` resolves the new session's `agentium:` ref (and stays `null`
+/// when a slow host times out the wait — the spawn, and any `--prompt`, is still
+/// delivered). Built here (rather than inline in [`emit_spawn`]) so the shape is
+/// unit-testable.
+fn spawn_json(host: &str, spawn_id: &str, session: Option<&str>) -> serde_json::Value {
+    serde_json::json!({ "spawn_id": spawn_id, "host": host, "session": session })
 }
 
 /// Report a spawn's result. Plain text mirrors [`cmd_send`]'s style; `--json`
-/// emits `{ spawn_id, host, session, event_id }` — `session` is `null` until
-/// `--wait` resolves it, and `event_id` is present only when `--prompt` sent a
-/// first message. `session` is the sayable `agentium:` ref, `event_id` the hex
-/// note id.
-fn emit_spawn(
-    host: &str,
-    spawn_id: &str,
-    session: Option<&str>,
-    event_id: Option<&str>,
-    as_json: bool,
-) -> Result<()> {
+/// emits `{ spawn_id, host, session }` — `session` is the sayable `agentium:` ref,
+/// `null` until `--wait` resolves it. Any `--prompt` is delivered by the host off
+/// the spawn command, so it is not reported here.
+fn emit_spawn(host: &str, spawn_id: &str, session: Option<&str>, as_json: bool) -> Result<()> {
     if as_json {
-        let obj = spawn_json(host, spawn_id, session, event_id);
+        let obj = spawn_json(host, spawn_id, session);
         println!("{}", serde_json::to_string_pretty(&obj)?);
         return Ok(());
     }
@@ -640,14 +625,7 @@ fn emit_spawn(
     let short = short_id(spawn_id);
     match session {
         None => println!("spawn command sent to {host} (spawn {short}…)"),
-        Some(uri) => {
-            let mut line = format!("spawned {uri} on {host} (spawn {short}…)");
-            if let Some(event_id) = event_id {
-                let ev = short_id(event_id);
-                line.push_str(&format!(", sent prompt (event {ev}…)"));
-            }
-            println!("{line}");
-        }
+        Some(uri) => println!("spawned {uri} on {host} (spawn {short}…)"),
     }
     Ok(())
 }
@@ -2288,9 +2266,10 @@ COMMANDS:
                       current session ($AGENTIUM_SESSION) so a bare `spawn`
                       starts a sibling in the same worktree. --title sets a
                       sticky session title; --wait blocks until the host answers;
-                      --prompt <text> (implies --wait) sends a first message once
-                      the session is up. --json emits {{ spawn_id, host, session,
-                      event_id }}.
+                      --prompt <text> rides the command so the host delivers it as
+                      the session's first message (delivery no longer depends on
+                      --wait, so a slow host still gets the prompt). --json emits
+                      {{ spawn_id, host, session }}.
     interrupt <session>
                       Abort a live session's in-flight turn on its host — the CLI
                       companion to pressing Esc in Dave. Takes any selector `list`
@@ -2344,8 +2323,10 @@ OPTIONS:
                       churns with — the first message)
     --wait            Block (bounded) until the host answers with the new
                       session's state, then print its agentium: ref
-    --prompt <text>   Deliver <text> as the session's first user message once
-                      it's up (implies --wait; also reports the message event id)
+    --prompt <text>   The session's first user message. It rides the spawn command
+                      and the host delivers it when the session comes up, so it
+                      lands even if a slow host outlasts --wait (which --prompt
+                      still implies, only to report the ref)
     --prompt-file <p> Like --prompt, but read the message from file <p> (or stdin
                       when <p> is `-`) — pass a long/multi-line prompt with no
                       shell-escaping. Mutually exclusive with --prompt.
@@ -3256,18 +3237,18 @@ mod tests {
     }
 
     #[test]
-    fn spawn_json_shape_tracks_wait_and_prompt() {
-        // Pre-wait: session is null, no event_id key.
-        let pre = spawn_json("mac", "spawn-1", None, None);
+    fn spawn_json_shape_tracks_wait() {
+        // Pre-wait (or a slow-host timeout): session is null.
+        let pre = spawn_json("mac", "spawn-1", None);
         assert_eq!(pre["spawn_id"], "spawn-1");
         assert_eq!(pre["host"], "mac");
         assert!(pre["session"].is_null());
-        assert!(pre.get("event_id").is_none());
 
-        // Resolved with --prompt: session ref + event_id both present.
-        let full = spawn_json("mac", "spawn-1", Some("agentium:a-b-c"), Some("deadbeef"));
+        // Resolved: the session ref is filled in.
+        let full = spawn_json("mac", "spawn-1", Some("agentium:a-b-c"));
         assert_eq!(full["session"], "agentium:a-b-c");
-        assert_eq!(full["event_id"], "deadbeef");
+        // Delivery moved to the host, so there is no event_id key either way.
+        assert!(full.get("event_id").is_none());
     }
 
     #[test]

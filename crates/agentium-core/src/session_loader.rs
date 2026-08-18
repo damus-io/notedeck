@@ -257,7 +257,9 @@ impl ToolResultContent {
 }
 
 /// Render one conversation note into a chat [`Message`], or `None` for roles
-/// that carry no display message (permission_response, progress, …).
+/// that carry no display message (progress, queue-operation, …). A
+/// `permission_response` renders only when it carries user-authored reply text
+/// (see [`crate::messages::permission_reply_message`]); otherwise `None`.
 ///
 /// This is the **single** note→message mapping, shared by the loader (a
 /// from-scratch rebuild) and the live poll-merge append path in notedeck_dave,
@@ -277,12 +279,22 @@ pub fn render_conversation_note(
         )),
         Some("tool_result") => {
             let decoded = ToolResultContent::decode(content);
-            let summary = crate::util::truncate(&decoded.summary, 200);
+            let tool_name = get_tag_value(note, "tool-name")
+                .unwrap_or("tool")
+                .to_string();
+            // Pre-encoding (and any legacy/plaintext) notes stored content as
+            // `"{tool_name}: {summary}"`, which `decode` keeps whole as the
+            // summary. The renderer prepends `tool_name` again, so the raw
+            // summary would double the name ("Bash Bash: ..."). Strip a
+            // redundant leading "<tool_name>: " so the name shows exactly once.
+            let summary_text = decoded
+                .summary
+                .strip_prefix(&format!("{tool_name}: "))
+                .unwrap_or(&decoded.summary);
+            let summary = crate::util::truncate(summary_text, 200);
             Some(Message::ToolResponse(ToolResponse::executed_tool(
                 ExecutedTool {
-                    tool_name: get_tag_value(note, "tool-name")
-                        .unwrap_or("tool")
-                        .to_string(),
+                    tool_name,
                     summary,
                     output: decoded.output,
                     parent_task_id: None,
@@ -310,13 +322,24 @@ pub fn render_conversation_note(
             request.auto_accepted = decision.is_some_and(|d| d.auto_accepted);
             Some(Message::PermissionRequest(request))
         }
+        Some("permission_response") => {
+            // Surface the user's approve/deny reply text as an inline user
+            // message so a reconstruct-from-notes render (remote observer or
+            // local reload) shows the same record the live local push does.
+            // The allow/deny *decision* itself is rendered on the request row
+            // (via `responded`); only genuine user-authored reply text renders
+            // here — `permission_reply_message` drops empty/placeholder reasons.
+            let decoded = crate::session_events::decode_permission_response(content);
+            crate::messages::permission_reply_message(decoded.message.as_deref())
+                .map(|reply| Message::User(reply.into()))
+        }
         Some("compaction_complete") => {
             let pre_tokens = content.parse::<u64>().unwrap_or(0);
             Some(Message::CompactionComplete(
                 crate::messages::CompactionInfo { pre_tokens },
             ))
         }
-        // Skip permission_response, progress, queue-operation, etc.
+        // Skip progress, queue-operation, etc.
         _ => None,
     }
 }
@@ -770,6 +793,7 @@ pub fn latest_state_created_at(
 /// still reads as fresh here. Used to fade a stale status indicator. Both kinds
 /// tag their session id under `d`, so a single filter ordered by `created_at`
 /// yields the global newest with `limit(1)`.
+#[profiling::function]
 pub fn latest_activity_created_at(
     ndb: &Ndb,
     txn: &Transaction,
@@ -1390,6 +1414,175 @@ mod tests {
             tool.output.as_deref(),
             Some("build succeeded\n"),
             "raw output must survive the note round-trip for remote observers",
+        );
+    }
+
+    /// A legacy/plaintext `tool_result` note stored its content as
+    /// `"{tool_name}: {summary}"`. Since the renderer prepends the tool name
+    /// again, the redundant `"Bash: "` prefix must be stripped at render time so
+    /// the row reads `"Bash exit 0"`, not the doubled `"Bash Bash: exit 0"`.
+    #[tokio::test]
+    async fn legacy_tool_result_strips_doubled_tool_name() {
+        let sk = test_secret_key();
+        let session_id = "legacy-doubled-name";
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "run the build", 1_000, 0, &[]),
+            // Pre-encoding content: a bare "tool_name: summary" line, not JSON.
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "tool_result",
+                "Bash: exit 0",
+                1_001,
+                1,
+                &[("tool-name", "Bash")],
+            ),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        let tool = loaded
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                Message::ToolResponse(r) => match r.responses() {
+                    crate::tools::ToolResponses::ExecutedTool(t) => Some(t),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("tool_result note should load as an ExecutedTool");
+        assert_eq!(tool.tool_name, "Bash");
+        assert_eq!(
+            tool.summary, "exit 0",
+            "redundant \"Bash: \" prefix must be stripped so the name isn't doubled",
+        );
+    }
+
+    /// Load a fresh single-session store from `events` and return the rendered
+    /// messages. Test helper for the permission-reply cases below.
+    async fn load_events(session_id: &str, events: &[String]) -> Vec<Message> {
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, events).await;
+        let txn = Transaction::new(&ndb).unwrap();
+        load_session_messages(&ndb, &txn, session_id).messages
+    }
+
+    fn user_replies(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::User(u) => Some(u.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A permission_response carrying an approve reply message reconstructs as an
+    /// inline user message, so a remote observer / local reload sees the record
+    /// of what was said — not just the "Allowed" decision on the request row
+    /// (headway:dave/provide-measure-expose).
+    #[tokio::test]
+    async fn loads_permission_allow_reply_from_note() {
+        let sk = test_secret_key();
+        let session_id = "perm-allow-reply";
+        let perm_id = uuid::Uuid::new_v4().to_string();
+        let req = r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+        let resp = r#"{"decision":"allow","message":"go ahead, but be careful","interrupt":false,"auto":false}"#;
+        let events = [
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "permission_request",
+                req,
+                1_000,
+                0,
+                &[("perm-id", &perm_id)],
+            ),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "permission_response",
+                resp,
+                1_001,
+                1,
+                &[("perm-id", &perm_id)],
+            ),
+        ];
+
+        let messages = load_events(session_id, &events).await;
+        assert_eq!(
+            user_replies(&messages),
+            vec!["go ahead, but be careful".to_string()],
+            "approve reply must render as an inline user message: {messages:?}",
+        );
+        // The request row still reflects the decision.
+        let responded = messages.iter().any(|m| {
+            matches!(
+                m,
+                Message::PermissionRequest(r)
+                    if r.response == Some(crate::messages::PermissionResponseType::Allowed)
+            )
+        });
+        assert!(responded, "request row must show Allowed: {messages:?}");
+    }
+
+    /// A deny with a genuine user-authored reason renders it; a plain deny whose
+    /// reason is the canned placeholder renders nothing (the request row already
+    /// shows "Denied"), so the transcript stays free of `"User denied"` noise.
+    #[tokio::test]
+    async fn permission_deny_reply_renders_only_user_text() {
+        let sk = test_secret_key();
+
+        let deny = |message: &str| {
+            format!(
+                r#"{{"decision":"deny","message":{},"interrupt":false,"auto":false}}"#,
+                serde_json::Value::from(message)
+            )
+        };
+        let make_events = |session_id: &str, reason: &str| {
+            let perm_id = uuid::Uuid::new_v4().to_string();
+            [
+                build_1988_event_json(
+                    &sk,
+                    session_id,
+                    "permission_request",
+                    r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}"#,
+                    1_000,
+                    0,
+                    &[("perm-id", &perm_id)],
+                ),
+                build_1988_event_json(
+                    &sk,
+                    session_id,
+                    "permission_response",
+                    &deny(reason),
+                    1_001,
+                    1,
+                    &[("perm-id", &perm_id)],
+                ),
+            ]
+        };
+
+        let custom = make_events("perm-deny-custom", "use ripgrep instead");
+        assert_eq!(
+            user_replies(&load_events("perm-deny-custom", &custom).await),
+            vec!["use ripgrep instead".to_string()],
+            "a user-authored deny reason must render inline",
+        );
+
+        let placeholder = make_events("perm-deny-plain", crate::messages::DEFAULT_DENY_REASON);
+        assert!(
+            user_replies(&load_events("perm-deny-plain", &placeholder).await).is_empty(),
+            "the canned deny placeholder must not render as a message",
         );
     }
 }

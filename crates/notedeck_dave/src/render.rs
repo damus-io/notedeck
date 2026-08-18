@@ -25,7 +25,7 @@ use notedeck::{
 use crate::agent_status::{stale_color, AgentStatus};
 use crate::session_cache::AgentiumSessionCache;
 use agentium_core::session_events::{now_secs, AI_SESSION_STATE_KIND};
-use agentium_core::session_loader::{latest_activity_created_at, SessionState, DELETED_STATUS};
+use agentium_core::session_loader::{SessionState, DELETED_STATUS};
 
 /// The kinds this renderer draws: the parameterized-replaceable session-state
 /// event. A `'static` slice so [`KindRenderer::kinds`] can hand it out by
@@ -45,22 +45,26 @@ struct LiveSession {
     status: String,
     /// The working directory the session runs in (for the block card).
     cwd: String,
-    /// Unix seconds of the session's last activity — the newest folded revision's
-    /// `created_at`, overridden in [`live_session`] by the newest event ndb holds.
-    /// Used to fade the status dot as the session goes stale.
+    /// Unix seconds of the session's last activity, used to fade the status dot as
+    /// the session goes stale. For a folded session this is
+    /// [`SessionView::last_activity`](crate::session_cache::SessionView::last_activity)
+    /// — the newest of its state and conversation-message times, memoized in the
+    /// shared cache so no ndb query runs in the per-frame render path. For the
+    /// unfolded fallback it's the note snapshot's own `created_at`.
     last_activity: u64,
 }
 
 impl LiveSession {
     /// Build from a folded [`SessionState`] (the live cache read) or the note's own
-    /// snapshot (the fallback). `last_activity` starts from the state's own
-    /// `created_at`; [`live_session`] refines it from ndb.
-    fn from_state(state: &SessionState) -> Self {
+    /// snapshot (the fallback), with `last_activity` supplied by the caller: the
+    /// cache's cross-kind timestamp for a folded session, or the snapshot's
+    /// `created_at` for one not folded locally.
+    fn from_state(state: &SessionState, last_activity: u64) -> Self {
         Self {
             title: state.display_title().to_string(),
             status: state.status.clone(),
             cwd: state.cwd.clone(),
-            last_activity: state.created_at,
+            last_activity,
         }
     }
 }
@@ -142,6 +146,13 @@ impl KindRenderer for AgentiumSessionRenderer {
 /// the session isn't folded locally. Reads through the memoized
 /// [`session`](AgentiumSessionCache::session), keyed by the note's author + its
 /// `claude_session_id` d-tag, so a chip reuses this frame's fold.
+///
+/// `last_activity` (which fades the stale dot) comes straight from the folded
+/// [`SessionView`](crate::session_cache::SessionView): the cache maintains it across
+/// both the session's state events and its conversation messages, so this path does
+/// **no** per-frame ndb query — the fix for the per-chip query storm that dominated
+/// the render of a message with many chips.
+#[profiling::function]
 fn live_session(
     cache: &Rc<RefCell<AgentiumSessionCache>>,
     ndb: &Ndb,
@@ -150,17 +161,11 @@ fn live_session(
     snapshot: &SessionState,
 ) -> LiveSession {
     let author = Pubkey::new(*note.pubkey());
-    let mut live = cache
+    cache
         .borrow_mut()
         .session(ndb, txn, &author, &snapshot.claude_session_id)
-        .map(|v| LiveSession::from_state(&v.state))
-        .unwrap_or_else(|| LiveSession::from_state(snapshot));
-    // Prefer the newest-event time from ndb (accounts for streamed messages, not
-    // just status publishes) over the folded state's own `created_at`.
-    if let Some(ts) = latest_activity_created_at(ndb, txn, &author, &snapshot.claude_session_id) {
-        live.last_activity = ts;
-    }
-    live
+        .map(|v| LiveSession::from_state(&v.state, v.last_activity))
+        .unwrap_or_else(|| LiveSession::from_state(snapshot, snapshot.created_at))
 }
 
 /// The chip/heading title for a session: its display title, or
@@ -190,6 +195,7 @@ fn status_color(theme: &ColorTheme, session: &LiveSession) -> egui::Color32 {
 /// A compact, single-line inline reference to a session: a live status dot
 /// followed by the session's title, in a small rounded pill — the in-prose shape
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
+#[profiling::function]
 fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
     let color = status_color(theme, live);
     // A tombstoned session reads as resumable: a small "resume" play triangle
@@ -215,6 +221,7 @@ fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) ->
 /// The block embed of a session ([`notedeck::RenderContext::Embed`]): its title, a
 /// status line (dot + label), and its working directory. Borrowed text keeps the
 /// path light.
+#[profiling::function]
 fn session_card_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
     ui.vertical(|ui| {
         ui.label(egui::RichText::new(session_title(live)).heading().strong());

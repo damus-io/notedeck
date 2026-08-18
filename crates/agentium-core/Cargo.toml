@@ -25,6 +25,9 @@ similar = "2"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Puffin scopes on the hot per-chip reads (e.g. latest_activity_created_at, run
+# once per visible agentium chip per frame).
+profiling = { workspace = true }
 # StreamExt::next drives the session-watch subscription stream.
 futures-util = { workspace = true }
 

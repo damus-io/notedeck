@@ -16,9 +16,7 @@ strum_macros = { workspace = true }
 dirs = { workspace = true }
 enostr = { workspace = true }
 nostr = { workspace = true }
-# Embedded localhost relay (nostrdb_net::relay::server), gated behind the
-# `local-relay` feature (disabled for Android builds).
-nostrdb_net = { workspace = true, optional = true }
+nostrdb_net = { workspace = true }
 egui = { workspace = true }
 egui_nav = { workspace = true }
 egui_extras = { workspace = true }
@@ -102,7 +100,6 @@ ndk-context = "0.1"
 [features]
 # Embedded localhost nostr relay. Enabled by notedeck_chrome for non-Android
 # targets; off by default so Android builds never compile or run it.
-local-relay = ["dep:nostrdb_net"]
 auto-update = []
 sound = ["rodio"]
 snapshot-testing = ["egui_kittest", "egui-wgpu"]

@@ -1781,13 +1781,13 @@ fn chevron_color(ui: &egui::Ui, enabled: bool) -> Color32 {
 /// Paint a back/forward chevron centred in `rect`.
 fn paint_nav_chevron(painter: &egui::Painter, rect: Rect, dir: ChevronDir, color: Color32) {
     let glyph = Rect::from_center_size(rect.center(), vec2(10.0, 13.0));
-    paint_chevron(painter, glyph, 2.0, dir, egui::Stroke::new(1.6, color));
+    paint_chevron(painter, glyph, 2.0, dir, egui::Stroke::new(1.6_f32, color));
 }
 
 /// Paint a small clock glyph (ring + two hands) centred at `center`, used for the
 /// history dropdown button.
 fn paint_clock(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: Color32) {
-    let stroke = egui::Stroke::new(1.5, color);
+    let stroke = egui::Stroke::new(1.5_f32, color);
     painter.circle_stroke(center, radius, stroke);
     // Hands reading ~10:10 — hour hand up, minute hand to the right.
     painter.line_segment([center, center - vec2(0.0, radius * 0.55)], stroke);

@@ -12,7 +12,8 @@
 //! [`RealtimeCache`](notedeck::RealtimeCache) — subscribe once per author, seed the
 //! fold once, absorb later revisions as deltas, memoize the projection, defer
 //! notes that postdate the read snapshot — plugging in only the agentium-specific
-//! [`SessionReducer`] (kind-31988 → the latest [`SessionState`] per session id).
+//! [`SessionReducer`] (kind-31988 → the latest [`SessionState`] per session id,
+//! plus kind-1988 conversation messages folded to a per-session last-activity time).
 //!
 //! # Two agentium specifics
 //! - **Replaceable identity.** A session's kind-31988 state event is *replaceable*:
@@ -21,6 +22,12 @@
 //!   [`agentium_core::wordid`]), not the event id. nostrdb keeps *every* revision,
 //!   so the fold keeps the highest-`created_at` revision per session id, tombstones
 //!   included, so a re-delivered older revision can't resurrect a deleted session.
+//! - **Two kinds, one fold.** The subscription spans both the kind-31988 state
+//!   events (the title/status projection) and the kind-1988 conversation messages
+//!   ([`session_feed_filter`]). Only the newest message *time* per session is kept,
+//!   folded into [`SessionView::last_activity`], so a session that streams messages
+//!   without republishing its status still reads fresh — and the render path reads
+//!   that memoized timestamp instead of querying ndb for it every frame.
 //! - **No fan-out.** Unlike the notebook/headway caches, this one is read-only:
 //!   Dave already syncs and publishes session-state events through its PNS relay
 //!   path, so the pump only *advances* the fold — it never re-publishes
@@ -37,7 +44,7 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::collections::HashMap;
 
-use agentium_core::session_events::AI_SESSION_STATE_KIND;
+use agentium_core::session_events::{get_tag_value, AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
 
 /// Upper bound on session-state events folded in one seed query. Far above any
 /// realistic per-account session count; the incremental path folds later
@@ -55,6 +62,14 @@ pub struct SessionView {
     pub note_id: NoteId,
     /// The current folded session state (title, status, …).
     pub state: SessionState,
+    /// Unix seconds of the session's last activity: the newest `created_at` across
+    /// *both* its state revisions (kind-31988) and its conversation messages
+    /// (kind-1988), maintained incrementally as either kind folds in. Read by the
+    /// inline chip to fade its status dot as the session goes stale — memoized here
+    /// so the per-frame render path never queries ndb for it. Spanning kind-1988 is
+    /// what keeps a session that's actively streaming messages (without republishing
+    /// its status) reading as fresh rather than only tracking status publishes.
+    pub last_activity: u64,
 }
 
 /// The pure-data accumulator: the latest kind-31988 revision per session id
@@ -76,16 +91,38 @@ pub struct SessionReducer {
     /// replaceable revision (and its note id) churns. Tombstones stay indexed:
     /// a session id is only ever added, never removed, mirroring [`latest`](Self::latest).
     wordid_index: HashMap<String, String>,
+    /// Newest kind-1988 conversation-message `created_at` seen per session id. Only
+    /// the timestamp is kept (never the message), so this is a tiny per-session
+    /// `u64` regardless of conversation volume. Merged with each session's state
+    /// `created_at` into [`SessionView::last_activity`], so a session streaming
+    /// messages without republishing its status still reads fresh. Kept separate
+    /// from [`latest`](Self::latest) so a message that arrives *before* its
+    /// session's state event isn't lost — the state ingest folds it in when it lands.
+    last_msg_activity: HashMap<String, u64>,
 }
 
 impl SessionReducer {
-    /// Fold one kind-31988 note, keeping the highest-`created_at` revision per
-    /// session id (tombstones included). A no-op for a note with no `d` tag, one in
-    /// the superseded JSON-content format, or an older revision than one already
-    /// held — which makes the fold commutative and idempotent (a re-delivered
-    /// revision changes nothing), as the [`RealtimeCache`](notedeck::RealtimeCache)
-    /// requires.
+    /// Fold one note from the session feed, dispatching on kind: a kind-1988
+    /// conversation message advances only last-activity
+    /// ([`ingest_activity`](Self::ingest_activity)); anything else is treated as a
+    /// kind-31988 state revision ([`ingest_state`](Self::ingest_state)). Both paths
+    /// are commutative and idempotent (a re-delivered or older event changes
+    /// nothing), as the [`RealtimeCache`](notedeck::RealtimeCache) requires.
     fn ingest(&mut self, note: &Note) {
+        // A conversation message only advances last-activity; a state event carries
+        // the full session projection. Everything else the broadened subscription
+        // could deliver falls through to the state path and is rejected there.
+        if note.kind() == AI_CONVERSATION_KIND {
+            self.ingest_activity(note);
+            return;
+        }
+        self.ingest_state(note);
+    }
+
+    /// Fold a kind-31988 session-state event: keep the highest-`created_at`
+    /// revision per session id (tombstones included) and compute its
+    /// [`last_activity`](SessionView::last_activity) across both kinds.
+    fn ingest_state(&mut self, note: &Note) {
         // The superseded JSON-content format predates the tag layout `from_note`
         // reads; the loader skips it too (see `load_session_states_with_author`).
         if note.content().starts_with('{') {
@@ -108,10 +145,49 @@ impl SessionReducer {
             );
         }
         let note_id = NoteId::new(*note.id());
+        // Last activity spans both kinds: fold in the newest conversation message
+        // already seen for this session (which may have arrived before this state),
+        // so an actively-streaming session doesn't read as stale.
+        let last_activity = self
+            .last_msg_activity
+            .get(&state.claude_session_id)
+            .copied()
+            .unwrap_or(0)
+            .max(state.created_at);
         self.latest.insert(
             state.claude_session_id.clone(),
-            SessionView { note_id, state },
+            SessionView {
+                note_id,
+                state,
+                last_activity,
+            },
         );
+    }
+
+    /// Fold a kind-1988 conversation message: advance its session's newest-message
+    /// timestamp (keeping only the max, never the message body) and, when that
+    /// session is already folded, bump its [`last_activity`](SessionView::last_activity).
+    /// This is the whole reason the fold observes kind-1988 — a session streaming
+    /// messages without republishing its status must still read fresh, without the
+    /// render path querying ndb every frame. Idempotent: a re-delivered or older
+    /// message can't move the max backwards.
+    fn ingest_activity(&mut self, note: &Note) {
+        let Some(session_id) = get_tag_value(note, "d") else {
+            return; // a conversation message with no session id — nothing to key.
+        };
+        let created_at = note.created_at();
+        let newer = self
+            .last_msg_activity
+            .get(session_id)
+            .is_none_or(|&seen| created_at > seen);
+        if !newer {
+            return;
+        }
+        self.last_msg_activity
+            .insert(session_id.to_string(), created_at);
+        if let Some(view) = self.latest.get_mut(session_id) {
+            view.last_activity = view.last_activity.max(created_at);
+        }
     }
 
     /// The current (non-deleted) sessions. Tombstones are kept in the accumulator
@@ -143,8 +219,11 @@ impl SessionReducer {
     }
 }
 
-/// The subscription/seed filter selecting `author`'s kind-31988 session-state
-/// events — the one filter both the live subscription and the seed fold use.
+/// The seed filter selecting `author`'s kind-31988 session-state events — the
+/// projection-bearing half of the fold (title/status/word-id). Kept kind-scoped
+/// (rather than the combined [`session_feed_filter`]) so the seed query for the
+/// session *set* can't be crowded out of [`SEED_QUERY_LIMIT`] by conversation
+/// volume, and so tests can await state commits alone.
 pub fn session_state_filter(author: &Pubkey) -> Filter {
     Filter::new()
         .kinds([AI_SESSION_STATE_KIND as u64])
@@ -152,15 +231,56 @@ pub fn session_state_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
-/// Seed a reducer by folding all of `author`'s existing kind-31988 events — the
-/// one-time seed the cache performs on first touch. `None` on a query error, so
-/// the cache re-attempts on the next touch.
+/// The seed filter selecting `author`'s kind-1988 conversation messages — the
+/// last-activity half of the fold. Queried newest-first and capped, so it seeds
+/// recent activity (all that matters for the stale dot) without walking the whole
+/// message history.
+fn session_conversation_filter(author: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([AI_CONVERSATION_KIND as u64])
+        .authors([author.bytes()])
+        .build()
+}
+
+/// The live subscription filter: `author`'s session-state (kind-31988) *and*
+/// conversation (kind-1988) events in one filter, so both advance the fold. State
+/// events drive the title/status projection; conversation events advance
+/// [`SessionView::last_activity`] so a streaming session reads fresh without the
+/// render path querying ndb per frame. Seeding is split across the two kind-scoped
+/// filters above (see [`fold_sessions`]).
+pub fn session_feed_filter(author: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([AI_CONVERSATION_KIND as u64, AI_SESSION_STATE_KIND as u64])
+        .authors([author.bytes()])
+        .build()
+}
+
+/// Seed a reducer by folding all of `author`'s existing session-state (kind-31988)
+/// and recent conversation (kind-1988) events — the one-time seed the cache
+/// performs on first touch. `None` on a query error, so the cache re-attempts on
+/// the next touch.
+///
+/// Conversation activity folds *first* so that when a state event lands its
+/// [`last_activity`](SessionView::last_activity) already reflects the newest
+/// message; the two kinds are queried separately (not through the combined
+/// [`session_feed_filter`]) so a busy message history can't push session-state
+/// events out of the [`SEED_QUERY_LIMIT`] window and drop sessions from the fold.
 fn fold_sessions(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<SessionReducer> {
-    let results = ndb
+    let mut reducer = SessionReducer::default();
+    let activity = ndb
+        .query(
+            txn,
+            &[session_conversation_filter(author)],
+            SEED_QUERY_LIMIT,
+        )
+        .ok()?;
+    for result in &activity {
+        reducer.ingest(&result.note);
+    }
+    let states = ndb
         .query(txn, &[session_state_filter(author)], SEED_QUERY_LIMIT)
         .ok()?;
-    let mut reducer = SessionReducer::default();
-    for result in &results {
+    for result in &states {
         reducer.ingest(&result.note);
     }
     Some(reducer)
@@ -199,7 +319,7 @@ impl notedeck::Reducer for AgentiumReducer {
     type View = SessionView;
 
     fn filter(author: &Pubkey) -> Filter {
-        session_state_filter(author)
+        session_feed_filter(author)
     }
 
     fn fold(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Self> {
@@ -312,7 +432,7 @@ impl AgentiumSessionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentium_core::session_events::AI_SESSION_STATE_KIND;
+    use agentium_core::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
     use enostr::FullKeypair;
     use futures::StreamExt;
     use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream};
@@ -335,7 +455,9 @@ mod tests {
             let dir = tempfile::TempDir::new().unwrap();
             let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
             let kp = FullKeypair::generate();
-            let sub = ndb.subscribe(&[session_state_filter(&kp.pubkey)]).unwrap();
+            // Await both kinds the fold observes, so a test can wait on a
+            // conversation message committing just as it waits on a state event.
+            let sub = ndb.subscribe(&[session_feed_filter(&kp.pubkey)]).unwrap();
             let stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
             Self {
                 ndb,
@@ -363,6 +485,29 @@ mod tests {
                 .start_tag()
                 .tag_str("status")
                 .tag_str(status)
+                .sign(&self.kp.secret_key.secret_bytes())
+                .build()
+                .unwrap();
+            let frame = enostr::ClientMessage::event(&note)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            self.ndb
+                .process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+                .unwrap();
+        }
+
+        /// Write a kind-1988 conversation message for `session_id` and ingest it
+        /// locally. Only its `d` tag (session id) and `created_at` matter to the
+        /// fold — the body is ignored — so this is the minimal streamed message.
+        fn write_message(&self, session_id: &str, created_at: u64) {
+            let note = NoteBuilder::new()
+                .kind(AI_CONVERSATION_KIND)
+                .content("streamed message")
+                .created_at(created_at)
+                .start_tag()
+                .tag_str("d")
+                .tag_str(session_id)
                 .sign(&self.kp.secret_key.secret_bytes())
                 .build()
                 .unwrap();
@@ -469,6 +614,60 @@ mod tests {
         assert_ne!(id_a, id_b, "each session resolves to its own note id");
         assert_eq!(t.session(sid_a).unwrap().state.display_title(), "Alpha");
         assert_eq!(t.session(sid_b).unwrap().state.display_title(), "Bravo");
+    }
+
+    /// A session streaming kind-1988 conversation messages stays fresh even when
+    /// its kind-31988 status isn't republished: `last_activity` advances with the
+    /// newest message. This is the whole reason the fold observes both kinds — a
+    /// stale dot must not fade an actively-streaming session — so it guards the
+    /// per-frame-query removal in `render::live_session`.
+    #[tokio::test]
+    async fn conversation_messages_advance_last_activity() {
+        let mut t = TestCache::new();
+        let sid = "session-live";
+
+        // A session state published at t=1000, then folded.
+        t.write_state(sid, "Live", "working", 1_000);
+        t.await_notes(1).await;
+        let base = loop {
+            t.poll();
+            if let Some(v) = t.session(sid) {
+                break v.last_activity;
+            }
+        };
+        assert_eq!(base, 1_000, "last_activity seeds from the state event");
+
+        // A conversation message streams in later, without a status republish.
+        t.write_message(sid, 2_500);
+        t.await_notes(1).await;
+        let advanced = loop {
+            t.poll();
+            let v = t.session(sid).expect("session still projected");
+            if v.last_activity > 1_000 {
+                break v.last_activity;
+            }
+        };
+        assert_eq!(
+            advanced, 2_500,
+            "a newer conversation message advances last_activity"
+        );
+        // Freshness came from kind-1988 alone: the state event is untouched.
+        assert_eq!(
+            t.session(sid).unwrap().state.created_at,
+            1_000,
+            "the status event was not republished"
+        );
+
+        // An older/re-delivered message can't move last_activity backwards.
+        t.write_message(sid, 1_500);
+        for _ in 0..5 {
+            t.poll();
+        }
+        assert_eq!(
+            t.session(sid).unwrap().last_activity,
+            2_500,
+            "a stale message must not regress last_activity"
+        );
     }
 
     /// A `deleted` tombstone drops a session from the *projected* views (so it
