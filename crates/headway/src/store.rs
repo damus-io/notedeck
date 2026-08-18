@@ -17,8 +17,8 @@ use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
     board_address, build_archive_placement, build_blockers, build_board, build_comment,
-    build_cover_note, build_field, build_issue, build_labels, build_placement, build_relation,
-    build_sequence, build_subject_edit, rank_between,
+    build_cover_note, build_field, build_issue, build_labels, build_placement, build_related,
+    build_relation, build_sequence, build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -85,6 +85,15 @@ pub enum BoardAction {
     Block { card: NoteId, on: NoteId },
     /// Remove `on` from `card`'s blocker set. A no-op when the edge isn't present.
     Unblock { card: NoteId, on: NoteId },
+    /// Relate `card` to `other` (an undirected "see also" edge). A no-op when the
+    /// edge already exists (in either direction) or is a self-relation. The edge is
+    /// independent of the parent/blocking axes, carries no ordering or readiness
+    /// meaning, and may point at another board.
+    Relate { card: NoteId, other: NoteId },
+    /// Remove the `card`-relates-`other` edge. Symmetric: it clears the edge from
+    /// whichever endpoint stored it, so unrelating from either side removes it. A
+    /// no-op when the edge isn't present.
+    Unrelate { card: NoteId, other: NoteId },
     /// Post a NIP-22 comment on `card`. `reply_to`, when set, is another comment
     /// on the same card that this one threads under.
     AddComment {
@@ -1004,6 +1013,33 @@ pub fn apply(
             }
             republish_blockers(ndb, &card, &set, cur, signer, publisher);
         }
+        BoardAction::Relate { card, other } => {
+            // Self-relation is meaningless; the reducer skips it anyway.
+            if card == other {
+                return;
+            }
+            // Symmetric: skip if the edge already exists on *either* endpoint, so
+            // the pair is stored once. Rebuild from the raw stored set (the fold
+            // unions both directions), then add `other` to `card`'s endpoint.
+            let cur = event::current_related(ndb, author, &card);
+            let mut set: Vec<NoteId> = cur
+                .as_ref()
+                .map(|r| r.related.iter().map(|id| NoteId::new(*id)).collect())
+                .unwrap_or_default();
+            let reverse_has = event::current_related(ndb, author, &other)
+                .is_some_and(|r| r.related.contains(other.bytes()));
+            if set.contains(&other) || reverse_has {
+                return;
+            }
+            set.push(other);
+            republish_related(ndb, &card, &set, cur, signer, publisher);
+        }
+        BoardAction::Unrelate { card, other } => {
+            // Symmetric: the edge may live on either endpoint, so drop it from both
+            // stored sets, republishing only the side(s) that actually change.
+            unrelate_endpoint(ndb, author, &card, &other, signer, publisher);
+            unrelate_endpoint(ndb, author, &other, &card, signer, publisher);
+        }
         BoardAction::AddComment {
             card,
             body,
@@ -1320,6 +1356,51 @@ fn republish_blockers(
         signer,
         publisher,
     );
+}
+
+/// Publish `card`'s complete related-to set, superseding its previous one.
+/// Stamped strictly past `prev` for the same latest-authorised-wins reasons as
+/// [`republish_blockers`].
+fn republish_related(
+    ndb: &Ndb,
+    card: &NoteId,
+    set: &[NoteId],
+    prev: Option<event::RelatedSet>,
+    signer: &Signer,
+    publisher: &mut dyn Publisher,
+) {
+    let after = prev.map_or(0, |r| r.created_at);
+    ingest_signed(
+        ndb,
+        build_related(card, set).created_at(next_after(after)),
+        signer,
+        publisher,
+    );
+}
+
+/// Drop `other` from `card`'s stored related-to set, republishing the superseding
+/// set only when the edge was actually present. One half of the symmetric
+/// [`BoardAction::Unrelate`]: called for both endpoints so the edge is cleared
+/// wherever it was stored.
+fn unrelate_endpoint(
+    ndb: &Ndb,
+    author: &Pubkey,
+    card: &NoteId,
+    other: &NoteId,
+    signer: &Signer,
+    publisher: &mut dyn Publisher,
+) {
+    let cur = event::current_related(ndb, author, card);
+    let mut set: Vec<NoteId> = cur
+        .as_ref()
+        .map(|r| r.related.iter().map(|id| NoteId::new(*id)).collect())
+        .unwrap_or_default();
+    let before = set.len();
+    set.retain(|id| id != other);
+    if set.len() == before {
+        return;
+    }
+    republish_related(ndb, card, &set, cur, signer, publisher);
 }
 
 /// Would blocking `card` on `on` create a dependency cycle? A cycle would form
@@ -2191,6 +2272,95 @@ mod tests {
             .wait(|v| find_card(v, blocked).is_some_and(|c| c.blocked_by.len() == 1))
             .await;
         assert_eq!(find_card(&view, blocked).unwrap().blocked_by[0].id, d2);
+    }
+
+    #[tokio::test]
+    async fn relate_and_unrelate_edit_the_related_set() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let mut view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+
+        // Three fresh cards to wire relations between.
+        for title in ["hub", "sib one", "sib two"] {
+            t.apply(
+                &view,
+                BoardAction::AddCard {
+                    col: 0,
+                    title: title.to_string(),
+                    labels: vec![],
+                    parent: None,
+                },
+            );
+            view = t.wait(|v| card_id_by_title(v, title).is_some()).await;
+        }
+        let hub = card_id_by_title(&view, "hub").unwrap();
+        let s1 = card_id_by_title(&view, "sib one").unwrap();
+        let s2 = card_id_by_title(&view, "sib two").unwrap();
+
+        // Relate hub to two siblings; the set accumulates.
+        t.apply(
+            &view,
+            BoardAction::Relate {
+                card: hub,
+                other: s1,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.iter().any(|e| e.id == s1)))
+            .await;
+        t.apply(
+            &view,
+            BoardAction::Relate {
+                card: hub,
+                other: s2,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.len() == 2))
+            .await;
+
+        // Symmetric: both siblings list hub back, and hub is never "blocked" by a
+        // relation (it's context only).
+        let hub_card = find_card(&view, hub).unwrap();
+        assert!(!hub_card.is_blocked());
+        assert_eq!(
+            find_card(&view, s1)
+                .unwrap()
+                .related
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>(),
+            vec![hub]
+        );
+
+        // Relating an existing pair from the reverse endpoint is a no-op — the edge
+        // is stored once, so s2 gains no second entry.
+        t.apply(
+            &view,
+            BoardAction::Relate {
+                card: s2,
+                other: hub,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.len() == 2))
+            .await;
+        assert_eq!(find_card(&view, s2).unwrap().related.len(), 1);
+
+        // Unrelate from the endpoint that did NOT store the edge (s1): symmetric
+        // removal still clears it from both sides, while the hub↔s2 edge survives.
+        t.apply(
+            &view,
+            BoardAction::Unrelate {
+                card: s1,
+                other: hub,
+            },
+        );
+        let view = t
+            .wait(|v| find_card(v, hub).is_some_and(|c| c.related.len() == 1))
+            .await;
+        assert!(find_card(&view, s1).unwrap().related.is_empty());
+        assert_eq!(find_card(&view, hub).unwrap().related[0].id, s2);
     }
 
     #[tokio::test]
