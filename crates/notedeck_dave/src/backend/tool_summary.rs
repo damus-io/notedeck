@@ -45,7 +45,7 @@ pub fn format_tool_summary(
     match tool_name {
         "Read" => format_read_summary(input, response),
         "Write" => format_write_summary(input),
-        "Bash" => format_bash_summary(input, response),
+        "Bash" => format_bash_summary(input),
         "Grep" => format_grep_summary(input),
         "Glob" => format_glob_summary(input),
         "Edit" => format_edit_summary(input),
@@ -90,24 +90,16 @@ fn format_write_summary(input: &serde_json::Value) -> String {
     format!("{} ({} bytes)", filename, bytes)
 }
 
-fn format_bash_summary(input: &serde_json::Value, response: &serde_json::Value) -> String {
+/// Summarize a `Bash` tool call as its full command, backtick-quoted.
+///
+/// The command is shown untruncated; any stdout/stderr is surfaced separately
+/// via the collapsible output body, so the summary carries no output-length
+/// count — the old `"(N chars)"` only ever measured the output, never the
+/// command, which read as an uninformative `"(13 chars)"` next to a truncated
+/// command.
+fn format_bash_summary(input: &serde_json::Value) -> String {
     let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    // Truncate long commands (must respect UTF-8 char boundaries)
-    let cmd_display = if cmd.len() > 40 {
-        let cut = notedeck::abbrev::floor_char_boundary(cmd, 37);
-        format!("{}...", &cmd[..cut])
-    } else {
-        cmd.to_string()
-    };
-    let output_len = extract_response_content(response)
-        .as_ref()
-        .map(|s| s.len())
-        .unwrap_or(0);
-    if output_len > 0 {
-        format!("`{}` ({} chars)", cmd_display, output_len)
-    } else {
-        format!("`{}`", cmd_display)
-    }
+    format!("`{}`", cmd)
 }
 
 fn format_grep_summary(input: &serde_json::Value) -> String {
@@ -163,33 +155,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ---- Bug fix: format_bash_summary panicked on multi-byte UTF-8 at byte 37 ----
+    // ---- Bash summaries show the full command, backtick-quoted, no count ----
 
     #[test]
-    fn bash_summary_truncates_multibyte_command_without_panic() {
-        // "🔥" is 4 bytes. Place emojis so byte 37 falls mid-character.
-        // 9 emojis = 36 bytes, then "ab" = 38 bytes total, then more chars to exceed 40.
-        let cmd = "🔥🔥🔥🔥🔥🔥🔥🔥🔥abcdefgh"; // 36 + 8 = 44 bytes
+    fn bash_summary_shows_full_command_untruncated() {
+        // Long, multi-byte commands are shown in full: no truncation (which once
+        // risked slicing mid-UTF-8-char) and no trailing output-length count.
+        let cmd = "🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥 git add crates/agentium-core/src/messages.rs crates/notedeck_dave/src/ui/dave.rs";
         assert!(cmd.len() > 40);
-        // Before the fix, &cmd[..37] would panic because byte 37 is inside "a"... wait
-        // Actually 9 emojis = 36 bytes, byte 37 is 'a', which is fine.
-        // Better test: 9 emojis + "a" = 37 bytes, byte 37 is start of next char.
-        // Let's use a string where byte 37 is mid-emoji:
-        // 8 emojis = 32 bytes, "12345" = 5 bytes = 37 bytes, then emoji at byte 37
-        // That's fine too. We need byte 37 to be inside a multi-byte char.
-        // 9 emojis = 36 bytes, then a 4-byte emoji starts at 36.
-        // byte 37 is the 2nd byte of that emoji - NOT a char boundary.
-        let cmd2 = "🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥padding"; // 40 + 7 = 47 bytes
-        assert!(cmd2.len() > 40);
-        // byte 37 is inside the 10th emoji (bytes 36-39)
-        assert!(!cmd2.is_char_boundary(37));
+        let input = json!({"command": cmd});
+        let summary = format_bash_summary(&input);
+        assert_eq!(summary, format!("`{cmd}`"));
+        // The uninformative "(N chars)" output count is gone.
+        assert!(!summary.contains("chars)"));
+    }
 
-        let input = json!({"command": cmd2});
-        let response = json!(null);
-        // This would panic before the fix
-        let summary = format_bash_summary(&input, &response);
-        assert!(summary.contains("..."));
-        assert!(summary.starts_with('`'));
+    #[test]
+    fn bash_summary_missing_command_is_empty_backticks() {
+        assert_eq!(format_bash_summary(&json!({})), "``");
     }
 
     // ---- Bug fix: truncate_output panicked on multi-byte UTF-8 ----
