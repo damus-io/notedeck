@@ -116,6 +116,17 @@ enum Command {
         card: String,
         on: String,
     },
+    /// Relate `card` to `other` (an undirected "see also" edge — symmetric,
+    /// carries no ordering or readiness meaning, and allowed to cross boards).
+    Relate {
+        card: String,
+        other: String,
+    },
+    /// Remove the `card`-relates-`other` edge (symmetric: from either endpoint).
+    Unrelate {
+        card: String,
+        other: String,
+    },
     /// Print what to work on next: walk a container's work-order and show the
     /// ready frontier (see [`traversal`]). A read command — it never signs.
     Next {
@@ -233,6 +244,10 @@ impl Command {
             Command::Block { card, on } | Command::Unblock { card, on } => {
                 selectors.push(card);
                 selectors.push(on);
+            }
+            Command::Relate { card, other } | Command::Unrelate { card, other } => {
+                selectors.push(card);
+                selectors.push(other);
             }
             Command::Seq {
                 card,
@@ -716,6 +731,14 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Unblock { card, on } => BoardAction::Unblock {
             card: resolve_card(view, &card)?,
             on: resolve_card(view, &on)?,
+        },
+        Command::Relate { card, other } => BoardAction::Relate {
+            card: resolve_card(view, &card)?,
+            other: resolve_card(view, &other)?,
+        },
+        Command::Unrelate { card, other } => BoardAction::Unrelate {
+            card: resolve_card(view, &card)?,
+            other: resolve_card(view, &other)?,
         },
         Command::Seq {
             card,
@@ -1284,6 +1307,7 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
 
     print_edges(view, "blocked by", &card.blocked_by);
     print_edges(view, "blocks", &card.blocks);
+    print_related(view, &card.related);
 
     if !card.comments.is_empty() {
         println!("\ncomments ({})", card.comments.len());
@@ -1378,6 +1402,20 @@ fn print_edges(view: &BoardView, label: &str, edges: &[headway::event::EdgeRef])
     for e in edges {
         let mark = if e.done { "x" } else { " " };
         println!("    [{mark}] {}  {}", e.title, card_ref(view, &e.id));
+    }
+}
+
+/// Print a card-detail `related` section — one `<title>  <ref>` line per edge.
+/// Unlike [`print_edges`] there is no cleared marker: the relation is undirected
+/// and semantics-free ("see also"), so a partner's doneness is irrelevant.
+/// Nothing is printed when there are no related edges.
+fn print_related(view: &BoardView, edges: &[headway::event::EdgeRef]) {
+    if edges.is_empty() {
+        return;
+    }
+    println!("\nrelated ({})", edges.len());
+    for e in edges {
+        println!("    {}  {}", e.title, card_ref(view, &e.id));
     }
 }
 
@@ -1675,6 +1713,20 @@ fn parse_command(
                 .or_else(|| rest.get(1).cloned())
                 .ok_or("unblock needs --on <card>")?,
         },
+        // `relate <card> --to <other>`; the partner may also be a second positional
+        // so `relate <card> <other>` works too.
+        "relate" => Command::Relate {
+            card: card()?,
+            other: to
+                .or_else(|| rest.get(1).cloned())
+                .ok_or("relate needs --to <card>")?,
+        },
+        "unrelate" => Command::Unrelate {
+            card: card()?,
+            other: to
+                .or_else(|| rest.get(1).cloned())
+                .ok_or("unrelate needs --to <card>")?,
+        },
         "comment" => Command::Comment {
             card: card()?,
             body: joined(rest, 1, name)?,
@@ -1760,6 +1812,9 @@ COMMANDS:
     block <card> --on <b>      Mark <card> as blocked by <b> (a dependency edge,
                                may cross boards; cycles are refused)
     unblock <card> --on <b>    Remove the <card>-blocked-by-<b> edge
+    relate <card> --to <o>     Relate <card> to <o> (undirected \"see also\"; shows
+                               on both, may cross boards, no ordering meaning)
+    unrelate <card> --to <o>   Remove the <card>-relates-<o> edge (either endpoint)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
                                another comment)
     delete <card>              Remove a card (reversible tombstone)
@@ -1791,7 +1846,8 @@ OPTIONS:
     --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
     -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
     --col <c>         Column for `add`/`move` (id or name)
-    --to <board>      Target board for `link`/`move-board`
+    --to <board>      Target board for `link`/`move-board`; or the partner card
+                      for `relate`/`unrelate`
     --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
     --parent <card>   Parent card for `add` (created as its subissue)
     --on <card>       Blocker card for `block`/`unblock`
