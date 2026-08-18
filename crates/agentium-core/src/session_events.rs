@@ -1206,6 +1206,43 @@ pub fn build_set_permission_mode_event(
     Ok(event)
 }
 
+/// Build a kind-1988 command event to interrupt a remote session's in-flight turn.
+///
+/// Published by a remote observer to abort whatever turn/tool loop the host is
+/// currently running, mirroring the local Escape interrupt. The host subscribes
+/// for these (`role = "interrupt"`, `t = ai-command`) and applies them by sending
+/// `SessionCommand::Interrupt` to its local backend actor. Carries no payload —
+/// the session is identified by the `d` tag.
+pub fn build_interrupt_event(
+    session_id: &str,
+    threading: &mut ThreadingState,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, "{}", Some(now_ms / 1000));
+
+    builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Ordering tags: `ms` sub-second (primary tiebreak), `seq` monotonic index.
+    // Every kind-1988 conversation event carries a `seq` — see the
+    // `no_conversation_event_is_seqless` invariant test.
+    builder = stamp_ms_tag(builder, Some(now_ms));
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
+
+    builder = builder.start_tag().tag_str("role").tag_str("interrupt");
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-command");
+
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1825,6 +1862,10 @@ mod tests {
             build_set_permission_mode_event("plan", session_id, &mut threading, &sk).unwrap();
         assert_has_seq(&mode.note_json);
 
+        // Interrupt command.
+        let interrupt = build_interrupt_event(session_id, &mut threading, &sk).unwrap();
+        assert_has_seq(&interrupt.note_json);
+
         // JSONL-derived conversation events (build_events → build_single_event).
         let line = JsonlLine::parse(&format!(
             r#"{{"type":"user","uuid":"x1","parentUuid":null,"sessionId":"{session_id}","timestamp":"2024-01-01T00:00:00Z","cwd":"/tmp","version":"2.0.0","message":{{"role":"user","content":"hello"}}}}"#,
@@ -1835,6 +1876,24 @@ mod tests {
                 assert_has_seq(&ev.note_json);
             }
         }
+    }
+
+    #[test]
+    fn test_build_interrupt_event() {
+        let session_id = "sess-interrupt";
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+
+        let ev = build_interrupt_event(session_id, &mut threading, &sk).unwrap();
+
+        assert_eq!(ev.kind, AI_CONVERSATION_KIND);
+        let json = &ev.note_json;
+        assert!(json.contains(r#"["role","interrupt"]"#));
+        assert!(json.contains(r#"["t","ai-command"]"#));
+        assert!(json.contains(&format!(r#"["d","{session_id}"]"#)));
+        // No payload beyond the empty object — the session id in the `d` tag is
+        // all the host needs.
+        assert!(json.contains(r#""content":"{}""#));
     }
 
     #[test]

@@ -755,6 +755,23 @@ pub fn seed_demo_board(
         }
     }
 
+    // Wire a small dependency chain so the demo exercises both dependency states
+    // and both detail sections. The sync card is blocked on the event-model card
+    // (still in Backlog → an *open* blocker) and the scaffold card (in Done → a
+    // *cleared* blocker), and in turn blocks the card-detail card. So sync's
+    // detail shows a mixed "Blocked by" list (one open, one struck-through) *and*
+    // a "Blocks" list, and the board listing marks both sync and the card-detail
+    // card with a dim ⊘.
+    if let (Some(sync), Some(model), Some(scaffold), Some(card_detail)) = (
+        ids.get("Sync cards across relays"),
+        ids.get("Nostr event model"),
+        ids.get("Scaffold the Headway app crate"),
+        ids.get("Card detail / comments view"),
+    ) {
+        ingest!(build_blockers(sync, &[*model, *scaffold]).created_at(created));
+        ingest!(build_blockers(card_detail, &[*sync]).created_at(created));
+    }
+
     // Post-creation history: amend the event-model card (rename → label swap →
     // description edit) and move the drag card into In Progress, each at its
     // own instant, so the detail views showcase a populated activity timeline.

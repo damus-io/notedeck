@@ -11,6 +11,8 @@
 //! (the correlation the CLI waits on). Same identity + relay, so the CLI's own
 //! cache syncs the answer and its watch fires.
 
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use agentium_core::Engine;
@@ -18,6 +20,100 @@ use agentium_core::messages::Message;
 use agentium_core::session_events::{self, AI_SESSION_COMMAND_KIND, build_session_state_event};
 use nostrdb::{Config, Ndb};
 use tempfile::TempDir;
+
+/// Resolve a path to *this* worktree's freshly-built `agentium` binary, robust to
+/// the shared-target uplift hazard that otherwise makes these tests fail under
+/// `cargo test --workspace` while passing under `cargo test -p agentium_cli`.
+///
+/// `env!("CARGO_BIN_EXE_agentium")` names the top-level `target/debug/agentium` —
+/// a *single* path that every git worktree sharing this `target/` dir hardlinks
+/// its own `agentium` onto. Under `cargo test --workspace` cargo compiles this
+/// crate's bin but records its uplift as already-done and won't re-link it, so a
+/// sibling worktree's older `agentium` (e.g. one predating `--wait`) can own that
+/// path — and, because sibling builds run concurrently, it can be re-clobbered at
+/// any instant *during* the test. `-p agentium_cli` re-roots the package and forces
+/// the uplift, which is exactly why isolation passes.
+///
+/// Rather than trust that shared path, we go to the per-fingerprint artifact cargo
+/// actually built for this invocation: `target/debug/deps/agentium-<hash>`. That
+/// name is unique to a (source + feature) fingerprint, so no sibling overwrites it
+/// with *different* code (a matching hash means matching source). We pick the
+/// newest such artifact that (a) cargo built through *this* worktree's target path
+/// — its `agentium-<hash>.d` dep-info records that absolute path — and (b) is a
+/// current build that understands `--wait`, so the test exercises this worktree's
+/// code, not a sibling's.
+fn agentium_bin() -> PathBuf {
+    let uplifted = Path::new(env!("CARGO_BIN_EXE_agentium"));
+    let deps = uplifted
+        .parent()
+        .expect("CARGO_BIN_EXE_agentium has a target/debug parent")
+        .join("deps");
+
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&deps)
+        .expect("read target/debug/deps")
+        .flatten()
+    {
+        let path = entry.path();
+        if !is_agentium_exe(&path) || !built_in_this_worktree(&path, &deps) {
+            continue;
+        }
+        if !is_current_build(&path) {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if newest.as_ref().is_none_or(|(t, _)| mtime > *t) {
+            newest = Some((mtime, path));
+        }
+    }
+
+    newest.map(|(_, p)| p).unwrap_or_else(|| {
+        panic!(
+            "no current `agentium` artifact built by this worktree under {} — \
+             run `cargo build -p agentium_cli --bin agentium` first",
+            deps.display()
+        )
+    })
+}
+
+/// A `deps/agentium-<hash>` runnable executable — the extensionless sibling of the
+/// `.d`/`.rmeta`/`.o` files cargo drops next to it under the same stem.
+fn is_agentium_exe(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    name.starts_with("agentium-") && !name.contains('.') && path.is_file()
+}
+
+/// Cargo's dep-info (`agentium-<hash>.d`) names its target by absolute path through
+/// the *building* worktree's `target` symlink, so ours begin with this worktree's
+/// own `deps` dir. (A hash shared with a sibling means byte-identical source, so a
+/// miss here is never wrong — just deferred to an owned twin or the fallback.)
+fn built_in_this_worktree(bin: &Path, deps: &Path) -> bool {
+    let Ok(depinfo) = std::fs::read_to_string(bin.with_extension("d")) else {
+        return false;
+    };
+    depinfo
+        .lines()
+        .next()
+        .is_some_and(|first| first.starts_with(&*deps.to_string_lossy()))
+}
+
+/// A current build lists both the `spawn` command and its `--wait` flag in its
+/// no-arg usage; a stale sibling that predates either lists neither, which is how
+/// we tell a freshly-built `agentium` from a leftover one. (No-arg usage goes to
+/// stderr, so scan both streams.)
+fn is_current_build(bin: &Path) -> bool {
+    let Ok(out) = Command::new(bin).output() else {
+        return false;
+    };
+    let mut usage = String::from_utf8_lossy(&out.stdout).into_owned();
+    usage.push_str(&String::from_utf8_lossy(&out.stderr));
+    usage.contains("spawn") && usage.contains("--wait")
+}
 
 /// `[7u8; 32]` as an nsec — the identity the CLI signs/decrypts as, and the same
 /// key the helper host uses so their PNS envelopes round-trip.
@@ -87,11 +183,12 @@ async fn spawn_wait_resolves_and_prompt_lands() {
     let cli_dir = TempDir::new().expect("cli tmp");
     let db_path = cli_dir.path().to_str().expect("path").to_string();
     let url_for_cli = url.clone();
+    let bin = agentium_bin();
 
     // Run the real binary in a blocking task so the host-answer loop runs
     // concurrently on this task.
     let cli = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_agentium"))
+        Command::new(&bin)
             .args([
                 "--nsec",
                 NSEC,
@@ -196,9 +293,10 @@ async fn spawn_wait_times_out_without_a_host() {
     let cli_dir = TempDir::new().expect("cli tmp");
     let db_path = cli_dir.path().to_str().expect("path").to_string();
     let url_for_cli = url.clone();
+    let bin = agentium_bin();
 
     let out = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_agentium"))
+        Command::new(&bin)
             .args([
                 "--nsec",
                 NSEC,

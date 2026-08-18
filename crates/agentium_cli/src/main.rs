@@ -109,6 +109,12 @@ enum Command {
         prompt: Option<String>,
         wait: bool,
     },
+    /// Abort a session's in-flight turn on its host — the CLI companion to
+    /// pressing Esc in Dave. The selector is required (a specific live session to
+    /// interrupt); a tombstoned session has no running backend and is rejected.
+    Interrupt {
+        session: String,
+    },
     Login {
         nsec: String,
     },
@@ -216,6 +222,9 @@ async fn run() -> Result<()> {
                 wait,
             };
             cmd_spawn(&engine, &mut transport, &read_pk, &opts, cli.json).await?
+        }
+        Command::Interrupt { session } => {
+            cmd_interrupt(&engine, &mut transport, &read_pk, &session).await?
         }
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
@@ -658,6 +667,59 @@ fn emit_spawn(
             println!("{line}");
         }
     }
+    Ok(())
+}
+
+/// `agentium interrupt <session>` — abort a session's in-flight turn.
+///
+/// The CLI companion to pressing Esc in Dave: publishes a kind-1988 interrupt
+/// command that the session's host applies by aborting the current turn/tool
+/// loop. Resolves the selector against the **live** set — a tombstoned session
+/// has no running backend to interrupt, so a match against only the deleted set
+/// is reported as such (reopen it with `resume` first); any other miss surfaces
+/// the resolver's own "no session matching" error so a typo fails loudly.
+///
+/// Mirrors [`cmd_send`]'s resolve → engine-verb → bounded post-publish flush,
+/// minus the message body and reported event id — an interrupt is fire-and-forget.
+async fn cmd_interrupt(
+    engine: &Engine,
+    transport: &mut impl Transport,
+    author: &Pubkey,
+    selector: &str,
+) -> Result<()> {
+    use agentium_core::session_loader::{
+        load_deleted_session_states_for_author, load_session_states_for_author, resolve_session,
+    };
+
+    let (session_id, uri) = {
+        let txn = Transaction::new(engine.ndb())?;
+        let live = load_session_states_for_author(engine.ndb(), &txn, author);
+        let state = match resolve_session(&live, selector) {
+            Ok(state) => state,
+            Err(live_err) => {
+                let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+                if let Ok(gone) = resolve_session(&deleted, selector) {
+                    return Err(format!(
+                        "{} is deleted — nothing is running to interrupt",
+                        gone.agentium_uri()
+                    )
+                    .into());
+                }
+                return Err(live_err.into());
+            }
+        };
+        (state.claude_session_id.clone(), state.agentium_uri())
+    };
+
+    engine.interrupt_session(transport, &session_id)?;
+
+    // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
+    // after it resolves once the loop has drained (sent) the publish. Bounded so
+    // an unreachable relay can't stall exit — the event is already ingested
+    // locally regardless.
+    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+
+    println!("interrupt sent to {uri}");
     Ok(())
 }
 
@@ -2132,6 +2194,9 @@ fn parse_command(name: &str, rest: &[String], view: MessageView) -> Result<Comma
             session: arg(rest, 0, name)?,
             text: join_message(&rest[1..])?,
         },
+        "interrupt" => Command::Interrupt {
+            session: arg(rest, 0, name)?,
+        },
         "login" => Command::Login {
             nsec: arg(rest, 0, name)?,
         },
@@ -2216,6 +2281,10 @@ COMMANDS:
                       --prompt <text> (implies --wait) sends a first message once
                       the session is up. --json emits {{ spawn_id, host, session,
                       event_id }}.
+    interrupt <session>
+                      Abort a live session's in-flight turn on its host — the CLI
+                      companion to pressing Esc in Dave. Takes any selector `list`
+                      accepts; a deleted session has nothing running to interrupt.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
@@ -2480,6 +2549,18 @@ mod tests {
         // A selector plus a whitespace-only quoted arg is also rejected.
         let blank = ["agentium:a-b-c", "   "].map(String::from);
         assert!(parse_command("send", &blank, view_all()).is_err());
+    }
+
+    #[test]
+    fn interrupt_requires_session() {
+        // `interrupt <sel>` carries just the selector; trailing words are ignored.
+        let rest = ["agentium:a-b-c", "extra"].map(String::from);
+        match parse_command("interrupt", &rest, view_all()).unwrap() {
+            Command::Interrupt { session } => assert_eq!(session, "agentium:a-b-c"),
+            _ => panic!("expected Interrupt"),
+        }
+        // No selector → the missing-argument error (no $AGENTIUM_SESSION default).
+        assert!(parse_command("interrupt", &[], view_all()).is_err());
     }
 
     #[test]

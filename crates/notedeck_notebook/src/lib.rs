@@ -12,7 +12,7 @@ use crate::editor::{
     EditorAction, LongformEditor, SavedLongform, VaultAction, VaultRow, VaultState, editor_ui,
     vault_rows, vault_ui,
 };
-use crate::event::{CanvasReducer, CanvasView};
+use crate::event::{CanvasReducer, CanvasView, VaultDocKind};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
 use egui::{Pos2, Rect};
@@ -788,9 +788,11 @@ impl Notebook {
         self.wake();
     }
 
-    /// Apply a completed [`VaultAction`] from the sidebar. Returns whether the
-    /// action takes over the view (only Open does — it opens the editor; Rename
-    /// and Delete persist in place).
+    /// Apply a completed [`VaultAction`] from the sidebar, dispatching on the row's
+    /// [`VaultDocKind`]. Returns whether the action **takes over the view** — only
+    /// opening a *note* does (it swaps in the full-screen editor). Opening a
+    /// *canvas* swaps the background surface but keeps rendering the canvas this
+    /// frame (so it returns `false`); Rename and Delete persist in place.
     fn apply_vault_action(
         &mut self,
         ctx: &mut AppContext,
@@ -799,7 +801,10 @@ impl Notebook {
         action: VaultAction,
     ) -> bool {
         match action {
-            VaultAction::Open { d } => {
+            VaultAction::Open {
+                kind: VaultDocKind::Note,
+                d,
+            } => {
                 let Some(editor) = self
                     .vault_sync
                     .notes()
@@ -812,15 +817,164 @@ impl Notebook {
                 self.editor = Some(editor);
                 true
             }
-            VaultAction::Rename { d, title } => {
+            VaultAction::Open {
+                kind: VaultDocKind::Canvas,
+                d,
+            } => {
+                self.open_canvas(ctx.ndb, author, &d);
+                false
+            }
+            VaultAction::Rename {
+                kind: VaultDocKind::Note,
+                d,
+                title,
+            } => {
                 self.rename_note(ctx, author, signer, &d, title);
                 false
             }
-            VaultAction::Delete { d } => {
+            VaultAction::Rename {
+                kind: VaultDocKind::Canvas,
+                d,
+                title,
+            } => {
+                self.rename_canvas(ctx, author, signer, &d, title);
+                false
+            }
+            VaultAction::Delete {
+                kind: VaultDocKind::Note,
+                d,
+            } => {
                 self.delete_note(ctx, author, signer, &d);
                 false
             }
+            VaultAction::Delete {
+                kind: VaultDocKind::Canvas,
+                d,
+            } => {
+                self.delete_canvas_doc(ctx, author, signer, &d);
+                false
+            }
         }
+    }
+
+    /// Create a fresh canvas from the toolbar and adopt it as the active surface.
+    /// Mints an opaque `d` via [`store::create_canvas`] and points
+    /// [`active_canvas`](Self::active_canvas) at it; the new (empty) canvas folds in
+    /// on a following poll and [`select_active`] keeps it, mirroring the auto-seed
+    /// path. The current surface shows for the frame or two until it folds. Needs a
+    /// signing key (a watch-only account can't create canvases).
+    fn create_canvas(&mut self, ctx: &mut AppContext, author: &Pubkey, signer: &Option<[u8; 32]>) {
+        let Some(secret) = signer else { return };
+        let Some((d, _)) = store::create_canvas(
+            ctx.ndb,
+            author,
+            secret,
+            "Untitled canvas",
+            &mut store::NoPublish,
+        ) else {
+            return;
+        };
+        self.active_canvas = Some(d);
+        self.wake();
+    }
+
+    /// Swap the foreground to the canvas keyed by `d`, opened from the sidebar:
+    /// adopt it as the [`active_canvas`](Self::active_canvas) and re-project the
+    /// view + renderable canvas *synchronously* (a click must swap the surface this
+    /// frame, not wait for the next fold), resetting the per-canvas interaction
+    /// state carried over from the old surface. On the following frame
+    /// [`select_active`] keeps this canvas (it exists), so the choice sticks.
+    fn open_canvas(&mut self, ndb: &Ndb, author: &Pubkey, d: &str) {
+        if self.active_canvas.as_deref() == Some(d) {
+            return; // already the active surface
+        }
+        self.active_canvas = Some(d.to_string());
+        let view = Transaction::new(ndb).ok().and_then(|txn| {
+            let mut cache = self.cache.borrow_mut();
+            cache.canvas(ndb, &txn, author, d)
+        });
+        self.canvas = view.as_ref().map(view_to_canvas).unwrap_or_default();
+        self.view = view;
+        // Drop state tied to the old surface so nothing bleeds across the swap.
+        self.live.clear();
+        self.selected = None;
+        self.edit = NodeEdit::Idle;
+        self.connecting = None;
+        self.confirm_delete = None;
+        self.pan_target = None;
+        // Re-lay-out the scene for the incoming canvas's viewport (see `loaded`).
+        self.loaded = false;
+        self.wake();
+    }
+
+    /// Rename a canvas from the sidebar: load its current [`CanvasView`] (the
+    /// pre-action snapshot [`store::apply`] supersedes) and republish it with the
+    /// new title via [`store::CanvasAction::Rename`]. Needs a signing key; a no-op
+    /// if the canvas is gone or the title is unchanged.
+    fn rename_canvas(
+        &mut self,
+        ctx: &mut AppContext,
+        author: &Pubkey,
+        signer: &Option<[u8; 32]>,
+        d: &str,
+        title: String,
+    ) {
+        let Some(secret) = signer else { return };
+        let view = {
+            let Ok(txn) = Transaction::new(ctx.ndb) else {
+                return;
+            };
+            let mut cache = self.cache.borrow_mut();
+            cache.canvas(ctx.ndb, &txn, author, d)
+        };
+        let Some(view) = view else { return };
+        if view.title == title {
+            return; // unchanged
+        }
+        store::apply(
+            ctx.ndb,
+            d,
+            &view,
+            author,
+            secret,
+            CanvasAction::Rename { title },
+            &mut store::NoPublish,
+        );
+        self.wake();
+    }
+
+    /// Delete a canvas from the sidebar: tombstone it via [`store::delete_canvas`]
+    /// (reversible), stamping past its current revision. Needs a signing key; a
+    /// no-op if the canvas is already gone. Deleting the *active* canvas needs no
+    /// synchronous swap here — its tombstone folds in on a following poll, and
+    /// [`select_active`] then adopts the newest surviving sibling (or the auto-seed
+    /// path mints a fresh one when none remain, now that the seed latch is released
+    /// while a surface exists).
+    fn delete_canvas_doc(
+        &mut self,
+        ctx: &mut AppContext,
+        author: &Pubkey,
+        signer: &Option<[u8; 32]>,
+        d: &str,
+    ) {
+        let Some(secret) = signer else { return };
+        let view = {
+            let Ok(txn) = Transaction::new(ctx.ndb) else {
+                return;
+            };
+            let mut cache = self.cache.borrow_mut();
+            cache.canvas(ctx.ndb, &txn, author, d)
+        };
+        let Some(view) = view else { return };
+        store::delete_canvas(
+            ctx.ndb,
+            author,
+            secret,
+            d,
+            view.created_at,
+            &mut store::NoPublish,
+        );
+        self.wake();
     }
 
     /// Persist an inline rename: supersede note `d` with a title-only edit that
@@ -996,23 +1150,47 @@ impl notedeck::App for Notebook {
                         })
                         .flatten();
                 }
+                // Re-project the mixed vault rows (notes + canvases) off the render
+                // loop on *either* change signal — `vault_changed` for notes,
+                // `poll.changed` for canvases — formatting each "edited …" subtitle
+                // once here rather than per frame in `vault_ui`. Crucially this
+                // reuses the *same* `txn` the poll above drained: `with_canvases`
+                // runs another `advance`, and a *fresher* txn would let it fold (and
+                // so consume) keys the poll deferred, leaving the canvas view never
+                // rebuilt to include them — the vault read must not steal fresh keys
+                // from the fold pump.
+                if poll.changed || vault_changed {
+                    let notes = self.vault_sync.notes();
+                    let rows = cache.with_canvases(ctx.ndb, &txn, &author, |canvases| {
+                        vault_rows(ctx.i18n, notes, canvases)
+                    });
+                    // `with_canvases` is `None` only before the first canvas fold;
+                    // project the notes alone until a canvas surfaces.
+                    self.vault_rows = match rows {
+                        Some(rows) => rows,
+                        None => vault_rows(ctx.i18n, notes, &[]),
+                    };
+                }
                 poll
             })
             .unwrap_or_default();
 
+        // A canvas is present again (this fold picked or kept one): release the
+        // one-shot auto-seed latch so deleting the *last* canvas can re-seed. The
+        // latch only guards the async gap before the first seed folds; once a
+        // surface exists it must not block a later re-seed.
+        if self.view.is_some() {
+            self.seeded = false;
+        }
+
         // On a fresh canvas fold, rebuild the renderable canvas and drop now-stale
-        // drag overrides (the new fold carries the committed positions). Re-project
-        // the vault rows off the render loop only when longform changed, formatting
-        // each "edited …" subtitle once here rather than every frame in `vault_ui`.
+        // drag overrides (the new fold carries the committed positions).
         if poll.changed || vault_changed {
             if poll.changed {
                 if let Some(view) = &self.view {
                     self.canvas = view_to_canvas(view);
                 }
                 self.live.clear();
-            }
-            if vault_changed {
-                self.vault_rows = vault_rows(ctx.i18n, self.vault_sync.notes());
             }
             self.wake();
         }
@@ -1073,10 +1251,19 @@ impl notedeck::App for Notebook {
 
         let theme = notedeck::ColorTheme::current(ui.ctx());
 
-        // Canvas mode. A top toolbar with the canvas name and a New-note button;
-        // opening the editor takes over from the next frame (request a repaint so
-        // there's no canvas flash).
+        // Canvas mode. A top toolbar showing the active canvas's title (now that the
+        // account may hold several canvases) with New-note / New-canvas buttons;
+        // opening the editor or creating a canvas takes over from the next frame
+        // (request a repaint so there's no canvas flash).
+        let canvas_title = self
+            .view
+            .as_ref()
+            .map(|v| v.title.trim())
+            .filter(|t| !t.is_empty())
+            .unwrap_or("Notebook")
+            .to_owned();
         let mut open_editor = false;
+        let mut new_canvas = false;
         egui::TopBottomPanel::top("notebook-toolbar")
             .frame(egui::Frame::new().fill(theme.surface_primary).inner_margin(
                 egui::Margin::symmetric(
@@ -1087,13 +1274,16 @@ impl notedeck::App for Notebook {
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Notebook")
+                        egui::RichText::new(canvas_title)
                             .strong()
                             .color(theme.text_primary),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("+ New note").clicked() {
                             open_editor = true;
+                        }
+                        if ui.button("+ New canvas").clicked() {
+                            new_canvas = true;
                         }
                     });
                 });
@@ -1103,16 +1293,25 @@ impl notedeck::App for Notebook {
             ui.ctx().request_repaint();
             return AppResponse::default();
         }
+        if new_canvas {
+            self.create_canvas(ctx, &author, &signer);
+            ui.ctx().request_repaint();
+            return AppResponse::default();
+        }
 
         // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
         // in `update` this frame; here we just render the cached canvas and vault.
 
-        // Vault sidebar: the account's notes down the left, shown once there's at
-        // least one — an empty vault stays out of the way and lets the canvas use
-        // the full width. A row can be opened, renamed, or deleted; opening takes
-        // over with the editor from the next frame.
+        // Vault sidebar: the account's documents (notes + canvases) down the left,
+        // shown once there's more than the single active canvas to navigate — any
+        // note, or a second canvas. A lone auto-seeded canvas (nothing to switch to;
+        // creation is on the toolbar) keeps the sidebar out of the way and lets the
+        // canvas use the full width, preserving the old empty-vault behaviour. A row
+        // opens (note → editor, canvas → surface swap), renames, or deletes.
+        let show_vault = self.vault_rows.len() >= 2
+            || self.vault_rows.iter().any(|r| r.kind == VaultDocKind::Note);
         let mut vault_action = None;
-        if !self.vault_rows.is_empty() {
+        if show_vault {
             egui::SidePanel::left("notebook-vault")
                 .resizable(true)
                 .default_width(230.0)
@@ -1473,6 +1672,58 @@ mod tests {
             text: s.to_string(),
             ..Default::default()
         }
+    }
+
+    fn canvas_view(id: &str, created_at: u64) -> CanvasView {
+        CanvasView {
+            id: id.to_string(),
+            author: [3u8; 32],
+            title: id.to_string(),
+            members: vec![],
+            open: false,
+            created_at,
+            nodes: vec![],
+            edges: vec![],
+            pending: vec![],
+        }
+    }
+
+    /// The active-canvas selection that a sidebar "open" hinges on:
+    /// - opening a canvas (setting `active` to its `d`) makes it *stick* — even when
+    ///   a newer sibling exists, `select_active` keeps the chosen one;
+    /// - when the active canvas is gone (deleted) or unset, it adopts the newest;
+    /// - an empty account yields `None` (the caller then auto-seeds).
+    #[test]
+    fn select_active_keeps_opened_then_falls_back_to_newest() {
+        let canvases = [canvas_view("alpha", 100), canvas_view("beta", 200)];
+
+        // Opening "alpha" (the older canvas) keeps it active over newer "beta".
+        let mut active = Some("alpha".to_string());
+        let picked = select_active(&canvases, &mut active).expect("a canvas");
+        assert_eq!(picked.id, "alpha", "the opened canvas sticks");
+        assert_eq!(active.as_deref(), Some("alpha"));
+
+        // The active canvas vanished (e.g. a delete): adopt the newest survivor.
+        let mut active = Some("gone".to_string());
+        let picked = select_active(&canvases, &mut active).expect("a canvas");
+        assert_eq!(
+            picked.id, "beta",
+            "adopts the newest when the active is gone"
+        );
+        assert_eq!(active.as_deref(), Some("beta"));
+
+        // Nothing chosen yet: newest again.
+        let mut active = None;
+        assert_eq!(
+            select_active(&canvases, &mut active).map(|c| c.id),
+            Some("beta".to_string())
+        );
+        assert_eq!(active.as_deref(), Some("beta"));
+
+        // No canvases: None, and `active` is left for the caller to seed.
+        let mut active = None;
+        assert!(select_active(&[], &mut active).is_none());
+        assert_eq!(active, None);
     }
 
     /// An ordinary edit folds in as a delta — the whole history is re-walked only

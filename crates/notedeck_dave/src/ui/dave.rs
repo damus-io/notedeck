@@ -649,14 +649,13 @@ impl<'a> DaveUi<'a> {
                         .color(ui.visuals().weak_text_color())
                         .italics(),
                 );
-                // Don't show interrupt hint for remote sessions
-                if !self.flags.contains(DaveUiFlags::IsRemote) {
-                    ui.label(
-                        egui::RichText::new("(press esc to interrupt)")
-                            .color(ui.visuals().weak_text_color())
-                            .small(),
-                    );
-                }
+                // Remote sessions can now be interrupted too — the Esc keystroke
+                // publishes a command the host applies to its backend.
+                ui.label(
+                    egui::RichText::new("(press esc to interrupt)")
+                        .color(ui.visuals().weak_text_color())
+                        .small(),
+                );
             });
         }
 
@@ -1457,8 +1456,9 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        let show_stop = self.flags.contains(DaveUiFlags::IsWorking)
-            && !self.flags.contains(DaveUiFlags::IsRemote);
+        // Remote sessions can be interrupted too: the Stop button / Esc publishes
+        // an interrupt command the host applies to its backend.
+        let show_stop = self.flags.contains(DaveUiFlags::IsWorking);
         let show_esc_hint = show_stop && self.flags.contains(DaveUiFlags::InterruptPending);
 
         let layout = InputboxLayout::new(self.input, i18n)

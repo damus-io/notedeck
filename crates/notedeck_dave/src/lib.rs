@@ -202,6 +202,7 @@ struct PnsLocalRuntime {
     pending_resume_commands: Vec<PendingResumeCommand>,
     pending_perm_responses: Vec<PermissionPublish>,
     pending_mode_commands: Vec<update::ModeCommandPublish>,
+    pending_interrupt_commands: Vec<update::InterruptPublish>,
     pending_deletions: Vec<session_loader::SessionState>,
     pending_worktree_removals: Vec<PendingWorktreeRemoval>,
     pending_summaries: Vec<enostr::NoteId>,
@@ -238,6 +239,7 @@ impl PnsLocalRuntime {
             pending_resume_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
+            pending_interrupt_commands: Vec::new(),
             pending_deletions: Vec::new(),
             pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
@@ -295,6 +297,30 @@ fn pns_remote_sub_config(
         live_filters: vec![pns_filter],
         history_filters: vec![pns_history_filter],
     })
+}
+
+/// A permission-mode change decoded from a remote command, to apply on the local
+/// backend. See [`Dave::poll_remote_conversation_actions`].
+struct ModeApply {
+    backend_sid: String,
+    backend_type: BackendType,
+    mode: claude_agent_sdk_rs::PermissionMode,
+}
+
+/// An interrupt decoded from a remote command, to apply on the local backend by
+/// aborting the session's in-flight turn. See
+/// [`Dave::poll_remote_conversation_actions`].
+struct InterruptApply {
+    backend_sid: String,
+    backend_type: BackendType,
+}
+
+/// The backend applications a poll of remote conversation actions produces:
+/// permission-mode changes and interrupts destined for the local CLI backend.
+#[derive(Default)]
+struct RemoteActionApplies {
+    mode_changes: Vec<ModeApply>,
+    interrupts: Vec<InterruptApply>,
 }
 
 /// A pending spawn command waiting to be built and published.
@@ -544,6 +570,8 @@ pub struct Dave {
     pending_perm_responses: Vec<PermissionPublish>,
     /// Permission mode commands queued for relay publishing (observer → host).
     pending_mode_commands: Vec<update::ModeCommandPublish>,
+    /// Interrupt commands queued for relay publishing (observer → host).
+    pending_interrupt_commands: Vec<update::InterruptPublish>,
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
     pending_deletions: Vec<session_loader::SessionState>,
@@ -1106,6 +1134,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_resume_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
+            pending_interrupt_commands: Vec::new(),
             pending_deletions: Vec::new(),
             pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
@@ -2221,24 +2250,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Dispatches kind-1988 events by `role` tag:
     /// - `permission_response`: route through oneshot channel (first-response-wins)
     /// - `set_permission_mode`: apply mode change locally
+    /// - `interrupt`: abort the session's in-flight turn on the local backend
     ///
-    /// Returns (backend_session_id, backend_type, mode) tuples for mode changes
-    /// that need to be applied to the local CLI backend.
-    fn poll_remote_conversation_actions(
-        &mut self,
-        ndb: &nostrdb::Ndb,
-    ) -> Vec<(String, BackendType, claude_agent_sdk_rs::PermissionMode)> {
-        let mut mode_applies = Vec::new();
+    /// Returns the backend applications (mode changes and interrupts) that the
+    /// caller forwards to the local CLI backend.
+    fn poll_remote_conversation_actions(&mut self, ndb: &nostrdb::Ndb) -> RemoteActionApplies {
+        let mut applies = RemoteActionApplies::default();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
-            return mode_applies;
+            return applies;
         };
         let Some(sub) = self.conversation_action_sub else {
-            return mode_applies;
+            return applies;
         };
 
         let note_keys = ndb.poll_for_notes(sub, 256);
         if note_keys.is_empty() {
-            return mode_applies;
+            return applies;
         }
 
         // Route each conversation event to its session by `d`-tag. Only local
@@ -2247,7 +2274,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let txn = match Transaction::new(ndb) {
             Ok(txn) => txn,
-            Err(_) => return mode_applies,
+            Err(_) => return applies,
         };
 
         for key in note_keys {
@@ -2288,11 +2315,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     agentic.permission_mode = new_mode;
                     session.state_dirty = true;
 
-                    mode_applies.push((
-                        format!("dave-session-{}", session_id),
-                        session.backend_type,
-                        new_mode,
-                    ));
+                    applies.mode_changes.push(ModeApply {
+                        backend_sid: format!("dave-session-{}", session_id),
+                        backend_type: session.backend_type,
+                        mode: new_mode,
+                    });
 
                     tracing::info!(
                         "remote command: set permission mode to {:?} for session {}",
@@ -2300,10 +2327,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         session_id,
                     );
                 }
+                Some("interrupt") => {
+                    applies.interrupts.push(InterruptApply {
+                        backend_sid: format!("dave-session-{}", session_id),
+                        backend_type: session.backend_type,
+                    });
+
+                    tracing::info!("remote command: interrupt session {}", session_id);
+                }
                 _ => {}
             }
         }
-        mode_applies
+        applies
     }
 
     /// Map each session's live-event `d`-tag (its `event_session_id`) to the
@@ -2530,6 +2565,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Publish interrupt command events for remote sessions.
+    /// Called in the update loop where AppContext is available.
+    fn publish_pending_interrupt_commands(&mut self, ctx: &AppContext<'_>) {
+        if self.pending_interrupt_commands.is_empty() {
+            return;
+        }
+
+        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
+            tracing::warn!("no secret key for publishing interrupt commands");
+            self.pending_interrupt_commands.clear();
+            return;
+        };
+        let Some(engine) = embedded_engine(ctx.ndb, &sk) else {
+            self.pending_interrupt_commands.clear();
+            return;
+        };
+
+        for cmd in std::mem::take(&mut self.pending_interrupt_commands) {
+            match engine.prepare_interrupt(&cmd.session_id) {
+                Ok(evt) => {
+                    tracing::info!("publishing interrupt command for {}", cmd.session_id);
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => tracing::error!(
+                    "failed to build interrupt command for {}: {:?}",
+                    cmd.session_id,
+                    e
+                ),
+            }
+        }
+    }
+
     /// Restore selected-account sessions from kind-31988 state events in ndb.
     fn restore_sessions_from_ndb(&mut self, ctx: &mut AppContext<'_>, account: enostr::Pubkey) {
         let txn = match Transaction::new(ctx.ndb) {
@@ -2711,6 +2778,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .filter_map(|s| s.agentic.as_ref().map(|a| a.event_session_id().to_string()))
             .collect();
 
+        // Remote sessions whose heartbeat landed this poll — reconciled against
+        // ndb after the txn drops (see `reconcile_remote_chat_from_ndb`), to pull
+        // in any conversation note that reached ndb out-of-band and so was never
+        // delivered through the live conversation poll.
+        let mut reconcile_ids: Vec<SessionId> = Vec::new();
+
         for key in note_keys {
             let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
                 continue;
@@ -2806,6 +2879,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     agentic.permission_mode =
                                         crate::session::permission_mode_from_str(pm);
                                 }
+                                reconcile_ids.push(session.id);
                             }
                         }
                     }
@@ -2905,6 +2979,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
                 self.active_overlay = DaveOverlay::None;
             }
+        }
+
+        // Drop the read txn before reconciling — `reconcile_remote_chat_from_ndb`
+        // opens its own transaction per session (avoids nested transactions).
+        drop(txn);
+
+        for id in reconcile_ids {
+            let Some(session) = self.session_manager.get_mut(id) else {
+                continue;
+            };
+            reconcile_remote_chat_from_ndb(session, ctx.ndb, &account);
         }
     }
 
@@ -3285,12 +3370,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .get_active()
             .map(|s| s.backend_type)
             .unwrap_or(BackendType::Remote);
-        self.interrupt_pending_since = update::handle_interrupt_request(
+        let outcome = update::handle_interrupt_request(
             &self.session_manager,
             get_backend(&self.backends, bt),
             self.interrupt_pending_since,
             ctx,
         );
+        self.interrupt_pending_since = outcome.pending_since;
+        if let Some(publish) = outcome.publish {
+            self.pending_interrupt_commands.push(publish);
+        }
     }
 
     /// Check if interrupt confirmation has timed out and clear it
@@ -3877,6 +3966,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             UiActionResult::PublishModeCommand(cmd) => {
                 self.pending_mode_commands.push(cmd);
+                None
+            }
+            UiActionResult::PublishInterruptCommand(cmd) => {
+                self.pending_interrupt_commands.push(cmd);
                 None
             }
             UiActionResult::ToggleAutoSteal => {
@@ -4480,6 +4573,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_resume_commands: std::mem::take(&mut self.pending_resume_commands),
             pending_perm_responses: std::mem::take(&mut self.pending_perm_responses),
             pending_mode_commands: std::mem::take(&mut self.pending_mode_commands),
+            pending_interrupt_commands: std::mem::take(&mut self.pending_interrupt_commands),
             pending_deletions: std::mem::take(&mut self.pending_deletions),
             pending_worktree_removals: std::mem::take(&mut self.pending_worktree_removals),
             pending_summaries: std::mem::take(&mut self.pending_summaries),
@@ -4525,6 +4619,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pending_resume_commands = runtime.pending_resume_commands;
         self.pending_perm_responses = runtime.pending_perm_responses;
         self.pending_mode_commands = runtime.pending_mode_commands;
+        self.pending_interrupt_commands = runtime.pending_interrupt_commands;
         self.pending_deletions = runtime.pending_deletions;
         self.pending_worktree_removals = runtime.pending_worktree_removals;
         self.pending_summaries = runtime.pending_summaries;
@@ -4748,6 +4843,9 @@ impl notedeck::App for Dave {
         // Build permission mode command events for remote sessions
         self.publish_pending_mode_commands(ctx);
 
+        // Build interrupt command events for remote sessions
+        self.publish_pending_interrupt_commands(ctx);
+
         self.pending_relay_events.extend(events_to_publish);
         // Only publish to a remote relay when one is configured in the private
         // relay list (and its PNS subscription is live). With no private relay
@@ -4783,13 +4881,17 @@ impl notedeck::App for Dave {
         }
 
         // Poll for remote conversation actions (permission responses, commands).
-        let mode_applies = self.poll_remote_conversation_actions(ctx.ndb);
-        for (backend_sid, bt, mode) in mode_applies {
-            get_backend(&self.backends, bt).set_permission_mode(
-                backend_sid,
-                mode,
+        let applies = self.poll_remote_conversation_actions(ctx.ndb);
+        for apply in applies.mode_changes {
+            get_backend(&self.backends, apply.backend_type).set_permission_mode(
+                apply.backend_sid,
+                apply.mode,
                 crate::backend::egui_waker(egui_ctx),
             );
+        }
+        for apply in applies.interrupts {
+            get_backend(&self.backends, apply.backend_type)
+                .interrupt_session(apply.backend_sid, crate::backend::egui_waker(egui_ctx));
         }
 
         // Poll git status for local agentic sessions
@@ -5489,6 +5591,62 @@ pub(crate) fn rebuild_remote_chat(
     }
 }
 
+/// Reconcile a remote session's chat with ndb when the live conversation poll
+/// may have missed notes.
+///
+/// The fast-path append in [`process_conversation_notes`] trusts that every note
+/// ordering at or before `tail_order` has already been displayed — an invariant
+/// that holds only when every such note was delivered through the live
+/// conversation subscription. A note that reaches ndb out-of-band — a negentropy
+/// backfill, or a note ingested before the subscription existed for an
+/// already-built chat — breaks it: the note is in ndb but never entered
+/// `seen_note_ids`, and because it sorts *before* the tail no later live note
+/// triggers the out-of-order rebuild that would recover it (an injected first
+/// user message is exactly this case — it is the thread root, so it sorts before
+/// every assistant reply that streams in after it). Driven off the kind-31988
+/// state-event heartbeat, this pulls any such note into the chat by rebuilding
+/// from ndb.
+///
+/// `seen_note_ids` only ever holds this session's ingested notes, so the note
+/// count in ndb exceeding it is a cheap, exact signal that an out-of-band note
+/// is waiting — an up-to-date session pays just one bounded id query and skips
+/// the rebuild.
+pub(crate) fn reconcile_remote_chat_from_ndb(
+    session: &mut session::ChatSession,
+    ndb: &nostrdb::Ndb,
+    author: &enostr::Pubkey,
+) {
+    if !session.is_remote() {
+        return;
+    }
+    let Some((claude_sid, seen)) = session
+        .agentic
+        .as_ref()
+        .map(|a| (a.event_session_id().to_string(), a.seen_note_ids.len()))
+    else {
+        return;
+    };
+
+    let Ok(txn) = Transaction::new(ndb) else {
+        return;
+    };
+    let filter = nostrdb::Filter::new()
+        .kinds([session_events::AI_CONVERSATION_KIND as u64])
+        .authors([author.bytes()])
+        .tags([claude_sid.as_str()], 'd')
+        .build();
+    let ndb_count = ndb
+        .query(&txn, &[filter], 10_000)
+        .map(|r| r.len())
+        .unwrap_or(0);
+    // Nothing in ndb we haven't already incorporated — the fast-path chat is
+    // complete, so skip the rebuild.
+    if ndb_count <= seen {
+        return;
+    }
+    rebuild_remote_chat(session, ndb, &txn, author);
+}
+
 /// Handle a remote permission request from a kind-1988 conversation event.
 ///
 /// Runs only the side effects — records the request note id and, if the runtime
@@ -6123,6 +6281,292 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Every `Message::User` body in a chat, in order.
+    fn user_texts(chat: &[Message]) -> Vec<&str> {
+        chat.iter()
+            .filter_map(|m| match m {
+                Message::User(u) => Some(u.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Observer regression (headway:dave/light-hobby-upgrade): a user message
+    /// injected into a running session via `agentium send` must render on a
+    /// remote observer even when the host backend's assistant reply streams in
+    /// and is processed first.
+    ///
+    /// This drives the observer's live-conversation loop faithfully: a real
+    /// author-scoped conversation subscription, PNS-unwrapped externally-authored
+    /// notes, and the exact `poll_for_notes` -> `process_conversation_notes` ->
+    /// `rebuild_remote_chat` sequence `poll_remote_conversation_events` runs. The
+    /// interleaving is the adversarial one from the card: the session is
+    /// discovered and hydrated from an *empty* ndb snapshot (the kind-31988 state
+    /// event beat the conversation notes to the observer), then the assistant
+    /// reply lands and is polled *before* the user message — seeding
+    /// `tail_order` past where the user message sorts.
+    #[tokio::test]
+    async fn observer_renders_injected_first_user_message() {
+        let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let mut threading = ThreadingState::new();
+        let session_id_str = "inject-observer-test";
+
+        // The injected user message (published by the CLI via `agentium send`)
+        // is authored first; the host backend's assistant reply follows it.
+        let user_evt = build_live_event(
+            "Work on the thing",
+            "user",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let asst_evt = build_live_event(
+            "On it",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        // The observer's live conversation subscription (author-scoped, exactly
+        // as `subscribe_conversation_events` builds it).
+        let sub = subscribe_conversation_events(&ndb, author).unwrap();
+
+        // A freshly discovered remote session, hydrated from an empty ndb
+        // snapshot — the state event reached the observer before any
+        // conversation note did.
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            let loaded = session_loader::load_session_messages_for_author(
+                &ndb,
+                &txn,
+                &author,
+                session_id_str,
+            );
+            let state = hydrate_test_state(session_id_str, Some("cli-uuid"));
+            hydrate_session_from_state(&mut session, &state, loaded, "observer-host");
+        }
+        assert!(session.is_remote(), "differing hostname makes this remote");
+        assert!(
+            session.chat.is_empty(),
+            "no conversation notes have synced to the observer yet"
+        );
+
+        // Ingest the inner kind-1988 note (as it exists after ndb unwraps the
+        // PNS envelope) and wait for the ingest thread, so the conversation
+        // subscription has it queued for the next poll. A throwaway sub gates on
+        // ingest without draining `sub`.
+        async fn ingest(ndb: &Ndb, evt: &session_events::BuiltEvent) {
+            let gate = ndb
+                .subscribe(&[nostrdb::Filter::new()
+                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                    .build()])
+                .unwrap();
+            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            ndb.wait_for_notes(gate, 1).await.unwrap();
+        }
+
+        // One faithful observer poll: drain the conversation sub, process the
+        // batch, and rebuild from ndb when asked — mirroring
+        // `poll_remote_conversation_events`.
+        fn conv_poll(
+            session: &mut session::ChatSession,
+            ndb: &Ndb,
+            sub: nostrdb::Subscription,
+            author: &enostr::Pubkey,
+            sk: &[u8; 32],
+        ) {
+            let keys = ndb.poll_for_notes(sub, 256);
+            if keys.is_empty() {
+                return;
+            }
+            let txn = Transaction::new(ndb).unwrap();
+            let notes: Vec<_> = keys
+                .iter()
+                .filter_map(|k| ndb.get_note_by_key(&txn, *k).ok())
+                .collect();
+            let result = process_conversation_notes(notes, session, 1, true, Some(sk), ndb);
+            if result.rebuild_chat {
+                rebuild_remote_chat(session, ndb, &txn, author);
+            }
+        }
+
+        // The assistant reply lands and is polled first, seeding tail_order.
+        ingest(&ndb, &asst_evt).await;
+        conv_poll(&mut session, &ndb, sub, &author, &sk);
+        assert_eq!(
+            assistant_texts(&session.chat),
+            vec!["On it"],
+            "assistant reply renders"
+        );
+
+        // The injected user message arrives afterwards and must still render.
+        ingest(&ndb, &user_evt).await;
+        conv_poll(&mut session, &ndb, sub, &author, &sk);
+
+        assert_eq!(
+            user_texts(&session.chat),
+            vec!["Work on the thing"],
+            "the injected user message must render on the observer"
+        );
+        assert!(
+            matches!(session.chat.first(), Some(Message::User(_))),
+            "the user message sorts first (it is the thread root)"
+        );
+    }
+
+    /// Observer regression (headway:dave/light-hobby-upgrade): a conversation
+    /// note that reaches the observer's ndb *without being delivered through the
+    /// live conversation subscription* — an out-of-band negentropy backfill, or a
+    /// note ingested before the subscription existed for an already-built chat —
+    /// must still render.
+    ///
+    /// The injected user message is the thread root, so it sorts *before* the
+    /// assistant replies that stream live. Those replies append via the fast
+    /// path (they sort after `tail_order`), which never reloads from ndb — so a
+    /// user message that landed in ndb out-of-band is silently skipped forever:
+    /// it is not in `session.chat`, and because it sorts before the tail no
+    /// subsequent live note triggers the out-of-order rebuild that would recover
+    /// it. Only the state-event heartbeat reconciliation
+    /// ([`Dave::poll_session_state_events`]) closes this gap.
+    #[tokio::test]
+    async fn observer_reconciles_backfilled_note_not_delivered_live() {
+        let sk = test_secret_key();
+        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let mut threading = ThreadingState::new();
+        let session_id_str = "backfill-hole-test";
+
+        // Authored order: user message first (thread root), then two assistant
+        // replies.
+        let user_evt = build_live_event(
+            "Do the thing",
+            "user",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let asst1 = build_live_event(
+            "Working on it",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let asst2 = build_live_event(
+            "Done",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let ingest = |ndb: &Ndb, evt: &session_events::BuiltEvent| {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            sub
+        };
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        // The first assistant reply arrives live and seeds the chat + tail_order.
+        // The user message has not reached this observer yet.
+        {
+            let sub = ingest(&ndb, &asst1);
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+        }
+        assert_eq!(assistant_texts(&session.chat), vec!["Working on it"]);
+        assert!(user_texts(&session.chat).is_empty());
+
+        // The user message backfills into ndb out-of-band (it was never delivered
+        // through the live poll), then the second assistant reply arrives live and
+        // is appended via the fast path.
+        {
+            let sub = ingest(&ndb, &user_evt);
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+        {
+            let sub = ingest(&ndb, &asst2);
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            let batch: Vec<_> = ndb
+                .query(&txn, std::slice::from_ref(&filter), 128)
+                .unwrap()
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .filter(|n| n.content() == "Done")
+                .collect();
+            let result = process_conversation_notes(batch, &mut session, 1, true, Some(&sk), &ndb);
+            // The live note appends without a rebuild, so the backfilled user
+            // message is still absent at this point.
+            assert!(!result.rebuild_chat);
+        }
+        assert_eq!(
+            assistant_texts(&session.chat),
+            vec!["Working on it", "Done"],
+            "assistant replies rendered via the fast-path append"
+        );
+
+        // The state-event heartbeat reconciles the chat from ndb, recovering the
+        // backfilled user message that the live poll never delivered.
+        reconcile_remote_chat_from_ndb(&mut session, &ndb, &author);
+        assert_eq!(
+            user_texts(&session.chat),
+            vec!["Do the thing"],
+            "the backfilled user message must render after heartbeat reconciliation"
+        );
+        assert!(
+            matches!(session.chat.first(), Some(Message::User(_))),
+            "the user message sorts first (it is the thread root)"
+        );
     }
 
     /// Integration test for the remote conversation display path: events

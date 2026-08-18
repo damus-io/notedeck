@@ -11,7 +11,8 @@ use notedeck_notebook::event::{
     build_longform, build_node, build_transform, canvas_address,
 };
 use notedeck_notebook::store::{
-    CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_longform, load_longform,
+    CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_canvases, list_longform,
+    load_canvas, load_longform,
 };
 use notedeck_notebook::wordid;
 use notedeck_ui::markdown::render_markdown_with_refs;
@@ -30,8 +31,30 @@ struct NotebookTestState {
     /// `update`s each frame, so the shared cache the chip folds through stays
     /// current; only the drawn surface changes.
     ref_surface: Option<String>,
+    /// Canvases to seed on the injection frame, *before* the app auto-seeds one, so
+    /// a multi-canvas test gets deterministic ids/titles/order (the auto-seed uses
+    /// wall-clock `created_at`, which shuffles ordering run-to-run). The earliest to
+    /// fold suppresses the auto-seed, exactly as `seed_colors` does with `CANVAS_ID`.
+    seed_canvases: Vec<SeedCanvas>,
     _tmpdir: tempfile::TempDir,
     setup_done: bool,
+}
+
+/// A canvas to seed deterministically on the injection frame: a fixed `d`, title
+/// and `created_at` (which fixes its sort position in the vault list), plus any
+/// text nodes to place on it so an open-swap test can tell one canvas from another.
+struct SeedCanvas {
+    d: String,
+    title: String,
+    created_at: u64,
+    nodes: Vec<SeedNode>,
+}
+
+/// One text node to seed onto a [`SeedCanvas`], at canvas position `(x, y)`.
+struct SeedNode {
+    text: String,
+    x: i64,
+    y: i64,
 }
 
 fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
@@ -60,13 +83,23 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
         }
         app_ctx.select_account(&pubkey);
 
+        let secret = state.account.secret_key.secret_bytes();
+        let mut seeded_canvas_ids: Vec<String> = Vec::new();
         if state.seed_colors {
-            seed_colored_canvas(
-                app_ctx.ndb,
-                &pubkey,
-                &state.account.secret_key.secret_bytes(),
-            );
+            seed_colored_canvas(app_ctx.ndb, &pubkey, &secret);
+            seeded_canvas_ids.push(CANVAS_ID.to_string());
         }
+        for canvas in &state.seed_canvases {
+            seed_canvas_with_nodes(app_ctx.ndb, &pubkey, &secret, canvas);
+            seeded_canvas_ids.push(canvas.d.clone());
+        }
+        // Block until the seeded canvas docs commit, so the app's *first* history
+        // fold (next frame's `update`) already sees them and doesn't spuriously
+        // auto-seed a second empty canvas before they land — which would pop the
+        // vault sidebar open (≥2 canvases) and offset these canvas fixtures. This
+        // is the test-side stand-in for the deferred sync-caught-up seed gate
+        // (headway:notebook/social-genuine-crane).
+        wait_canvases_committed(app_ctx.ndb, &pubkey, &seeded_canvas_ids);
 
         state.setup_done = true;
         return;
@@ -218,10 +251,95 @@ fn seed_colored_canvas(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32]) {
     );
 }
 
+/// Seed a canvas with a fixed `d`/title/`created_at` and its text nodes as nostr
+/// events — the deterministic multi-canvas counterpart to the app's wall-clock
+/// auto-seed. Mirrors [`seed_colored_canvas`]'s node+transform ingest per node.
+fn seed_canvas_with_nodes(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], canvas: &SeedCanvas) {
+    let addr = canvas_address(author, &canvas.d);
+    let mut publisher = NoPublish;
+    ingest(
+        ndb,
+        build_canvas(&canvas.d, &canvas.title, &[], false).created_at(canvas.created_at),
+        secret,
+        &mut publisher,
+    );
+    let mut last = String::new();
+    for node in &canvas.nodes {
+        let geo = Geometry {
+            x: node.x,
+            y: node.y,
+            w: 200,
+            h: 90,
+        };
+        let content = NodeContent {
+            text: node.text.clone(),
+            ..Default::default()
+        };
+        let id = ingest(
+            ndb,
+            build_node(&addr, NodeKind::Text, &geo, &content),
+            secret,
+            &mut publisher,
+        )
+        .expect("seed node ingested");
+        let z = event::rank_between((!last.is_empty()).then_some(last.as_str()), None);
+        ingest(
+            ndb,
+            build_transform(&canvas.d, &addr, &id, &geo, &z, None),
+            secret,
+            &mut publisher,
+        );
+        last = z;
+    }
+}
+
+/// Block until every canvas in `ids` has committed and folds under a fresh read
+/// txn (ingest is async on a writer thread), or panic after a deadline. Used by
+/// the setup frame so the app's first history fold sees the seeded canvases and
+/// skips the auto-seed.
+fn wait_canvases_committed(ndb: &Ndb, author: &Pubkey, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let all_present = {
+            let txn = Transaction::new(ndb).expect("txn");
+            ids.iter()
+                .all(|d| load_canvas(ndb, &txn, author, d).is_some())
+        };
+        if all_present {
+            return;
+        }
+        assert!(Instant::now() < deadline, "seeded canvases never committed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn build_harness(
     size: egui::Vec2,
     seed_colors: bool,
     renderer: bool,
+) -> Harness<'static, NotebookTestState> {
+    build_harness_inner(size, seed_colors, renderer, vec![])
+}
+
+/// Build a harness that seeds a fixed set of `canvases` on the injection frame
+/// (suppressing the wall-clock auto-seed) — for the deterministic multi-canvas
+/// vault/open/rename/delete tests.
+fn build_harness_canvases(
+    size: egui::Vec2,
+    renderer: bool,
+    canvases: Vec<SeedCanvas>,
+) -> Harness<'static, NotebookTestState> {
+    build_harness_inner(size, false, renderer, canvases)
+}
+
+fn build_harness_inner(
+    size: egui::Vec2,
+    seed_colors: bool,
+    renderer: bool,
+    seed_canvases: Vec<SeedCanvas>,
 ) -> Harness<'static, NotebookTestState> {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
@@ -248,6 +366,7 @@ fn build_harness(
         account: FullKeypair::generate(),
         seed_colors,
         ref_surface: None,
+        seed_canvases,
         _tmpdir: tmpdir,
         setup_done: false,
     };
@@ -535,15 +654,23 @@ fn seed_embed_note(ndb: &Ndb, secret: &[u8; 32], d: &str, title: &str, summary: 
     ingest(ndb, builder, secret, &mut NoPublish).expect("seed embed longform");
 }
 
-/// Seed a canvas holding a single note-embed (Link) node whose url is `reference`
-/// (a `nostr:naddr…`). Placed clear of the vault sidebar (which appears once the
-/// referenced longform note folds in) so the whole embed is visible.
-fn seed_embed_canvas(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], reference: &str) {
-    let addr = canvas_address(author, CANVAS_ID);
+/// Seed a note-embed (Link) node whose url is `reference` (a `nostr:naddr…`) onto
+/// canvas `canvas_id`. Pass the app's active canvas so the embed lands on the
+/// foreground surface (the app mints its own canvas `d` on first run, so a
+/// hard-coded id would drop the node on a canvas the app isn't showing). Placed
+/// clear of the vault sidebar so the whole embed is visible.
+fn seed_embed_canvas(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    canvas_id: &str,
+    reference: &str,
+) {
+    let addr = canvas_address(author, canvas_id);
     let mut publisher = NoPublish;
     ingest(
         ndb,
-        build_canvas(CANVAS_ID, "Embed", &[], false),
+        build_canvas(canvas_id, "Embed", &[], false),
         secret,
         &mut publisher,
     );
@@ -567,7 +694,7 @@ fn seed_embed_canvas(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], reference: &
     let z = event::rank_between(None, None);
     ingest(
         ndb,
-        build_transform(CANVAS_ID, &addr, &id, &geo, &z, None),
+        build_transform(canvas_id, &addr, &id, &geo, &z, None),
         secret,
         &mut publisher,
     );
@@ -586,6 +713,14 @@ fn snapshot_notebook_note_embed() {
     let author = harness.state().account.pubkey;
     let ctx = harness.ctx.clone();
     let reference = event::longform_naddr(&author, "embed-00").expect("naddr");
+    // Seed the embed onto the app's active (auto-seeded) canvas, so it lands on the
+    // foreground surface rather than a hard-coded id the app isn't showing.
+    let canvas_id = harness
+        .state()
+        .notebook
+        .active_canvas()
+        .expect("the app auto-seeded a canvas during warmup")
+        .to_string();
     {
         let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
         seed_embed_note(
@@ -600,7 +735,7 @@ fn snapshot_notebook_note_embed() {
              - Note templates and daily notes\n\n\
              Revisit these at the **mid-point review**.",
         );
-        seed_embed_canvas(app_ctx.ndb, &author, &secret, &reference);
+        seed_embed_canvas(app_ctx.ndb, &author, &secret, &canvas_id, &reference);
     }
 
     // The longform note must fold in before the embed can resolve it.
@@ -1433,6 +1568,285 @@ fn delete_note_via_vault_context_menu() {
         assert!(Instant::now() < deadline, "the note was never deleted");
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// The titles of the account's live (non-deleted) canvases, read through the
+/// app's own ndb via the vault projection.
+fn canvas_titles(harness: &mut Harness<'static, NotebookTestState>) -> Vec<String> {
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    list_canvases(app_ctx.ndb, &txn, &pubkey)
+        .into_iter()
+        .map(|c| c.title)
+        .collect()
+}
+
+/// The title of the canvas keyed by `d`, read through the app's own ndb, or `None`
+/// if it's gone (deleted / never folded).
+fn canvas_title_of(harness: &mut Harness<'static, NotebookTestState>, d: &str) -> Option<String> {
+    let pubkey = harness.state().account.pubkey;
+    let ctx = harness.ctx.clone();
+    let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    load_canvas(app_ctx.ndb, &txn, &pubkey, d).map(|c| c.title)
+}
+
+/// Two deterministically-seeded canvases (fixed ids/titles, "Ideas" the newer so
+/// the app adopts it as the active surface) each carrying one distinctly-labelled
+/// node — the fixture the multi-canvas open/rename/delete tests share.
+fn two_seed_canvases() -> Vec<SeedCanvas> {
+    vec![
+        SeedCanvas {
+            d: "cv-ideas".to_string(),
+            title: "Ideas".to_string(),
+            created_at: 1_700_000_050,
+            nodes: vec![SeedNode {
+                text: "Idea one".to_string(),
+                x: 320,
+                y: 80,
+            }],
+        },
+        SeedCanvas {
+            d: "cv-roadmap".to_string(),
+            title: "Roadmap".to_string(),
+            created_at: 1_700_000_030,
+            nodes: vec![SeedNode {
+                text: "Ship v1".to_string(),
+                x: 320,
+                y: 80,
+            }],
+        },
+    ]
+}
+
+/// Pump frames until the vault sidebar has listed at least `expected` documents
+/// (notes + canvases), or panic after a deadline. The canvas half seeds
+/// asynchronously like the notes, so a mixed-vault snapshot taken too early would
+/// render a partial (nondeterministic) list.
+fn wait_for_vault_docs(harness: &mut Harness<'static, NotebookTestState>, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        let docs = harness.state().notebook.notes().len() + canvas_titles(harness).len();
+        if docs >= expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "only {docs} of {expected} vault docs folded in"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Clicking a canvas row in the vault must swap the *background surface* to that
+/// canvas — not open the editor. Seed two canvases (each with a distinct node),
+/// let the app adopt the newer ("Ideas") as active, click the other ("Roadmap")
+/// row, and assert the active canvas swapped and the rendered surface now shows
+/// Roadmap's node — with the editor still closed.
+#[test]
+fn open_canvas_swaps_active_surface() {
+    let mut harness =
+        build_harness_canvases(egui::Vec2::new(1000.0, 700.0), false, two_seed_canvases());
+
+    // Both canvases fold; the newer one ("Ideas") is the adopted active surface.
+    wait_for_vault_docs(&mut harness, 2);
+    wait_for_label(&mut harness, "Roadmap");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while harness.state().notebook.active_canvas() != Some("cv-ideas") {
+        harness.run_ok();
+        assert!(
+            Instant::now() < deadline,
+            "the app never adopted the newer canvas as active (got {:?})",
+            harness.state().notebook.active_canvas()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!harness.state().notebook.editor_is_open());
+
+    // Click the *other* canvas's vault row (by its title label — the same way the
+    // note tests open a note). It must swap the surface, not open the editor.
+    harness.get_by_label("Roadmap").simulate_click();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        let nb = &harness.state().notebook;
+        let swapped = nb.active_canvas() == Some("cv-roadmap")
+            && nb
+                .canvas()
+                .get_nodes()
+                .values()
+                .any(|n| matches!(n, jsoncanvas::Node::Text(t) if t.text() == "Ship v1"));
+        if swapped {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the canvas surface never swapped to Roadmap"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        !harness.state().notebook.editor_is_open(),
+        "opening a canvas must not open the longform editor"
+    );
+}
+
+/// End-to-end canvas rename from the sidebar: seed two canvases, right-click the
+/// top row (the newer "Ideas"), choose Rename, type into the inline field, commit
+/// with Enter, and verify the canvas document is superseded with the new title in
+/// place (the other canvas untouched).
+#[test]
+fn rename_canvas_via_vault_context_menu() {
+    let mut harness =
+        build_harness_canvases(egui::Vec2::new(1000.0, 700.0), false, two_seed_canvases());
+
+    // Both canvases folded into the list; render the sidebar. (Don't wait on the
+    // "Ideas" label — the toolbar shows the active canvas's title too, so it isn't
+    // unique.)
+    wait_for_vault_docs(&mut harness, 2);
+    harness.run_steps(3);
+
+    // Right-click a canvas row (both seeded docs are canvases) and choose Rename.
+    // Which row `(120,120)` lands on isn't pinned — like the note-rename test we
+    // don't depend on it, only that the clicked canvas is renamed in place.
+    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
+    harness.get_by_label("Rename").simulate_click();
+    harness.run_ok();
+
+    // Append " v2" to the seeded title and commit with Enter.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" v2");
+    harness.run_ok();
+    key_press(&mut harness, egui::Key::Enter);
+
+    // The rename supersedes that canvas doc in place: one canvas now ends " v2",
+    // both canvases still exist (the other untouched).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        let titles = canvas_titles(&mut harness);
+        if titles.len() == 2 && titles.iter().any(|t| t.ends_with(" v2")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the canvas was never renamed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // Exactly one seeded canvas was renamed; the other kept its title.
+    let ideas = canvas_title_of(&mut harness, "cv-ideas").expect("Ideas canvas");
+    let roadmap = canvas_title_of(&mut harness, "cv-roadmap").expect("Roadmap canvas");
+    assert!(
+        (ideas == "Ideas v2" && roadmap == "Roadmap")
+            || (ideas == "Ideas" && roadmap == "Roadmap v2"),
+        "exactly one canvas was renamed in place (Ideas={ideas:?}, Roadmap={roadmap:?})"
+    );
+}
+
+/// End-to-end canvas delete from the sidebar: seed two canvases, right-click the
+/// top row ("Ideas"), choose Delete, confirm the modal, and verify a tombstone
+/// drops that canvas from the vault while the sibling survives.
+#[test]
+fn delete_canvas_via_vault_context_menu() {
+    let mut harness =
+        build_harness_canvases(egui::Vec2::new(1000.0, 700.0), false, two_seed_canvases());
+
+    // Both canvases folded into the list; render the sidebar. (The toolbar echoes
+    // the active canvas's title, so "Ideas" isn't a unique label to wait on.)
+    wait_for_vault_docs(&mut harness, 2);
+    harness.run_steps(3);
+    assert_eq!(canvas_titles(&mut harness).len(), 2);
+
+    // Right-click a canvas row (both seeded docs are canvases; row position isn't
+    // pinned) and choose Delete, then confirm the modal — worded "Delete canvas?".
+    secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
+    harness.get_by_label("Delete").simulate_click();
+    harness.run_ok();
+    wait_for_label(&mut harness, "Delete canvas?");
+    harness.get_by_label("Delete").simulate_click();
+
+    // The tombstone folds in and drops the clicked canvas; exactly one survives,
+    // and it's one of the two seeded (not a re-seeded replacement).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if canvas_titles(&mut harness).len() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the canvas was never deleted (canvases: {:?})",
+            canvas_titles(&mut harness)
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let survivor = canvas_titles(&mut harness);
+    assert!(
+        survivor == ["Ideas"] || survivor == ["Roadmap"],
+        "one seeded canvas survives the delete (got {survivor:?})"
+    );
+}
+
+/// Seed notes and canvases and snapshot the mixed vault sidebar — note rows and
+/// canvas rows in one newest-edited list, each with its typed leading icon — for
+/// eyeballing the unified vault's visual design.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_vault_mixed() {
+    let mut harness =
+        build_harness_canvases(egui::Vec2::new(1000.0, 700.0), true, two_seed_canvases());
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let ctx = harness.ctx.clone();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        seed_vault(
+            app_ctx.ndb,
+            &secret,
+            &["Meeting notes — Q3 planning", "Reading list", "Groceries"],
+        );
+    }
+
+    // Two canvases + three notes.
+    wait_for_vault_docs(&mut harness, 5);
+    // The seeded canvases must have suppressed the wall-clock auto-seed.
+    assert_eq!(harness.state().notebook.active_canvas(), Some("cv-ideas"));
+    harness.run_steps(3);
+    harness.snapshot("notebook_vault_mixed");
+}
+
+/// Snapshot a canvas surface swap driven from the sidebar: seed two canvases, click
+/// the non-active "Roadmap" row, and snapshot the swapped-in surface (its node) with
+/// the sidebar still listing both canvases.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_canvas_open() {
+    let mut harness =
+        build_harness_canvases(egui::Vec2::new(1000.0, 700.0), true, two_seed_canvases());
+
+    wait_for_vault_docs(&mut harness, 2);
+    wait_for_label(&mut harness, "Roadmap");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while harness.state().notebook.active_canvas() != Some("cv-ideas") {
+        harness.run_ok();
+        assert!(Instant::now() < deadline, "active canvas never settled");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    harness.get_by_label("Roadmap").simulate_click();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while harness.state().notebook.active_canvas() != Some("cv-roadmap") {
+        harness.run_ok();
+        assert!(
+            Instant::now() < deadline,
+            "surface never swapped to Roadmap"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_steps(3);
+    harness.snapshot("notebook_canvas_open");
 }
 
 /// A click delivered as press+release within a single frame, so it registers

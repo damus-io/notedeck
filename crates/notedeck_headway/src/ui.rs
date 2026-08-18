@@ -919,6 +919,9 @@ fn cards_drop_zone(
                     // Subissues: parent this card under another card on the
                     // board, or detach it from its current parent.
                     card_parent_menu(ui, view, card, action);
+                    // Dependencies: block this card on another, or lift an
+                    // existing blocker.
+                    card_blocker_menu(ui, view, card, action);
                 });
 
                 // Hover affordance: cards are clickable, so highlight the border and
@@ -1077,6 +1080,63 @@ fn card_parent_menu(
     }
 }
 
+/// Context-menu dependency controls, mirroring [`card_parent_menu`]: an "Add
+/// blocker" submenu listing every card this one could be blocked on — filtered
+/// with [`store::would_block_cycle`], the same cycle guard the write path
+/// applies, so nothing offered can be refused — plus a "Remove blocker" entry
+/// per current edge. Draws nothing when neither applies (a lone card with no
+/// blockers).
+///
+/// Immediate-mode: candidates are walked as an iterator (probe, then draw)
+/// rather than collected, so an open menu allocates nothing per frame.
+fn card_blocker_menu(
+    ui: &mut egui::Ui,
+    view: &BoardView,
+    card: &CardView,
+    action: &mut Option<BoardAction>,
+) {
+    // A card can block on any other card that isn't already its blocker and
+    // wouldn't close a dependency loop — the exact rule `store::apply` enforces.
+    let candidates = || {
+        view.columns.iter().flat_map(|c| &c.cards).filter(|p| {
+            p.id != card.id
+                && !card.blocked_by.iter().any(|e| e.id == p.id)
+                && !crate::store::would_block_cycle(view, card.id, p.id)
+        })
+    };
+    let has_candidates = candidates().next().is_some();
+    if !has_candidates && card.blocked_by.is_empty() {
+        return;
+    }
+    ui.separator();
+    if has_candidates {
+        ui.menu_button("Add blocker", |ui| {
+            for blocker in candidates() {
+                if ui.button(menu_title(&blocker.title).as_ref()).clicked() {
+                    *action = Some(BoardAction::Block {
+                        card: card.id,
+                        on: blocker.id,
+                    });
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+    if !card.blocked_by.is_empty() {
+        ui.menu_button("Remove blocker", |ui| {
+            for edge in &card.blocked_by {
+                if ui.button(menu_title(&edge.title).as_ref()).clicked() {
+                    *action = Some(BoardAction::Unblock {
+                        card: card.id,
+                        on: edge.id,
+                    });
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+}
+
 /// Clamp a card title to a menu-friendly length so one long title doesn't
 /// stretch the whole context menu. Borrows when the title already fits, so the
 /// common case doesn't allocate.
@@ -1117,6 +1177,13 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
             // for copy-paste (see [`headway::wordid`]).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = SPACING_XS;
+                // A dim ⊘ flags a card held back by an unfinished blocker — the
+                // GUI mirror of the CLI listing's blocked prefix. It leads the
+                // row so a blocked card reads as such at a glance.
+                if card.is_blocked() {
+                    ui.label(egui::RichText::new("⊘").small().color(theme.text_muted))
+                        .on_hover_text("Blocked by unfinished work");
+                }
                 // The priority glyph leads the row, matching the CLI's board
                 // listing; unprioritised cards stay unadorned.
                 if card.priority != Priority::None {
@@ -1641,6 +1708,12 @@ fn card_detail_pane_ui(
                 on_board: find_card(view, s.id).is_some(),
             })
             .collect(),
+        blocked_by: card
+            .blocked_by
+            .iter()
+            .map(|e| detail_edge(view, e))
+            .collect(),
+        blocks: card.blocks.iter().map(|e| detail_edge(view, e)).collect(),
     };
 
     // Escape backs out to the board. Consume it so it doesn't also fall through
@@ -1787,6 +1860,37 @@ struct DetailCtx {
     parent: Option<DetailParent>,
     /// The card's subissues, precomputed for the checklist rows.
     subissues: Vec<DetailSubissue>,
+    /// Cards this one is *blocked by*, precomputed for the "Blocked by" section
+    /// (editable: each row unblocks, the context menu adds).
+    blocked_by: Vec<DetailEdge>,
+    /// The reverse edges — cards this one *blocks* — for the read-only "Blocks"
+    /// section.
+    blocks: Vec<DetailEdge>,
+}
+
+/// One row of the detail sheet's dependency lists, precomputed from a card's
+/// [`EdgeRef`]. `on_board` records whether the other card is placed here, so the
+/// row can be a click-to-open link (like a subissue row) rather than an inert
+/// label for a cross-board edge.
+struct DetailEdge {
+    id: NoteId,
+    title: String,
+    /// The referenced card is cleared (done/archived), so this edge no longer
+    /// holds work back — rendered struck through and dimmed.
+    done: bool,
+    /// Whether the other card is on this board, i.e. clickable to open.
+    on_board: bool,
+}
+
+/// Resolve one dependency [`EdgeRef`] into a [`DetailEdge`], marking whether the
+/// referenced card is placed on this board (so its row can open it).
+fn detail_edge(view: &BoardView, edge: &event::EdgeRef) -> DetailEdge {
+    DetailEdge {
+        id: edge.id,
+        title: edge.title.clone(),
+        done: edge.done,
+        on_board: find_card(view, edge.id).is_some(),
+    }
 }
 
 /// The open card's parent, resolved for the detail breadcrumb. `title` is
@@ -1851,6 +1955,8 @@ enum DetailOutcome {
     },
     /// Clear this card's parent relation.
     DetachParent,
+    /// Lift a blocker: remove the `card`-blocked-by-`on` dependency edge.
+    Unblock(NoteId),
 }
 
 /// The dimmed full-screen backdrop behind the sheet. Returns true if it was
@@ -1933,6 +2039,8 @@ fn detail_body_ui(
 
     ui.add_space(SPACING_LG);
     detail_subissues_section_ui(ui, theme, ctx, state, outcome);
+
+    detail_dependencies_section_ui(ui, theme, ctx, outcome);
 }
 
 /// The card's properties — status, labels, dates and the archive/delete
@@ -2441,6 +2549,102 @@ fn commit_subissue_drop(
         after: gap.after,
         before: gap.before,
     };
+}
+
+/// The card's dependency edges, mirroring the subissue section: a "Blocked by"
+/// list of the cards holding this one back (each row unblockable with a trailing
+/// ✕, the way the parent breadcrumb detaches) and a read-only "Blocks" list of
+/// the cards it holds back. Both are omitted when empty, so a card with no
+/// dependencies shows nothing. Adding a blocker lives in the board card's
+/// context menu ([`card_blocker_menu`]), like re-parenting.
+fn detail_dependencies_section_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    outcome: &mut DetailOutcome,
+) {
+    if !ctx.blocked_by.is_empty() {
+        ui.add_space(SPACING_LG);
+        ui.horizontal(|ui| {
+            detail_heading(ui, theme, "Blocked by");
+            // A dim ⊘ next to the heading when at least one blocker is still
+            // open — the same signal the board listing carries.
+            if ctx.blocked_by.iter().any(|e| !e.done) {
+                ui.label(egui::RichText::new("⊘").small().color(theme.text_muted))
+                    .on_hover_text("Held back by an unfinished blocker");
+            }
+        });
+        ui.add_space(SPACING_XS);
+        for edge in &ctx.blocked_by {
+            detail_edge_row_ui(ui, theme, edge, true, outcome);
+        }
+    }
+
+    if !ctx.blocks.is_empty() {
+        ui.add_space(SPACING_LG);
+        detail_heading(ui, theme, "Blocks");
+        ui.add_space(SPACING_XS);
+        for edge in &ctx.blocks {
+            detail_edge_row_ui(ui, theme, edge, false, outcome);
+        }
+    }
+}
+
+/// One dependency row: a cleared/open status circle, the other card's title (a
+/// link that opens it when it's on this board, struck through once the edge is
+/// cleared), its muted word-id, and — when `unblockable` (the "Blocked by" side)
+/// — a trailing ✕ that lifts the blocker. The reverse "Blocks" side is read-only
+/// (the edge is owned by the other card's blocker set), so it passes
+/// `unblockable = false`.
+fn detail_edge_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    edge: &DetailEdge,
+    unblockable: bool,
+    outcome: &mut DetailOutcome,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+        // A cleared edge no longer blocks: a done disc; otherwise a plain ring.
+        let icon = if edge.done {
+            StatusIcon::Done
+        } else {
+            StatusIcon::Todo
+        };
+        status_icon_ui(ui, theme, icon, 14.0);
+        // A cleared blocker reads as struck-through and muted, so an open one is
+        // the eye's anchor (the CLI's `[x]`/`[ ]` distinction).
+        let title = if edge.done {
+            egui::RichText::new(&edge.title)
+                .strikethrough()
+                .color(theme.text_muted)
+        } else {
+            egui::RichText::new(&edge.title).color(theme.text_primary)
+        };
+        if edge.on_board {
+            if ui
+                .add(egui::Link::new(title))
+                .on_hover_text("Open card")
+                .clicked()
+            {
+                *outcome = DetailOutcome::OpenCard(edge.id);
+            }
+        } else {
+            ui.label(title);
+        }
+        ui.label(
+            egui::RichText::new(headway::wordid::encode(edge.id.bytes()))
+                .small()
+                .color(theme.text_muted.gamma_multiply(0.6)),
+        );
+        if unblockable {
+            let x = egui::Button::new(egui::RichText::new("✕").small().color(theme.text_muted))
+                .frame(false);
+            if ui.add(x).on_hover_text("Remove blocker").clicked() {
+                *outcome = DetailOutcome::Unblock(edge.id);
+            }
+        }
+    });
 }
 
 /// Labels section: removable Linear-style chips (a colored dot in a neutral
@@ -3062,6 +3266,12 @@ fn resolve_detail_outcome(
             *action = Some(BoardAction::SetParent {
                 card: ctx.card_id,
                 parent: None,
+            });
+        }
+        DetailOutcome::Unblock(on) => {
+            *action = Some(BoardAction::Unblock {
+                card: ctx.card_id,
+                on,
             });
         }
     }

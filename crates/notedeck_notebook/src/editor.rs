@@ -9,7 +9,7 @@
 //! how the canvas returns a single [`crate::UiIntent`] for the caller to apply, and
 //! lets the editor be driven headlessly in tests.
 
-use crate::event::LongformNote;
+use crate::event::{CanvasView, LongformNote, VaultDocKind};
 use egui::{Layout, RichText, ScrollArea, TextEdit};
 use enostr::Pubkey;
 use notedeck::{AppContext, ColorTheme, Localization};
@@ -353,22 +353,34 @@ fn preview_body_ui(ui: &mut egui::Ui, ctx: &mut AppContext, content: &str) {
     notedeck_ui::markdown::render_markdown_with_refs(ui, &mut note_ctx, &txn, content);
 }
 
-/// A vault row ready to render: a note's display strings, precomputed once when
-/// the vault list is rebuilt (see [`vault_rows`]) rather than per frame in
+/// A vault row ready to render: a document's display strings, precomputed once
+/// when the vault list is rebuilt (see [`vault_rows`]) rather than per frame in
 /// [`vault_ui`] — the render loop must not allocate or format (CLAUDE.md rule 18).
-/// The full [`LongformNote`] stays in the sync cache; the app resolves it by
-/// [`d`](Self::d) only when a row is actually opened/renamed/deleted.
+/// A row is a **typed** projection of a vault document: a longform note or a
+/// canvas ([`kind`](Self::kind)), which every [`VaultAction`] dispatches on. The
+/// full document stays in its store (the note sync / the canvas cache); the app
+/// resolves it by [`d`](Self::d) only when a row is actually
+/// opened/renamed/deleted.
 pub(crate) struct VaultRow {
-    /// The note's author, half of the `(author, d)` coordinate a drag carries so
-    /// the drop can build the note's `nostr:naddr` (see [`VaultDrag`]).
+    /// Note vs canvas — the document type, dispatched on by open/rename/delete and
+    /// shown as a distinct leading icon. Only note rows are drag-to-canvas
+    /// (a canvas isn't a note-embed; see [`VaultDrag`]).
+    pub kind: VaultDocKind,
+    /// The document's author, half of the `(author, d)` coordinate a note drag
+    /// carries so the drop can build its `nostr:naddr` (see [`VaultDrag`]).
     pub author: Pubkey,
-    /// The note's stable addressable `d`, the identity carried in every
-    /// [`VaultAction`] so the app can look the full note back up.
+    /// The document's stable addressable `d`, the identity carried in every
+    /// [`VaultAction`] so the app can look the full document back up.
     pub d: String,
-    /// The note title (already trimmed of surrounding whitespace, but possibly
+    /// The document title (already trimmed of surrounding whitespace, but possibly
     /// empty — the row renders "Untitled" for a blank title).
     pub title: String,
-    /// The muted "edited …" subtitle, e.g. "edited 2h ago" (empty if unavailable).
+    /// `created_at` of the winning revision, used only to sort the mixed list
+    /// newest-edited first (the same key [`crate::event::list_vault`] uses).
+    pub edited_at: u64,
+    /// The muted "edited …" subtitle, e.g. "edited 2h ago". Empty for a canvas
+    /// row (a canvas's document `created_at` doesn't move when its nodes change,
+    /// so an "edited" time would mislead — canvas rows show only their title).
     pub subtitle: String,
 }
 
@@ -382,21 +394,51 @@ pub(crate) struct VaultDrag {
     pub d: String,
 }
 
-/// Project the sync cache's notes into renderable [`VaultRow`]s, formatting each
-/// row's relative "edited …" subtitle once. Called on the vault relist path (not
-/// per frame), so the localized time string and its allocation stay out of the
-/// render loop.
-pub(crate) fn vault_rows(i18n: &mut Localization, notes: &[LongformNote]) -> Vec<VaultRow> {
+/// Project both vault stores — the account's longform `notes` and its `canvases`
+/// — into one typed, newest-edited-first list of renderable [`VaultRow`]s,
+/// formatting each note's relative "edited …" subtitle once. Called on the vault
+/// relist path (not per frame), so the localized time string and its allocation
+/// stay out of the render loop (CLAUDE.md rule 18).
+///
+/// The inputs are already-folded slices — the note sync's list and the canvas
+/// cache's finalized views — so this deliberately does *not* go through
+/// [`crate::event::list_vault`] (which re-folds the canvas history every call and
+/// would defeat the canvas cache's incremental delta-fold on the per-edit path).
+/// It applies the same `(edited_at desc, title, d)` tiebreak `list_vault` uses, so
+/// the app and the CLI order a mixed vault identically.
+pub(crate) fn vault_rows(
+    i18n: &mut Localization,
+    notes: &[LongformNote],
+    canvases: &[CanvasView],
+) -> Vec<VaultRow> {
     let now = notedeck::unix_time_secs();
-    notes
+    let mut rows: Vec<VaultRow> = notes
         .iter()
         .map(|note| VaultRow {
+            kind: VaultDocKind::Note,
             author: Pubkey::new(note.author),
             d: note.d.clone(),
             title: note.title.trim().to_owned(),
+            edited_at: note.created_at,
             subtitle: edited_subtitle(i18n, note.created_at, now),
         })
-        .collect()
+        .collect();
+    // Canvas rows carry no subtitle (see [`VaultRow::subtitle`]).
+    rows.extend(canvases.iter().map(|canvas| VaultRow {
+        kind: VaultDocKind::Canvas,
+        author: Pubkey::new(canvas.author),
+        d: canvas.id.clone(),
+        title: canvas.title.trim().to_owned(),
+        edited_at: canvas.created_at,
+        subtitle: String::new(),
+    }));
+    rows.sort_by(|a, b| {
+        b.edited_at
+            .cmp(&a.edited_at)
+            .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.d.cmp(&b.d))
+    });
+    rows
 }
 
 /// The muted "edited …" subtitle for a vault row, relative to `now`. A note's
@@ -429,17 +471,21 @@ pub(crate) enum VaultState {
     Idle,
     /// A row is being inline-renamed.
     Renaming(VaultRename),
-    /// A row's delete is awaiting modal confirmation; holds the note's `d`.
-    ConfirmingDelete(String),
+    /// A row's delete is awaiting modal confirmation; holds the document's kind
+    /// (to word the prompt and dispatch the delete) and its `d`.
+    ConfirmingDelete { kind: VaultDocKind, d: String },
 }
 
 /// An in-progress inline rename of a vault row. While the vault is in
-/// [`VaultState::Renaming`], the row whose note matches [`d`](Self::d) renders an
-/// editable title field in place of its label; every other row stays plain.
+/// [`VaultState::Renaming`], the row whose document matches [`d`](Self::d) renders
+/// an editable title field in place of its label; every other row stays plain.
 pub(crate) struct VaultRename {
-    /// The `d` of the note being renamed (its stable addressable id).
+    /// Whether the document being renamed is a note or a canvas — the committed
+    /// [`VaultAction::Rename`] dispatches on it (note edit vs canvas rename).
+    pub kind: VaultDocKind,
+    /// The `d` of the document being renamed (its stable addressable id).
     pub d: String,
-    /// Editable title buffer, seeded from the note's current title.
+    /// Editable title buffer, seeded from the document's current title.
     pub buffer: String,
     /// True only until the field has grabbed keyboard focus (its first frame).
     pub focus: bool,
@@ -450,12 +496,18 @@ pub(crate) struct VaultRename {
 /// rename, opening the delete prompt) mutate the passed-in [`VaultState`] and
 /// yield nothing; only a terminal action surfaces here.
 pub(crate) enum VaultAction {
-    /// Open note `d` in the editor.
-    Open { d: String },
-    /// A rename committed: persist `title` as note `d`'s new title.
-    Rename { d: String, title: String },
-    /// A delete was confirmed: tombstone note `d`.
-    Delete { d: String },
+    /// Open document `d`: a note opens in the editor; a canvas swaps the active
+    /// background surface. Dispatched on [`kind`](VaultDocKind).
+    Open { kind: VaultDocKind, d: String },
+    /// A rename committed: persist `title` as document `d`'s new title (a note
+    /// title-only edit, or a canvas [`Rename`](crate::store::CanvasAction::Rename)).
+    Rename {
+        kind: VaultDocKind,
+        d: String,
+        title: String,
+    },
+    /// A delete was confirmed: tombstone document `d` (a note or canvas tombstone).
+    Delete { kind: VaultDocKind, d: String },
 }
 
 /// The outcome of one frame of an inline rename field.
@@ -469,12 +521,12 @@ enum RenameOutcome {
     Cancel,
 }
 
-/// Render the vault list — one styled row per note (newest-edited first) — plus
-/// any in-progress rename field or delete-confirmation modal, and return the
-/// single terminal [`VaultAction`] the user triggered this frame. All transient
-/// interaction lives in `state`; the rows are pre-projected ([`vault_rows`]), so
-/// the function reads a borrowed slice and only allocates on a discrete user
-/// action — safe to call every frame from the canvas-mode sidebar.
+/// Render the vault list — one styled row per document, notes and canvases mixed
+/// newest-edited first (see [`vault_rows`]) — plus any in-progress rename field or
+/// delete-confirmation modal, and return the single terminal [`VaultAction`] the
+/// user triggered this frame. All transient interaction lives in `state`; the rows
+/// are pre-projected, so the function reads a borrowed slice and only allocates on
+/// a discrete user action — safe to call every frame from the canvas-mode sidebar.
 pub(crate) fn vault_ui(
     rows: &[VaultRow],
     state: &mut VaultState,
@@ -484,11 +536,13 @@ pub(crate) fn vault_ui(
     let theme = notedeck::ColorTheme::current(ui.ctx());
 
     // A muted, small-caps section header, left-aligned with the row titles below.
+    // One mixed listing (notes + canvases), so a single "VAULT" header rather than
+    // per-type sections (diet-junior-embody §4).
     ui.add_space(SPACING_SM);
     ui.horizontal(|ui| {
         ui.add_space(SPACING_SM);
         ui.label(
-            egui::RichText::new("NOTES")
+            egui::RichText::new("VAULT")
                 .small()
                 .strong()
                 .color(theme.text_muted),
@@ -499,7 +553,7 @@ pub(crate) fn vault_ui(
     if rows.is_empty() {
         ui.add_space(SPACING_SM);
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new("No notes yet").color(theme.text_muted));
+            ui.label(egui::RichText::new("Nothing here yet").color(theme.text_muted));
         });
         return None;
     }
@@ -543,18 +597,25 @@ fn renaming_row_ui(
     };
     let outcome = rename_row_ui(ui, theme, active);
     let committed = matches!(outcome, RenameOutcome::Commit)
-        .then(|| (active.d.clone(), active.buffer.trim().to_owned()))
-        .filter(|(_, title)| !title.is_empty());
+        .then(|| {
+            (
+                active.kind,
+                active.d.clone(),
+                active.buffer.trim().to_owned(),
+            )
+        })
+        .filter(|(_, _, title)| !title.is_empty());
     if !matches!(outcome, RenameOutcome::Pending) {
         *state = VaultState::Idle;
     }
-    committed.map(|(d, title)| VaultAction::Rename { d, title })
+    committed.map(|(kind, d, title)| VaultAction::Rename { kind, d, title })
 }
 
 /// Render a plain, clickable vault row plus its Rename/Delete context menu.
-/// Clicking opens the note; Rename arms the inline field for the next frame;
-/// Delete opens the confirmation modal. Both menu entries transition `state`;
-/// only a click (Open) returns an action here.
+/// Clicking opens the document (note editor, or canvas surface swap — dispatched
+/// on [`VaultRow::kind`]); Rename arms the inline field for the next frame; Delete
+/// opens the confirmation modal. Both menu entries transition `state`; only a
+/// click (Open) returns an action here.
 fn note_menu_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -566,12 +627,13 @@ fn note_menu_row_ui(
     } else {
         &row.title
     };
-    let resp = note_row_ui(ui, theme, label, &row.subtitle);
+    let resp = note_row_ui(ui, theme, row.kind, label, &row.subtitle);
 
-    // Dragging a row onto the canvas drops a note-embed node referencing it: set
-    // the drag payload and trail a document chip from the cursor. Only the
-    // actively-dragged row clones its `d`, never the whole list per frame.
-    if resp.dragged() {
+    // Dragging a *note* row onto the canvas drops a note-embed node referencing it:
+    // set the drag payload and trail a document chip from the cursor. Only the
+    // actively-dragged row clones its `d`, never the whole list per frame. A canvas
+    // row isn't a note-embed (canvas embeds are a later item), so it never drags.
+    if row.kind == VaultDocKind::Note && resp.dragged() {
         resp.dnd_set_drag_payload(VaultDrag {
             author: row.author,
             d: row.d.clone(),
@@ -579,13 +641,15 @@ fn note_menu_row_ui(
         drag_chip_ui(ui, theme, label);
     }
 
-    let action = resp
-        .clicked()
-        .then(|| VaultAction::Open { d: row.d.clone() });
+    let action = resp.clicked().then(|| VaultAction::Open {
+        kind: row.kind,
+        d: row.d.clone(),
+    });
     // Right-click (or long-press on touch) mirrors the canvas node's menu.
     notedeck_ui::context_menu::context_menu(&resp, |ui| {
         if ui.button("Rename").clicked() {
             *state = VaultState::Renaming(VaultRename {
+                kind: row.kind,
                 d: row.d.clone(),
                 buffer: row.title.clone(),
                 focus: true,
@@ -593,7 +657,10 @@ fn note_menu_row_ui(
             ui.close_menu();
         }
         if ui.button("Delete").clicked() {
-            *state = VaultState::ConfirmingDelete(row.d.clone());
+            *state = VaultState::ConfirmingDelete {
+                kind: row.kind,
+                d: row.d.clone(),
+            };
             ui.close_menu();
         }
     });
@@ -608,24 +675,24 @@ fn confirm_delete_ui(
     rows: &[VaultRow],
     state: &mut VaultState,
 ) -> Option<VaultAction> {
-    let VaultState::ConfirmingDelete(d) = state else {
+    let VaultState::ConfirmingDelete { kind, d } = state else {
         return None;
     };
-    // The note may have vanished (a concurrent sync) — abandon the prompt if so.
-    let Some(row) = rows.iter().find(|r| &r.d == d) else {
+    let (kind, d) = (*kind, d.clone());
+    // The document may have vanished (a concurrent sync) — abandon the prompt if so.
+    let Some(row) = rows.iter().find(|r| r.d == d) else {
         *state = VaultState::Idle;
         return None;
     };
-    match note_delete_confirm_ui(ui, &row.title) {
+    match note_delete_confirm_ui(ui, kind, &row.title) {
         DeleteConfirm::Pending => None,
         DeleteConfirm::Cancelled => {
             *state = VaultState::Idle;
             None
         }
         DeleteConfirm::Confirmed => {
-            let d = d.clone();
             *state = VaultState::Idle;
-            Some(VaultAction::Delete { d })
+            Some(VaultAction::Delete { kind, d })
         }
     }
 }
@@ -672,19 +739,24 @@ enum DeleteConfirm {
     Cancelled,
 }
 
-/// A centered modal confirming deletion of the note titled `title`, returning the
-/// user's choice this frame. Mirrors the canvas node's delete prompt
-/// ([`crate::ui`]); a backdrop click or Esc counts as cancelling.
-fn note_delete_confirm_ui(ui: &egui::Ui, title: &str) -> DeleteConfirm {
+/// A centered modal confirming deletion of the document titled `title`, worded for
+/// its `kind` (note vs canvas), returning the user's choice this frame. Mirrors the
+/// canvas node's delete prompt ([`crate::ui`]); a backdrop click or Esc counts as
+/// cancelling.
+fn note_delete_confirm_ui(ui: &egui::Ui, kind: VaultDocKind, title: &str) -> DeleteConfirm {
     use notedeck::tokens::{SPACING_LG, SPACING_SM};
+    let (heading, noun) = match kind {
+        VaultDocKind::Note => ("Delete note?", "notes"),
+        VaultDocKind::Canvas => ("Delete canvas?", "canvases"),
+    };
     let shown = title.trim();
     let shown = if shown.is_empty() { "Untitled" } else { shown };
     let modal =
         egui::Modal::new(egui::Id::new("notebook_note_delete_confirm")).show(ui.ctx(), |ui| {
             ui.set_max_width(320.0);
-            ui.heading("Delete note?");
+            ui.heading(heading);
             ui.add_space(SPACING_SM);
-            ui.label(format!("“{shown}” will be removed from your notes."));
+            ui.label(format!("“{shown}” will be removed from your {noun}."));
             ui.add_space(SPACING_LG);
             ui.horizontal(|ui| {
                 let delete = egui::Button::new(
@@ -732,12 +804,14 @@ fn drag_chip_ui(ui: &egui::Ui, theme: &ColorTheme, title: &str) {
 }
 
 /// One vault row: a full-width, left-aligned, rounded surface that highlights on
-/// hover, with a leading document icon, the title on top and a muted `subtitle`
-/// beneath (omitted when empty). Both lines elide to a single line. Painted with
-/// the semantic theme so it reads as part of the app rather than a bare label.
+/// hover, with a leading icon typed by `kind` (a document glyph for a note, a
+/// canvas glyph for a canvas), the title on top and a muted `subtitle` beneath
+/// (omitted when empty). Both lines elide to a single line. Painted with the
+/// semantic theme so it reads as part of the app rather than a bare label.
 fn note_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    kind: VaultDocKind,
     title: &str,
     subtitle: &str,
 ) -> egui::Response {
@@ -769,7 +843,10 @@ fn note_row_ui(
     // titles stay aligned regardless of whether a row wraps to two lines.
     let inner = rect.shrink2(pad);
     let icon_center = egui::pos2(inner.left() + ICON_SM / 2.0, inner.top() + title_h / 2.0);
-    document_icon(ui.painter(), icon_center, ICON_SM, theme.text_muted);
+    match kind {
+        VaultDocKind::Note => document_icon(ui.painter(), icon_center, ICON_SM, theme.text_muted),
+        VaultDocKind::Canvas => canvas_icon(ui.painter(), icon_center, ICON_SM, theme.text_muted),
+    }
     let text_rect = egui::Rect::from_min_max(
         egui::pos2(inner.left() + ICON_SM + SPACING_SM, inner.top()),
         inner.max,
@@ -830,6 +907,48 @@ pub(crate) fn document_icon(
     }
 }
 
+/// A small monochrome canvas glyph — a rounded frame holding two little connected
+/// node boxes — for a canvas vault row's leading gutter, distinguishing it at a
+/// glance from a note's [`document_icon`]. Painter-drawn (like `document_icon`) so
+/// it inherits the row's muted theme color and scales with `size`.
+pub(crate) fn canvas_icon(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    size: f32,
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new((size * 0.08).max(1.0), color);
+    let frame = egui::Rect::from_center_size(center, egui::vec2(size * 0.9, size * 0.74));
+    painter.rect_stroke(
+        frame,
+        egui::CornerRadius::same((size * 0.12) as u8),
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    // Two small node boxes on a diagonal, joined by a connector — the canvas motif.
+    let box_size = egui::vec2(size * 0.26, size * 0.2);
+    let a = egui::Rect::from_min_size(
+        egui::pos2(frame.left() + size * 0.12, frame.top() + size * 0.1),
+        box_size,
+    );
+    let b = egui::Rect::from_min_size(
+        egui::pos2(
+            frame.right() - size * 0.12 - box_size.x,
+            frame.bottom() - size * 0.1 - box_size.y,
+        ),
+        box_size,
+    );
+    painter.line_segment([a.center(), b.center()], stroke);
+    for node in [a, b] {
+        painter.rect_stroke(
+            node,
+            egui::CornerRadius::same((size * 0.05) as u8),
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -885,5 +1004,79 @@ mod tests {
         assert!(!editor.dirty());
         editor.title = "Titled".to_string();
         assert!(editor.dirty(), "a title change alone is unsaved");
+    }
+
+    fn note(d: &str, title: &str, created_at: u64) -> LongformNote {
+        LongformNote {
+            author: [7u8; 32],
+            d: d.to_string(),
+            title: title.to_string(),
+            summary: None,
+            content: String::new(),
+            published_at: None,
+            hashtags: vec![],
+            created_at,
+            deleted: false,
+        }
+    }
+
+    fn canvas(id: &str, title: &str, created_at: u64) -> CanvasView {
+        CanvasView {
+            id: id.to_string(),
+            author: [9u8; 32],
+            title: title.to_string(),
+            members: vec![],
+            open: false,
+            created_at,
+            nodes: vec![],
+            edges: vec![],
+            pending: vec![],
+        }
+    }
+
+    /// The typed vault-row projection: notes and canvases merge into one list,
+    /// each row typed by kind; the list is newest-edited first with the
+    /// `(edited_at desc, title, d)` tiebreak; a note carries an "edited …"
+    /// subtitle while a canvas carries none; a blank title is left empty (the row
+    /// renders its own "Untitled").
+    #[test]
+    fn vault_rows_projects_typed_sorted_rows() {
+        let mut i18n = Localization::no_bidi();
+        let notes = [note("n1", "Zeta note", 100), note("n2", "Alpha note", 300)];
+        // Two canvases tie on edited_at (200) so the title tiebreak orders them.
+        let canvases = [
+            canvas("c1", "Beta canvas", 200),
+            canvas("c2", "Aardvark canvas", 200),
+            canvas("c3", "  ", 50),
+        ];
+
+        let rows = vault_rows(&mut i18n, &notes, &canvases);
+
+        // Newest-edited first, ties broken by title then d.
+        let order: Vec<(&str, VaultDocKind)> =
+            rows.iter().map(|r| (r.d.as_str(), r.kind)).collect();
+        assert_eq!(
+            order,
+            vec![
+                ("n2", VaultDocKind::Note),   // 300
+                ("c2", VaultDocKind::Canvas), // 200, "Aardvark…" < "Beta…"
+                ("c1", VaultDocKind::Canvas), // 200
+                ("n1", VaultDocKind::Note),   // 100
+                ("c3", VaultDocKind::Canvas), // 50
+            ]
+        );
+
+        // A note row carries an "edited …" subtitle; a canvas row carries none.
+        let n2 = rows.iter().find(|r| r.d == "n2").unwrap();
+        assert!(
+            n2.subtitle.starts_with("edited "),
+            "note has edited subtitle"
+        );
+        let c1 = rows.iter().find(|r| r.d == "c1").unwrap();
+        assert!(c1.subtitle.is_empty(), "canvas has no subtitle");
+
+        // A blank canvas title is left empty (the row renders "Untitled" itself).
+        let c3 = rows.iter().find(|r| r.d == "c3").unwrap();
+        assert_eq!(c3.title, "", "a whitespace-only title trims to empty");
     }
 }

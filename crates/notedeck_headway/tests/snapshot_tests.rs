@@ -337,6 +337,23 @@ fn snapshot_headway_subissue_detail() {
     harness.snapshot("headway_subissue_detail");
 }
 
+/// A blocked card's detail shows its dependency edges: the demo seed blocks the
+/// sync card on the event-model card (open) and the scaffold card (in Done, so a
+/// *cleared*, struck-through blocker), so its detail carries a "Blocked by" list
+/// spanning both states plus a "Blocks" list (it holds back the card-detail
+/// card). The board listing behind it marks blocked cards with a dim ⊘.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_blocked_detail() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    harness
+        .get_by_label("Sync cards across relays")
+        .simulate_click();
+    harness.run_steps(3);
+    harness.snapshot("headway_blocked_detail");
+}
+
 /// The id of the demo card titled `title`. Folded fresh off the db rather than
 /// hard-coded: the ids are stable (fixed key + frozen clock), but deriving them
 /// keeps the test honest if the demo fixture changes.

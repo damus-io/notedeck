@@ -30,13 +30,12 @@ use crate::event::{
     rank_between,
 };
 
-/// A canvas `d` used as the CLI's provisional `--canvas` default and as a fixed
-/// fixture id in tests. The egui app no longer depends on it — it tracks an active
-/// canvas ([`crate::Notebook::active_canvas`]) and mints a fresh `d` per canvas via
-/// [`create_canvas`]. The CLI's dependence on it goes away once `show` becomes
-/// vault-aware (`--canvas` resolved through the unified ref resolver); until then
-/// it stays a valid opaque id (existing accounts already hold this canvas, so no
-/// migration is needed).
+/// A fixed canvas `d` used only as a fixture id in tests. Neither the egui app nor
+/// the CLI depends on it in production anymore: the app tracks an active canvas
+/// ([`crate::Notebook::active_canvas`]) and mints a fresh `d` per canvas via
+/// [`create_canvas`], and the CLI resolves `--canvas <ref|d>` through the unified
+/// ref resolver (no default). It stays a valid opaque `d`, so existing accounts
+/// that already hold this canvas need no migration.
 pub const CANVAS_ID: &str = "notebook";
 
 /// A UI intent to mutate the canvas. Collected during rendering and applied

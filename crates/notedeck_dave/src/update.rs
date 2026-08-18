@@ -3,6 +3,7 @@
 //! These are standalone functions with explicit inputs to reduce the complexity
 //! of the main Dave struct and make the code more testable and reusable.
 
+use crate::agent_status::AgentStatus;
 use crate::backend::{AiBackend, BackendType, Model};
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
@@ -23,59 +24,127 @@ pub const INTERRUPT_CONFIRM_TIMEOUT_SECS: f32 = 1.5;
 // Interrupt Handling
 // =============================================================================
 
+/// Info needed to publish an interrupt command to a remote host.
+///
+/// A remote session's turn runs on the host, so the client can't abort it
+/// locally (its [`RemoteOnlyBackend`](crate::backend::RemoteOnlyBackend) interrupt
+/// is a no-op). Instead the interrupt is published as a kind-1988 command the
+/// host applies to its local backend — the caller turns this into that event.
+pub struct InterruptPublish {
+    /// The session's live-event `d`-tag (its `event_session_id`).
+    pub session_id: String,
+}
+
+/// The result of an interrupt request: the new double-Escape confirmation state
+/// plus, when the interrupt fired against a remote session, the command to
+/// publish to its host.
+pub struct InterruptOutcome {
+    pub pending_since: Option<Instant>,
+    pub publish: Option<InterruptPublish>,
+}
+
+/// Whether the active session has an in-flight turn that Escape can interrupt.
+///
+/// Local sessions stream tokens into `incoming_tokens`; remote sessions have no
+/// local stream, so their liveness comes from the host's status (`Working`).
+fn session_is_interruptible(session: &ChatSession) -> bool {
+    if session.is_remote() {
+        session.status() == AgentStatus::Working
+    } else {
+        session.incoming_tokens.is_some()
+    }
+}
+
+/// The interrupt command to publish for a remote session, if it is one.
+fn remote_interrupt_publish(session: &ChatSession) -> Option<InterruptPublish> {
+    if !session.is_remote() {
+        return None;
+    }
+    let session_id = session.agentic.as_ref()?.event_session_id().to_string();
+    Some(InterruptPublish { session_id })
+}
+
 /// Handle an interrupt request - requires double-Escape to confirm.
-/// Returns the new pending_since state.
+///
+/// Returns the new confirmation state and, for a confirmed interrupt on a remote
+/// session, the [`InterruptPublish`] the caller must forward to the host. A local
+/// session is interrupted directly on its backend and yields no publish.
 pub fn handle_interrupt_request(
     session_manager: &SessionManager,
     backend: &dyn AiBackend,
     pending_since: Option<Instant>,
     ctx: &egui::Context,
-) -> Option<Instant> {
+) -> InterruptOutcome {
     // Only allow interrupt if there's an active AI operation
     let has_active_operation = session_manager
         .get_active()
-        .map(|s| s.incoming_tokens.is_some())
+        .map(session_is_interruptible)
         .unwrap_or(false);
 
     if !has_active_operation {
-        return None;
+        return InterruptOutcome {
+            pending_since: None,
+            publish: None,
+        };
     }
 
     let now = Instant::now();
 
-    if let Some(pending) = pending_since {
-        if now.duration_since(pending).as_secs_f32() < INTERRUPT_CONFIRM_TIMEOUT_SECS {
-            // Second Escape within timeout - confirm interrupt
-            if let Some(session) = session_manager.get_active() {
-                let session_id = format!("dave-session-{}", session.id);
-                backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
-            }
-            None
-        } else {
-            // Timeout expired, treat as new first press
-            Some(now)
+    let Some(pending) = pending_since else {
+        // First Escape press — arm the confirmation window.
+        return InterruptOutcome {
+            pending_since: Some(now),
+            publish: None,
+        };
+    };
+
+    if now.duration_since(pending).as_secs_f32() >= INTERRUPT_CONFIRM_TIMEOUT_SECS {
+        // Timeout expired, treat as new first press.
+        return InterruptOutcome {
+            pending_since: Some(now),
+            publish: None,
+        };
+    }
+
+    // Second Escape within timeout - confirm interrupt.
+    let publish = session_manager.get_active().and_then(|session| {
+        if let Some(publish) = remote_interrupt_publish(session) {
+            return Some(publish);
         }
-    } else {
-        // First Escape press
-        Some(now)
+        let session_id = format!("dave-session-{}", session.id);
+        backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
+        None
+    });
+
+    InterruptOutcome {
+        pending_since: None,
+        publish,
     }
 }
 
 /// Execute the actual interrupt on the active session.
+///
+/// For a remote session this returns the [`InterruptPublish`] the caller forwards
+/// to the host (there is nothing local to abort); for a local session it aborts
+/// the backend turn directly and clears the local stream state.
 pub fn execute_interrupt(
     session_manager: &mut SessionManager,
     backend: &dyn AiBackend,
     ctx: &egui::Context,
-) {
-    if let Some(session) = session_manager.get_active_mut() {
-        let session_id = format!("dave-session-{}", session.id);
-        backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
-        session.incoming_tokens = None;
-        if let Some(agentic) = &mut session.agentic {
-            agentic.permissions.pending.clear();
-        }
-        tracing::debug!("Interrupted session {}", session.id);
+) -> Option<InterruptPublish> {
+    let session = session_manager.get_active_mut()?;
+    if let Some(publish) = remote_interrupt_publish(session) {
+        tracing::debug!("Interrupting remote session {}", session.id);
+        return Some(publish);
     }
+    let session_id = format!("dave-session-{}", session.id);
+    backend.interrupt_session(session_id, crate::backend::egui_waker(ctx));
+    session.incoming_tokens = None;
+    if let Some(agentic) = &mut session.agentic {
+        agentic.permissions.pending.clear();
+    }
+    tracing::debug!("Interrupted session {}", session.id);
+    None
 }
 
 /// Exit a tool call by denying it and cancelling the current turn.
@@ -2262,5 +2331,72 @@ mod tests {
         let session = sm.get(sm.active_id().unwrap()).unwrap();
         assert_eq!(session.input, "macos content");
         assert!(!temp_path.exists());
+    }
+
+    /// A remote session running a turn (host status `Working`) is interruptible;
+    /// a local session's interruptibility instead follows its token stream.
+    #[test]
+    fn remote_working_session_is_interruptible() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_remote_agent_session(&mut sm, &mut picker, &mut scene);
+
+        let session = sm.get_mut(id).expect("session should exist");
+        // No local token stream and idle host status → not interruptible.
+        assert!(!session_is_interruptible(session));
+
+        session.agentic.as_mut().unwrap().remote_status = Some(AgentStatus::Working);
+        session.update_status();
+        assert!(session_is_interruptible(session));
+    }
+
+    /// `execute_interrupt` on a remote session publishes an interrupt command to
+    /// the host (there is nothing local to abort) keyed by the session's
+    /// live-event id.
+    #[test]
+    fn execute_interrupt_remote_yields_publish() {
+        let ctx = egui::Context::default();
+        let backend = crate::backend::RemoteOnlyBackend;
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_remote_agent_session(&mut sm, &mut picker, &mut scene);
+        sm.switch_to(id);
+
+        let expected = sm
+            .get(id)
+            .unwrap()
+            .agentic
+            .as_ref()
+            .unwrap()
+            .event_session_id()
+            .to_string();
+
+        let publish = execute_interrupt(&mut sm, &backend, &ctx);
+        assert_eq!(publish.map(|p| p.session_id), Some(expected));
+    }
+
+    /// `execute_interrupt` on a local session aborts on the backend directly and
+    /// yields no publish.
+    #[test]
+    fn execute_interrupt_local_yields_no_publish() {
+        let ctx = egui::Context::default();
+        let backend = crate::backend::RemoteOnlyBackend;
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "local-host",
+            "/tmp/project",
+            "local",
+        );
+        sm.switch_to(id);
+
+        let publish = execute_interrupt(&mut sm, &backend, &ctx);
+        assert!(publish.is_none());
     }
 }

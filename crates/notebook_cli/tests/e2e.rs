@@ -37,31 +37,53 @@ fn nodes(canvas: &Value) -> usize {
     canvas["nodes"].as_array().map_or(0, Vec::len)
 }
 
-/// Poll `show --json` until the canvas has materialised (non-null, has a title).
+/// The `ref` of the sole canvas in `author`'s vault, or `None` until it has synced.
+/// `show` with no arg now lists the whole vault (typed rows), so the canvas is
+/// addressed by the `notebook:` ref on its row rather than by dumping "the" canvas.
+fn canvas_ref(url: &str, db: &str) -> Option<String> {
+    let out = notebook(url, db, &["show", "--json"]);
+    if !out.status.success() {
+        return None;
+    }
+    let vault: Value = serde_json::from_slice(&out.stdout).ok()?;
+    vault
+        .as_array()?
+        .iter()
+        .find(|row| row["kind"] == "canvas")
+        .and_then(|row| row["ref"].as_str())
+        .map(str::to_string)
+}
+
+/// Poll until the sole canvas has materialised in the vault, then fetch it by ref
+/// (non-null, has a title).
 fn show_until_seeded(url: &str, db: &str) -> Value {
     for _ in 0..50 {
-        let out = notebook(url, db, &["show", "--json"]);
-        if out.status.success()
-            && let Ok(canvas) = serde_json::from_slice::<Value>(&out.stdout)
-            && canvas.get("title").and_then(Value::as_str).is_some()
-        {
-            return canvas;
+        if let Some(cref) = canvas_ref(url, db) {
+            let out = notebook(url, db, &["show", &cref, "--json"]);
+            if out.status.success()
+                && let Ok(canvas) = serde_json::from_slice::<Value>(&out.stdout)
+                && canvas.get("title").and_then(Value::as_str).is_some()
+            {
+                return canvas;
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     panic!("canvas never materialised");
 }
 
-/// Poll `show --json` until the canvas has `n` nodes (the relay ingests
+/// Poll until the sole canvas (fetched by ref) has `n` nodes (the relay ingests
 /// asynchronously, so it may take a moment to fully materialise).
 fn show_until_nodes(url: &str, db: &str, n: usize) -> Value {
     for _ in 0..50 {
-        let out = notebook(url, db, &["show", "--json"]);
-        if out.status.success()
-            && let Ok(canvas) = serde_json::from_slice::<Value>(&out.stdout)
-            && nodes(&canvas) == n
-        {
-            return canvas;
+        if let Some(cref) = canvas_ref(url, db) {
+            let out = notebook(url, db, &["show", &cref, "--json"]);
+            if out.status.success()
+                && let Ok(canvas) = serde_json::from_slice::<Value>(&out.stdout)
+                && nodes(&canvas) == n
+            {
+                return canvas;
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -217,6 +239,190 @@ fn seed_show_and_add_round_trip() {
     assert_eq!(node["text"], "hello from the cli");
     assert_eq!(node["x"], 40);
     assert_eq!(node["y"], 20);
+}
+
+/// Write a PNS-wrapped longform note into the CLI's own db in-process (as the app
+/// would), waiting for the background ingester to unwrap + commit it so a separate
+/// binary process can read it. Returns the note's `d`. Longform never syncs over the
+/// relay, so this is the only way a note reaches the CLI's vault.
+fn write_local_longform(db: &str, title: &str, summary: Option<&str>, content: &str) -> String {
+    use notedeck_notebook::event;
+    use notedeck_notebook::store::{self, LongformInput, NoPublish};
+    use std::time::Instant;
+
+    let (_sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec()).expect("nsec");
+    let author = enostr::Pubkey::new(*pk.bytes());
+
+    let ndb = Ndb::new(db, &Config::new().set_ingester_threads(1)).expect("ndb");
+    assert!(ndb.add_key(&SECRET), "register the device key");
+    let input = LongformInput {
+        title: title.to_string(),
+        summary: summary.map(str::to_string),
+        content: content.to_string(),
+        published_at: None,
+        hashtags: vec![],
+    };
+    let saved = store::create_longform(&ndb, &author, &SECRET, &input, None, &mut NoPublish)
+        .expect("create longform");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let txn = nostrdb::Transaction::new(&ndb).unwrap();
+        let ready = !event::list_longform(&ndb, &txn, &author).is_empty();
+        drop(txn);
+        if ready {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "longform note never materialised"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    saved.d
+}
+
+/// `show` with no arg lists the whole vault: a local longform note and a
+/// relay-synced canvas both surface as typed rows, each carrying its `notebook:` ref.
+#[test]
+fn show_lists_mixed_vault() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // A longform note (local-only) plus a canvas (synced over the relay) — the two
+    // vault document kinds. Write the note before seeding so both are present.
+    write_local_longform(db, "An Article", None, "# An Article\n\nbody");
+    assert!(
+        notebook(&url, db, &["seed", "A Canvas"]).status.success(),
+        "seed"
+    );
+    show_until_seeded(&url, db);
+
+    // `show --json` lists BOTH, typed, each with a notebook ref.
+    let out = notebook(&url, db, &["show", "--json"]);
+    assert!(
+        out.status.success(),
+        "show failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let vault: Value = serde_json::from_slice(&out.stdout).expect("vault json");
+    let rows = vault.as_array().expect("array");
+    assert_eq!(
+        rows.len(),
+        2,
+        "vault should list the note and the canvas: {vault}"
+    );
+
+    let note = rows.iter().find(|r| r["kind"] == "note").expect("note row");
+    let canvas = rows
+        .iter()
+        .find(|r| r["kind"] == "canvas")
+        .expect("canvas row");
+    assert_eq!(note["title"], "An Article");
+    assert_eq!(canvas["title"], "A Canvas");
+    assert!(
+        note["ref"].as_str().unwrap().starts_with("notebook:"),
+        "note ref: {note}"
+    );
+    assert!(
+        canvas["ref"].as_str().unwrap().starts_with("notebook:"),
+        "canvas ref: {canvas}"
+    );
+}
+
+/// `show <ref>` resolves one selector across the whole vault and dispatches the
+/// render on the resolved type: a canvas ref prints the canvas, a node ref prints
+/// the node, and a note ref prints its raw markdown body.
+#[test]
+fn show_ref_dispatches_by_type() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // One of each vault kind, plus a node on the canvas.
+    write_local_longform(db, "Ref Article", None, "# Ref Article\n\nthe article body");
+    assert!(
+        notebook(&url, db, &["seed", "Ref Canvas"]).status.success(),
+        "seed"
+    );
+    show_until_seeded(&url, db);
+    assert!(
+        notebook(&url, db, &["add", "a ref node"]).status.success(),
+        "add"
+    );
+    let canvas = show_until_nodes(&url, db, 1);
+
+    // Each document's ref: the note/canvas from the vault listing, the node from the
+    // canvas dump.
+    let vault: Value = serde_json::from_slice(&notebook(&url, db, &["show", "--json"]).stdout)
+        .expect("vault json");
+    let rows = vault.as_array().expect("array");
+    let note_ref = rows.iter().find(|r| r["kind"] == "note").unwrap()["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let canvas_reference = rows.iter().find(|r| r["kind"] == "canvas").unwrap()["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let node_ref = canvas["nodes"].as_array().unwrap()[0]["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Canvas ref → a canvas object (title + its node).
+    let cj: Value =
+        serde_json::from_slice(&notebook(&url, db, &["show", &canvas_reference, "--json"]).stdout)
+            .expect("canvas json");
+    assert_eq!(cj["title"], "Ref Canvas");
+    assert_eq!(nodes(&cj), 1);
+
+    // Node ref → a node object (its text).
+    let nj: Value =
+        serde_json::from_slice(&notebook(&url, db, &["show", &node_ref, "--json"]).stdout)
+            .expect("node json");
+    assert_eq!(nj["text"], "a ref node");
+
+    // Note ref, no --json → the raw markdown body, so `show <note> > note.md`
+    // round-trips.
+    let body = notebook(&url, db, &["show", &note_ref]);
+    assert!(
+        body.status.success(),
+        "note body failed: {}",
+        String::from_utf8_lossy(&body.stderr)
+    );
+    let text = String::from_utf8_lossy(&body.stdout);
+    assert!(
+        text.contains("# Ref Article"),
+        "body missing heading: {text}"
+    );
+    assert!(
+        text.contains("the article body"),
+        "body missing content: {text}"
+    );
 }
 
 /// Moving a node writes a new transform revision and supersedes the old one,
