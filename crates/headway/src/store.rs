@@ -384,21 +384,6 @@ pub fn seed_board(
     .is_some() as usize
 }
 
-/// Mint a fresh random `team_root` — the 32-byte channel secret an SNS board is
-/// sealed under (see [`create_shared_board`]). A freshly generated secp256k1
-/// secret is a valid random root that [`enostr::sns::derive_sns_keys`] accepts;
-/// generating via `FullKeypair` avoids a raw-`OsRng` call under the crate's
-/// `deny(clippy::disallowed_methods)`.
-///
-/// Each standalone board mints its own root, giving per-board content isolation
-/// (sharing one board's key can't decrypt another). A future *workspace* of boards
-/// that should all be unlocked by one key would instead mint a root once and pass
-/// the same value to [`create_shared_board`] for each board — which is why the root
-/// is a parameter there rather than minted inside.
-pub fn mint_team_root() -> [u8; 32] {
-    enostr::FullKeypair::generate().secret_key.secret_bytes()
-}
-
 /// Create a board sealed into the SNS channel identified by `team_root` — a board
 /// under a "team". Unlike [`seed_board`] (plaintext, single-writer), this registers
 /// the root so nostrdb (un)seals the channel, self-shares it (a kind-1082 key-share
@@ -408,13 +393,14 @@ pub fn mint_team_root() -> [u8; 32] {
 /// later is just handing the same root to another member
 /// ([`enostr::sns::wrap_keyshare`]) — no history re-seal.
 ///
-/// Pass a freshly-[minted](mint_team_root) root for a standalone team-of-one board,
-/// or an existing root to add a board to a shared workspace channel whose boards
-/// all reuse one key. Returns `true` on success, `false` if the account can't sign
-/// (`secret` invalid) or a wrap/ingest step fails. The caller already holds
-/// `team_root`, so it can register the board in its in-memory roster immediately —
-/// closing the window where an edit made before the self-share folds back in would
-/// be written plaintext.
+/// `team_root` is [derived](enostr::sns::derive_board_root) from the account secret
+/// and the board slug by every create site, so the same board seeded independently
+/// on another device lands the same root and converges on one channel; a different
+/// slug derives an unrelated root, keeping per-board keys isolated. Returns `true`
+/// on success, `false` if the account can't sign (`secret` invalid) or a wrap/ingest
+/// step fails. The caller already holds `team_root`, so it can register the board in
+/// its in-memory roster immediately — closing the window where an edit made before
+/// the self-share folds back in would be written plaintext.
 pub fn create_shared_board(
     ndb: &Ndb,
     author: &Pubkey,
@@ -510,8 +496,9 @@ pub fn share_board(
 /// plaintext note), so a fresh root would strand the sealed half of the board in
 /// the old channel.
 ///
-/// Returns the number of notes re-sealed. Pass a freshly-[minted](mint_team_root)
-/// `team_root`. As sole author of a single-writer board, `author` can validly seal
+/// Returns the number of notes re-sealed. Pass the board's
+/// [derived](enostr::sns::derive_board_root) `team_root` (or its existing root when
+/// it already has one). As sole author of a single-writer board, `author` can validly seal
 /// all of its history. Note the original signed plaintext events remain on relays
 /// (they can't be unpublished) — this makes the board shareable and future edits
 /// sealed, it does not retract already-public history.
@@ -1761,7 +1748,7 @@ mod tests {
 
     /// A board created with [`create_shared_board`] is sealed into its SNS channel
     /// from note #1: the definition folds through the shared (team-key) path, not as
-    /// a plaintext own-board event. Proves mint → register → seal → auto-unwrap
+    /// a plaintext own-board event. Proves derive → register → seal → auto-unwrap
     /// round-trips through a real `Ndb`.
     #[tokio::test]
     async fn create_shared_board_seals_definition_into_channel() {
@@ -1769,7 +1756,7 @@ mod tests {
         // The account key must be registered for the self-share (1059) to unwrap.
         t.ndb.add_key(&t.secret());
 
-        let root = mint_team_root();
+        let root = enostr::sns::derive_board_root(&t.secret(), BOARD_ID);
         assert!(create_shared_board(
             &t.ndb,
             &t.kp.pubkey,
@@ -1828,7 +1815,7 @@ mod tests {
         t.ndb.add_key(&t.secret());
         let member = FullKeypair::generate();
 
-        let root = mint_team_root();
+        let root = enostr::sns::derive_board_root(&t.secret(), BOARD_ID);
         assert!(create_shared_board(
             &t.ndb,
             &t.kp.pubkey,
@@ -1859,11 +1846,11 @@ mod tests {
 
     /// The auto-seeded default board converges across an account's devices. Each
     /// device seeds the default independently at the same coordinate; because its
-    /// root is *derived* from the account secret (not a per-device random mint),
-    /// both devices arrive at the identical SNS channel, so device B adopts device
-    /// A's board instead of forking a second channel that never folds together.
-    /// This is exactly why the default uses [`enostr::sns::derive_board_root`]
-    /// rather than [`mint_team_root`] (see the auto-seed path in `notedeck_headway`).
+    /// root is *derived* from the account secret + slug (not a per-device random
+    /// value), both devices arrive at the identical SNS channel, so device B adopts
+    /// device A's board instead of forking a second channel that never folds
+    /// together. This is exactly why every board's root comes from
+    /// [`enostr::sns::derive_board_root`] (see the create path in `notedeck_headway`).
     #[tokio::test]
     async fn default_board_converges_across_devices() {
         #[derive(Default)]
@@ -1880,19 +1867,20 @@ mod tests {
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
 
-        // The load-bearing property: both devices derive the SAME default root. A
-        // random mint would differ per device and fork the channel (shown for
-        // contrast) — which is the divergence the derivation exists to prevent.
+        // The load-bearing property: both devices derive the SAME default root, so
+        // independent seeds converge instead of forking the channel.
         let root_a = enostr::sns::derive_board_root(&secret, BOARD_ID);
         let root_b = enostr::sns::derive_board_root(&secret, BOARD_ID);
         assert_eq!(
             root_a, root_b,
             "derived default root is stable across devices"
         );
+        // Contrast: a different slug derives an unrelated root, so per-board keys
+        // stay isolated (sharing one board's key can't unlock another).
         assert_ne!(
-            mint_team_root(),
-            mint_team_root(),
-            "a random mint would fork the channel per device"
+            enostr::sns::derive_board_root(&secret, "other-board"),
+            root_a,
+            "a different slug derives an unrelated root"
         );
 
         let team_pk = enostr::sns::derive_sns_keys(&root_a)
@@ -1984,8 +1972,8 @@ mod tests {
             .await;
         let card_id = card_id_by_title(&plaintext, "existing card").unwrap();
 
-        // Migrate under a fresh root.
-        let root = mint_team_root();
+        // Migrate under the board's derived root.
+        let root = enostr::sns::derive_board_root(&t.secret(), BOARD_ID);
         let sealed = migrate_board_to_sns(
             &t.ndb,
             &t.kp.pubkey,
@@ -2038,7 +2026,7 @@ mod tests {
         let path = dir.path().to_str().unwrap().to_string();
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
-        let root = mint_team_root();
+        let root = enostr::sns::derive_board_root(&secret, BOARD_ID);
         let team_pk = enostr::sns::derive_sns_keys(&root)
             .unwrap()
             .team_keypair
