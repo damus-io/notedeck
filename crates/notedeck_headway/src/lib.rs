@@ -805,48 +805,7 @@ impl Headway {
             None => {}
         }
 
-        // A switcher request (raised in the UI state): switch the active board or
-        // seed a new one. Both persist the selection so it survives a restart.
-        if let Some(nav) = self.state.take_nav() {
-            match nav {
-                // The switcher entry carries the board's full coordinate, so
-                // selecting a joined board (owned by a co-member) keeps its owner
-                // rather than collapsing onto one of ours with the same slug.
-                BoardNav::Switch(coord) => {
-                    self.active = Some(coord);
-                    if let Some(secret) = &signer {
-                        store::save_board_pref(
-                            ctx.ndb,
-                            &author,
-                            secret,
-                            self.active(),
-                            &mut store::NoPublish,
-                        );
-                    }
-                    self.wake();
-                }
-                BoardNav::Create(title) => {
-                    if let Some(secret) = &signer {
-                        let slug = store::board_slug(&title, |s| boards.iter().any(|b| b.id == s));
-                        // Born a team-of-one SNS board (sealed + self-shared), so it
-                        // can be shared later with no history re-seal. Ingest locally
-                        // only; `update`'s poll fans the new events out to the private
-                        // relays next frame (see `wake`).
-                        self.create_board(ctx.ndb, &author, secret, &slug, &title);
-                        // A new board is ours: coordinate owner = the account.
-                        self.active = Some(event::BoardCoord::new(*author.bytes(), slug));
-                        store::save_board_pref(
-                            ctx.ndb,
-                            &author,
-                            secret,
-                            self.active(),
-                            &mut store::NoPublish,
-                        );
-                        self.wake();
-                    }
-                }
-            }
-        }
+        self.drain_board_nav(ctx, &author, signer.as_ref(), &boards);
 
         // A cross-board card request (move or link, raised from a card's context
         // menu): resolve the target board's view out of the same reducer and
@@ -915,6 +874,61 @@ impl Headway {
         }
 
         AppResponse::default()
+    }
+
+    /// Drain a switcher request (raised in the UI state): switch the active board
+    /// or seed a new one. Both persist the selection so it survives a restart,
+    /// which needs `signer` — a watch-only account can still switch boards for the
+    /// session, it just can't record the choice or create a board.
+    fn drain_board_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        author: &Pubkey,
+        signer: Option<&[u8; 32]>,
+        boards: &[BoardSummary],
+    ) {
+        let Some(nav) = self.state.take_nav() else {
+            return;
+        };
+        match nav {
+            // The switcher entry carries the board's full coordinate, so selecting
+            // a joined board (owned by a co-member) keeps its owner rather than
+            // collapsing onto one of ours with the same slug.
+            BoardNav::Switch(coord) => {
+                self.active = Some(coord);
+                if let Some(secret) = signer {
+                    store::save_board_pref(
+                        ctx.ndb,
+                        author,
+                        secret,
+                        self.active(),
+                        &mut store::NoPublish,
+                    );
+                }
+                self.wake();
+            }
+            BoardNav::Create(title) => {
+                let Some(secret) = signer else {
+                    return;
+                };
+                let slug = store::board_slug(&title, |s| boards.iter().any(|b| b.id == s));
+                // Born a team-of-one SNS board (sealed + self-shared), so it can be
+                // shared later with no history re-seal. Ingest locally only;
+                // `update`'s poll fans the new events out to the private relays
+                // next frame (see `wake`).
+                self.create_board(ctx.ndb, author, secret, &slug, &title);
+                // A new board is ours: coordinate owner = the account.
+                self.active = Some(event::BoardCoord::new(*author.bytes(), slug));
+                store::save_board_pref(
+                    ctx.ndb,
+                    author,
+                    secret,
+                    self.active(),
+                    &mut store::NoPublish,
+                );
+                self.wake();
+            }
+        }
     }
 }
 
