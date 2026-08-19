@@ -655,6 +655,36 @@ pub fn board_ui(
     action
 }
 
+/// Render the board chrome around a board whose contents haven't folded yet: the
+/// switcher plus `message`, and nothing else.
+///
+/// This is what a not-yet-folded board shows instead of a full-pane message. The
+/// distinction matters: a full-pane message takes the switcher away with it, so a
+/// board that never folds (a shared board whose definition hasn't arrived, or
+/// won't) strands the app with no way to reach another board or make a new one.
+/// Here the switcher — the escape hatch — stays live while the board itself is
+/// still empty.
+///
+/// Deliberately no editing affordances: every board-level edit republishes the
+/// board definition derived from the view it was given, so an edit made against
+/// the placeholder would clobber the real definition once it folds in.
+pub fn unfolded_board_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    boards: &[BoardSummary],
+    state: &mut BoardUiState,
+    message: &str,
+) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(SPACING_LG as i8))
+        .show(ui, |ui| {
+            board_switcher(ui, theme, view, boards, state);
+            ui.add_space(SPACING_SM);
+            ui.label(egui::RichText::new(message).color(theme.text_muted));
+        });
+}
+
 /// A centered, muted message shown when there's no board to render yet.
 pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
     egui::Frame::new()

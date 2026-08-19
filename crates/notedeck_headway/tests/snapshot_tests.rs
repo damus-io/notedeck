@@ -1360,6 +1360,51 @@ fn restart_reopens_saved_board_coordinate() {
     );
 }
 
+/// A joined shared board whose sealed definition never arrives must not strand the
+/// app. Join a co-member's board, deliver no definition for it, switch onto it
+/// through the real switcher, and the board still draws its chrome: it says it's
+/// loading, but the switcher comes with it, so switching back off works.
+///
+/// Regression for the full-pane "Loading shared board…" dead-end, which replaced
+/// the whole view — switcher included — and so left no way off a board whose fold
+/// stayed empty. Seeding a board into a channel the app can't resolve made Headway
+/// unusable until the selection was edited out of band.
+#[test]
+fn unfolded_shared_board_keeps_the_switcher_reachable() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let account = test_keypair();
+    let alice = fixed_keypair(0xa1);
+
+    // Join alice's `ghost` board — a key-share and nothing else, so the shared fold
+    // has no definition to resolve and stays empty for the rest of the test.
+    {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let app_ctx = &mut state.notedeck.app_context(&egui_ctx);
+        ingest_keyshare(
+            app_ctx.ndb,
+            &alice,
+            &account.pubkey,
+            0xa5,
+            &event::board_address(&alice.pubkey, "ghost"),
+        );
+    }
+
+    // Switch onto it through the real switcher. With no definition to title it, the
+    // roster lists it (and the switcher button then names it) by slug.
+    harness.get_by_label(SWITCHER_LABEL).simulate_click();
+    wait_for_label(&mut harness, "ghost");
+    harness.get_by_label("ghost").simulate_click();
+    wait_for_label(&mut harness, "Loading shared board…");
+
+    // The escape hatch: the switcher is still on screen, so the demo board is one
+    // switch away — the whole point of not dead-ending on a full-pane message.
+    harness.get_by_label("ghost  ⏷").simulate_click();
+    wait_for_label(&mut harness, "Headway");
+    harness.get_by_label("Headway").simulate_click();
+    wait_for_board(&mut harness);
+}
+
 /// Deliverable 2 (pixel snapshot, needs lavapipe): the switcher keeps two joined
 /// boards that share a slug but differ in owner as two distinct entries (breakage
 /// #3), and lists a board you own AND shared only once (coordinate dedup). Run via

@@ -760,26 +760,47 @@ impl Headway {
                     .cloned()
             }
         };
+        // The switcher list, needed before the board renders because an unfolded
+        // board still draws the switcher (below) — that's the escape hatch off a
+        // board that won't fold. Owned, so the cache borrow it takes is dropped
+        // before we render: a description that references another card resolves
+        // through `self.board_cache` *during* `board_ui`, so holding a borrow
+        // across the render would panic the `RefCell`.
+        let boards = self.board_summaries_with_shared(ctx, &own_boards);
+
         let Some(view) = view else {
-            // No board yet. `update` auto-seeds one for a signing account; a
-            // watch-only account can't create one; a joined shared board is still
-            // folding in from its co-members.
+            // No board folded yet. `update` auto-seeds one for a signing account;
+            // a watch-only account can't create one; a joined shared board is
+            // still folding in from its co-members.
+            //
+            // A watch-only account has nothing to switch between and can't create
+            // a board, so it gets a plain prompt. Everyone else keeps the board
+            // chrome around a placeholder: dead-ending on a full-pane message
+            // takes the switcher with it, which strands the app for as long as the
+            // fold stays empty — and a shared board whose definition never arrives
+            // strands it for good (the bug this replaces).
+            let Some(secret) = &signer else {
+                empty_state(
+                    ui,
+                    &theme,
+                    "Sign in with a key to create your Headway board.",
+                );
+                return AppResponse::default();
+            };
             let msg = if active_team.is_some() {
                 "Loading shared board…"
-            } else if signer.is_some() {
-                "Setting up your board…"
             } else {
-                "Sign in with a key to create your Headway board."
+                "Setting up your board…"
             };
-            empty_state(ui, &theme, msg);
+            let placeholder = placeholder_board(self.active(), &boards);
+            ui::unfolded_board_ui(ui, &theme, &placeholder, &boards, &mut self.state, msg);
+            // Only the switcher is live here, so that's the only request to drain
+            // — no `board_ui` action exists to apply, and applying one against a
+            // placeholder would republish a board definition over the real one.
+            self.drain_board_nav(ctx, &author, Some(secret), &boards);
             return AppResponse::default();
         };
 
-        // Render against the folded `view` (owned, so the cache borrow above is
-        // already dropped — which matters here: a description that references
-        // another card resolves through `self.board_cache` *during* `board_ui`,
-        // so holding a borrow across the render would panic the `RefCell`).
-        let boards = self.board_summaries_with_shared(ctx, &own_boards);
         // Header sync indicator: are we reaching a private relay right now?
         let sync = sync_status(ctx);
         let action = board_ui(ui, &theme, ctx, &view, &boards, sync, &mut self.state);
@@ -880,6 +901,11 @@ impl Headway {
     /// or seed a new one. Both persist the selection so it survives a restart,
     /// which needs `signer` — a watch-only account can still switch boards for the
     /// session, it just can't record the choice or create a board.
+    ///
+    /// Split out of [`render_board`](Self::render_board) because a board that
+    /// hasn't folded still draws its switcher (see [`ui::unfolded_board_ui`]) and
+    /// so still has this one request to drain, even though no board edit exists to
+    /// apply there.
     fn drain_board_nav(
         &mut self,
         ctx: &mut AppContext<'_>,
@@ -929,6 +955,31 @@ impl Headway {
                 self.wake();
             }
         }
+    }
+}
+
+/// An empty stand-in for a board that hasn't folded yet, so the board chrome (the
+/// switcher, which is the escape hatch off a board that won't fold) can render
+/// against something. Its title comes from the switcher roster when that knows it
+/// — a joined shared board is listed by slug until its definition arrives — so the
+/// board reads by name rather than as a blank while it's still syncing.
+///
+/// Never hand this to [`store::apply`]: a board-level edit republishes the board
+/// definition derived from the view it was given, so an edit against a placeholder
+/// would overwrite the real definition with an empty one.
+fn placeholder_board(active: &event::BoardCoord, boards: &[BoardSummary]) -> BoardView {
+    let title = boards
+        .iter()
+        .find(|b| b.id == active.slug && b.owner == active.owner)
+        .map_or_else(|| active.slug.clone(), |b| b.title.clone());
+    BoardView {
+        id: active.slug.clone(),
+        author: active.owner,
+        title,
+        description: String::new(),
+        created_at: 0,
+        columns: Vec::new(),
+        archived: Vec::new(),
     }
 }
 
