@@ -309,6 +309,63 @@ pub fn shared_card_id(
     })
 }
 
+/// The comment bodies on the card titled `title` in a device's view of the shared
+/// board at `board_addr`, oldest first (empty if the card or board hasn't folded
+/// yet). Lets a two-party test assert a sealed NIP-22 comment crossed the wire and
+/// folded onto the receiver's card — the leg `add`/`move` already cover but that no
+/// test exercised. A comment (kind-1111) is card-anchored by its `#E` root tag and
+/// carries no board `#a` coordinate, so it converges through `fold_shared_board`'s
+/// comment leg rather than the board-coordinate one.
+pub fn shared_card_comments(
+    device: &mut DeviceHarness,
+    board_addr: &str,
+    team_pubkey: &Pubkey,
+    title: &str,
+) -> Vec<String> {
+    shared_board(device, board_addr, team_pubkey)
+        .and_then(|v| {
+            v.columns
+                .iter()
+                .flat_map(|c| c.cards.iter())
+                .find(|c| c.title == title)
+                .map(|c| c.comments.iter().map(|cm| cm.body.clone()).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// Step both devices until `done` holds against the comment bodies on the card
+/// titled `card_title` in `receiver`'s folded shared board, or panic after
+/// [`CONVERGE_TIMEOUT`]. The comment analogue of [`wait_for_convergence`]: a sealed
+/// kind-1111 comment must cross the wire and fold onto the receiver's card the same
+/// way a placement or issue does.
+pub fn wait_for_comment_convergence(
+    publisher: &mut DeviceHarness,
+    receiver: &mut DeviceHarness,
+    board_addr: &str,
+    team_pubkey: &Pubkey,
+    card_title: &str,
+    context: &str,
+    done: impl Fn(&[String]) -> bool,
+) {
+    let deadline = Instant::now() + CONVERGE_TIMEOUT;
+    loop {
+        publisher.run_ok();
+        receiver.run_ok();
+
+        let comments = shared_card_comments(receiver, board_addr, team_pubkey, card_title);
+        if done(&comments) {
+            return;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {context}; receiver saw comments {:?}",
+            comments
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Count local notes of `kind` in a device's nostrdb — used to assert that a
 /// sealed edit's unwrapped rumor actually reached the receiver (propagation),
 /// independent of whether the fold counts it.
