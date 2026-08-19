@@ -748,6 +748,16 @@ fn session_state_snapshot(
     })
 }
 
+/// Wire safety cap for a tool result's `output`, in bytes.
+///
+/// Truncation is otherwise a display concern — the host keeps the full output in
+/// memory and [`ui::dave::DaveUi::tool_output_ui`] truncates it for display —
+/// but the tool_result note is PNS-wrapped and published, so the serialized
+/// event must stay under typical relay limits (~64KB). This mirrors the
+/// permission event's tool-input budget: ~40KB output plus summary, inner-event,
+/// and PNS overhead, times the ~1.33x base64 expansion, lands under 64KB.
+const MAX_TOOL_OUTPUT_WIRE_BYTES: usize = 40_000;
+
 /// Build and ingest a live kind-1988 event into ndb (via PNS wrapping).
 ///
 /// Extracts cwd and session ID from the session's agentic data,
@@ -1371,18 +1381,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 // propagation is handled in one place.
                 let live_event: Option<(String, &str, Option<&str>)> = match &res {
                     DaveApiResponse::Failed(err) => Some((err.clone(), "error", None)),
-                    DaveApiResponse::ToolResult(result) => Some((
+                    DaveApiResponse::ToolResult(result) => {
                         // Encode summary + raw output so a remote observer can
                         // reconstruct the full result, not just the one-line
                         // summary (headway:dave/sting-february-sausage). The
+                        // output is capped to a wire budget here (the host keeps
+                        // the full copy in memory; the UI truncates for display)
+                        // so the PNS-wrapped event stays under relay limits. The
                         // tool name travels in the `tool-name` tag below.
-                        session_loader::ToolResultContent::encode(
-                            &result.summary,
-                            result.output.as_deref(),
-                        ),
-                        "tool_result",
-                        Some(result.tool_name.as_str()),
-                    )),
+                        let capped_output = result
+                            .output
+                            .as_deref()
+                            .map(|o| backend::truncate_output(o, MAX_TOOL_OUTPUT_WIRE_BYTES));
+                        Some((
+                            session_loader::ToolResultContent::encode(
+                                &result.summary,
+                                capped_output.as_deref(),
+                            ),
+                            "tool_result",
+                            Some(result.tool_name.as_str()),
+                        ))
+                    }
                     DaveApiResponse::CompactionStarted => {
                         Some((String::new(), "compaction_started", None))
                     }

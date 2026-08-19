@@ -176,13 +176,13 @@ pub fn send_tool_result(
     let summary = format_tool_summary(tool_name, tool_input, result_value);
     // Bash is the tool whose stdout/stderr *is* the result, so keep it around to
     // render inline. Other tools are covered by their summary (or a file diff);
-    // broadening this set is a follow-up. Trimmed to a bounded tail so a long
-    // build log can't balloon the in-memory transcript.
+    // broadening this set is a follow-up. Kept in full here: truncation is a
+    // display concern the UI applies (see `tool_output_ui`), and the wire keeps
+    // only a safety-capped copy (see `ToolResultContent::encode`).
     let output = (tool_name == "Bash")
         .then(|| extract_response_content(result_value))
         .flatten()
-        .filter(|s| !s.is_empty())
-        .map(|s| truncate_output(&s, 2000));
+        .filter(|s| !s.is_empty());
     // An explicit `parent_tool_use_id` (a subagent-internal result) wins over
     // the foreground nesting stack.
     let parent_task_id = parent_override

@@ -235,6 +235,11 @@ pub struct ToolResultContent {
 
 impl ToolResultContent {
     /// Serialize a tool result into a note's `content` field.
+    ///
+    /// `output` must already be size-bounded for the wire by the caller.
+    /// Truncation is otherwise a display concern (the host keeps the full output
+    /// and the UI truncates it), but the note is PNS-wrapped and published, so
+    /// the live-event path caps it to stay under relay limits before encoding.
     pub fn encode(summary: &str, output: Option<&str>) -> String {
         serde_json::to_string(&Self {
             summary: summary.to_string(),

@@ -9,6 +9,8 @@ mod task_tracker;
 mod tool_summary;
 pub mod traits;
 
+pub(crate) use tool_summary::truncate_output;
+
 pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;
 pub use openai::OpenAiBackend;
