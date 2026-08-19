@@ -158,6 +158,26 @@ impl BoardUiState {
     pub fn open_card(&mut self, card: NoteId) {
         self.selected = Some(card);
     }
+
+    /// The card whose detail is currently open, if any.
+    ///
+    /// The app diffs this against the [`selection it seeded from the nav
+    /// route`](Self::set_selected) after a render pass to turn a board↔card
+    /// transition the UI made (a card click, a detail close, a subissue swap) into
+    /// a chrome global-history request — see [`crate::Headway`].
+    pub fn selected(&self) -> Option<NoteId> {
+        self.selected
+    }
+
+    /// Seed which card's detail is open from the chrome global-history route this
+    /// frame renders, making the nav stack — not this transient view-state — the
+    /// source of truth for board-vs-card. Called at the top of each render pass so
+    /// a global back/forward/jump is reflected before the board draws; the UI may
+    /// then mutate the selection (a click, a close), and the app diffs the result
+    /// back into a nav request.
+    pub fn set_selected(&mut self, selected: Option<NoteId>) {
+        self.selected = selected;
+    }
 }
 
 /// A card's on-screen placement last frame: its screen rect and which column it
@@ -655,6 +675,14 @@ fn find_card(view: &BoardView, card: NoteId) -> Option<(usize, &CardView)> {
         .iter()
         .enumerate()
         .find_map(|(i, col)| col.cards.iter().find(|c| c.id == card).map(|c| (i, c)))
+}
+
+/// The title of a card on this board, snapshotted for a global-history entry's
+/// label when the app pushes a [`Card`](crate::nav::HeadwayRoute::Card) route
+/// (see [`crate::Headway`]). `None` when the card isn't on the folded view — the
+/// dropdown then falls back to the app label.
+pub(crate) fn card_title(view: &BoardView, card: NoteId) -> Option<String> {
+    find_card(view, card).map(|(_, c)| c.title.clone())
 }
 
 /// The egui animation-manager id holding a card's 0→1 move-slide progress.

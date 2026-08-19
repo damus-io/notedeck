@@ -645,11 +645,21 @@ impl Chrome {
             return;
         }
 
+        // The active-owned requests (`PushToActive`/`ReplaceActive`) don't name
+        // their app — the enqueuing app doesn't know its own slot — so the chrome
+        // completes them here by tagging the token with the active slot. This
+        // runs during the same frame's render as the enqueue and before
+        // `sync_active_from_nav`, so `active` still names the app that raised the
+        // request (a plain app-switch funnels through `set_active`, not here).
+        let active = AppId(self.active as usize);
+
         if let Some(nav) = self.global_nav.as_mut() {
             for request in requests {
                 match request {
                     NavRequest::Push(entry) => nav.route_to(entry),
                     NavRequest::Replace(entry) => nav.route_to_replaced(entry),
+                    NavRequest::PushToActive(entry) => nav.route_to(entry.tag(active)),
+                    NavRequest::ReplaceActive(entry) => nav.route_to_replaced(entry.tag(active)),
                     NavRequest::Back => {
                         nav.go_back();
                     }
@@ -2983,6 +2993,7 @@ mod tab_cycle_tests {
 mod global_nav_tests {
     use super::*;
     use egui_nav::{NavAction, ReturnType};
+    use notedeck::ActiveNavEntry;
 
     /// Build a bare chrome with a seeded global history and no apps — enough to
     /// drive the stack machinery (`set_active`, the `Navigator` drain, and the
@@ -3075,6 +3086,54 @@ mod global_nav_tests {
         let nav = chrome.global_nav.as_ref().unwrap();
         assert_eq!(nav.len(), 1, "replace collapses the history to the new top");
         assert_eq!(nav.top().app, AppId(2));
+        assert_eq!(chrome.active, 2);
+    }
+
+    #[test]
+    fn drained_active_push_is_tagged_with_the_active_app() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(3); // active app is now slot 3
+
+        // An app self-pushing carries only its token; the chrome fills in the
+        // active slot on drain.
+        chrome.apply_nav_requests(vec![NavRequest::PushToActive(ActiveNavEntry::new(
+            Rc::new(7u32),
+        ))]);
+
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.len(), 3, "[app0, app3, app3-route]");
+        assert_eq!(
+            nav.top().app,
+            AppId(3),
+            "the self-push inherited the active slot"
+        );
+        assert_eq!(nav.top().token.downcast_ref::<u32>(), Some(&7));
+        assert_eq!(chrome.active, 3);
+    }
+
+    #[test]
+    fn drained_active_replace_is_tagged_with_the_active_app() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(2); // [app0, app2], active app2
+
+        chrome.apply_nav_requests(vec![NavRequest::ReplaceActive(ActiveNavEntry::new(
+            Rc::new(9u32),
+        ))]);
+        // route_to_replaced defers the drop until the transition completes.
+        chrome
+            .global_nav
+            .as_mut()
+            .unwrap()
+            .reconcile(NavAction::Navigated);
+
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.len(), 1, "replace collapses the history to the new top");
+        assert_eq!(
+            nav.top().app,
+            AppId(2),
+            "the replacement kept the active slot"
+        );
+        assert_eq!(nav.top().token.downcast_ref::<u32>(), Some(&9));
         assert_eq!(chrome.active, 2);
     }
 

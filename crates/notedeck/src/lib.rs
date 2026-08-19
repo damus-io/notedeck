@@ -107,7 +107,7 @@ pub use media::{
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
 pub use nav::{nav_frame, DragResponse, NavFrameResponse, NavStack, NavStackEvent};
-pub use navigator::{AppId, ChromeNavEntry, NavRequest, Navigator};
+pub use navigator::{ActiveNavEntry, AppId, ChromeNavEntry, NavRequest, Navigator};
 pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{

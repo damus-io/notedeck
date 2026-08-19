@@ -190,6 +190,54 @@ fn snapshot_agentium_reference_chip() {
     harness.snapshot("agentium_reference_chip");
 }
 
+/// An `agentium:` ref inside a GitHub-flavored markdown **table cell** resolves to
+/// the same live session chip it renders in a paragraph — the regression guard for
+/// headway:notedeck/trend-jacket-young, where `render_table` drew every cell span
+/// as raw text and bypassed the reference-aware inline seam. The body is a
+/// two-column table whose data cell holds the ref; the resolved session *title*
+/// (not the raw word-id) must appear on both surfaces (note + Dave message),
+/// proving the cell now flows through the ref seam.
+///
+/// Asserts on the accesskit tree rather than a pixel snapshot, so it needs no
+/// committed baseline png and stays deterministic across mesa versions — but the
+/// egui_kittest harness still needs a lavapipe adapter to build, so it runs in the
+/// `snapshot-test` job (via `scripts/snapshot-test`), not the default suite. Before
+/// the fix the cell rendered the raw `agentium:<word-id>` text and this title query
+/// found nothing.
+#[test]
+#[ignore] // needs lavapipe to build the harness — run via scripts/snapshot-test
+fn agentium_reference_chip_renders_in_table_cell() {
+    let mut harness = build_harness();
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let ctx = harness.ctx.clone();
+    let session_id = "claude-session-table-cell";
+    let title = "Thread RefCtx into tables";
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context(&ctx);
+        seed_session(app_ctx.ndb, &secret, session_id, title, "working");
+    }
+    let session_ref = agentium_core::wordid::session_ref(session_id);
+    harness.state_mut().body =
+        format!("| Session | Status |\n| --- | --- |\n| {session_ref} | running |\n");
+
+    // Wait until the chip renders the resolved title inside the cell on both
+    // surfaces, proving the cell went through the ref-aware seam (raw text would
+    // show the word-id, not the title).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness.query_all_by_label(title).count() >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session reference never resolved to its title chip inside the table cell"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// A *tombstoned* session still resolves to a chip — drawn with the hollow
 /// "resumable" ring (vs a live session's filled dot) — so a soft-deleted
 /// `agentium:` ref reads as click-to-resume rather than vanishing. The chip folds

@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use common::{
     CONVERGE_TIMEOUT, apply_sealed, build_headway_device, join_shared_board, seal_board_definition,
-    shared_board, shared_card_id, step_for, wait_for_convergence,
+    shared_board, shared_card_id, step_for, wait_for_comment_convergence, wait_for_convergence,
 };
 use enostr::{FullKeypair, Pubkey};
 use notedeck_headway::{
@@ -264,6 +264,156 @@ async fn member_own_card_folds_into_owners_shared_board_over_relay() {
         &team_pk,
         "the member's own sealed card to fold into the member's shared board",
         |titles| titles.iter().any(|t| t == "member-own-card"),
+    );
+}
+
+/// A sealed NIP-22 comment converges over the relay — the case
+/// `headway:notedeck/expand-aerobic-cycle` reported broken (a CLI `headway comment`
+/// not reaching a second instance while moves/adds did). A comment (kind-1111) is
+/// card-anchored by its NIP-22 root `#E` tag and carries **no** board `#a`
+/// coordinate, unlike an issue/placement, so it converges through
+/// `fold_shared_board`'s comment leg (phase B, gathered by `#E` for surfaced cards)
+/// rather than the board-coordinate leg. This exercises that leg end to end over the
+/// sealed transport — the coverage gap the existing add/edit/move tests left — so a
+/// regression that drops comments from the wire or the fold fails here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn owner_comment_on_card_converges_to_member_over_relay() {
+    init_tracing();
+    let mut fx = setup_shared_board().await;
+    let team_pk = fx.team_pubkey();
+
+    // The owner adds a card and it converges to the member, so both folds surface it
+    // (a comment only folds onto a card the receiver already resolved).
+    apply_sealed(
+        &mut fx.owner_device,
+        BOARD_ID,
+        &fx.board_addr,
+        &fx.owner.pubkey,
+        &fx.owner.secret_key.secret_bytes(),
+        &fx.channel,
+        BoardAction::AddCard {
+            col: 0,
+            title: "comment-host-card".to_owned(),
+            description: String::new(),
+            labels: vec![],
+            parent: None,
+        },
+    );
+    wait_for_convergence(
+        &mut fx.owner_device,
+        &mut fx.member_device,
+        &fx.board_addr,
+        &team_pk,
+        "the card to reach the member before it is commented on",
+        |titles| titles.iter().any(|t| t == "comment-host-card"),
+    );
+
+    // The owner comments on its own card, sealed into the channel — the shape a CLI
+    // `headway comment` takes (author folds the shared view, writes a sealed 1111).
+    let card = shared_card_id(
+        &mut fx.owner_device,
+        &fx.board_addr,
+        &team_pk,
+        "comment-host-card",
+    )
+    .expect("the owner's card folds into its own view before it comments");
+    apply_sealed(
+        &mut fx.owner_device,
+        BOARD_ID,
+        &fx.board_addr,
+        &fx.owner.pubkey,
+        &fx.owner.secret_key.secret_bytes(),
+        &fx.channel,
+        BoardAction::AddComment {
+            card,
+            body: "owner-comment-sentinel".to_owned(),
+            reply_to: None,
+        },
+    );
+
+    // The sealed 1111 crosses the relay, nostrdb unwraps it, and `fold_shared_board`
+    // gathers it onto the card in the member's view — comment sync, proven.
+    wait_for_comment_convergence(
+        &mut fx.owner_device,
+        &mut fx.member_device,
+        &fx.board_addr,
+        &team_pk,
+        "comment-host-card",
+        "the owner's sealed comment to fold into the member's shared card",
+        |bodies| bodies.iter().any(|b| b == "owner-comment-sentinel"),
+    );
+}
+
+/// A member commenting on the **owner's** card converges back into the owner's
+/// board — the cross-author comment case (the commenter isn't the card author). A
+/// comment is anchored by the card's `#E` issue id, which is identical no matter who
+/// authors the comment, so a co-member's sealed comment folds onto the same card;
+/// team-key possession is the write capability (as for [`member_editing_owners_card_counts_over_relay`]).
+/// Guards the multi-user shape the original sync-bug report was about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn member_comment_on_owners_card_converges_to_owner_over_relay() {
+    init_tracing();
+    let mut fx = setup_shared_board().await;
+    let team_pk = fx.team_pubkey();
+
+    // The owner adds a card and it reaches the member, giving the member a
+    // co-member-owned card to comment on.
+    apply_sealed(
+        &mut fx.owner_device,
+        BOARD_ID,
+        &fx.board_addr,
+        &fx.owner.pubkey,
+        &fx.owner.secret_key.secret_bytes(),
+        &fx.channel,
+        BoardAction::AddCard {
+            col: 0,
+            title: "cross-comment-card".to_owned(),
+            description: String::new(),
+            labels: vec![],
+            parent: None,
+        },
+    );
+    wait_for_convergence(
+        &mut fx.owner_device,
+        &mut fx.member_device,
+        &fx.board_addr,
+        &team_pk,
+        "the owner's card to reach the member before it comments",
+        |titles| titles.iter().any(|t| t == "cross-comment-card"),
+    );
+
+    // The member comments on the owner's card, sealed under the team key.
+    let card = shared_card_id(
+        &mut fx.member_device,
+        &fx.board_addr,
+        &team_pk,
+        "cross-comment-card",
+    )
+    .expect("the owner's card folds into the member's view before it comments");
+    apply_sealed(
+        &mut fx.member_device,
+        BOARD_ID,
+        &fx.board_addr,
+        &fx.member.pubkey,
+        &fx.member.secret_key.secret_bytes(),
+        &fx.channel,
+        BoardAction::AddComment {
+            card,
+            body: "member-comment-sentinel".to_owned(),
+            reply_to: None,
+        },
+    );
+
+    // It converges into the owner's own fold: a non-author's sealed comment folded
+    // onto the card by its `#E` anchor.
+    wait_for_comment_convergence(
+        &mut fx.member_device,
+        &mut fx.owner_device,
+        &fx.board_addr,
+        &team_pk,
+        "cross-comment-card",
+        "the member's sealed comment to fold into the owner's shared card",
+        |bodies| bodies.iter().any(|b| b == "member-comment-sentinel"),
     );
 }
 

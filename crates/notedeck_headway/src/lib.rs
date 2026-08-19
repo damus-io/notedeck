@@ -8,10 +8,12 @@ use notedeck::{App, AppContext, AppResponse, ColorTheme, PrivateRelaySync, fan_o
 
 pub use headway::{event, store, teams};
 
+mod nav;
 mod tools;
 mod ui;
 
-use ui::{BoardNav, CardBoardOp, board_ui, empty_state};
+pub use nav::HeadwayRoute;
+use ui::{BoardNav, CardBoardOp, board_ui, card_title, empty_state};
 pub use ui::{BoardUiState, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
 use event::{BoardReducer, BoardView};
@@ -628,7 +630,64 @@ impl App for Headway {
         self.pump_repaint(egui_ctx);
     }
 
+    /// Render Headway's currently-open board or card detail (whichever
+    /// [`state.selected`](BoardUiState::selected) names) and reconcile the chrome
+    /// global-history stack with any board↔card move the frame makes.
+    ///
+    /// This path does **not** reseed the selection from a nav route: in production
+    /// [`render_nav`](Self::render_nav) always seeds it first (the chrome reaches
+    /// every app through `render_nav`), and this is also the standalone entrypoint a
+    /// chrome-less embedding (tests) drives, where the selection must persist across
+    /// frames because no nav entry is pushed to carry it.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        self.render_board(ctx, ui)
+    }
+
+    /// Draw one chrome global-history entry. Seeds the open-card selection from the
+    /// entry's route token — [`HeadwayRoute::Card`] ⇒ that card's full-pane detail,
+    /// [`Board`](HeadwayRoute::Board) or any unrecognized token (the `()` a plain
+    /// app-switch entry carries) ⇒ the board grid — so the nav stack, not stale
+    /// view-state, decides which screen shows. A global back/forward/jump is
+    /// honored here before the board draws.
+    fn render_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        token: &Rc<dyn std::any::Any>,
+    ) -> AppResponse {
+        let seed = token
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(|r| r.card_id());
+        self.state.set_selected(seed);
+        self.render_board(ctx, ui)
+    }
+
+    /// A short title for one global-history entry, shown in the chrome's history
+    /// dropdown: a [`Card`](HeadwayRoute::Card)'s snapshotted title, or `None` for
+    /// the board so the chrome falls back to the "Headway" app label. `nav_title`
+    /// is handed only the token — no [`AppContext`] to re-resolve through — so the
+    /// title comes from the snapshot the card route carries (see [`HeadwayRoute`]).
+    fn nav_title(&self, token: &Rc<dyn std::any::Any>) -> Option<String> {
+        token
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(|r| r.title())
+            .map(str::to_owned)
+    }
+}
+
+impl Headway {
+    /// Render one board↔card view and reconcile the chrome global-history stack.
+    ///
+    /// The open card is whatever [`state.selected`](BoardUiState::selected) already
+    /// names — seeded from the nav route by [`render_nav`](Self::render_nav) in
+    /// production, or persisted across frames in a chrome-less embedding. The UI may
+    /// then move the selection (a card click, a detail close, a subissue swap); we
+    /// diff the result against where it started back into a nav request afterward —
+    /// board→card pushes, a card→card swap replaces in place (so depth never
+    /// exceeds one), and closing/deleting a card is a single global-back to the
+    /// board. The chrome fills in Headway's own [`AppId`](notedeck::AppId) on
+    /// drain, since `render_nav` never tells the app its own slot.
+    fn render_board(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let theme = ColorTheme::current(ui.ctx());
 
         let author = *ctx.accounts.selected_account_pubkey();
@@ -638,6 +697,11 @@ impl App for Headway {
             .accounts
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
+
+        // Snapshot the open card before the UI runs so we can diff the frame's
+        // board↔card move into a nav request afterward. In production this is the
+        // route `render_nav` just seeded; a cross-app `open` may override it below.
+        let before = self.state.selected();
 
         // Navigate to an entity a click elsewhere asked us to open (see `open`).
         self.process_pending_open(ctx, &author);
@@ -719,6 +783,27 @@ impl App for Headway {
         // Header sync indicator: are we reaching a private relay right now?
         let sync = sync_status(ctx);
         let action = board_ui(ui, &theme, ctx, &view, &boards, sync, &mut self.state);
+
+        // Reconcile the chrome global-history stack with the selection the board UI
+        // left, comparing it against `before` (seeded from this entry's route). The
+        // card title is snapshotted from the freshly-folded `view` for the entry's
+        // history-dropdown label.
+        match reconcile_nav(before, self.state.selected()) {
+            // Board → card: push a new detail entry (the chrome tags Headway's own
+            // slot on drain, since `render_nav` never told us our AppId).
+            Some(NavReconcile::Open(card)) => ctx
+                .navigator
+                .push_active_route(HeadwayRoute::card(card, card_title(&view, card))),
+            // Card → card: replace the detail in place so depth never exceeds one,
+            // keeping a single global-back returning to the board.
+            Some(NavReconcile::Swap(card)) => ctx
+                .navigator
+                .replace_active_route(HeadwayRoute::card(card, card_title(&view, card))),
+            // Card → board (close, delete, or a card that vanished): global-back.
+            Some(NavReconcile::Back) => ctx.navigator.back(),
+            // Steady frame — nothing moved, so enqueue nothing (this doesn't spin).
+            None => {}
+        }
 
         // A switcher request (raised in the UI state): switch the active board or
         // seed a new one. Both persist the selection so it survives a restart.
@@ -830,6 +915,42 @@ impl App for Headway {
         }
 
         AppResponse::default()
+    }
+}
+
+/// The chrome global-history request a board↔card selection change calls for,
+/// decided by [`reconcile_nav`] and dispatched onto the [`Navigator`](notedeck::Navigator)
+/// in [`Headway::render_board`].
+#[derive(Debug, PartialEq, Eq)]
+enum NavReconcile {
+    /// Board → card: push a new detail entry above the board root.
+    Open(NoteId),
+    /// Card → card: replace the current detail entry in place (a subissue/parent/
+    /// blocker jump), so board↔card depth never exceeds one.
+    Swap(NoteId),
+    /// Card → board: a single global-back to the board root (a close, a delete, or
+    /// a card that vanished from the folded view).
+    Back,
+}
+
+/// Map a board↔card selection change to its chrome global-history request.
+///
+/// `before` is the open-card seeded from the entry's route this frame; `after` is
+/// what the board UI left after the user interacted. A frame that changed nothing
+/// yields `None`, so a steady detail view enqueues no request and the nav stack
+/// doesn't spin. Kept a pure function (no `egui`/`Ndb`) so the board↔card ⇒
+/// push/replace/back mapping is unit-tested on its own.
+fn reconcile_nav(before: Option<NoteId>, after: Option<NoteId>) -> Option<NavReconcile> {
+    // A steady frame (same card open, or the board still showing) moves nothing.
+    if before == after {
+        return None;
+    }
+    match after {
+        // Newly on a card: a push from the board, a replace from another card.
+        Some(card) if before.is_none() => Some(NavReconcile::Open(card)),
+        Some(card) => Some(NavReconcile::Swap(card)),
+        // Left the card with none open: back out to the board root.
+        None => Some(NavReconcile::Back),
     }
 }
 
@@ -1346,6 +1467,27 @@ mod tests {
     use futures_util::StreamExt;
     use nostrdb::{Config, Filter, Ndb, SubscriptionStream};
     use std::time::{Duration, Instant};
+
+    /// The board↔card selection change → global-history request mapping (see
+    /// [`reconcile_nav`]): opening a card from the board pushes, swapping to
+    /// another card replaces in place, and clearing the selection backs out — while
+    /// a frame that left the selection unchanged enqueues nothing.
+    #[test]
+    fn reconcile_nav_maps_board_card_transitions() {
+        let a = NoteId::new([1u8; 32]);
+        let b = NoteId::new([2u8; 32]);
+
+        // Steady frames — nothing moved — enqueue no request, so the stack doesn't
+        // spin while a board or a detail sits open.
+        assert_eq!(reconcile_nav(None, None), None);
+        assert_eq!(reconcile_nav(Some(a), Some(a)), None);
+
+        // Board → card opens (push); card → same-card is steady; card → other-card
+        // swaps in place (replace); card → board backs out.
+        assert_eq!(reconcile_nav(None, Some(a)), Some(NavReconcile::Open(a)));
+        assert_eq!(reconcile_nav(Some(a), Some(b)), Some(NavReconcile::Swap(b)));
+        assert_eq!(reconcile_nav(Some(a), None), Some(NavReconcile::Back));
+    }
 
     /// A headless harness driving a [`BoardCache`] against a bare `Ndb` — the
     /// subscription / poll / refold logic with no egui in sight. Mirrors the

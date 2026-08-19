@@ -25,6 +25,12 @@ struct HeadwayTestState {
     /// so its board cache (which the reference parser + issue renderer resolve
     /// against) stays live.
     ref_note: Option<NoteId>,
+    /// When set, the harness renders this chrome global-history entry via
+    /// [`App::render_nav`] (with this exact route token) instead of the plain
+    /// [`App::render`] root — mirroring how the chrome draws the top nav entry, so
+    /// a test can exercise the board↔card port's seeding both ways (a `Card` token
+    /// shows the detail, a `Board`/`()` token returns to the grid).
+    nav_token: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
@@ -69,7 +75,17 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
     }
 
     egui::CentralPanel::default().show(ctx, |ui| {
-        state.headway.render(&mut app_ctx, ui);
+        // Mirror the chrome: when a global-history entry is set, draw it through
+        // `render_nav` with its route token (the chrome always reaches an app this
+        // way); otherwise the plain `render` root.
+        match &state.nav_token {
+            Some(token) => {
+                state.headway.render_nav(&mut app_ctx, ui, token);
+            }
+            None => {
+                state.headway.render(&mut app_ctx, ui);
+            }
+        }
     });
 }
 
@@ -177,6 +193,7 @@ fn headway_state() -> HeadwayTestState {
         _tmpdir: tmpdir,
         fonts_installed: false,
         ref_note: None,
+        nav_token: None,
     }
 }
 
@@ -1177,6 +1194,97 @@ fn own_shared_board_folds_teammate_card_in_render() {
     // proof the *active own* board routed through the shared fold and gathered a
     // co-member's coordinate-anchored, team-sealed card.
     wait_for_label(&mut harness, TEAMMATE_CARD);
+}
+
+/// Runtime click-through (behavioural, no lavapipe): drilling from the board into
+/// a card enqueues exactly one chrome global-history push carrying that card's
+/// route token, so the browser back chevron returns to the board. Drives a real
+/// pointer click through `render()` and inspects the [`Navigator`] queue the
+/// chrome would drain — the app-side half of the board↔card global-nav port.
+#[test]
+fn opening_a_card_pushes_a_global_nav_entry() {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+
+    const CARD: &str = "Define nostr event model for boards";
+    // A card title is a non-interactive label; a real pointer click lands on the
+    // drag-source card surface beneath it and opens the detail (the same trick the
+    // detail snapshots use). Then wait for the detail's "← Board" back affordance
+    // so the board↔card diff has run and enqueued the push.
+    harness.get_by_label(CARD).simulate_click();
+    wait_for_label(&mut harness, "← Board");
+
+    let egui_ctx = harness.ctx.clone();
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let app_ctx = state.notedeck.app_context(&egui_ctx);
+    let card = demo_card_id(app_ctx.ndb, &author, CARD);
+
+    // Nothing drains the Navigator in this chrome-less harness, so every request
+    // the app enqueued since boot is still here: opening one card must be exactly
+    // one self-owned push carrying a `Card` route for the clicked card, its title
+    // snapshotted for the history dropdown.
+    let requests = app_ctx.navigator.take();
+    let pushed: Vec<&HeadwayRoute> = requests
+        .iter()
+        .filter_map(|req| match req {
+            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        pushed.len(),
+        1,
+        "opening a card pushes exactly one global-nav entry"
+    );
+    assert_eq!(
+        pushed[0].card_id(),
+        Some(card),
+        "push targets the clicked card"
+    );
+    assert_eq!(
+        pushed[0].title(),
+        Some(CARD),
+        "the entry snapshots the card title for the history dropdown"
+    );
+}
+
+/// Runtime round-trip (behavioural, no lavapipe): the chrome draws a global-history
+/// entry via `render_nav` with its route token, so a `Card` token opens the detail
+/// and — the browser back result — a `Board` token returns to the grid, regardless
+/// of any stale selection. Proves `render_nav` seeds the open card from the nav
+/// stack rather than lingering view-state, the app half of chrome-back.
+#[test]
+fn render_nav_seeds_board_and_card_from_the_route_token() {
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+
+    const CARD: &str = "Define nostr event model for boards";
+    let card = {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context(&egui_ctx);
+        demo_card_id(app_ctx.ndb, &author, CARD)
+    };
+
+    // Chrome pushes a Card entry: render_nav seeds that card, so its detail opens
+    // (the "← Board" back affordance is only in the detail top bar).
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::card(
+        card,
+        Some(CARD.into()),
+    )));
+    wait_for_label(&mut harness, "← Board");
+
+    // Chrome-back pops to the board's root entry (a `Board` token): render_nav
+    // reseeds no open card, so the grid returns even though the detail was just up.
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::Board));
+    wait_for_absent(&mut harness, "← Board");
+    wait_for_label(&mut harness, "7 cards · 5 columns");
 }
 
 /// Deliverable 3 (behavioural, no lavapipe): the selected board survives a restart

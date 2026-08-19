@@ -158,38 +158,50 @@ async fn run() -> Result<()> {
 
     let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
 
-    // Register the signer's key so nostrdb transparently unwraps our PNS-wrapped
-    // longform (kind 1080 → 30023) for the vault reader below, mirroring what the
-    // app does when the account is added. Without it the vault reads empty.
+    // The whole vault (canvases + longform) is sealed into the account's team-of-one
+    // SNS workspace. Register its derived root so nostrdb transparently unwraps the
+    // kind-1081 envelopes to the inner canvas/longform rumors the readers below
+    // fold. The root is derived from the signing key, so a read-only `--author` CLI
+    // can't open the private vault — it works against whatever is already cached.
     if let Some((sk, _)) = &cli.secret {
-        ndb.add_key(sk);
+        store::register_workspace(&ndb, sk);
     }
 
-    // The vault is a local read of the PNS-unwrapped longform store. Longform
-    // never travels over the relay — pushing the plaintext kind-30023 would leak
-    // the article (cross-device sync fans the 1080 wrapper instead; see
-    // notedeck_notebook and headway:notebook/merry-patch-boost) — so a `vault`
-    // command skips the canvas reconcile entirely and works fully offline.
+    // `vault` is a local read of the unwrapped store; it skips the relay reconcile
+    // and works fully offline against the cache.
     if let Command::Vault { notes } = &cli.command {
         return run_vault(&ndb, &author, notes, cli.json);
     }
 
-    // Reconcile the local cache against the relay both ways so the cache and the
-    // app converge regardless of which side an edit happened on. Best-effort: an
-    // unreachable relay leaves us working offline against the cache.
-    let filter = event::notebook_filter(&author);
-    // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert our enostr author
-    // across the boundary (both are `[u8; 32]` newtypes).
-    let author_nn = nostrdb_net::Pubkey::new(*author.bytes());
-    let mut relay = nostrdb_net::relay::sync::connect_and_sync(
-        &cli.relay,
-        &ndb,
-        &author_nn,
-        &event::NOTEBOOK_KINDS,
-        &filter,
-        &event::is_addressable,
-    )
-    .await?;
+    // Reconcile the sealed vault against the relay both ways so the cache and the
+    // app converge regardless of which side an edit happened on. The wire unit is
+    // the kind-1081 SNS envelope, authored by the workspace's team key; nostrdb
+    // unwraps it locally (root registered above). Immutable per-edit, so nothing is
+    // addressable. Reconciling needs the signing key to derive the channel — a
+    // read-only CLI has nothing sealed to sync, so it works offline against the
+    // cache. Best-effort: an unreachable relay also falls back to the cache.
+    let mut relay = if let Some((sk, _)) = &cli.secret {
+        let team_pubkey =
+            store::workspace_team_pubkey(sk).ok_or("could not derive the vault's SNS channel")?;
+        let filter = nostrdb::Filter::new()
+            .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+            .authors([team_pubkey.bytes()])
+            .build();
+        // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert the team key
+        // across the boundary (both are `[u8; 32]` newtypes).
+        let team_pubkey_nn = nostrdb_net::Pubkey::new(*team_pubkey.bytes());
+        nostrdb_net::relay::sync::connect_and_sync(
+            &cli.relay,
+            &ndb,
+            &team_pubkey_nn,
+            &[enostr::sns::SNS_ENVELOPE_KIND],
+            &filter,
+            &|_| false,
+        )
+        .await?
+    } else {
+        None
+    };
 
     let canvas = cli.canvas;
     let as_json = cli.json;
