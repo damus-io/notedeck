@@ -214,11 +214,19 @@ impl Headway {
         teams::register_teams(ndb, &self.teams);
     }
 
-    /// Create a new team-of-one board under a freshly-[minted](store::mint_team_root)
-    /// random `team_root` — the path for an explicit user "New board". See
-    /// [`create_board_with_root`](Self::create_board_with_root) for the mechanics;
-    /// the default board takes a *deterministic* root instead (so every device
-    /// converges), see the auto-seed path in [`update`](Self::update).
+    /// Create a new team-of-one board (sealed + self-shared via
+    /// [`store::create_shared_board`]) and register it in the roster immediately, so
+    /// it resolves as its own sealed channel from the very next frame — edits seal
+    /// under the board's `team_root` rather than leaking plaintext while the
+    /// self-share folds back in. Returns whether the board was created. The path for
+    /// both an explicit "New board" and the auto-seeded default.
+    ///
+    /// The `team_root` is *derived* from the account secret and the board slug
+    /// ([`enostr::sns::derive_board_root`]), never randomly minted: the same board
+    /// created independently on another device — same secret, same slug — lands the
+    /// same root and converges on one channel instead of forking a divergent one.
+    /// Per-board content isolation is unchanged: a different slug derives an
+    /// unrelated root, and the derivation is one-way.
     fn create_board(
         &mut self,
         ndb: &Ndb,
@@ -227,36 +235,7 @@ impl Headway {
         board_id: &str,
         title: &str,
     ) -> bool {
-        self.create_board_with_root(
-            ndb,
-            author,
-            secret,
-            board_id,
-            title,
-            store::mint_team_root(),
-        )
-    }
-
-    /// Create a team-of-one board sealed under `root` (see
-    /// [`store::create_shared_board`]) and register it in the roster immediately,
-    /// so it resolves as its own sealed channel from the very next frame — edits
-    /// seal under the board's `team_root` rather than leaking plaintext while the
-    /// self-share folds back in. Returns whether the board was created.
-    ///
-    /// `root` is a parameter so a caller can pick its provenance: an explicit "New
-    /// board" [mints](store::mint_team_root) a random one, while the auto-seeded
-    /// default [derives](enostr::sns::derive_board_root) one from the account
-    /// secret so the same board created independently on each device converges to a
-    /// single channel.
-    fn create_board_with_root(
-        &mut self,
-        ndb: &Ndb,
-        author: &Pubkey,
-        secret: &[u8; 32],
-        board_id: &str,
-        title: &str,
-        root: [u8; 32],
-    ) -> bool {
+        let root = enostr::sns::derive_board_root(secret, board_id);
         if !store::create_shared_board(
             ndb,
             author,
@@ -570,7 +549,7 @@ impl App for Headway {
         // is drawn in `render`.)
         //
         // Never auto-seed when the active board is a *shared* one (its coordinate
-        // is in the roster): it may be owned by a co-member, so seeding would mint
+        // is in the roster): it may be owned by a co-member, so seeding would create
         // a conflicting own board instead of waiting for the shared one to fold in.
         let active_is_shared = active_shared_team(&self.teams, self.active()).is_some();
         if !self.seeded
@@ -590,40 +569,30 @@ impl App for Headway {
                 self.seeded = true;
             } else if slug == store::BOARD_ID {
                 // Auto-seed the default board as its own team-of-one SNS channel,
-                // sealed from note #1 like an explicit "New board" — so the default
-                // is shareable too and every board flows through one sealed path.
-                //
-                // Its `team_root` is *derived* from the account secret (not minted),
-                // because the default is auto-seeded independently on every device
-                // at the same coordinate: a per-device random root would mint a
-                // divergent channel per device that never folds together, whereas a
-                // deterministic root has all devices agree on one channel with no
-                // cross-device coordination (see [`enostr::sns::derive_board_root`]).
-                // An existing plaintext default is untouched — `has_board` is true
-                // for it above, so we never reach here to re-seal it.
-                let root = enostr::sns::derive_board_root(secret, store::BOARD_ID);
-                self.create_board_with_root(
-                    ctx.ndb,
-                    &author,
-                    secret,
-                    store::BOARD_ID,
-                    "Headway",
-                    root,
-                );
+                // sealed + self-shared from note #1 like an explicit "New board" — so
+                // the default is shareable too and every board flows through one
+                // sealed path. Its `team_root` is derived from the account secret and
+                // slug (see [`create_board`]), so every device auto-seeding it
+                // independently at the same coordinate converges on one channel. An
+                // existing plaintext default is untouched — `has_board` is true for it
+                // above, so we never reach here to re-seal it.
+                self.create_board(ctx.ndb, &author, secret, store::BOARD_ID, "Headway");
                 self.seeded = true;
                 self.wake();
             } else {
-                // A non-default active board only ever originates from an explicit
-                // "New board" (team-of-one SNS minted with a *random* root, created
-                // locally on the spot). Reaching here means it hasn't folded in from
-                // another device yet; deriving a root would mint a *different*
-                // channel than that random one and diverge. Keep the legacy
-                // plaintext seed for this case — retiring it is phase 2 of
-                // headway:headway/coil-lottery-surge (needs the board-sharing /
-                // migration path so a synced board is adopted, not re-seeded).
-                store::seed_default_board(ctx.ndb, &author, secret, &slug, &mut store::NoPublish);
+                // A non-default active board is never auto-created — we wait for it
+                // to sync in. Every non-default board originates from an explicit
+                // create (the GUI's "New board" or the CLI's `headway seed`, both
+                // born team-of-one SNS and in the roster from that frame). Reaching
+                // here means such a board is named by the restored board pref but
+                // hasn't folded in from its origin yet. We can't auto-create it: we
+                // don't know its title, and writing our own definition would clobber
+                // the real one once it arrives (both seal under the same derived root
+                // now, so the later `created_at` wins). So we sit tight — the board
+                // and its kind-1082 self-share sync in and are adopted via the roster
+                // (`active_is_shared` above), at which point it folds the shared way.
+                // Mark seeded so we stop re-checking; the roster path takes over.
                 self.seeded = true;
-                self.wake();
             }
         }
 

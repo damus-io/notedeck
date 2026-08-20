@@ -4,7 +4,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use nostrdb::{Config, Ndb};
+use nostrdb::{Config, Filter, Ndb, Transaction};
 use serde_json::Value;
 
 /// Test signing key — the same all-`0x42` secret the relay's own roundtrip test
@@ -14,6 +14,51 @@ const SECRET: [u8; 32] = [0x42; 32];
 fn nsec() -> String {
     let hrp = bech32::Hrp::parse("nsec").expect("hrp");
     bech32::encode::<bech32::Bech32>(hrp, &SECRET).expect("encode nsec")
+}
+
+/// The account pubkey behind [`SECRET`] — the author whose board the relay's
+/// store is inspected for below.
+fn author() -> enostr::Pubkey {
+    enostr::FullKeypair::from_secret_bytes(&SECRET)
+        .expect("keypair")
+        .pubkey
+}
+
+/// How many genuinely-plaintext headway board notes (board 30619 / issue 1621 /
+/// placement 30620) authored by `author` the relay's store holds.
+///
+/// The relay is not a channel keyholder, so it never unwraps an SNS envelope —
+/// every note of these kinds it holds is real plaintext. For a sealed board that
+/// must be zero: the write-side leak guard keeps the board's locally-unwrapped
+/// rumors off the plaintext reconcile, so only its kind-1081 envelopes reach the
+/// relay.
+fn plaintext_board_notes(ndb: &Ndb, author: &enostr::Pubkey) -> usize {
+    let txn = Transaction::new(ndb).expect("txn");
+    let filter = Filter::new()
+        .authors([author.bytes()])
+        .kinds([30619u64, 1621, 30620])
+        .build();
+    ndb.query(&txn, &[filter], 500).map_or(0, |r| r.len())
+}
+
+/// How many kind-1081 SNS envelopes the relay's store holds — the sealed wire
+/// form of a shared board's edits.
+fn envelope_count(ndb: &Ndb) -> usize {
+    let txn = Transaction::new(ndb).expect("txn");
+    let filter = Filter::new().kinds([1081u64]).build();
+    ndb.query(&txn, &[filter], 500).map_or(0, |r| r.len())
+}
+
+/// Poll the relay's store until it holds at least one kind-1081 envelope, i.e.
+/// the sealed board has synced up. Returns once satisfied, panics on timeout.
+fn wait_for_envelope(ndb: &Ndb) {
+    for _ in 0..50 {
+        if envelope_count(ndb) > 0 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("no kind-1081 envelope ever reached the relay");
 }
 
 /// Run the `headway` binary with the shared connection args plus `extra`.
@@ -353,4 +398,220 @@ fn multiple_boards_are_independent() {
         out.contains("headway"),
         "board list missing 'headway': {out}"
     );
+}
+
+/// Seal the CLI's default board online: seed it plaintext, then `migrate` it into
+/// a fresh SNS channel. After this the board's edits travel as kind-1081
+/// envelopes and its team key-share (kind-1059) is on the relay, so a fresh cache
+/// holding the account key can join and read it. Panics if either step fails.
+fn seed_and_seal(url: &str, db: &str) {
+    assert!(headway(url, db, &["seed"]).status.success(), "seed failed");
+    show_until_cols(url, db, 5);
+    let migrate = headway(url, db, &["--board", "headway", "migrate", "--new-channel"]);
+    assert!(
+        migrate.status.success(),
+        "migrate failed: {}",
+        String::from_utf8_lossy(&migrate.stderr)
+    );
+}
+
+/// A board sealed with SNS must round-trip to a brand-new cache purely through
+/// its kind-1081 envelopes: the fresh cache joins from the relay's key-share,
+/// pulls the envelopes by channel pubkey, and folds the same board — a card and
+/// all. This exercises the inbound half of the sealed-board sync leg.
+#[test]
+fn sealed_board_round_trips_to_fresh_cache() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    // A handle onto the relay's own store, to inspect what actually landed on it.
+    let relay_store = app_ndb.clone();
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    seed_and_seal(&url, db);
+    // A sealed edit: the card is written only as an envelope, never plaintext.
+    assert!(
+        headway(&url, db, &["add", "Sealed card", "--col", "Todo"])
+            .status
+            .success(),
+        "add to sealed board"
+    );
+    wait_for_envelope(&relay_store);
+
+    // A fresh cache with the same key: it must join off the relay's key-share,
+    // pull the envelopes, and fold the sealed board with its one card.
+    let fresh_dir = tempfile::tempdir().expect("fresh dir");
+    let fresh = fresh_dir.path().to_str().unwrap();
+    let board = show_until(&url, fresh, 1);
+    assert_eq!(board["columns"].as_array().unwrap().len(), 5);
+    let todo = board["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Todo")
+        .expect("todo column");
+    assert!(
+        todo["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["title"] == "Sealed card"),
+        "sealed card did not round-trip to a fresh cache: {board:#}"
+    );
+}
+
+/// A sealed edit made while the relay is unreachable is stored locally as a
+/// kind-1081 envelope; the next connected run must push that envelope up (the
+/// plaintext leg can't, the edit isn't plaintext), so the app — and a fresh
+/// cache — catch up. This exercises the outbound half of the envelope leg.
+#[test]
+fn offline_sealed_edit_flushes_on_reconnect() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+    // A port nothing listens on, so the CLI falls back to offline.
+    let dead = "ws://127.0.0.1:1";
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // Seal the board online so it is joinable, then make a sealed edit offline.
+    seed_and_seal(&url, db);
+    assert!(
+        headway(dead, db, &["add", "Offline sealed card", "--col", "Todo"])
+            .status
+            .success(),
+        "offline add to sealed board should still succeed"
+    );
+
+    // Reconnect: the sealed edit's envelope must flush up.
+    let _ = headway(&url, db, &["show"]);
+
+    // A fresh cache must see the offline edit, proving the envelope propagated.
+    let fresh_dir = tempfile::tempdir().expect("fresh dir");
+    let fresh = fresh_dir.path().to_str().unwrap();
+    let board = show_until(&url, fresh, 1);
+    let todo = board["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Todo")
+        .expect("todo column");
+    assert!(
+        todo["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["title"] == "Offline sealed card"),
+        "offline sealed edit never propagated: {board:#}"
+    );
+}
+
+/// The regression this card fixes: a sealed board must never flush its
+/// locally-unwrapped rumors to the relay as plaintext, and its sync must
+/// converge. Sealing offline (so the plaintext never had a chance to reach the
+/// relay before the seal) is the exact scenario that leaked before — the
+/// promoted rumors still matched the account-scoped plaintext filter, so every
+/// run re-pushed them and none ever converged.
+#[test]
+fn sealed_board_converges_without_plaintext_leak() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let relay_store = app_ndb.clone();
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+    let dead = "ws://127.0.0.1:1";
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // Seed and seal entirely offline: no plaintext board event ever reaches the
+    // relay, so the only way the board can sync up is as sealed envelopes.
+    assert!(
+        headway(dead, db, &["seed"]).status.success(),
+        "offline seed"
+    );
+    assert!(
+        headway(
+            dead,
+            db,
+            &["--board", "headway", "migrate", "--new-channel"]
+        )
+        .status
+        .success(),
+        "offline migrate"
+    );
+
+    // Reconnect: the envelope leg flushes the sealed board up. The plaintext leg
+    // must push nothing — the board's notes are now rumors, excluded from it.
+    wait_for_envelope_via_show(&url, db, &relay_store);
+
+    // No plaintext board event may have landed on the relay — only envelopes.
+    assert_eq!(
+        plaintext_board_notes(&relay_store, &author()),
+        0,
+        "a sealed board leaked plaintext board events to the relay"
+    );
+
+    // And the sync converges: once the envelope is up, a `show` finds nothing
+    // left to flush, and stays that way.
+    let mut converged = false;
+    for _ in 0..50 {
+        if !flushed(&headway(&url, db, &["show"])) {
+            converged = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(converged, "sealed-board sync kept re-flushing");
+    assert!(
+        !flushed(&headway(&url, db, &["show"])),
+        "a settled sealed board must not re-flush"
+    );
+    assert_eq!(
+        plaintext_board_notes(&relay_store, &author()),
+        0,
+        "a settled sealed board leaked plaintext on a later run"
+    );
+}
+
+/// Run `show` against the relay until the sealed board's envelope has flushed up,
+/// driving the reconnect that pushes it. Panics on timeout.
+fn wait_for_envelope_via_show(url: &str, db: &str, relay_store: &Ndb) {
+    for _ in 0..50 {
+        let _ = headway(url, db, &["show"]);
+        if envelope_count(relay_store) > 0 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("sealed board never flushed its envelope to the relay");
 }

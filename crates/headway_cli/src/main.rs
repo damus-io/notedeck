@@ -343,8 +343,11 @@ async fn run() -> Result<()> {
     }
     // Reconcile the local cache against the relay both ways so the cache and the
     // app converge regardless of which side an edit happened on. Best-effort: an
-    // unreachable relay leaves us working offline against the cache.
-    let filter = event::headway_filter(&author);
+    // unreachable relay leaves us working offline against the cache. The filter
+    // excludes unwrapped rumors so a sealed board's edits are never pushed to the
+    // relay as plaintext (see `plaintext_sync_filter`); their kind-1081 envelopes
+    // ride the separate `sync_envelopes` leg below instead.
+    let filter = plaintext_sync_filter(&author);
     let is_addressable = |kind: u32| kind == event::KIND_BOARD || kind == event::KIND_PLACEMENT;
     // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert our enostr author
     // across the boundary (both are `[u8; 32]` newtypes).
@@ -372,6 +375,13 @@ async fn run() -> Result<()> {
     // envelope that arrived before its root was registered, so it is safe for this
     // to run after the sync above rather than before it.
     let roster = Roster::load(&ndb, &author);
+
+    // Sync each joined board's kind-1081 SNS envelopes (see `sync_envelopes`).
+    // Runs after `Roster::load` has registered the channel roots, so every pulled
+    // envelope auto-unwraps into a queryable rumor and the sealed board folds.
+    if let Some(relay) = relay.as_mut() {
+        sync_envelopes(relay, &ndb, &roster).await;
+    }
 
     let board = cli.board;
     let board_explicit = cli.board_explicit;
@@ -834,13 +844,19 @@ fn parse_clearable<T>(s: &str, parse: impl Fn(&str) -> Result<T>) -> Result<Opti
 /// plaintext way omits every co-member's edit, and writing plaintext to one
 /// produces events no other front end will ever fold.
 ///
-/// Note what this does *not* add: a sync leg for the envelopes themselves. The
-/// CLI already pulls a shared board's content, because nostrdb stores the peeled
-/// rumor beside the envelope and those rumors are ordinary events matching the
-/// plaintext [`event::headway_filter`] the reconcile in `run` already syncs. What
-/// was missing was never the events, only the keys to recognise and seal them.
-/// The envelope pipe proper belongs to `relay::sync::Session`
-/// (headway:notedeck/clap-matrix-machine), not to a fourth one-shot leg here.
+/// The roster also drives the envelope sync leg ([`sync_envelopes`]): a sealed
+/// board's edits reach the relay only as kind-1081 envelopes signed by the team
+/// keypair, which the account-scoped plaintext reconcile can't see, so the CLI
+/// reconciles each channel's envelopes by its team pubkey. This is the one-shot
+/// counterpart of the long-lived `relay::sync::Session` envelope pipe
+/// (headway:notedeck/clap-matrix-machine): the CLI reconciles once per run and
+/// exits rather than holding a live subscription, but both move the same
+/// envelopes. It replaced an earlier assumption that the peeled rumors — stored
+/// beside their envelopes and matching the plaintext [`event::headway_filter`] —
+/// were enough to piggyback a sealed board onto the plaintext leg. They are not:
+/// a fresh cache has no envelope to peel until this leg pulls it, and pushing a
+/// rumor on the plaintext leg would leak it in the clear (see
+/// [`plaintext_sync_filter`]).
 struct Roster {
     /// Joined channels, each naming the board coordinate its key unlocks.
     teams: Vec<teams::Team>,
@@ -892,6 +908,98 @@ impl Roster {
         teams::board_channels(&self.teams, &addr)
             .first()?
             .root_bytes()
+    }
+}
+
+/// The plaintext reconcile filter: every headway event authored by us that is
+/// *not* an unwrapped rumor.
+///
+/// [`event::headway_filter`] also matches a sealed board's locally-unwrapped
+/// rumors — a rumor keeps its original author, so an account-authored sealed
+/// edit still matches `authors:[account]`. Those rumors live only in this cache
+/// (the relay holds their kind-1081 envelopes instead), so feeding them to the
+/// bidirectional reconcile would flush them to the relay *as plaintext*: a leak
+/// that also never converges, since the relay keeps the envelope, not the
+/// plaintext, so the reconcile re-opens the same diff every run. The custom
+/// `!is_rumor()` element drops them from both the negentropy "have" set and the
+/// push frames (`local_set` and `frames_where` both fold with this filter),
+/// mirroring notedeck's `fan_out_unseen_notes` `is_rumor` guard.
+///
+/// Write-side only, by design: the wire pull filter is built from kinds+author
+/// independently of this one, so inbound plaintext sync is unaffected, and reads
+/// never route through this filter (they fold via `load_board`). A
+/// genuinely-plaintext board's events aren't rumors, so they still reconcile
+/// both ways.
+fn plaintext_sync_filter(author: &Pubkey) -> nostrdb::Filter {
+    nostrdb::Filter::new()
+        .authors([author.bytes()])
+        .kinds(event::HEADWAY_KINDS.iter().map(|k| *k as u64))
+        .custom(|note| !note.is_rumor())
+        .build()
+}
+
+/// Reconcile every joined board's kind-1081 SNS envelopes with the relay, both
+/// ways, keyed by each channel's team pubkey.
+///
+/// A sealed board's edits travel as kind-1081 envelopes signed by the channel's
+/// *team* keypair, not the account — so they match neither the account-scoped
+/// plaintext [`event::headway_filter`] reconcile nor the kind-1059 gift-wrap
+/// pull ([`pull_giftwraps`]). Without this leg a fresh cache never pulls a sealed
+/// board down, and a seal made offline never flushes up. Each channel is
+/// reconciled under its team pubkey: the pull brings a co-member's (or another
+/// device's) envelopes down, the push flushes envelopes we sealed while offline.
+/// nostrdb auto-unwraps every pulled envelope against the roots [`Roster::load`]
+/// registered, so the peeled rumors become queryable and the board folds.
+///
+/// Bidirectional like the plaintext reconcile, but per channel: an envelope is
+/// immutable (nothing is addressable, so there is no revision to dedup) and
+/// authored by exactly one team key, so each distinct channel pubkey is its own
+/// single-author reconcile. Best-effort: an unreachable or non-NIP-77 relay just
+/// leaves us with the channels already in the cache.
+async fn sync_envelopes(relay: &mut nostrdb_net::relay::sync::Relay, ndb: &Ndb, roster: &Roster) {
+    // Every distinct channel pubkey across all joined boards — a board can span
+    // several channels, and one channel can back several boards, so dedup.
+    let mut pubkeys: Vec<Pubkey> = Vec::new();
+    for team in &roster.teams {
+        let Some(pk) = team.sns_keys().map(|keys| keys.team_keypair.pubkey) else {
+            continue;
+        };
+        if !pubkeys.contains(&pk) {
+            pubkeys.push(pk);
+        }
+    }
+    if pubkeys.is_empty() {
+        return;
+    }
+
+    let envelope_kinds = [enostr::sns::SNS_ENVELOPE_KIND];
+    let before = count_matching(ndb, &teams::envelope_filter(&pubkeys));
+    for pk in &pubkeys {
+        let filter = teams::envelope_filter(std::slice::from_ref(pk));
+        let author = nostrdb_net::Pubkey::new(*pk.bytes());
+        if let Err(e) = nostrdb_net::relay::sync::reconcile_sync(
+            relay,
+            ndb,
+            &author,
+            &envelope_kinds,
+            &filter,
+            &|_| false,
+        )
+        .await
+        {
+            eprintln!("warning: couldn't sync sealed-board envelopes: {e}");
+        }
+    }
+
+    // Peel any envelopes that just arrived. Auto-unwrap fires on ingest for an
+    // already-registered root, but a `process_sns` catch-up covers an envelope
+    // that landed before its root was registered — the envelope counterpart of
+    // `pull_giftwraps`' peel. Gated on new arrivals so the whole-store walk isn't
+    // paid on a command that pulled nothing.
+    if count_matching(ndb, &teams::envelope_filter(&pubkeys)) > before
+        && let Ok(txn) = Transaction::new(ndb)
+    {
+        ndb.process_sns(&txn);
     }
 }
 
