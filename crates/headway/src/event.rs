@@ -2679,12 +2679,24 @@ pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Board
 /// every member's contributions, so the read path keys off the board's
 /// *coordinate* instead of any one author:
 ///
-/// - `{kinds:[BOARD], authors:[owner], #d:[board_id]}` — the single owner-authored
-///   board definition (columns, title). Authored only by the owner by
-///   construction, so this stays author-scoped.
+/// - `{kinds:[BOARD], authors:[owner], #d:[board_id]}` — the owner-authored board
+///   definition (columns, title). Authored only by the owner by construction, so
+///   this stays author-scoped.
 /// - `{kinds:[ISSUE, PLACEMENT], #a:[board_addr]}` — every member's cards and
 ///   card placements, which carry the board coordinate in their `a` tag
 ///   ([`build_issue`], [`build_placement`]) rather than being owner-authored.
+///
+/// The definition filter is deliberately **unbounded**, for the same reason
+/// [`headway_filter`] is: nostrdb keeps every revision of an addressable event,
+/// and a `limit` here caps the notes *visited* by the fold rather than paging it.
+/// A `limit(1)` would visit only the newest revision at the coordinate — and the
+/// newest revision is not necessarily one the caller may trust. [`fold_shared_board`]
+/// ingests only team-sealed rumors, so a *plaintext* board definition written at the
+/// coordinate afterwards (a stray auto-seed, a front end that doesn't know the board
+/// is sealed) would be the only note visited, get dropped by the seal-trust check,
+/// and leave the fold with no definition at all — a board that has sealed cards yet
+/// renders nothing, permanently. Visiting every revision lets the reducer resolve
+/// latest-wins over the revisions the caller actually trusts.
 ///
 /// Returns `None` if `board_addr` isn't a well-formed board coordinate. This is
 /// "phase A" of [`fold_shared_board`]; the card ids it surfaces drive the
@@ -2695,7 +2707,6 @@ pub fn board_scoped_filters(board_addr: &str) -> Option<Vec<Filter>> {
         .kinds([KIND_BOARD as u64])
         .authors([&coord.owner])
         .tags([coord.slug.as_str()], 'd')
-        .limit(1)
         .build();
     let anchored = Filter::new()
         .kinds([KIND_ISSUE as u64, KIND_PLACEMENT as u64])
@@ -4298,6 +4309,91 @@ mod tests {
         assert_eq!(owner_only.columns[0].cards.len(), 1);
         assert_eq!(owner_only.columns[1].cards.len(), 0);
         assert_eq!(owner_only.columns[0].cards[0].title, "Owner card");
+    }
+
+    /// A *plaintext* board definition written at a sealed board's coordinate after
+    /// the sealed one must not hide it.
+    ///
+    /// nostrdb keeps every revision of an addressable event and serves the newest
+    /// first, so the newest definition at a coordinate is simply whatever was
+    /// written last — while [`fold_shared_board`] trusts only team-sealed rumors.
+    /// With the definition filter capped at `limit(1)` the fold visited *only* that
+    /// newest revision, dropped it as unsealed, and yielded a board with no
+    /// definition — `None` forever, on a board whose cards were all sealed and
+    /// present. Sighted live as a shared board that rendered nothing behind the
+    /// plaintext "Headway" definitions a since-retired auto-seed left at its
+    /// coordinate.
+    #[test]
+    fn shared_fold_sees_sealed_definition_behind_a_later_plaintext_one() {
+        use crate::store::{self, NoPublish, Signer, SnsChannel};
+        use nostrdb::{Config, Ndb, Transaction};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+
+        let owner = FullKeypair::generate();
+        let secret = owner.secret_key.secret_bytes();
+        let addr = board_address(&owner.pubkey, "headway");
+
+        // Distinctive bytes so a stray all-zero root can't accidentally match.
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x43;
+        let channel = SnsChannel {
+            keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+        };
+        assert!(ndb.add_team_root(&root));
+
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let seal = |b: NoteBuilder| -> NoteId {
+            store::ingest_signed(&ndb, b, &Signer::shared(&secret, &channel), &mut NoPublish)
+                .expect("sealed ingest")
+        };
+
+        // The real board: definition and one card, all sealed into the channel.
+        seal(build_board("headway", "Team Board", "", &cols).created_at(1_000));
+        let card = seal(build_issue(&addr, "Sealed card", "").created_at(1_000));
+        seal(build_placement("headway", &addr, &card, "todo", "g").created_at(1_000));
+
+        // A plaintext writer then seeds its own definition at the same coordinate,
+        // stamped *later* — so it is the revision the coordinate resolves to.
+        store::ingest(
+            &ndb,
+            build_board("headway", "Squatter", "", &cols).created_at(2_000),
+            &secret,
+            &mut NoPublish,
+        )
+        .expect("plaintext ingest");
+
+        let team_pubkey = &channel.keys.team_keypair.pubkey;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            // Require the plaintext revision to have actually won latest-wins first,
+            // or the shared fold could pass for the wrong reason (the squatter not
+            // yet ingested). The single-author fold has no seal-trust check, so it
+            // reports which revision the coordinate resolves to.
+            let squatted = fold_board(&ndb, &txn, &owner.pubkey)
+                .and_then(|r| pick_board(&r, &owner.pubkey, "headway"))
+                .is_some_and(|v| v.title == "Squatter");
+            if squatted
+                && let Some(view) =
+                    load_shared_board(&ndb, &txn, &addr, std::slice::from_ref(team_pubkey))
+                && view.columns[0].cards.len() == 1
+            {
+                // The sealed definition still folds: the plaintext one is dropped by
+                // the seal-trust check instead of taking the board down with it.
+                assert_eq!(view.title, "Team Board");
+                assert_eq!(view.columns[0].cards[0].title, "Sealed card");
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the sealed board never folded behind the later plaintext definition"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
