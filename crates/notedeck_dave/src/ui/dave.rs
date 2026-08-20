@@ -3110,6 +3110,56 @@ mod tests {
         harness.snapshot("executed_tool_results_expanded");
     }
 
+    /// Visualize the call-summary rows for the newer SDK subagent/skill/messaging
+    /// tools (headway:dave/make-stem-clerk, fancy-bulb-anger, fresh-pistol-depend):
+    /// a Skill invocation, an Agent (subagent) launch mirroring Task, and a
+    /// SendMessage agent-to-agent send. Each renders as a plain one-liner whose
+    /// summary leads with its most identifying arg. These tools once hit the blank
+    /// `_` arm and showed a bare greyed name; this guards that they now carry a
+    /// summary. Render with `scripts/snapshot-test snapshot_agentic_tool_summaries`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agentic_tool_summaries() {
+        // Summaries mirror what `format_tool_summary` produces for each tool
+        // (exercised directly in backend::tool_summary's unit tests); here we
+        // render the resulting rows.
+        let results = vec![
+            crate::messages::ExecutedTool {
+                tool_name: "Skill".to_string(),
+                summary: "headway show dave/measure-crawl-goat".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+            crate::messages::ExecutedTool {
+                tool_name: "Agent".to_string(),
+                summary: "audit the login flow (Explore)".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+            crate::messages::ExecutedTool {
+                tool_name: "SendMessage".to_string(),
+                summary: "→ researcher: assign task 1".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+        ];
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 120.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                for result in &results {
+                    DaveUi::executed_tool_ui(result, ui);
+                    ui.add_space(4.0);
+                }
+            });
+
+        harness.run();
+        harness.snapshot("agentic_tool_summaries");
+    }
+
     /// Regression guard for the expanded unified body (headway:dave/sting-february-sausage):
     /// a Bash result with a long command *and* output with an unbreakable token,
     /// rendered beside a wide sibling that stretches the column past the
