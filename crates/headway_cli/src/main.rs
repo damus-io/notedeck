@@ -49,7 +49,12 @@ enum Command {
         /// in full `git show`-style detail rather than the whole board.
         cards: Vec<String>,
     },
-    Seed,
+    /// Create the target board as a born team-of-one SNS channel (sealed from note
+    /// #1). Optional `--title` sets its display name; when unset it defaults to the
+    /// board's slug (so a non-default board is never accidentally titled "Headway").
+    Seed {
+        title: Option<String>,
+    },
     /// Migrate the current board to SNS: seal it under a fresh per-board team key
     /// so it can be shared, re-sealing existing notes in place (no data loss). See
     /// [`store::migrate_board_to_sns`].
@@ -277,7 +282,7 @@ impl Command {
             | Command::Restore { card }
             | Command::Link { card, .. }
             | Command::MoveBoard { card, .. } => selectors.push(card),
-            Command::Seed
+            Command::Seed { .. }
             | Command::Migrate
             | Command::Rename { .. }
             | Command::Board { .. }
@@ -410,17 +415,33 @@ async fn run() -> Result<()> {
             ),
         },
 
-        Command::Seed => {
+        Command::Seed { title } => {
             let secret = secret.ok_or("seed needs --nsec to sign")?;
             if load_board(&ndb, &roster, &author, &board).is_some() {
                 return Err(format!("board '{board}' already exists").into());
             }
+            // Title defaults to the slug (an explicit `--title` overrides). Every
+            // board is named after itself — no board is titled "Headway" unless its
+            // slug is, which fixes jb55's recurring "accidental Headway board" where
+            // `headway --board work seed` used to create a second board also titled
+            // "Headway".
+            let title = title.unwrap_or_else(|| board.clone());
+            // Born team-of-one SNS: seal the board under a per-board root *derived*
+            // from the account secret and slug (never randomly minted), mirroring the
+            // GUI. Deriving converges cross-device — the same slug on another device
+            // lands the same channel — while a different slug derives an unrelated,
+            // isolated root. `create_shared_board` also self-shares the root (a
+            // kind-1082 key-share) so the board joins this account's roster.
+            let root = enostr::sns::derive_board_root(&secret, &board);
             let mut sink = Collect::default();
-            store::seed_default_board(&ndb, &author, &secret, &board, &mut sink);
+            if !store::create_shared_board(&ndb, &author, &secret, &board, &title, &root, &mut sink)
+            {
+                return Err(format!("failed to seal new board '{board}'").into());
+            }
             let n = sink.0.len();
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
-                "seeded board '{board}' ({n} events){}",
+                "seeded sealed board '{board}' ({n} events){}",
                 nostrdb_net::relay::sync::offline_note(&relay)
             );
         }
@@ -806,7 +827,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Rename { title } => BoardAction::RenameBoard { title },
         Command::Show { .. }
         | Command::Next { .. }
-        | Command::Seed
+        | Command::Seed { .. }
         | Command::Migrate
         | Command::Link { .. }
         | Command::MoveBoard { .. }
@@ -1614,6 +1635,9 @@ impl Cli {
         let mut desc = None;
         let mut desc_file = None;
         let mut on = None;
+        // `seed` display title; when unset the title defaults to the board slug
+        // (see `Command::Seed`).
+        let mut title = None;
         let mut labels: Vec<String> = Vec::new();
         let mut seq = SeqFlags::default();
         // `next` flags.
@@ -1642,6 +1666,7 @@ impl Cli {
                 "--desc" => desc = Some(value("--desc")?),
                 "--desc-file" => desc_file = Some(value("--desc-file")?),
                 "--on" => on = Some(value("--on")?),
+                "--title" => title = Some(value("--title")?),
                 "--after" => seq.after = Some(value("--after")?),
                 "--before" => seq.before = Some(value("--before")?),
                 "--first" => seq.first = true,
@@ -1706,6 +1731,7 @@ impl Cli {
             parent,
             description,
             on,
+            title,
             labels,
             seq,
             ready,
@@ -1780,6 +1806,7 @@ fn parse_command(
     parent: Option<String>,
     description: Option<String>,
     on: Option<String>,
+    title: Option<String>,
     labels: Vec<String>,
     seq: SeqFlags,
     ready: bool,
@@ -1790,7 +1817,7 @@ fn parse_command(
         "show" => Command::Show {
             cards: rest.to_vec(),
         },
-        "seed" => Command::Seed,
+        "seed" => Command::Seed { title },
         "migrate" => Command::Migrate,
         "add" => Command::Add {
             title: joined(rest, 0, name)?,
@@ -1945,7 +1972,8 @@ COMMANDS:
     show [cards...]            Print the board, or the given cards in full
                                detail (--archived to list archived, --all for
                                every board, --json for machine output)
-    seed                       Seed the default board if none exists
+    seed [--title <t>]         Create the target board (born sealed team-of-one
+                               SNS) if none exists; title defaults to the slug
     migrate                    Migrate this board to SNS: seal it under a fresh
                                per-board key so it can be shared, re-sealing
                                existing notes in place (no data loss)
