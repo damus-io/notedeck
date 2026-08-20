@@ -779,17 +779,20 @@ impl Headway {
         // card title is snapshotted from the freshly-folded `view` for the entry's
         // history-dropdown label.
         match reconcile_nav(before, self.state.selected()) {
-            // Board → card: push a new detail entry (the chrome tags Headway's own
-            // slot on drain, since `render_nav` never told us our AppId).
-            Some(NavReconcile::Open(card)) => ctx
+            // Opening a card — from the board, or drilling from one card into a
+            // subissue/parent/blocker — pushes a new detail entry (the chrome tags
+            // Headway's own slot on drain, since `render_nav` never told us our
+            // AppId). A card→card drill pushes rather than replaces on purpose: the
+            // `replace` primitive collapses the *whole* history to the new top
+            // (`ReplacementType::All`), which would drop the board root and every
+            // prior app so a global-back had nothing to return to. Pushing keeps a
+            // browser-style trail — back walks from a subissue up to its parent and
+            // on to the board.
+            Some(NavReconcile::Push(card)) => ctx
                 .navigator
                 .push_active_route(HeadwayRoute::card(card, card_title(&view, card))),
-            // Card → card: replace the detail in place so depth never exceeds one,
-            // keeping a single global-back returning to the board.
-            Some(NavReconcile::Swap(card)) => ctx
-                .navigator
-                .replace_active_route(HeadwayRoute::card(card, card_title(&view, card))),
-            // Card → board (close, delete, or a card that vanished): global-back.
+            // Leaving a card with none open (close, delete, or a card that vanished)
+            // steps one entry back in the global history.
             Some(NavReconcile::Back) => ctx.navigator.back(),
             // Steady frame — nothing moved, so enqueue nothing (this doesn't spin).
             None => {}
@@ -957,13 +960,13 @@ fn placeholder_board(active: &event::BoardCoord, boards: &[BoardSummary]) -> Boa
 /// in [`Headway::render_board`].
 #[derive(Debug, PartialEq, Eq)]
 enum NavReconcile {
-    /// Board → card: push a new detail entry above the board root.
-    Open(NoteId),
-    /// Card → card: replace the current detail entry in place (a subissue/parent/
-    /// blocker jump), so board↔card depth never exceeds one.
-    Swap(NoteId),
-    /// Card → board: a single global-back to the board root (a close, a delete, or
-    /// a card that vanished from the folded view).
+    /// A card was opened — from the board or drilled into from another card (a
+    /// subissue/parent/blocker jump). Both push a new detail entry: the `replace`
+    /// primitive collapses the whole history rather than swapping the top, so a
+    /// card→card drill pushes to keep a walkable back trail.
+    Push(NoteId),
+    /// The open card was dismissed (a close, a delete, or a card that vanished from
+    /// the folded view): step one entry back in the global history.
     Back,
 }
 
@@ -972,18 +975,17 @@ enum NavReconcile {
 /// `before` is the open-card seeded from the entry's route this frame; `after` is
 /// what the board UI left after the user interacted. A frame that changed nothing
 /// yields `None`, so a steady detail view enqueues no request and the nav stack
-/// doesn't spin. Kept a pure function (no `egui`/`Ndb`) so the board↔card ⇒
-/// push/replace/back mapping is unit-tested on its own.
+/// doesn't spin. Kept a pure function (no `egui`/`Ndb`) so the open ⇒ push /
+/// dismiss ⇒ back mapping is unit-tested on its own.
 fn reconcile_nav(before: Option<NoteId>, after: Option<NoteId>) -> Option<NavReconcile> {
     // A steady frame (same card open, or the board still showing) moves nothing.
     if before == after {
         return None;
     }
     match after {
-        // Newly on a card: a push from the board, a replace from another card.
-        Some(card) if before.is_none() => Some(NavReconcile::Open(card)),
-        Some(card) => Some(NavReconcile::Swap(card)),
-        // Left the card with none open: back out to the board root.
+        // Newly on a (different) card: push its detail entry.
+        Some(card) => Some(NavReconcile::Push(card)),
+        // Left the card with none open: back out one entry.
         None => Some(NavReconcile::Back),
     }
 }
@@ -1503,9 +1505,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// The board↔card selection change → global-history request mapping (see
-    /// [`reconcile_nav`]): opening a card from the board pushes, swapping to
-    /// another card replaces in place, and clearing the selection backs out — while
-    /// a frame that left the selection unchanged enqueues nothing.
+    /// [`reconcile_nav`]): opening a card from the board pushes, drilling from one
+    /// card into another pushes too (a walkable trail — not a stack-collapsing
+    /// replace), and clearing the selection backs out — while a frame that left the
+    /// selection unchanged enqueues nothing.
     #[test]
     fn reconcile_nav_maps_board_card_transitions() {
         let a = NoteId::new([1u8; 32]);
@@ -1516,10 +1519,9 @@ mod tests {
         assert_eq!(reconcile_nav(None, None), None);
         assert_eq!(reconcile_nav(Some(a), Some(a)), None);
 
-        // Board → card opens (push); card → same-card is steady; card → other-card
-        // swaps in place (replace); card → board backs out.
-        assert_eq!(reconcile_nav(None, Some(a)), Some(NavReconcile::Open(a)));
-        assert_eq!(reconcile_nav(Some(a), Some(b)), Some(NavReconcile::Swap(b)));
+        // Board → card and card → other-card both push; card → board backs out.
+        assert_eq!(reconcile_nav(None, Some(a)), Some(NavReconcile::Push(a)));
+        assert_eq!(reconcile_nav(Some(a), Some(b)), Some(NavReconcile::Push(b)));
         assert_eq!(reconcile_nav(Some(a), None), Some(NavReconcile::Back));
     }
 

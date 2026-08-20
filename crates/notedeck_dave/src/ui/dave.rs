@@ -1158,6 +1158,12 @@ impl<'a> DaveUi<'a> {
         arrow: Option<&str>,
         ui: &mut egui::Ui,
     ) -> egui::Response {
+        // A compact one-line header shared by every tool result. The summary is
+        // *truncated* (ellipsized) to the visible width rather than wrapped, so
+        // a long Bash command — for Bash the summary is the full command, kept
+        // untruncated by `format_bash_summary` — can never overrun the row or
+        // push the layout past the viewport. The full command is revealed in the
+        // expanded body (`tool_command_output_ui`).
         ui.horizontal(|ui| {
             if let Some(arrow) = arrow {
                 ui.add(egui::Label::new(
@@ -1173,26 +1179,52 @@ impl<'a> DaveUi<'a> {
                     .monospace(),
             ));
             if !summary.is_empty() {
-                ui.add(egui::Label::new(
-                    egui::RichText::new(summary)
-                        .size(11.0)
-                        .color(ui.visuals().text_color().gamma_multiply(0.4))
-                        .monospace(),
-                ));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(summary)
+                            .size(11.0)
+                            .color(ui.visuals().text_color().gamma_multiply(0.4))
+                            .monospace(),
+                    )
+                    .truncate(),
+                );
             }
         })
         .response
     }
 
-    /// Render a tool's raw textual output (e.g. bash stdout/stderr) as an
-    /// indented, subdued monospace block under its result row.
+    /// Lay out `text` as a subdued, break-anywhere monospace block bounded to
+    /// `max_width`. Break-anywhere so a long line, or an unbreakable token like a
+    /// path or hash, can never run off the right edge — plain word-wrap leaves
+    /// those overflowing.
+    fn wrapped_mono_ui(text: &str, color: egui::Color32, max_width: f32, ui: &mut egui::Ui) {
+        let mut job = egui::text::LayoutJob::single_section(
+            text.to_owned(),
+            egui::TextFormat {
+                font_id: egui::FontId::monospace(11.0),
+                color,
+                ..Default::default()
+            },
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width,
+            break_anywhere: true,
+            ..Default::default()
+        };
+        ui.add(egui::Label::new(job));
+    }
+
+    /// Render the expanded detail for a free-form tool result (e.g. Bash): the
+    /// full `command` that ran, a divider, then its captured `output`. The header
+    /// row only shows a truncated one-liner, so this unified body is where the
+    /// reader sees the command in full alongside its output.
     ///
     /// The model holds the full output, so display is bounded here: a long tail
-    /// is trimmed (the end — the error, the exit — is what a reader wants), and
-    /// the text wraps *break-anywhere* within the visible width so a long line,
-    /// or an unbreakable token like a path or hash, can never run off the right
-    /// edge — plain word-wrap leaves those overflowing.
-    fn tool_output_ui(output: &str, ui: &mut egui::Ui) {
+    /// is trimmed (the end — the error, the exit — is what a reader wants). Both
+    /// command and output wrap *break-anywhere* within the visible width — not a
+    /// column an adjacent wide element (a diff, a long path) may have stretched
+    /// past the viewport — so nothing overflows horizontally.
+    fn tool_command_output_ui(command: &str, output: &str, ui: &mut egui::Ui) {
         let shown = crate::backend::truncate_output(output, MAX_TOOL_OUTPUT_DISPLAY_BYTES);
         ui.indent("exec_output_body", |ui| {
             egui::Frame::new()
@@ -1200,25 +1232,26 @@ impl<'a> DaveUi<'a> {
                 .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
                 .corner_radius(notedeck::tokens::RADIUS_LG)
                 .show(ui, |ui| {
-                    // Wrap to the visible width, not a column that an adjacent
-                    // wide element (a diff, a long path) may have stretched past
-                    // the viewport, and break inside long tokens so nothing
-                    // overflows horizontally.
                     let max_width = ui.available_width().min(ui.clip_rect().width());
-                    let mut job = egui::text::LayoutJob::single_section(
-                        shown,
-                        egui::TextFormat {
-                            font_id: egui::FontId::monospace(11.0),
-                            color: ui.visuals().text_color().gamma_multiply(0.75),
-                            ..Default::default()
-                        },
-                    );
-                    job.wrap = egui::text::TextWrapping {
+                    // The command reads brighter than its output so the two
+                    // sections stay distinct within the one block.
+                    Self::wrapped_mono_ui(
+                        command,
+                        ui.visuals().text_color().gamma_multiply(0.85),
                         max_width,
-                        break_anywhere: true,
-                        ..Default::default()
-                    };
-                    ui.add(egui::Label::new(job));
+                        ui,
+                    );
+                    if !output.is_empty() {
+                        ui.add_space(notedeck::tokens::SPACING_SM);
+                        ui.separator();
+                        ui.add_space(notedeck::tokens::SPACING_SM);
+                        Self::wrapped_mono_ui(
+                            &shown,
+                            ui.visuals().text_color().gamma_multiply(0.75),
+                            max_width,
+                            ui,
+                        );
+                    }
                 });
         });
     }
@@ -1245,7 +1278,8 @@ impl<'a> DaveUi<'a> {
             }
         } else if let Some(output) = &result.output {
             // Free-form tool output (bash stdout/stderr) — collapsed by default
-            // so a noisy command doesn't dominate the transcript; click to reveal.
+            // so a noisy command doesn't dominate the transcript; click to reveal
+            // the full command and its output together.
             let expand_id = ui.id().with("exec_output").with(&result.summary);
             let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(false));
 
@@ -1259,7 +1293,14 @@ impl<'a> DaveUi<'a> {
             }
 
             if expanded {
-                Self::tool_output_ui(output, ui);
+                // The Bash summary is the backtick-quoted command; strip the one
+                // surrounding pair so the body shows the bare command.
+                let command = result
+                    .summary
+                    .strip_prefix('`')
+                    .and_then(|s| s.strip_suffix('`'))
+                    .unwrap_or(&result.summary);
+                Self::tool_command_output_ui(command, output, ui);
             }
         } else {
             // Compact single-line display with subdued styling
@@ -2998,7 +3039,7 @@ mod tests {
         vec![
             crate::messages::ExecutedTool {
                 tool_name: "Bash".to_string(),
-                summary: "`ls -la crates` (312 chars)".to_string(),
+                summary: "`ls -la crates`".to_string(),
                 output: Some(
                     "total 24\ndrwxr-xr-x  notedeck\ndrwxr-xr-x  notedeck_dave\n-rw-r--r--  Cargo.toml"
                         .to_string(),
@@ -3057,10 +3098,7 @@ mod tests {
                 // Seed the ls row's disclosure open so the stdout block renders.
                 // `executed_tool_ui` keys its expand flag off `exec_output` +
                 // summary against this same `ui`'s id, so the key matches.
-                let expand_id = ui
-                    .id()
-                    .with("exec_output")
-                    .with("`ls -la crates` (312 chars)");
+                let expand_id = ui.id().with("exec_output").with("`ls -la crates`");
                 ui.data_mut(|d| d.insert_temp(expand_id, true));
                 for result in &results {
                     DaveUi::executed_tool_ui(result, ui);
@@ -3072,19 +3110,71 @@ mod tests {
         harness.snapshot("executed_tool_results_expanded");
     }
 
-    /// Regression guard for the tool-output wrapping (headway:dave/sting-february-sausage):
-    /// a Bash result with long spaced lines *and* an unbreakable token, rendered
-    /// beside a wide sibling that stretches the column past the viewport. The
-    /// output block must wrap within the visible width — break-anywhere for the
-    /// unbreakable token — instead of running off the right edge.
+    /// Visualize the call-summary rows for the newer SDK subagent/skill/messaging
+    /// tools (headway:dave/make-stem-clerk, fancy-bulb-anger, fresh-pistol-depend):
+    /// a Skill invocation, an Agent (subagent) launch mirroring Task, and a
+    /// SendMessage agent-to-agent send. Each renders as a plain one-liner whose
+    /// summary leads with its most identifying arg. These tools once hit the blank
+    /// `_` arm and showed a bare greyed name; this guards that they now carry a
+    /// summary. Render with `scripts/snapshot-test snapshot_agentic_tool_summaries`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agentic_tool_summaries() {
+        // Summaries mirror what `format_tool_summary` produces for each tool
+        // (exercised directly in backend::tool_summary's unit tests); here we
+        // render the resulting rows.
+        let results = vec![
+            crate::messages::ExecutedTool {
+                tool_name: "Skill".to_string(),
+                summary: "headway show dave/measure-crawl-goat".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+            crate::messages::ExecutedTool {
+                tool_name: "Agent".to_string(),
+                summary: "audit the login flow (Explore)".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+            crate::messages::ExecutedTool {
+                tool_name: "SendMessage".to_string(),
+                summary: "→ researcher: assign task 1".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+            },
+        ];
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 120.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                for result in &results {
+                    DaveUi::executed_tool_ui(result, ui);
+                    ui.add_space(4.0);
+                }
+            });
+
+        harness.run();
+        harness.snapshot("agentic_tool_summaries");
+    }
+
+    /// Regression guard for the expanded unified body (headway:dave/sting-february-sausage):
+    /// a Bash result with a long command *and* output with an unbreakable token,
+    /// rendered beside a wide sibling that stretches the column past the
+    /// viewport. Expanded, the body shows the full command, a divider, then the
+    /// output — both wrapping within the visible width (break-anywhere for the
+    /// unbreakable token) instead of running off the right edge.
     /// Render with `scripts/snapshot-test snapshot_tool_output_wraps_in_viewport`.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_tool_output_wraps_in_viewport() {
-        let output = "headway --board commerce desc headway:commerce/gallery-mansion-suggest \"Drop the notification claim table; best-effort send + operator-review transition guard replaces it, no reaper, no queue\"\n/Users/jb55/dev/hydra/commerce/apps/api/src/onboarding/onboarding.service.ts:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nexit 0";
+        let summary = "`headway --board commerce desc headway:commerce/gallery-mansion-suggest \"Drop the notification claim table; best-effort send + operator-review transition guard replaces it, no reaper, no queue\"`";
+        let output = "ok (1 events)\n/Users/jb55/dev/hydra/commerce/apps/api/src/onboarding/onboarding.service.ts:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nexit 0";
         let results = vec![crate::messages::ExecutedTool {
             tool_name: "Bash".to_string(),
-            summary: "exit 0".to_string(),
+            summary: summary.to_string(),
             output: Some(output.to_string()),
             parent_task_id: None,
             file_update: None,
@@ -3097,7 +3187,7 @@ mod tests {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
-                            let expand_id = ui.id().with("exec_output").with("exit 0");
+                            let expand_id = ui.id().with("exec_output").with(summary);
                             ui.data_mut(|d| d.insert_temp(expand_id, true));
                             for result in &results {
                                 DaveUi::executed_tool_ui(result, ui);
@@ -3109,5 +3199,39 @@ mod tests {
 
         harness.run();
         harness.snapshot("tool_output_wraps_in_viewport");
+    }
+
+    /// Regression guard for the *collapsed* header (headway:dave/sting-february-sausage):
+    /// a Bash result whose summary is a very long command, at a realistic chat
+    /// width. The header must stay one line, truncating the command with an
+    /// ellipsis, instead of overrunning the right edge — the overflow jb55 hit
+    /// (https://jb55.com/s/wrap-broke.png). Expanding reveals the full command
+    /// (see `snapshot_tool_output_wraps_in_viewport`).
+    /// Render with `scripts/snapshot-test snapshot_collapsed_bash_header_truncates`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_collapsed_bash_header_truncates() {
+        let summary = "`headway --board commerce desc headway:commerce/gallery-mansion-suggest \"Drop the notification claim table; best-effort send + operator-review transition guard replaces it, no reaper, no queue\"`";
+        let results = vec![crate::messages::ExecutedTool {
+            tool_name: "Bash".to_string(),
+            summary: summary.to_string(),
+            output: Some("ok (1 events)\nexit 0".to_string()),
+            parent_task_id: None,
+            file_update: None,
+        }];
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 80.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                ui.vertical(|ui| {
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, ui);
+                        ui.add_space(4.0);
+                    }
+                });
+            });
+
+        harness.run();
+        harness.snapshot("collapsed_bash_header_truncates");
     }
 }

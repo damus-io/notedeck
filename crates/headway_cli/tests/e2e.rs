@@ -139,6 +139,102 @@ fn show_until_cols(url: &str, db: &str, cols: usize) -> Value {
     panic!("board never reached {cols} columns");
 }
 
+/// Poll `--board <board> show --json` until that specific board has materialised
+/// with `cols` columns (its seed has folded back). Panics on timeout.
+fn show_board_until_cols(url: &str, db: &str, board: &str, cols: usize) -> Value {
+    for _ in 0..50 {
+        let out = headway(url, db, &["--board", board, "show", "--json"]);
+        if out.status.success()
+            && let Ok(v) = serde_json::from_slice::<Value>(&out.stdout)
+            && v["columns"].as_array().map_or(0, Vec::len) == cols
+        {
+            return v;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("board '{board}' never reached {cols} columns");
+}
+
+/// `headway --board <slug> seed` titles the board by its slug (never a hardcoded
+/// "Headway") and seals it from note #1 — the CLI half of jb55's recurring
+/// "accidental Headway board". Verifies the folded title is the slug and that no
+/// plaintext board event leaks (a born-sealed board rides up only as envelopes).
+#[test]
+fn non_default_seed_titles_by_slug_and_seals() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let relay_store = app_ndb.clone();
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    let seed = headway(&url, db, &["--board", "work", "seed"]);
+    assert!(
+        seed.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    // The board folds back titled by its slug — not "Headway".
+    let board = show_board_until_cols(&url, db, "work", 5);
+    assert_eq!(
+        board["title"], "work",
+        "a non-default board must be titled by its slug, not 'Headway': {board:#}"
+    );
+
+    // Born sealed: its board definition reached the relay only as a kind-1081
+    // envelope, never as a plaintext board event.
+    wait_for_envelope(&relay_store);
+    assert_eq!(
+        plaintext_board_notes(&relay_store, &author()),
+        0,
+        "a born-sealed non-default board leaked plaintext board events"
+    );
+}
+
+/// An explicit `--title` overrides the slug default when seeding.
+#[test]
+fn seed_title_flag_overrides_slug() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    let seed = headway(&url, db, &["--board", "work", "seed", "--title", "My Work"]);
+    assert!(
+        seed.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let board = show_board_until_cols(&url, db, "work", 5);
+    assert_eq!(
+        board["title"], "My Work",
+        "--title should override the slug default: {board:#}"
+    );
+}
+
 #[test]
 fn seed_show_and_add_round_trip() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -223,8 +319,14 @@ fn seed_show_and_add_round_trip() {
     );
 }
 
-/// Edits made while no relay is reachable land only in the CLI's cache; the next
-/// connected run must flush them up so the app catches up.
+/// A board seeded while no relay is reachable lands only in the CLI's cache; the
+/// next connected run must flush it up so the app catches up. `seed` is now
+/// born-sealed, so the stranded seed rides up as a kind-1081 envelope (not
+/// plaintext). A *fresh keyholder cache* folding an offline-born board is a
+/// separate capability — it needs the kind-1059 self-share to flush up too, which
+/// is tracked as headway:headway/basic-owner-torch — so this test asserts the
+/// supported half: the offline seed flushes its sealed board-def to the relay on
+/// reconnect.
 #[test]
 fn offline_edits_flush_on_reconnect() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -235,6 +337,7 @@ fn offline_edits_flush_on_reconnect() {
         &Config::new().set_ingester_threads(1),
     )
     .expect("app ndb");
+    let relay_store = app_ndb.clone();
     let _guard = rt.enter();
     let relay =
         nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
@@ -245,18 +348,19 @@ fn offline_edits_flush_on_reconnect() {
     let cli_dir = tempfile::tempdir().expect("cli dir");
     let db = cli_dir.path().to_str().unwrap();
 
-    // Seed offline: the board event lands in the CLI cache, none reach the relay.
+    // Seed offline: the sealed board-def lands in the CLI cache, none reach the relay.
     let seed = headway(dead, db, &["seed"]);
     assert!(seed.status.success(), "offline seed should still succeed");
 
-    // Reconnect and run a plain `show`: the reconcile must push the stranded
-    // seed up, so a fresh cache pointed at the relay sees the full board.
+    // Reconnect and run a plain `show`: the reconcile must push the stranded seed
+    // up as its sealed envelope, and never as a plaintext board event.
     let _ = headway(&url, db, &["show"]);
-
-    let fresh_dir = tempfile::tempdir().expect("fresh dir");
-    let fresh = fresh_dir.path().to_str().unwrap();
-    let board = show_until_cols(&url, fresh, 5);
-    assert_eq!(board["columns"].as_array().unwrap().len(), 5);
+    wait_for_envelope(&relay_store);
+    assert_eq!(
+        plaintext_board_notes(&relay_store, &author()),
+        0,
+        "an offline-born sealed board leaked plaintext board events on reconnect"
+    );
 }
 
 /// Moving a card writes a new placement revision and supersedes the old one,
@@ -400,19 +504,19 @@ fn multiple_boards_are_independent() {
     );
 }
 
-/// Seal the CLI's default board online: seed it plaintext, then `migrate` it into
-/// a fresh SNS channel. After this the board's edits travel as kind-1081
-/// envelopes and its team key-share (kind-1059) is on the relay, so a fresh cache
-/// holding the account key can join and read it. Panics if either step fails.
+/// Seed the CLI's default board online. `seed` now creates a *born* team-of-one
+/// SNS board — sealed from note #1 — so no separate `migrate` step is needed: the
+/// board's edits travel as kind-1081 envelopes and its team key-share (kind-1059)
+/// is on the relay from creation, so a fresh cache holding the account key can
+/// join and read it. Panics if the seed fails.
 fn seed_and_seal(url: &str, db: &str) {
-    assert!(headway(url, db, &["seed"]).status.success(), "seed failed");
-    show_until_cols(url, db, 5);
-    let migrate = headway(url, db, &["--board", "headway", "migrate", "--new-channel"]);
+    let seed = headway(url, db, &["seed"]);
     assert!(
-        migrate.status.success(),
-        "migrate failed: {}",
-        String::from_utf8_lossy(&migrate.stderr)
+        seed.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
     );
+    show_until_cols(url, db, 5);
 }
 
 /// A board sealed with SNS must round-trip to a brand-new cache purely through
@@ -529,10 +633,11 @@ fn offline_sealed_edit_flushes_on_reconnect() {
 
 /// The regression this card fixes: a sealed board must never flush its
 /// locally-unwrapped rumors to the relay as plaintext, and its sync must
-/// converge. Sealing offline (so the plaintext never had a chance to reach the
-/// relay before the seal) is the exact scenario that leaked before — the
-/// promoted rumors still matched the account-scoped plaintext filter, so every
-/// run re-pushed them and none ever converged.
+/// converge. A board born sealed offline (so its notes exist only as
+/// locally-unwrapped rumors, never having reached the relay as plaintext) is the
+/// exact scenario that leaked before — the promoted rumors still matched the
+/// account-scoped plaintext filter, so every run re-pushed them and none ever
+/// converged.
 #[test]
 fn sealed_board_converges_without_plaintext_leak() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -553,21 +658,12 @@ fn sealed_board_converges_without_plaintext_leak() {
     let cli_dir = tempfile::tempdir().expect("cli dir");
     let db = cli_dir.path().to_str().unwrap();
 
-    // Seed and seal entirely offline: no plaintext board event ever reaches the
-    // relay, so the only way the board can sync up is as sealed envelopes.
+    // Seed entirely offline: a born-sealed seed writes no plaintext board event, so
+    // nothing of these kinds ever reaches the relay and the only way the board can
+    // sync up is as sealed envelopes. (No `migrate` needed — seed is born-sealed.)
     assert!(
         headway(dead, db, &["seed"]).status.success(),
         "offline seed"
-    );
-    assert!(
-        headway(
-            dead,
-            db,
-            &["--board", "headway", "migrate", "--new-channel"]
-        )
-        .status
-        .success(),
-        "offline migrate"
     );
 
     // Reconnect: the envelope leg flushes the sealed board up. The plaintext leg

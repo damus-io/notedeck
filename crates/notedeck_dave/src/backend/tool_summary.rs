@@ -50,6 +50,9 @@ pub fn format_tool_summary(
         "Glob" => format_glob_summary(input),
         "Edit" => format_edit_summary(input),
         "Task" => format_task_summary(input),
+        "Agent" => format_agent_summary(input),
+        "Skill" => format_skill_summary(input),
+        "SendMessage" => format_sendmessage_summary(input),
         _ => String::new(),
     }
 }
@@ -133,6 +136,43 @@ fn format_task_summary(input: &serde_json::Value) -> String {
     format!("{} ({})", description, subagent_type)
 }
 
+/// Summarize an `Agent` tool call — the modern subagent launcher. It carries
+/// the same `description`/`subagent_type` shape as the legacy `Task` tool, so
+/// its summary mirrors Task's `"description (subagent_type)"`.
+fn format_agent_summary(input: &serde_json::Value) -> String {
+    format_task_summary(input)
+}
+
+/// Summarize a `Skill` tool call as the invoked skill name, optionally followed
+/// by a preview of its `args`. The skill name leads because the collapsed header
+/// truncates the summary, so the most identifying part must come first.
+fn format_skill_summary(input: &serde_json::Value) -> String {
+    let skill = input.get("skill").and_then(|v| v.as_str()).unwrap_or("?");
+    match input.get("args").and_then(|v| v.as_str()) {
+        Some(args) if !args.is_empty() => format!("{} {}", skill, args),
+        _ => skill.to_string(),
+    }
+}
+
+/// Summarize a `SendMessage` agent-to-agent call as `→ <to>: <preview>`, where
+/// the preview is the compact `summary` field when present (the sender's own
+/// 5-10 word gloss) and otherwise the raw `message`. The recipient leads because
+/// the collapsed header truncates the summary, so the most identifying part —
+/// who the message is for — must come first.
+fn format_sendmessage_summary(input: &serde_json::Value) -> String {
+    let to = input.get("to").and_then(|v| v.as_str()).unwrap_or("?");
+    let preview = input
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .or_else(|| input.get("message").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    if preview.is_empty() {
+        format!("→ {to}")
+    } else {
+        format!("→ {to}: {preview}")
+    }
+}
+
 /// Truncate output to a maximum size, keeping the end (most recent) content
 pub fn truncate_output(output: &str, max_size: usize) -> String {
     if output.len() <= max_size {
@@ -192,6 +232,82 @@ mod tests {
         // This would panic before the fix
         let result2 = truncate_output(output2, max_size2);
         assert!(result2.starts_with("...\n"));
+    }
+
+    // ---- Agent mirrors Task: "description (subagent_type)" ----
+
+    #[test]
+    fn agent_summary_shows_description_and_subagent_type() {
+        let input = json!({
+            "description": "audit the login flow",
+            "subagent_type": "Explore",
+            "prompt": "look at everything",
+        });
+        assert_eq!(
+            format_agent_summary(&input),
+            "audit the login flow (Explore)"
+        );
+    }
+
+    #[test]
+    fn agent_summary_missing_fields_falls_back() {
+        assert_eq!(format_agent_summary(&json!({})), "task (unknown)");
+    }
+
+    // ---- Skill leads with the skill name, optionally + args ----
+
+    #[test]
+    fn skill_summary_shows_name_and_args() {
+        let input = json!({"skill": "headway", "args": "show dave/foo"});
+        assert_eq!(format_skill_summary(&input), "headway show dave/foo");
+    }
+
+    #[test]
+    fn skill_summary_without_args_is_just_the_name() {
+        assert_eq!(
+            format_skill_summary(&json!({"skill": "code-review"})),
+            "code-review"
+        );
+        // An empty args string is treated the same as no args.
+        assert_eq!(
+            format_skill_summary(&json!({"skill": "code-review", "args": ""})),
+            "code-review"
+        );
+    }
+
+    #[test]
+    fn skill_summary_missing_name_is_placeholder() {
+        assert_eq!(format_skill_summary(&json!({})), "?");
+    }
+
+    // ---- SendMessage leads with the recipient, then a content preview ----
+
+    #[test]
+    fn sendmessage_summary_prefers_summary_field() {
+        let input = json!({
+            "to": "researcher",
+            "summary": "assign task 1",
+            "message": "start on task #1 and report back",
+        });
+        assert_eq!(
+            format_sendmessage_summary(&input),
+            "→ researcher: assign task 1"
+        );
+    }
+
+    #[test]
+    fn sendmessage_summary_falls_back_to_message() {
+        let input = json!({"to": "main", "message": "done, all green"});
+        assert_eq!(
+            format_sendmessage_summary(&input),
+            "→ main: done, all green"
+        );
+    }
+
+    #[test]
+    fn sendmessage_summary_missing_fields() {
+        // No recipient and no content: just the arrow + placeholder target.
+        assert_eq!(format_sendmessage_summary(&json!({})), "→ ?");
     }
 
     #[test]

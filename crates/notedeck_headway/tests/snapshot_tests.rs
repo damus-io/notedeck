@@ -1211,10 +1211,10 @@ fn opening_a_card_pushes_a_global_nav_entry() {
     const CARD: &str = "Define nostr event model for boards";
     // A card title is a non-interactive label; a real pointer click lands on the
     // drag-source card surface beneath it and opens the detail (the same trick the
-    // detail snapshots use). Then wait for the detail's "← Board" back affordance
+    // detail snapshots use). Then wait for the detail's "← Back" back affordance
     // so the board↔card diff has run and enqueued the push.
     harness.get_by_label(CARD).simulate_click();
-    wait_for_label(&mut harness, "← Board");
+    wait_for_label(&mut harness, "← Back");
 
     let egui_ctx = harness.ctx.clone();
     let state = harness.state_mut();
@@ -1273,18 +1273,166 @@ fn render_nav_seeds_board_and_card_from_the_route_token() {
     };
 
     // Chrome pushes a Card entry: render_nav seeds that card, so its detail opens
-    // (the "← Board" back affordance is only in the detail top bar).
+    // (the "← Back" back affordance is only in the detail top bar).
     harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::card(
         card,
         Some(CARD.into()),
     )));
-    wait_for_label(&mut harness, "← Board");
+    wait_for_label(&mut harness, "← Back");
 
     // Chrome-back pops to the board's root entry (a `Board` token): render_nav
     // reseeds no open card, so the grid returns even though the detail was just up.
     harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::Board));
-    wait_for_absent(&mut harness, "← Board");
+    wait_for_absent(&mut harness, "← Back");
     wait_for_label(&mut harness, "7 cards · 5 columns");
+}
+
+/// Full chrome round-trip (behavioural, no lavapipe): replicate the chrome's global
+/// nav loop — render the stack's top entry via `render_nav`, then drain the app's
+/// `Navigator` requests into a real `NavStack<ChromeNavEntry>` exactly like
+/// `Chrome::apply_nav_requests` — and prove a real card click grows the stack and a
+/// back step returns to the board. This closes the gap the two tests above leave
+/// (they drive `render_nav`/the push in isolation); here the push actually lands in
+/// the chrome stack and back actually pops it.
+#[test]
+fn chrome_nav_loop_card_open_then_back_returns_to_board() {
+    use notedeck::{AppId, ChromeNavEntry, NavRequest, NavStack};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+
+    // The chrome seeds one entry per app-switch with a `()` token; Headway's home
+    // (board root) entry is that. AppId is arbitrary here (single app under test).
+    let mut stack: NavStack<ChromeNavEntry> =
+        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+
+    // One chrome frame: draw the stack top through `render_nav` (its token), pump
+    // the harness, then drain the app's queued nav requests into the stack the way
+    // `Chrome::apply_nav_requests` does — `PushToActive`/`Back` are the only kinds
+    // Headway raises. A self-push inherits the active (top) app's slot.
+    fn chrome_frame(
+        harness: &mut Harness<'static, HeadwayTestState>,
+        stack: &mut NavStack<ChromeNavEntry>,
+    ) {
+        harness.state_mut().nav_token = Some(stack.top().token.clone());
+        harness.run_ok();
+
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let app_ctx = state.notedeck.app_context(&egui_ctx);
+        let active = stack.top().app;
+        for request in app_ctx.navigator.take() {
+            match request {
+                NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
+                // A back step from the chevron is instant here (go_to_route), so the
+                // app never raises one; handle it for completeness.
+                NavRequest::Back => {
+                    stack.go_back();
+                }
+                _ => panic!("unexpected nav request kind from Headway"),
+            }
+        }
+    }
+
+    // The board root shows the grid; no card entry yet.
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 1, "board root only until a card is opened");
+    assert!(
+        harness.query_by_label("7 cards · 5 columns").is_some(),
+        "the board grid renders at the root"
+    );
+
+    // Click a card. The click lands on the next pump inside chrome_frame, which then
+    // drains the resulting self-push into the stack.
+    const CARD: &str = "Define nostr event model for boards";
+    let card = {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context(&egui_ctx);
+        demo_card_id(app_ctx.ndb, &author, CARD)
+    };
+    harness.get_by_label(CARD).simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+
+    // The click pushed a Card entry onto the global stack (so the back chevron is now
+    // live), carrying the clicked card's route.
+    assert_eq!(stack.len(), 2, "opening a card grows the global stack");
+    assert_eq!(
+        stack
+            .top()
+            .token
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(|r| r.card_id()),
+        Some(card),
+        "the pushed entry is the clicked card"
+    );
+
+    // Render the new top (the Card entry): its detail opens.
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "← Back");
+
+    // Drill from the card into one of its subissues. This is the case that was
+    // broken: a card→card jump used to `replace` the top, which collapses the whole
+    // history (`ReplacementType::All`) — dropping the board root so a global-back had
+    // nowhere to return. It must PUSH instead, growing the stack to three.
+    const SUBISSUE: &str = "Sync cards across relays";
+    let subissue = {
+        let egui_ctx = harness.ctx.clone();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context(&egui_ctx);
+        demo_card_id(app_ctx.ndb, &author, SUBISSUE)
+    };
+    // The subissue title shows up in more than one place in the parent detail (the
+    // checklist and a dependency list); either row navigates to it via `OpenCard`,
+    // so click the first match.
+    harness
+        .get_all_by_label(SUBISSUE)
+        .next()
+        .expect("subissue row present in the parent detail")
+        .simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(
+        stack.len(),
+        3,
+        "drilling into a subissue pushes (does not collapse the stack)"
+    );
+    assert_eq!(
+        stack
+            .top()
+            .token
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(|r| r.card_id()),
+        Some(subissue),
+        "the pushed entry is the subissue"
+    );
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "← Back");
+
+    // Browser back from the subissue returns to its parent card (not straight to the
+    // board), and a second back returns to the board grid — a walkable trail.
+    stack.go_to_route(stack.len() - 2);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(
+        stack
+            .top()
+            .token
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(|r| r.card_id()),
+        Some(card),
+        "back from the subissue returns to the parent card"
+    );
+
+    stack.go_to_route(stack.len() - 2);
+    assert_eq!(stack.len(), 1, "a second back pops to the board root");
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_absent(&mut harness, "← Back");
+    assert!(
+        harness.query_by_label("7 cards · 5 columns").is_some(),
+        "back returns to the board grid"
+    );
 }
 
 /// Deliverable 3 (behavioural, no lavapipe): the selected board survives a restart
