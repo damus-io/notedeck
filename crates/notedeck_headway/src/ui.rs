@@ -1819,10 +1819,15 @@ fn card_detail_pane_ui(
     resolve_detail_outcome(state, action, view, &ctx, outcome);
 }
 
-/// The full-pane detail top bar, a Linear-style breadcrumb: back-to-board,
+/// The full-pane detail top bar, a Linear-style breadcrumb: a back affordance,
 /// then the card's word-id reference (click to copy — the GUI mirror of what
 /// the CLI prints, a stable handle for commits/chat), and a trailing ✕ that
 /// also dismisses.
+///
+/// The back button steps one entry back in the chrome global history (the same
+/// as the browser back chevron), so from a card opened off the board it returns
+/// to the board, and from a subissue it returns to the parent card it was drilled
+/// from — hence "← Back" rather than a fixed "← Board".
 fn detail_pane_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1830,7 +1835,7 @@ fn detail_pane_topbar_ui(
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
-        let back = egui::Button::new(egui::RichText::new("← Board").color(theme.text_secondary))
+        let back = egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
             .fill(egui::Color32::TRANSPARENT)
             .frame(false);
         if ui.add(back).clicked() {
