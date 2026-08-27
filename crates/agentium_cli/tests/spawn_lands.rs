@@ -1,7 +1,7 @@
 //! End-to-end check that the real `agentium spawn --wait` publishes a kind-31989
 //! spawn command, waits for a host to answer with the new session's kind-31988
-//! state, and prints its durable `agentium:` ref — plus that `--prompt` delivers
-//! a first `user` message once the session is up.
+//! state, and prints its durable `agentium:` ref — plus that `--prompt` rides
+//! that command so the host can deliver the first `user` message itself.
 //!
 //! The engine's `spawn_session_returns_a_uuid_spawn_id` already covers the plain
 //! publish; the value here is the `--wait` *resolution*. We stand up an in-process
@@ -16,7 +16,6 @@ use std::process::Command;
 use std::time::Duration;
 
 use agentium_core::Engine;
-use agentium_core::messages::Message;
 use agentium_core::session_events::{self, AI_SESSION_COMMAND_KIND, build_session_state_event};
 use nostrdb::{Config, Ndb};
 use tempfile::TempDir;
@@ -126,9 +125,18 @@ const CWD: &str = "/home/u/proj";
 /// The d-tag the helper host mints for the new session.
 const SPAWNED_SID: &str = "spawned-session-1";
 
+/// What the helper host reads off the CLI's kind-31989 spawn command: the
+/// `spawn_id` it must echo back on the session state, and the `prompt` tag the
+/// command carries (the first `user` message a real host delivers itself when it
+/// materializes the session).
+struct SpawnCommand {
+    spawn_id: String,
+    prompt: Option<String>,
+}
+
 /// Wait (bounded) for the helper host to see a kind-31989 spawn command in its
-/// synced cache, then return its `spawn_id`. `None` if none arrived in time.
-async fn await_spawn_id(host: &Engine) -> Option<String> {
+/// synced cache, then return what it carries. `None` if none arrived in time.
+async fn await_spawn_command(host: &Engine) -> Option<SpawnCommand> {
     let filter = nostrdb::Filter::new()
         .kinds([AI_SESSION_COMMAND_KIND as u64])
         .build();
@@ -142,12 +150,15 @@ async fn await_spawn_id(host: &Engine) -> Option<String> {
     let txn = nostrdb::Transaction::new(host.ndb()).ok()?;
     let results = host.ndb().query(&txn, &[filter], 1).ok()?;
     let note = &results.first()?.note;
-    session_events::get_tag_value(note, "spawn_id").map(|s| s.to_string())
+    Some(SpawnCommand {
+        spawn_id: session_events::get_tag_value(note, "spawn_id")?.to_string(),
+        prompt: session_events::get_tag_value(note, "prompt").map(|s| s.to_string()),
+    })
 }
 
 /// The real `agentium spawn --wait --prompt` resolves the new session's ref, and
-/// its seeded first message lands on the host — driven by a same-key helper host
-/// answering the command over a live relay.
+/// the seeded first message rides the published command so the host can deliver
+/// it — driven by a same-key helper host answering over a live relay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn spawn_wait_resolves_and_prompt_lands() {
     // A real relay backed by its own ndb — the seam every envelope crosses.
@@ -200,7 +211,7 @@ async fn spawn_wait_resolves_and_prompt_lands() {
 
     // Host side: wait for the command, then publish a kind-31988 state echoing its
     // spawn_id — the correlation the CLI's --wait keys on.
-    let spawn_id = await_spawn_id(&host)
+    let command = await_spawn_command(&host)
         .await
         .expect("host should see the spawn command");
     let state = build_session_state_event(
@@ -215,7 +226,7 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         "claude",
         "default",
         Some(""),
-        Some(&spawn_id),
+        Some(&command.spawn_id),
         1_770_000_000,
         &SECKEY,
     )
@@ -237,30 +248,13 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         stdout.contains("spawned agentium:") && stdout.contains(&format!("on {HOST}")),
         "spawn --wait should print the resolved ref on the host:\n{stdout}"
     );
-    assert!(
-        stdout.contains("sent prompt"),
-        "spawn --prompt should report the seeded message:\n{stdout}"
-    );
 
-    // The seeded first message lands on the host (same key, same relay).
-    let mut watch = host.watch_session(SPAWNED_SID).expect("watch");
-    let received = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if let Some(Message::User(u)) = host.session_messages(SPAWNED_SID).first()
-                && u.text == "do the first thing"
-            {
-                return true;
-            }
-            if !watch.changed().await {
-                return false;
-            }
-        }
-    })
-    .await
-    .unwrap_or(false);
-    assert!(
-        received,
-        "host should receive the seeded first user message"
+    // The seeded first message rode the spawn command itself, so a real host has
+    // everything it needs to deliver it whether or not the CLI was still waiting.
+    assert_eq!(
+        command.prompt.as_deref(),
+        Some("do the first thing"),
+        "the spawn command should carry --prompt as its `prompt` tag"
     );
 
     relay.shutdown();
