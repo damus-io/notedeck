@@ -9,8 +9,9 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 use egui::{Align, RichText, Stroke};
-use enostr::{Pubkey, RelayId};
+use enostr::RelayId;
 use nostrdb::{Filter, IngestMetadata, Ndb, Note, NoteBuilder, Subscription, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{AppContext, AppResponse, PrivateRelaySync, fan_out_event_frame};
 
 use block::Block;
@@ -1721,7 +1722,7 @@ fn account_secret(ctx: &AppContext<'_>) -> Option<[u8; 32]> {
 /// Serialize a signed note into a `["EVENT", …]` client frame for ingestion and
 /// relay publish, logging and returning `None` on the (unexpected) failure.
 fn frame_note(note: &Note) -> Option<String> {
-    match enostr::ClientMessage::event(note).and_then(|m| m.to_json()) {
+    match nostrdb_net::ClientMessage::event(note).and_then(|m| m.to_json()) {
         Ok(json) => Some(json),
         Err(err) => {
             tracing::error!("horizon: failed to frame note: {err}");

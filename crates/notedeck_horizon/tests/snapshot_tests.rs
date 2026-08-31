@@ -7,8 +7,8 @@
 
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use egui_kittest::Harness;
-use enostr::{FullKeypair, Keypair, SecretKey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
+use nostrdb_net::{FullKeypair, Keypair, SecretKey};
 use notedeck::{App, Notedeck};
 use notedeck_horizon::{Horizon, View};
 use std::time::{Duration, Instant};
@@ -65,7 +65,7 @@ fn ingest(ndb: &Ndb, builder: NoteBuilder, secret: &[u8; 32]) {
         .sign(secret)
         .build()
         .expect("note builds");
-    let json = enostr::ClientMessage::event(&note)
+    let json = nostrdb_net::ClientMessage::event(&note)
         .expect("client msg")
         .to_json()
         .expect("json");
