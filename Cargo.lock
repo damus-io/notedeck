@@ -5567,7 +5567,6 @@ dependencies = [
  "crossbeam-channel",
  "egui",
  "egui_kittest",
- "enostr",
  "nostrdb",
  "nostrdb_net",
  "notedeck",

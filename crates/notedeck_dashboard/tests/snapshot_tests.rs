@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use enostr::FullKeypair;
 use nostrdb::{FilterBuilder, Ndb, NoteBuilder};
+use nostrdb_net::FullKeypair;
 use notedeck::{App, Notedeck};
 use notedeck_dashboard::Dashboard;
 use notedeck_testing::fixtures::test_config;
