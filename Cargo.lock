@@ -5731,11 +5731,11 @@ version = "0.11.0-beta.1"
 dependencies = [
  "egui",
  "egui_kittest",
- "enostr",
  "futures-util",
  "jsoncanvas",
  "nostr 0.37.0",
  "nostrdb",
+ "nostrdb_net",
  "notebook",
  "notedeck",
  "notedeck_ui",

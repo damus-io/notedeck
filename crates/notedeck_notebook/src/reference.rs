@@ -32,7 +32,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use enostr::NoteId;
+use nostrdb_net::NoteId;
 use notedeck::{ReferenceParser, ReferenceResolveCtx, ResolvedRef};
 
 use crate::NotebookCache;
@@ -138,9 +138,9 @@ mod tests {
     use super::*;
     use crate::event;
     use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-    use enostr::FullKeypair;
     use futures_util::StreamExt;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
+    use nostrdb_net::FullKeypair;
 
     /// A `find`-only check: the parser matches a whole `notebook:<word-id>` token
     /// and rejects the near-misses (a bare word-id, a glued scheme, a bare

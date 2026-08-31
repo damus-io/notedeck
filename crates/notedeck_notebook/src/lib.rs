@@ -19,9 +19,9 @@ use crate::event::{CanvasReducer, CanvasView, VaultDocKind};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
 use egui::{Pos2, Rect};
-use enostr::{NoteId, Pubkey};
 use jsoncanvas::{JsonCanvas, NodeId, edge::Side};
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{AppContext, AppResponse};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1552,9 +1552,9 @@ impl VaultSync {
 mod tests {
     use super::*;
     use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-    use enostr::FullKeypair;
     use futures_util::StreamExt;
     use nostrdb::{Config, SubscriptionStream};
+    use nostrdb_net::FullKeypair;
 
     /// Only a body that is *exactly* one `nostr:` reference (whitespace aside)
     /// promotes to a note-embed node; a reference mixed with other text, or plain

@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use enostr::{FullKeypair, Keypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{FullKeypair, Keypair, Pubkey};
 use notedeck::{App, Notedeck};
 use notedeck_notebook::Notebook;
 use notedeck_notebook::event::{
@@ -803,7 +803,7 @@ fn seed_ref_node(
     secret: &[u8; 32],
     canvas_id: &str,
     title: &str,
-) -> notedeck::enostr::NoteId {
+) -> nostrdb_net::NoteId {
     seed_ref_node_at(ndb, author, secret, canvas_id, title, 40, 40)
 }
 
@@ -819,7 +819,7 @@ fn seed_ref_node_at(
     title: &str,
     x: i64,
     y: i64,
-) -> notedeck::enostr::NoteId {
+) -> nostrdb_net::NoteId {
     let addr = canvas_address(author, canvas_id);
     let mut publisher = NoPublish;
     ingest(

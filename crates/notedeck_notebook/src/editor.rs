@@ -11,7 +11,7 @@
 
 use crate::event::{CanvasView, LongformNote, VaultDocKind};
 use egui::{Layout, RichText, ScrollArea, TextEdit};
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 use notedeck::{AppContext, ColorTheme, Localization};
 use notedeck_ui::context_menu::{PasteBehavior, input_context};
 

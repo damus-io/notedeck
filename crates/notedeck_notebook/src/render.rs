@@ -12,8 +12,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use enostr::Pubkey;
 use nostrdb::{Ndb, Note, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     ColorTheme, KindRenderRequest, KindRenderResponse, KindRenderer, NoteContext, RenderContext,
 };
@@ -398,9 +398,9 @@ mod tests {
     #[test]
     fn live_node_reflects_the_current_content_not_the_snapshot() {
         use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-        use enostr::FullKeypair;
         use futures_util::StreamExt;
         use nostrdb::{Config, SubscriptionStream};
+        use nostrdb_net::FullKeypair;
 
         let dir = tempfile::TempDir::new().unwrap();
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();

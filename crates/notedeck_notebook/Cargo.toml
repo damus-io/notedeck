@@ -11,7 +11,7 @@ notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 egui = { workspace = true }
 profiling = { workspace = true }
-enostr = { workspace = true }
+nostrdb_net = { workspace = true }
 nostrdb = { workspace = true }
 nostr = { workspace = true }
 serde_json = { workspace = true }

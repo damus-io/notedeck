@@ -2,7 +2,7 @@
 //! rendering. This is the bridge from the nostr-backed model ([`crate::event`])
 //! to the renderer in [`crate::ui`], which is built around the `jsoncanvas`
 //! types. Node ids in the produced canvas are the hex of each node's nostr event
-//! id, so the UI can map an interaction back to a [`enostr::NoteId`].
+//! id, so the UI can map an interaction back to a [`nostrdb_net::NoteId`].
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -35,7 +35,7 @@ pub fn view_to_canvas(view: &CanvasView) -> JsonCanvas {
 }
 
 /// The jsoncanvas node id for a node: the hex of its nostr event id.
-pub fn node_id(id: &enostr::NoteId) -> Option<NodeId> {
+pub fn node_id(id: &nostrdb_net::NoteId) -> Option<NodeId> {
     id.hex().parse().ok()
 }
 
@@ -140,7 +140,7 @@ mod tests {
 
     fn link_view(url: &str) -> NodeView {
         NodeView {
-            id: enostr::NoteId::new([1; 32]),
+            id: nostrdb_net::NoteId::new([1; 32]),
             author: [2; 32],
             kind: NodeKind::Link,
             geo: Geometry {

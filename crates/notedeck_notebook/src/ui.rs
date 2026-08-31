@@ -91,7 +91,7 @@ enum Gesture {
     /// A vault note was dropped on empty canvas at this canvas position (creates a
     /// note-embed node referencing it).
     DropNote {
-        author: enostr::Pubkey,
+        author: nostrdb_net::Pubkey,
         d: String,
         pos: Pos2,
     },
