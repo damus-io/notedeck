@@ -174,8 +174,8 @@ mod tests {
     use super::*;
     use crate::source::{ExternalEvent, SourceError};
     use chrono::{DateTime, TimeZone};
-    use enostr::FullKeypair;
     use nostrdb::{Config, Filter, Transaction};
+    use nostrdb_net::FullKeypair;
     use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
 
@@ -210,7 +210,7 @@ mod tests {
     fn resolved_count(ndb: &Ndb, kind: u32) -> usize {
         let txn = Transaction::new(ndb).unwrap();
         let filter = Filter::new().kinds([kind as u64]).build();
-        enostr::query_replaceable(ndb, &txn, &[filter]).len()
+        nostrdb_net::query_replaceable(ndb, &txn, &[filter]).len()
     }
 
     #[test]

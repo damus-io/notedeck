@@ -5273,9 +5273,9 @@ name = "nostr_calsync"
 version = "0.11.0-beta.1"
 dependencies = [
  "chrono",
- "enostr",
  "eventkit-rs",
  "nostrdb",
+ "nostrdb_net",
  "tempfile",
  "tracing",
 ]

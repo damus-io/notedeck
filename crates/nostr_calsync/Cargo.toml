@@ -5,7 +5,7 @@ version.workspace = true
 
 [dependencies]
 nostrdb = { workspace = true }
-enostr = { workspace = true }
+nostrdb_net = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 

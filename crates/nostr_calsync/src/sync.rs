@@ -7,8 +7,8 @@
 //! notes (no-ops), and changed events supersede their predecessor by
 //! `created_at`. Downstream readers (e.g. Horizon) just see the notes appear.
 
-use enostr::NoteId;
 use nostrdb::{IngestMetadata, Ndb};
+use nostrdb_net::NoteId;
 
 use crate::event::build_calendar_event;
 use crate::source::ExternalEvent;
@@ -59,7 +59,10 @@ fn ingest(
 ) -> Option<NoteId> {
     let note = build_calendar_event(ev).sign(secret).build()?;
     let id = NoteId::new(*note.id());
-    let json = enostr::ClientMessage::event(&note).ok()?.to_json().ok()?;
+    let json = nostrdb_net::ClientMessage::event(&note)
+        .ok()?
+        .to_json()
+        .ok()?;
     if let Err(err) = ndb.process_event_with(&json, IngestMetadata::new().client(true)) {
         tracing::error!("calsync: failed to ingest {}: {err}", ev.source_id);
         return None;
@@ -73,8 +76,8 @@ mod tests {
     use super::*;
     use crate::event::{KIND_DATE_BASED, KIND_TIME_BASED, d_tag};
     use chrono::{TimeZone, Utc};
-    use enostr::FullKeypair;
     use nostrdb::{Config, Filter, Ndb, Transaction};
+    use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
 
     struct TestNdb {
@@ -129,7 +132,7 @@ mod tests {
             let filter = Filter::new().kinds([kind as u64]).build();
             // The shared resolver hands back one note per `d` tag (latest wins) —
             // exactly what a reader like Horizon will use.
-            enostr::query_replaceable(&self.ndb, &txn, &[filter])
+            nostrdb_net::query_replaceable(&self.ndb, &txn, &[filter])
                 .into_iter()
                 .filter_map(|key| self.ndb.get_note_by_key(&txn, key).ok())
                 .map(|note| MirroredNote {
