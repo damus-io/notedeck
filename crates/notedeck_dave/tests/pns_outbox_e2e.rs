@@ -14,10 +14,10 @@ use std::{
 };
 
 use egui_kittest::kittest::Queryable;
-use enostr::FullKeypair;
 use nostr::{Event, JsonUtil, Kind};
 use nostr_relay_builder::prelude::{MemoryDatabase, NostrEventsDatabase};
 use nostrdb::{Filter, FilterBuilder, NoteBuilder, Transaction};
+use nostrdb_net::FullKeypair;
 use notedeck::{App, AppContext, AppResponse, DataPathType, RelayAction};
 use notedeck_dave::{session_events, session_loader, AiProvider, Dave, DaveSettings};
 use notedeck_testing::{
@@ -176,7 +176,7 @@ async fn seed_pns_session_state(
     cli_session_id: Option<&str>,
 ) {
     let secret_key = account.secret_key.secret_bytes();
-    let pns_keys = enostr::pns::derive_pns_keys(&secret_key);
+    let pns_keys = nostrdb_net::pns::derive_pns_keys(&secret_key);
     let state_event = session_events::build_session_state_event(
         session_id,
         title,
@@ -207,7 +207,7 @@ async fn seed_pns_session_state_at(
     created_at: u64,
 ) {
     let secret_key = account.secret_key.secret_bytes();
-    let pns_keys = enostr::pns::derive_pns_keys(&secret_key);
+    let pns_keys = nostrdb_net::pns::derive_pns_keys(&secret_key);
     let state_event = session_events::build_session_state_event(
         session_id,
         title,
@@ -225,10 +225,10 @@ async fn seed_pns_session_state_at(
         &secret_key,
     )
     .expect("session state event");
-    let ciphertext = enostr::pns::encrypt(&pns_keys.conversation_key, &state_event.note_json)
+    let ciphertext = nostrdb_net::pns::encrypt(&pns_keys.conversation_key, &state_event.note_json)
         .expect("pns encrypt");
     let pns_note = NoteBuilder::new()
-        .kind(enostr::pns::PNS_KIND)
+        .kind(nostrdb_net::pns::PNS_KIND)
         .content(&ciphertext)
         .created_at(created_at)
         .sign(&pns_keys.keypair.secret_key.secret_bytes())
@@ -308,7 +308,7 @@ fn author_session_state_query(author: &FullKeypair) -> LocalQuery {
 fn pns_envelope_query() -> LocalQuery {
     LocalQuery::new(
         vec![FilterBuilder::new()
-            .kinds([enostr::pns::PNS_KIND as u64])
+            .kinds([nostrdb_net::pns::PNS_KIND as u64])
             .build()],
         4096,
         "query local PNS envelopes",
@@ -360,7 +360,7 @@ fn is_pns_filter(filter: &nostr::Filter, pns_pubkey: &nostr::PublicKey) -> bool 
     let has_kind = filter
         .kinds
         .as_ref()
-        .is_some_and(|kinds| kinds.contains(&Kind::Custom(enostr::pns::PNS_KIND as u16)));
+        .is_some_and(|kinds| kinds.contains(&Kind::Custom(nostrdb_net::pns::PNS_KIND as u16)));
     let has_author = filter
         .authors
         .as_ref()
@@ -369,15 +369,15 @@ fn is_pns_filter(filter: &nostr::Filter, pns_pubkey: &nostr::PublicKey) -> bool 
 }
 fn pns_filter_matcher(account: &FullKeypair) -> impl FnMut(&nostr::Filter) -> bool {
     let secret_key = account.secret_key.secret_bytes();
-    let pns_keys = enostr::pns::derive_pns_keys(&secret_key);
+    let pns_keys = nostrdb_net::pns::derive_pns_keys(&secret_key);
     let pns_pubkey = nostr_pubkey(&pns_keys.keypair.pubkey);
     move |filter| is_pns_filter(filter, &pns_pubkey)
 }
 fn pns_negentropy_open_filter(account: &FullKeypair) -> NegentropyOpenFilter {
     let secret_key = account.secret_key.secret_bytes();
-    let pns_keys = enostr::pns::derive_pns_keys(&secret_key);
+    let pns_keys = nostrdb_net::pns::derive_pns_keys(&secret_key);
     NegentropyOpenFilter::new(
-        Kind::Custom(enostr::pns::PNS_KIND as u16),
+        Kind::Custom(nostrdb_net::pns::PNS_KIND as u16),
         nostr_pubkey(&pns_keys.keypair.pubkey),
     )
 }
@@ -1257,7 +1257,7 @@ async fn dave_pns_outbound_publish_uses_configured_relay_only_e2e() {
     // Marking the relay private publishes a kind-10002 relay list to the
     // account's write relay (account_relay), so assert specifically on the PNS
     // session-state events: they must reach the configured relay only.
-    let pns_needle = format!("\"kind\":{}", enostr::pns::PNS_KIND);
+    let pns_needle = format!("\"kind\":{}", nostrdb_net::pns::PNS_KIND);
     assert!(configured_relay.count_captured_events_containing(&pns_needle) > 0);
     assert_eq!(
         account_relay.count_captured_events_containing(&pns_needle),

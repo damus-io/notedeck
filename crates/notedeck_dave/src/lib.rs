@@ -37,9 +37,9 @@ use backend::{
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
-use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
 use nostrdb::{NoteKey, Subscription, Transaction};
+use nostrdb_net::KeypairUnowned;
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
     DataPathType,
@@ -138,7 +138,7 @@ fn route_new_session(ai_mode: AiMode, has_remote_hosts: bool) -> NewSessionRoute
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PnsLocalState {
-    account: enostr::Pubkey,
+    account: nostrdb_net::Pubkey,
     has_secret_key: bool,
 }
 
@@ -173,7 +173,7 @@ struct PnsLocalRuntime {
     pending_interrupt_commands: Vec<update::InterruptPublish>,
     pending_deletions: Vec<session_loader::SessionState>,
     pending_worktree_removals: Vec<PendingWorktreeRemoval>,
-    pending_summaries: Vec<enostr::NoteId>,
+    pending_summaries: Vec<nostrdb_net::NoteId>,
     run_processes: HashMap<SessionId, HashMap<String, std::process::Child>>,
     running_session_ids: HashMap<SessionId, HashSet<String>>,
     run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
@@ -466,7 +466,7 @@ pub struct Dave {
     /// `agentium:` chip is clicked in another app (a note, a Dave chat). Resolved
     /// to a session and switched to on the next [`update`](Self::update), then
     /// cleared. See [`Self::open`] / [`Self::process_pending_open`].
-    pending_open: Option<enostr::NoteId>,
+    pending_open: Option<nostrdb_net::NoteId>,
     /// Directory picker for selecting working directory when creating sessions
     directory_picker: DirectoryPicker,
     /// Session picker for resuming existing Claude sessions
@@ -518,14 +518,14 @@ pub struct Dave {
     pending_worktree_removals: Vec<PendingWorktreeRemoval>,
     /// Thread summaries pending processing. Queued by summarize_thread(),
     /// resolved in update() where AppContext (ndb) is available.
-    pending_summaries: Vec<enostr::NoteId>,
+    pending_summaries: Vec<nostrdb_net::NoteId>,
     /// Local machine hostname, included in session state events.
     hostname: String,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
     /// regular Dave fields so existing UI/update code keeps operating directly.
-    pns_local_runtimes: HashMap<enostr::Pubkey, PnsLocalRuntime>,
+    pns_local_runtimes: HashMap<nostrdb_net::Pubkey, PnsLocalRuntime>,
     /// Persists DaveSettings to dave_settings.json
     settings_serializer: TimedSerializer<DaveSettings>,
     /// Running app processes launched via the Run button.
@@ -599,7 +599,7 @@ struct PendingMessageLoad {
     /// ndb subscription for kind-1988 events matching the session
     sub: Subscription,
     /// Account that signed the archived conversation events.
-    account: enostr::Pubkey,
+    account: nostrdb_net::Pubkey,
     /// Dave's internal session ID
     dave_session_id: SessionId,
     /// Claude session ID (the `d` tag value)
@@ -670,7 +670,7 @@ fn session_state_publish_params(
     event_sid: &str,
     local_hostname: &str,
     ndb: &nostrdb::Ndb,
-    account: &enostr::Pubkey,
+    account: &nostrdb_net::Pubkey,
 ) -> Option<SessionStatePublish> {
     let now = session_events::now_secs();
 
@@ -1098,7 +1098,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Queue a thread summary request. The thread is fetched and formatted
     /// in update() where AppContext (ndb) is available.
-    pub fn summarize_thread(&mut self, note_id: enostr::NoteId) {
+    pub fn summarize_thread(&mut self, note_id: nostrdb_net::NoteId) {
         self.pending_summaries.push(note_id);
     }
 
@@ -1107,7 +1107,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// clicked in another app like a note or Dave chat. `note` is the kind-31988
     /// session-state event; the switch happens on the next
     /// [`update`](Self::update) (see [`process_pending_open`](Self::process_pending_open)).
-    pub fn open(&mut self, note: enostr::NoteId) {
+    pub fn open(&mut self, note: nostrdb_net::NoteId) {
         self.pending_open = Some(note);
     }
 
@@ -1262,7 +1262,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn build_summary_session(
         &mut self,
         ndb: &nostrdb::Ndb,
-        note_id: &enostr::NoteId,
+        note_id: &nostrdb_net::NoteId,
     ) -> Option<SessionId> {
         let txn = Transaction::new(ndb).ok()?;
 
@@ -1317,7 +1317,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let present = tools::ToolCall::new(
                 "summarize-thread".to_string(),
                 tools::ToolCalls::PresentNotes(tools::PresentNotesCall {
-                    note_ids: vec![enostr::NoteId::new(root_id)],
+                    note_ids: vec![nostrdb_net::NoteId::new(root_id)],
                 }),
             );
             session.chat.push(Message::ToolCalls(vec![present]));
@@ -2547,7 +2547,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Restore selected-account sessions from kind-31988 state events in ndb.
-    fn restore_sessions_from_ndb(&mut self, ctx: &mut AppContext<'_>, account: enostr::Pubkey) {
+    fn restore_sessions_from_ndb(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        account: nostrdb_net::Pubkey,
+    ) {
         let txn = match Transaction::new(ctx.ndb) {
             Ok(t) => t,
             Err(e) => {
@@ -2940,7 +2944,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn reopen_session(
         &mut self,
         ndb: &nostrdb::Ndb,
-        account: enostr::Pubkey,
+        account: nostrdb_net::Pubkey,
         selector: &str,
     ) -> Option<SessionId> {
         let txn = Transaction::new(ndb).ok()?;
@@ -4196,7 +4200,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn load_resumed_session_history(
         &mut self,
         ndb: &nostrdb::Ndb,
-        account: enostr::Pubkey,
+        account: nostrdb_net::Pubkey,
         dave_sid: SessionId,
         claude_sid: &str,
     ) {
@@ -4471,7 +4475,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pending_reap = runtime.pending_reap;
     }
 
-    fn subscribe_pns_local_events(&mut self, ndb: &nostrdb::Ndb, account: enostr::Pubkey) {
+    fn subscribe_pns_local_events(&mut self, ndb: &nostrdb::Ndb, account: nostrdb_net::Pubkey) {
         let state_filter = nostrdb::Filter::new()
             .kinds([session_events::AI_SESSION_STATE_KIND as u64])
             .authors([account.bytes()])
@@ -4510,7 +4514,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.conversation_action_sub = subscribe_conversation_events(ndb, account);
     }
 
-    fn subscribe_pns_run_configs(&mut self, ndb: &nostrdb::Ndb, account: enostr::Pubkey) {
+    fn subscribe_pns_run_configs(&mut self, ndb: &nostrdb::Ndb, account: nostrdb_net::Pubkey) {
         let rc_filter = nostrdb::Filter::new()
             .kinds([crate::config::AI_RUN_CONFIG_KIND as u64])
             .authors([account.bytes()])
@@ -4526,7 +4530,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    fn load_run_configs(&mut self, ndb: &nostrdb::Ndb, account: enostr::Pubkey) {
+    fn load_run_configs(&mut self, ndb: &nostrdb::Ndb, account: nostrdb_net::Pubkey) {
         let txn = match nostrdb::Transaction::new(ndb) {
             Ok(txn) => txn,
             Err(err) => {
@@ -4914,7 +4918,7 @@ impl notedeck::App for Dave {
 /// behavior.
 pub(crate) fn subscribe_conversation_events(
     ndb: &nostrdb::Ndb,
-    account: enostr::Pubkey,
+    account: nostrdb_net::Pubkey,
 ) -> Option<nostrdb::Subscription> {
     let filter = nostrdb::Filter::new()
         .kinds([session_events::AI_CONVERSATION_KIND as u64])
@@ -5383,7 +5387,7 @@ pub(crate) fn rebuild_remote_chat(
     session: &mut session::ChatSession,
     ndb: &nostrdb::Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
 ) {
     let Some(claude_sid) = session
         .agentic
@@ -6017,7 +6021,7 @@ mod tests {
         let envelope = ndb.get_note_by_key(&txn, gw_key).unwrap();
         assert_eq!(
             u64::from(envelope.kind()),
-            enostr::pns::PNS_KIND as u64,
+            nostrdb_net::pns::PNS_KIND as u64,
             "the resolved envelope is the kind-1080 PNS wrapper"
         );
         assert!(
@@ -6034,8 +6038,8 @@ mod tests {
     }
 
     async fn conversation_subscription_author_pubkeys() -> ConversationSubAuthors {
-        let account = enostr::FullKeypair::generate();
-        let other_account = enostr::FullKeypair::generate();
+        let account = nostrdb_net::FullKeypair::generate();
+        let other_account = nostrdb_net::FullKeypair::generate();
         let account_pubkey = *account.pubkey.bytes();
         let session_id_str = "same-d-live-scope";
         let mut account_threading = ThreadingState::new();
@@ -6131,7 +6135,9 @@ mod tests {
     #[tokio::test]
     async fn test_process_conversation_notes_ordering() {
         let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "poll-ordering-test";
 
@@ -6301,7 +6307,9 @@ mod tests {
     #[tokio::test]
     async fn fresh_machine_backfill_rebuilds_in_order() {
         let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "backfill-test";
 
@@ -6411,7 +6419,9 @@ mod tests {
     #[tokio::test]
     async fn in_order_note_appends_without_rebuild() {
         let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "fast-path-test";
 
@@ -6500,7 +6510,9 @@ mod tests {
     #[tokio::test]
     async fn remote_rename_publishes_only_on_custom_title_change() {
         let sk = test_secret_key();
-        let account = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let sid = "rename-persist-test";
 
         let tmp = TempDir::new().unwrap();
@@ -6602,7 +6614,9 @@ mod tests {
     #[tokio::test]
     async fn reopen_revives_deleted_session_with_history() {
         let sk = test_secret_key();
-        let account = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let sid = "revive-me";
 
         let base_dir = TempDir::new().unwrap();
@@ -6854,7 +6868,9 @@ mod tests {
     #[tokio::test]
     async fn deleted_chip_routes_remote_resume_but_revives_local() {
         let sk = test_secret_key();
-        let account = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
 
         let base_dir = TempDir::new().unwrap();
         let data_path = DataPath::new(base_dir.path());
@@ -6905,7 +6921,7 @@ mod tests {
 
         // Click the remote chip: a resume command is queued for its host, and a
         // "Connecting…" placeholder stands in until the owning host revives it.
-        dave.pending_open = Some(enostr::NoteId::new(remote_tomb.note_id));
+        dave.pending_open = Some(nostrdb_net::NoteId::new(remote_tomb.note_id));
         dave.process_pending_open(&ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
@@ -6952,7 +6968,7 @@ mod tests {
         // Re-clicking the same deleted chip before the host answers focuses the
         // existing placeholder instead of queuing a second command / stranding a
         // duplicate placeholder.
-        dave.pending_open = Some(enostr::NoteId::new(remote_tomb.note_id));
+        dave.pending_open = Some(nostrdb_net::NoteId::new(remote_tomb.note_id));
         dave.process_pending_open(&ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
@@ -6975,7 +6991,7 @@ mod tests {
 
         // Click the local chip: it is revived in place (materialized, dirty) with
         // no additional resume command emitted.
-        dave.pending_open = Some(enostr::NoteId::new(local_tomb.note_id));
+        dave.pending_open = Some(nostrdb_net::NoteId::new(local_tomb.note_id));
         dave.process_pending_open(&ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
@@ -7060,7 +7076,9 @@ mod tests {
     #[tokio::test]
     async fn test_permission_response_denied_is_decoded() {
         let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "perm-deny-test";
         let perm_id = uuid::Uuid::new_v4();
@@ -7204,7 +7222,9 @@ mod tests {
     #[tokio::test]
     async fn test_permission_denied_single_batch() {
         let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "perm-single-batch";
         let perm_id = uuid::Uuid::new_v4();
@@ -7304,7 +7324,9 @@ mod tests {
     #[tokio::test]
     async fn test_auto_accepted_permission_survives_ndb_rebuild() {
         let sk = test_secret_key();
-        let author = enostr::FullKeypair::from_secret_bytes(&sk).unwrap().pubkey;
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
         let mut threading = ThreadingState::new();
         let session_id_str = "perm-auto-rebuild";
         let perm_id = uuid::Uuid::new_v4();

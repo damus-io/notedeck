@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
-use enostr::{FullKeypair, Keypair, Pubkey};
 use nostrdb::{Ndb, NoteBuilder, Transaction};
+use nostrdb_net::{FullKeypair, Keypair, Pubkey};
 use notedeck::Notedeck;
 use notedeck_dave::reference::AgentiumRefParser;
 use notedeck_dave::render::AgentiumSessionRenderer;
@@ -58,7 +58,7 @@ fn seed_session(ndb: &Ndb, secret: &[u8; 32], session_id: &str, title: &str, sta
         .sign(secret)
         .build()
         .unwrap();
-    let frame = enostr::ClientMessage::event(&note)
+    let frame = nostrdb_net::ClientMessage::event(&note)
         .unwrap()
         .to_json()
         .unwrap();

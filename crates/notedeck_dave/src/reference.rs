@@ -128,9 +128,9 @@ mod tests {
     use super::*;
     use crate::session_cache::session_state_filter;
     use agentium_core::session_events::AI_SESSION_STATE_KIND;
-    use enostr::{FullKeypair, NoteId};
     use futures::StreamExt;
     use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream, Transaction};
+    use nostrdb_net::{FullKeypair, NoteId};
 
     /// A `find`-only check: the parser matches a whole `agentium:<word-id>` token
     /// and rejects the near-misses (a bare word-id, a glued scheme, a bare scheme,
@@ -200,7 +200,7 @@ mod tests {
                 .sign(&self.kp.secret_key.secret_bytes())
                 .build()
                 .unwrap();
-            let frame = enostr::ClientMessage::event(&note)
+            let frame = nostrdb_net::ClientMessage::event(&note)
                 .unwrap()
                 .to_json()
                 .unwrap();

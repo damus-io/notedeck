@@ -16,8 +16,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use enostr::Pubkey;
 use nostrdb::{Ndb, Note, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     ColorTheme, KindRenderRequest, KindRenderResponse, KindRenderer, NoteContext, RenderContext,
 };

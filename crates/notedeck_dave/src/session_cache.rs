@@ -40,8 +40,8 @@
 //! `headway:notedeck/buffalo-change-cook`.
 
 use agentium_core::session_loader::{SessionState, DELETED_STATUS};
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use std::collections::HashMap;
 
 use agentium_core::session_events::{get_tag_value, AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
@@ -433,9 +433,9 @@ impl AgentiumSessionCache {
 mod tests {
     use super::*;
     use agentium_core::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
-    use enostr::FullKeypair;
     use futures::StreamExt;
     use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream};
+    use nostrdb_net::FullKeypair;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -494,7 +494,7 @@ mod tests {
                 .sign(&self.kp.secret_key.secret_bytes())
                 .build()
                 .unwrap();
-            let frame = enostr::ClientMessage::event(&note)
+            let frame = nostrdb_net::ClientMessage::event(&note)
                 .unwrap()
                 .to_json()
                 .unwrap();
@@ -518,7 +518,7 @@ mod tests {
                 .sign(&self.kp.secret_key.secret_bytes())
                 .build()
                 .unwrap();
-            let frame = enostr::ClientMessage::event(&note)
+            let frame = nostrdb_net::ClientMessage::event(&note)
                 .unwrap()
                 .to_json()
                 .unwrap();
