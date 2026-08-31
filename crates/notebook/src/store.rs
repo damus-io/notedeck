@@ -20,8 +20,8 @@
 //! `*_at` timestamps the reducer surfaces on the view), mirroring headway's
 //! `next_after`.
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{
     self, CanvasView, EdgeEnds, Geometry, NodeContent, NodeKind, NodeView, build_canvas,
@@ -107,7 +107,7 @@ impl Publisher for NoPublish {
 // The whole vault — canvases *and* longform notes — is one team-of-one SNS
 // channel (NIP-SNS sealed shared storage), the notebook analogue of headway's
 // team-of-one boards. Every write is sealed into a kind-1081 envelope
-// ([`enostr::sns::wrap_rumor`]); nostrdb auto-unwraps it back to the inner rumor
+// ([`nostrdb_net::sns::wrap_rumor`]); nostrdb auto-unwraps it back to the inner rumor
 // once the workspace root is registered, so the rumor stays queryable by its own
 // author/kind and every fold below is unchanged. On a relay only the opaque
 // envelope is visible — no plaintext note or public NIP-23 article ever leaks.
@@ -116,7 +116,7 @@ impl Publisher for NoPublish {
 // than minted, so every device holding that secret converges on one channel with
 // zero coordination (a per-device mint would fork a channel that never folds).
 // "Team-of-one" means the single member holds the derived root; adding co-members
-// later is a metadata hand-off ([`enostr::sns::wrap_keyshare`]) with no history
+// later is a metadata hand-off ([`nostrdb_net::sns::wrap_keyshare`]) with no history
 // re-seal, since the notes are already sealed under the shared root.
 //
 // Sync is owned by the notedeck host. The app hands the host the derived root
@@ -140,15 +140,15 @@ const WORKSPACE_LABEL: &str = "notebook";
 /// edit to the real author while the envelope itself is signed by (and addressed
 /// to) the shared team keypair.
 pub struct SnsChannel {
-    /// Team keypair + envelope key, from [`enostr::sns::derive_sns_keys`].
-    pub keys: enostr::sns::SnsKeys,
+    /// Team keypair + envelope key, from [`nostrdb_net::sns::derive_sns_keys`].
+    pub keys: nostrdb_net::sns::SnsKeys,
 }
 
 /// Derive the account's notebook workspace `team_root` from its `secret`.
 /// Deterministic: every device holding the secret derives the same root, so the
 /// vault is one channel across devices with no cross-device coordination.
 pub fn workspace_root(secret: &[u8; 32]) -> [u8; 32] {
-    enostr::sns::derive_board_root(secret, WORKSPACE_LABEL)
+    nostrdb_net::sns::derive_board_root(secret, WORKSPACE_LABEL)
 }
 
 /// Derive the account's notebook [`SnsChannel`] from its `secret`, or `None` if
@@ -156,7 +156,7 @@ pub fn workspace_root(secret: &[u8; 32]) -> [u8; 32] {
 /// rehashes any invalid candidate away).
 pub fn workspace_channel(secret: &[u8; 32]) -> Option<SnsChannel> {
     Some(SnsChannel {
-        keys: enostr::sns::derive_sns_keys(&workspace_root(secret))?,
+        keys: nostrdb_net::sns::derive_sns_keys(&workspace_root(secret))?,
     })
 }
 
@@ -215,7 +215,7 @@ pub fn ingest(
 /// the rumor stays queryable by its own author/kind (canvas subscriptions,
 /// [`load_longform`], the reducer). The returned id is the **rumor's**, which
 /// nostrdb recomputes identically on unwrap — so a document's coordinate/word-id
-/// is stable whether sealed or not. [`enostr::sns::wrap_rumor`] re-parses the rumor
+/// is stable whether sealed or not. [`nostrdb_net::sns::wrap_rumor`] re-parses the rumor
 /// on the seal peel and requires every field including the id, which
 /// `builder.sign(...).build()` guarantees. Returns `None` (publishing nothing) if
 /// the account can't sign or a wrap/ingest step fails.
@@ -227,10 +227,11 @@ fn ingest_sealed(
 ) -> Option<NoteId> {
     let id = NoteId::new(*note.id());
     let channel = workspace_channel(secret)?;
-    let member = enostr::FullKeypair::from_secret_bytes(secret)?;
+    let member = nostrdb_net::FullKeypair::from_secret_bytes(secret)?;
     let rumor_json = note.json().ok()?;
-    let envelope = enostr::sns::wrap_rumor(&channel.keys, &member, &rumor_json, note.created_at())?;
-    let frame = enostr::ClientMessage::event(&envelope)
+    let envelope =
+        nostrdb_net::sns::wrap_rumor(&channel.keys, &member, &rumor_json, note.created_at())?;
+    let frame = nostrdb_net::ClientMessage::event(&envelope)
         .ok()?
         .to_json()
         .ok()?;
@@ -322,7 +323,7 @@ pub struct LongformSaved {
 /// document (a longform note or a canvas). Not a [`crate::wordid`] (that encodes
 /// an *existing* event id; a replaceable `d` must be chosen before the event
 /// exists and stay stable across edits). Reuses the same OS RNG
-/// `enostr::FullKeypair::generate` already pulls in — no new crate.
+/// `nostrdb_net::FullKeypair::generate` already pulls in — no new crate.
 pub fn mint_d() -> String {
     use nostr::secp256k1::rand::{RngCore, rngs::OsRng};
     let mut bytes = [0u8; 8];
@@ -683,9 +684,9 @@ pub use event::{VaultDoc, VaultDocKind, list_canvases, list_vault};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
     use futures_util::StreamExt;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
+    use nostrdb_net::FullKeypair;
 
     /// A headless harness: ingest actions against a bare `Ndb` and wait on a
     /// subscription (not a sleep loop) for the canvas to reflect them.

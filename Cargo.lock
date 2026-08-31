@@ -5327,10 +5327,10 @@ dependencies = [
 name = "notebook"
 version = "0.11.0-beta.1"
 dependencies = [
- "enostr",
  "futures-util",
  "nostr 0.37.0",
  "nostrdb",
+ "nostrdb_net",
  "pollster",
  "profiling",
  "serde_json",

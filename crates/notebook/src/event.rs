@@ -42,8 +42,8 @@
 
 use std::collections::HashMap;
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, NoteKey, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 
 /// Canvas document: addressable, `d` = canvas id, holds title + membership.
 pub const KIND_CANVAS: u32 = 31606;
@@ -1323,13 +1323,13 @@ pub fn load_longform(
 ///
 /// Kind 30023 is replaceable, and nostrdb keeps *every* revision rather than
 /// collapsing them, so this resolves the effective set via
-/// [`enostr::query_replaceable`] (the shared d-tag fold) rather than deduping by
+/// [`nostrdb_net::query_replaceable`] (the shared d-tag fold) rather than deduping by
 /// hand. It reads the inner notes, which nostrdb has transparently unwrapped from
 /// their PNS envelopes — so it only ever sees the notes, never the encrypted
 /// wrappers.
 pub fn list_longform(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<LongformNote> {
     let mut notes: Vec<LongformNote> =
-        enostr::query_replaceable(ndb, txn, &[longform_filter(author)])
+        nostrdb_net::query_replaceable(ndb, txn, &[longform_filter(author)])
             .into_iter()
             .filter_map(|key| ndb.get_note_by_key(txn, key).ok())
             .filter_map(|note| parse_longform(&note))
@@ -1612,7 +1612,7 @@ pub fn rank_between(left: Option<&str>, right: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
+    use nostrdb_net::FullKeypair;
 
     fn parse_signed(builder: NoteBuilder, kp: &FullKeypair) -> NotebookEvent {
         let note = builder
@@ -2129,7 +2129,7 @@ mod tests {
         let ingest = |b: NoteBuilder| -> NoteId {
             let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
             let id = NoteId::new(*note.id());
-            let json = enostr::ClientMessage::event(&note)
+            let json = nostrdb_net::ClientMessage::event(&note)
                 .unwrap()
                 .to_json()
                 .unwrap();
