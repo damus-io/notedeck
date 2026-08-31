@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use agentium_core::Engine;
 use agentium_core::session_loader::SessionState;
-use enostr::Pubkey;
 use nostrdb::Transaction;
+use nostrdb_net::Pubkey;
 
 use nostrdb_net::relay::sync::Result;
 
@@ -2211,7 +2211,7 @@ impl Cli {
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
         // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
-        // (and the `agentium_core` engine) speaks `enostr::Pubkey`. Both are
+        // (and the `agentium_core` engine) speaks `nostrdb_net::Pubkey`. Both are
         // `[u8; 32]` newtypes, so bridge at this boundary and keep everything
         // downstream in enostr terms.
         let secret = match (&command, nsec) {
