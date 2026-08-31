@@ -22,7 +22,7 @@
 
 use std::collections::HashSet;
 
-use enostr::NoteId;
+use nostrdb_net::NoteId;
 
 use crate::event::{BoardView, CardView, Container};
 

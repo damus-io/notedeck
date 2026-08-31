@@ -3628,11 +3628,11 @@ dependencies = [
 name = "headway"
 version = "0.11.0-beta.1"
 dependencies = [
- "enostr",
  "futures-util",
  "hex",
  "nostr 0.37.0",
  "nostrdb",
+ "nostrdb_net",
  "profiling",
  "serde_json",
  "tempfile",

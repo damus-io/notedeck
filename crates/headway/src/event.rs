@@ -30,8 +30,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, NoteKey, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 
 /// Headway board: addressable, `d` = board id, holds title/description and the
 /// ordered column list.
@@ -2817,7 +2817,7 @@ pub fn comment_filter(card_ids: &[[u8; 32]]) -> Filter {
 /// roster) are the separate G6 gate, `headway:headway/purchase-arch-since`.
 ///
 /// `team_pubkeys` are the board channel's team public keys
-/// (`enostr::sns::derive_sns_keys(team_root).team_keypair.pubkey`), the value a
+/// (`nostrdb_net::sns::derive_sns_keys(team_root).team_keypair.pubkey`), the value a
 /// kind-1081 envelope is authored by. It is a *set*, not one key, because a board
 /// can accumulate more than one channel over its life and its content is then
 /// split across them with no way to consolidate: a note is promoted to a sealed
@@ -3275,7 +3275,7 @@ pub fn rank_between(left: Option<&str>, right: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
+    use nostrdb_net::FullKeypair;
 
     /// The relay-sync dedup keys off [`is_addressable`]: an addressable kind is
     /// deduped to its winning revision before the push, an immutable one is passed
@@ -4141,7 +4141,7 @@ mod tests {
         let ingest = |b: NoteBuilder| -> NoteId {
             let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
             let id = NoteId::new(*note.id());
-            let json = enostr::ClientMessage::event(&note)
+            let json = nostrdb_net::ClientMessage::event(&note)
                 .unwrap()
                 .to_json()
                 .unwrap();
@@ -4195,7 +4195,7 @@ mod tests {
 
         let ingest = |b: NoteBuilder| {
             let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
-            let json = enostr::ClientMessage::event(&note)
+            let json = nostrdb_net::ClientMessage::event(&note)
                 .unwrap()
                 .to_json()
                 .unwrap();
@@ -4254,7 +4254,7 @@ mod tests {
         root[0] = 0x11;
         root[31] = 0x42;
         let channel = SnsChannel {
-            keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("derive sns keys"),
         };
         assert!(ndb.add_team_root(&root));
 
@@ -4397,7 +4397,7 @@ mod tests {
         root[0] = 0x11;
         root[31] = 0x43;
         let channel = SnsChannel {
-            keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("derive sns keys"),
         };
         assert!(ndb.add_team_root(&root));
 
@@ -4821,7 +4821,7 @@ mod tests {
 
         let ingest = |b: NoteBuilder| {
             let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
-            let json = enostr::ClientMessage::event(&note)
+            let json = nostrdb_net::ClientMessage::event(&note)
                 .unwrap()
                 .to_json()
                 .unwrap();

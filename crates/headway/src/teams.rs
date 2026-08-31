@@ -21,8 +21,8 @@
 //! a restart), so [`register_teams`] re-registers the derived roster each boot,
 //! mirroring `add_key` for account keys.
 
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb_net::Pubkey;
 
 /// One shared board the account has joined: the channel secret plus which board
 /// coordinate it unlocks. Derived from the account's kind-1082 key-share rumors
@@ -58,10 +58,10 @@ impl Team {
     }
 
     /// Derive this team's SNS channel keys from its root, or `None` if the root is
-    /// unusable. The keys are what seal an edit ([`enostr::sns::wrap_rumor`]) and
+    /// unusable. The keys are what seal an edit ([`nostrdb_net::sns::wrap_rumor`]) and
     /// name the channel to subscribe to (the team keypair's pubkey).
-    pub fn sns_keys(&self) -> Option<enostr::sns::SnsKeys> {
-        enostr::sns::derive_sns_keys(&self.root_bytes()?)
+    pub fn sns_keys(&self) -> Option<nostrdb_net::sns::SnsKeys> {
+        nostrdb_net::sns::derive_sns_keys(&self.root_bytes()?)
     }
 }
 
@@ -71,7 +71,7 @@ impl Team {
 /// filter to notice new joins live.
 pub fn keyshare_filter() -> Filter {
     Filter::new()
-        .kinds([enostr::sns::KEYSHARE_KIND as u64])
+        .kinds([nostrdb_net::sns::KEYSHARE_KIND as u64])
         .limit(500)
         .build()
 }
@@ -90,7 +90,7 @@ pub fn keyshare_filter() -> Filter {
 /// walk that a `limit` truncates would silently under-report the channel.
 pub fn envelope_filter(team_pubkeys: &[Pubkey]) -> Filter {
     Filter::new()
-        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+        .kinds([nostrdb_net::sns::SNS_ENVELOPE_KIND as u64])
         .authors(team_pubkeys.iter().map(|k| k.bytes()))
         .build()
 }
@@ -120,7 +120,7 @@ pub fn giftwrap_filter(author: &Pubkey) -> Filter {
 /// kind-1082 key-share gift-wrapped to the account, and nostrdb unwrapped it into
 /// a durable `1082` rumor. We query those rumors, keep the ones addressed to
 /// `author` (nostrdb records the gift-wrap recipient on the rumor), and read each
-/// one's `team_root` / `a` / `epoch` tags via [`enostr::sns::parse_keyshare`] — the
+/// one's `team_root` / `a` / `epoch` tags via [`nostrdb_net::sns::parse_keyshare`] — the
 /// same tag parser the app's live accept path uses, so both agree on the 1082 wire
 /// format (notably that a 64-hex `team_root` is an id element, not a string). Thus
 /// membership survives restarts and rides the account's NIP-59 inbox across devices
@@ -146,7 +146,7 @@ pub fn teams_from_ndb(ndb: &Ndb, author: &Pubkey) -> Vec<Team> {
         if res.note.rumor_receiver_pubkey() != Some(author.bytes()) {
             continue;
         }
-        let Some(share) = enostr::sns::parse_keyshare(&res.note) else {
+        let Some(share) = nostrdb_net::sns::parse_keyshare(&res.note) else {
             continue;
         };
         // A share must name the board its root unlocks, or we can't fold it later.
@@ -224,8 +224,8 @@ pub fn register_teams(ndb: &Ndb, teams: &[Team]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
     use nostrdb::Config;
+    use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
 
     fn test_root(seed: u8) -> [u8; 32] {
@@ -242,13 +242,13 @@ mod tests {
     }
 
     /// Gift-wrap a kind-1082 key-share to `recipient` via the production
-    /// [`enostr::sns::wrap_keyshare`] and return the kind-1059 giftwrap JSON — what a
+    /// [`nostrdb_net::sns::wrap_keyshare`] and return the kind-1059 giftwrap JSON — what a
     /// sharer publishes and nostrdb unwraps back into a queryable `1082` rumor. Using
     /// the real builder means these ndb-backed tests exercise `wrap_keyshare`'s output
     /// through nostrdb's actual auto-unwrap (never an in-process peel), plus the
     /// receiver filter and tag parsing, end to end. Pass `board_addr = None` for a
     /// (malformed) share that names no board — [`wrap_keyshare`] emits an empty `a`
-    /// tag, which [`enostr::sns::parse_keyshare`] resolves to "no board".
+    /// tag, which [`nostrdb_net::sns::parse_keyshare`] resolves to "no board".
     fn gift_wrapped_keyshare(
         sender: &FullKeypair,
         recipient: &Pubkey,
@@ -256,7 +256,7 @@ mod tests {
         board_addr: Option<&str>,
         epoch: Option<u32>,
     ) -> String {
-        enostr::sns::wrap_keyshare(sender, recipient, root, board_addr.unwrap_or(""), epoch, 1)
+        nostrdb_net::sns::wrap_keyshare(sender, recipient, root, board_addr.unwrap_or(""), epoch, 1)
             .expect("keyshare giftwrap")
             .json()
             .expect("giftwrap json")

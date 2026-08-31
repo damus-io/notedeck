@@ -2,7 +2,7 @@
 //! the CLI (`headway_cli`) and the egui board (`notedeck_headway`) so the two
 //! present authors and timestamps identically.
 
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 
 /// A short, recognisable stand-in for a comment author: the first 12 hex chars
 /// of their pubkey. There's no profile lookup at this layer, so this is just a

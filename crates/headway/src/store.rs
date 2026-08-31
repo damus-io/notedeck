@@ -11,8 +11,8 @@
 
 use std::collections::HashSet;
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
@@ -154,8 +154,8 @@ impl Publisher for NoPublish {
 /// so the seal inside each envelope attributes the edit to the real author while
 /// the envelope is signed by (and addressed to) the shared team keypair.
 pub struct SnsChannel {
-    /// Team keypair + envelope key, from [`enostr::sns::derive_sns_keys`].
-    pub keys: enostr::sns::SnsKeys,
+    /// Team keypair + envelope key, from [`nostrdb_net::sns::derive_sns_keys`].
+    pub keys: nostrdb_net::sns::SnsKeys,
 }
 
 /// Who is writing an edit, and how it reaches the wire: the signing `secret`
@@ -210,7 +210,7 @@ pub fn ingest(
 ///
 /// For a plaintext [`Signer`] the note itself is ingested and published. For a
 /// [`Signer::shared`] the signed note is the *rumor*: it is sealed into a
-/// kind-1081 SNS envelope ([`enostr::sns::wrap_rumor`]), and that envelope is what
+/// kind-1081 SNS envelope ([`nostrdb_net::sns::wrap_rumor`]), and that envelope is what
 /// gets ingested (nostrdb auto-unwraps it back to the rumor, since the team_root
 /// is registered) and published. Either way the returned id is the rumor's, which
 /// nostrdb recomputes identically on unwrap — so a card's id is stable whether the
@@ -226,13 +226,20 @@ pub fn ingest_signed(
     let note = builder.sign(signer.secret).build()?;
     let id = NoteId::new(*note.id());
     let frame = match signer.channel {
-        None => enostr::ClientMessage::event(&note).ok()?.to_json().ok()?,
+        None => nostrdb_net::ClientMessage::event(&note)
+            .ok()?
+            .to_json()
+            .ok()?,
         Some(channel) => {
-            let member = enostr::FullKeypair::from_secret_bytes(signer.secret)?;
+            let member = nostrdb_net::FullKeypair::from_secret_bytes(signer.secret)?;
             let rumor_json = note.json().ok()?;
-            let envelope =
-                enostr::sns::wrap_rumor(&channel.keys, &member, &rumor_json, note.created_at())?;
-            enostr::ClientMessage::event(&envelope)
+            let envelope = nostrdb_net::sns::wrap_rumor(
+                &channel.keys,
+                &member,
+                &rumor_json,
+                note.created_at(),
+            )?;
+            nostrdb_net::ClientMessage::event(&envelope)
                 .ok()?
                 .to_json()
                 .ok()?
@@ -280,7 +287,7 @@ pub fn save_board_pref(
 
 /// PNS-wrap a signed `inner` note and ingest the kind-1080 wrapper into the local
 /// nostrdb, then publish it. The crypto + wrapper construction lives in
-/// [`enostr::pns::wrap`]; this only adds the app-specific ingest/publish glue (the
+/// [`nostrdb_net::pns::wrap`]; this only adds the app-specific ingest/publish glue (the
 /// [`Publisher`] seam differs per crate, so it can't be shared). nostrdb
 /// transparently unwraps the envelope on read once the account key is registered
 /// via `Ndb::add_key`, so the inner note stays queryable. Returns the inner note's
@@ -292,9 +299,9 @@ fn ingest_pns(
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
     let inner_id = NoteId::new(*inner.id());
-    let pns_keys = enostr::pns::derive_pns_keys(device_secret);
-    let wrapper = enostr::pns::wrap(&pns_keys, &inner.json().ok()?, now_secs())?;
-    let frame = enostr::ClientMessage::event(&wrapper)
+    let pns_keys = nostrdb_net::pns::derive_pns_keys(device_secret);
+    let wrapper = nostrdb_net::pns::wrap(&pns_keys, &inner.json().ok()?, now_secs())?;
+    let frame = nostrdb_net::ClientMessage::event(&wrapper)
         .ok()?
         .to_json()
         .ok()?;
@@ -391,9 +398,9 @@ pub fn seed_board(
 /// share and rides its NIP-59 inbox across devices), and seals the board definition
 /// into the channel. The board is therefore encrypted from note #1, and sharing it
 /// later is just handing the same root to another member
-/// ([`enostr::sns::wrap_keyshare`]) — no history re-seal.
+/// ([`nostrdb_net::sns::wrap_keyshare`]) — no history re-seal.
 ///
-/// `team_root` is [derived](enostr::sns::derive_board_root) from the account secret
+/// `team_root` is [derived](nostrdb_net::sns::derive_board_root) from the account secret
 /// and the board slug by every create site, so the same board seeded independently
 /// on another device lands the same root and converges on one channel; a different
 /// slug derives an unrelated root, keeping per-board keys isolated. Returns `true`
@@ -410,7 +417,7 @@ pub fn create_shared_board(
     team_root: &[u8; 32],
     publisher: &mut dyn Publisher,
 ) -> bool {
-    let Some(keys) = enostr::sns::derive_sns_keys(team_root) else {
+    let Some(keys) = nostrdb_net::sns::derive_sns_keys(team_root) else {
         return false;
     };
     let channel = SnsChannel { keys };
@@ -437,7 +444,7 @@ pub fn create_shared_board(
 }
 
 /// Share an existing SNS board with `recipient`: gift-wrap the board's `team_root`
-/// to them as a kind-1082 key-share ([`enostr::sns::wrap_keyshare`]) and ingest +
+/// to them as a kind-1082 key-share ([`nostrdb_net::sns::wrap_keyshare`]) and ingest +
 /// publish it, so it reaches the recipient's NIP-59 inbox and, once they register
 /// the root, unseals the board for them.
 ///
@@ -456,12 +463,18 @@ pub fn share_board(
     team_root: &[u8; 32],
     publisher: &mut dyn Publisher,
 ) -> bool {
-    let Some(sharer) = enostr::FullKeypair::from_secret_bytes(sharer_secret) else {
+    let Some(sharer) = nostrdb_net::FullKeypair::from_secret_bytes(sharer_secret) else {
         return false;
     };
-    let frame =
-        enostr::sns::wrap_keyshare(&sharer, recipient, team_root, board_addr, None, now_secs())
-            .and_then(|gw| enostr::ClientMessage::event(&gw).ok()?.to_json().ok());
+    let frame = nostrdb_net::sns::wrap_keyshare(
+        &sharer,
+        recipient,
+        team_root,
+        board_addr,
+        None,
+        now_secs(),
+    )
+    .and_then(|gw| nostrdb_net::ClientMessage::event(&gw).ok()?.to_json().ok());
     let Some(frame) = frame else {
         return false;
     };
@@ -483,7 +496,7 @@ pub fn share_board(
 /// Registers the root, self-shares it (so the board joins the roster and becomes
 /// shareable — see [`share_board`]), then re-seals every still-plaintext note of
 /// the board: it re-wraps each as a rumor in an SNS envelope
-/// ([`enostr::sns::wrap_rumor`]) and ingests it. nostrdb promotes each already-stored
+/// ([`nostrdb_net::sns::wrap_rumor`]) and ingests it. nostrdb promotes each already-stored
 /// plaintext note to a team-sealed rumor in place (same note_key — see
 /// `ndb_write_note`), so the board then folds via the shared/team-key path.
 /// Idempotent, and cheap to re-run: already-sealed notes are skipped, so a second
@@ -497,7 +510,7 @@ pub fn share_board(
 /// the old channel.
 ///
 /// Returns the number of notes re-sealed. Pass the board's
-/// [derived](enostr::sns::derive_board_root) `team_root` (or its existing root when
+/// [derived](nostrdb_net::sns::derive_board_root) `team_root` (or its existing root when
 /// it already has one). As sole author of a single-writer board, `author` can validly seal
 /// all of its history. Note the original signed plaintext events remain on relays
 /// (they can't be unpublished) — this makes the board shareable and future edits
@@ -510,10 +523,10 @@ pub fn migrate_board_to_sns(
     team_root: &[u8; 32],
     publisher: &mut dyn Publisher,
 ) -> usize {
-    let Some(member) = enostr::FullKeypair::from_secret_bytes(secret) else {
+    let Some(member) = nostrdb_net::FullKeypair::from_secret_bytes(secret) else {
         return 0;
     };
-    let Some(keys) = enostr::sns::derive_sns_keys(team_root) else {
+    let Some(keys) = nostrdb_net::sns::derive_sns_keys(team_root) else {
         return 0;
     };
     let channel = SnsChannel { keys };
@@ -536,11 +549,11 @@ pub fn migrate_board_to_sns(
             continue;
         }
         let Some(envelope) =
-            enostr::sns::wrap_rumor(&channel.keys, &member, &note.json, note.created_at)
+            nostrdb_net::sns::wrap_rumor(&channel.keys, &member, &note.json, note.created_at)
         else {
             continue;
         };
-        let Some(frame) = enostr::ClientMessage::event(&envelope)
+        let Some(frame) = nostrdb_net::ClientMessage::event(&envelope)
             .ok()
             .and_then(|m| m.to_json().ok())
         else {
@@ -1718,9 +1731,9 @@ pub use event::load_board;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
     use futures_util::StreamExt;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
+    use nostrdb_net::FullKeypair;
 
     struct TestNdb {
         ndb: Ndb,
@@ -1831,7 +1844,7 @@ mod tests {
         // The account key must be registered for the self-share (1059) to unwrap.
         t.ndb.add_key(&t.secret());
 
-        let root = enostr::sns::derive_board_root(&t.secret(), BOARD_ID);
+        let root = nostrdb_net::sns::derive_board_root(&t.secret(), BOARD_ID);
         assert!(create_shared_board(
             &t.ndb,
             &t.kp.pubkey,
@@ -1842,7 +1855,7 @@ mod tests {
             &mut NoPublish,
         ));
 
-        let team_pk = enostr::sns::derive_sns_keys(&root)
+        let team_pk = nostrdb_net::sns::derive_sns_keys(&root)
             .unwrap()
             .team_keypair
             .pubkey;
@@ -1890,7 +1903,7 @@ mod tests {
         t.ndb.add_key(&t.secret());
         let member = FullKeypair::generate();
 
-        let root = enostr::sns::derive_board_root(&t.secret(), BOARD_ID);
+        let root = nostrdb_net::sns::derive_board_root(&t.secret(), BOARD_ID);
         assert!(create_shared_board(
             &t.ndb,
             &t.kp.pubkey,
@@ -1925,7 +1938,7 @@ mod tests {
     /// value), both devices arrive at the identical SNS channel, so device B adopts
     /// device A's board instead of forking a second channel that never folds
     /// together. This is exactly why every board's root comes from
-    /// [`enostr::sns::derive_board_root`] (see the create path in `notedeck_headway`).
+    /// [`nostrdb_net::sns::derive_board_root`] (see the create path in `notedeck_headway`).
     #[tokio::test]
     async fn default_board_converges_across_devices() {
         #[derive(Default)]
@@ -1944,8 +1957,8 @@ mod tests {
 
         // The load-bearing property: both devices derive the SAME default root, so
         // independent seeds converge instead of forking the channel.
-        let root_a = enostr::sns::derive_board_root(&secret, BOARD_ID);
-        let root_b = enostr::sns::derive_board_root(&secret, BOARD_ID);
+        let root_a = nostrdb_net::sns::derive_board_root(&secret, BOARD_ID);
+        let root_b = nostrdb_net::sns::derive_board_root(&secret, BOARD_ID);
         assert_eq!(
             root_a, root_b,
             "derived default root is stable across devices"
@@ -1953,12 +1966,12 @@ mod tests {
         // Contrast: a different slug derives an unrelated root, so per-board keys
         // stay isolated (sharing one board's key can't unlock another).
         assert_ne!(
-            enostr::sns::derive_board_root(&secret, "other-board"),
+            nostrdb_net::sns::derive_board_root(&secret, "other-board"),
             root_a,
             "a different slug derives an unrelated root"
         );
 
-        let team_pk = enostr::sns::derive_sns_keys(&root_a)
+        let team_pk = nostrdb_net::sns::derive_sns_keys(&root_a)
             .unwrap()
             .team_keypair
             .pubkey;
@@ -2048,7 +2061,7 @@ mod tests {
         let card_id = card_id_by_title(&plaintext, "existing card").unwrap();
 
         // Migrate under the board's derived root.
-        let root = enostr::sns::derive_board_root(&t.secret(), BOARD_ID);
+        let root = nostrdb_net::sns::derive_board_root(&t.secret(), BOARD_ID);
         let sealed = migrate_board_to_sns(
             &t.ndb,
             &t.kp.pubkey,
@@ -2063,7 +2076,7 @@ mod tests {
         );
 
         // It now folds via the shared path, with the SAME card id preserved.
-        let team_pk = enostr::sns::derive_sns_keys(&root)
+        let team_pk = nostrdb_net::sns::derive_sns_keys(&root)
             .unwrap()
             .team_keypair
             .pubkey;
@@ -2101,8 +2114,8 @@ mod tests {
         let path = dir.path().to_str().unwrap().to_string();
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
-        let root = enostr::sns::derive_board_root(&secret, BOARD_ID);
-        let team_pk = enostr::sns::derive_sns_keys(&root)
+        let root = nostrdb_net::sns::derive_board_root(&secret, BOARD_ID);
+        let team_pk = nostrdb_net::sns::derive_sns_keys(&root)
             .unwrap()
             .team_keypair
             .pubkey;
@@ -3263,7 +3276,7 @@ mod tests {
         root[0] = 0x11;
         root[31] = 0x77;
         assert!(t.ndb.add_team_root(&root));
-        let keys = enostr::sns::derive_sns_keys(&root).expect("keys");
+        let keys = nostrdb_net::sns::derive_sns_keys(&root).expect("keys");
         let team_pubkey = keys.team_keypair.pubkey;
         let channel = SnsChannel { keys };
 
@@ -3310,7 +3323,7 @@ mod tests {
         root[31] = 0x22;
         assert!(t.ndb.add_team_root(&root));
         let channel = SnsChannel {
-            keys: enostr::sns::derive_sns_keys(&root).expect("keys"),
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
         };
 
         // A shared board's definition travels sealed too — members subscribe to no
