@@ -14,8 +14,8 @@ use std::env;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 
 use notebook::event::{
     self, CanvasView, EdgeView, Geometry, NodeContent, NodeKind, NodeView, NotebookTarget,
@@ -184,7 +184,7 @@ async fn run() -> Result<()> {
         let team_pubkey =
             store::workspace_team_pubkey(sk).ok_or("could not derive the vault's SNS channel")?;
         let filter = nostrdb::Filter::new()
-            .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+            .kinds([nostrdb_net::sns::SNS_ENVELOPE_KIND as u64])
             .authors([team_pubkey.bytes()])
             .build();
         // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert the team key
@@ -194,7 +194,7 @@ async fn run() -> Result<()> {
             &cli.relay,
             &ndb,
             &team_pubkey_nn,
-            &[enostr::sns::SNS_ENVELOPE_KIND],
+            &[nostrdb_net::sns::SNS_ENVELOPE_KIND],
             &filter,
             &|_| false,
         )
@@ -1081,7 +1081,7 @@ impl Cli {
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
         // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
-        // (and the `notebook` store/event layer) speaks `enostr::Pubkey`.
+        // (and the `notebook` store/event layer) speaks `nostrdb_net::Pubkey`.
         // Both are `[u8; 32]` newtypes, so bridge at this boundary and keep
         // everything downstream in enostr terms.
         let secret = match (&command, nsec) {

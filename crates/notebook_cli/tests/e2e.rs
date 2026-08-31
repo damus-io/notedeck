@@ -114,7 +114,7 @@ fn vault_lists_and_prints_local_longform() {
 
     // The author whose vault we write and read.
     let (_sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec()).expect("nsec");
-    let author = enostr::Pubkey::new(*pk.bytes());
+    let author = nostrdb_net::Pubkey::new(*pk.bytes());
 
     // Populate the CLI db in-process, then drop the handle so the binary opens it
     // cleanly. The vault is sealed into the account's SNS workspace, so register
@@ -253,7 +253,7 @@ fn write_local_longform(db: &str, title: &str, summary: Option<&str>, content: &
     use std::time::Instant;
 
     let (_sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec()).expect("nsec");
-    let author = enostr::Pubkey::new(*pk.bytes());
+    let author = nostrdb_net::Pubkey::new(*pk.bytes());
 
     let ndb = Ndb::new(db, &Config::new().set_ingester_threads(1)).expect("ndb");
     // Register the vault's derived SNS workspace root so nostrdb unwraps the sealed
