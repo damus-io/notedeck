@@ -1,8 +1,8 @@
 use crate::messages::ExecutedTool;
 use crate::tool::{ToolArg, ToolArgType, ToolSpec};
 use chrono::DateTime;
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, fmt};

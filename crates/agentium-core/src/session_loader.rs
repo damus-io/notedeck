@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 // every consumer (calendar sync, Horizon, Dave sessions) resolves replaceable
 // events the same way. Re-exported here for the call sites below and any users
 // of this module. (Eventual home is nostrdb itself.)
-pub use enostr::{query_replaceable, query_replaceable_filtered};
+pub use nostrdb_net::{query_replaceable, query_replaceable_filtered};
 
 /// Total ordering key for a conversation event, at millisecond wall-clock
 /// resolution.
@@ -101,7 +101,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
 pub fn load_session_messages_for_author(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
     session_id: &str,
 ) -> LoadedSession {
     load_session_messages_with_author(ndb, txn, session_id, Some(author))
@@ -111,7 +111,7 @@ fn load_session_messages_with_author(
     ndb: &Ndb,
     txn: &Transaction,
     session_id: &str,
-    author: Option<&enostr::Pubkey>,
+    author: Option<&nostrdb_net::Pubkey>,
 ) -> LoadedSession {
     let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]);
     let filter = if let Some(author) = author {
@@ -583,7 +583,7 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
 pub fn load_session_states_for_author(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
 ) -> Vec<SessionState> {
     load_session_states_with_author(ndb, txn, Some(author), SessionScope::Live)
 }
@@ -599,7 +599,7 @@ pub fn load_session_states_for_author(
 pub fn load_deleted_session_states_for_author(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
 ) -> Vec<SessionState> {
     load_session_states_with_author(ndb, txn, Some(author), SessionScope::Deleted)
 }
@@ -617,7 +617,7 @@ enum SessionScope {
 fn load_session_states_with_author(
     ndb: &Ndb,
     txn: &Transaction,
-    author: Option<&enostr::Pubkey>,
+    author: Option<&nostrdb_net::Pubkey>,
     scope: SessionScope,
 ) -> Vec<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
@@ -669,7 +669,7 @@ fn load_session_states_with_author(
 pub fn load_run_configs_from_ndb(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
     local_hostname: &str,
 ) -> std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> {
     use crate::config::{RunConfig, AI_RUN_CONFIG_KIND};
@@ -737,7 +737,7 @@ pub fn latest_valid_session(
 pub fn latest_valid_session_for_author(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
     session_id: &str,
 ) -> Option<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
@@ -773,7 +773,7 @@ pub fn latest_valid_session_for_author(
 pub fn latest_state_created_at(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
     session_id: &str,
 ) -> Option<u64> {
     use crate::session_events::AI_SESSION_STATE_KIND;
@@ -802,7 +802,7 @@ pub fn latest_state_created_at(
 pub fn latest_activity_created_at(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
     session_id: &str,
 ) -> Option<u64> {
     use crate::session_events::AI_SESSION_STATE_KIND;
@@ -834,7 +834,7 @@ pub fn load_recent_paths_by_host(
 pub fn load_recent_paths_by_host_for_author(
     ndb: &Ndb,
     txn: &Transaction,
-    author: &enostr::Pubkey,
+    author: &nostrdb_net::Pubkey,
 ) -> HashMap<String, Vec<std::path::PathBuf>> {
     load_recent_paths_by_host_with_author(ndb, txn, Some(author))
 }
@@ -842,7 +842,7 @@ pub fn load_recent_paths_by_host_for_author(
 fn load_recent_paths_by_host_with_author(
     ndb: &Ndb,
     txn: &Transaction,
-    author: Option<&enostr::Pubkey>,
+    author: Option<&nostrdb_net::Pubkey>,
 ) -> HashMap<String, Vec<std::path::PathBuf>> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 

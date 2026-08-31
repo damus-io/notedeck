@@ -205,7 +205,7 @@ fn desktop_request_permission(seeder: &Session, relay: &str) -> uuid::Uuid {
 /// PNS-wrap a freshly-built inner event and publish it through the seeder
 /// [`Session`] — the same envelope the engine's own write methods produce.
 fn desktop_publish(seeder: &Session, inner_json: &str, relay: &str) {
-    let pns = enostr::pns::derive_pns_keys(&DEVICE_KEY);
+    let pns = nostrdb_net::pns::derive_pns_keys(&DEVICE_KEY);
     let wrapped = wrap_pns(inner_json, &pns).unwrap();
     seeder.publish(wrapped, vec![relay.to_string()]);
 }

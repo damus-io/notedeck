@@ -57,10 +57,10 @@
 //! an await); the engine only hands it plain `Filter`s and pre-serialized event
 //! JSON, so none of that discipline leaks up here.
 
-use enostr::pns::PNS_KIND;
 use enostr::NormRelayUrl;
 use futures_util::StreamExt;
 use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
+use nostrdb_net::pns::PNS_KIND;
 use nostrdb_net::relay::sync::Session;
 
 use crate::messages::Message;
@@ -113,7 +113,7 @@ pub struct Engine {
     /// events (kind 1988/31988/31989) and is the root from which the PNS keys
     /// are derived; both devices sharing a session share this key. See the
     /// module docs.
-    account: enostr::FullKeypair,
+    account: nostrdb_net::FullKeypair,
     /// The relay a standalone engine publishes to and points its PNS discovery
     /// subscription at, set by [`Engine::connect`]. `None` means "ingest locally,
     /// don't publish" — the state of an embedded engine, whose host owns sync.
@@ -169,7 +169,7 @@ impl Engine {
     /// [`Engine::with_ndb`]. Fails with [`EngineError::InvalidDeviceKey`] if the
     /// bytes are not a valid secp256k1 secret.
     pub fn embedded(ndb: Ndb, device_key: [u8; 32]) -> Result<Self, EngineError> {
-        let account = enostr::FullKeypair::from_secret_bytes(&device_key)
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&device_key)
             .ok_or(EngineError::InvalidDeviceKey)?;
         // Register the key so ndb can decrypt inbound PNS envelopes in-thread.
         // A `false` return means the key was already present, which is benign.
@@ -191,15 +191,15 @@ impl Engine {
 
     /// The account public key that signs this engine's session events (and that
     /// its author-scoped reads filter on).
-    pub fn account_pubkey(&self) -> enostr::Pubkey {
+    pub fn account_pubkey(&self) -> nostrdb_net::Pubkey {
         self.account.pubkey
     }
 
     /// The PNS keys (kind-1080 signing keypair + NIP-44 conversation key)
     /// derived from the device key. Used to author the discovery subscription
     /// and to wrap/unwrap session events on the wire.
-    fn pns_keys(&self) -> enostr::pns::PnsKeys {
-        enostr::pns::derive_pns_keys(&self.account.secret_key.secret_bytes())
+    fn pns_keys(&self) -> nostrdb_net::pns::PnsKeys {
+        nostrdb_net::pns::derive_pns_keys(&self.account.secret_key.secret_bytes())
     }
 
     /// Connect a standalone engine to a relay for remote sync.
@@ -911,7 +911,7 @@ mod tests {
     /// engine's registered device key lets ndb decrypt it into the queryable
     /// inner event.
     fn pns_seed(ndb: &Ndb, inner_json: &str) {
-        let pns = enostr::pns::derive_pns_keys(&TEST_SECKEY);
+        let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
         let wrapped = crate::session_events::wrap_pns(inner_json, &pns).expect("wrap pns");
         ndb.process_event(&format!(r#"["EVENT","_seed",{wrapped}]"#))
             .expect("ingest pns envelope");
@@ -923,7 +923,7 @@ mod tests {
     /// ingest but don't publish, so the caller wraps the returned inner event and
     /// sends it through the same [`Session`] a standalone engine owns.
     fn publish_prepared(engine: &Engine, built: &crate::session_events::BuiltEvent, relay: &str) {
-        let pns = enostr::pns::derive_pns_keys(&TEST_SECKEY);
+        let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
         let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns).expect("wrap pns");
         engine
             .session

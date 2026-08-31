@@ -65,14 +65,14 @@ impl BuiltEvent {
 
 /// Wrap an inner event in a kind-1080 PNS envelope for relay publishing.
 ///
-/// The encrypt + sign-1080 construction lives in [`enostr::pns::wrap`]; this
+/// The encrypt + sign-1080 construction lives in [`nostrdb_net::pns::wrap`]; this
 /// adapts it to agentium's `Result<String, EventBuildError>` by returning the
 /// wrapper's event JSON.
 pub fn wrap_pns(
     inner_json: &str,
-    pns_keys: &enostr::pns::PnsKeys,
+    pns_keys: &nostrdb_net::pns::PnsKeys,
 ) -> Result<String, EventBuildError> {
-    enostr::pns::wrap(pns_keys, inner_json, now_secs())
+    nostrdb_net::pns::wrap(pns_keys, inner_json, now_secs())
         .ok_or_else(|| EventBuildError::Serialize("PNS wrap failed".to_string()))?
         .json()
         .map_err(|e| EventBuildError::Serialize(format!("PNS wrap json: {e}")))
@@ -2206,7 +2206,7 @@ mod tests {
     #[test]
     fn test_wrap_pns() {
         let sk = test_secret_key();
-        let pns_keys = enostr::pns::derive_pns_keys(&sk);
+        let pns_keys = nostrdb_net::pns::derive_pns_keys(&sk);
 
         let inner = r#"{"kind":1988,"content":"hello","tags":[],"created_at":0,"pubkey":"abc","id":"def","sig":"ghi"}"#;
         let wrapped = wrap_pns(inner, &pns_keys).unwrap();
