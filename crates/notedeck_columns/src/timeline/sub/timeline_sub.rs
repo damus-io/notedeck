@@ -1,6 +1,6 @@
-use enostr::Pubkey;
 use hashbrown::HashMap;
 use nostrdb::{Ndb, NoteKey, Subscription};
+use nostrdb_net::Pubkey;
 use notedeck::filter::HybridFilter;
 
 use crate::timeline::sub::ndb_sub;

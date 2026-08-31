@@ -1,7 +1,7 @@
 use crate::key_parsing::perform_key_retrieval;
 use crate::key_parsing::AcquireKeyError;
 use egui::{TextBuffer, TextEdit};
-use enostr::Keypair;
+use nostrdb_net::Keypair;
 use notedeck::{tr, Localization};
 use poll_promise::Promise;
 
@@ -152,7 +152,7 @@ fn show_error(ui: &mut egui::Ui, i18n: &mut Localization, err: &AcquireKeyError)
 
 #[cfg(test)]
 mod tests {
-    use enostr::Pubkey;
+    use nostrdb_net::Pubkey;
 
     use super::*;
     use std::time::{Duration, Instant};

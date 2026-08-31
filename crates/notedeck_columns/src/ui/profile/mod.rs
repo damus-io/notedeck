@@ -2,8 +2,8 @@ pub mod edit;
 
 pub use edit::EditProfileView;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
-use enostr::Pubkey;
 use nostrdb::{ProfileRecord, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{tr, DragResponse, Localization, ProfileContext};
 use notedeck_ui::profile::{context::ProfileContextWidget, follow_button};
 use robius_open::Uri;

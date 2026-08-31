@@ -10,8 +10,8 @@ use egui::{
     widgets::text_edit::TextEdit,
     Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
-use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{FilledKeypair, FullKeypair, NoteId, Pubkey};
 use notedeck::media::latest::LatestImageTex;
 use notedeck::media::AnimationMode;
 #[cfg(target_os = "android")]
@@ -94,7 +94,7 @@ impl NewPostAction {
         // `ClientMessage` now lives in nostrdb_net, so its error is
         // `nostrdb_net::Error`; bridge it through `enostr::Error` (which our
         // `Error::Nostr` variant already accepts) so `?` has a single hop.
-        let event = enostr::ClientMessage::event(&note).map_err(enostr::Error::from)?;
+        let event = nostrdb_net::ClientMessage::event(&note).map_err(enostr::Error::from)?;
 
         // Ingest locally so the note appears immediately, even when offline
         if let Ok(json) = event.to_json() {

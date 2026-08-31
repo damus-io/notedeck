@@ -2,7 +2,7 @@ use core::f32;
 
 use egui::{vec2, Button, CornerRadius, Layout, Margin, RichText, ScrollArea, TextEdit};
 use egui_winit::clipboard::Clipboard;
-use enostr::ProfileState;
+use nostrdb_net::ProfileState;
 use notedeck::DragResponse;
 use notedeck::{
     profile::unwrap_profile_url, tr, Images, Localization, MediaJobSender, NotedeckTextStyle,

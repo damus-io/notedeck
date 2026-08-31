@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::nfilter::filter_from_querystring;
 use crate::timeline::kind::FilterVec;
 use crate::timeline::TimelineKind;
-use enostr::{Filter, Pubkey};
+use nostrdb_net::{Filter, Pubkey};
 use oot_bitset::{bitset_clear, bitset_get, bitset_set};
 use tracing::{debug, error, info};
 

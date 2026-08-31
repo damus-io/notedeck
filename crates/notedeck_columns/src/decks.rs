@@ -1,7 +1,7 @@
 use std::collections::{hash_map::ValuesMut, HashMap};
 
-use enostr::Pubkey;
 use nostrdb::Transaction;
+use nostrdb_net::Pubkey;
 use notedeck::{tr, AppContext, Localization, FALLBACK_PUBKEY};
 use tracing::{error, info};
 

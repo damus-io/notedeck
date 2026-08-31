@@ -1,5 +1,5 @@
-use enostr::Pubkey;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::NoteRef;
 use notedeck_ui::note::get_reposted_note;
 
@@ -179,7 +179,7 @@ fn to_repost(payload: &NotePayload, ndb: &Ndb, txn: &Transaction) -> Option<Repo
         None => {
             tracing::debug!(
                 "Could not get reposted note for note id {}",
-                enostr::NoteId::new(*payload.note.id()).hex()
+                nostrdb_net::NoteId::new(*payload.note.id()).hex()
             );
             return None;
         }
@@ -190,7 +190,7 @@ fn to_repost(payload: &NotePayload, ndb: &Ndb, txn: &Transaction) -> Option<Repo
         None => {
             tracing::error!(
                 "Could not get key of reposted note {}",
-                enostr::NoteId::new(*reposted_note.id()).hex()
+                nostrdb_net::NoteId::new(*reposted_note.id()).hex()
             );
             return None;
         }
@@ -250,7 +250,7 @@ fn to_zap(payload: &NotePayload, ndb: &Ndb, txn: &Transaction) -> Option<ZapResp
     let description_str = description?;
 
     // Parse the zap request (description) to get the sender pubkey
-    let zap_req = enostr::Note::from_json(description_str).ok()?;
+    let zap_req = nostrdb_net::Note::from_json(description_str).ok()?;
     let sender_pk = *zap_req.pubkey.bytes();
 
     // Parse bolt11 invoice for amount

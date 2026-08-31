@@ -1,8 +1,9 @@
 use egui::{
     Align, Button, Frame, InnerResponse, Layout, RichText, ScrollArea, Ui, UiBuilder, Vec2,
 };
-use enostr::{Keypair, Pubkey, ToBech32};
+use enostr::ToBech32;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{Keypair, Pubkey};
 use notedeck::{tr, Accounts, DragResponse, Images, Localization, MediaJobSender};
 use notedeck_ui::colors::PINK;
 use notedeck_ui::profile::preview::SimpleProfilePreview;
@@ -279,8 +280,8 @@ fn sign_out_button(i18n: &mut Localization) -> egui::Button<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::{FullKeypair, SecretKey};
     use nostr::nips::nip19::FromBech32;
+    use nostrdb_net::{FullKeypair, SecretKey};
 
     /// The nsec menu item hands back a bech32 secret key that round-trips to the
     /// same account, and is only offered for accounts we hold the key for.

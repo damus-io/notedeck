@@ -3,8 +3,8 @@ use egui::{
     text_edit::TextEditOutput,
     TextBuffer, TextEdit, TextFormat,
 };
-use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Note, NoteBuilder, NoteReply};
+use nostrdb_net::{FullKeypair, Pubkey};
 use std::{
     any::TypeId,
     collections::{BTreeMap, HashMap, HashSet},
@@ -44,7 +44,7 @@ fn add_client_tag(builder: NoteBuilder<'_>) -> NoteBuilder<'_> {
 impl NewPost {
     pub fn new(
         content: String,
-        account: enostr::FullKeypair,
+        account: nostrdb_net::FullKeypair,
         media: Vec<Nip94Event>,
         mentions: Vec<Pubkey>,
     ) -> Self {
@@ -157,7 +157,7 @@ impl NewPost {
         let new_content = format!(
             "{}\nnostr:{}",
             self.content,
-            enostr::NoteId::new(*quoting.id()).to_bech().unwrap()
+            nostrdb_net::NoteId::new(*quoting.id()).to_bech().unwrap()
         );
 
         let builder = self.builder_with_shared_tags(new_content);

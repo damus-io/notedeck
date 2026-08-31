@@ -10,8 +10,8 @@ use crate::{
 };
 
 use egui_nav::Percent;
-use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
+use nostrdb_net::{FilledKeypair, NoteId, Pubkey};
 use notedeck::{
     get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
@@ -378,7 +378,7 @@ fn send_reaction_event(
         .build()
         .ok_or_else(|| "failed to build reaction event".to_owned())?;
 
-    let Ok(event) = &enostr::ClientMessage::event(&note) else {
+    let Ok(event) = &nostrdb_net::ClientMessage::event(&note) else {
         return Err("failed to convert reaction note into client message".to_owned());
     };
 

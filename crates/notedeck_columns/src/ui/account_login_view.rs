@@ -5,7 +5,7 @@ use egui::{
     Align, Button, Color32, Frame, InnerResponse, Layout, Margin, RichText, TextEdit, Vec2,
 };
 use egui_winit::clipboard::Clipboard;
-use enostr::Keypair;
+use nostrdb_net::Keypair;
 use notedeck::{fonts::get_font_size, tr, Localization, NotedeckTextStyle};
 use notedeck_ui::{
     app_images,

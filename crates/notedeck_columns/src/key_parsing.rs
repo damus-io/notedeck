@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use crate::Error;
 use ehttp::{Request, Response};
-use enostr::{Keypair, Pubkey, SecretKey};
+use nostrdb_net::{Keypair, Pubkey, SecretKey};
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 use tracing::error;

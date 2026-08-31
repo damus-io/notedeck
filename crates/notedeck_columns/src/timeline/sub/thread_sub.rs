@@ -1,7 +1,8 @@
 use egui_nav::ReturnType;
-use enostr::{Filter, NormRelayUrl, NoteId, Pubkey};
+use enostr::NormRelayUrl;
 use hashbrown::{HashMap, HashSet};
 use nostrdb::{Ndb, NoteReply, Subscription, Transaction};
+use nostrdb_net::{Filter, NoteId, Pubkey};
 use notedeck::{Accounts, FullHistoryConfig, ScopedSubApi, SubConfig, SubKey};
 
 use crate::column::ColumnId;
@@ -1381,7 +1382,7 @@ mod tests {
         let mut app_ctx = h.notedeck.app_context();
         // Use a full-key account so the relay-list edit is signed, ingested into
         // NDB, and restored by the normal account-selection query path.
-        let account_a_keypair = enostr::FullKeypair::generate().to_keypair();
+        let account_a_keypair = nostrdb_net::FullKeypair::generate().to_keypair();
         let account_a = account_a_keypair.pubkey;
         let add_account_a = app_ctx
             .accounts
@@ -1393,7 +1394,7 @@ mod tests {
             &mut app_ctx,
             "wss://thread-account-switch-read.example.com",
         );
-        let account_b = enostr::FullKeypair::generate().to_keypair();
+        let account_b = nostrdb_net::FullKeypair::generate().to_keypair();
         let account_b_pk = account_b.pubkey;
         let add_response = app_ctx
             .accounts

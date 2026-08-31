@@ -3,10 +3,10 @@
 use std::time::Duration;
 
 use egui_kittest::kittest::Queryable;
-use enostr::FullKeypair;
 use nostr::{Alphabet, Event, JsonUtil, Kind, SingleLetterTag};
 use nostr_relay_builder::prelude::{MemoryDatabase, NostrEventsDatabase};
 use nostrdb::{Filter, FilterBuilder, Ndb, NoteBuilder, Transaction};
+use nostrdb_net::FullKeypair;
 use notedeck::{construct_people_list_note, filter, App, AppContext, AppResponse, RootNoteIdBuf};
 use notedeck_columns::{
     column::{Column, ColumnId, Columns},
@@ -250,7 +250,7 @@ fn build_text_note(
 }
 fn build_pubkey_tagged_text_note(
     account: &FullKeypair,
-    tagged_pubkey: &enostr::Pubkey,
+    tagged_pubkey: &nostrdb_net::Pubkey,
     content: &str,
     created_at: u64,
 ) -> nostrdb::Note<'static> {
@@ -267,7 +267,7 @@ fn build_pubkey_tagged_text_note(
 }
 fn build_giftwrap_note(
     account: &FullKeypair,
-    recipient: &enostr::Pubkey,
+    recipient: &nostrdb_net::Pubkey,
     content: &str,
     created_at: u64,
 ) -> nostrdb::Note<'static> {
@@ -428,7 +428,7 @@ async fn setup_relay() -> (MemoryDatabase, String, NegentropyRelay) {
     let relay_url = remote.relay.url().to_owned();
     (remote.db, relay_url, remote.relay)
 }
-fn construct_contact_list_note<'a>(pks: Vec<enostr::Pubkey>) -> NoteBuilder<'a> {
+fn construct_contact_list_note<'a>(pks: Vec<nostrdb_net::Pubkey>) -> NoteBuilder<'a> {
     let mut builder = NoteBuilder::new()
         .content("")
         .kind(3)

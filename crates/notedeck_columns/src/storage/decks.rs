@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt, str::FromStr};
 
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
@@ -386,7 +386,7 @@ impl CleanIntermediaryRoute {
 
 #[cfg(test)]
 mod tests {
-    //use enostr::Pubkey;
+    //use nostrdb_net::Pubkey;
 
     //use crate::{route::Route, timeline::TimelineRoute};
 

@@ -2,8 +2,8 @@ use crate::error::Error;
 use crate::nfilter::{filter_from_querystring, filter_to_querystring};
 use crate::search::SearchQuery;
 use crate::timeline::{Timeline, TimelineTab};
-use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{Filter, NoteId, Pubkey};
 use notedeck::filter::{NdbQueryPackage, ValidKind};
 use notedeck::{
     contacts::{contacts_filter, hybrid_contacts_filter, hybrid_last_per_pubkey_filter},

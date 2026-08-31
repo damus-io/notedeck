@@ -1,5 +1,5 @@
 use crate::timeline::TimelineTab;
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 use notedeck_ui::ProfileSearchResult;
 
 use super::SearchType;

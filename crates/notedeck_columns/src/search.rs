@@ -1,6 +1,6 @@
 use crate::nfilter::{filter_from_querystring, filter_to_querystring};
-use enostr::Pubkey;
 use nostrdb::{Filter, FilterBuilder, FilterField};
+use nostrdb_net::Pubkey;
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
@@ -79,7 +79,7 @@ impl SearchQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::Pubkey;
+    use nostrdb_net::Pubkey;
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
     fn test_pubkey() -> Pubkey {

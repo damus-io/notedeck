@@ -619,7 +619,7 @@ fn settings_button(current_route: Option<&Route>) -> impl Widget + '_ {
     }
 }
 
-fn profile_button(current_route: Option<&Route>, pubkey: enostr::Pubkey) -> impl Widget + '_ {
+fn profile_button(current_route: Option<&Route>, pubkey: nostrdb_net::Pubkey) -> impl Widget + '_ {
     let is_active = matches!(
         current_route,
         Some(Route::Timeline(crate::timeline::TimelineKind::Profile(pk))) if *pk == pubkey

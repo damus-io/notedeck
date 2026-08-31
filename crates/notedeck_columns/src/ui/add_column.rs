@@ -5,8 +5,8 @@ use egui::{
     pos2, vec2, Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, ScrollArea,
     Separator, Ui, Vec2, Widget,
 };
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use tracing::error;
 
 use crate::{

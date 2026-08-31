@@ -11,8 +11,8 @@ use crate::{
 
 use egui::UiBuilder;
 use egui::{Margin, Response, RichText, Sense, Stroke};
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::tr;
 use notedeck::{Images, Localization, MediaJobSender, NotedeckTextStyle};
 use notedeck_ui::app_images;

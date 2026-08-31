@@ -19,8 +19,8 @@ use notedeck::{
 };
 
 use egui_virtual_list::VirtualList;
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
+use nostrdb_net::Pubkey;
 use std::{
     cell::RefCell,
     rc::Rc,

@@ -1,8 +1,8 @@
 use egui_nav::ReturnType;
 use egui_virtual_list::VirtualList;
-use enostr::NoteId;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Ndb, Note, NoteKey, NoteReplyBuf, Transaction};
+use nostrdb_net::NoteId;
 use notedeck::{Accounts, NoteCache, NoteRef, ScopedSubApi, UnknownIds};
 
 use crate::{

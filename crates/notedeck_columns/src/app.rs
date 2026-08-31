@@ -20,8 +20,8 @@ use crate::{
     Result,
 };
 use egui_extras::{Size, StripBuilder};
-use enostr::Pubkey;
 use nostrdb::Transaction;
+use nostrdb_net::Pubkey;
 use notedeck::{
     tr, ui::is_compiled_as_mobile, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
     DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender, NotedeckOptions,

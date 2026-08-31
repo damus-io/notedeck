@@ -1,5 +1,5 @@
-use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{FullKeypair, Pubkey};
 
 use notedeck::{Accounts, AppContext, DragResponse, Localization, SingleUnkIdAction, UnknownIds};
 use notedeck_ui::nip51_set::Nip51SetUiCache;

@@ -1,5 +1,5 @@
-use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
+use nostrdb_net::{FilledKeypair, FullKeypair, ProfileState, Pubkey};
 
 use notedeck::{
     builder_from_note, note::publish::publish_note_builder, send_mute_event, Accounts,
@@ -73,7 +73,7 @@ impl ProfileAction {
             }
             ProfileAction::SaveChanges(changes) => {
                 let note = changes.to_note();
-                let Ok(event) = enostr::ClientMessage::event(&note) else {
+                let Ok(event) = nostrdb_net::ClientMessage::event(&note) else {
                     tracing::error!("could not serialize profile note?");
                     return None;
                 };
@@ -330,7 +330,7 @@ fn default_dms_relays() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::construct_contact_list_note;
-    use enostr::FullKeypair;
+    use nostrdb_net::FullKeypair;
 
     #[test]
     fn construct_contact_list_note_emits_expected_tags() {

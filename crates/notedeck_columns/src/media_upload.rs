@@ -338,7 +338,7 @@ impl Nip94Event {
 mod tests {
     use std::{fs, path::PathBuf, str::FromStr};
 
-    use enostr::FullKeypair;
+    use nostrdb_net::FullKeypair;
 
     use crate::media_upload::{
         get_upload_url_from_provider, nostrbuild_nip96_upload, SelectedMedia, NOSTR_BUILD_URL,

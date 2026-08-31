@@ -2,8 +2,8 @@ use egui::{
     emath::GuiRounding, pos2, vec2, Color32, CornerRadius, FontId, Frame, Label, Layout, Slider,
     Stroke,
 };
-use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, Localization,
     MediaJobSender, NotedeckTextStyle,

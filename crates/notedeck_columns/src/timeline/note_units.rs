@@ -402,8 +402,8 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use egui::ahash::HashMap;
-    use enostr::Pubkey;
     use nostrdb::NoteKey;
+    use nostrdb_net::Pubkey;
     use notedeck::NoteRef;
     use pretty_assertions::assert_eq;
 

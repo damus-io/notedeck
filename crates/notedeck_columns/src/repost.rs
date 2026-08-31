@@ -1,5 +1,6 @@
-use enostr::{Keypair, NoteId, RelayId};
+use enostr::RelayId;
 use nostrdb::{Ndb, Note, NoteBuilder, Transaction};
+use nostrdb_net::{Keypair, NoteId};
 use notedeck::{Accounts, RemoteApi};
 
 use crate::{nav::RouterAction, Route};
@@ -89,7 +90,7 @@ impl RepostAction {
                 .inspect_err(|e| tracing::error!("failure to generate repost event: {e}"))
                 .ok()?;
 
-                let Ok(event) = &enostr::ClientMessage::event(&repost_ev) else {
+                let Ok(event) = &nostrdb_net::ClientMessage::event(&repost_ev) else {
                     tracing::error!("send_note_builder: failed to build json");
                     return None;
                 };

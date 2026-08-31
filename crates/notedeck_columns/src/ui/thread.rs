@@ -111,7 +111,10 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             .get_note_by_id(txn, self.selected_note_id)
         else {
             let id = *self.selected_note_id;
-            tracing::error!("ndb: Did not find note {}", enostr::NoteId::new(id).hex());
+            tracing::error!(
+                "ndb: Did not find note {}",
+                nostrdb_net::NoteId::new(id).hex()
+            );
             return None;
         };
 

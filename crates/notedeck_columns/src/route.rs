@@ -1,6 +1,6 @@
 use egui_nav::{Percent, ReturnType};
-use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
     tr, Localization, NoteDetail, NoteZapTargetOwned, ReportTarget, RootNoteIdBuf, ScopedSubApi,
     WalletType,
@@ -805,11 +805,11 @@ fn cleanup_route(
 
 #[cfg(test)]
 mod tests {
-    use enostr::NoteId;
+    use nostrdb_net::NoteId;
     use tokenator::{TokenParser, TokenWriter};
 
     use crate::{timeline::ThreadSelection, Route};
-    use enostr::Pubkey;
+    use nostrdb_net::Pubkey;
     use notedeck::{NavStack, RootNoteIdBuf};
 
     #[test]

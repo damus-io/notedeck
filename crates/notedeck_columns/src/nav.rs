@@ -35,8 +35,8 @@ use crate::{
 use egui_nav::{
     Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
-use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb_net::ProfileState;
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppAction,
     AppContext, FilterState, NavStack, NavStackEvent, NoteAction, NoteContext, NoteDetail,
@@ -74,8 +74,8 @@ pub enum RenderNavAction {
     RelayAction(RelayAction),
     SettingsAction(SettingsAction),
     RepostAction(RepostAction),
-    ShowFollowing(enostr::Pubkey),
-    ShowFollowers(enostr::Pubkey),
+    ShowFollowing(nostrdb_net::Pubkey),
+    ShowFollowers(nostrdb_net::Pubkey),
     RefreshTimeline(crate::timeline::TimelineKind),
 }
 
@@ -795,11 +795,11 @@ fn process_render_nav_action(
 /// The sender is the author of the zap request (kind 9734) embedded
 /// in the receipt's "description" tag, not the receipt's own pubkey
 /// (which is the LNURL server).
-fn zap_sender_pubkey(zap_receipt: &nostrdb::Note<'_>) -> Option<enostr::Pubkey> {
+fn zap_sender_pubkey(zap_receipt: &nostrdb::Note<'_>) -> Option<nostrdb_net::Pubkey> {
     for tag in zap_receipt.tags() {
         if tag.count() >= 2 && tag.get_str(0) == Some("description") {
             let desc = tag.get_str(1)?;
-            let zap_req = enostr::Note::from_json(desc).ok()?;
+            let zap_req = nostrdb_net::Note::from_json(desc).ok()?;
             return Some(zap_req.pubkey);
         }
     }
@@ -819,8 +819,8 @@ fn is_zap_verified(ndb: &Ndb, txn: &Transaction, note_id: &[u8; 32]) -> bool {
 /// Cached zap detail list split by verification status.
 #[derive(Clone)]
 struct ZapDetailCache {
-    verified: Vec<enostr::Pubkey>,
-    unverified: Vec<enostr::Pubkey>,
+    verified: Vec<nostrdb_net::Pubkey>,
+    unverified: Vec<nostrdb_net::Pubkey>,
 }
 
 fn note_detail_ui(
@@ -843,7 +843,7 @@ fn note_detail_ui(
 
     let contacts = ui
         .ctx()
-        .data_mut(|d| d.get_temp::<Vec<enostr::Pubkey>>(cache_id));
+        .data_mut(|d| d.get_temp::<Vec<nostrdb_net::Pubkey>>(cache_id));
 
     let (txn, contacts) = if let Some(cached) = contacts {
         let txn = nostrdb::Transaction::new(ndb).expect("txn");
@@ -868,7 +868,7 @@ fn note_detail_ui(
 
         if let Ok(results) = ndb.query(&txn, &[filter], 500) {
             for result in &results {
-                let pk = enostr::Pubkey::new(*result.note.pubkey());
+                let pk = nostrdb_net::Pubkey::new(*result.note.pubkey());
                 if seen.insert(pk) {
                     contacts.push(pk);
                 }
@@ -897,7 +897,7 @@ fn note_detail_ui(
 fn zap_detail_ui(
     ui: &mut egui::Ui,
     ndb: &Ndb,
-    note_id: &enostr::NoteId,
+    note_id: &nostrdb_net::NoteId,
     note_context: &mut NoteContext<'_>,
 ) -> DragResponse<RenderNavAction> {
     let cache_id = egui::Id::new(("zap_detail_cache", note_id));
@@ -1350,7 +1350,7 @@ fn render_nav_body(
 
             let contacts = ui
                 .ctx()
-                .data_mut(|d| d.get_temp::<Vec<enostr::Pubkey>>(cache_id));
+                .data_mut(|d| d.get_temp::<Vec<nostrdb_net::Pubkey>>(cache_id));
 
             let (txn, contacts) = if let Some(cached) = contacts {
                 let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
@@ -1370,7 +1370,7 @@ fn render_nav_body(
                             if tag.count() >= 2 {
                                 if let Some("p") = tag.get_str(0) {
                                     if let Some(pk_bytes) = tag.get_id(1) {
-                                        contacts.push(enostr::Pubkey::new(*pk_bytes));
+                                        contacts.push(nostrdb_net::Pubkey::new(*pk_bytes));
                                     }
                                 }
                             }

@@ -10,8 +10,8 @@ use crate::{
 use notedeck::ScopedSubApi;
 use notedeck::{filter, FilterState, NoteCache, NoteRef};
 
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
@@ -407,8 +407,8 @@ mod tests {
 
     use super::*;
     use crate::timeline::InitialLoadState;
-    use enostr::FullKeypair;
     use nostrdb::NoteBuilder;
+    use nostrdb_net::FullKeypair;
     use notedeck::{NoteCache, Notedeck};
     use std::time::{Duration, Instant};
     use tempfile::TempDir;

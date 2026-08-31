@@ -1,5 +1,5 @@
 use egui::{vec2, Align, Key, RichText, TextEdit};
-use enostr::{NoteId, Pubkey};
+use nostrdb_net::{NoteId, Pubkey};
 use state::TypingType;
 
 use crate::{

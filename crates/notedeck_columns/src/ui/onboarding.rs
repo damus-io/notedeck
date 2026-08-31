@@ -22,7 +22,7 @@ pub struct FollowPackOnboardingView<'a> {
 
 pub enum OnboardingResponse {
     FollowPacks(FollowPacksResponse),
-    ViewProfile(enostr::Pubkey),
+    ViewProfile(nostrdb_net::Pubkey),
 }
 
 pub enum FollowPacksResponse {

@@ -4,7 +4,7 @@ use egui::{
     epaint::PathShape, pos2, vec2, CornerRadius, Layout, Margin, RichText, Sense, Shape, Stroke,
 };
 use egui_extras::StripBuilder;
-use enostr::NoteId;
+use nostrdb_net::NoteId;
 use notedeck::{fonts::get_font_size, NotedeckTextStyle};
 use notedeck_ui::{app_images, galley_centered_pos};
 

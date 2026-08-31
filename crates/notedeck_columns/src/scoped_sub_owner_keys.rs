@@ -1,4 +1,4 @@
-use enostr::{NoteId, Pubkey};
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::SubOwnerKey;
 
 use crate::column::ColumnId;

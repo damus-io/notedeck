@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 use notedeck::compact::CompactState;
 use notedeck::Nip51SetCache;
 use notedeck::ReportType;
@@ -11,7 +11,7 @@ use crate::login_manager::AcquireKeyState;
 use crate::ui::relay::RelayViewState;
 use crate::ui::search::SearchQueryState;
 use crate::ui::settings::SettingsUiState;
-use enostr::ProfileState;
+use nostrdb_net::ProfileState;
 use notedeck_ui::media::MediaViewerState;
 
 /// Various state for views

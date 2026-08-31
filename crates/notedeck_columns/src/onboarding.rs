@@ -1,8 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use egui_virtual_list::VirtualList;
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     create_nip51_set, filter::default_limit, Nip51SetCache, ScopedSubApi, ScopedSubIdentity,
     SubConfig, SubKey, SubOwnerKey, UnknownIds,

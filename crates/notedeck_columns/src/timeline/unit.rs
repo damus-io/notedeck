@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
-use enostr::Pubkey;
 use nostrdb::ProfileKey;
+use nostrdb_net::Pubkey;
 use notedeck::NoteRef;
 
 use crate::timeline::note_units::{CompositeKey, CompositeType, UnitKey};

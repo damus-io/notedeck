@@ -5,7 +5,7 @@ use crate::{
 };
 
 use egui::ScrollArea;
-use enostr::{FilledKeypair, NoteId};
+use nostrdb_net::{FilledKeypair, NoteId};
 use notedeck::{DragResponse, NoteContext};
 use notedeck_ui::NoteOptions;
 

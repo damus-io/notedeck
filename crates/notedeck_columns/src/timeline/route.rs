@@ -6,7 +6,7 @@ use crate::{
     ui::{self, ProfileView},
 };
 
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 use notedeck::{DragResponse, NoteContext};
 use notedeck_ui::NoteOptions;
 

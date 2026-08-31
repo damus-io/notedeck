@@ -3,8 +3,8 @@ use crate::{
     route::{Route, SingletonRouter},
     timeline::{RemoteSubscriptionPolicy, Timeline, TimelineCache, TimelineKind},
 };
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{NavStack, NoteCache, ScopedSubApi};
 use std::iter::Iterator;
 use tracing::warn;

@@ -8,7 +8,7 @@ pub enum AccountsRouteResponse {
 }
 
 pub enum AccountsResponse {
-    ViewProfile(enostr::Pubkey),
+    ViewProfile(nostrdb_net::Pubkey),
     Account(AccountsRouteResponse),
 }
 
