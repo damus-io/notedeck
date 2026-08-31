@@ -4,9 +4,9 @@
 //! plus a keep-alive heartbeat every 60s to maintain room presence.
 //! Not intended for smooth real-time movement sync.
 
-use enostr::{FilledKeypair, Pubkey};
 use glam::Vec3;
 use nostrdb::Ndb;
+use nostrdb_net::{FilledKeypair, Pubkey};
 
 use crate::{nostr_events, room_state::RoomUser, subscriptions::PresenceSubscription};
 

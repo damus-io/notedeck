@@ -3,8 +3,8 @@
 //! Space events (kind 37555) are NIP-33 parameterized replaceable events
 //! where the content is a protoverse `.space` s-expression.
 
-use enostr::FilledKeypair;
 use nostrdb::{Ndb, Note, NoteBuilder};
+use nostrdb_net::FilledKeypair;
 use protoverse::Space;
 
 use crate::kinds;
@@ -143,7 +143,7 @@ pub fn ingest_event(
         .build()
         .expect("build note");
 
-    let Ok(event) = enostr::ClientMessage::event(&note) else {
+    let Ok(event) = nostrdb_net::ClientMessage::event(&note) else {
         tracing::error!("ingest_event: failed to build client message");
         return None;
     };

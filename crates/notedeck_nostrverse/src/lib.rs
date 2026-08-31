@@ -21,9 +21,10 @@ pub use room_state::{
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
-use enostr::{NormRelayUrl, Pubkey, RelayDemandPriority, RelayId, RelayRoutingPreference};
+use enostr::{NormRelayUrl, RelayDemandPriority, RelayId, RelayRoutingPreference};
 use glam::Vec3;
 use nostrdb::Filter;
+use nostrdb_net::Pubkey;
 use notedeck::{
     AppContext, AppResponse, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey, SubRelayPolicy,
 };

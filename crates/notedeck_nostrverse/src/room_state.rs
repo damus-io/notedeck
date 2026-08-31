@@ -1,7 +1,7 @@
 //! Space state management for nostrverse views
 
-use enostr::Pubkey;
 use glam::{Quat, Vec3};
+use nostrdb_net::Pubkey;
 use renderbud::{Aabb, Model, ObjectId};
 
 /// Actions that can be triggered from the nostrverse view
