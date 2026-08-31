@@ -5,8 +5,8 @@ use egui::{
 };
 use egui_extras::{Size, StripBuilder};
 use egui_winit::clipboard::Clipboard;
-use enostr::Pubkey;
 use nostrdb::{Ndb, NoteKey, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     name::get_display_name, tr, ui::is_narrow, Images, Localization, MediaJobSender, NostrName,
 };

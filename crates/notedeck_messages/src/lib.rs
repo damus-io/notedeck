@@ -7,10 +7,10 @@ mod relay_ensure;
 mod relay_prefetch;
 pub mod ui;
 
-use enostr::Pubkey;
 use hashbrown::{HashMap, HashSet};
 use nav::{process_messages_ui_response, Route};
 use nostrdb::{Ndb, Subscription, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     ui::is_narrow, Accounts, App, AppContext, AppResponse, RemoteApi, Router, SubKey, SubOwnerKey,
     TabNotifications,

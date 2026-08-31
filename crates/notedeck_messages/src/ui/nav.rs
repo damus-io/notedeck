@@ -1,8 +1,8 @@
 use egui::{CornerRadius, CursorIcon, Frame, Margin, Sense, Stroke};
 use egui_nav::{NavResponse, RouteResponse};
 use egui_winit::clipboard::Clipboard;
-use enostr::Pubkey;
 use nostrdb::Ndb;
+use nostrdb_net::Pubkey;
 use notedeck::{
     tr, ui::is_narrow, ContactState, Images, Localization, MediaJobSender, Router, Settings,
 };

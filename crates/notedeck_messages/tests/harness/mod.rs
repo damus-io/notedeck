@@ -12,8 +12,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use enostr::FullKeypair;
 use nostrdb::Transaction;
+use nostrdb_net::FullKeypair;
 use notedeck::{giftwrap_sub_identity, ScopedSubReadiness};
 use notedeck_messages::{
     nip17::{conversation_filter, parse_chat_message},

@@ -1,4 +1,4 @@
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 use notedeck::{
     Accounts, FullHistoryConfig, RemoteApi, ScopedSubApi, ScopedSubIdentity, SubConfig, SubOwnerKey,
 };

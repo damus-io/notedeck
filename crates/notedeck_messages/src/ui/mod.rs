@@ -2,8 +2,8 @@ use std::borrow::Cow;
 
 use chrono::{DateTime, Local, Utc};
 use egui::{Layout, RichText, Sense};
-use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     name::get_display_name, tr, tr_plural, Images, Localization, MediaJobSender, NoteRef,
     NotedeckTextStyle,

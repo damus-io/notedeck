@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use enostr::Pubkey;
 use nostrdb::{Ndb, Subscription, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     Accounts, RemoteApi, ScopedSubIdentity, ScopedSubReadiness, SubConfig, SubKey, SubOwnerKey,
 };

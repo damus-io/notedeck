@@ -1,8 +1,8 @@
 use egui::{Frame, Layout, Margin};
 use egui_extras::{Size, StripBuilder};
 use egui_winit::clipboard::Clipboard;
-use enostr::Pubkey;
 use nostrdb::Ndb;
+use nostrdb_net::Pubkey;
 use notedeck::{
     ui::is_narrow, ContactState, Images, Localization, MediaJobSender, Router, Settings,
 };

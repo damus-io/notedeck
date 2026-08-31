@@ -1,8 +1,8 @@
 //! Background loader for Messages NostrDB queries.
 
 use crossbeam_channel as chan;
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+use nostrdb_net::Pubkey;
 
 use notedeck::AsyncLoader;
 

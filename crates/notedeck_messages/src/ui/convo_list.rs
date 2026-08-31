@@ -3,8 +3,8 @@ use egui::{
     Align, Color32, CornerRadius, Frame, Label, Layout, Margin, RichText, ScrollArea, Sense,
 };
 use egui_extras::{Size, Strip, StripBuilder};
-use enostr::Pubkey;
 use nostrdb::{Ndb, Note, ProfileRecord, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     fonts::get_font_size, tr, ui::is_narrow, Images, Localization, MediaJobSender,
     NotedeckTextStyle,

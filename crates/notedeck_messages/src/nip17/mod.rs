@@ -1,6 +1,6 @@
 mod message;
 
-use enostr::{FullKeypair, NormRelayUrl, Pubkey, SecretKey};
+use enostr::NormRelayUrl;
 use hashbrown::HashSet;
 pub(crate) use message::{send_conversation_message, SendMessageResult};
 pub use nostr::secp256k1::rand::rngs::OsRng;
@@ -12,6 +12,7 @@ use nostr::{
     util::JsonUtil,
 };
 use nostrdb::{Filter, FilterBuilder, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb_net::{FullKeypair, Pubkey, SecretKey};
 use notedeck::get_p_tags;
 
 fn build_rumor_json(

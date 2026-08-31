@@ -1,6 +1,6 @@
-use enostr::Pubkey;
 use hashbrown::HashSet;
 use nostrdb::NoteKey;
+use nostrdb_net::Pubkey;
 use notedeck::NoteRef;
 use std::cmp::Ordering;
 

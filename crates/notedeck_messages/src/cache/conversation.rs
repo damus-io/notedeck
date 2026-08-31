@@ -14,9 +14,9 @@ use crate::{
 };
 
 use super::message_store::MessageStore;
-use enostr::Pubkey;
 use hashbrown::{HashMap, HashSet};
 use nostrdb::{Ndb, Note, NoteKey, Subscription, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{note::event_tag, NoteRef, UnknownIds};
 
 pub struct ConversationCache {

@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use enostr::FullKeypair;
 use harness::fixtures::{
     build_backdated_giftwrap_note, build_invalid_giftwrap_note, build_local_chat_note_jsons,
     build_misdirected_giftwrap_note, local_chat_messages_in_data_dir, local_dm_relay_list_relays,
@@ -39,6 +38,7 @@ use nostr_relay_builder::{
     prelude::{MemoryDatabase, MemoryDatabaseOptions, NostrEventsDatabase},
     LocalRelay, RelayBuilder,
 };
+use nostrdb_net::FullKeypair;
 use notedeck::unix_time_secs;
 use notedeck_messages::nip17::default_dm_relay_urls;
 use tempfile::TempDir;

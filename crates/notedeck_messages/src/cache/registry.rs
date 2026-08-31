@@ -1,5 +1,5 @@
-use enostr::Pubkey;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
+use nostrdb_net::Pubkey;
 use std::{
     fmt::Debug,
     hash::{BuildHasher, Hash},

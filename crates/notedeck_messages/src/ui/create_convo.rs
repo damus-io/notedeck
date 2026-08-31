@@ -1,6 +1,6 @@
 use egui::{Label, RichText};
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{tr, ContactState, Images, Localization, MediaJobSender, NotedeckTextStyle};
 use notedeck_ui::{
     profile_row_widget, search_input_box, search_profiles, ContactsListView, ProfileRowOptions,

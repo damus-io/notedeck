@@ -9,7 +9,6 @@ mod harness;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use enostr::FullKeypair;
 use enostr_test_support::outbox::{test_outbox_service, TestOutboxService};
 use harness::fixtures::{seed_local_dm_relay_list, test_config};
 use harness::ui::{open_conversation_via_ui, send_message_via_ui};
@@ -25,6 +24,7 @@ use nostr_relay_builder::{
     LocalRelay, RelayBuilder,
 };
 use nostrdb::{Filter, NoteBuilder};
+use nostrdb_net::FullKeypair;
 use notedeck_testing::negentropy_relay::{run_memory_negentropy_relay, MemoryNegentropyRelay};
 use serial_test::serial;
 

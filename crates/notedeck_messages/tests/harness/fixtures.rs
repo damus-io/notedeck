@@ -4,13 +4,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Instant;
 
-use enostr::FullKeypair;
 use nostr::{
     event::{EventBuilder, Kind, Tag},
     nips::nip44,
     util::JsonUtil,
 };
 use nostrdb::{FilterBuilder, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb_net::FullKeypair;
 use notedeck::unix_time_secs;
 use notedeck_messages::nip17::{
     conversation_filter, parse_chat_message, parse_dm_relay_list_relays,

@@ -1,6 +1,6 @@
 use egui_nav::{NavAction, NavResponse};
-use enostr::Pubkey;
 use hashbrown::HashSet;
+use nostrdb_net::Pubkey;
 use notedeck::{AppAction, AppContext, NoteAction, ReplacementType, Router};
 
 use crate::{
