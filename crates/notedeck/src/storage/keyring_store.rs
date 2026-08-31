@@ -1,5 +1,5 @@
-use enostr::{Pubkey, SecretKey};
 use keyring::Entry;
+use nostrdb_net::{Pubkey, SecretKey};
 
 use crate::{Error, Result};
 

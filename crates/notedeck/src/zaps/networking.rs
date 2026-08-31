@@ -3,8 +3,8 @@ use crate::{
     zaps::{cache::PayCache, ZapAddress, ZapTargetOwned},
     ZapError,
 };
-use enostr::{NoteId, Pubkey};
 use nostrdb::NoteBuilder;
+use nostrdb_net::{NoteId, Pubkey};
 use poll_promise::Promise;
 use serde::Deserialize;
 use tokio::task::JoinError;
@@ -381,7 +381,7 @@ pub(crate) fn generate_endpoint_url(lud16: &str) -> Result<Url, ZapError> {
 
 #[cfg(test)]
 mod tests {
-    use enostr::{FullKeypair, NoteId};
+    use nostrdb_net::{FullKeypair, NoteId};
 
     use crate::zaps::{
         cache::PayCache,

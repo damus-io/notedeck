@@ -16,8 +16,8 @@
 
 use std::collections::HashMap;
 
-use enostr::NoteId;
 use nostrdb::{Filter, Ndb, Note, Transaction};
+use nostrdb_net::NoteId;
 
 use crate::NoteContext;
 

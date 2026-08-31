@@ -14,8 +14,8 @@ pub use default_zap::{
     get_current_default_msats, DefaultZapError, DefaultZapMsats, PendingDefaultZapState,
     UserZapMsats,
 };
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 
 use crate::ZapError;
 

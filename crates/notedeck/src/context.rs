@@ -4,7 +4,7 @@ use crate::{
     Args, DataPath, Images, JobPool, MediaJobs, NoteCache, RemoteApi, SettingsHandler, UnknownIds,
 };
 use egui_winit::clipboard::Clipboard;
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 
 use nostrdb::{Ndb, Transaction};
 

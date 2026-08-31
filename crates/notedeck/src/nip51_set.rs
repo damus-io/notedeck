@@ -1,6 +1,7 @@
-use enostr::{OutboxSubId, Pubkey};
+use enostr::OutboxSubId;
 use indexmap::IndexMap;
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
+use nostrdb_net::Pubkey;
 
 use crate::{UnifiedSubscription, UnknownIds};
 

@@ -4,14 +4,13 @@ use crate::{
     ScopedSubIdentity, ScopedSubReadiness, ScopedSubsState, SubConfig, SubKey, SubOwnerKey,
     SubRelayPolicy, UnknownIds, FALLBACK_PUBKEY,
 };
-use enostr::{
-    FullKeypair, NormRelayUrl, NoteId, RelayDemandPriority, RelayId, RelayRoutingPreference,
-};
+use enostr::{NormRelayUrl, RelayDemandPriority, RelayId, RelayRoutingPreference};
 use enostr_test_support::relay::{
     create_filtered_capture_relay_with_handler,
     create_text_capture_relay as create_shared_text_capture_relay, CaptureRelayResponse,
 };
 use nostrdb::{Config, Filter, Ndb, NoteBuilder, Transaction};
+use nostrdb_net::{FullKeypair, NoteId};
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},

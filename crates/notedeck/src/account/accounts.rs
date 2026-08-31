@@ -12,9 +12,10 @@ use crate::{
     AccountStorage, FullHistoryConfig, MuteFun, RemoteApi, ScopedSubApi, SingleUnkIdAction,
     SubOwnerKey, UnknownIds, UserAccount, ZapWallet,
 };
-use enostr::{FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId, RelayRoutingPreference};
+use enostr::{NormRelayUrl, RelayId, RelayRoutingPreference};
 use hashbrown::HashSet;
 use nostrdb::{Filter, IngestMetadata, Ndb, Note, Subscription, Transaction};
+use nostrdb_net::{FilledKeypair, Keypair, Pubkey};
 
 use std::slice::from_ref;
 // TODO: remove this
@@ -131,7 +132,7 @@ impl Accounts {
         true
     }
 
-    pub fn contains_full_kp(&self, pubkey: &enostr::Pubkey) -> bool {
+    pub fn contains_full_kp(&self, pubkey: &nostrdb_net::Pubkey) -> bool {
         self.cache
             .get(pubkey)
             .is_some_and(|u| u.key.secret_key.is_some())
@@ -800,8 +801,8 @@ mod tests {
         construct_nip65_relays_note, remote_data::RemoteState, JobPool, RelaySpec,
         ScopedSubReadiness, FALLBACK_PUBKEY,
     };
-    use enostr::FullKeypair;
     use nostrdb::Config;
+    use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 

@@ -4,9 +4,10 @@ use std::{
 };
 
 use crate::{relayspec::relays_from_nip65_note, AccountData, RelaySpec, RemoteApi};
-use enostr::{Keypair, NormRelayUrl, RelayId};
+use enostr::{NormRelayUrl, RelayId};
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
+use nostrdb_net::Keypair;
 use tracing::{debug, error, info};
 
 const RELAY_LIST_POLL_LIMIT: u32 = 64;
@@ -789,7 +790,8 @@ mod tests {
         RelayListProjection, PRIVATE_RELAY_LIST_KIND,
     };
     use crate::RelaySpec;
-    use enostr::{FullKeypair, Keypair, NormRelayUrl, RelayId};
+    use enostr::{NormRelayUrl, RelayId};
+    use nostrdb_net::{FullKeypair, Keypair};
 
     fn relay_spec(url: &str) -> RelaySpec {
         RelaySpec::new(NormRelayUrl::new(url).expect("relay url"), false, false)

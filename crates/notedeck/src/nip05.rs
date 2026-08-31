@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 
 const NIP05_TTL: Duration = Duration::from_secs(8 * 3600); // 8 hours
 

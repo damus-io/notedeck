@@ -1,6 +1,7 @@
-use enostr::{NoteId, Pubkey, RelayId};
+use enostr::RelayId;
 use nostr::RelayUrl;
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use tracing::error;
 
 use crate::{Accounts, RemoteApi};

@@ -5,9 +5,10 @@ use crate::{
     OneshotApi, Result,
 };
 
-use enostr::{Filter, NormRelayUrl, NoteId, Pubkey};
+use enostr::NormRelayUrl;
 use nostr::RelayUrl;
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
+use nostrdb_net::{Filter, NoteId, Pubkey};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::error;

@@ -9,10 +9,10 @@
 //! (`nostrdb_net`'s) are foreign to this crate and the orphan rule forbids the
 //! impl.
 
-use enostr::{Keypair, Pubkey, SecretKey};
 use nostr::nips::nip19::FromBech32;
 use nostr::nips::nip19::ToBech32;
 use nostr::nips::nip49::EncryptedSecretKey;
+use nostrdb_net::{Keypair, Pubkey, SecretKey};
 use tokenator::{ParseError, TokenParser, TokenWriter};
 
 const ESECKEY_TOKEN: &str = "eseckey";
@@ -93,7 +93,7 @@ fn parse_seckey<'a>(parser: &mut TokenParser<'a>) -> Result<SecretKey, ParseErro
 
 #[cfg(test)]
 mod tests {
-    use enostr::{FullKeypair, Keypair};
+    use nostrdb_net::{FullKeypair, Keypair};
     use tokenator::{TokenParser, TokenWriter};
 
     use super::{parse_keypair_from_tokens, serialize_keypair_tokens};

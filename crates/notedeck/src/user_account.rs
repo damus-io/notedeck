@@ -1,4 +1,4 @@
-use enostr::{Keypair, KeypairUnowned};
+use nostrdb_net::{Keypair, KeypairUnowned};
 
 use crate::keypair_tokens::{parse_keypair_from_tokens, serialize_keypair_tokens};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
@@ -130,7 +130,7 @@ impl TokenSerializable for UserAccountSerializable {
 
 #[cfg(test)]
 mod tests {
-    use enostr::FullKeypair;
+    use nostrdb_net::FullKeypair;
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
     use crate::{user_account::UserAccountSerializable, wallet::WalletSerializable};

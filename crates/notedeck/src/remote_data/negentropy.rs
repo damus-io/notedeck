@@ -46,10 +46,10 @@ fn insert_negentropy_record(storage: &mut NegentropyStorageVector, created_at: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
-    use enostr::NoteId;
     use negentropy::{Item, NegentropyStorageBase};
     use nostrdb::{Config, IngestMetadata, NoteBuilder};
+    use nostrdb_net::FullKeypair;
+    use nostrdb_net::NoteId;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 

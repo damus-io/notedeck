@@ -21,10 +21,11 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use enostr::{NormRelayUrl, Pubkey, RelayId};
+use enostr::{NormRelayUrl, RelayId};
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::relay::sync::Session;
+use nostrdb_net::Pubkey;
 
 use crate::{
     AppContext, ExplicitPublishApi, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey,
@@ -34,7 +35,7 @@ use crate::{
 /// Errors from [`write_private_note`], the host-owned outbound write path.
 #[derive(Debug, thiserror::Error)]
 pub enum PrivateWriteError {
-    /// PNS encryption or 1080-envelope signing failed (see [`enostr::pns::wrap`]).
+    /// PNS encryption or 1080-envelope signing failed (see [`nostrdb_net::pns::wrap`]).
     #[error("PNS wrap failed")]
     Wrap,
     /// Serializing the signed 1080 envelope back to JSON failed.
@@ -61,7 +62,7 @@ pub enum PrivateWriteError {
 ///   see it.
 ///
 /// `secret_key` is the account's 32-byte device secret; its PNS keypair is
-/// derived here ([`enostr::pns::derive_pns_keys`]). With no private relay marked
+/// derived here ([`nostrdb_net::pns::derive_pns_keys`]). With no private relay marked
 /// the fan-out is a no-op and the note simply stays local.
 ///
 /// The 3-element `["EVENT","_pns",{…}]` relay frame drives nostrdb's PNS-unwrap
@@ -75,8 +76,8 @@ pub fn write_private_note(
     secret_key: &[u8; 32],
     inner_json: &str,
 ) -> Result<(), PrivateWriteError> {
-    let pns_keys = enostr::pns::derive_pns_keys(secret_key);
-    let envelope = enostr::pns::wrap(&pns_keys, inner_json, crate::time::unix_time_secs())
+    let pns_keys = nostrdb_net::pns::derive_pns_keys(secret_key);
+    let envelope = nostrdb_net::pns::wrap(&pns_keys, inner_json, crate::time::unix_time_secs())
         .ok_or(PrivateWriteError::Wrap)?;
     let envelope_json = envelope
         .json()
@@ -206,14 +207,16 @@ const HOST_PRIVATE_SUB_ID: &str = "host/private";
 
 /// The unlinkable pubkey that signs (and thus authors) the account's kind-1080
 /// PNS envelopes, HKDF-derived from the account secret
-/// (`enostr::pns::derive_pns_keys`). Every device for the same account derives the
+/// (`nostrdb_net::pns::derive_pns_keys`). Every device for the same account derives the
 /// same pubkey, so this names the account's private-note stream. A PNS envelope
 /// wraps an account-private inner note — notebook longform, a dave session state,
 /// a headway board-pref — NIP-44 encrypted to that keypair; relays only ever see
 /// the opaque envelope, and nostrdb (seeded with the account key at sign-in)
 /// auto-unwraps it on ingest so the inner note becomes queryable by its own kind.
 fn pns_author(account_secret: &[u8; 32]) -> Pubkey {
-    enostr::pns::derive_pns_keys(account_secret).keypair.pubkey
+    nostrdb_net::pns::derive_pns_keys(account_secret)
+        .keypair
+        .pubkey
 }
 
 /// Filter for the account's kind-1080 PNS envelope stream, authored by
@@ -224,7 +227,7 @@ fn pns_author(account_secret: &[u8; 32]) -> Pubkey {
 /// pulls back *every* app's private notes for the account.
 fn pns_envelope_filter(pns_pubkey: &Pubkey) -> Filter {
     Filter::new()
-        .kinds([enostr::pns::PNS_KIND as u64])
+        .kinds([nostrdb_net::pns::PNS_KIND as u64])
         .authors([pns_pubkey.bytes()])
         .build()
 }
@@ -254,7 +257,7 @@ fn pns_envelope_filter(pns_pubkey: &Pubkey) -> Filter {
 /// filter surfaces new joins from the account's other devices.
 fn keyshare_filter() -> Filter {
     Filter::new()
-        .kinds([enostr::sns::KEYSHARE_KIND as u64])
+        .kinds([nostrdb_net::sns::KEYSHARE_KIND as u64])
         .limit(500)
         .build()
 }
@@ -264,7 +267,7 @@ fn keyshare_filter() -> Filter {
 /// envelope, so this is the inbound sync stream for that channel.
 fn team_envelope_filter(team_pubkey: &Pubkey) -> Filter {
     Filter::new()
-        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+        .kinds([nostrdb_net::sns::SNS_ENVELOPE_KIND as u64])
         .authors([team_pubkey.bytes()])
         .limit(5000)
         .build()
@@ -277,7 +280,7 @@ fn team_envelope_filter(team_pubkey: &Pubkey) -> Filter {
 /// subscription, so it is left unbounded.
 fn team_envelopes_filter(team_pubkeys: &[Pubkey]) -> Filter {
     Filter::new()
-        .kinds([enostr::sns::SNS_ENVELOPE_KIND as u64])
+        .kinds([nostrdb_net::sns::SNS_ENVELOPE_KIND as u64])
         .authors(team_pubkeys.iter().map(|k| k.bytes()))
         .build()
 }
@@ -285,7 +288,7 @@ fn team_envelopes_filter(team_pubkeys: &[Pubkey]) -> Filter {
 /// The team keypair pubkey that seals (and thus authors) `root`'s kind-1081
 /// envelopes — the channel to subscribe to. `None` if the root is unusable.
 fn team_pubkey(root: &[u8; 32]) -> Option<Pubkey> {
-    Some(enostr::sns::derive_sns_keys(root)?.team_keypair.pubkey)
+    Some(nostrdb_net::sns::derive_sns_keys(root)?.team_keypair.pubkey)
 }
 
 /// Every SNS `team_root` `author` has been key-shared, reconstructed from nostrdb.
@@ -311,7 +314,7 @@ fn registered_roots(ndb: &Ndb, author: &Pubkey) -> Vec<[u8; 32]> {
         if res.note.rumor_receiver_pubkey() != Some(author.bytes()) {
             continue;
         }
-        let Some(share) = enostr::sns::parse_keyshare(&res.note) else {
+        let Some(share) = nostrdb_net::sns::parse_keyshare(&res.note) else {
             continue;
         };
         if !roots.contains(&share.team_root) {
@@ -897,8 +900,9 @@ mod tests {
         remote_data::{RemoteIntent, RemoteIntentBatchBuilder, RemotePublishCommand},
         ExplicitPublishApi,
     };
-    use enostr::{FullKeypair, NormRelayUrl};
+    use enostr::NormRelayUrl;
     use nostrdb::{Config, IngestMetadata, NoteBuilder};
+    use nostrdb_net::FullKeypair;
     use tempfile::TempDir;
 
     /// Frame a signed note as the `["EVENT", {…}]` envelope `ingest` hands the
@@ -1070,7 +1074,7 @@ mod tests {
         root[0] = 0x11;
         root[31] = 0x22;
         assert!(ndb.add_team_root(&root));
-        let keys = enostr::sns::derive_sns_keys(&root).expect("keys");
+        let keys = nostrdb_net::sns::derive_sns_keys(&root).expect("keys");
         let member = FullKeypair::generate();
         // The rumor must be a complete signed note — nostrdb re-parses it on the
         // seal peel and requires every field but the sig/pubkey (including the id),
@@ -1085,7 +1089,7 @@ mod tests {
             .json()
             .expect("rumor json");
         let envelope =
-            enostr::sns::wrap_rumor(&keys, &member, &rumor, 1_700_000_000).expect("envelope");
+            nostrdb_net::sns::wrap_rumor(&keys, &member, &rumor, 1_700_000_000).expect("envelope");
 
         // Ingest the envelope; ndb peels it to the rumor. No relay is attributed,
         // so the rumor's seen-on set is empty — it *would* be fanned to the private
@@ -1150,7 +1154,7 @@ mod tests {
     /// `secret`'s account, returning the `["EVENT", {…}]` ingest frame, the
     /// envelope id, and the inner note id.
     fn pns_envelope_frame(secret: &[u8; 32]) -> (String, [u8; 32], [u8; 32]) {
-        let pns_keys = enostr::pns::derive_pns_keys(secret);
+        let pns_keys = nostrdb_net::pns::derive_pns_keys(secret);
         let inner = NoteBuilder::new()
             .kind(1)
             .content("private longform body")
@@ -1160,7 +1164,7 @@ mod tests {
             .expect("inner note");
         let inner_id = *inner.id();
         let envelope =
-            enostr::pns::wrap(&pns_keys, &inner.json().expect("inner json"), HOST_TEST_TS)
+            nostrdb_net::pns::wrap(&pns_keys, &inner.json().expect("inner json"), HOST_TEST_TS)
                 .expect("pns envelope");
         let envelope_id = *envelope.id();
         let frame = format!("[\"EVENT\",{}]", envelope.json().expect("envelope json"));
@@ -1283,7 +1287,7 @@ mod tests {
         root: &[u8; 32],
         board_addr: Option<&str>,
     ) -> String {
-        enostr::sns::wrap_keyshare(
+        nostrdb_net::sns::wrap_keyshare(
             sender,
             recipient,
             root,
@@ -1358,7 +1362,7 @@ mod tests {
 
         // The shared board root and its channel keypair (the 1081 author).
         let root = test_root(0x55);
-        let sns_keys = enostr::sns::derive_sns_keys(&root).expect("sns keys");
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
 
         // A shared private relay over its own opaque db — never seeded with the root,
         // so it only ever holds the opaque 1081 envelope, never the inner rumor.
@@ -1383,7 +1387,7 @@ mod tests {
             .build()
             .expect("rumor");
         let inner_id = *rumor.id();
-        let envelope = enostr::sns::wrap_rumor(
+        let envelope = nostrdb_net::sns::wrap_rumor(
             &sns_keys,
             &member,
             &rumor.json().expect("rumor json"),
@@ -1439,7 +1443,7 @@ mod tests {
 
         // A derived-style team-of-one root apps register directly — never key-shared.
         let root = test_root(0x66);
-        let sns_keys = enostr::sns::derive_sns_keys(&root).expect("sns keys");
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
         let app_roots = std::slice::from_ref(&root);
 
         let (_relay_dir, relay_ndb) = test_ndb();
@@ -1467,7 +1471,7 @@ mod tests {
             .build()
             .expect("rumor");
         let inner_id = *rumor.id();
-        let envelope = enostr::sns::wrap_rumor(
+        let envelope = nostrdb_net::sns::wrap_rumor(
             &sns_keys,
             &account,
             &rumor.json().expect("json"),
@@ -1518,7 +1522,7 @@ mod tests {
         use std::time::Duration;
 
         let root = test_root(0x77);
-        let sns_keys = enostr::sns::derive_sns_keys(&root).expect("sns keys");
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
         let app_roots = std::slice::from_ref(&root);
 
         let (_relay_dir, relay_ndb) = test_ndb();
@@ -1544,7 +1548,7 @@ mod tests {
             .build()
             .expect("rumor");
         let inner_id = *rumor.id();
-        let envelope = enostr::sns::wrap_rumor(
+        let envelope = nostrdb_net::sns::wrap_rumor(
             &sns_keys,
             &account,
             &rumor.json().expect("json"),

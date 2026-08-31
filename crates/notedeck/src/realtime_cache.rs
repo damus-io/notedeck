@@ -30,8 +30,8 @@
 
 use std::collections::HashMap;
 
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb_net::Pubkey;
 
 /// An app-owned reduction of one author's nostr events into renderable views.
 ///
@@ -486,7 +486,7 @@ mod tests {
     /// mirroring the store's client-ingest path (a hand-built relay frame won't
     /// pass validation). Each note carries a distinct `d` tag so it's a distinct
     /// event. Ingest is async; the caller waits on a subscription.
-    fn write_note(ndb: &Ndb, kp: &enostr::FullKeypair, tag: &str) {
+    fn write_note(ndb: &Ndb, kp: &nostrdb_net::FullKeypair, tag: &str) {
         let note = nostrdb::NoteBuilder::new()
             .kind(TEST_KIND as u32)
             .content(tag)
@@ -497,7 +497,7 @@ mod tests {
             .sign(&kp.secret_key.secret_bytes())
             .build()
             .unwrap();
-        let frame = enostr::ClientMessage::event(&note)
+        let frame = nostrdb_net::ClientMessage::event(&note)
             .unwrap()
             .to_json()
             .unwrap();
@@ -520,7 +520,7 @@ mod tests {
     fn seeds_once_then_folds_deltas() {
         reset_counters();
         let (ndb, _dir) = test_ndb();
-        let kp = enostr::FullKeypair::generate();
+        let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
 
         // First touch on an empty db seeds an empty reducer and opens the sub.
@@ -562,7 +562,7 @@ mod tests {
     fn finalizes_once_per_fold() {
         reset_counters();
         let (ndb, _dir) = test_ndb();
-        let kp = enostr::FullKeypair::generate();
+        let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
 
         let txn = Transaction::new(&ndb).unwrap();
@@ -595,7 +595,7 @@ mod tests {
     fn retries_deltas_committed_after_the_read_txn() {
         reset_counters();
         let (ndb, _dir) = test_ndb();
-        let kp = enostr::FullKeypair::generate();
+        let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
 
@@ -646,7 +646,7 @@ mod tests {
     fn a_read_does_not_swallow_fresh_from_the_next_poll() {
         reset_counters();
         let (ndb, _dir) = test_ndb();
-        let kp = enostr::FullKeypair::generate();
+        let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
 

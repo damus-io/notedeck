@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::{DataPath, DataPathType, NotedeckOptions};
-use enostr::{Keypair, Pubkey, SecretKey};
+use nostrdb_net::{Keypair, Pubkey, SecretKey};
 use tracing::error;
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 

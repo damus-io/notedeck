@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, NoteKey, Subscription, Transaction};
+use nostrdb_net::Pubkey;
 
 #[derive(Clone)]
 pub struct Contacts {

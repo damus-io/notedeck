@@ -17,8 +17,8 @@ use crate::GlobalWallet;
 use crate::Localization;
 use crate::UnknownIds;
 use crate::{notecache::NoteCache, zaps::Zaps, Images};
-use enostr::NoteId;
 use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
+use nostrdb_net::NoteId;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
@@ -234,7 +234,7 @@ pub fn event_tag<'a>(ev: &nostrdb::Note<'a>, name: &str) -> Option<&'a str> {
 
 /// Temporary way of checking whether a user has sent a reaction.
 /// Should be replaced with nostrdb metadata
-pub fn reaction_sent_id(sender_pk: &enostr::Pubkey, note_reacted_to: &[u8; 32]) -> egui::Id {
+pub fn reaction_sent_id(sender_pk: &nostrdb_net::Pubkey, note_reacted_to: &[u8; 32]) -> egui::Id {
     egui::Id::new(("sent-reaction-id", note_reacted_to, sender_pk))
 }
 

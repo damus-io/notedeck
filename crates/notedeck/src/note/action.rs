@@ -1,7 +1,7 @@
 use super::context::ContextSelection;
 use crate::{zaps::NoteZapTargetOwned, MediaAction};
 use egui::Vec2;
-use enostr::{NoteId, Pubkey};
+use nostrdb_net::{NoteId, Pubkey};
 
 #[derive(Debug)]
 pub struct ScrollInfo {

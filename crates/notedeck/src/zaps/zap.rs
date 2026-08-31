@@ -1,6 +1,6 @@
-use enostr::{NoteId, Pubkey};
 use image::EncodableLayout;
 use lightning_invoice::Bolt11Invoice;
+use nostrdb_net::{NoteId, Pubkey};
 use secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
 use sha2::Digest;
 
@@ -46,7 +46,7 @@ impl Zap {
             }
         }
 
-        let Ok(zap_req) = enostr::Note::from_json(zap_tags.description) else {
+        let Ok(zap_req) = nostrdb_net::Note::from_json(zap_tags.description) else {
             return None;
         };
 
@@ -97,7 +97,7 @@ pub fn event_commitment(
 }
 
 // TODO(kernelkind): i think we may be able to validate just with the nostrdb::Note. Not exactly sure yet how though
-pub(crate) fn valid_zap_request(note: enostr::Note) -> bool {
+pub(crate) fn valid_zap_request(note: nostrdb_net::Note) -> bool {
     let sig = note.sig.clone();
 
     let commitment = event_commitment(
@@ -225,7 +225,7 @@ fn get_zap_tags(ev: nostrdb::Note) -> Option<ZapTags> {
 
 #[cfg(test)]
 mod tests {
-    use enostr::{NoteId, Pubkey};
+    use nostrdb_net::{NoteId, Pubkey};
 
     use nostrdb::{Filter, IngestMetadata, Ndb, Transaction};
     use tempfile::TempDir;
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_valid_zap_req() {
-        let note = enostr::Note::from_json(ZAP_REQ).unwrap();
+        let note = nostrdb_net::Note::from_json(ZAP_REQ).unwrap();
 
         assert!(valid_zap_request(note));
     }

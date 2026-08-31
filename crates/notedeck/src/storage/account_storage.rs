@@ -1,5 +1,5 @@
 use crate::{user_account::UserAccountSerializable, Result};
-use enostr::{Keypair, Pubkey, SerializableKeypair};
+use nostrdb_net::{Keypair, Pubkey, SerializableKeypair};
 use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
 use super::{
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_basic() {
-        let kp = enostr::FullKeypair::generate().to_keypair();
+        let kp = nostrdb_net::FullKeypair::generate().to_keypair();
         let (reader, writer) = AccountStorage::mock().unwrap().rw();
         let resp = writer.write_account(&UserAccountSerializable::new(kp.clone()));
 
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_secret_persisted_in_keyring_not_on_disk() {
-        let kp = enostr::FullKeypair::generate().to_keypair();
+        let kp = nostrdb_net::FullKeypair::generate().to_keypair();
         let (reader, writer) = AccountStorage::mock().unwrap().rw();
 
         writer
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_remove_key_removes_secret() {
-        let kp = enostr::FullKeypair::generate().to_keypair();
+        let kp = nostrdb_net::FullKeypair::generate().to_keypair();
         let (reader, writer) = AccountStorage::mock().unwrap().rw();
 
         writer
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_file_backed_persists_secret_on_disk() {
-        let kp = enostr::FullKeypair::generate().to_keypair();
+        let kp = nostrdb_net::FullKeypair::generate().to_keypair();
         let (reader, writer) = AccountStorage::mock_file().unwrap().rw();
 
         writer
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_select_key() {
-        let kp = enostr::FullKeypair::generate().to_keypair();
+        let kp = nostrdb_net::FullKeypair::generate().to_keypair();
 
         let (reader, writer) = AccountStorage::mock().unwrap().rw();
         let _ = writer.write_account(&UserAccountSerializable::new(kp.clone()));

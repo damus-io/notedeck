@@ -1,5 +1,5 @@
-use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
+use nostrdb_net::{FilledKeypair, NoteId, Pubkey};
 use tracing::info;
 
 use crate::{Muted, PublishApi};
@@ -94,7 +94,7 @@ pub fn publish_note_builder(
         .build()
         .expect("build note");
 
-    let Ok(event) = &enostr::ClientMessage::event(&note) else {
+    let Ok(event) = &nostrdb_net::ClientMessage::event(&note) else {
         tracing::error!("send_note_builder: failed to build json");
         return;
     };
@@ -273,7 +273,7 @@ pub fn send_report_event(
 #[cfg(test)]
 mod tests {
     use super::construct_people_list_note;
-    use enostr::FullKeypair;
+    use nostrdb_net::FullKeypair;
 
     #[test]
     fn construct_people_list_note_emits_expected_nip51_tags() {

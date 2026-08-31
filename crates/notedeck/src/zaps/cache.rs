@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use nwc::nostr::nips::nip47::PayInvoiceResponse;
 use poll_promise::Promise;
 use tokio::task::JoinError;

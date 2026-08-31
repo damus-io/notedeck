@@ -1,5 +1,5 @@
-use enostr::Pubkey;
 use hashbrown::{hash_map::OccupiedEntry, HashMap};
+use nostrdb_net::Pubkey;
 
 use crate::{SingleUnkIdAction, UserAccount};
 
@@ -129,6 +129,6 @@ impl<'a> IntoIterator for &'a AccountCache {
 }
 
 pub struct AccountDeletionResponse {
-    pub deleted: enostr::Keypair,
+    pub deleted: nostrdb_net::Keypair,
     pub swap_to: Option<Pubkey>,
 }

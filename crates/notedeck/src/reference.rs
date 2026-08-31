@@ -26,8 +26,8 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 
 /// The concrete nostr entity a [`ReferenceParser`] resolved a matched reference
 /// to.

@@ -1,4 +1,4 @@
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 
 use super::declarations::ScopedSubDeclarations;
 use super::{config::ScopedSubKey, state::ScopedSubReadModel};

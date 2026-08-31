@@ -5,11 +5,12 @@ use crate::{
     },
 };
 use enostr::{
-    FullKeypair, NormRelayUrl, OutboxEvent, OutboxIdRegistry, OutboxServiceOutput, OutboxSubId,
-    OutboxSubRelayEose, Pubkey, RelayReqStatus,
+    NormRelayUrl, OutboxEvent, OutboxIdRegistry, OutboxServiceOutput, OutboxSubId,
+    OutboxSubRelayEose, RelayReqStatus,
 };
 use enostr_test_support::outbox::{test_outbox_service, TestOutboxService};
 use nostrdb::{Filter, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb_net::{FullKeypair, Pubkey};
 use std::{
     thread,
     time::{Duration, Instant},

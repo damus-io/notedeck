@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::sync::mpsc;
 
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use url::Url;
 
 use crate::zaps::networking::{
