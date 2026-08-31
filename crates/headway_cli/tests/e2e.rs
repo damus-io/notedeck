@@ -18,8 +18,8 @@ fn nsec() -> String {
 
 /// The account pubkey behind [`SECRET`] — the author whose board the relay's
 /// store is inspected for below.
-fn author() -> enostr::Pubkey {
-    enostr::FullKeypair::from_secret_bytes(&SECRET)
+fn author() -> nostrdb_net::Pubkey {
+    nostrdb_net::FullKeypair::from_secret_bytes(&SECRET)
         .expect("keypair")
         .pubkey
 }
@@ -32,7 +32,7 @@ fn author() -> enostr::Pubkey {
 /// must be zero: the write-side leak guard keeps the board's locally-unwrapped
 /// rumors off the plaintext reconcile, so only its kind-1081 envelopes reach the
 /// relay.
-fn plaintext_board_notes(ndb: &Ndb, author: &enostr::Pubkey) -> usize {
+fn plaintext_board_notes(ndb: &Ndb, author: &nostrdb_net::Pubkey) -> usize {
     let txn = Transaction::new(ndb).expect("txn");
     let filter = Filter::new()
         .authors([author.bytes()])

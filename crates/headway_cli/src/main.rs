@@ -10,8 +10,8 @@
 use std::env;
 use std::process::ExitCode;
 
-use enostr::{NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use serde_json::json;
 
 use headway::event::{
@@ -432,7 +432,7 @@ async fn run() -> Result<()> {
             // lands the same channel — while a different slug derives an unrelated,
             // isolated root. `create_shared_board` also self-shares the root (a
             // kind-1082 key-share) so the board joins this account's roster.
-            let root = enostr::sns::derive_board_root(&secret, &board);
+            let root = nostrdb_net::sns::derive_board_root(&secret, &board);
             let mut sink = Collect::default();
             if !store::create_shared_board(&ndb, &author, &secret, &board, &title, &root, &mut sink)
             {
@@ -489,7 +489,7 @@ async fn run() -> Result<()> {
                     )
                     .into());
                 }
-                None => (enostr::sns::derive_board_root(&secret, &board), false),
+                None => (nostrdb_net::sns::derive_board_root(&secret, &board), false),
             };
             let channel = if reused { "existing" } else { "NEW" };
             if dry_run {
@@ -1009,7 +1009,7 @@ async fn sync_envelopes(relay: &mut nostrdb_net::relay::sync::Relay, ndb: &Ndb, 
         return;
     }
 
-    let envelope_kinds = [enostr::sns::SNS_ENVELOPE_KIND];
+    let envelope_kinds = [nostrdb_net::sns::SNS_ENVELOPE_KIND];
     let before = count_matching(ndb, &teams::envelope_filter(&pubkeys));
     for pk in &pubkeys {
         let filter = teams::envelope_filter(std::slice::from_ref(pk));
@@ -1809,7 +1809,7 @@ impl Cli {
         // potentially reject on) whatever key is currently configured — that would
         // keep `login` from replacing a stale or malformed stored key.
         // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
-        // (and the `headway` store/event layer) speaks `enostr::Pubkey`. Both are
+        // (and the `headway` store/event layer) speaks `nostrdb_net::Pubkey`. Both are
         // `[u8; 32]` newtypes, so bridge at this boundary and keep everything
         // downstream in enostr terms.
         let secret = match (&command, nsec) {
@@ -2269,8 +2269,8 @@ mod tests {
     /// ingests only sealed rumors and would show it empty.
     #[test]
     fn a_board_is_shared_only_at_its_own_coordinate() {
-        let owner = enostr::FullKeypair::generate().pubkey;
-        let other = enostr::FullKeypair::generate().pubkey;
+        let owner = nostrdb_net::FullKeypair::generate().pubkey;
+        let other = nostrdb_net::FullKeypair::generate().pubkey;
         let mut root = [0u8; 32];
         root[0] = 0x11;
         root[31] = 0x42;
