@@ -1,6 +1,6 @@
 //! Account cluster: one logical account with several independent devices.
 
-use enostr::FullKeypair;
+use nostrdb_net::FullKeypair;
 
 use crate::device::{build_device_with_relays, AppFactory, DeviceHarness};
 

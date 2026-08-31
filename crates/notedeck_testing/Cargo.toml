@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 eframe = { workspace = true }
 egui = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe"] }
-enostr = { workspace = true }
+nostrdb_net = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 negentropy = { workspace = true }

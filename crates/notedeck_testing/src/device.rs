@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use egui_kittest::Harness;
-use enostr::FullKeypair;
 use nostr::nips::nip19::ToBech32;
+use nostrdb_net::FullKeypair;
 use notedeck::{Notedeck, NotedeckRemoteConfig};
 use tempfile::TempDir;
 

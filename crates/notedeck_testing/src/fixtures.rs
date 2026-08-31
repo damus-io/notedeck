@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use enostr::{FullKeypair, ProfileState, Pubkey};
 use nostr::key::PublicKey;
 use nostrdb::{Config, FilterBuilder, Ndb, NoteBuilder, Transaction};
+use nostrdb_net::{FullKeypair, ProfileState, Pubkey};
 use notedeck::{DataPath, DataPathType, RelayAction};
 
 use crate::cluster::AccountCluster;
@@ -144,7 +144,9 @@ pub fn add_account_to_device(device: &mut DeviceHarness, account: &FullKeypair) 
     let app_ctx = &mut device.state_mut().notedeck.app_context();
     let Some(response) = app_ctx
         .accounts
-        .add_account(enostr::Keypair::from_secret(account.secret_key.clone()))
+        .add_account(nostrdb_net::Keypair::from_secret(
+            account.secret_key.clone(),
+        ))
     else {
         return;
     };
