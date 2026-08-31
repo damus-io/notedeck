@@ -5448,6 +5448,7 @@ dependencies = [
  "egui_nav",
  "egui_tabs",
  "nostrdb",
+ "nostrdb_net",
  "notedeck",
  "notedeck_clndash",
  "notedeck_columns",

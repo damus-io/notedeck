@@ -112,7 +112,7 @@ pub enum ChromePanelAction {
     Account,
     Wallet,
     SaveTheme(ThemePreference),
-    Profile(notedeck::enostr::Pubkey),
+    Profile(nostrdb_net::Pubkey),
     #[cfg(feature = "auto-update")]
     ApplyUpdate,
     #[cfg(feature = "auto-update")]
@@ -1916,7 +1916,7 @@ pub fn get_account_url<'a>(
 /// Whether `note_id` refers to a headway board/issue event, so a click on its
 /// inline widget routes to the Headway app instead of the timeline.
 #[cfg(feature = "headway")]
-fn is_headway_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> bool {
+fn is_headway_note(ctx: &mut AppContext, note_id: nostrdb_net::NoteId) -> bool {
     let Ok(txn) = Transaction::new(ctx.ndb) else {
         return false;
     };
@@ -1929,7 +1929,7 @@ fn is_headway_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> b
 /// Whether `note_id` refers to an agentium session-state event, so a click on its
 /// inline widget routes to the Dave app instead of the timeline.
 #[cfg(feature = "dave")]
-fn is_agentium_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> bool {
+fn is_agentium_note(ctx: &mut AppContext, note_id: nostrdb_net::NoteId) -> bool {
     let Ok(txn) = Transaction::new(ctx.ndb) else {
         return false;
     };
@@ -1942,7 +1942,7 @@ fn is_agentium_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> 
 /// Whether `note_id` refers to a notebook node event, so a click on its inline
 /// widget routes to the Notebook app instead of the timeline.
 #[cfg(feature = "notebook")]
-fn is_notebook_note(ctx: &mut AppContext, note_id: notedeck::enostr::NoteId) -> bool {
+fn is_notebook_note(ctx: &mut AppContext, note_id: nostrdb_net::NoteId) -> bool {
     let Ok(txn) = Transaction::new(ctx.ndb) else {
         return false;
     };
@@ -2057,7 +2057,7 @@ fn chrome_handle_app_action(
 }
 
 fn columns_route_to_profile(
-    pk: &notedeck::enostr::Pubkey,
+    pk: &nostrdb_net::Pubkey,
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     ui: &mut egui::Ui,
