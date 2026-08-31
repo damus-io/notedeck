@@ -53,6 +53,7 @@ pub fn format_tool_summary(
         "Agent" => format_agent_summary(input),
         "Skill" => format_skill_summary(input),
         "SendMessage" => format_sendmessage_summary(input),
+        "WebSearch" => format_websearch_summary(input),
         _ => String::new(),
     }
 }
@@ -171,6 +172,15 @@ fn format_sendmessage_summary(input: &serde_json::Value) -> String {
     } else {
         format!("→ {to}: {preview}")
     }
+}
+
+/// Summarize a `WebSearch` tool call as its quoted search query. The query is
+/// the identifying part of the call — the returned results render separately in
+/// the collapsible body — so the summary leads with it, single-quoted to match
+/// the search-like `Grep`/`Glob` summaries.
+fn format_websearch_summary(input: &serde_json::Value) -> String {
+    let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("?");
+    format!("'{}'", query)
 }
 
 /// Truncate output to a maximum size, keeping the end (most recent) content
@@ -331,6 +341,22 @@ mod tests {
     fn sendmessage_summary_missing_fields() {
         // No recipient and no content: just the arrow + placeholder target.
         assert_eq!(format_sendmessage_summary(&json!({})), "→ ?");
+    }
+
+    // ---- WebSearch leads with the quoted search query ----
+
+    #[test]
+    fn websearch_summary_quotes_the_query() {
+        let input = json!({"query": "rust async tokio cancellation"});
+        assert_eq!(
+            format_websearch_summary(&input),
+            "'rust async tokio cancellation'"
+        );
+    }
+
+    #[test]
+    fn websearch_summary_missing_query_is_placeholder() {
+        assert_eq!(format_websearch_summary(&json!({})), "'?'");
     }
 
     #[test]

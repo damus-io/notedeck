@@ -1217,17 +1217,22 @@ impl<'a> DaveUi<'a> {
         ui.add(egui::Label::new(job));
     }
 
-    /// Render the expanded detail for a free-form tool result (e.g. Bash): the
-    /// full `command` that ran, a divider, then its captured `output`. The header
-    /// row only shows a truncated one-liner, so this unified body is where the
-    /// reader sees the command in full alongside its output.
+    /// Render the expanded detail for a free-form tool result: an optional
+    /// leading `command`/context line, a divider, then the captured `output`.
+    /// The header row only shows a truncated one-liner, so this unified body is
+    /// where the reader sees the full detail.
+    ///
+    /// `command` is `Some` for a tool whose summary *is* the thing that ran and
+    /// deserves echoing in full (Bash's command), and `None` for a tool whose
+    /// summary already fully names the call in the header (WebSearch's query) —
+    /// there, only the result body needs showing, without duplicating the summary.
     ///
     /// The model holds the full output, so display is bounded here: a long tail
     /// is trimmed (the end — the error, the exit — is what a reader wants). Both
     /// command and output wrap *break-anywhere* within the visible width — not a
     /// column an adjacent wide element (a diff, a long path) may have stretched
     /// past the viewport — so nothing overflows horizontally.
-    fn tool_command_output_ui(command: &str, output: &str, ui: &mut egui::Ui) {
+    fn tool_command_output_ui(command: Option<&str>, output: &str, ui: &mut egui::Ui) {
         let shown = crate::backend::truncate_output(output, MAX_TOOL_OUTPUT_DISPLAY_BYTES);
         ui.indent("exec_output_body", |ui| {
             egui::Frame::new()
@@ -1238,16 +1243,20 @@ impl<'a> DaveUi<'a> {
                     let max_width = ui.available_width().min(ui.clip_rect().width());
                     // The command reads brighter than its output so the two
                     // sections stay distinct within the one block.
-                    Self::wrapped_mono_ui(
-                        command,
-                        ui.visuals().text_color().gamma_multiply(0.85),
-                        max_width,
-                        ui,
-                    );
+                    if let Some(command) = command {
+                        Self::wrapped_mono_ui(
+                            command,
+                            ui.visuals().text_color().gamma_multiply(0.85),
+                            max_width,
+                            ui,
+                        );
+                        if !output.is_empty() {
+                            ui.add_space(notedeck::tokens::SPACING_SM);
+                            ui.separator();
+                            ui.add_space(notedeck::tokens::SPACING_SM);
+                        }
+                    }
                     if !output.is_empty() {
-                        ui.add_space(notedeck::tokens::SPACING_SM);
-                        ui.separator();
-                        ui.add_space(notedeck::tokens::SPACING_SM);
                         Self::wrapped_mono_ui(
                             &shown,
                             ui.visuals().text_color().gamma_multiply(0.75),
@@ -1301,13 +1310,18 @@ impl<'a> DaveUi<'a> {
             }
 
             if expanded {
-                // The Bash summary is the backtick-quoted command; strip the one
-                // surrounding pair so the body shows the bare command.
-                let command = result
-                    .summary
-                    .strip_prefix('`')
-                    .and_then(|s| s.strip_suffix('`'))
-                    .unwrap_or(&result.summary);
+                // Bash's summary *is* the command that ran, so echo it in full
+                // above its output (stripping the one surrounding backtick pair
+                // `format_bash_summary` adds). Other output-bearing tools —
+                // WebSearch — already name the call fully in the header, so the
+                // body shows only the result without duplicating the summary.
+                let command = (result.tool_name == "Bash").then(|| {
+                    result
+                        .summary
+                        .strip_prefix('`')
+                        .and_then(|s| s.strip_suffix('`'))
+                        .unwrap_or(&result.summary)
+                });
                 Self::tool_command_output_ui(command, output, ui);
             }
         } else {
@@ -3252,6 +3266,41 @@ mod tests {
 
         harness.run();
         harness.snapshot("agentic_tool_summaries");
+    }
+
+    /// A `WebSearch` result (headway:dave/smart-wreck-weapon): the header row
+    /// leads with the quoted query and the expanded body shows the returned
+    /// results list. WebSearch once hit the blank `_` summary arm and rendered a
+    /// bare greyed name with no results; this guards the query-in-header +
+    /// results-in-body layout. Unlike Bash, the summary (the query) is *not*
+    /// echoed in the body — only the results are.
+    /// Render with `scripts/snapshot-test snapshot_websearch_result`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_websearch_result() {
+        let summary = "'rust async tokio cancellation'";
+        let output = "1. Tokio — Graceful Shutdown (tokio.rs)\n2. CancellationToken docs (docs.rs)\n3. \"How to cancel a future\" (users.rust-lang.org)";
+        let results = vec![crate::messages::ExecutedTool {
+            tool_name: "WebSearch".to_string(),
+            summary: summary.to_string(),
+            output: Some(output.to_string()),
+            parent_task_id: None,
+            file_update: None,
+        }];
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 140.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                ui.vertical(|ui| {
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, ui);
+                        ui.add_space(4.0);
+                    }
+                });
+            });
+
+        harness.run();
+        harness.snapshot("websearch_result");
     }
 
     /// Regression guard for the expanded unified body (headway:dave/sting-february-sausage):

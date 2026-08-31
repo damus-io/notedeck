@@ -174,12 +174,14 @@ pub fn send_tool_result(
     waker: &Waker,
 ) {
     let summary = format_tool_summary(tool_name, tool_input, result_value);
-    // Bash is the tool whose stdout/stderr *is* the result, so keep it around to
-    // render inline. Other tools are covered by their summary (or a file diff);
-    // broadening this set is a follow-up. Kept in full here: truncation is a
-    // display concern the UI applies (see `tool_output_ui`), and the wire keeps
-    // only a safety-capped copy (see `ToolResultContent::encode`).
-    let output = (tool_name == "Bash")
+    // Some tools' result content *is* the payload worth reading inline, not just
+    // a confirmation captured by the summary: Bash's stdout/stderr, and
+    // WebSearch's returned results. Keep those around to render in the
+    // collapsible body. Other tools are covered by their summary (or a file
+    // diff); broadening this set further is a follow-up. Kept in full here:
+    // truncation is a display concern the UI applies (see `tool_command_output_ui`),
+    // and the wire keeps only a safety-capped copy (see `ToolResultContent::encode`).
+    let output = matches!(tool_name, "Bash" | "WebSearch")
         .then(|| extract_response_content(result_value))
         .flatten()
         .filter(|s| !s.is_empty());
@@ -634,8 +636,9 @@ mod tests {
             DaveApiResponse::ToolResult(tool) => {
                 assert_eq!(tool.tool_name, "Read");
                 assert_eq!(tool.parent_task_id, Some("task-1".to_string()));
-                // Only Bash carries raw output inline today.
-                assert!(tool.output.is_none(), "non-Bash tools carry no output");
+                // Read's content is captured by its summary, not surfaced inline
+                // (only Bash/WebSearch carry raw output today).
+                assert!(tool.output.is_none(), "Read carries no inline output");
             }
             _ => panic!("expected ToolResult"),
         }
@@ -671,6 +674,33 @@ mod tests {
                 assert!(!tool.summary.is_empty(), "summary should not be empty");
                 // Bash stdout/stderr is surfaced inline for the transcript.
                 assert_eq!(tool.output.as_deref(), Some("file.txt"));
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn send_tool_result_websearch_captures_results_inline() {
+        let (tx, rx) = mpsc::channel();
+        let waker = Waker::noop();
+        send_tool_result(
+            "WebSearch",
+            &serde_json::json!({"query": "rust async"}),
+            &serde_json::json!("Result 1\nResult 2"),
+            None,
+            None,
+            &[],
+            &tx,
+            &waker,
+        );
+
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::ToolResult(tool) => {
+                assert_eq!(tool.tool_name, "WebSearch");
+                assert_eq!(tool.summary, "'rust async'");
+                // The returned results are surfaced inline for the transcript.
+                assert_eq!(tool.output.as_deref(), Some("Result 1\nResult 2"));
             }
             _ => panic!("expected ToolResult"),
         }
