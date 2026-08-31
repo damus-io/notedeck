@@ -1,4 +1,6 @@
-use crate::{Accounts, ExplicitPublishApi, OneshotApi, PublishApi, ScopedSubApi, ScopedSubsState};
+use crate::{
+    ExplicitPublishApi, OneshotApi, PublishApi, RelaySetResolver, ScopedSubApi, ScopedSubsState,
+};
 use enostr::{NormRelayUrl, RelayStatus};
 use tokio::sync::mpsc;
 
@@ -71,8 +73,9 @@ impl<'a> RemoteApi<'a> {
     }
 
     /// Access scoped subscription APIs bound to the selected account.
-    pub fn scoped_subs<'o>(&'o mut self, accounts: &'o Accounts) -> ScopedSubApi<'o> {
-        self.scoped_sub_state.api(accounts, &mut self.batch)
+    pub fn scoped_subs<'o>(&'o mut self, resolver: &impl RelaySetResolver) -> ScopedSubApi<'o> {
+        self.scoped_sub_state
+            .api(resolver.selected_account_pubkey(), &mut self.batch)
     }
 
     /// Access one-shot read APIs bound to the selected account.
@@ -118,21 +121,21 @@ impl<'a> RemoteApi<'a> {
     }
 
     /// Host account-switch transition hook for scoped subscription teardown and restore.
-    pub(crate) fn on_account_switched(&mut self, accounts: &Accounts) {
-        self.on_selected_account_changed(accounts);
+    pub(crate) fn on_account_switched(&mut self, resolver: &impl RelaySetResolver) {
+        self.on_selected_account_changed(resolver);
     }
 
     /// Host/account hook for selected-account remote state changes.
-    pub(crate) fn on_selected_account_changed(&mut self, accounts: &Accounts) {
+    pub(crate) fn on_selected_account_changed(&mut self, resolver: &impl RelaySetResolver) {
         self.batch
-            .set_account_changed(Self::bridge_account_state(accounts));
+            .set_account_changed(Self::bridge_account_state(resolver));
     }
 
-    fn bridge_account_state(accounts: &Accounts) -> BridgeAccountState {
+    fn bridge_account_state(resolver: &impl RelaySetResolver) -> BridgeAccountState {
         BridgeAccountState::new(
-            *accounts.selected_account_pubkey(),
-            accounts.selected_account_read_relays(),
-            accounts.selected_account_write_relays(),
+            resolver.selected_account_pubkey(),
+            resolver.selected_account_read_relays(),
+            resolver.selected_account_write_relays(),
         )
     }
 }

@@ -4081,7 +4081,7 @@ fn missing_bridge_fact_clears_cached_readiness_without_clearing_ownership() {
     let identity = ScopedSubIdentity::global(owner, key);
 
     {
-        let mut api = state.api(&accounts, &mut batch);
+        let mut api = state.api(*accounts.selected_account_pubkey(), &mut batch);
         assert_eq!(
             api.ensure_sub(identity, base_config(SubScope::Global)),
             EnsureSubResult::Created
@@ -4106,7 +4106,7 @@ fn missing_bridge_fact_clears_cached_readiness_without_clearing_ownership() {
     });
 
     {
-        let api = state.api(&accounts, &mut batch);
+        let api = state.api(*accounts.selected_account_pubkey(), &mut batch);
         assert!(matches!(
             api.sub_readiness(identity),
             ScopedSubReadiness::Live(_)
@@ -4119,7 +4119,7 @@ fn missing_bridge_fact_clears_cached_readiness_without_clearing_ownership() {
     });
 
     {
-        let api = state.api(&accounts, &mut batch);
+        let api = state.api(*accounts.selected_account_pubkey(), &mut batch);
         assert_eq!(api.sub_readiness(identity), ScopedSubReadiness::Inactive);
     }
 }

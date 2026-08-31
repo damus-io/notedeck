@@ -40,6 +40,7 @@ pub mod realtime_cache;
 pub mod reference;
 pub mod registries;
 mod relay_limits;
+mod relay_resolver;
 pub mod relayspec;
 mod remote_api;
 mod remote_data;
@@ -132,6 +133,7 @@ pub use reference::{
     NostrRefParser, ReferenceParser, ReferenceParserRegistry, ReferenceResolveCtx, ResolvedRef,
 };
 pub use registries::AppRegistries;
+pub use relay_resolver::RelaySetResolver;
 pub use relayspec::RelaySpec;
 pub use remote_api::{RelayInspectApi, RelayInspectEntry, RemoteApi};
 pub use result::Result;

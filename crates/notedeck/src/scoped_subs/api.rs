@@ -6,14 +6,14 @@ use super::{
     ClearSubResult, EnsureSubResult, ScopedSubIdentity, ScopedSubReadiness, SetSubResult,
     SubConfig, SubKey, SubOwnerKey,
 };
-use crate::{remote_data::RemoteIntentBatchBuilder, Accounts};
+use crate::remote_data::RemoteIntentBatchBuilder;
 
 /// App-facing facade over scoped subscription owner/runtime operations.
 ///
 /// This bundles host resources that are commonly passed together to avoid
 /// argument plumbing through app-layer helper functions.
 pub struct ScopedSubApi<'o> {
-    accounts: &'o Accounts,
+    selected_pubkey: Pubkey,
     declarations: &'o mut ScopedSubDeclarations,
     read_model: &'o ScopedSubReadModel,
     batch: &'o mut RemoteIntentBatchBuilder,
@@ -21,13 +21,13 @@ pub struct ScopedSubApi<'o> {
 
 impl<'o> ScopedSubApi<'o> {
     pub(super) fn new(
-        accounts: &'o Accounts,
+        selected_pubkey: Pubkey,
         declarations: &'o mut ScopedSubDeclarations,
         read_model: &'o ScopedSubReadModel,
         batch: &'o mut RemoteIntentBatchBuilder,
     ) -> Self {
         Self {
-            accounts,
+            selected_pubkey,
             declarations,
             read_model,
             batch,
@@ -35,7 +35,7 @@ impl<'o> ScopedSubApi<'o> {
     }
 
     pub fn selected_account_pubkey(&self) -> Pubkey {
-        *self.accounts.selected_account_pubkey()
+        self.selected_pubkey
     }
 
     /// Create or update one scoped remote subscription declaration.

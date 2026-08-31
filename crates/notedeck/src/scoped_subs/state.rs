@@ -2,8 +2,9 @@ use super::{
     config::ScopedSubKey, declarations::ScopedSubDeclarations, ScopedSubApi, ScopedSubFact,
     ScopedSubReadiness,
 };
-use crate::{remote_data::RemoteIntentBatchBuilder, Accounts};
+use crate::remote_data::RemoteIntentBatchBuilder;
 use hashbrown::HashMap;
+use nostrdb_net::Pubkey;
 
 /// Host-owned scoped subscription declarations and committed bridge facts.
 ///
@@ -19,10 +20,15 @@ impl ScopedSubsState {
     /// Build the app-facing scoped subscription API.
     pub(crate) fn api<'o>(
         &'o mut self,
-        accounts: &'o Accounts,
+        selected_pubkey: Pubkey,
         batch: &'o mut RemoteIntentBatchBuilder,
     ) -> ScopedSubApi<'o> {
-        ScopedSubApi::new(accounts, &mut self.declarations, &self.read_model, batch)
+        ScopedSubApi::new(
+            selected_pubkey,
+            &mut self.declarations,
+            &self.read_model,
+            batch,
+        )
     }
 
     pub(crate) fn apply_bridge_fact(&mut self, fact: ScopedSubFact) {

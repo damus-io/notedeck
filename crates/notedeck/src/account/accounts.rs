@@ -531,6 +531,20 @@ impl Accounts {
     }
 }
 
+impl crate::RelaySetResolver for Accounts {
+    fn selected_account_pubkey(&self) -> Pubkey {
+        *Accounts::selected_account_pubkey(self)
+    }
+
+    fn selected_account_read_relays(&self) -> HashSet<NormRelayUrl> {
+        Accounts::selected_account_read_relays(self)
+    }
+
+    fn selected_account_write_relays(&self) -> Vec<RelayId> {
+        Accounts::selected_account_write_relays(self)
+    }
+}
+
 enum AccType<'a> {
     Entry(hashbrown::hash_map::OccupiedEntry<'a, Pubkey, UserAccount>),
     Acc(&'a UserAccount),
