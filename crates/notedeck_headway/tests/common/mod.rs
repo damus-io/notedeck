@@ -21,11 +21,11 @@
 
 use std::time::{Duration, Instant};
 
-use enostr::{FullKeypair, NoteId, Pubkey};
 use nostr::key::PublicKey;
 use nostr::nips::nip44;
 use nostr::secp256k1::rand::rngs::OsRng;
 use nostrdb::{Filter, NoteBuilder, Transaction};
+use nostrdb_net::{FullKeypair, NoteId, Pubkey};
 use notedeck::RelayAction;
 use notedeck_headway::{
     Headway,
@@ -88,7 +88,7 @@ pub fn gift_wrapped_keyshare(
     epoch: Option<u32>,
 ) -> String {
     let mut rumor = NoteBuilder::new()
-        .kind(enostr::sns::KEYSHARE_KIND)
+        .kind(nostrdb_net::sns::KEYSHARE_KIND)
         .content("")
         .start_tag()
         .tag_str("team_root")

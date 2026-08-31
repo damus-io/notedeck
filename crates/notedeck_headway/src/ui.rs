@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use enostr::NoteId;
+use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{
     PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS,

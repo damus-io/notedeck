@@ -24,7 +24,7 @@ use common::{
     CONVERGE_TIMEOUT, apply_sealed, build_headway_device, join_shared_board, seal_board_definition,
     shared_board, shared_card_id, step_for, wait_for_comment_convergence, wait_for_convergence,
 };
-use enostr::{FullKeypair, Pubkey};
+use nostrdb_net::{FullKeypair, Pubkey};
 use notedeck_headway::{
     event::{self, ColumnDef},
     store::{BoardAction, SnsChannel},
@@ -96,7 +96,7 @@ impl SharedBoardFixture {
 async fn setup_shared_board() -> SharedBoardFixture {
     let root = team_root();
     let channel = SnsChannel {
-        keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+        keys: nostrdb_net::sns::derive_sns_keys(&root).expect("derive sns keys"),
     };
 
     let owner = FullKeypair::generate();
@@ -429,7 +429,7 @@ async fn sealed_rumors_never_cross_the_wire_in_plaintext() {
     // its own to keep it alive; here we need to assert on captured frames).
     let root = team_root();
     let channel = SnsChannel {
-        keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+        keys: nostrdb_net::sns::derive_sns_keys(&root).expect("derive sns keys"),
     };
     let owner = FullKeypair::generate();
     let member = FullKeypair::generate();

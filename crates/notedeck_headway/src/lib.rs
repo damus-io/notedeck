@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use enostr::{NoteId, Pubkey, RelayId, RelayStatus};
+use enostr::{RelayId, RelayStatus};
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{App, AppContext, AppResponse, ColorTheme, PrivateRelaySync, fan_out_unseen_notes};
 
 pub use headway::{event, store, teams};
@@ -222,7 +223,7 @@ impl Headway {
     /// both an explicit "New board" and the auto-seeded default.
     ///
     /// The `team_root` is *derived* from the account secret and the board slug
-    /// ([`enostr::sns::derive_board_root`]), never randomly minted: the same board
+    /// ([`nostrdb_net::sns::derive_board_root`]), never randomly minted: the same board
     /// created independently on another device — same secret, same slug — lands the
     /// same root and converges on one channel instead of forking a divergent one.
     /// Per-board content isolation is unchanged: a different slug derives an
@@ -235,7 +236,7 @@ impl Headway {
         board_id: &str,
         title: &str,
     ) -> bool {
-        let root = enostr::sns::derive_board_root(secret, board_id);
+        let root = nostrdb_net::sns::derive_board_root(secret, board_id);
         if !store::create_shared_board(
             ndb,
             author,
@@ -1498,9 +1499,9 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
     use futures_util::StreamExt;
     use nostrdb::{Config, Filter, Ndb, SubscriptionStream};
+    use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
 
     /// The board↔card selection change → global-history request mapping (see
@@ -2292,7 +2293,7 @@ mod tests {
         root[31] = 0x22;
         assert!(t.ndb.add_team_root(&root));
         let channel = store::SnsChannel {
-            keys: enostr::sns::derive_sns_keys(&root).expect("keys"),
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
         };
         let team = teams::Team {
             team_root: hex::encode(root),

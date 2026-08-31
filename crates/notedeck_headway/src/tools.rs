@@ -7,11 +7,12 @@
 //! same curated schema the CLI emits with `--json`. Boards are folded for the
 //! currently-selected account — the pubkey that authors this user's boards.
 
-use enostr::{Pubkey, RelayId};
+use enostr::RelayId;
 use headway::event::{self, BoardView, CardView, Container, Priority, resolve_card};
 use headway::store::{self, BoardAction};
 use headway::{traversal, wordid};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     AppTool, ExplicitPublishApi, RegisteredTool, ToolArg, ToolArgType, ToolContext, ToolSpec,
     fan_out_event_frame,
@@ -975,9 +976,9 @@ fn board_arg() -> ToolArg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enostr::FullKeypair;
     use headway::wordid;
     use nostrdb::{Config, Ndb};
+    use nostrdb_net::FullKeypair;
     use notedeck::{Accounts, NoteCache, UnknownIds};
     use serde_json::json;
     use std::time::{Duration, Instant};
@@ -1067,7 +1068,7 @@ mod tests {
         root[31] = 0x22;
         assert!(ndb.add_team_root(&root));
         let channel = store::SnsChannel {
-            keys: enostr::sns::derive_sns_keys(&root).expect("keys"),
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
         };
         let board_addr = event::board_address(&owner.pubkey, store::BOARD_ID);
         let cols = vec![

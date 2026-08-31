@@ -17,7 +17,7 @@
 //! [`replace`](notedeck::Navigator::replace_active_route)s in place rather than
 //! growing the stack — so a single global-back always returns to the board.
 
-use enostr::NoteId;
+use nostrdb_net::NoteId;
 
 /// A Headway entry in the chrome-owned global navigation history.
 ///

@@ -5642,6 +5642,7 @@ dependencies = [
  "hex",
  "nostr 0.37.0",
  "nostrdb",
+ "nostrdb_net",
  "notedeck",
  "notedeck_testing",
  "notedeck_ui",

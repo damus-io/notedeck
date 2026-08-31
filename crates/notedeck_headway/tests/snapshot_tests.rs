@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::{Key, Node, Queryable};
-use enostr::{FullKeypair, Keypair, NoteId, Pubkey};
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
+use nostrdb_net::{FullKeypair, Keypair, NoteId, Pubkey};
 use notedeck::{App, AppContext, Notedeck};
 use notedeck_headway::{Headway, event, store};
 
@@ -129,7 +129,7 @@ fn ingest_kind1(ndb: &Ndb, content: &str, secret: &[u8; 32]) -> (NoteId, Subscri
     let sub = ndb
         .subscribe(&[Filter::new().ids([id.bytes()]).build()])
         .expect("subscribe");
-    let json = enostr::ClientMessage::event(&note)
+    let json = nostrdb_net::ClientMessage::event(&note)
         .expect("client msg")
         .to_json()
         .expect("json");
@@ -152,7 +152,7 @@ fn test_keypair() -> FullKeypair {
 /// stand-in co-member (see the shared-board flows) use fixed keys so coordinates,
 /// switcher ordering, and snapshots reproduce run to run.
 fn fixed_keypair(fill: u8) -> FullKeypair {
-    let secret = enostr::SecretKey::from_slice(&[fill; 32]).expect("valid test secret");
+    let secret = nostrdb_net::SecretKey::from_slice(&[fill; 32]).expect("valid test secret");
     let kp = Keypair::from_secret(secret);
     FullKeypair::new(kp.pubkey, kp.secret_key.expect("has secret"))
 }
@@ -599,7 +599,7 @@ fn snapshot_inline_card() {
     let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
     let card = CardView {
-        id: enostr::NoteId::new([1u8; 32]),
+        id: nostrdb_net::NoteId::new([1u8; 32]),
         author: [0u8; 32],
         title: "Update headway-cli to use negentropy for sync".to_string(),
         description: String::new(),
@@ -1114,7 +1114,7 @@ fn own_shared_board_folds_teammate_card_in_render() {
     root[0] = 0x53;
     root[31] = 0x11;
     let channel = store::SnsChannel {
-        keys: enostr::sns::derive_sns_keys(&root).expect("derive sns keys"),
+        keys: nostrdb_net::sns::derive_sns_keys(&root).expect("derive sns keys"),
     };
     let team_pubkey = channel.keys.team_keypair.pubkey;
 
