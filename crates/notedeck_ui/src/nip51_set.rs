@@ -1,8 +1,8 @@
 use bitflags::bitflags;
 use egui::{vec2, Checkbox, CornerRadius, Margin, RichText, Sense, UiBuilder};
-use enostr::Pubkey;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Ndb, ProfileRecord, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{
     fonts::get_font_size, get_profile_url, name::get_display_name, tr, Images, Localization,
     MediaJobSender, Nip51Set, Nip51SetCache, NotedeckTextStyle,

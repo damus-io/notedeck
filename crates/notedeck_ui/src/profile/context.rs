@@ -1,4 +1,4 @@
-use enostr::Pubkey;
+use nostrdb_net::Pubkey;
 use notedeck::{tr, Localization, ProfileContextSelection};
 
 use crate::context_menu::{context_button, stationary_arbitrary_menu_button};

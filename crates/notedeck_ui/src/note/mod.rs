@@ -22,8 +22,8 @@ pub use reply_description::reply_desc;
 
 use egui::emath::{pos2, Vec2};
 use egui::{Id, Pos2, Rect, Response, Sense};
-use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, NoteMetadataEntryVariant, ProfileRecord, Transaction};
+use nostrdb_net::{KeypairUnowned, NoteId, Pubkey};
 use notedeck::{
     note::{NoteAction, NoteContext, NoteDetail, ReactAction, ZapAction},
     tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, ZapTarget, Zaps,

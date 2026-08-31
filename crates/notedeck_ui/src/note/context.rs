@@ -1,6 +1,6 @@
 use egui::{Rect, Vec2};
-use enostr::NoteId;
 use nostrdb::NoteKey;
+use nostrdb_net::NoteId;
 use notedeck::{tr, BroadcastContext, Localization, NoteContextSelection};
 
 use crate::context_menu::{context_button, stationary_arbitrary_menu_button};

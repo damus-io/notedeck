@@ -19,7 +19,7 @@ tokio = { workspace = true }
 notedeck = { workspace = true }
 image = { workspace = true }
 bitflags = { workspace = true }
-enostr = { workspace = true }
+nostrdb_net = { workspace = true }
 hashbrown = { workspace = true }
 md-stream = { workspace = true }
 

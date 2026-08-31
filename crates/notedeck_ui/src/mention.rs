@@ -1,7 +1,7 @@
 use crate::ProfilePreview;
 use egui::Sense;
-use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::{name::get_display_name, Images, MediaJobSender, NoteAction, NotedeckTextStyle};
 
 pub struct Mention<'a> {

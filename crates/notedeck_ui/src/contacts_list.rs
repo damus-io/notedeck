@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use crate::ProfilePic;
 use egui::{RichText, Sense, Stroke};
-use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
+use nostrdb_net::Pubkey;
 use notedeck::tokens::{PFP_LG, SPACING_SM, SPACING_XS, STROKE_MEDIUM};
 use notedeck::{
     name::get_display_name, profile::get_profile_url, tr, ContactState, DragResponse, Images,
