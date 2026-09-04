@@ -25,6 +25,7 @@ pub enum SessionListAction {
     NewWorktree(SessionId),
     DeleteWorktree(SessionId),
     ToggleHostCollapse(String),
+    ToggleProjectCollapse(String, PathBuf),
     ToggleCwdCollapse(String, PathBuf),
     NewSessionInCwd(String, PathBuf),
 }
@@ -155,9 +156,9 @@ impl<'a> SessionListUi<'a> {
             CycleHints::default()
         };
         let mut visual_index: usize = 0;
-        let host_groups = self.session_manager.host_cwd_groups().to_vec();
+        let host_groups = self.session_manager.host_groups().to_vec();
 
-        // Agents grouped by host → cwd (pre-computed, deterministically ordered)
+        // Agents grouped by host → project → cwd (deterministically ordered)
         for host_group in &host_groups {
             if let Some(a) =
                 host_section_ui(ui, self, host_group, &mut visual_index, active_id, cycle)
@@ -992,16 +993,33 @@ fn host_section_ui(
     });
 
     let (toggle_resp, label_resp, _) = header.body_unindented(|ui| {
-        for cwd_group in &host_group.cwd_groups {
-            if let Some(a) = cwd_section_ui(
-                ui,
-                list_ui,
-                &host_group.hostname,
-                cwd_group,
-                visual_index,
-                active_id,
-                cycle,
-            ) {
+        for project in &host_group.project_groups {
+            // Single-workspace projects render flush (no slug header) so the
+            // common single-checkout case stays uncluttered — "flat". Only
+            // multi-worktree projects get a project header grouping their
+            // workspaces, which is exactly where per-cwd scatter was the problem.
+            let rendered = if project.is_flat() {
+                cwd_section_ui(
+                    ui,
+                    list_ui,
+                    &host_group.hostname,
+                    &project.cwd_groups[0],
+                    visual_index,
+                    active_id,
+                    cycle,
+                )
+            } else {
+                project_section_ui(
+                    ui,
+                    list_ui,
+                    &host_group.hostname,
+                    project,
+                    visual_index,
+                    active_id,
+                    cycle,
+                )
+            };
+            if let Some(a) = rendered {
                 action = Some(a);
             }
         }
@@ -1014,6 +1032,73 @@ fn host_section_ui(
     }
 
     ui.add_space(6.0);
+    action
+}
+
+/// Render one multi-workspace project's collapsible section: a slug header with
+/// each of its workspaces (worktrees/dirs) as a folder beneath. Single-workspace
+/// projects never reach here — they render flush (see `host_section_ui`).
+fn project_section_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_>,
+    hostname: &str,
+    project: &crate::session::ProjectGroup,
+    visual_index: &mut usize,
+    active_id: Option<SessionId>,
+    cycle: CycleHints,
+) -> Option<SessionListAction> {
+    let mut action = None;
+    let collapsed = list_ui
+        .collapse_state
+        .is_project_collapsed(hostname, &project.root);
+    let project_id =
+        ui.make_persistent_id(("dave_project_collapse", hostname, project.root.as_path()));
+    let mut project_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        project_id,
+        true,
+    );
+    project_state.set_open(!collapsed);
+
+    let header = project_state.show_header(ui, |ui| {
+        let text = egui::RichText::new(&project.slug).size(13.0).strong();
+        ui.add(egui::Label::new(text).truncate().sense(Sense::click()))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    });
+
+    let (toggle_resp, label_resp, _) = header.body_unindented(|ui| {
+        // Indent the workspace folders under the project header so the two-level
+        // hierarchy (project → workspace) reads clearly.
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 12,
+                ..Default::default()
+            })
+            .show(ui, |ui| {
+                for cwd_group in &project.cwd_groups {
+                    if let Some(a) = cwd_folder_ui(
+                        ui,
+                        list_ui,
+                        hostname,
+                        cwd_group,
+                        visual_index,
+                        active_id,
+                        cycle,
+                    ) {
+                        action = Some(a);
+                    }
+                }
+            });
+    });
+
+    if toggle_resp.clicked() || label_resp.inner.clicked() {
+        action = Some(SessionListAction::ToggleProjectCollapse(
+            hostname.to_string(),
+            project.root.clone(),
+        ));
+    }
+
+    ui.add_space(4.0);
     action
 }
 
@@ -1241,9 +1326,9 @@ mod tests {
                 session.details.custom_title = None;
                 session.details.home_dir = String::new();
             }
-            session_manager.rebuild_cwd_groups();
+            session_manager.rebuild_groups();
 
-            let cwd_label = session_manager.host_cwd_groups()[0].cwd_groups[0]
+            let cwd_label = session_manager.host_groups()[0].project_groups[0].cwd_groups[0]
                 .display_cwd
                 .clone();
 
@@ -1427,5 +1512,61 @@ mod tests {
         let mut harness = status_row_harness(AgentStatus::Idle, "Dead Session");
         harness.run();
         harness.snapshot("session_row_revived");
+    }
+
+    /// Render the whole sidebar with a flat single-checkout project and a
+    /// multi-worktree project side by side, so the new project grouping — one
+    /// "notedeck" header wrapping its worktrees, versus the flush single project
+    /// — can be verified visually.
+    fn project_grouping_harness() -> Harness<'static> {
+        Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 360.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut sm = SessionManager::new();
+
+                // A flat, single-checkout project (renders flush, no header).
+                let solo = sm.new_session(
+                    PathBuf::from("/home/dev/scratch"),
+                    AiMode::Agentic,
+                    BackendType::Claude,
+                );
+
+                // A multi-worktree "notedeck" project: main checkout + two
+                // worktrees, all sharing one repo root.
+                let mut wt = |sm: &mut SessionManager, cwd: &str, title: &str| {
+                    let id =
+                        sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
+                    let s = sm.get_mut(id).expect("session");
+                    s.details.title = title.to_string();
+                    s.details.home_dir = "/home/dev".to_string();
+                    s.details.project_root = Some(PathBuf::from("/home/dev/notedeck"));
+                    s.details.project_slug = Some("notedeck".to_string());
+                    id
+                };
+                wt(&mut sm, "/home/dev/notedeck", "fix streaming bug");
+                wt(&mut sm, "/home/dev/notedeck-dave", "project grouping");
+                wt(&mut sm, "/home/dev/notedeck-dave", "render tool results");
+                wt(&mut sm, "/home/dev/notedeck-feature", "responsive layout");
+
+                if let Some(s) = sm.get_mut(solo) {
+                    s.details.title = "one-off".to_string();
+                    s.details.home_dir = "/home/dev".to_string();
+                }
+                sm.rebuild_groups();
+
+                let focus_queue = FocusQueue::new();
+                let collapse_state = CollapseState::new();
+                let mut list = SessionListUi::new(&mut sm, &focus_queue, &collapse_state, false);
+                list.ui(ui);
+            })
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_project_grouping() {
+        let mut harness = project_grouping_harness();
+        harness.run();
+        harness.snapshot("session_list_project_grouping");
     }
 }

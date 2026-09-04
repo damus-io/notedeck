@@ -67,6 +67,14 @@ pub struct SessionDetails {
     /// Home directory of the machine where this session originated.
     /// Used to abbreviate cwd paths for remote sessions.
     pub home_dir: String,
+    /// Display slug of the project the cwd belongs to (git repo root basename).
+    /// `None` until resolved; grouping then falls back to deriving it from `cwd`.
+    /// See [`crate::worktree::project_for`].
+    pub project_slug: Option<String>,
+    /// Git repo root shared by all the project's worktrees — the grouping key
+    /// that keeps worktrees of one repo under a single sidebar project instead of
+    /// scattering per-cwd. `None` until resolved (grouping falls back to `cwd`).
+    pub project_root: Option<PathBuf>,
     /// User-requested model override for new backend requests and clones.
     ///
     /// `None` means "let the backend choose its default model".
@@ -555,6 +563,10 @@ impl ChatSession {
         } else {
             None
         };
+        // Resolve the project (git repo) the cwd belongs to once, at creation —
+        // `project_for` spawns git, so it must never run from a per-frame path.
+        // Chat sessions have no cwd and no project.
+        let project = (ai_mode == AiMode::Agentic).then(|| crate::worktree::project_for(&cwd));
         let agentic = match ai_mode {
             AiMode::Agentic => Some(AgenticSessionData::new(id, cwd)),
             AiMode::Chat => None,
@@ -582,6 +594,8 @@ impl ChatSession {
                 home_dir: dirs::home_dir()
                     .map(|h| h.to_string_lossy().to_string())
                     .unwrap_or_default(),
+                project_slug: project.as_ref().map(|p| p.slug.clone()),
+                project_root: project.map(|p| p.root),
                 requested_model: None,
                 model: None,
             },
@@ -647,6 +661,10 @@ impl ChatSession {
                 hostname,
                 cwd: Some(cwd),
                 home_dir: String::new(),
+                // Placeholder: the real project is filled in on hydration from the
+                // arriving state event (remote) or recomputed from git (local).
+                project_slug: None,
+                project_root: None,
                 requested_model: None,
                 model: None,
             },
@@ -991,11 +1009,11 @@ pub struct SessionManager {
     next_id: SessionId,
     /// Pending external editor job (only one at a time)
     pub pending_editor: Option<EditorJob>,
-    /// Cached agent grouping: host → cwd → sessions.
-    /// Rebuilt via `rebuild_cwd_groups()` when sessions change.
-    host_cwd_groups: Vec<HostGroup>,
-    /// Whether host/cwd grouping cache must be rebuilt before reads.
-    host_cwd_groups_dirty: bool,
+    /// Cached agent grouping: host → project → cwd → sessions.
+    /// Rebuilt via `rebuild_groups()` when sessions change.
+    host_groups: Vec<HostGroup>,
+    /// Whether host grouping cache must be rebuilt before reads.
+    host_groups_dirty: bool,
     /// Cached chat session IDs in recency order.
     chat_ids: Vec<SessionId>,
     /// Whether chat ID cache must be rebuilt before reads.
@@ -1006,7 +1024,32 @@ pub struct SessionManager {
 #[derive(Clone)]
 pub struct HostGroup {
     pub hostname: String,
+    pub project_groups: Vec<ProjectGroup>,
+}
+
+/// A group of workspaces (cwds/worktrees) belonging to one project.
+///
+/// A project is the git repository shared by all its worktrees, so every
+/// worktree lands under one sidebar entry instead of scattering per-cwd. A cwd
+/// that isn't in a git repo forms its own single-workspace project.
+#[derive(Clone)]
+pub struct ProjectGroup {
+    /// Display slug — the git repo root basename (or cwd basename for non-git).
+    pub slug: String,
+    /// Grouping key — the project root shared by the worktrees, or the cwd itself.
+    pub root: PathBuf,
     pub cwd_groups: Vec<CwdGroup>,
+}
+
+impl ProjectGroup {
+    /// A project renders "flat" — sessions directly under the project header,
+    /// with no workspace sub-level — when it has a single workspace located at
+    /// the project root (the common single-checkout case). Multi-workspace
+    /// projects (worktrees) and single workspaces sitting in a subdirectory keep
+    /// the workspace level so their paths stay distinguishable.
+    pub fn is_flat(&self) -> bool {
+        self.cwd_groups.len() == 1 && self.cwd_groups[0].cwd == self.root
+    }
 }
 
 /// A group of sessions sharing a working directory.
@@ -1015,6 +1058,16 @@ pub struct CwdGroup {
     pub display_cwd: String,
     pub cwd: PathBuf,
     pub session_ids: Vec<SessionId>,
+}
+
+/// Fallback project slug for a root that carries no persisted slug (old events /
+/// non-git cwds): the root's basename, or the whole path if it has no final
+/// component. A pure alternative to [`crate::worktree::project_for`] that never
+/// spawns git, safe to call from the grouping rebuild.
+fn project_slug_from_root(root: &std::path::Path) -> String {
+    root.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
 impl Default for SessionManager {
@@ -1031,8 +1084,8 @@ impl SessionManager {
             active: None,
             next_id: 1,
             pending_editor: None,
-            host_cwd_groups: Vec::new(),
-            host_cwd_groups_dirty: false,
+            host_groups: Vec::new(),
+            host_groups_dirty: false,
             chat_ids: Vec::new(),
             chat_ids_dirty: false,
         }
@@ -1052,7 +1105,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
-        self.rebuild_cwd_groups();
+        self.rebuild_groups();
 
         id
     }
@@ -1074,7 +1127,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
-        self.rebuild_cwd_groups();
+        self.rebuild_groups();
 
         id
     }
@@ -1104,7 +1157,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id);
         self.active = Some(id);
-        self.rebuild_cwd_groups();
+        self.rebuild_groups();
 
         id
     }
@@ -1147,7 +1200,7 @@ impl SessionManager {
             if self.active == Some(id) {
                 self.active = self.order.first().copied();
             }
-            self.rebuild_cwd_groups();
+            self.rebuild_groups();
             true
         } else {
             false
@@ -1230,9 +1283,9 @@ impl SessionManager {
     }
 
     /// Get cached agent session groups: host → cwd → sessions.
-    pub fn host_cwd_groups(&mut self) -> &[HostGroup] {
+    pub fn host_groups(&mut self) -> &[HostGroup] {
         self.ensure_grouping_cache();
-        &self.host_cwd_groups
+        &self.host_groups
     }
 
     /// Collect unique remote hostnames from all sessions.
@@ -1255,27 +1308,48 @@ impl SessionManager {
         &self.chat_ids
     }
 
-    /// Session IDs in visual/display order (host/cwd groups then chats),
-    /// filtered by collapse state. Collapsed host/cwd groups are excluded.
+    /// Session IDs in visual/display order (host → project → cwd groups, then
+    /// chats), filtered by collapse state. Sessions inside a collapsed host,
+    /// project, or workspace folder are excluded — this must mirror what
+    /// `session_list` renders so keyboard nav lands only on visible rows.
     pub fn visual_order(
         &mut self,
         collapse: &crate::collapse_state::CollapseState,
     ) -> Vec<SessionId> {
         self.ensure_grouping_cache();
         let mut ids = Vec::new();
-        for host_group in &self.host_cwd_groups {
+        for host_group in &self.host_groups {
             if collapse.is_host_collapsed(&host_group.hostname) {
                 continue;
             }
-            for cwd_group in &host_group.cwd_groups {
-                // Single-session cwds render without a folder header (no UI to
-                // collapse), so they're always visible to keyboard nav too —
-                // ignore any stale `is_cwd_collapsed` state.
-                let collapsible = cwd_group.session_ids.len() > 1;
-                if collapsible && collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd) {
+            for project in &host_group.project_groups {
+                if project.is_flat() {
+                    // Flat projects render flush (no project header): the single
+                    // workspace inlines a lone session or folds multiple. Only the
+                    // multi-session folder is collapsible; a lone inline row has
+                    // no folder UI, so it stays visible regardless of stale state.
+                    let cwd_group = &project.cwd_groups[0];
+                    let collapsible = cwd_group.session_ids.len() > 1;
+                    if collapsible
+                        && collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd)
+                    {
+                        continue;
+                    }
+                    ids.extend_from_slice(&cwd_group.session_ids);
                     continue;
                 }
-                ids.extend_from_slice(&cwd_group.session_ids);
+
+                // Multi-workspace project: a collapsible slug header wrapping one
+                // always-collapsible folder per workspace.
+                if collapse.is_project_collapsed(&host_group.hostname, &project.root) {
+                    continue;
+                }
+                for cwd_group in &project.cwd_groups {
+                    if collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd) {
+                        continue;
+                    }
+                    ids.extend_from_slice(&cwd_group.session_ids);
+                }
             }
         }
         ids.extend_from_slice(&self.chat_ids);
@@ -1287,10 +1361,10 @@ impl SessionManager {
         self.order.iter().position(|&oid| oid == id)
     }
 
-    /// Rebuild the cached host/cwd groups from current sessions.
-    /// Call after adding/removing sessions or changing a session's cwd.
-    pub fn rebuild_cwd_groups(&mut self) {
-        self.host_cwd_groups.clear();
+    /// Rebuild the cached host → project → cwd groups from current sessions.
+    /// Call after adding/removing sessions or changing a session's cwd/project.
+    pub fn rebuild_groups(&mut self) {
+        self.host_groups.clear();
         self.chat_ids.clear();
 
         for &id in &self.order {
@@ -1317,30 +1391,60 @@ impl SessionManager {
                     None => "(unknown)".to_string(),
                 };
 
+                // Project identity: the persisted/computed repo root groups all
+                // worktrees together. Old events / non-git cwds have no project,
+                // so fall back to the cwd itself as a single-workspace project.
+                let project_root = session
+                    .details
+                    .project_root
+                    .clone()
+                    .unwrap_or_else(|| raw_cwd.clone());
+                let project_slug = session
+                    .details
+                    .project_slug
+                    .clone()
+                    .unwrap_or_else(|| project_slug_from_root(&project_root));
+
                 // Find or create host group
                 let host_group = if let Some(hg) = self
-                    .host_cwd_groups
+                    .host_groups
                     .iter_mut()
                     .find(|hg| hg.hostname == hostname)
                 {
                     hg
                 } else {
-                    self.host_cwd_groups.push(HostGroup {
+                    self.host_groups.push(HostGroup {
                         hostname: hostname.clone(),
-                        cwd_groups: Vec::new(),
+                        project_groups: Vec::new(),
                     });
-                    self.host_cwd_groups.last_mut().unwrap()
+                    self.host_groups.last_mut().unwrap()
                 };
 
-                // Find or create cwd group within host
-                if let Some(cg) = host_group
+                // Find or create project group within host (keyed by root)
+                let project_group = if let Some(pg) = host_group
+                    .project_groups
+                    .iter_mut()
+                    .find(|pg| pg.root == project_root)
+                {
+                    pg
+                } else {
+                    host_group.project_groups.push(ProjectGroup {
+                        slug: project_slug,
+                        root: project_root,
+                        cwd_groups: Vec::new(),
+                    });
+                    host_group.project_groups.last_mut().unwrap()
+                };
+
+                // Find or create cwd group within project
+                if let Some(cg) = project_group
                     .cwd_groups
                     .iter_mut()
                     .find(|cg| cg.cwd == raw_cwd)
                 {
                     cg.session_ids.push(id);
                 } else {
-                    host_group.cwd_groups.push(CwdGroup {
+                    project_group.cwd_groups.push(CwdGroup {
                         display_cwd: cwd_display,
                         cwd: raw_cwd,
                         session_ids: vec![id],
@@ -1350,46 +1454,52 @@ impl SessionManager {
         }
 
         // Sort host groups alphabetically (empty hostname = local, sorts first)
-        self.host_cwd_groups
-            .sort_by(|a, b| a.hostname.cmp(&b.hostname));
+        self.host_groups.sort_by(|a, b| a.hostname.cmp(&b.hostname));
 
-        // Sort cwd groups and sessions within each
-        for host_group in &mut self.host_cwd_groups {
+        for host_group in &mut self.host_groups {
+            // Sort projects by slug (then root, so same-named repos stay stable)
             host_group
-                .cwd_groups
-                .sort_by(|a, b| a.display_cwd.cmp(&b.display_cwd));
+                .project_groups
+                .sort_by(|a, b| a.slug.cmp(&b.slug).then_with(|| a.root.cmp(&b.root)));
 
-            for cwd_group in &mut host_group.cwd_groups {
-                cwd_group.session_ids.sort_by(|a, b| {
-                    let title_a = self
-                        .sessions
-                        .get(a)
-                        .map(|s| s.details.display_title())
-                        .unwrap_or("");
-                    let title_b = self
-                        .sessions
-                        .get(b)
-                        .map(|s| s.details.display_title())
-                        .unwrap_or("");
-                    title_a.cmp(title_b).then(a.cmp(b))
-                });
+            for project in &mut host_group.project_groups {
+                // Sort workspaces, and sessions within each
+                project
+                    .cwd_groups
+                    .sort_by(|a, b| a.display_cwd.cmp(&b.display_cwd));
+
+                for cwd_group in &mut project.cwd_groups {
+                    cwd_group.session_ids.sort_by(|a, b| {
+                        let title_a = self
+                            .sessions
+                            .get(a)
+                            .map(|s| s.details.display_title())
+                            .unwrap_or("");
+                        let title_b = self
+                            .sessions
+                            .get(b)
+                            .map(|s| s.details.display_title())
+                            .unwrap_or("");
+                        title_a.cmp(title_b).then(a.cmp(b))
+                    });
+                }
             }
         }
 
-        self.host_cwd_groups_dirty = false;
+        self.host_groups_dirty = false;
         self.chat_ids_dirty = false;
     }
 
     /// Mark cached grouping state dirty after mutable session access.
     fn mark_grouping_cache_dirty(&mut self) {
-        self.host_cwd_groups_dirty = true;
+        self.host_groups_dirty = true;
         self.chat_ids_dirty = true;
     }
 
     /// Ensure host/cwd and chat caches are rebuilt before read access.
     fn ensure_grouping_cache(&mut self) {
-        if self.host_cwd_groups_dirty || self.chat_ids_dirty {
-            self.rebuild_cwd_groups();
+        if self.host_groups_dirty || self.chat_ids_dirty {
+            self.rebuild_groups();
         }
     }
 }
@@ -3072,7 +3182,7 @@ mod tests {
             session.details.hostname = "remote-a".to_string();
         }
 
-        let groups = mgr.host_cwd_groups();
+        let groups = mgr.host_groups();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].hostname, "remote-a");
     }
@@ -3089,16 +3199,20 @@ mod tests {
             None,
         );
 
-        let groups = mgr.host_cwd_groups();
+        let groups = mgr.host_groups();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].hostname, "remote-a");
-        assert_eq!(groups[0].cwd_groups.len(), 1);
-        assert_eq!(groups[0].cwd_groups[0].cwd, requested_cwd);
-        assert_eq!(groups[0].cwd_groups[0].display_cwd, "/srv/project");
+        // A placeholder has no persisted project, so its cwd forms its own
+        // single-workspace project keyed by the cwd itself.
+        assert_eq!(groups[0].project_groups.len(), 1);
+        let cwd_groups = &groups[0].project_groups[0].cwd_groups;
+        assert_eq!(cwd_groups.len(), 1);
+        assert_eq!(cwd_groups[0].cwd, requested_cwd);
+        assert_eq!(cwd_groups[0].display_cwd, "/srv/project");
     }
 
     #[test]
-    fn rebuild_cwd_groups_groups_hosts_cwds_and_sessions_deterministically() {
+    fn rebuild_groups_groups_hosts_cwds_and_sessions_deterministically() {
         let mut mgr = SessionManager::new();
 
         let local_zulu =
@@ -3121,24 +3235,30 @@ mod tests {
         );
         let chat_id = create_grouped_session(&mut mgr, "", "/chat/ignored", "Chat", AiMode::Chat);
 
-        mgr.rebuild_cwd_groups();
+        mgr.rebuild_groups();
 
-        let groups = mgr.host_cwd_groups();
+        let groups = mgr.host_groups();
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].hostname, "");
         assert_eq!(groups[1].hostname, "beta-host");
         assert_eq!(groups[2].hostname, "zulu-host");
 
+        // Non-git cwds each become their own single-workspace project.
         let local_group = &groups[0];
-        assert_eq!(local_group.cwd_groups.len(), 1);
-        assert_eq!(local_group.cwd_groups[0].display_cwd, "/work/alpha");
-        assert_eq!(
-            local_group.cwd_groups[0].session_ids,
-            vec![local_alpha, local_zulu]
-        );
+        assert_eq!(local_group.project_groups.len(), 1);
+        let local_cwds = &local_group.project_groups[0].cwd_groups;
+        assert_eq!(local_cwds.len(), 1);
+        assert_eq!(local_cwds[0].display_cwd, "/work/alpha");
+        assert_eq!(local_cwds[0].session_ids, vec![local_alpha, local_zulu]);
 
-        assert_eq!(groups[1].cwd_groups[0].session_ids, vec![remote_beta]);
-        assert_eq!(groups[2].cwd_groups[0].session_ids, vec![remote_zulu]);
+        assert_eq!(
+            groups[1].project_groups[0].cwd_groups[0].session_ids,
+            vec![remote_beta]
+        );
+        assert_eq!(
+            groups[2].project_groups[0].cwd_groups[0].session_ids,
+            vec![remote_zulu]
+        );
 
         assert_eq!(
             mgr.visual_order(&CollapseState::new()),
@@ -3147,7 +3267,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_cwd_groups_sorts_multiple_cwds_within_a_host() {
+    fn rebuild_groups_sorts_multiple_projects_within_a_host() {
         let mut mgr = SessionManager::new();
 
         let alpha_first = create_grouped_session(
@@ -3172,19 +3292,24 @@ mod tests {
             AiMode::Agentic,
         );
 
-        mgr.rebuild_cwd_groups();
+        mgr.rebuild_groups();
 
-        let groups = mgr.host_cwd_groups();
+        // Two distinct non-git cwds → two single-workspace projects, sorted by
+        // slug (basename): "alpha" before "zeta".
+        let groups = mgr.host_groups();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].hostname, "remote-a");
-        assert_eq!(groups[0].cwd_groups.len(), 2);
-        assert_eq!(groups[0].cwd_groups[0].display_cwd, "/srv/alpha");
-        assert_eq!(groups[0].cwd_groups[1].display_cwd, "/srv/zeta");
+        let projects = &groups[0].project_groups;
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].slug, "alpha");
+        assert_eq!(projects[0].cwd_groups[0].display_cwd, "/srv/alpha");
+        assert_eq!(projects[1].slug, "zeta");
+        assert_eq!(projects[1].cwd_groups[0].display_cwd, "/srv/zeta");
         assert_eq!(
-            groups[0].cwd_groups[0].session_ids,
+            projects[0].cwd_groups[0].session_ids,
             vec![alpha_first, alpha_second]
         );
-        assert_eq!(groups[0].cwd_groups[1].session_ids, vec![zeta_only]);
+        assert_eq!(projects[1].cwd_groups[0].session_ids, vec![zeta_only]);
         assert_eq!(
             mgr.visual_order(&CollapseState::new()),
             vec![alpha_first, alpha_second, zeta_only]
@@ -3218,7 +3343,7 @@ mod tests {
         );
         let chat_id = create_grouped_session(&mut mgr, "", "/chat/ignored", "Chat", AiMode::Chat);
 
-        mgr.rebuild_cwd_groups();
+        mgr.rebuild_groups();
 
         let mut collapse = CollapseState::new();
         collapse.toggle_cwd("", std::path::Path::new("/work/a"));
@@ -3239,12 +3364,70 @@ mod tests {
         // entry must not hide it from keyboard navigation.
         let solo = create_grouped_session(&mut mgr, "", "/work/solo", "Solo", AiMode::Agentic);
 
-        mgr.rebuild_cwd_groups();
+        mgr.rebuild_groups();
 
         let mut collapse = CollapseState::new();
         collapse.toggle_cwd("", std::path::Path::new("/work/solo"));
 
         assert_eq!(mgr.visual_order(&collapse), vec![solo]);
+    }
+
+    /// Set an explicit shared project on a session, simulating two worktrees of
+    /// one repo (which resolve to the same `project_root` but different cwds).
+    fn set_project(mgr: &mut SessionManager, id: SessionId, root: &str, slug: &str) {
+        let session = mgr.get_mut(id).expect("session should exist");
+        session.details.project_root = Some(PathBuf::from(root));
+        session.details.project_slug = Some(slug.to_string());
+    }
+
+    #[test]
+    fn worktrees_of_one_repo_group_under_a_single_project() {
+        let mut mgr = SessionManager::new();
+        // Main checkout and a linked worktree: different cwds, same repo root.
+        let main = create_grouped_session(&mut mgr, "", "/dev/repo", "Main", AiMode::Agentic);
+        let wt = create_grouped_session(
+            &mut mgr,
+            "",
+            "/dev/repo-feature",
+            "Feature",
+            AiMode::Agentic,
+        );
+        set_project(&mut mgr, main, "/dev/repo", "repo");
+        set_project(&mut mgr, wt, "/dev/repo", "repo");
+        mgr.rebuild_groups();
+
+        let groups = mgr.host_groups();
+        assert_eq!(groups.len(), 1);
+        // Both sessions land under ONE project with two workspaces (not two
+        // scattered top-level cwd groups) — the whole point of the redesign.
+        let projects = &groups[0].project_groups;
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].slug, "repo");
+        assert_eq!(projects[0].cwd_groups.len(), 2);
+        assert!(
+            !projects[0].is_flat(),
+            "a two-workspace project is not flat"
+        );
+
+        // Collapsing the project hides both workspaces from keyboard nav.
+        let mut collapse = CollapseState::new();
+        collapse.toggle_project("", std::path::Path::new("/dev/repo"));
+        assert!(mgr.visual_order(&collapse).is_empty());
+    }
+
+    #[test]
+    fn single_workspace_at_root_is_flat() {
+        let mut mgr = SessionManager::new();
+        let id = create_grouped_session(&mut mgr, "", "/dev/repo", "Only", AiMode::Agentic);
+        set_project(&mut mgr, id, "/dev/repo", "repo");
+        mgr.rebuild_groups();
+
+        let projects = &mgr.host_groups()[0].project_groups;
+        assert_eq!(projects.len(), 1);
+        assert!(
+            projects[0].is_flat(),
+            "one workspace at the repo root renders flush"
+        );
     }
 
     // ---- compact_intent / take_compact_and_proceed tests ----

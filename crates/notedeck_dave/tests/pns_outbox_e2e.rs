@@ -190,6 +190,8 @@ async fn seed_pns_session_state(
         "default",
         cli_session_id,
         None,
+        None,
+        None,
         session_events::now_secs(),
         &secret_key,
     )
@@ -220,6 +222,8 @@ async fn seed_pns_session_state_at(
         "remote",
         "default",
         Some(session_id),
+        None,
+        None,
         None,
         created_at,
         &secret_key,

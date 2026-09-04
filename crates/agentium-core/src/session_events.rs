@@ -932,6 +932,8 @@ pub fn build_session_state_event(
     permission_mode: &str,
     cli_session_id: Option<&str>,
     spawn_id: Option<&str>,
+    project: Option<&str>,
+    project_root: Option<&str>,
     created_at: u64,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
@@ -969,6 +971,18 @@ pub fn build_session_state_event(
     // Spawn command UUID linking this session to the request that created it.
     if let Some(sid) = spawn_id {
         builder = builder.start_tag().tag_str("spawn_id").tag_str(sid);
+    }
+
+    // Project the session's cwd belongs to. `project-root` is the git repo root
+    // shared by all its worktrees (the grouping key); `project` is its display
+    // slug. Absent on old events — loaders then fall back to deriving a project
+    // from the cwd itself. Remote clients (no local git) rely on these tags to
+    // group worktrees of one repo together rather than scattering per-cwd.
+    if let Some(root) = project_root {
+        builder = builder.start_tag().tag_str("project-root").tag_str(root);
+    }
+    if let Some(slug) = project {
+        builder = builder.start_tag().tag_str("project").tag_str(slug);
     }
 
     // Discoverability
@@ -1982,6 +1996,8 @@ mod tests {
             "/home/testuser",
             "claude",
             "plan",
+            None,
+            None,
             None,
             None,
             1_770_000_000,

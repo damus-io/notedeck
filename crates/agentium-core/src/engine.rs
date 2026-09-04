@@ -984,6 +984,8 @@ mod tests {
             "default",
             None,
             None,
+            None,
+            None,
             1_770_000_000,
             &TEST_SECKEY,
         )
@@ -1093,6 +1095,8 @@ mod tests {
             "/home",
             "claude",
             "default",
+            None,
+            None,
             None,
             None,
             1_770_000_000,

@@ -227,6 +227,8 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         "default",
         Some(""),
         Some(&command.spawn_id),
+        None,
+        None,
         1_770_000_000,
         &SECKEY,
     )

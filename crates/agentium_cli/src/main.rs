@@ -2440,6 +2440,8 @@ mod tests {
             created_at,
             cli_session_id: None,
             spawn_id: None,
+            project: None,
+            project_root: None,
         }
     }
 

@@ -1318,7 +1318,7 @@ pub fn create_session_with_cwd(
         // Remote clients reach this session's live conversation events through
         // the shared per-account subscription; nothing per-session to wire up.
     }
-    session_manager.rebuild_cwd_groups();
+    session_manager.rebuild_groups();
     id
 }
 
@@ -1350,7 +1350,7 @@ pub fn create_resumed_session_with_cwd(
             }
         }
     }
-    session_manager.rebuild_cwd_groups();
+    session_manager.rebuild_groups();
     id
 }
 
@@ -1546,7 +1546,7 @@ mod tests {
         session.details.custom_title = None;
         session.details.home_dir = "/home/tester".to_string();
 
-        sm.rebuild_cwd_groups();
+        sm.rebuild_groups();
         id
     }
 

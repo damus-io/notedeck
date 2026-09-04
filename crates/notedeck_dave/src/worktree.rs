@@ -12,6 +12,93 @@ fn configure_cmd(cmd: &mut Command) {
 #[cfg(not(target_os = "windows"))]
 fn configure_cmd(_cmd: &mut Command) {}
 
+/// Identity of the project a session's cwd belongs to.
+///
+/// A "project" groups every git worktree of one repository (plus the main
+/// checkout) under a single sidebar entry, Codex-style, instead of scattering
+/// each worktree as its own top-level cwd group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectId {
+    /// Grouping key: the git repo root shared by all the project's worktrees, or
+    /// the cwd itself when it isn't inside a git repo.
+    pub root: PathBuf,
+    /// Display slug: the basename of `root`.
+    pub slug: String,
+}
+
+/// Resolve the project a `cwd` belongs to.
+///
+/// Runs `git rev-parse --path-format=absolute --git-common-dir`, so every linked
+/// worktree of a repo resolves to the *same* shared `.git` and hence the same
+/// project root — the whole point of project grouping. A cwd that isn't inside a
+/// git repo becomes its own single-workspace project. This spawns `git`, so call
+/// it at session-creation time and persist the result; never from a per-frame
+/// UI path.
+pub fn project_for(cwd: &Path) -> ProjectId {
+    match git_common_dir(cwd) {
+        Some(common) => project_from_common_dir(&common, cwd),
+        None => project_from_cwd(cwd),
+    }
+}
+
+/// Get the shared git dir (`--git-common-dir`) for `cwd`, absolute.
+///
+/// For the main checkout this is `<repo>/.git`; for a linked worktree it is the
+/// *main* repo's `.git`, which is exactly what makes worktrees converge onto one
+/// project root.
+fn git_common_dir(cwd: &Path) -> Option<PathBuf> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(cwd);
+    configure_cmd(&mut cmd);
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(path_str))
+}
+
+/// Derive a [`ProjectId`] from a `--git-common-dir` path.
+///
+/// The common dir is typically `<root>/.git`; the project root is its parent.
+/// Factored out (pure) so it can be unit-tested without a real git repo.
+fn project_from_common_dir(common_dir: &Path, cwd: &Path) -> ProjectId {
+    let root = if common_dir.file_name().and_then(|n| n.to_str()) == Some(".git") {
+        common_dir.parent().map(Path::to_path_buf)
+    } else {
+        Some(common_dir.to_path_buf())
+    };
+    match root {
+        Some(root) => ProjectId {
+            slug: slug_for(&root),
+            root,
+        },
+        // Degenerate common dir (e.g. `.git` with no parent) — fall back to cwd.
+        None => project_from_cwd(cwd),
+    }
+}
+
+/// A cwd that isn't inside a git repo is its own single-workspace project.
+fn project_from_cwd(cwd: &Path) -> ProjectId {
+    ProjectId {
+        slug: slug_for(cwd),
+        root: cwd.to_path_buf(),
+    }
+}
+
+/// The display slug for a project root: its basename, or the full path when the
+/// root has no final component (e.g. `/`).
+fn slug_for(root: &Path) -> String {
+    root.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| root.to_string_lossy().to_string())
+}
+
 /// Get the git repository root for the given directory.
 pub fn git_repo_root(cwd: &Path) -> Option<PathBuf> {
     let mut cmd = Command::new("git");
@@ -106,5 +193,50 @@ pub fn create_git_worktree(
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn main_checkout_root_is_common_dir_parent() {
+        let p = project_from_common_dir(
+            Path::new("/home/dev/notedeck/.git"),
+            Path::new("/home/dev/notedeck"),
+        );
+        assert_eq!(p.root, PathBuf::from("/home/dev/notedeck"));
+        assert_eq!(p.slug, "notedeck");
+    }
+
+    #[test]
+    fn worktree_converges_on_the_main_repo_root() {
+        // A linked worktree reports the *main* repo's `.git` as its common dir,
+        // so both the worktree and the main checkout produce the same project.
+        let from_worktree = project_from_common_dir(
+            Path::new("/home/dev/notedeck/.git"),
+            Path::new("/home/dev/notedeck-dave"),
+        );
+        let from_main = project_from_common_dir(
+            Path::new("/home/dev/notedeck/.git"),
+            Path::new("/home/dev/notedeck"),
+        );
+        assert_eq!(from_worktree, from_main);
+        assert_eq!(from_worktree.slug, "notedeck");
+    }
+
+    #[test]
+    fn non_dot_git_common_dir_is_kept_as_root() {
+        let p = project_from_common_dir(Path::new("/srv/repo.git"), Path::new("/srv/repo.git"));
+        assert_eq!(p.root, PathBuf::from("/srv/repo.git"));
+        assert_eq!(p.slug, "repo.git");
+    }
+
+    #[test]
+    fn non_git_cwd_is_its_own_project() {
+        let p = project_from_cwd(Path::new("/home/dev/scratch"));
+        assert_eq!(p.root, PathBuf::from("/home/dev/scratch"));
+        assert_eq!(p.slug, "scratch");
     }
 }

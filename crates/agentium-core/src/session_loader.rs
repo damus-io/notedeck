@@ -378,6 +378,12 @@ pub struct SessionState {
     pub cli_session_id: Option<String>,
     /// Spawn command UUID linking this session to the request that created it.
     pub spawn_id: Option<String>,
+    /// Display slug of the project the cwd belongs to (git repo root basename).
+    /// Absent on old events / non-git cwds — grouping then derives it from the cwd.
+    pub project: Option<String>,
+    /// Git repo root shared by all the project's worktrees (the grouping key).
+    /// Absent on old events / non-git cwds — grouping then falls back to the cwd.
+    pub project_root: Option<String>,
 }
 
 impl SessionState {
@@ -405,6 +411,8 @@ impl SessionState {
             created_at: note.created_at(),
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
             spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
+            project: get_tag_value(note, "project").map(|s| s.to_string()),
+            project_root: get_tag_value(note, "project-root").map(|s| s.to_string()),
         })
     }
 
@@ -434,6 +442,8 @@ impl SessionState {
             self.permission_mode.as_deref().unwrap_or("default"),
             self.cli_session_id.as_deref(),
             self.spawn_id.as_deref(),
+            self.project.as_deref(),
+            self.project_root.as_deref(),
             self.created_at,
             secret_key,
         )
@@ -1224,6 +1234,8 @@ mod tests {
             created_at: 0,
             cli_session_id: cli.map(|s| s.to_string()),
             spawn_id: None,
+            project: None,
+            project_root: None,
         }
     }
 

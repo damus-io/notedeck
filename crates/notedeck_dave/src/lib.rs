@@ -745,6 +745,12 @@ fn session_state_snapshot(
         created_at,
         cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
         spawn_id: session.spawn_id.clone(),
+        project: session.details.project_slug.clone(),
+        project_root: session
+            .details
+            .project_root
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
     })
 }
 
@@ -1002,7 +1008,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if let Some(session) = manager.get_mut(sid) {
                     session.details.hostname = hostname.clone();
                 }
-                manager.rebuild_cwd_groups();
+                manager.rebuild_groups();
                 (manager, DaveOverlay::None)
             }
             AiMode::Agentic => (SessionManager::new(), DaveOverlay::DirectoryPicker),
@@ -1079,6 +1085,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Toggle a host collapse state, persist it, and re-arm auto-steal if needed.
     fn toggle_host_collapse(&mut self, hostname: &str) {
         self.collapse_state.toggle_host(hostname);
+        self.collapse_serializer
+            .try_save(self.collapse_state.clone());
+        if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
+            self.auto_steal = focus_queue::AutoStealState::Pending;
+        }
+    }
+
+    /// Toggle a project collapse state, persist it, and re-arm auto-steal if needed.
+    fn toggle_project_collapse(&mut self, hostname: &str, root: &std::path::Path) {
+        self.collapse_state.toggle_project(hostname, root);
         self.collapse_serializer
             .try_save(self.collapse_state.clone());
         if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
@@ -1904,6 +1920,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::ToggleHostCollapse(hostname) => {
                     self.toggle_host_collapse(&hostname);
                 }
+                SessionListAction::ToggleProjectCollapse(hostname, root) => {
+                    self.toggle_project_collapse(&hostname, &root);
+                }
                 SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
                     self.toggle_cwd_collapse(&hostname, &cwd);
                 }
@@ -1997,6 +2016,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::ToggleHostCollapse(hostname) => {
                     self.toggle_host_collapse(&hostname);
+                }
+                SessionListAction::ToggleProjectCollapse(hostname, root) => {
+                    self.toggle_project_collapse(&hostname, &root);
                 }
                 SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
                     self.toggle_cwd_collapse(&hostname, &cwd);
@@ -2175,7 +2197,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
             }
-            self.session_manager.rebuild_cwd_groups();
+            self.session_manager.rebuild_groups();
             last_created = Some(id);
 
             // Close directory picker if open
@@ -2641,7 +2663,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             existing_ids.insert(state.claude_session_id.clone());
         }
 
-        self.session_manager.rebuild_cwd_groups();
+        self.session_manager.rebuild_groups();
 
         // Restore the pre-existing active session (Chat mode — see above).
         if let Some(active) = prior_active {
@@ -2828,7 +2850,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                 }
-                self.session_manager.rebuild_cwd_groups();
+                self.session_manager.rebuild_groups();
                 continue;
             }
 
@@ -2917,7 +2939,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 hydrate_session_from_state(session, &state, loaded, &self.hostname);
             }
 
-            self.session_manager.rebuild_cwd_groups();
+            self.session_manager.rebuild_groups();
 
             // If we were showing the directory picker, switch to showing sessions
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
@@ -3011,7 +3033,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session.focus_requested = true;
         }
 
-        self.session_manager.rebuild_cwd_groups();
+        self.session_manager.rebuild_groups();
         if self.show_scene {
             self.scene.select(dave_sid);
         }
@@ -4991,6 +5013,20 @@ fn hydrate_session_from_state(
         session.details.home_dir = state.home_dir.clone();
     }
 
+    // Resolve the project the cwd belongs to (git repo grouping). Remote sessions
+    // rely on the persisted tags since git isn't available for their cwd; local
+    // sessions recompute from git, which stays authoritative even for old events
+    // that predate the project tags. `hydrate` runs at load/open, not per frame,
+    // so the `project_for` git spawn here is acceptable.
+    if session.is_remote() {
+        session.details.project_slug = state.project.clone();
+        session.details.project_root = state.project_root.as_ref().map(PathBuf::from);
+    } else if let Some(cwd) = session.details.cwd.clone() {
+        let project = crate::worktree::project_for(&cwd);
+        session.details.project_slug = Some(project.slug);
+        session.details.project_root = Some(project.root);
+    }
+
     // A state event is a "host is alive" signal; feed the status-bar
     // last-activity indicator (before borrowing agentic).
     session.mark_activity(state.created_at);
@@ -5869,6 +5905,8 @@ mod tests {
             created_at: 1_770_000_123,
             cli_session_id: cli.map(str::to_string),
             spawn_id: Some("spawn-xyz".to_string()),
+            project: None,
+            project_root: None,
         }
     }
 
@@ -6540,6 +6578,8 @@ mod tests {
             "default",
             Some(sid),
             None,
+            None,
+            None,
             persisted_created_at,
             &sk,
         )
@@ -6658,6 +6698,8 @@ mod tests {
             "claude",
             "default",
             Some("cli-abc"),
+            None,
+            None,
             None,
             1_000,
             &sk,
@@ -6899,6 +6941,8 @@ mod tests {
                 "claude",
                 "default",
                 Some("cli-abc"),
+                None,
+                None,
                 None,
                 1_000,
                 &sk,
