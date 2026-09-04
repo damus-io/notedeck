@@ -504,6 +504,7 @@ impl Images {
         self.static_imgs.clear();
         self.gifs.clear();
         self.gif_states.clear();
+        self.textures.clear();
 
         Ok(())
     }
