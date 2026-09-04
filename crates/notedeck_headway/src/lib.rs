@@ -74,6 +74,21 @@ pub struct Headway {
     /// Subscription to unwrapped kind-1082 key-share rumors, so a share that
     /// arrives while Headway is open is detected and accepted without a restart.
     keyshare_sub: Option<Subscription>,
+    /// Self-share gift-wrap frames from boards created this session, captured at
+    /// [`create_board`](Self::create_board) and awaiting fan-out to the account's
+    /// private relays in [`update`](App::update).
+    ///
+    /// A board's kind-1059 self-share (the key-share that lets another device's
+    /// roster discover the board) is authored by an ephemeral NIP-59 key and
+    /// addressed to us, so it matches neither the plaintext author poll
+    /// ([`fan_out_unseen_notes`]) nor the host's kind-1081 envelope leg
+    /// ([`notedeck::HostPrivateSync`]) — nothing else fans it out. Without this
+    /// leg a board created in the app syncs its *content* (its kind-1081 envelopes
+    /// do ride the host leg) but never its key, so every other device sees the
+    /// sealed envelopes with no root registered and folds nothing: the board is
+    /// invisible off the device that made it. Buffered rather than sent inline
+    /// because the outbound relay set isn't resolved until [`update`](App::update).
+    pending_selfshares: Vec<String>,
     /// The one board-data engine (see [`BoardCache`]): the account's folded board
     /// reducer, pumped in [`update`](App::update) and read by both the foreground
     /// UI here and everything this app registers for inline display — the
@@ -97,9 +112,35 @@ impl Default for Headway {
             teams: Vec::new(),
             pending_teams: Vec::new(),
             keyshare_sub: None,
+            pending_selfshares: Vec::new(),
             board_cache: Rc::new(RefCell::new(BoardCache::default())),
         }
     }
+}
+
+/// A [`store::Publisher`] that keeps only the kind-1059 self-share gift-wrap
+/// frames [`store::create_shared_board`] emits, dropping the board's kind-1081
+/// definition envelope (the host's SNS envelope leg already fans that out). See
+/// [`Headway::pending_selfshares`].
+#[derive(Default)]
+struct SelfShareSink(Vec<String>);
+
+impl store::Publisher for SelfShareSink {
+    fn publish(&mut self, frame: &str) {
+        if frame_kind(frame) == Some(1059) {
+            self.0.push(frame.to_string());
+        }
+    }
+}
+
+/// The `kind` of the event in a NIP-01 `["EVENT", {…}]` frame, or `None` if the
+/// frame doesn't parse as one.
+fn frame_kind(frame: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(frame)
+        .ok()?
+        .get(1)?
+        .get("kind")?
+        .as_u64()
 }
 
 impl Headway {
@@ -237,17 +278,16 @@ impl Headway {
         title: &str,
     ) -> bool {
         let root = nostrdb_net::sns::derive_board_root(secret, board_id);
-        if !store::create_shared_board(
-            ndb,
-            author,
-            secret,
-            board_id,
-            title,
-            &root,
-            &mut store::NoPublish,
-        ) {
+        // Capture the kind-1059 self-share so `update` can fan it out to the
+        // private relays (see `pending_selfshares`). `create_shared_board` also
+        // emits the board's kind-1081 definition envelope, but the host's SNS
+        // envelope leg already fans that, so the sink keeps only the self-share to
+        // avoid a redundant double-send.
+        let mut sink = SelfShareSink::default();
+        if !store::create_shared_board(ndb, author, secret, board_id, title, &root, &mut sink) {
             return false;
         }
+        self.pending_selfshares.extend(sink.0);
         let team = teams::Team {
             team_root: hex::encode(root),
             board_addr: event::board_address(author, board_id),
@@ -485,6 +525,18 @@ impl App for Headway {
         // the envelopes off-foreground — so headway no longer declares them here.
         let inbound = vec![event::headway_filter(&author)];
         let private_relays = self.private_sync.update(ctx, inbound);
+
+        // Flush any self-share gift-wraps captured when a board was created this
+        // session, now that the outbound relay set is resolved (see
+        // `pending_selfshares`). Held until a private relay is reachable so an
+        // account created offline still shares its key once one appears; drained
+        // only once actually forwarded, so a local-only account keeps buffering.
+        if !self.pending_selfshares.is_empty() && !private_relays.is_empty() {
+            let mut api = ctx.remote.publisher_explicit();
+            for frame in self.pending_selfshares.drain(..) {
+                notedeck::fan_out_event_frame(&mut api, &frame, &private_relays);
+            }
+        }
 
         // Pump the shared board cache: advance this account's reducer, folding in
         // any freshly-arrived notes — our own async ingests, CLI moves into the
