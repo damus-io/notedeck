@@ -35,6 +35,7 @@ fn into_texture_state<T>(result: Result<T, Error>) -> TextureState<T> {
 pub fn deliver_completed_media_job(
     completed: JobComplete<MediaJobKind, MediaJobResult>,
     tex_cache: &mut TexturesCache,
+    pass_nr: u64,
 ) {
     let JobComplete { job_id, response } = completed;
     let id = job_id.id;
@@ -51,9 +52,11 @@ pub fn deliver_completed_media_job(
                     "static img texture delivered"
                 );
             }
-            tex_cache
-                .static_image
-                .set_state(request_key, into_texture_state(job_complete));
+            tex_cache.static_image.set_state(
+                request_key,
+                into_texture_state(job_complete),
+                pass_nr,
+            );
         }
         (MediaJobKind::AnimatedImg { request_key }, MediaJobResult::Animation(animation)) => {
             if let Ok(ref anim) = animation {
@@ -68,13 +71,12 @@ pub fn deliver_completed_media_job(
             }
             tex_cache
                 .animated
-                .set_state(request_key, into_texture_state(animation));
+                .set_state(request_key, into_texture_state(animation), pass_nr);
         }
         (MediaJobKind::Blurhash, MediaJobResult::Blurhash(texture_handle)) => {
             tex_cache
                 .blurred
-                .cache
-                .insert(id, into_texture_state(texture_handle).into());
+                .set_state(id, into_texture_state(texture_handle), pass_nr);
         }
         (job_kind, _) => {
             tracing::error!(
@@ -87,20 +89,25 @@ pub fn deliver_completed_media_job(
 }
 
 #[profiling::function]
-pub fn run_media_job_pre_action(job_id: &JobId<MediaJobKind>, tex_cache: &mut TexturesCache) {
+pub fn run_media_job_pre_action(
+    job_id: &JobId<MediaJobKind>,
+    tex_cache: &mut TexturesCache,
+    pass_nr: u64,
+) {
     let id = job_id.id.clone();
     match &job_id.job_kind {
         MediaJobKind::Blurhash => {
             tex_cache
                 .blurred
-                .cache
-                .insert(id, TextureState::Pending.into());
+                .set_state(id, TextureState::Pending, pass_nr);
         }
         MediaJobKind::StaticImg { request_key } => {
-            tex_cache.static_image.set_pending(request_key.clone());
+            tex_cache
+                .static_image
+                .set_pending(request_key.clone(), pass_nr);
         }
         MediaJobKind::AnimatedImg { request_key } => {
-            tex_cache.animated.set_pending(request_key.clone());
+            tex_cache.animated.set_pending(request_key.clone(), pass_nr);
         }
     }
 }

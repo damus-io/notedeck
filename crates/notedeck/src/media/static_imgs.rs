@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use egui::TextureHandle;
-use hashbrown::HashMap;
 
+use crate::media::budget::VariantTexCache;
 use crate::TextureState;
 use crate::{
     jobs::{
@@ -15,7 +15,7 @@ use crate::{
     media::{
         images::{
             buffer_to_color_image, normalize_image_type_for_request, parse_img_response,
-            process_image, should_persist_full_content, TextureRequestKey, TextureRequestVariant,
+            process_image, should_persist_full_content, TextureRequestKey,
         },
         load_texture_checked,
     },
@@ -24,34 +24,35 @@ use crate::{
 };
 
 pub struct StaticImgTexCache {
-    pub(crate) cache: HashMap<String, HashMap<TextureRequestVariant, TextureState<TextureHandle>>>,
+    pub(crate) textures: VariantTexCache<TextureHandle>,
     static_img_cache_path: PathBuf,
 }
 
 impl StaticImgTexCache {
     pub fn new(static_img_cache_path: PathBuf) -> Self {
         Self {
-            cache: Default::default(),
+            textures: Default::default(),
             static_img_cache_path,
         }
     }
 
-    /// Returns true when any size variant for the URL is already in texture memory.
+    /// Returns true when any size variant for the URL has been requested.
     pub fn contains(&self, url: &str) -> bool {
-        self.cache.contains_key(url)
+        self.textures.contains(url)
     }
 
-    pub(crate) fn set_pending(&mut self, request_key: TextureRequestKey) {
-        self.set_state(request_key, TextureState::Pending);
+    pub(crate) fn set_pending(&mut self, request_key: TextureRequestKey, pass_nr: u64) {
+        self.set_state(request_key, TextureState::Pending, pass_nr);
     }
 
     pub(crate) fn set_state(
         &mut self,
         request_key: TextureRequestKey,
         state: TextureState<TextureHandle>,
+        pass_nr: u64,
     ) {
         let TextureRequestKey { url, variant } = request_key;
-        self.cache.entry(url).or_default().insert(variant, state);
+        self.textures.set_state(url, variant, state, pass_nr);
     }
 
     pub fn request(
@@ -74,9 +75,8 @@ impl StaticImgTexCache {
         let imgtype = normalize_image_type_for_request(imgtype);
         let request_variant = TextureRequestKey::variant_for_image_type(imgtype);
         if let Some(res) = self
-            .cache
-            .get(url)
-            .and_then(|variants| variants.get(&request_variant))
+            .textures
+            .get(url, request_variant, ctx.cumulative_pass_nr())
         {
             return res;
         }

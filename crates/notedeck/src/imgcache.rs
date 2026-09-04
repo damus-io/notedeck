@@ -1,4 +1,5 @@
 use crate::jobs::MediaJobSender;
+use crate::media::budget::{self, EvictCandidate};
 use crate::media::gif::AnimatedImgTexCache;
 use crate::media::images::ImageType;
 use crate::media::static_imgs::StaticImgTexCache;
@@ -31,6 +32,17 @@ pub struct TexturesCache {
     pub static_image: StaticImgTexCache,
     pub blurred: BlurCache,
     pub animated: AnimatedImgTexCache,
+
+    /// Ceiling on the GPU bytes all three caches may hold between them.
+    ///
+    /// One budget rather than one per cache: they all draw on the same pool, and
+    /// which of them a given byte sits in is an implementation detail the user
+    /// should not have to tune around.
+    budget: usize,
+
+    /// Reused between sweeps so that a sweep costs no allocation once the
+    /// process has swept a large cache at least once.
+    sweep_scratch: Vec<EvictCandidate>,
 }
 
 impl TexturesCache {
@@ -43,7 +55,103 @@ impl TexturesCache {
             animated: AnimatedImgTexCache::new(
                 base_dir.join(MediaCache::rel_dir(MediaCacheType::Gif)),
             ),
+            budget: budget::DEFAULT_TEXTURE_BUDGET,
+            sweep_scratch: Vec::new(),
         }
+    }
+
+    /// Overrides the GPU texture budget. For tests and the measurement harness.
+    pub fn set_budget(&mut self, budget: usize) {
+        self.budget = budget;
+    }
+
+    /// GPU bytes currently held across all three caches.
+    pub fn loaded_bytes(&self) -> usize {
+        self.static_image.textures.loaded_bytes()
+            + self.animated.textures.loaded_bytes()
+            + self.blurred.loaded_bytes()
+    }
+
+    /// Number of loaded entries across all three caches. O(entries), so this is
+    /// for diagnostics rather than the per-frame path.
+    pub fn loaded_count(&self) -> usize {
+        self.static_image.textures.loaded_count()
+            + self.animated.textures.loaded_count()
+            + self.blurred.loaded_count()
+    }
+
+    /// Evicts least-recently-used textures until the caches fit the budget.
+    ///
+    /// Call once per pass before drawing any UI. `current_pass` must be
+    /// [`egui::Context::cumulative_pass_nr`], the same clock the caches record
+    /// reads against.
+    ///
+    /// Returns the number of bytes freed, which is zero on the common in-budget
+    /// path.
+    #[profiling::function]
+    pub fn evict_over_budget(&mut self, current_pass: u64) -> usize {
+        let total = self.loaded_bytes();
+        if total <= self.budget {
+            return 0;
+        }
+
+        self.sweep_scratch.clear();
+        self.static_image
+            .textures
+            .collect_evictable(current_pass, &mut self.sweep_scratch);
+        self.animated
+            .textures
+            .collect_evictable(current_pass, &mut self.sweep_scratch);
+        self.blurred
+            .collect_evictable(current_pass, &mut self.sweep_scratch);
+
+        let Some(plan) = budget::plan_sweep(&mut self.sweep_scratch, total, self.budget) else {
+            // Everything over budget is either in flight or too recently drawn
+            // to touch. Going over budget beats dropping a texture that is on
+            // screen right now.
+            tracing::debug!(
+                total_bytes = total,
+                budget = self.budget,
+                "texture cache over budget but nothing is cold enough to evict"
+            );
+            return 0;
+        };
+
+        // Each cache is asked for whatever the previous ones did not free. A
+        // cache can overshoot its ask by up to one entry, hence saturating_sub.
+        let mut freed =
+            self.static_image
+                .textures
+                .evict_until(current_pass, plan.cutoff_pass, plan.to_free);
+        freed += self.animated.textures.evict_until(
+            current_pass,
+            plan.cutoff_pass,
+            plan.to_free.saturating_sub(freed),
+        );
+        freed += self.blurred.evict_until(
+            current_pass,
+            plan.cutoff_pass,
+            plan.to_free.saturating_sub(freed),
+        );
+
+        tracing::debug!(
+            freed_bytes = freed,
+            was_bytes = total,
+            now_bytes = total.saturating_sub(freed),
+            budget = self.budget,
+            cutoff_pass = plan.cutoff_pass,
+            current_pass,
+            "swept gpu texture cache"
+        );
+
+        freed
+    }
+
+    /// Drops every cached texture.
+    pub fn clear(&mut self) {
+        self.static_image.textures.clear();
+        self.animated.textures.clear();
+        self.blurred.clear();
     }
 }
 

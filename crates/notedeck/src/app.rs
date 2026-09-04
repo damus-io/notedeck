@@ -362,15 +362,24 @@ impl Notedeck {
     /// Core per-frame logic, independent of eframe::Frame.
     /// Called by `eframe::App::update` in production and directly in tests.
     pub fn tick(&mut self, ctx: &egui::Context) {
+        // The pass number is the clock the texture caches age entries against,
+        // so every read and write below has to agree on it.
+        let pass_nr = ctx.cumulative_pass_nr();
+
         {
             profiling::scope!("media jobs");
             self.media_jobs.run_received(&mut self.job_pool, |id| {
-                crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
+                crate::run_media_job_pre_action(id, &mut self.img_cache.textures, pass_nr);
             });
             self.media_jobs.deliver_all_completed(|completed| {
-                crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
+                crate::deliver_completed_media_job(completed, &mut self.img_cache.textures, pass_nr)
             });
         }
+
+        // Bound GPU texture memory before drawing anything. Doing it here rather
+        // than after the UI means no texture can be dropped while this pass
+        // still holds a reference to it.
+        self.img_cache.textures.evict_over_budget(pass_nr);
 
         self.remote.poll_bridge();
         self.pump_host_private_sync();

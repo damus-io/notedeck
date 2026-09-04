@@ -8,6 +8,7 @@ use crate::{
         CompleteResponse, JobOutput, JobPackage, JobRun, MediaJobKind, MediaJobResult,
         MediaJobSender, RunType,
     },
+    media::budget::{EvictCandidate, TexEntry},
     media::load_texture_checked,
     TextureState,
 };
@@ -199,30 +200,51 @@ fn generate_blurhash_texturehandle(
     Ok(load_texture_checked(ctx, url, img, Default::default()))
 }
 
+/// Blurhash placeholder textures, keyed by media URL.
+///
+/// These are not free: [`ImageMetadata::scaled_pixel_dimensions`] decodes a
+/// blurhash at the display size of the media it stands in for, so a full-width
+/// column image on a 2x display produces a multi-megabyte texture. They are
+/// therefore counted against the same budget as real images — see
+/// [`crate::media::budget`].
 #[derive(Default)]
 pub struct BlurCache {
-    pub(crate) cache: HashMap<String, BlurState>,
+    cache: HashMap<String, BlurState>,
+
+    /// Running total of the bytes held by loaded entries.
+    loaded_bytes: usize,
 }
 
 pub struct BlurState {
-    pub tex_state: TextureState<TextureHandle>,
+    entry: TexEntry<TextureHandle>,
     pub finished_transitioning: bool,
 }
 
-impl From<TextureState<TextureHandle>> for BlurState {
-    fn from(value: TextureState<TextureHandle>) -> Self {
-        BlurState {
-            tex_state: value,
-            finished_transitioning: false,
-        }
+impl BlurState {
+    /// The blur texture's load state.
+    ///
+    /// Reading this does not count as a use; [`BlurCache::get`] already
+    /// recorded one.
+    pub fn tex_state(&self) -> &TextureState<TextureHandle> {
+        self.entry.peek()
     }
 }
 
 impl BlurCache {
-    pub fn get(&self, url: &str) -> Option<&BlurState> {
-        self.cache.get(url)
+    /// Reads the blur state for `url`, recording it as used during `pass_nr`.
+    pub fn get(&self, url: &str, pass_nr: u64) -> Option<&BlurState> {
+        let state = self.cache.get(url)?;
+        state.entry.touch(pass_nr);
+        Some(state)
     }
 
+    /// Returns the blur texture for `url`, dispatching a blurhash decode job if
+    /// it is not cached yet.
+    ///
+    /// Yields the texture rather than the whole `&BlurState` because there is
+    /// no `BlurState` to point at on a miss: [`TexEntry`] has interior
+    /// mutability, so a `Pending` placeholder cannot be promoted to a `'static`
+    /// the way the image caches' `&TextureState::Pending` is.
     pub fn get_or_request(
         &self,
         jobs: &MediaJobSender,
@@ -230,9 +252,12 @@ impl BlurCache {
         url: &str,
         blurhash: &ImageMetadata,
         size: egui::Vec2,
-    ) -> &BlurState {
-        if let Some(res) = self.cache.get(url) {
-            return res;
+    ) -> Option<&TextureHandle> {
+        if let Some(res) = self.get(url, ui.ctx().cumulative_pass_nr()) {
+            return match res.tex_state() {
+                TextureState::Loaded(texture) => Some(texture),
+                TextureState::Pending | TextureState::Error(_) => None,
+            };
         }
 
         let available_points = PointDimensions {
@@ -262,10 +287,7 @@ impl BlurCache {
             tracing::error!("{e}");
         }
 
-        &BlurState {
-            tex_state: TextureState::Pending,
-            finished_transitioning: false,
-        }
+        None
     }
 
     pub fn finished_transitioning(&mut self, url: &str) {
@@ -274,5 +296,80 @@ impl BlurCache {
         };
 
         state.finished_transitioning = true;
+    }
+
+    /// Stores the outcome of a blurhash job for `url`.
+    pub fn set_state(&mut self, url: String, state: TextureState<TextureHandle>, pass_nr: u64) {
+        let entry = TexEntry::new(state, pass_nr);
+        self.loaded_bytes += entry.bytes();
+
+        let replaced = self.cache.insert(
+            url,
+            BlurState {
+                entry,
+                finished_transitioning: false,
+            },
+        );
+
+        if let Some(replaced) = replaced {
+            self.loaded_bytes = self.loaded_bytes.saturating_sub(replaced.entry.bytes());
+        }
+    }
+
+    /// GPU bytes currently held by loaded blur textures.
+    pub fn loaded_bytes(&self) -> usize {
+        self.loaded_bytes
+    }
+
+    /// Number of loaded blur textures, for diagnostics.
+    pub fn loaded_count(&self) -> usize {
+        self.cache
+            .values()
+            .filter(|state| matches!(state.tex_state(), TextureState::Loaded(_)))
+            .count()
+    }
+
+    /// Appends every entry a sweep of `current_pass` could drop. See
+    /// [`crate::media::budget::VariantTexCache::collect_evictable`].
+    pub fn collect_evictable(&self, current_pass: u64, out: &mut Vec<EvictCandidate>) {
+        for state in self.cache.values() {
+            if let Some(candidate) = state.entry.as_candidate(current_pass) {
+                out.push(candidate);
+            }
+        }
+    }
+
+    /// Drops evictable entries last used at or before `cutoff_pass`, stopping
+    /// once `to_free` bytes have been released. Returns the bytes freed.
+    ///
+    /// Unlike the image caches this drops the whole entry, including
+    /// `finished_transitioning`: a blur only renders while its media is still
+    /// loading, so if the media comes back it should shimmer in again.
+    pub fn evict_until(&mut self, current_pass: u64, cutoff_pass: u64, to_free: usize) -> usize {
+        let mut freed = 0;
+
+        self.cache.retain(|_url, state| {
+            if freed >= to_free {
+                return true;
+            }
+            let Some(candidate) = state.entry.as_candidate(current_pass) else {
+                return true;
+            };
+            if candidate.last_used > cutoff_pass {
+                return true;
+            }
+
+            freed += candidate.bytes;
+            false
+        });
+
+        self.loaded_bytes = self.loaded_bytes.saturating_sub(freed);
+        freed
+    }
+
+    /// Drops every entry and its textures.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+        self.loaded_bytes = 0;
     }
 }

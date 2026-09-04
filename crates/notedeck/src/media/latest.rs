@@ -148,11 +148,9 @@ impl<'a> UntrustedMediaLatestTex<'a> {
             return ObfuscatedTexture::Default;
         };
 
-        let state = self.blur_cache.get_or_request(jobs, ui, url, meta, size);
-
-        match &state.tex_state {
-            TextureState::Pending | TextureState::Error(_) => ObfuscatedTexture::Default,
-            TextureState::Loaded(t) => ObfuscatedTexture::Blur(t),
+        match self.blur_cache.get_or_request(jobs, ui, url, meta, size) {
+            Some(texture) => ObfuscatedTexture::Blur(texture),
+            None => ObfuscatedTexture::Default,
         }
     }
 }
@@ -196,7 +194,7 @@ impl<'a> TrustedMediaLatestTex<'a> {
             LatestImageTex::Pending => (),
             LatestImageTex::Error(error) => return MediaRenderState::Error(error),
             LatestImageTex::Loaded(texture_handle) => {
-                let Some(blur) = self.blur_cache.get(url) else {
+                let Some(blur) = self.blur_cache.get(url, ui.ctx().cumulative_pass_nr()) else {
                     return MediaRenderState::ActualImage(texture_handle);
                 };
 
@@ -204,7 +202,7 @@ impl<'a> TrustedMediaLatestTex<'a> {
                     return MediaRenderState::ActualImage(texture_handle);
                 };
 
-                let obfuscation = match &blur.tex_state {
+                let obfuscation = match blur.tex_state() {
                     TextureState::Pending | TextureState::Error(_) => ObfuscatedTexture::Default,
                     TextureState::Loaded(t) => ObfuscatedTexture::Blur(t),
                 };
