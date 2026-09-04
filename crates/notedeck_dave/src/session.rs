@@ -245,7 +245,7 @@ impl AgenticSessionData {
         AgenticSessionData {
             permissions: PermissionTracker::new(),
             scene_position: (x, y),
-            permission_mode: PermissionMode::Default,
+            permission_mode: PermissionMode::Auto,
             permission_message_state: PermissionMessageState::None,
             question_answers: HashMap::new(),
             question_index: HashMap::new(),
