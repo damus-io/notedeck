@@ -959,9 +959,12 @@ fn render_title(ui: &mut egui::Ui, title: &str, x: f32, y: f32, max_width: f32) 
 
 /// Render one host's collapsible section, including its nested cwd sections.
 ///
-/// Egui's `CollapsingState` handles the disclosure triangle and animation;
-/// the open flag is forced from the external `CollapseState` each frame, so
-/// keyboard navigation and persistence keep their single source of truth.
+/// Like the project and workspace sections, the header is built by hand via the
+/// shared [`collapsible_header_ui`] so a host icon can sit on the left and the
+/// disclosure arrow on the right. Open/closed is forced from the external
+/// `CollapseState` each frame (keeping a single source of truth for keyboard
+/// navigation and persistence); `CollapsingState` is kept only for the animated
+/// body reveal and the arrow's `openness`.
 fn host_section_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_>,
@@ -983,16 +986,22 @@ fn host_section_ui(
     let mut host_state =
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), host_id, true);
     host_state.set_open(!host_collapsed);
+    let openness = host_state.openness(ui.ctx());
 
-    let header = host_state.show_header(ui, |ui| {
-        let text = egui::RichText::new(host_label)
-            .size(14.0)
-            .color(ui.visuals().weak_text_color());
-        ui.add(egui::Label::new(text).truncate().sense(Sense::click()))
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-    });
+    let (row_resp, label_resp) = collapsible_header_ui(
+        ui,
+        HeaderParams {
+            text: host_label,
+            font: egui::FontId::proportional(14.0),
+            color: HeaderColor::Weak,
+            icon: HeaderIcon::Host,
+            height: 24.0,
+            truncate_from_start: false,
+        },
+        openness,
+    );
 
-    let (toggle_resp, label_resp, _) = header.body_unindented(|ui| {
+    host_state.show_body_unindented(ui, |ui| {
         for project in &host_group.project_groups {
             // Single-workspace projects render flush (no slug header) so the
             // common single-checkout case stays uncluttered — "flat". Only
@@ -1024,8 +1033,11 @@ fn host_section_ui(
             }
         }
     });
+    host_state.store(ui.ctx());
 
-    if toggle_resp.clicked() || label_resp.inner.clicked() {
+    // The whole row toggles collapse; the label sits on top and captures clicks
+    // over its own rect, so check both.
+    if row_resp.clicked() || label_resp.clicked() {
         action = Some(SessionListAction::ToggleHostCollapse(
             host_group.hostname.clone(),
         ));
@@ -1067,7 +1079,18 @@ fn project_section_ui(
     project_state.set_open(!collapsed);
     let openness = project_state.openness(ui.ctx());
 
-    let header_resp = project_header_ui(ui, &project.slug, openness);
+    let (row_resp, label_resp) = collapsible_header_ui(
+        ui,
+        HeaderParams {
+            text: &project.slug,
+            font: egui::FontId::proportional(13.0),
+            color: HeaderColor::StrongOnHover,
+            icon: HeaderIcon::Folder,
+            height: 22.0,
+            truncate_from_start: false,
+        },
+        openness,
+    );
 
     project_state.show_body_unindented(ui, |ui| {
         // Indent the whole workspace level under the project header so the
@@ -1099,7 +1122,9 @@ fn project_section_ui(
     });
     project_state.store(ui.ctx());
 
-    if header_resp.clicked() {
+    // The whole row toggles collapse; the label sits on top and captures clicks
+    // over its own rect, so check both.
+    if row_resp.clicked() || label_resp.clicked() {
         action = Some(SessionListAction::ToggleProjectCollapse(
             hostname.to_string(),
             project.root.clone(),
@@ -1110,52 +1135,200 @@ fn project_section_ui(
     action
 }
 
-/// Custom project header row: a folder icon and the project slug on the left, a
-/// disclosure arrow on the right. The whole row is one click target driving the
-/// manual collapse toggle. Returns the row response so the caller can react to
-/// clicks.
-fn project_header_ui(ui: &mut egui::Ui, slug: &str, openness: f32) -> egui::Response {
-    let height = 22.0;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+/// Which glyph a collapsible section header paints at its left edge.
+///
+/// Each variant owns both where its icon sits ([`HeaderIcon::icon_rect`]) and
+/// how it's drawn ([`HeaderIcon::paint`]), so [`collapsible_header_ui`] stays
+/// agnostic to the specific glyph.
+#[derive(Clone, Copy)]
+enum HeaderIcon {
+    /// A monitor silhouette for a host/machine section.
+    Host,
+    /// A folder silhouette for a project section.
+    Folder,
+    /// A git-branch glyph for a workspace (worktree/cwd) section.
+    Worktree,
+}
 
-    let color = if response.hovered() {
-        ui.visuals().strong_text_color()
-    } else {
-        ui.visuals().text_color()
-    };
+impl HeaderIcon {
+    /// Left-edge icon rect for this glyph within the header row `rect`.
+    fn icon_rect(self, rect: egui::Rect) -> egui::Rect {
+        let left = rect.left() + 2.0;
+        match self {
+            HeaderIcon::Host => {
+                let (w, h) = (13.0, 11.0);
+                egui::Rect::from_min_size(
+                    egui::pos2(left, rect.center().y - h / 2.0),
+                    egui::vec2(w, h),
+                )
+            }
+            HeaderIcon::Folder => {
+                let s = 13.0;
+                egui::Rect::from_min_size(
+                    egui::pos2(left, rect.center().y - s * 0.4),
+                    egui::vec2(s, s * 0.8),
+                )
+            }
+            HeaderIcon::Worktree => {
+                let s = 12.0;
+                egui::Rect::from_min_size(
+                    egui::pos2(left, rect.center().y - s / 2.0),
+                    egui::vec2(s, s),
+                )
+            }
+        }
+    }
 
-    // Folder icon, left edge.
-    let icon_size = 13.0;
-    let icon_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.left() + 2.0, rect.center().y - icon_size * 0.4),
-        egui::vec2(icon_size, icon_size * 0.8),
+    /// Paint this glyph inside `rect` using `color`.
+    fn paint(self, painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+        match self {
+            HeaderIcon::Host => paint_host_icon(painter, rect, color),
+            HeaderIcon::Folder => paint_folder_icon(painter, rect, color),
+            HeaderIcon::Worktree => paint_worktree_icon(painter, rect, color),
+        }
+    }
+}
+
+/// How a collapsible section header colors its text and icon.
+#[derive(Clone, Copy)]
+enum HeaderColor {
+    /// Weak (dim) text that doesn't change on hover — host and workspace.
+    Weak,
+    /// Normal text that strengthens on hover — project headers.
+    StrongOnHover,
+}
+
+impl HeaderColor {
+    fn resolve(self, visuals: &egui::Visuals, hovered: bool) -> egui::Color32 {
+        match self {
+            HeaderColor::Weak => visuals.weak_text_color(),
+            HeaderColor::StrongOnHover if hovered => visuals.strong_text_color(),
+            HeaderColor::StrongOnHover => visuals.text_color(),
+        }
+    }
+}
+
+/// Parameters for [`collapsible_header_ui`], the one header renderer shared by
+/// the host, project, and workspace sections.
+struct HeaderParams<'a> {
+    /// Header text (host label, project slug, or cwd path).
+    text: &'a str,
+    /// Font + size for the text.
+    font: egui::FontId,
+    /// Text/icon color treatment.
+    color: HeaderColor,
+    /// Glyph painted at the left edge.
+    icon: HeaderIcon,
+    /// Row height.
+    height: f32,
+    /// Truncate the text from the *start* (keep the tail) via
+    /// [`truncate_host_and_path`], as the workspace cwd path does; otherwise
+    /// truncate normally from the end with an ellipsis.
+    truncate_from_start: bool,
+}
+
+/// The one collapsible section header, shared by the host, project, and
+/// workspace sections (previously three near-identical hand-built renderers).
+///
+/// Allocates a full-width click row, paints `params.icon` at the left edge and
+/// a disclosure arrow (driven by `openness`) at the right edge, and places
+/// `params.text` between them as a real accessible [`egui::Label`] (left-
+/// aligned) — so every header is keyboard- and right-click-friendly, not just
+/// the workspace one. egui always paints its own triangle on the left, which is
+/// why the arrow is drawn by hand on the right and the caller drives open/closed
+/// from the external `CollapseState`.
+///
+/// Returns `(row_response, label_response)`. Callers toggle collapse when either
+/// is clicked: the label sits on top of the row and captures clicks over its own
+/// rect.
+fn collapsible_header_ui(
+    ui: &mut egui::Ui,
+    params: HeaderParams<'_>,
+    openness: f32,
+) -> (egui::Response, egui::Response) {
+    let (rect, row_response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), params.height),
+        Sense::click(),
     );
-    paint_folder_icon(ui.painter(), icon_rect, color);
+    let row_response = row_response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    let color = params.color.resolve(ui.visuals(), row_response.hovered());
+
+    // Icon, left edge.
+    let icon_rect = params.icon.icon_rect(rect);
+    params.icon.paint(ui.painter(), icon_rect, color);
 
     // Disclosure arrow, right edge (rotates from ▶ closed to ▼ open).
     let arrow_box = 16.0;
     let arrow_center = egui::pos2(rect.right() - 2.0 - arrow_box / 2.0, rect.center().y);
     paint_disclosure_arrow(ui.painter(), arrow_center, openness, color);
 
-    // Slug (strong) between the icon and the arrow, clipped to fit.
+    // Header text between the icon and the arrow, as a real accessible widget so
+    // it can be found and right-clicked.
     let text_left = icon_rect.right() + 6.0;
     let text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
-    let max_width = (text_right - text_left).max(0.0);
-    let font = egui::FontId::proportional(13.0);
-    let galley = ui.painter().layout_no_wrap(slug.to_string(), font, color);
-    let text_pos = egui::pos2(text_left, rect.center().y - galley.size().y / 2.0);
-    if galley.size().x > max_width {
-        let clip = egui::Rect::from_min_size(text_pos, egui::vec2(max_width, galley.size().y));
-        ui.painter()
-            .with_clip_rect(clip)
-            .galley(text_pos, galley, color);
-    } else {
-        ui.painter().galley(text_pos, galley, color);
-    }
+    let label_rect = egui::Rect::from_min_max(
+        egui::pos2(text_left, rect.top()),
+        egui::pos2(text_right, rect.bottom()),
+    );
+    let max_text_width = label_rect.width().max(0.0);
 
-    response
+    // Workspace paths keep their tail (truncate from the start); host/project
+    // text truncates normally from the end with an ellipsis.
+    let label = if params.truncate_from_start {
+        let (text, _) = truncate_host_and_path(ui, "", params.text, max_text_width);
+        egui::Label::new(egui::RichText::new(text).font(params.font).color(color))
+            .sense(Sense::click())
+    } else {
+        egui::Label::new(
+            egui::RichText::new(params.text)
+                .font(params.font)
+                .color(color),
+        )
+        .truncate()
+        .sense(Sense::click())
+    };
+
+    // Left-align the text within its rect (a plain `ui.put` would center it).
+    let mut label_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(label_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let label_response = label_ui
+        .add(label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    (row_response, label_response)
+}
+
+/// Paint a small monitor silhouette inside `rect` (a screen over a stand),
+/// reading as a "host / machine" rather than a folder or worktree.
+fn paint_host_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let stroke = egui::Stroke::new(1.3, color);
+
+    // Screen: a rounded rect outline occupying the top portion of the icon.
+    let screen = egui::Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(rect.right(), rect.top() + rect.height() * 0.72),
+    );
+    painter.rect_stroke(screen, 1.5, stroke, egui::StrokeKind::Inside);
+
+    // Stand: a short neck down from the screen to a wider base foot.
+    let cx = rect.center().x;
+    let base_y = rect.bottom();
+    painter.line_segment(
+        [egui::pos2(cx, screen.bottom()), egui::pos2(cx, base_y)],
+        stroke,
+    );
+    let foot_half = rect.width() * 0.28;
+    painter.line_segment(
+        [
+            egui::pos2(cx - foot_half, base_y),
+            egui::pos2(cx + foot_half, base_y),
+        ],
+        stroke,
+    );
 }
 
 /// Paint a small filled folder silhouette (a tab over a body) inside `rect`.
@@ -1278,7 +1451,18 @@ fn cwd_folder_ui(
     cwd_state.set_open(!cwd_collapsed);
     let openness = cwd_state.openness(ui.ctx());
 
-    let (row_resp, label_resp) = cwd_folder_header_ui(ui, &cwd_group.display_cwd, openness);
+    let (row_resp, label_resp) = collapsible_header_ui(
+        ui,
+        HeaderParams {
+            text: &cwd_group.display_cwd,
+            font: egui::FontId::monospace(10.0),
+            color: HeaderColor::Weak,
+            icon: HeaderIcon::Worktree,
+            height: 20.0,
+            truncate_from_start: true,
+        },
+        openness,
+    );
 
     cwd_state.show_body_unindented(ui, |ui| {
         ui.add_space(2.0);
@@ -1315,63 +1499,6 @@ fn cwd_folder_ui(
     });
 
     action
-}
-
-/// Custom folder header row for a multi-session cwd: a worktree icon and the
-/// cwd path (monospace 10pt, weak, truncated from the start) on the left, a
-/// disclosure arrow on the right. The full row is a click target for the
-/// collapse toggle; the path is a real `egui::Label` so it stays accessible
-/// (right-click "New Session" menu, kittest lookup by label). Returns the
-/// whole-row response and the label response.
-fn cwd_folder_header_ui(
-    ui: &mut egui::Ui,
-    cwd_display: &str,
-    openness: f32,
-) -> (egui::Response, egui::Response) {
-    let height = 20.0;
-    let (rect, row_response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
-    let row_response = row_response.on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    let color = ui.visuals().weak_text_color();
-
-    // Worktree icon, left edge.
-    let icon_size = 12.0;
-    let icon_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.left() + 2.0, rect.center().y - icon_size / 2.0),
-        egui::vec2(icon_size, icon_size),
-    );
-    paint_worktree_icon(ui.painter(), icon_rect, color);
-
-    // Disclosure arrow, right edge (rotates from ▶ closed to ▼ open).
-    let arrow_box = 16.0;
-    let arrow_center = egui::pos2(rect.right() - 2.0 - arrow_box / 2.0, rect.center().y);
-    paint_disclosure_arrow(ui.painter(), arrow_center, openness, color);
-
-    // cwd path label between the icon and the arrow, as a real accessible
-    // widget so its text can be found and right-clicked.
-    let text_left = icon_rect.right() + 6.0;
-    let text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
-    let label_rect = egui::Rect::from_min_max(
-        egui::pos2(text_left, rect.top()),
-        egui::pos2(text_right, rect.bottom()),
-    );
-    let max_text_width = label_rect.width().max(0.0);
-    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_text_width);
-    let rich = egui::RichText::new(text)
-        .font(egui::FontId::monospace(10.0))
-        .color(color);
-    // Left-align the path within its rect (a plain `ui.put` would center it).
-    let mut label_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(label_rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    let label_response = label_ui
-        .add(egui::Label::new(rich).sense(Sense::click()))
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    (row_response, label_response)
 }
 
 /// Paint a small git-branch (worktree) glyph inside `rect`: a trunk with two
