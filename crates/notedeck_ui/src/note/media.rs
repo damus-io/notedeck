@@ -337,7 +337,7 @@ fn render_media_internal(
         MediaRenderState::Obfuscated(obfuscated_texture) => {
             let resp = match obfuscated_texture {
                 ObfuscatedTexture::Blur(texture_handle) => {
-                    let scaled = ScaledTexture::new(texture_handle, size, scale_flags);
+                    let scaled = ScaledTexture::blurred(texture_handle, size, scale_flags);
 
                     let resp = ui.add(scaled.get_image());
                     render_blur_text(ui, i18n, url, resp.rect)
@@ -538,7 +538,7 @@ fn shimmer_blurhash(
 ) -> egui::Response {
     let cur_alpha = get_blur_current_alpha(ui, url);
 
-    let scaled = ScaledTexture::new(tex, size, scale_flags);
+    let scaled = ScaledTexture::blurred(tex, size, scale_flags);
     let img = scaled.get_image();
     show_blurhash_with_alpha(ui, img, cur_alpha)
 }
@@ -579,7 +579,7 @@ fn render_blur_transition(
     scale_flags: ScaledTextureFlags,
 ) -> egui::InnerResponse<FinishedTransition> {
     let scaled_texture = ScaledTexture::new(image_texture, size, scale_flags);
-    let scaled_blur_img = ScaledTexture::new(blur_texture, size, scale_flags);
+    let scaled_blur_img = ScaledTexture::blurred(blur_texture, size, scale_flags);
 
     match get_blur_transition_state(ui.ctx(), url) {
         BlurTransitionState::StoppingShimmer { cur_alpha } => egui::InnerResponse::new(
@@ -638,6 +638,33 @@ impl<'a> ScaledTexture<'a> {
             tex,
             size: max_size,
             scaled_size,
+        }
+    }
+
+    /// Fits a blurhash placeholder to `max_size`.
+    ///
+    /// The same geometry as [`Self::new`], except that the texture is scaled
+    /// *up* as readily as down. Placeholders are decoded at a fixed small size
+    /// (see `notedeck::media::blur`), so their texel count says nothing about
+    /// how large they should be drawn — only their aspect ratio does, and only
+    /// so that the placeholder is the shape of the media it stands in for.
+    pub fn blurred(tex: &'a TextureHandle, max_size: Vec2, flags: ScaledTextureFlags) -> Self {
+        // respecting_max already scales in both directions.
+        if flags.contains(ScaledTextureFlags::RESPECT_MAX_DIMS) {
+            return Self::respecting_max(tex, max_size);
+        }
+
+        let tex_size = tex.size_vec2();
+        let scale = if flags.contains(ScaledTextureFlags::SCALE_TO_WIDTH) {
+            max_size.x / tex_size.x
+        } else {
+            max_size.y / tex_size.y
+        };
+
+        Self {
+            tex,
+            size: max_size,
+            scaled_size: tex_size * scale,
         }
     }
 
@@ -704,4 +731,62 @@ fn get_blur_transition_state(ctx: &Context, url: &str) -> BlurTransitionState {
 enum BlurTransitionState {
     StoppingShimmer { cur_alpha: u8 },
     FadingBlur,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real 4x3-component blurhash — the `blurhash` crate's octocat fixture.
+    const OCTOCAT: &str = "LNAdAqj[00aymkj[TKay9}ay-Sj[";
+
+    /// A column-sized media slot: `image_carousel` allocates `available_width`
+    /// by a fixed 360 points.
+    const SLOT: Vec2 = vec2(400.0, 360.0);
+
+    fn blur_texture(ctx: &egui::Context, w: u32, h: u32) -> TextureHandle {
+        let bytes = blurhash::decode(OCTOCAT, w, h, 1.0).expect("decodes");
+        let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &bytes);
+        notedeck::media::load_texture_checked(
+            ctx,
+            format!("blur-{w}x{h}"),
+            img,
+            egui::TextureOptions::LINEAR,
+        )
+    }
+
+    #[test]
+    fn a_capped_blur_fills_the_same_box_a_display_sized_one_did() {
+        let ctx = egui::Context::default();
+
+        // What the blur cache used to hand over for this slot on a 2x display,
+        // and what it hands over now.
+        let display_sized = blur_texture(&ctx, 1280, 720);
+        let capped = blur_texture(&ctx, 64, 36);
+
+        for flags in [
+            ScaledTextureFlags::empty(),
+            ScaledTextureFlags::SCALE_TO_WIDTH,
+        ] {
+            assert_eq!(
+                ScaledTexture::blurred(&capped, SLOT, flags).scaled_size,
+                ScaledTexture::new(&display_sized, SLOT, flags).scaled_size,
+                "{flags:?} placeholder changed size",
+            );
+        }
+    }
+
+    #[test]
+    fn the_plain_constructor_would_have_drawn_a_capped_blur_at_its_texel_size() {
+        // Why `blurred` exists: `new` only ever scales down, so a placeholder
+        // decoded below the slot size would be drawn as a 64x36 point postage
+        // stamp instead of filling the slot.
+        let ctx = egui::Context::default();
+        let capped = blur_texture(&ctx, 64, 36);
+
+        assert_eq!(
+            ScaledTexture::new(&capped, SLOT, ScaledTextureFlags::empty()).scaled_size,
+            vec2(64.0, 36.0),
+        );
+    }
 }

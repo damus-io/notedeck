@@ -24,6 +24,7 @@ hashbrown = { workspace = true }
 md-stream = { workspace = true }
 
 [dev-dependencies]
+blurhash = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }
 pollster = { workspace = true }
