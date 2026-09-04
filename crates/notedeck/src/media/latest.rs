@@ -9,7 +9,7 @@ use crate::{
         static_imgs::StaticImgTexCache,
         AnimationMode, BlurCache,
     },
-    Error, GifStateMap, ImageType, MediaCacheType, ObfuscationType, TextureState,
+    Error, GifStateMap, ImageType, MediaCacheType, ObfuscationType, PointDimensions, TextureState,
 };
 
 pub enum MediaRenderState<'a> {
@@ -128,27 +128,27 @@ impl<'a> UntrustedMediaLatestTex<'a> {
     pub fn latest(
         &self,
         jobs: &MediaJobSender,
-        ui: &egui::Ui,
+        ctx: &egui::Context,
         url: &str,
         obfuscation_type: &'a ObfuscationType,
-        size: egui::Vec2,
+        size: PointDimensions,
     ) -> MediaRenderState<'a> {
-        MediaRenderState::Obfuscated(self.latest_internal(jobs, ui, url, obfuscation_type, size))
+        MediaRenderState::Obfuscated(self.latest_internal(jobs, ctx, url, obfuscation_type, size))
     }
 
     fn latest_internal(
         &self,
         jobs: &MediaJobSender,
-        ui: &egui::Ui,
+        ctx: &egui::Context,
         url: &str,
         obfuscation_type: &'a ObfuscationType,
-        size: egui::Vec2,
+        size: PointDimensions,
     ) -> ObfuscatedTexture<'a> {
         let ObfuscationType::Blurhash(meta) = obfuscation_type else {
             return ObfuscatedTexture::Default;
         };
 
-        match self.blur_cache.get_or_request(jobs, ui, url, meta, size) {
+        match self.blur_cache.get_or_request(jobs, ctx, url, meta, size) {
             Some(texture) => ObfuscatedTexture::Blur(texture),
             None => ObfuscatedTexture::Default,
         }
@@ -173,28 +173,23 @@ impl<'a> TrustedMediaLatestTex<'a> {
     pub fn latest(
         &mut self,
         jobs: &MediaJobSender,
-        ui: &egui::Ui,
+        ctx: &egui::Context,
         url: &str,
         cache_type: MediaCacheType,
         imgtype: ImageType,
         animation_mode: AnimationMode,
         obfuscation_type: &'a ObfuscationType,
-        size: egui::Vec2,
+        size: PointDimensions,
     ) -> MediaRenderState<'a> {
-        let actual_latest_tex = self.img_no_loading.latest_state(
-            jobs,
-            ui.ctx(),
-            url,
-            cache_type,
-            imgtype,
-            animation_mode,
-        );
+        let actual_latest_tex =
+            self.img_no_loading
+                .latest_state(jobs, ctx, url, cache_type, imgtype, animation_mode);
 
         match actual_latest_tex {
             LatestImageTex::Pending => (),
             LatestImageTex::Error(error) => return MediaRenderState::Error(error),
             LatestImageTex::Loaded(texture_handle) => {
-                let Some(blur) = self.blur_cache.get(url, ui.ctx().cumulative_pass_nr()) else {
+                let Some(blur) = self.blur_cache.get(url, ctx.cumulative_pass_nr()) else {
                     return MediaRenderState::ActualImage(texture_handle);
                 };
 
@@ -217,7 +212,7 @@ impl<'a> TrustedMediaLatestTex<'a> {
         MediaRenderState::Shimmering(
             UntrustedMediaLatestTex::new(self.blur_cache).latest_internal(
                 jobs,
-                ui,
+                ctx,
                 url,
                 obfuscation_type,
                 size,

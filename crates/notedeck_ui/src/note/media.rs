@@ -153,21 +153,22 @@ pub fn render_media(
         };
         AnimationMode::Continuous { fps }
     });
+    let points = PointDimensions::from_vec(size);
     let media_state = if trusted_media {
         img_cache.trusted_texture_loader().latest(
             jobs,
-            ui,
+            ui.ctx(),
             url,
             *media_type,
-            ImageType::Content(Some(PointDimensions::from_vec(size).to_pixels(ui))),
+            ImageType::Content(Some(points.to_pixels(ui))),
             animation_mode,
             blur_type,
-            size,
+            points,
         )
     } else {
         img_cache
             .untrusted_texture_loader()
-            .latest(jobs, ui, url, blur_type, size)
+            .latest(jobs, ui.ctx(), url, blur_type, points)
     };
 
     render_media_internal(ui, media_state, url, size, i18n, scale_flags)
