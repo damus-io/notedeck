@@ -304,6 +304,7 @@ pub fn render_conversation_note(
                     output: decoded.output,
                     parent_task_id: None,
                     file_update: None,
+                    tool_use_id: None,
                 },
             )))
         }

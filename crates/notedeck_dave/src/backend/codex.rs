@@ -754,6 +754,7 @@ fn handle_codex_message(
                                 None,
                                 None,
                                 subagent_stack,
+                                None,
                                 response_tx,
                                 waker,
                             );
@@ -769,6 +770,7 @@ fn handle_codex_message(
                                 None,
                                 None,
                                 subagent_stack,
+                                None,
                                 response_tx,
                                 waker,
                             );
@@ -985,6 +987,7 @@ fn handle_codex_message(
                             file_update,
                             None,
                             subagent_stack,
+                            None,
                             response_tx,
                             waker,
                         );
@@ -1442,6 +1445,7 @@ fn handle_item_completed(
                 None,
                 None,
                 subagent_stack,
+                None,
                 response_tx,
                 waker,
             );
@@ -1480,6 +1484,7 @@ fn handle_item_completed(
                 file_update,
                 None,
                 subagent_stack,
+                None,
                 response_tx,
                 waker,
             );

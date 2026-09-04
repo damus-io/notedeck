@@ -87,6 +87,7 @@ pub fn messages_to_prompt(messages: &[Message]) -> String {
                 prompt.push_str("\n\n");
             }
             Message::ToolCalls(_)
+            | Message::ToolRunning(_)
             | Message::ToolResponse(_)
             | Message::Error(_)
             | Message::PermissionRequest(_)
@@ -170,6 +171,7 @@ pub fn send_tool_result(
     file_update: Option<FileUpdate>,
     parent_override: Option<&str>,
     subagent_stack: &[String],
+    tool_use_id: Option<&str>,
     response_tx: &mpsc::Sender<DaveApiResponse>,
     waker: &Waker,
 ) {
@@ -196,6 +198,7 @@ pub fn send_tool_result(
         output,
         parent_task_id,
         file_update,
+        tool_use_id: tool_use_id.map(str::to_string),
     };
     let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
     waker.wake();
@@ -627,6 +630,7 @@ mod tests {
             None,
             None,
             &stack,
+            None,
             &tx,
             waker.waker(),
         );
@@ -660,6 +664,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             &tx,
             &waker,
         );
@@ -690,6 +695,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             &tx,
             &waker,
         );
@@ -717,6 +723,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             &tx,
             &waker,
         );

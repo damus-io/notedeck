@@ -276,7 +276,8 @@ fn message_to_api(
         }
 
         // The remaining variants are UI-only, not sent to the API.
-        Message::PermissionRequest(_)
+        Message::ToolRunning(_)
+        | Message::PermissionRequest(_)
         | Message::CompactionComplete(_)
         | Message::Subagent(_)
         | Message::TodoUpdate(_) => None,

@@ -8,7 +8,9 @@ use crate::backend::BackendType;
 use crate::config::AiMode;
 use crate::focus_queue::FocusPriority;
 use crate::git_status::GitStatusCache;
-use crate::messages::{CompactionInfo, ExecutedTool, QuestionAnswer, SessionInfo, SubagentStatus};
+use crate::messages::{
+    CompactionInfo, ExecutedTool, QuestionAnswer, RunningTool, SessionInfo, SubagentStatus,
+};
 use crate::session_events::ThreadingState;
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;
@@ -199,6 +201,11 @@ pub struct AgenticSessionData {
     pub session_info: Option<SessionInfo>,
     /// Indices of subagent messages in chat (keyed by task_id)
     pub subagent_indices: HashMap<String, usize>,
+    /// Indices of in-flight `Message::ToolRunning` rows in chat, keyed by the
+    /// originating `tool_use` id. A row is upgraded in place to its completed
+    /// `ToolResponse` when the matching result lands (`place_tool_result`), and
+    /// any still-running row is finalized at turn end (`finalize_running_tools`).
+    pub running_tool_indices: HashMap<String, usize>,
     /// Compaction lifecycle state. `None` = idle.
     pub compact_intent: Option<CompactIntent>,
     /// Info from the last completed compaction (for display)
@@ -260,6 +267,7 @@ impl AgenticSessionData {
             cwd,
             session_info: None,
             subagent_indices: HashMap::new(),
+            running_tool_indices: HashMap::new(),
             compact_intent: None,
             last_compaction: None,
             resume_session_id: None,
@@ -874,6 +882,64 @@ impl ChatSession {
             agentic.fold_tool_result(&mut self.chat, result)
         } else {
             Some(result)
+        }
+    }
+
+    /// Push an in-flight `Message::ToolRunning` row and record its chat index so
+    /// the matching result can upgrade it in place. Mirrors how a subagent row
+    /// is pushed on spawn (`handle_subagent_spawned`): the index is tracked only
+    /// when agentic state exists, which is where running tools originate.
+    pub fn push_running_tool(&mut self, running: RunningTool) {
+        let idx = self.chat.len();
+        let tool_use_id = running.tool_use_id.clone();
+        self.chat.push(Message::ToolRunning(running));
+        if let Some(agentic) = &mut self.agentic {
+            agentic.running_tool_indices.insert(tool_use_id, idx);
+        }
+    }
+
+    /// Place a completed foreground tool result into chat. When it correlates to
+    /// an in-flight running row (by `tool_use_id`), that row is upgraded in
+    /// place — no index shift, so sibling `subagent_indices` /
+    /// `running_tool_indices` stay valid and message ordering is preserved.
+    /// Otherwise (no running row, or a stale index) the result is appended.
+    pub fn place_tool_result(&mut self, result: ExecutedTool) {
+        let running_idx = result.tool_use_id.as_ref().and_then(|id| {
+            self.agentic
+                .as_mut()
+                .and_then(|agentic| agentic.running_tool_indices.remove(id))
+        });
+        let message = Message::ToolResponse(crate::tools::ToolResponse::executed_tool(result));
+        match running_idx {
+            Some(idx) if matches!(self.chat.get(idx), Some(Message::ToolRunning(_))) => {
+                self.chat[idx] = message;
+            }
+            _ => self.chat.push(message),
+        }
+    }
+
+    /// Resolve any still-running tool rows at a turn boundary. A tool whose
+    /// result never arrived (an interrupted turn) would otherwise keep spinning
+    /// forever; convert each dangling `Message::ToolRunning` to its terminal
+    /// static `ToolResponse` in place and clear the index map.
+    pub fn finalize_running_tools(&mut self) {
+        let Some(agentic) = &mut self.agentic else {
+            return;
+        };
+        // Collect first: draining the map while indexing `self.chat` would be a
+        // double &mut borrow. This runs at the turn boundary, not per frame, so
+        // the small allocation is fine.
+        let dangling: Vec<usize> = agentic
+            .running_tool_indices
+            .drain()
+            .map(|(_, i)| i)
+            .collect();
+        for idx in dangling {
+            if let Some(Message::ToolRunning(running)) = self.chat.get(idx) {
+                let executed = running.to_executed();
+                self.chat[idx] =
+                    Message::ToolResponse(crate::tools::ToolResponse::executed_tool(executed));
+            }
         }
     }
 
@@ -3030,6 +3096,7 @@ mod tests {
             output: None,
             parent_task_id: Some("task-1".to_string()),
             file_update: None,
+            tool_use_id: None,
         };
 
         // Should be folded (returns None)
@@ -3057,6 +3124,7 @@ mod tests {
             output: None,
             parent_task_id: None,
             file_update: None,
+            tool_use_id: None,
         };
 
         // Should NOT be folded (returns Some)
@@ -3065,6 +3133,96 @@ mod tests {
             not_folded.is_some(),
             "result without parent should not be folded"
         );
+    }
+
+    // ---- in-flight running tool rows ----
+
+    fn running_tool(id: &str, name: &str, summary: &str) -> crate::messages::RunningTool {
+        crate::messages::RunningTool {
+            tool_use_id: id.to_string(),
+            tool_name: name.to_string(),
+            summary: summary.to_string(),
+        }
+    }
+
+    fn executed_tool(id: &str, name: &str) -> crate::messages::ExecutedTool {
+        crate::messages::ExecutedTool {
+            tool_name: name.to_string(),
+            summary: format!("{name} done"),
+            output: None,
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: Some(id.to_string()),
+        }
+    }
+
+    #[test]
+    fn running_tool_is_resolved_in_place_by_its_result() {
+        let mut session = test_session();
+        session.push_running_tool(running_tool("t1", "Read", "hostname"));
+
+        let idx = 0;
+        assert!(matches!(
+            session.chat.get(idx),
+            Some(Message::ToolRunning(_))
+        ));
+        assert_eq!(
+            session
+                .agentic
+                .as_ref()
+                .unwrap()
+                .running_tool_indices
+                .get("t1"),
+            Some(&idx)
+        );
+
+        session.place_tool_result(executed_tool("t1", "Read"));
+
+        // Upgraded in place: same length, same slot, now a completed response,
+        // and the index map is cleared.
+        assert_eq!(session.chat.len(), 1, "no new row is appended");
+        assert!(matches!(
+            session.chat.get(idx),
+            Some(Message::ToolResponse(_))
+        ));
+        assert!(session
+            .agentic
+            .as_ref()
+            .unwrap()
+            .running_tool_indices
+            .is_empty());
+    }
+
+    #[test]
+    fn tool_result_without_a_running_row_is_appended() {
+        let mut session = test_session();
+        session.place_tool_result(executed_tool("x", "Bash"));
+        assert_eq!(session.chat.len(), 1);
+        assert!(matches!(
+            session.chat.get(0),
+            Some(Message::ToolResponse(_))
+        ));
+    }
+
+    #[test]
+    fn finalize_running_tools_stops_a_dangling_spinner() {
+        let mut session = test_session();
+        session.push_running_tool(running_tool("t1", "Bash", "sleep 5"));
+        assert!(matches!(session.chat.get(0), Some(Message::ToolRunning(_))));
+
+        // An interrupted turn ends with no result for the tool; finalize turns
+        // the spinner into a static completed row.
+        session.finalize_running_tools();
+        assert!(matches!(
+            session.chat.get(0),
+            Some(Message::ToolResponse(_))
+        ));
+        assert!(session
+            .agentic
+            .as_ref()
+            .unwrap()
+            .running_tool_indices
+            .is_empty());
     }
 
     // ---- edge case: silent failures ----
@@ -3093,6 +3251,7 @@ mod tests {
             output: None,
             parent_task_id: Some("nonexistent-task".to_string()),
             file_update: None,
+            tool_use_id: None,
         };
         // Parent doesn't exist — should return the result unfolded
         let not_folded = session.fold_tool_result(result);

@@ -1549,6 +1549,7 @@ fn message_role(m: &Message) -> &'static str {
         Message::User(_) => "user",
         Message::Assistant(_) => "assistant",
         Message::ToolCalls(_) => "tool_call",
+        Message::ToolRunning(_) => "tool_running",
         Message::ToolResponse(_) => "tool_result",
         Message::PermissionRequest(_) => "permission_request",
         Message::CompactionComplete(_) => "compaction",
@@ -1571,6 +1572,7 @@ fn role_style(m: &Message) -> (&'static str, &'static str) {
         Message::User(_) => ("user", "36"),
         Message::Assistant(_) => ("assistant", "32"),
         Message::ToolCalls(_) => ("tool", "35"),
+        Message::ToolRunning(_) => ("running", "36"),
         Message::ToolResponse(_) => ("result", "90"),
         Message::PermissionRequest(_) => ("permission", SGR_NEEDS_INPUT),
         Message::CompactionComplete(_) => ("compaction", "90"),
@@ -1618,6 +1620,13 @@ fn render_message(m: &Message, color: bool) -> String {
             .map(render_tool_call)
             .collect::<Vec<_>>()
             .join("\n"),
+        Message::ToolRunning(rt) => {
+            if rt.summary.is_empty() {
+                format!("{} (running)", rt.tool_name)
+            } else {
+                format!("{} {} (running)", rt.tool_name, rt.summary)
+            }
+        }
         Message::ToolResponse(tr) => render_tool_response(tr),
         Message::PermissionRequest(p) => {
             format!("{}  [{}]", p.tool_name, decision_label(p.response))
@@ -2772,6 +2781,7 @@ mod tests {
             output: None,
             parent_task_id: None,
             file_update: None,
+            tool_use_id: None,
         }))
     }
 

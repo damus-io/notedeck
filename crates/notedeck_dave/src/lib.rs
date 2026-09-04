@@ -52,8 +52,8 @@ use std::time::Instant;
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
-    PermissionResponseType, QuestionAnswer, QuestionSetInput, SessionInfo, SubagentInfo,
-    SubagentStatus, UserMessage,
+    PermissionResponseType, QuestionAnswer, QuestionSetInput, RunningTool, SessionInfo,
+    SubagentInfo, SubagentStatus, UserMessage,
 };
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
@@ -1470,6 +1470,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         if handle_tool_calls(session, &toolcalls, app_ctx.ndb) {
                             needs_send.insert(session_id);
                         }
+                    }
+                    DaveApiResponse::ToolRunning(running) => {
+                        session.push_running_tool(running);
                     }
                     DaveApiResponse::PermissionRequest(pending) => {
                         handle_permission_request(session, pending, &secret_key, app_ctx.ndb);
@@ -5600,10 +5603,11 @@ fn handle_tool_result(session: &mut session::ChatSession, result: ExecutedTool) 
             agentic.git_status.invalidate();
         }
     }
+    // A subagent-internal result folds into its subagent's tool list; a
+    // foreground result upgrades its in-flight running row in place (or is
+    // appended when there is none).
     if let Some(result) = session.fold_tool_result(result) {
-        session
-            .chat
-            .push(Message::ToolResponse(ToolResponse::executed_tool(result)));
+        session.place_tool_result(result);
     }
 }
 
@@ -5707,6 +5711,10 @@ fn handle_stream_end(
     needs_compact: &mut HashSet<SessionId>,
 ) {
     session.finalize_last_assistant();
+
+    // Stop any tool row still spinning: an interrupted turn can end without a
+    // result for a tool that had already started.
+    session.finalize_running_tools();
 
     // Generate live event for the finalized assistant message
     if let Some(sk) = secret_key {

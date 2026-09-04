@@ -15,7 +15,7 @@ use crate::{
     messages::{
         ApprovalPromptInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
         Message, PermissionRequest, PermissionResponse, PermissionResponseType, PermissionView,
-        QuestionAnswer, SubagentInfo, SubagentStatus, DEFAULT_DENY_REASON,
+        QuestionAnswer, RunningTool, SubagentInfo, SubagentStatus, DEFAULT_DENY_REASON,
     },
     session::{PermissionMessageState, SessionDetails, SessionId},
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse, ToolResponses},
@@ -556,6 +556,13 @@ impl<'a> DaveUi<'a> {
                 }
                 Message::Assistant(msg) => {
                     self.assistant_chat(msg, ctx, ui);
+                }
+                Message::ToolRunning(running) => {
+                    // In-flight tool rows only appear in agentic mode, matching
+                    // the completed ToolResponse row.
+                    if is_agentic {
+                        Self::tool_running_ui(running, ui);
+                    }
                 }
                 Message::ToolResponse(msg) => {
                     Self::tool_response_ui(msg, is_agentic, ui);
@@ -1265,6 +1272,33 @@ impl<'a> DaveUi<'a> {
                         );
                     }
                 });
+        });
+    }
+
+    /// Render an in-flight tool row: a spinner in place of the disclosure arrow,
+    /// then the tool name and its call-time summary — the same subdued monospace
+    /// styling as the completed `exec_tool_header_ui` row, so on completion the
+    /// row is replaced in place with no visual jump.
+    fn tool_running_ui(running: &RunningTool, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.add(SquareLoadingSpinner::new().size(11.0));
+            ui.add(egui::Label::new(
+                egui::RichText::new(&running.tool_name)
+                    .size(11.0)
+                    .color(ui.visuals().text_color().gamma_multiply(0.6))
+                    .monospace(),
+            ));
+            if !running.summary.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&running.summary)
+                            .size(11.0)
+                            .color(ui.visuals().text_color().gamma_multiply(0.4))
+                            .monospace(),
+                    )
+                    .truncate(),
+                );
+            }
         });
     }
 
@@ -3067,6 +3101,7 @@ mod tests {
                 ),
                 parent_task_id: None,
                 file_update: None,
+                tool_use_id: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "Bash".to_string(),
@@ -3074,6 +3109,7 @@ mod tests {
                 output: None,
                 parent_task_id: None,
                 file_update: None,
+                tool_use_id: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "Read".to_string(),
@@ -3081,6 +3117,7 @@ mod tests {
                 output: None,
                 parent_task_id: None,
                 file_update: None,
+                tool_use_id: None,
             },
         ]
     }
@@ -3099,6 +3136,7 @@ mod tests {
             output: Some("total 24\nCargo.toml".to_string()),
             parent_task_id: None,
             file_update: None,
+            tool_use_id: None,
         }];
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
@@ -3144,6 +3182,44 @@ mod tests {
     /// Visualize the tool-result rows in their default state: the
     /// Bash-with-output row shows a ▼ disclosure with its body expanded, the
     /// others render as plain one-liners. Render with
+    /// The in-flight "running" rows: a spinner in place of the disclosure arrow,
+    /// then the tool name + call-time summary, matching the completed row's
+    /// subdued monospace styling so the swap-in-place on completion is seamless.
+    /// Run via `scripts/snapshot-test snapshot_running_tool_rows`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_running_tool_rows() {
+        let running = vec![
+            crate::messages::RunningTool {
+                tool_use_id: "t1".to_string(),
+                tool_name: "Bash".to_string(),
+                summary: "`cargo test --all`".to_string(),
+            },
+            crate::messages::RunningTool {
+                tool_use_id: "t2".to_string(),
+                tool_name: "Read".to_string(),
+                summary: "lib.rs (0 lines)".to_string(),
+            },
+            crate::messages::RunningTool {
+                tool_use_id: "t3".to_string(),
+                tool_name: "Grep".to_string(),
+                summary: "'fn handle_stream_message'".to_string(),
+            },
+        ];
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(420.0, 120.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                for rt in &running {
+                    DaveUi::tool_running_ui(rt, ui);
+                    ui.add_space(4.0);
+                }
+            });
+
+        harness.run();
+        harness.snapshot("running_tool_rows");
+    }
+
     /// `scripts/snapshot-test snapshot_executed_tool_results`.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
@@ -3238,6 +3314,7 @@ mod tests {
                 output: None,
                 parent_task_id: None,
                 file_update: None,
+                tool_use_id: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "Agent".to_string(),
@@ -3245,6 +3322,7 @@ mod tests {
                 output: None,
                 parent_task_id: None,
                 file_update: None,
+                tool_use_id: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "SendMessage".to_string(),
@@ -3252,6 +3330,7 @@ mod tests {
                 output: None,
                 parent_task_id: None,
                 file_update: None,
+                tool_use_id: None,
             },
         ];
         let mut harness = Harness::builder()
@@ -3286,6 +3365,7 @@ mod tests {
             output: Some(output.to_string()),
             parent_task_id: None,
             file_update: None,
+            tool_use_id: None,
         }];
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(460.0, 140.0))
@@ -3321,6 +3401,7 @@ mod tests {
             output: Some(output.to_string()),
             parent_task_id: None,
             file_update: None,
+            tool_use_id: None,
         }];
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(700.0, 260.0))
@@ -3361,6 +3442,7 @@ mod tests {
             output: Some("ok (1 events)\nexit 0".to_string()),
             parent_task_id: None,
             file_update: None,
+            tool_use_id: None,
         }];
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(460.0, 80.0))

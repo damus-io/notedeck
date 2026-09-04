@@ -1,11 +1,11 @@
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::task_tracker::TaskTracker;
-use crate::backend::tool_summary::extract_response_content;
+use crate::backend::tool_summary::{extract_response_content, format_tool_summary};
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, PermissionResponse, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -136,6 +136,7 @@ fn handle_tool_result(
         file_update,
         parent_override,
         subagent_stack,
+        Some(tool_use_id),
         response_tx,
         waker,
     );
@@ -319,6 +320,27 @@ fn handle_stream_message(
                     // Emit TodoUpdate for TodoWrite tool calls
                     if name == "TodoWrite" {
                         let _ = response_tx.send(DaveApiResponse::TodoUpdate(input.clone()));
+                        waker.wake();
+                    }
+
+                    // Emit an in-flight "running" row for a generic foreground
+                    // tool so the user sees which tool is executing before its
+                    // result lands. Task/TodoWrite already surface their own
+                    // rows, and a subagent-internal tool (a set
+                    // `parent_tool_use_id`, or a non-empty foreground
+                    // `subagent_stack`) folds into its subagent instead of chat.
+                    // This foreground test MUST match `send_tool_result`'s
+                    // `parent_task_id` rule so every emitted running row is
+                    // guaranteed a foreground result that resolves it in place.
+                    let is_foreground =
+                        assistant_msg.parent_tool_use_id.is_none() && subagent_stack.is_empty();
+                    if name != "Task" && name != "TodoWrite" && is_foreground {
+                        let summary = format_tool_summary(name, input, &serde_json::Value::Null);
+                        let _ = response_tx.send(DaveApiResponse::ToolRunning(RunningTool {
+                            tool_use_id: id.clone(),
+                            tool_name: name.clone(),
+                            summary,
+                        }));
                         waker.wake();
                     }
                 }
@@ -1349,6 +1371,17 @@ mod tests {
                 })
                 .collect()
         }
+
+        /// Drain the channel, keeping the in-flight running rows.
+        fn running_tools(&self) -> Vec<crate::messages::RunningTool> {
+            self.rx
+                .try_iter()
+                .filter_map(|r| match r {
+                    DaveApiResponse::ToolRunning(running) => Some(running),
+                    _ => None,
+                })
+                .collect()
+        }
     }
 
     fn tool_use(id: &str, name: &str, input: serde_json::Value) -> serde_json::Value {
@@ -1458,6 +1491,83 @@ mod tests {
         assert_eq!(
             results[1].output, None,
             "a non-Bash tool is covered by its summary alone"
+        );
+    }
+
+    #[test]
+    fn foreground_tool_use_emits_a_running_row_before_its_result() {
+        let mut harness = StreamHarness::new();
+
+        harness.feed(serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [
+                tool_use("toolu_r", "Read", serde_json::json!({ "file_path": "/etc/hostname" })),
+            ]},
+        }));
+
+        // The running row is emitted at call time, before any result, and
+        // carries the tool name + a call-time summary derived from the input.
+        let running = harness.running_tools();
+        assert_eq!(running.len(), 1, "one running row for one foreground tool");
+        assert_eq!(running[0].tool_name, "Read");
+        assert_eq!(running[0].tool_use_id, "toolu_r");
+        assert!(
+            running[0].summary.contains("hostname"),
+            "the running summary is derived from the tool input"
+        );
+        assert!(
+            harness.tool_results().is_empty(),
+            "no result until the tool actually runs"
+        );
+
+        // The result correlates to the same tool_use_id so the UI can resolve
+        // the running row in place.
+        harness.feed(user_with(vec![tool_result("toolu_r", "hostname content")]));
+        let results = harness.tool_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tool_use_id.as_deref(), Some("toolu_r"));
+    }
+
+    #[test]
+    fn subagent_internal_tool_use_emits_no_running_row() {
+        let mut harness = StreamHarness::new();
+
+        // A subagent-internal tool_use carries a `parent_tool_use_id`; its
+        // result folds into the subagent's own list, so it must not get a
+        // top-level running row.
+        harness.feed(serde_json::json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_root",
+            "message": { "content": [
+                tool_use("toolu_b", "Bash", serde_json::json!({ "command": "echo hi" })),
+            ]},
+        }));
+
+        assert!(
+            harness.running_tools().is_empty(),
+            "a subagent-internal tool has no top-level running row"
+        );
+    }
+
+    #[test]
+    fn task_and_todowrite_emit_no_running_row() {
+        let mut harness = StreamHarness::new();
+
+        // Task already surfaces a subagent row and TodoWrite a task-list row, so
+        // neither gets a generic running row.
+        harness.feed(serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [
+                tool_use("toolu_t", "Task", serde_json::json!({
+                    "description": "do work", "subagent_type": "general-purpose"
+                })),
+                tool_use("toolu_w", "TodoWrite", serde_json::json!({ "todos": [] })),
+            ]},
+        }));
+
+        assert!(
+            harness.running_tools().is_empty(),
+            "Task/TodoWrite keep their dedicated rows, not a generic running row"
         );
     }
 }

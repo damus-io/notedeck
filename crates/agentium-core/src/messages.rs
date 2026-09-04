@@ -497,6 +497,48 @@ pub struct ExecutedTool {
     /// Pre-computed file update for diff rendering (not serialized)
     #[serde(skip)]
     pub file_update: Option<crate::file_update::FileUpdate>,
+    /// The originating `tool_use` id. Used only to correlate this result with
+    /// its in-flight [`RunningTool`] row so the row can be resolved in place
+    /// (see [`DaveApiResponse::ToolRunning`]). Not serialized into the kind-1988
+    /// note — it is a live-session correlation key, meaningless once
+    /// reconstructed from notes.
+    #[serde(skip)]
+    pub tool_use_id: Option<String>,
+}
+
+/// An in-flight tool call surfaced at `tool_use` time, before its result lands.
+///
+/// A generic agentic tool (Read/Bash/Grep/…) otherwise shows nothing in chat
+/// until it completes; this drives a per-tool "running" row (name + call-time
+/// summary + spinner) that is replaced in place by the completed
+/// [`ExecutedTool`] once its `tool_result` arrives. Correlated to that result
+/// by [`tool_use_id`](Self::tool_use_id).
+#[derive(Debug, Clone)]
+pub struct RunningTool {
+    /// The `tool_use` id, matching the eventual [`ExecutedTool::tool_use_id`].
+    pub tool_use_id: String,
+    /// Tool name (e.g. "Read", "Bash").
+    pub tool_name: String,
+    /// Call-time summary derived from the tool input (e.g. a file path, a
+    /// command), same formatting as the completed row's summary.
+    pub summary: String,
+}
+
+impl RunningTool {
+    /// Build the terminal [`ExecutedTool`] row for a running tool that never
+    /// received a result (an interrupted turn), so the spinner stops. Carries
+    /// only what the call-time row already knows — name, summary, and the
+    /// correlation id — with no output/diff/parent.
+    pub fn to_executed(&self) -> ExecutedTool {
+        ExecutedTool {
+            tool_name: self.tool_name.clone(),
+            summary: self.summary.clone(),
+            output: None,
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: Some(self.tool_use_id.clone()),
+        }
+    }
 }
 
 /// Session initialization info from Claude Code CLI
@@ -696,6 +738,9 @@ pub enum Message {
     User(UserMessage),
     Assistant(AssistantMessage),
     ToolCalls(Vec<ToolCall>),
+    /// An in-flight agentic tool call, shown before its result lands. Resolved
+    /// in place into a `ToolResponse` when the matching `tool_result` arrives.
+    ToolRunning(RunningTool),
     ToolResponse(ToolResponse),
     /// A permission request from the AI that needs user response
     PermissionRequest(PermissionRequest),
@@ -744,6 +789,9 @@ pub fn context_window_for_model(_model: Option<&str>) -> u64 {
 /// represented as individual tokens or tool calls
 pub enum DaveApiResponse {
     ToolCalls(Vec<ToolCall>),
+    /// An agentic tool started running (emitted at `tool_use` time). Drives the
+    /// in-flight "running" row that a later `ToolResult` resolves in place.
+    ToolRunning(RunningTool),
     Token(String),
     Failed(String),
     /// A permission request that needs to be displayed to the user
@@ -825,6 +873,11 @@ impl Message {
                         json!({ "tool": c.calls().tool_name(), "input": input })
                     })
                     .collect::<Vec<_>>(),
+            }),
+            Message::ToolRunning(rt) => json!({
+                "role": "tool_running",
+                "tool": rt.tool_name,
+                "summary": rt.summary,
             }),
             Message::ToolResponse(tr) => match tr.responses() {
                 ToolResponses::ExecutedTool(e) => {
