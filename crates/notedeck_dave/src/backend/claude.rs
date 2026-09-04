@@ -241,6 +241,7 @@ fn cancelled_turn_message_action(message: &ClaudeMessage) -> CancelledTurnMessag
         | ClaudeMessage::System(_)
         | ClaudeMessage::StreamEvent(_)
         | ClaudeMessage::User(_)
+        | ClaudeMessage::ToolProgress(_)
         | ClaudeMessage::ControlCancelRequest(_) => CancelledTurnMessageAction::Ignore,
     }
 }
@@ -432,6 +433,17 @@ fn handle_stream_message(
             } else {
                 tracing::debug!("Received system message subtype: {}", system_msg.subtype);
             }
+        }
+        ClaudeMessage::ToolProgress(progress) => {
+            // Incremental progress from a long-running tool, emitted before its
+            // final `tool_result`. There's no in-flight progress UI yet (that's
+            // tracked separately), so just log it rather than dropping the
+            // stream on an unknown variant.
+            tracing::debug!(
+                "tool_progress for tool_use_id={:?} parent={:?}",
+                progress.tool_use_id,
+                progress.parent_tool_use_id,
+            );
         }
         ClaudeMessage::ControlCancelRequest(_) => {
             // Ignore internal control messages

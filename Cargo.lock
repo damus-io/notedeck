@@ -1525,7 +1525,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 [[package]]
 name = "claude-agent-sdk-rs"
 version = "0.6.3"
-source = "git+https://github.com/jb55/claude-agent-sdk-rs?rev=2cd3188f6f1b#2cd3188f6f1b466bd3b4c400f15ed380562fe300"
+source = "git+https://github.com/jb55/claude-agent-sdk-rs?rev=245f99c82643#245f99c82643e47886d6025243af673c0aa8f269"
 dependencies = [
  "anyhow",
  "async-stream",
