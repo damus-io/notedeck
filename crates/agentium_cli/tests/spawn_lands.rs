@@ -251,6 +251,11 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         "spawn --wait should print the resolved ref on the host:\n{stdout}"
     );
 
+    // The `--prompt` is not reported on the spawn output — it rides the spawn
+    // command and the host delivers it off that command (see `emit_spawn`). The
+    // real end-to-end guarantee is that the seeded first message actually lands
+    // on the host, asserted below.
+
     // The seeded first message rode the spawn command itself, so a real host has
     // everything it needs to deliver it whether or not the CLI was still waiting.
     assert_eq!(
