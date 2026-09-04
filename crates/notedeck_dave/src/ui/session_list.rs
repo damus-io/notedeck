@@ -1036,8 +1036,14 @@ fn host_section_ui(
 }
 
 /// Render one multi-workspace project's collapsible section: a slug header with
-/// each of its workspaces (worktrees/dirs) as a folder beneath. Single-workspace
-/// projects never reach here — they render flush (see `host_section_ui`).
+/// each of its workspaces (worktrees/dirs) beneath. Single-workspace projects
+/// never reach here — they render flush (see `host_section_ui`).
+///
+/// The header is built by hand rather than via `CollapsingState::show_header`
+/// so the disclosure arrow can sit on the *right* (egui always paints its
+/// triangle on the left). Open/closed state is driven manually from the
+/// external `CollapseState`; `CollapsingState` is kept only for the animated
+/// body reveal and the arrow's `openness`.
 fn project_section_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_>,
@@ -1059,16 +1065,17 @@ fn project_section_ui(
         true,
     );
     project_state.set_open(!collapsed);
+    let openness = project_state.openness(ui.ctx());
 
-    let header = project_state.show_header(ui, |ui| {
-        let text = egui::RichText::new(&project.slug).size(13.0).strong();
-        ui.add(egui::Label::new(text).truncate().sense(Sense::click()))
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-    });
+    let header_resp = project_header_ui(ui, &project.slug, openness);
 
-    let (toggle_resp, label_resp, _) = header.body_unindented(|ui| {
-        // Indent the workspace folders under the project header so the two-level
-        // hierarchy (project → workspace) reads clearly.
+    project_state.show_body_unindented(ui, |ui| {
+        // Indent the whole workspace level under the project header so the
+        // hierarchy (project → workspace) reads clearly. Each workspace then
+        // applies the same inline-single / folder-multi rule as a flat project
+        // (a lone session renders inline with its cwd path; multiple sessions
+        // get a collapsible folder), so `cwd_section_ui` is reused verbatim and
+        // `visual_order` mirrors it.
         egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 12,
@@ -1076,7 +1083,7 @@ fn project_section_ui(
             })
             .show(ui, |ui| {
                 for cwd_group in &project.cwd_groups {
-                    if let Some(a) = cwd_folder_ui(
+                    if let Some(a) = cwd_section_ui(
                         ui,
                         list_ui,
                         hostname,
@@ -1090,8 +1097,9 @@ fn project_section_ui(
                 }
             });
     });
+    project_state.store(ui.ctx());
 
-    if toggle_resp.clicked() || label_resp.inner.clicked() {
+    if header_resp.clicked() {
         action = Some(SessionListAction::ToggleProjectCollapse(
             hostname.to_string(),
             project.root.clone(),
@@ -1100,6 +1108,84 @@ fn project_section_ui(
 
     ui.add_space(4.0);
     action
+}
+
+/// Custom project header row: a folder icon and the project slug on the left, a
+/// disclosure arrow on the right. The whole row is one click target driving the
+/// manual collapse toggle. Returns the row response so the caller can react to
+/// clicks.
+fn project_header_ui(ui: &mut egui::Ui, slug: &str, openness: f32) -> egui::Response {
+    let height = 22.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    let color = if response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+
+    // Folder icon, left edge.
+    let icon_size = 13.0;
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 2.0, rect.center().y - icon_size * 0.4),
+        egui::vec2(icon_size, icon_size * 0.8),
+    );
+    paint_folder_icon(ui.painter(), icon_rect, color);
+
+    // Disclosure arrow, right edge (rotates from ▶ closed to ▼ open).
+    let arrow_box = 16.0;
+    let arrow_center = egui::pos2(rect.right() - 2.0 - arrow_box / 2.0, rect.center().y);
+    paint_disclosure_arrow(ui.painter(), arrow_center, openness, color);
+
+    // Slug (strong) between the icon and the arrow, clipped to fit.
+    let text_left = icon_rect.right() + 6.0;
+    let text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
+    let max_width = (text_right - text_left).max(0.0);
+    let font = egui::FontId::proportional(13.0);
+    let galley = ui.painter().layout_no_wrap(slug.to_string(), font, color);
+    let text_pos = egui::pos2(text_left, rect.center().y - galley.size().y / 2.0);
+    if galley.size().x > max_width {
+        let clip = egui::Rect::from_min_size(text_pos, egui::vec2(max_width, galley.size().y));
+        ui.painter()
+            .with_clip_rect(clip)
+            .galley(text_pos, galley, color);
+    } else {
+        ui.painter().galley(text_pos, galley, color);
+    }
+
+    response
+}
+
+/// Paint a small filled folder silhouette (a tab over a body) inside `rect`.
+fn paint_folder_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let rounding = 1.5;
+    let tab_h = rect.height() * 0.28;
+    let tab =
+        egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width() * 0.5, tab_h * 2.0));
+    let body = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top() + tab_h),
+        rect.right_bottom(),
+    );
+    painter.rect_filled(tab, rounding, color);
+    painter.rect_filled(body, rounding, color);
+}
+
+/// Paint a disclosure triangle centered at `center`, rotating from pointing
+/// right (`openness` 0, collapsed) to pointing down (`openness` 1, expanded).
+fn paint_disclosure_arrow(painter: &egui::Painter, center: Pos2, openness: f32, color: Color32) {
+    let r = 4.0;
+    let angle = openness * std::f32::consts::FRAC_PI_2;
+    let (sin, cos) = angle.sin_cos();
+    let rot =
+        |x: f32, y: f32| egui::pos2(center.x + x * cos - y * sin, center.y + x * sin + y * cos);
+    let points = vec![rot(r, 0.0), rot(-r * 0.7, -r * 0.9), rot(-r * 0.7, r * 0.9)];
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// Render one (host, cwd) section, including its session rows.

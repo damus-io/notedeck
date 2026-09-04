@@ -1070,6 +1070,28 @@ fn project_slug_from_root(root: &std::path::Path) -> String {
         .unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
+/// Append a workspace's sessions to `ids` unless it's a collapsible
+/// (multi-session) folder that's currently collapsed.
+///
+/// A single-session workspace renders inline with no folder header (see
+/// `cwd_section_ui`), so it has no collapse UI and stays visible regardless of
+/// a stale `is_cwd_collapsed` entry. Only multi-session workspaces get a
+/// collapsible folder. This is the one rule shared by flat projects and the
+/// workspaces inside a multi-workspace project, keeping `visual_order` in lock
+/// step with what `session_list` renders.
+fn push_visible_cwd(
+    ids: &mut Vec<SessionId>,
+    collapse: &crate::collapse_state::CollapseState,
+    hostname: &str,
+    cwd_group: &CwdGroup,
+) {
+    let collapsible = cwd_group.session_ids.len() > 1;
+    if collapsible && collapse.is_cwd_collapsed(hostname, &cwd_group.cwd) {
+        return;
+    }
+    ids.extend_from_slice(&cwd_group.session_ids);
+}
+
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new()
@@ -1325,30 +1347,25 @@ impl SessionManager {
             for project in &host_group.project_groups {
                 if project.is_flat() {
                     // Flat projects render flush (no project header): the single
-                    // workspace inlines a lone session or folds multiple. Only the
-                    // multi-session folder is collapsible; a lone inline row has
-                    // no folder UI, so it stays visible regardless of stale state.
-                    let cwd_group = &project.cwd_groups[0];
-                    let collapsible = cwd_group.session_ids.len() > 1;
-                    if collapsible
-                        && collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd)
-                    {
-                        continue;
-                    }
-                    ids.extend_from_slice(&cwd_group.session_ids);
+                    // workspace inlines a lone session or folds multiple.
+                    push_visible_cwd(
+                        &mut ids,
+                        collapse,
+                        &host_group.hostname,
+                        &project.cwd_groups[0],
+                    );
                     continue;
                 }
 
-                // Multi-workspace project: a collapsible slug header wrapping one
-                // always-collapsible folder per workspace.
+                // Multi-workspace project: a collapsible slug header wrapping its
+                // workspaces. Each workspace follows the same inline-single /
+                // folder-multi rule as a flat project, so a single-session
+                // workspace stays visible even with a stale collapse entry.
                 if collapse.is_project_collapsed(&host_group.hostname, &project.root) {
                     continue;
                 }
                 for cwd_group in &project.cwd_groups {
-                    if collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd) {
-                        continue;
-                    }
-                    ids.extend_from_slice(&cwd_group.session_ids);
+                    push_visible_cwd(&mut ids, collapse, &host_group.hostname, cwd_group);
                 }
             }
         }
@@ -3413,6 +3430,47 @@ mod tests {
         let mut collapse = CollapseState::new();
         collapse.toggle_project("", std::path::Path::new("/dev/repo"));
         assert!(mgr.visual_order(&collapse).is_empty());
+    }
+
+    #[test]
+    fn single_session_workspace_in_project_stays_visible_when_marked_collapsed() {
+        let mut mgr = SessionManager::new();
+        // A multi-workspace (non-flat) project: one workspace has a single
+        // session (renders inline, no folder), the other has two (a folder).
+        let main = create_grouped_session(&mut mgr, "", "/dev/repo", "Main", AiMode::Agentic);
+        let feat_a = create_grouped_session(
+            &mut mgr,
+            "",
+            "/dev/repo-feature",
+            "Feature A",
+            AiMode::Agentic,
+        );
+        let feat_b = create_grouped_session(
+            &mut mgr,
+            "",
+            "/dev/repo-feature",
+            "Feature B",
+            AiMode::Agentic,
+        );
+        for id in [main, feat_a, feat_b] {
+            set_project(&mut mgr, id, "/dev/repo", "repo");
+        }
+        mgr.rebuild_groups();
+        assert!(!mgr.host_groups()[0].project_groups[0].is_flat());
+
+        // Marking the single-session workspace collapsed must NOT hide it — it
+        // has no folder UI to collapse (mirrors the flat single-session rule).
+        let mut collapse = CollapseState::new();
+        collapse.toggle_cwd("", std::path::Path::new("/dev/repo"));
+        assert_eq!(
+            mgr.visual_order(&collapse),
+            vec![main, feat_a, feat_b],
+            "single-session workspace stays visible; folder still expanded"
+        );
+
+        // Collapsing the multi-session workspace hides just its two sessions.
+        collapse.toggle_cwd("", std::path::Path::new("/dev/repo-feature"));
+        assert_eq!(mgr.visual_order(&collapse), vec![main]);
     }
 
     #[test]
