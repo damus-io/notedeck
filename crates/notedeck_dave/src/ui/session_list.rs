@@ -1252,6 +1252,13 @@ fn cwd_section_ui(
 /// Render the collapsible folder for a multi-session cwd: header, body
 /// containing each session row, and the right-click "New Session" menu.
 /// Indentation is the caller's responsibility.
+///
+/// Like `project_section_ui`, the header is built by hand rather than via
+/// `CollapsingState::show_header` so the disclosure arrow can sit on the
+/// *right* (egui always paints its triangle on the left) with a worktree icon
+/// on the left. Open/closed state is driven manually from the external
+/// `CollapseState`; `CollapsingState` is kept only for the animated body reveal
+/// and the arrow's `openness`.
 fn cwd_folder_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_>,
@@ -1269,10 +1276,11 @@ fn cwd_folder_ui(
     let mut cwd_state =
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), cwd_id, true);
     cwd_state.set_open(!cwd_collapsed);
+    let openness = cwd_state.openness(ui.ctx());
 
-    let header = cwd_state.show_header(ui, |ui| cwd_folder_label_ui(ui, &cwd_group.display_cwd));
+    let (row_resp, label_resp) = cwd_folder_header_ui(ui, &cwd_group.display_cwd, openness);
 
-    let (toggle_resp, label_resp, _) = header.body_unindented(|ui| {
+    cwd_state.show_body_unindented(ui, |ui| {
         ui.add_space(2.0);
         for &id in &cwd_group.session_ids {
             if let Some(session) = list_ui.session_manager.get(id) {
@@ -1285,15 +1293,18 @@ fn cwd_folder_ui(
             }
         }
     });
+    cwd_state.store(ui.ctx());
 
-    if toggle_resp.clicked() || label_resp.inner.clicked() {
+    // The whole row toggles collapse; the label sits on top and captures clicks
+    // over its own rect, so check both.
+    if row_resp.clicked() || label_resp.clicked() {
         action = Some(SessionListAction::ToggleCwdCollapse(
             hostname.to_string(),
             cwd_group.cwd.clone(),
         ));
     }
 
-    notedeck_ui::context_menu::context_menu(&label_resp.inner, |ui| {
+    notedeck_ui::context_menu::context_menu(&label_resp, |ui| {
         if ui.button("New Session").clicked() {
             action = Some(SessionListAction::NewSessionInCwd(
                 hostname.to_string(),
@@ -1306,6 +1317,86 @@ fn cwd_folder_ui(
     action
 }
 
+/// Custom folder header row for a multi-session cwd: a worktree icon and the
+/// cwd path (monospace 10pt, weak, truncated from the start) on the left, a
+/// disclosure arrow on the right. The full row is a click target for the
+/// collapse toggle; the path is a real `egui::Label` so it stays accessible
+/// (right-click "New Session" menu, kittest lookup by label). Returns the
+/// whole-row response and the label response.
+fn cwd_folder_header_ui(
+    ui: &mut egui::Ui,
+    cwd_display: &str,
+    openness: f32,
+) -> (egui::Response, egui::Response) {
+    let height = 20.0;
+    let (rect, row_response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
+    let row_response = row_response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    let color = ui.visuals().weak_text_color();
+
+    // Worktree icon, left edge.
+    let icon_size = 12.0;
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 2.0, rect.center().y - icon_size / 2.0),
+        egui::vec2(icon_size, icon_size),
+    );
+    paint_worktree_icon(ui.painter(), icon_rect, color);
+
+    // Disclosure arrow, right edge (rotates from ▶ closed to ▼ open).
+    let arrow_box = 16.0;
+    let arrow_center = egui::pos2(rect.right() - 2.0 - arrow_box / 2.0, rect.center().y);
+    paint_disclosure_arrow(ui.painter(), arrow_center, openness, color);
+
+    // cwd path label between the icon and the arrow, as a real accessible
+    // widget so its text can be found and right-clicked.
+    let text_left = icon_rect.right() + 6.0;
+    let text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
+    let label_rect = egui::Rect::from_min_max(
+        egui::pos2(text_left, rect.top()),
+        egui::pos2(text_right, rect.bottom()),
+    );
+    let max_text_width = label_rect.width().max(0.0);
+    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_text_width);
+    let rich = egui::RichText::new(text)
+        .font(egui::FontId::monospace(10.0))
+        .color(color);
+    // Left-align the path within its rect (a plain `ui.put` would center it).
+    let mut label_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(label_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let label_response = label_ui
+        .add(egui::Label::new(rich).sense(Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    (row_response, label_response)
+}
+
+/// Paint a small git-branch (worktree) glyph inside `rect`: a trunk with two
+/// nodes and a third node forked off to the right, reading as a branch/worktree
+/// rather than a plain folder.
+fn paint_worktree_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let node_r = rect.height() * 0.16;
+    let stroke = egui::Stroke::new(1.3, color);
+
+    // Trunk on the left: a node at top and bottom joined by a vertical line.
+    let trunk_x = rect.left() + node_r + 1.0;
+    let top = egui::pos2(trunk_x, rect.top() + node_r);
+    let bottom = egui::pos2(trunk_x, rect.bottom() - node_r);
+    painter.line_segment([top, bottom], stroke);
+
+    // Branch node forked off to the upper right, connected back to the trunk.
+    let branch = egui::pos2(rect.right() - node_r - 1.0, rect.top() + node_r);
+    let fork = egui::pos2(trunk_x, rect.center().y);
+    painter.line_segment([branch, fork], stroke);
+
+    painter.circle_filled(top, node_r, color);
+    painter.circle_filled(bottom, node_r, color);
+    painter.circle_filled(branch, node_r, color);
+}
+
 /// Draw the cwd path inline within an agent row (monospace 10pt, weak color,
 /// truncated from the start), for sessions that are alone in their cwd and so
 /// don't get a surrounding folder header.
@@ -1315,20 +1406,6 @@ fn cwd_inline_ui(ui: &mut egui::Ui, cwd_display: &str, pos: Pos2, max_width: f32
     let cwd_color = ui.visuals().weak_text_color();
     ui.painter()
         .text(pos, egui::Align2::LEFT_TOP, &text, cwd_font, cwd_color);
-}
-
-/// Renders just the cwd label (monospace 10pt, weak color, truncated from the
-/// start) for use inside `CollapsingState::show_header`. egui draws the
-/// disclosure triangle separately.
-fn cwd_folder_label_ui(ui: &mut egui::Ui, cwd_display: &str) -> egui::Response {
-    let max_text_width = (ui.available_width() - 4.0).max(0.0);
-    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_text_width);
-    let weak_color = ui.visuals().weak_text_color();
-    let rich = egui::RichText::new(text)
-        .font(egui::FontId::monospace(10.0))
-        .color(weak_color);
-    ui.add(egui::Label::new(rich).sense(Sense::click()))
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Renders the "Delete worktree" context-menu item with an inline confirmation step.
