@@ -2,6 +2,8 @@
 .PHONY: fake
 
 ANDROID_DIR := crates/notedeck_chrome/android
+MACOS_APP := target/release/bundle/osx/Notedeck.app
+MACOS_FEATURES ?= dave,messages
 
 check:
 	cargo check
@@ -48,6 +50,22 @@ android-tracy: fake
 	adb shell am start -n com.damus.notedeck/.MainActivity
 	adb forward tcp:8086 tcp:8086
 	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt
+
+# Build an unsigned .app for local development. macOS reads a process's icon
+# and name from the bundle's Info.plist, so a bare target/release binary shows
+# up as a generic executable in Activity Monitor and cmd-tab. For the signed,
+# notarized release build see scripts/macos_build.sh.
+macos-app: fake
+	@command -v cargo-bundle >/dev/null || \
+		{ echo "cargo-bundle not found; install it with: cargo install cargo-bundle"; exit 1; }
+	cargo bundle -p notedeck_chrome --release --format osx --features "$(MACOS_FEATURES)"
+	@echo "Built $(MACOS_APP)"
+
+# Run the bundled build with logs still going to the terminal. Launching the
+# inner executable rather than `open`ing the .app keeps stdout attached while
+# still giving the process its bundle identity.
+macos-run: macos-app
+	$(MACOS_APP)/Contents/MacOS/notedeck
 
 test-messages-docker:
 	docker build -f crates/notedeck_testing/Dockerfile -t notedeck-test-base .
