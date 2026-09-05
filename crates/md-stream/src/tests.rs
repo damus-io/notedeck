@@ -1464,3 +1464,28 @@ fn test_streaming_bare_bullet_stays_ambiguous() {
         parser.parsed()
     );
 }
+
+#[test]
+fn test_block_handoffs_stay_under_the_stall_guard() {
+    // Blocks that end without consuming the line that ended them hand it
+    // straight to the next handler, and those handoffs are what the stall guard
+    // in process_new_content has to leave room for. Butt every such block
+    // against the next with no blank line between them: in a debug build a
+    // guard set too tight fires here rather than in front of a user.
+    let (els, _) = parse_doc_bounded(
+        "| a | b |\n|---|---|\n| 1 | 2 |\n- item\n> quoted\n1. first\n# heading\npara\n",
+    );
+    let kinds: Vec<&str> = els
+        .iter()
+        .map(|e| match e {
+            MdElement::Table { .. } => "table",
+            MdElement::UnorderedList(_) => "ul",
+            MdElement::OrderedList { .. } => "ol",
+            MdElement::BlockQuote(_) => "quote",
+            MdElement::Heading { .. } => "heading",
+            MdElement::Paragraph(_) => "p",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["table", "ul", "quote", "ol", "heading", "p"]);
+}

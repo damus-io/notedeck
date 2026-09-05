@@ -25,6 +25,18 @@ pub struct StreamParser {
     at_line_start: bool,
 }
 
+/// How many iterations of [`StreamParser::process_new_content`] may pass at one
+/// buffer offset before we call it a stall.
+///
+/// Block handlers legitimately hand a line to one another without consuming it:
+/// `try_block_start` opens a list or a blockquote and leaves the line to
+/// `process_list`/`process_blockquote`, and those can close the block and hand
+/// the line back to be re-detected. Each handoff moves to a different handler
+/// and there are only a handful of them, so a real line is placed within two or
+/// three. Anything past this is two handlers disagreeing about the same line and
+/// passing it back and forth forever.
+const MAX_STALLED_ITERATIONS: u32 = 16;
+
 /// Lightweight dispatch tag for partial state, avoiding Clone on PartialKind
 /// which contains Vecs (table headers/rows).
 #[derive(Clone, Copy)]
@@ -137,7 +149,33 @@ impl StreamParser {
 
     /// Process newly added content.
     fn process_new_content(&mut self) {
+        // Where we last saw the cursor, and for how many iterations it has sat
+        // there. See [`MAX_STALLED_ITERATIONS`]: a parser that stops consuming
+        // input freezes the render loop that calls us every frame, so break the
+        // deadlock instead of spinning in it.
+        let mut stalled_at = self.process_pos;
+        let mut stalled = 0;
+
         while self.process_pos < self.buffer.len() {
+            if self.process_pos != stalled_at {
+                stalled_at = self.process_pos;
+                stalled = 0;
+            }
+            stalled += 1;
+            if stalled > MAX_STALLED_ITERATIONS {
+                debug_assert!(
+                    false,
+                    "md-stream: stalled at byte {} of {}",
+                    self.process_pos,
+                    self.buffer.len()
+                );
+                // `process_inline` always consumes at least one byte, so this
+                // keeps the cursor moving. Whatever block the handlers could not
+                // agree on is mis-rendered as inline text, which beats a hang.
+                self.process_inline();
+                continue;
+            }
+
             // Handle based on current partial state
             if let Some(dispatch) = self.partial_dispatch() {
                 match dispatch {
