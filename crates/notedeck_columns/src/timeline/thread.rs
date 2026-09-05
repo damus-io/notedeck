@@ -208,14 +208,14 @@ impl Threads {
             .dispose_route_for_account(ndb, scoped_subs, account_pk, id, thread);
     }
 
+    /// Rebuild thread declarations using the current outbox relay setting.
     pub(crate) fn refresh_remote_subscriptions(
         &mut self,
-        ndb: &Ndb,
         scoped_subs: &mut ScopedSubApi<'_>,
         remote_policy: RemoteSubscriptionPolicy,
     ) {
         self.subs
-            .refresh_remote_subscriptions(ndb, scoped_subs, remote_policy);
+            .refresh_remote_subscriptions(scoped_subs, remote_policy);
     }
 
     /// Responsible for making sure the chain and the direct replies are up to date

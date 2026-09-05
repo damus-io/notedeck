@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use enostr::{
-    FullHistoryConfig, NormRelayUrl, Pubkey, RelayDemandPriority, RelayRoutingPreference,
+    FullHistoryConfig, NormRelayUrl, NoteId, Pubkey, RelayDemandPriority, RelayRoutingPreference,
     RelayUrlSource,
 };
 use hashbrown::HashSet;
@@ -215,6 +215,8 @@ pub struct SubConfig {
     /// Optional background full-history reconciliation request paired to this
     /// scoped subscription.
     pub(super) full_history: Option<SubFullHistoryConfig>,
+    /// Root and selected thread notes used to discover ancestry and author relays.
+    pub(super) thread_notes: Option<HashSet<NoteId>>,
 }
 
 /// Sendable full-history filter set retained by one scoped-sub config.
@@ -252,6 +254,7 @@ impl SubFullHistoryConfig {
 impl PartialEq for SubConfig {
     fn eq(&self, other: &Self) -> bool {
         self.execution == other.execution
+            && self.thread_notes == other.thread_notes
             && same_canonical_send_filter_set(&self.filters, &other.filters)
             && full_history_configs_have_same_canonical_attributes(
                 self.full_history.as_ref(),
@@ -277,6 +280,7 @@ impl SubConfig {
             execution: SubExecution::AccountsRead { baseline },
             filters,
             full_history: None,
+            thread_notes: None,
         }
     }
 
@@ -290,6 +294,7 @@ impl SubConfig {
             execution: SubExecution::Explicit { relays, policy },
             filters,
             full_history: None,
+            thread_notes: None,
         }
     }
 
@@ -310,7 +315,13 @@ impl SubConfig {
             },
             filters,
             full_history: None,
+            thread_notes: None,
         }
+    }
+
+    /// Borrow the root and selected notes retained for thread outbox discovery.
+    pub(super) fn thread_notes(&self) -> Option<&HashSet<NoteId>> {
+        self.thread_notes.as_ref()
     }
 
     /// Runtime author-outbox relay policy, if this config has one.
@@ -372,6 +383,7 @@ impl SubConfig {
             },
             filters,
             full_history: None,
+            thread_notes: None,
         }
     }
 
@@ -392,8 +404,29 @@ impl SubConfig {
         )
     }
 
+    /// Union compatible owners' thread notes or explicit relays under one scoped key.
     pub(super) fn merged_owner_configs(configs: &[&SubConfig]) -> Option<SubConfig> {
-        let latest = configs.last()?.to_owned().clone();
+        let mut latest = configs.last()?.to_owned().clone();
+        if let Some(thread_notes) = &mut latest.thread_notes {
+            if configs.iter().any(|config| {
+                config.thread_notes.is_none()
+                    || config.execution != latest.execution
+                    || !same_canonical_send_filter_set(&config.filters, &latest.filters)
+                    || !full_history_configs_have_same_canonical_attributes(
+                        config.full_history.as_ref(),
+                        latest.full_history.as_ref(),
+                    )
+            }) {
+                return Some(latest);
+            }
+            for config in configs {
+                if let Some(owner_notes) = &config.thread_notes {
+                    thread_notes.extend(owner_notes);
+                }
+            }
+            return Some(latest);
+        }
+
         let latest_additive = configs
             .iter()
             .rev()
@@ -637,6 +670,7 @@ impl AccountsReadBuilder {
             baseline: self.baseline,
             author_outbox,
             full_history: self.full_history,
+            thread_notes: None,
         }
     }
 
@@ -720,9 +754,23 @@ pub struct AuthorOutboxBuilder {
     baseline: SubRelayPolicy,
     author_outbox: SubRelayPolicy,
     full_history: Option<SubFullHistoryConfig>,
+    thread_notes: Option<HashSet<NoteId>>,
 }
 
 impl AuthorOutboxBuilder {
+    /// Discover author relays and missing ancestors from this root and its selections.
+    ///
+    /// These notes are routing inputs. The retained live and history filters keep
+    /// their original shape and remain shared by owners of the same thread root.
+    pub fn for_thread(
+        mut self,
+        root: NoteId,
+        selected_ids: impl IntoIterator<Item = NoteId>,
+    ) -> Self {
+        self.thread_notes = Some(selected_ids.into_iter().chain([root]).collect());
+        self
+    }
+
     /// Add or replace generic full-history catchup on the resolved scoped-sub relay set.
     pub fn full_history(mut self, full_history: FullHistoryConfig) -> Self {
         self.full_history = normalize_full_history_policy(Some(full_history));
@@ -731,12 +779,14 @@ impl AuthorOutboxBuilder {
 
     /// Finish building the baseline-plus-author-outbox scoped subscription config.
     pub fn build(self) -> SubConfig {
-        SubConfig::accounts_read_with_author_outbox_parts(
+        let mut config = SubConfig::accounts_read_with_author_outbox_parts(
             self.filters,
             self.baseline,
             self.author_outbox,
         )
-        .with_full_history(self.full_history)
+        .with_full_history(self.full_history);
+        config.thread_notes = self.thread_notes;
+        config
     }
 }
 
@@ -854,4 +904,76 @@ impl SubConfig {
         self.full_history = full_history.filter(|full_history| !full_history.is_empty());
         self
     }
+}
+
+/// Selected thread notes are retained demand and must invalidate an old declaration.
+#[test]
+fn thread_outbox_seeds_affect_config_equality() {
+    let root = enostr::NoteId::new([1; 32]);
+    let first = enostr::NoteId::new([2; 32]);
+    let second = enostr::NoteId::new([3; 32]);
+    let config = |selected: Vec<enostr::NoteId>| {
+        SubConfig::builder(vec![Filter::new().kinds([1]).event(root.bytes()).build()])
+            .accounts_read_important()
+            .with_author_outbox_augmentation()
+            .for_thread(root, selected)
+            .build()
+    };
+
+    assert_eq!(
+        config(vec![first, second]),
+        config(vec![second, first, first])
+    );
+    assert_ne!(config(vec![first]), config(vec![second]));
+    assert_eq!(
+        config(vec![first]).thread_notes(),
+        Some(&HashSet::from([root, first]))
+    );
+    let author_config =
+        SubConfig::builder(vec![Filter::new().authors([&[4; 32]]).kinds([1]).build()])
+            .accounts_read_important()
+            .with_author_outbox_augmentation()
+            .build();
+    assert_eq!(author_config.thread_notes(), None);
+}
+
+/// Shared thread demand unions owner selections and removes departed owners' seeds.
+#[test]
+fn thread_outbox_seeds_merge_for_compatible_owners() {
+    let root = enostr::NoteId::new([1; 32]);
+    let first = enostr::NoteId::new([2; 32]);
+    let second = enostr::NoteId::new([3; 32]);
+    let config = |root: enostr::NoteId, selected: enostr::NoteId| {
+        SubConfig::builder(vec![Filter::new().kinds([1]).event(root.bytes()).build()])
+            .full_history(FullHistoryConfig::new(vec![Filter::new()
+                .kinds([1])
+                .event(root.bytes())
+                .build()]))
+            .accounts_read_important()
+            .with_author_outbox_augmentation()
+            .for_thread(root, [selected])
+            .build()
+    };
+    let first_config = config(root, first);
+    let second_config = config(root, second);
+    let merged = SubConfig::merged_owner_configs(&[&first_config, &second_config])
+        .expect("shared thread config");
+    assert_eq!(
+        merged.thread_notes(),
+        Some(&HashSet::from([root, first, second]))
+    );
+    assert_eq!(
+        SubConfig::merged_owner_configs(&[&first_config]),
+        Some(first_config.clone())
+    );
+    assert_eq!(
+        SubConfig::merged_owner_configs(&[&second_config, &first_config]),
+        Some(merged)
+    );
+
+    let different_root = config(enostr::NoteId::new([5; 32]), second);
+    assert_eq!(
+        SubConfig::merged_owner_configs(&[&first_config, &different_root]),
+        Some(different_root)
+    );
 }

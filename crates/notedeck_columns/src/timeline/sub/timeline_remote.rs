@@ -13,7 +13,7 @@ pub(in crate::timeline) enum TimelineScopedSub {
 }
 
 /// Columns policy for remote timeline and thread subscription declarations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RemoteSubscriptionPolicy {
     use_outbox_relays: bool,
 }
@@ -29,9 +29,9 @@ impl RemoteSubscriptionPolicy {
         self.use_outbox_relays && remote_filters_have_authors(remote_filters)
     }
 
-    /// Return whether observed relay coverage should augment selected-account read relays.
-    pub(crate) fn uses_observed_relay_coverage(self, has_observed_relays: bool) -> bool {
-        self.use_outbox_relays && has_observed_relays
+    /// Return whether thread routing should discover author and hinted relay coverage.
+    pub(crate) fn uses_outbox_relays(self) -> bool {
+        self.use_outbox_relays
     }
 }
 

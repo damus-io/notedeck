@@ -637,6 +637,377 @@ async fn publish_accounts_write_broadcasts_to_selected_account_write_relays() {
     assert!(frame.contains("publish account-write"));
 }
 
+/// Missing author metadata is fetched from bootstrap before the parent is
+/// requested by exact ID from that author's advertised write relay.
+#[tokio::test]
+async fn bridge_thread_discovers_author_on_bootstrap_then_fetches_parent_from_write_relay() {
+    use serde_json::{json, Value};
+
+    // Each relay serves its one event only for the exact filter under test.
+    let handler = |expected: Value, event: Value| {
+        move || {
+            let expected = expected.clone();
+            let event = event.clone();
+            move |text: &str| {
+                let Ok(Value::Array(request)) = serde_json::from_str::<Value>(text) else {
+                    return CaptureRelayResponse::none();
+                };
+                if request.first().and_then(Value::as_str) != Some("REQ") {
+                    return CaptureRelayResponse::none();
+                }
+                let Some(sub_id) = request.get(1).and_then(Value::as_str) else {
+                    return CaptureRelayResponse::none();
+                };
+                let mut response = Vec::new();
+                if request[2..].contains(&expected) {
+                    response.push(json!(["EVENT", sub_id, event]).to_string());
+                }
+                response.push(json!(["EOSE", sub_id]).to_string());
+                CaptureRelayResponse {
+                    send_text: response,
+                    close: false,
+                }
+            }
+        }
+    };
+    let user = FullKeypair::generate();
+    let author = FullKeypair::generate();
+    let parent = NoteBuilder::new()
+        .kind(1)
+        .content("parent only on write relay")
+        .created_at(1)
+        .sign(&author.secret_key.secret_bytes())
+        .build()
+        .expect("parent");
+    let parent_filter = json!({"ids": [hex::encode(parent.id())]});
+    let (_write_task, write_relay, write_frames, write_notify) =
+        create_filtered_capture_relay_with_handler(
+            |_| true,
+            handler(
+                parent_filter.clone(),
+                serde_json::from_str(&parent.json().expect("json")).expect("event"),
+            ),
+        )
+        .await;
+    // Match the existing Columns local-relay setup without relaxing URL policy.
+    let mut write_url = url::Url::parse(write_relay.as_str()).expect("write URL");
+    write_url
+        .set_host(Some("localhost.localdomain"))
+        .expect("local hostname");
+    let advertised_write = NormRelayUrl::new(write_url.as_str()).expect("advertised relay");
+    assert!(advertised_write.allowed_for_source(enostr::RelayUrlSource::RemoteAdvertised));
+    let write_spec = crate::RelaySpec::new(advertised_write, false, true);
+    let author_list = crate::construct_nip65_relays_note([&write_spec])
+        .created_at(2)
+        .sign(&author.secret_key.secret_bytes())
+        .build()
+        .expect("author list");
+    let list_filter = json!({"authors": [author.pubkey.hex()], "kinds": [10002]});
+    let (_bootstrap_task, bootstrap, bootstrap_frames, bootstrap_notify) =
+        create_filtered_capture_relay_with_handler(
+            |_| true,
+            handler(
+                list_filter.clone(),
+                serde_json::from_str(&author_list.json().expect("json")).expect("event"),
+            ),
+        )
+        .await;
+    let (read_url, _, _) = create_text_capture_relay().await;
+    let read = NormRelayUrl::new(&read_url).expect("read relay");
+    let read_spec = crate::RelaySpec::new(read.clone(), true, false);
+    let account_list = crate::construct_nip65_relays_note([&read_spec])
+        .created_at(2)
+        .sign(&user.secret_key.secret_bytes())
+        .build()
+        .expect("account list");
+    let child = NoteBuilder::new()
+        .kind(1)
+        .content("selected child")
+        .created_at(3)
+        .start_tag()
+        .tag_str("e")
+        .tag_id(parent.id())
+        .tag_str("")
+        .tag_str("reply")
+        .tag_id(author.pubkey.bytes())
+        .sign(&user.secret_key.secret_bytes())
+        .build()
+        .expect("child");
+    let (_tmp, mut ndb) = test_ndb();
+    let job_pool = JobPool::new(1);
+    let mut remote = test_remote_state(&ndb, &job_pool);
+    for note in [&account_list, &child] {
+        ndb.process_client_event(&note.json().expect("json"))
+            .expect("seed local context");
+    }
+    wait_for_condition(
+        &mut remote,
+        Duration::from_secs(2),
+        None,
+        "local context",
+        |_| {
+            let txn = Transaction::new(&ndb).ok()?;
+            [&account_list, &child]
+                .iter()
+                .all(|note| ndb.get_note_by_id(&txn, note.id()).is_ok())
+                .then_some(())
+        },
+    )
+    .await;
+    let accounts = {
+        let txn = Transaction::new(&ndb).expect("txn");
+        assert!(ndb.get_note_by_id(&txn, parent.id()).is_err());
+        assert!(ndb.get_note_by_id(&txn, author_list.id()).is_err());
+        Accounts::new(
+            None,
+            Vec::new(),
+            vec![bootstrap.to_string()],
+            user.pubkey,
+            &mut ndb,
+            &txn,
+            &mut UnknownIds::default(),
+        )
+    };
+    assert_eq!(
+        accounts.selected_account_read_relays(),
+        hashbrown::HashSet::from([read])
+    );
+    assert_eq!(
+        accounts.discovery_bootstrap_relays(),
+        hashbrown::HashSet::from([bootstrap])
+    );
+    let identity = ScopedSubIdentity::global(
+        SubOwnerKey::new("bridge/bootstrap-author"),
+        SubKey::new("thread"),
+    );
+    let config = SubConfig::builder(vec![Filter::new()
+        .kinds([1])
+        .event(parent.id())
+        .limit(250)
+        .build()])
+    .accounts_read_important()
+    .with_author_outbox_augmentation()
+    .for_thread(NoteId::new(*parent.id()), [NoteId::new(*child.id())])
+    .build();
+    {
+        let mut api = remote.api();
+        api.on_selected_account_changed(&accounts);
+        assert_eq!(
+            api.scoped_subs(&accounts).ensure_sub(identity, config),
+            EnsureSubResult::Created
+        );
+        api.flush();
+    }
+    let list_request = wait_for_frame(
+        &mut remote,
+        &bootstrap_frames,
+        &bootstrap_notify,
+        "author relay-list REQ on bootstrap",
+        |text| {
+            let Ok(Value::Array(request)) = serde_json::from_str::<Value>(text) else {
+                return false;
+            };
+            request.first().and_then(Value::as_str) == Some("REQ")
+                && request.get(2) == Some(&list_filter)
+        },
+    )
+    .await;
+    let list_request: Value = serde_json::from_str(&list_request).expect("request");
+    assert_eq!(list_request.as_array().expect("request").len(), 3);
+    let _ = wait_for_frame(
+        &mut remote,
+        &write_frames,
+        &write_notify,
+        "parent exact-ID REQ on discovered write relay",
+        |text| {
+            let Ok(Value::Array(request)) = serde_json::from_str::<Value>(text) else {
+                return false;
+            };
+            request.first().and_then(Value::as_str) == Some("REQ")
+                && request[2..].contains(&parent_filter)
+        },
+    )
+    .await;
+    wait_for_condition(
+        &mut remote,
+        Duration::from_secs(3),
+        None,
+        "network parent ingestion",
+        |_| {
+            let txn = Transaction::new(&ndb).ok()?;
+            ndb.get_note_by_id(&txn, author_list.id()).ok()?;
+            ndb.get_note_by_id(&txn, parent.id()).ok().map(|_| ())
+        },
+    )
+    .await;
+    assert!(
+        bootstrap_frames.lock().expect("frames").iter().all(|text| {
+            let Ok(Value::Array(request)) = serde_json::from_str::<Value>(text) else {
+                return true;
+            };
+            request.first().and_then(Value::as_str) != Some("REQ")
+                || request[2..] == [list_filter.clone()]
+        }),
+        "known-author parent must not be fetched from metadata-only bootstrap"
+    );
+}
+
+/// An explicit bootstrap relay can supply an authorless missing parent, without
+/// receiving the thread's root/reply filters in the parent request.
+#[tokio::test]
+async fn bridge_thread_fetches_authorless_parent_from_bootstrap_by_exact_id() {
+    use serde_json::{json, Value};
+
+    let parent = signed_text_note("parent only on bootstrap", 1);
+    let parent_filter = json!({"ids": [hex::encode(parent.id())]});
+    let event: Value = serde_json::from_str(&parent.json().expect("json")).expect("event");
+    let expected = parent_filter.clone();
+    let (_bootstrap_task, bootstrap, captured, notify) =
+        create_filtered_capture_relay_with_handler(
+            |_| true,
+            move || {
+                let expected = expected.clone();
+                let event = event.clone();
+                move |text: &str| {
+                    let Ok(Value::Array(request)) = serde_json::from_str::<Value>(text) else {
+                        return CaptureRelayResponse::none();
+                    };
+                    if request.first().and_then(Value::as_str) != Some("REQ") {
+                        return CaptureRelayResponse::none();
+                    }
+                    let Some(sub_id) = request.get(1).and_then(Value::as_str) else {
+                        return CaptureRelayResponse::none();
+                    };
+                    // No broad request, relay-list request, or extra filter can obtain the parent.
+                    let mut response = Vec::new();
+                    if request[2..] == [expected.clone()] {
+                        response.push(json!(["EVENT", sub_id, event]).to_string());
+                    }
+                    response.push(json!(["EOSE", sub_id]).to_string());
+                    CaptureRelayResponse {
+                        send_text: response,
+                        close: false,
+                    }
+                }
+            },
+        )
+        .await;
+    let (read_url, _, _) = create_text_capture_relay().await;
+    let read = NormRelayUrl::new(&read_url).expect("read relay");
+    let user = FullKeypair::generate();
+    let read_spec = crate::RelaySpec::new(read.clone(), true, false);
+    let account_list = crate::construct_nip65_relays_note([&read_spec])
+        .created_at(2)
+        .sign(&user.secret_key.secret_bytes())
+        .build()
+        .expect("account list");
+    let child = NoteBuilder::new()
+        .kind(1)
+        .content("child without a parent-author hint")
+        .created_at(3)
+        .start_tag()
+        .tag_str("e")
+        .tag_id(parent.id())
+        .tag_str("")
+        .tag_str("reply")
+        .sign(&user.secret_key.secret_bytes())
+        .build()
+        .expect("child");
+    let (_tmp, mut ndb) = test_ndb();
+    let job_pool = JobPool::new(1);
+    let mut remote = test_remote_state(&ndb, &job_pool);
+    for note in [&account_list, &child] {
+        ndb.process_client_event(&note.json().expect("json"))
+            .expect("seed local context");
+    }
+    wait_for_condition(
+        &mut remote,
+        Duration::from_secs(2),
+        None,
+        "local context",
+        |_| {
+            let txn = Transaction::new(&ndb).ok()?;
+            [&account_list, &child]
+                .iter()
+                .all(|note| ndb.get_note_by_id(&txn, note.id()).is_ok())
+                .then_some(())
+        },
+    )
+    .await;
+    let accounts = {
+        let txn = Transaction::new(&ndb).expect("txn");
+        assert!(ndb.get_note_by_id(&txn, parent.id()).is_err());
+        Accounts::new(
+            None,
+            Vec::new(),
+            vec![bootstrap.to_string()],
+            user.pubkey,
+            &mut ndb,
+            &txn,
+            &mut UnknownIds::default(),
+        )
+    };
+    assert_eq!(
+        accounts.selected_account_read_relays(),
+        hashbrown::HashSet::from([read])
+    );
+    assert_eq!(
+        accounts.discovery_bootstrap_relays(),
+        hashbrown::HashSet::from([bootstrap.clone()])
+    );
+    assert!(!bootstrap.allowed_for_source(enostr::RelayUrlSource::RemoteAdvertised));
+    let identity = ScopedSubIdentity::global(
+        SubOwnerKey::new("bridge/bootstrap-authorless"),
+        SubKey::new("thread"),
+    );
+    let config = SubConfig::builder(vec![Filter::new()
+        .kinds([1])
+        .event(parent.id())
+        .limit(250)
+        .build()])
+    .accounts_read_important()
+    .with_author_outbox_augmentation()
+    .for_thread(NoteId::new(*parent.id()), [NoteId::new(*child.id())])
+    .build();
+    {
+        let mut api = remote.api();
+        api.on_selected_account_changed(&accounts);
+        assert_eq!(
+            api.scoped_subs(&accounts).ensure_sub(identity, config),
+            EnsureSubResult::Created
+        );
+        api.flush();
+    }
+    let frame = wait_for_frame(
+        &mut remote,
+        &captured,
+        &notify,
+        "bootstrap exact-ID REQ",
+        |text| {
+            let Ok(Value::Array(request)) = serde_json::from_str::<Value>(text) else {
+                return false;
+            };
+            request.first().and_then(Value::as_str) == Some("REQ")
+                && request[2..] == [parent_filter.clone()]
+        },
+    )
+    .await;
+    let frame: Value = serde_json::from_str(&frame).expect("request");
+    assert_eq!(frame.as_array().expect("request").len(), 3);
+    assert_eq!(frame[2], parent_filter);
+    wait_for_condition(
+        &mut remote,
+        Duration::from_secs(3),
+        None,
+        "bootstrap parent ingestion",
+        |_| {
+            let txn = Transaction::new(&ndb).ok()?;
+            ndb.get_note_by_id(&txn, parent.id()).ok().map(|_| ())
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn oneshot_uses_selected_account_read_relays() {
     let (relay_url, captured, notify) = create_text_capture_relay().await;

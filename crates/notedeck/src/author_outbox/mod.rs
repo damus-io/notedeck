@@ -1,6 +1,7 @@
 mod directory;
 mod planner;
 mod routing;
+pub(crate) mod thread;
 
 pub(crate) use directory::{RelayDirectoryRead, RelayDirectorySnapshot, RelayDirectoryState};
 pub(crate) use planner::{

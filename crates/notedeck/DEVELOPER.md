@@ -75,6 +75,64 @@ pub enum FilterState {
 }
 ```
 
+#### Thread outbox subscriptions
+
+Columns declares a thread with the existing scoped subscription API:
+
+```rust,ignore
+SubConfig::builder(root_filters)
+    .accounts_read_important()
+    .with_author_outbox_augmentation()
+    .for_thread(root_id, selected_note_ids)
+    .build()
+```
+
+The filters still request replies to the root and the root itself. The selected
+IDs are additional planning inputs, not an `authors` restriction. Owners of the
+same thread share their selected IDs under the existing account-scoped key.
+
+`AuthorOutboxPlanRuntime` uses the existing background job runner to walk available
+NIP-10 ancestry. `RelayDirectorySnapshot` resolves the authors' write relays, just
+as it does for author-filter subscriptions. Observed relays and relay hints add
+coverage. Missing ancestors are requested by exact event ID; a tag's claimed
+author only helps find relays and cannot exclude the actual event author.
+
+Author-filter and thread jobs have distinct input variants. A thread job reads
+one ancestry snapshot and returns its routes and encountered IDs/authors; it
+does not create subscriptions or reread ancestry to catch up with ingestion.
+
+After completion, `AuthorOutboxPlanRuntime` subscribes to those IDs and authors'
+kind-10002 events. Installing new or expanded subscription coverage schedules
+another job to catch arrivals that preceded subscription setup. The completed
+plan remains usable while that job runs. With unchanged coverage, the runtime
+retains the same subscription and its queued arrivals.
+
+An NDB `SubscriptionStream` wakes the bridge when relevant data arrives; healthy
+threads have no polling timer. Notifications remain queued while a job runs,
+then can cause the next job to be scheduled. Timers are used only for failed
+planning/subscription attempts and existing relay-list discovery retries.
+Read/setup failures back off from 100 ms, doubling up to 60 seconds; a successful
+snapshot with subscription coverage resets the delay.
+Relay-list discovery uses the existing `RelayListDiscovery` requests and remains
+alive while ancestry changes. Usable routes do not wait for discovery EOSE.
+Both author-filter and thread discovery query the selected read relays plus the
+configured bootstrap set. Missing ancestors without a claimed author also get
+exact-ID one-shots on bootstrap relays outside the selected read set. These
+are explicit configured-relay requests, not remote-advertised hints; ordinary
+account reads stay unchanged. Forced-relay configuration disables the additional
+bootstrap coverage, and an injected empty bootstrap set remains empty.
+NDB does not notify when an already-stored note gains another observed relay;
+that metadata is picked up on the next snapshot rebuild.
+
+Closing the last owner or switching away from the account releases the watch,
+ancestor fetch, and unfinished relay-list discovery. Disabling outbox replaces
+the declaration with ordinary selected-account coverage. `UnknownIds` and the
+bridge's selected-account one-shot API are unchanged.
+
+The regression tests in `columns_e2e.rs` run the real host, scoped subscriptions,
+relay transport, and NDB against local WebSocket relays, including late ancestor
+and relay-list arrival. They are not interactive GUI verification.
+
 ## Development Workflow
 
 ### Setting Up Your Environment

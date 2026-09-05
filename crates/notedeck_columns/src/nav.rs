@@ -109,7 +109,7 @@ fn process_settings_response(
                 app.timeline_cache
                     .refresh_remote_subscriptions(&mut scoped_subs, remote_policy);
                 app.threads
-                    .refresh_remote_subscriptions(ctx.ndb, &mut scoped_subs, remote_policy);
+                    .refresh_remote_subscriptions(&mut scoped_subs, remote_policy);
             }
             None
         }

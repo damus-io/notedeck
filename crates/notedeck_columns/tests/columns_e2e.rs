@@ -48,6 +48,7 @@ struct ThreadLoadApp {
     selection: ThreadSelection,
     col: ColumnId,
     opened: bool,
+    use_outbox_relays: bool,
 }
 
 impl ThreadLoadApp {
@@ -57,6 +58,7 @@ impl ThreadLoadApp {
             selection,
             col: test_column_id(col),
             opened: false,
+            use_outbox_relays: true,
         }
     }
 }
@@ -77,7 +79,7 @@ impl App for ThreadLoadApp {
             true,
             self.col,
             0.0,
-            RemoteSubscriptionPolicy::from_outbox_relays(true),
+            RemoteSubscriptionPolicy::from_outbox_relays(self.use_outbox_relays),
         );
         self.opened = true;
     }
@@ -301,6 +303,61 @@ fn build_reply_note(
         .build()
         .expect("reply note")
 }
+
+/// Address the local relay through a DNS hostname accepted for advertised URLs.
+/// `localhost.localdomain` resolves locally on the Linux test host, so these
+/// scenarios use the production URL policy without an external relay or DNS service.
+fn advertised_relay_endpoint(relay_url: &str, path: &str) -> String {
+    let mut endpoint = url::Url::parse(relay_url).expect("local relay URL");
+    endpoint
+        .set_host(Some("localhost.localdomain"))
+        .expect("local DNS hostname");
+    endpoint.set_path(path);
+    let endpoint = endpoint.to_string();
+    let normalized = enostr::NormRelayUrl::new(&endpoint).expect("advertised relay URL");
+    assert!(normalized.allowed_for_source(enostr::RelayUrlSource::RemoteAdvertised));
+    endpoint
+}
+
+/// Build a reply whose NIP-10 references carry relay hints and claimed authors.
+fn build_routed_reply_note(
+    account: &FullKeypair,
+    content: &str,
+    references: &[(&str, &nostrdb::Note<'_>, &str, &enostr::Pubkey)],
+) -> nostrdb::Note<'static> {
+    let mut builder = NoteBuilder::new()
+        .kind(1)
+        .content(content)
+        .created_at(1_700_500_000);
+    for (marker, note, relay, claimed_author) in references {
+        builder = builder
+            .start_tag()
+            .tag_str("e")
+            .tag_str(&hex::encode(note.id()))
+            .tag_str(relay)
+            .tag_str(marker)
+            .tag_str(&claimed_author.hex());
+    }
+    builder
+        .sign(&account.secret_key.secret_bytes())
+        .build()
+        .expect("reply with NIP-10 routing metadata")
+}
+
+/// Advertise the relay where an author writes notes.
+fn build_write_relay_list(author: &FullKeypair, relay_url: &str) -> nostrdb::Note<'static> {
+    NoteBuilder::new()
+        .kind(10002)
+        .content("")
+        .start_tag()
+        .tag_str("r")
+        .tag_str(relay_url)
+        .tag_str("write")
+        .sign(&author.secret_key.secret_bytes())
+        .build()
+        .expect("author write relay list")
+}
+
 fn rendered_note_count(device: &DeviceHarness, substring: &str) -> usize {
     device.query_all_by_label_contains(substring).count()
 }
@@ -948,6 +1005,331 @@ async fn thread_loads_full_reply_set_e2e() {
         "thread import should open negentropy"
     );
 }
+
+/// Opening a locally stored child must fetch its hinted ancestors, including
+/// another missing ancestor revealed only after the first parent is imported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn thread_open_fetches_hinted_parents_and_newly_discovered_ancestor_e2e() {
+    let (_account_db, account_url, _account_relay) = setup_relay().await;
+    let (parent_db, parent_url, _parent_relay) = setup_relay().await;
+    let (ancestor_db, ancestor_url, _ancestor_relay) = setup_relay().await;
+    let parent_hint = advertised_relay_endpoint(&parent_url, "/inbox");
+    let ancestor_hint = advertised_relay_endpoint(&ancestor_url, "/notes");
+    let alice = FullKeypair::generate();
+    let author = FullKeypair::generate();
+    let claimed_author = FullKeypair::generate();
+    let root = build_text_note(&author, "hinted thread root", 1_700_499_000);
+    let ancestor = build_reply_note(&author, &root, "hinted ancestor", 1_700_499_100);
+    let parent = build_routed_reply_note(
+        &author,
+        "hinted parent",
+        &[
+            ("root", &root, &parent_hint, &author.pubkey),
+            ("reply", &ancestor, &ancestor_hint, &author.pubkey),
+        ],
+    );
+    let child = build_routed_reply_note(
+        &alice,
+        "selected child",
+        &[
+            ("root", &root, &parent_hint, &claimed_author.pubkey),
+            ("reply", &parent, &parent_hint, &claimed_author.pubkey),
+        ],
+    );
+    for note in [&root, &parent] {
+        save_note(&parent_db, note).await;
+    }
+    save_note(&ancestor_db, &ancestor).await;
+    let tmpdir = TempDir::new().expect("tmpdir");
+    seed_notes_in_tmpdir(&tmpdir, &[child.json().expect("child JSON")], 1);
+    let selection = ThreadSelection {
+        root_id: RootNoteIdBuf::new_unsafe(*root.id()),
+        selected_note: Some(enostr::NoteId::new(*child.id())),
+    };
+    let mut device = build_columns_device(
+        &account_url,
+        &alice,
+        tmpdir,
+        thread_app_factory(selection, 7),
+    );
+    let ancestors = LocalQuery::new(
+        vec![Filter::new()
+            .ids([root.id(), parent.id(), ancestor.id()])
+            .build()],
+        3,
+        "query hinted ancestors",
+    );
+    ancestors.wait_for_count(
+        &mut device,
+        3,
+        Duration::from_secs(15),
+        "root, parent and newly discovered ancestor from relay hints",
+    );
+}
+
+/// A relay list imported after thread demand must route the missing note by id;
+/// its claimed author must not exclude a note signed by a different author.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn thread_open_fetches_parent_after_claimed_author_relay_list_arrives_e2e() {
+    let (_account_db, account_url, account_relay) = setup_relay().await;
+    let (author_db, author_url, _author_relay) = setup_relay().await;
+    let author_relay_url = advertised_relay_endpoint(&author_url, "/");
+    let alice = FullKeypair::generate();
+    let author = FullKeypair::generate();
+    let claimed_author = FullKeypair::generate();
+    let parent = build_text_note(&author, "parent on claimed author relay", 1_700_499_000);
+    let child = build_routed_reply_note(
+        &alice,
+        "selected child before relay discovery",
+        &[("root", &parent, "", &claimed_author.pubkey)],
+    );
+    save_note(&author_db, &parent).await;
+    let profile = NoteBuilder::new()
+        .kind(0)
+        .content(r#"{"name":"already known profile"}"#)
+        .sign(&claimed_author.secret_key.secret_bytes())
+        .build()
+        .expect("known claimed-author profile");
+    let tmpdir = TempDir::new().expect("tmpdir");
+    seed_notes_in_tmpdir(&tmpdir, &[child.json().expect("child JSON")], 1);
+    seed_notes_in_tmpdir(&tmpdir, &[profile.json().expect("profile JSON")], 0);
+    let selection = ThreadSelection {
+        root_id: RootNoteIdBuf::new_unsafe(*parent.id()),
+        selected_note: Some(enostr::NoteId::new(*child.id())),
+    };
+    let mut device = build_columns_device(
+        &account_url,
+        &alice,
+        tmpdir,
+        thread_app_factory(selection, 7),
+    );
+    wait_for_device_condition(
+        &mut device,
+        Duration::from_secs(5),
+        "initial relay requests before relay-list discovery",
+        |_| {
+            if account_relay.count_captured_prefix("[\"REQ\",") > 0 {
+                Ok(())
+            } else {
+                Err("no initial REQ received".to_owned())
+            }
+        },
+    );
+    let parent_query = LocalQuery::new(
+        vec![Filter::new().ids([parent.id()]).build()],
+        1,
+        "query parent on claimed author relay",
+    );
+    parent_query.assert_count_stable(&mut device, 0, 8, "parent before relay discovery");
+    let relay_list = NoteBuilder::new()
+        .kind(10002)
+        .content("")
+        .start_tag()
+        .tag_str("r")
+        .tag_str(&author_relay_url)
+        .tag_str("write")
+        .sign(&claimed_author.secret_key.secret_bytes())
+        .build()
+        .expect("claimed author relay list");
+    {
+        let app_ctx = &mut device.state_mut().notedeck.app_context();
+        app_ctx
+            .ndb
+            .process_client_event(&relay_list.json().expect("relay-list JSON"))
+            .expect("import relay list after thread demand");
+    }
+    parent_query.wait_for_count(
+        &mut device,
+        1,
+        Duration::from_secs(15),
+        "parent after claimed author relay-list discovery",
+    );
+}
+
+/// Disabling outbox relays keeps thread traffic on selected-account read relays,
+/// even when a selected child supplies a parent hint and a known author relay list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn thread_open_with_outbox_disabled_uses_only_selected_read_relays_e2e() {
+    let (account_db, account_url, _account_relay) = setup_relay().await;
+    let (author_db, author_url, author_relay) = setup_relay().await;
+    let author_hint = advertised_relay_endpoint(&author_url, "/inbox");
+    let alice = FullKeypair::generate();
+    let author = FullKeypair::generate();
+    let root = build_text_note(&author, "root from selected read relay", 1_700_499_000);
+    let parent = build_reply_note(&author, &root, "parent on outbox relay", 1_700_499_100);
+    let sibling = build_reply_note(
+        &author,
+        &root,
+        "reply from selected read relay",
+        1_700_499_200,
+    );
+    let child = build_routed_reply_note(
+        &alice,
+        "selected child with outbox disabled",
+        &[
+            ("root", &root, &author_hint, &author.pubkey),
+            ("reply", &parent, &author_hint, &author.pubkey),
+        ],
+    );
+    for note in [&root, &sibling] {
+        save_note(&account_db, note).await;
+    }
+    save_note(&author_db, &parent).await;
+    let relay_list = build_write_relay_list(&author, &author_hint);
+    let tmpdir = TempDir::new().expect("tmpdir");
+    seed_notes_in_tmpdir(&tmpdir, &[child.json().expect("child JSON")], 1);
+    seed_notes_in_tmpdir(
+        &tmpdir,
+        &[relay_list.json().expect("relay-list JSON")],
+        10002,
+    );
+    let selection = ThreadSelection {
+        root_id: RootNoteIdBuf::new_unsafe(*root.id()),
+        selected_note: Some(enostr::NoteId::new(*child.id())),
+    };
+    let mut device = build_columns_device(
+        &account_url,
+        &alice,
+        tmpdir,
+        Box::new(move |notedeck, _ctx| {
+            notedeck
+                .app_context()
+                .settings
+                .set_columns_use_outbox_relays(false);
+            let mut app = ThreadLoadApp::new(selection, 7);
+            app.use_outbox_relays = false;
+            notedeck.set_app(app);
+        }),
+    );
+    LocalQuery::new(
+        vec![Filter::new().ids([root.id(), sibling.id()]).build()],
+        2,
+        "query selected-account thread notes",
+    )
+    .wait_for_count(
+        &mut device,
+        2,
+        Duration::from_secs(15),
+        "thread root and reply from selected-account read relay",
+    );
+    LocalQuery::new(
+        vec![Filter::new().ids([parent.id()]).build()],
+        1,
+        "query parent available only from outbox",
+    )
+    .assert_count_stable(
+        &mut device,
+        0,
+        12,
+        "parent remains missing with outbox disabled",
+    );
+    assert_eq!(author_relay.count_captured_prefix("[\"REQ\","), 0);
+    assert_eq!(author_relay.count_captured_prefix("[\"NEG-OPEN\","), 0);
+}
+
+/// Importing an author-routed parent reveals another author whose later relay
+/// list must route the next missing ancestor without reopening the thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn thread_open_fetches_new_ancestor_from_new_authors_later_relay_list_e2e() {
+    let (_account_db, account_url, _account_relay) = setup_relay().await;
+    let (parent_db, parent_url, _parent_relay) = setup_relay().await;
+    let (ancestor_db, ancestor_url, _ancestor_relay) = setup_relay().await;
+    let parent_relay_url = advertised_relay_endpoint(&parent_url, "/");
+    let ancestor_relay_url = advertised_relay_endpoint(&ancestor_url, "/");
+    let alice = FullKeypair::generate();
+    let parent_author = FullKeypair::generate();
+    let ancestor_author = FullKeypair::generate();
+    let root = build_text_note(&parent_author, "author-routed root", 1_700_499_000);
+    let ancestor = build_reply_note(
+        &ancestor_author,
+        &root,
+        "ancestor from newly discovered author",
+        1_700_499_100,
+    );
+    let parent = build_routed_reply_note(
+        &parent_author,
+        "parent exposing new author",
+        &[
+            ("root", &root, "", &parent_author.pubkey),
+            ("reply", &ancestor, "", &ancestor_author.pubkey),
+        ],
+    );
+    let child = build_routed_reply_note(
+        &alice,
+        "selected child before ancestor author is known",
+        &[
+            ("root", &root, "", &parent_author.pubkey),
+            ("reply", &parent, "", &parent_author.pubkey),
+        ],
+    );
+    for note in [&root, &parent] {
+        save_note(&parent_db, note).await;
+    }
+    save_note(&ancestor_db, &ancestor).await;
+    let parent_relay_list = build_write_relay_list(&parent_author, &parent_relay_url);
+    let tmpdir = TempDir::new().expect("tmpdir");
+    seed_notes_in_tmpdir(&tmpdir, &[child.json().expect("child JSON")], 1);
+    seed_notes_in_tmpdir(
+        &tmpdir,
+        &[parent_relay_list.json().expect("parent relay-list JSON")],
+        10002,
+    );
+    let selection = ThreadSelection {
+        root_id: RootNoteIdBuf::new_unsafe(*root.id()),
+        selected_note: Some(enostr::NoteId::new(*child.id())),
+    };
+    let mut device = build_columns_device(
+        &account_url,
+        &alice,
+        tmpdir,
+        thread_app_factory(selection, 7),
+    );
+    LocalQuery::new(
+        vec![Filter::new().ids([root.id(), parent.id()]).build()],
+        2,
+        "query first author-routed ancestors",
+    )
+    .wait_for_count(
+        &mut device,
+        2,
+        Duration::from_secs(15),
+        "root and parent from first author's write relay",
+    );
+    let ancestor_query = LocalQuery::new(
+        vec![Filter::new().ids([ancestor.id()]).build()],
+        1,
+        "query ancestor from newly discovered author",
+    );
+    ancestor_query.assert_count_stable(
+        &mut device,
+        0,
+        8,
+        "ancestor before its author's relay list arrives",
+    );
+    let ancestor_relay_list = build_write_relay_list(&ancestor_author, &ancestor_relay_url);
+    {
+        let app_ctx = &mut device.state_mut().notedeck.app_context();
+        app_ctx
+            .ndb
+            .process_client_event(
+                &ancestor_relay_list
+                    .json()
+                    .expect("ancestor relay-list JSON"),
+            )
+            .expect("import newly discovered author's relay list");
+    }
+    ancestor_query.wait_for_count(
+        &mut device,
+        1,
+        Duration::from_secs(15),
+        "ancestor from newly discovered author's write relay",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn account_switch_restores_thread_subscription_e2e() {

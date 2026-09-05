@@ -13,6 +13,8 @@ use hyper_util::{
 use url::Url;
 
 const MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
+/// Stable client identity sent with outbound HTTP requests.
+const NOTEDECK_USER_AGENT: &str = "notedeck";
 
 type HyperClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
 
@@ -102,7 +104,8 @@ async fn http_req_with_client(
         // Fetch the url...
         let mut req_builder = Request::builder()
             .uri(current_uri.clone())
-            .header(hyper::header::HOST, authority.as_str());
+            .header(hyper::header::HOST, authority.as_str())
+            .header(hyper::header::USER_AGENT, NOTEDECK_USER_AGENT);
         if let Some(accept) = accept {
             req_builder = req_builder.header(hyper::header::ACCEPT, accept);
         }

@@ -20,6 +20,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::http::{header::USER_AGENT, HeaderValue};
 use tokio_tungstenite::tungstenite::Message as TMessage;
 use tokio_tungstenite::{client_async_tls, MaybeTlsStream, WebSocketStream};
 
@@ -37,6 +38,8 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 /// A vanished *route* is caught instantly by the interface watcher instead;
 /// this backstops the rarer "peer silently dead, route still up" case.
 const KEEPALIVE_RETRIES: u32 = 2;
+/// Stable client identity sent during relay websocket handshakes.
+const ENOSTR_USER_AGENT: &str = "enostr";
 
 /// A websocket data frame exchanged with a relay.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,11 +106,14 @@ where
 {
     // Validate the request synchronously so a malformed URL fails on the
     // spot, matching the previous connect contract.
-    let request = url.into_client_request().map_err(|err| {
+    let mut request = url.into_client_request().map_err(|err| {
         Error::WebSocket(WebSocketError::new(format!(
             "invalid relay url {url}: {err}"
         )))
     })?;
+    request
+        .headers_mut()
+        .insert(USER_AGENT, HeaderValue::from_static(ENOSTR_USER_AGENT));
 
     let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let (in_tx, in_rx) = tokio::sync::mpsc::unbounded_channel::<WsMessage>();

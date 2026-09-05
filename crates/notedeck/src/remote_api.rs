@@ -134,6 +134,7 @@ impl<'a> RemoteApi<'a> {
             accounts.selected_account_read_relays(),
             accounts.selected_account_write_relays(),
         )
+        .with_bootstrap_relays(accounts.discovery_bootstrap_relays())
     }
 }
 

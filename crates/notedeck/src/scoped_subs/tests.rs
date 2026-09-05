@@ -494,6 +494,7 @@ fn apply_scoped_effects_for_test(
                     selected_account_pubkey,
                     account_read_relays,
                     completion,
+                    ndb,
                 );
                 let next_effects = bridge.ingest_scoped_delta(delta);
                 apply_scoped_effects_for_test(
@@ -525,6 +526,7 @@ fn collect_scoped_effect_outbox_ops_for_test(
                     selected_account_pubkey,
                     account_read_relays,
                     completion,
+                    ndb,
                 );
                 let (_output, ops, next_effects) = delta.into_parts();
                 outbox_ops.extend(ops);

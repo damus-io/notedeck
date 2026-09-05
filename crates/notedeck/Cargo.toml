@@ -24,6 +24,7 @@ eframe = { workspace = true }
 image = { workspace = true }
 base32 = { workspace = true }
 poll-promise = { workspace = true }
+futures-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
@@ -82,7 +83,6 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 nostr-relay-builder = "0.37"
 tokio-tungstenite = { workspace = true }
-futures-util = { workspace = true }
 
 [dependencies.egui_kittest]
 workspace = true

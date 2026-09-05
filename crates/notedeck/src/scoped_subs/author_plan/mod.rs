@@ -1,6 +1,11 @@
-use enostr::{NormRelayUrl, OutboxIdRegistry, OutboxSubId, Pubkey, RelayReqStatus};
+use enostr::{
+    NormRelayUrl, NoteId, OutboxIdRegistry, OutboxSubId, Pubkey, RelayReqStatus, RelayUrlPkgs,
+    RelayUrlPolicy,
+};
+use futures_util::{future::poll_fn, StreamExt};
 use hashbrown::{HashMap, HashSet};
-use nostrdb::{Ndb, SendFilter};
+use nostrdb::{Filter, Ndb, SendFilter};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use super::config::{ScopedSubKey, SubConfig};
@@ -12,8 +17,13 @@ use crate::author_outbox::{
 };
 
 mod discovery;
+mod thread;
 
 use discovery::{start_relay_list_discovery, RelayListDiscovery, RelayListDiscoveryAdvance};
+use thread::{build_thread_plan, ThreadPlanSnapshot, ThreadWatch};
+
+const THREAD_PLAN_RETRY_DELAY: Duration = Duration::from_millis(100);
+const THREAD_PLAN_RETRY_MAX: Duration = Duration::from_secs(60);
 
 const RELAY_LIST_INGESTION_WAIT_DELAYS: [Duration; 6] = [
     Duration::from_millis(50),
@@ -32,19 +42,25 @@ struct AuthorOutboxPlanOwner {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(super) struct AuthorOutboxPlanSlotId(u64);
+pub(crate) struct AuthorOutboxPlanSlotId(u64);
 
 /// Input snapshot that must still match before a cached plan can be reused.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AuthorOutboxPlanInputs {
     account_read_relays: HashSet<NormRelayUrl>,
+    bootstrap_relays: HashSet<NormRelayUrl>,
     spec: SubConfig,
 }
 
 impl AuthorOutboxPlanInputs {
-    fn new(account_read_relays: &HashSet<NormRelayUrl>, spec: &SubConfig) -> Self {
+    fn new(
+        account_read_relays: &HashSet<NormRelayUrl>,
+        bootstrap_relays: &HashSet<NormRelayUrl>,
+        spec: &SubConfig,
+    ) -> Self {
         Self {
             account_read_relays: account_read_relays.clone(),
+            bootstrap_relays: bootstrap_relays.clone(),
             spec: spec.clone(),
         }
     }
@@ -105,7 +121,18 @@ pub(crate) struct AuthorOutboxPlanJobCompletion {
 }
 
 /// Owned sendable data needed by one background author-outbox plan job.
-struct SendAuthorOutboxPlanJobInput {
+enum SendAuthorOutboxPlanJobInput {
+    /// Route authors named by the configured filters.
+    AuthorFilters(SendAuthorOutboxPlanConfig),
+    /// Route the ancestry of the required thread note IDs.
+    Thread {
+        config: SendAuthorOutboxPlanConfig,
+        note_ids: HashSet<NoteId>,
+    },
+}
+
+/// Relay coverage and filters shared by both background plan kinds.
+struct SendAuthorOutboxPlanConfig {
     account_read_relays: HashSet<NormRelayUrl>,
     live_filters: Vec<SendPlanFilter>,
     full_history_filters: Vec<SendPlanFilter>,
@@ -124,6 +151,7 @@ struct SendAuthorOutboxPlanJobResult {
     live_routed_relays: Vec<SendPlannedRoutedRelay>,
     full_history_routed_relays: Vec<SendPlannedRoutedRelay>,
     missing_authors: HashSet<Pubkey>,
+    thread: Option<Result<ThreadPlanSnapshot, nostrdb::Error>>,
 }
 
 /// Current shared author-outbox plan lifecycle for one input snapshot.
@@ -131,10 +159,126 @@ struct AuthorOutboxPlanSlot {
     inputs: AuthorOutboxPlanInputs,
     owners: HashSet<AuthorOutboxPlanOwner>,
     state: AuthorOutboxPlanState,
+    thread: Option<ThreadPlanState>,
+}
+
+/// Dynamic thread inputs and the last usable routes while a replacement builds.
+/// Owned by the same plan slot as relay-list discovery, never by the UI.
+struct ThreadPlanState {
+    watch: Option<ThreadWatch>,
+    /// Only failed reads or subscription setup use a timer; arrivals wake the stream.
+    retry_after: Option<Instant>,
+    /// Next failure's delay, doubled up to the cap and reset after recovery.
+    retry_delay: Duration,
+    available_plan: Option<CachedAuthorOutboxPlan>,
+    baseline_fetch: MissingIdFetch,
+    bootstrap_fetch: MissingIdFetch,
+    /// Shared discovery implementation, kept alive across ancestry snapshots.
+    discovery: Option<RelayListDiscovery>,
+    requested_authors: HashSet<Pubkey>,
+}
+
+impl Default for ThreadPlanState {
+    fn default() -> Self {
+        Self {
+            watch: None,
+            retry_after: None,
+            retry_delay: THREAD_PLAN_RETRY_DELAY,
+            available_plan: None,
+            baseline_fetch: MissingIdFetch::default(),
+            bootstrap_fetch: MissingIdFetch::default(),
+            discovery: None,
+            requested_authors: HashSet::new(),
+        }
+    }
+}
+
+impl ThreadPlanState {
+    /// Back off consecutive read/setup failures, including across planning jobs.
+    fn record_failed_attempt(&mut self) {
+        self.retry_after = Some(Instant::now() + self.retry_delay);
+        self.retry_delay = self
+            .retry_delay
+            .saturating_mul(2)
+            .min(THREAD_PLAN_RETRY_MAX);
+    }
+
+    /// Discover each newly encountered author once per thread plan lifetime.
+    /// Existing discovery legs retain their normal EOSE/retry policy while
+    /// arriving ancestors extend the set of authors being discovered.
+    fn discover_authors(
+        &mut self,
+        ids: &OutboxIdRegistry,
+        missing: HashSet<Pubkey>,
+        relays: &HashSet<NormRelayUrl>,
+    ) -> ScopedSubOutboxOps {
+        if relays.is_empty() {
+            return ScopedSubOutboxOps::default();
+        }
+        let new_authors = missing
+            .into_iter()
+            .filter(|author| self.requested_authors.insert(*author))
+            .collect::<HashSet<_>>();
+        if new_authors.is_empty() {
+            return ScopedSubOutboxOps::default();
+        }
+        let (discovery, ops) = start_relay_list_discovery(ids, new_authors, relays.clone());
+        if let Some(existing) = &mut self.discovery {
+            existing.chunks.extend(discovery.chunks);
+        } else {
+            self.discovery = Some(discovery);
+        }
+        ops
+    }
+}
+
+/// One exact-ID fetch retained across thread snapshots, with normal one-shot EOSE cleanup.
+/// Remembering the requested IDs and relays prevents resending an unchanged fetch.
+#[derive(Default)]
+struct MissingIdFetch {
+    missing_ids: HashSet<NoteId>,
+    relays: HashSet<NormRelayUrl>,
+    id: Option<OutboxSubId>,
+}
+
+impl MissingIdFetch {
+    /// Replace the one-shot only when its missing IDs or destination relays change.
+    fn update(
+        &mut self,
+        missing_ids: HashSet<NoteId>,
+        relays: HashSet<NormRelayUrl>,
+        ids: &OutboxIdRegistry,
+        policy: RelayUrlPolicy,
+    ) -> ScopedSubOutboxOps {
+        let mut ops = ScopedSubOutboxOps::default();
+        if self.missing_ids == missing_ids && self.relays == relays {
+            return ops;
+        }
+        self.missing_ids = missing_ids;
+        self.relays = relays;
+        if let Some(id) = self.id.take() {
+            ops.clear_fetch(id);
+        }
+        if self.missing_ids.is_empty() || self.relays.is_empty() {
+            return ops;
+        }
+        let mut missing = self.missing_ids.iter().copied().collect::<Vec<_>>();
+        missing.sort_unstable_by_key(|id| *id.bytes());
+        let id = ids.next_sub_id();
+        ops.start_fetch(
+            id,
+            vec![Filter::new().ids(missing.iter().map(NoteId::bytes)).build()],
+            RelayUrlPkgs::new(self.relays.clone(), policy),
+        );
+        self.id = Some(id);
+        ops
+    }
 }
 
 enum AuthorOutboxPlanState {
     BuildingInitial,
+    /// No successful initial thread snapshot yet; retry at the error deadline.
+    WaitingForThreadRetry,
     DiscoveringRelays {
         discovery: RelayListDiscovery,
         original_missing_author_count: usize,
@@ -200,8 +344,11 @@ pub(super) struct AuthorOutboxPlanAdvanceResult<'a> {
     pub(super) effects: ScopedSubEffects,
 }
 
-/// Retained frozen author-outbox plans and in-flight relay-list discovery.
+/// Shared author-outbox planner. Author-filter plans remain frozen; thread
+/// plans rebuild on NDB ingestion while retaining their relay-list discovery.
 pub(super) struct AuthorOutboxPlanRuntime {
+    /// Injected discovery destinations, captured in each immutable plan input.
+    pub(super) bootstrap_relays: HashSet<NormRelayUrl>,
     owner_slots: HashMap<AuthorOutboxPlanOwner, AuthorOutboxPlanSlotId>,
     slots: HashMap<AuthorOutboxPlanSlotId, AuthorOutboxPlanSlot>,
     next_slot_id: u64,
@@ -211,6 +358,7 @@ pub(super) struct AuthorOutboxPlanRuntime {
 impl Default for AuthorOutboxPlanRuntime {
     fn default() -> Self {
         Self {
+            bootstrap_relays: HashSet::new(),
             owner_slots: HashMap::new(),
             slots: HashMap::new(),
             next_slot_id: 1,
@@ -220,12 +368,73 @@ impl Default for AuthorOutboxPlanRuntime {
 }
 
 impl AuthorOutboxPlanRuntime {
-    /// Return the next relay-list discovery retry deadline.
+    /// Return the next discovery or failed-thread-plan retry deadline.
     pub(super) fn next_deadline(&self) -> Option<Instant> {
         self.slots
             .values()
             .filter_map(AuthorOutboxPlanSlot::next_deadline)
             .min()
+    }
+
+    /// Await a relevant NDB arrival without a timer or a task per thread.
+    ///
+    /// Do not consume notifications while a job is running: the subscription's
+    /// queue retains them for a subsequent job. Cancelling this wait keeps the
+    /// streams in their slots, so other bridge activity cannot lose arrivals.
+    pub(super) async fn next_thread_change(&mut self) -> AuthorOutboxPlanSlotId {
+        poll_fn(|cx| {
+            for (slot_id, slot) in &mut self.slots {
+                if slot.state.is_building() {
+                    continue;
+                }
+                let Some(thread) = &mut slot.thread else {
+                    continue;
+                };
+                let Some(watch) = &mut thread.watch else {
+                    continue;
+                };
+                match watch.poll_next_unpin(cx) {
+                    Poll::Ready(Some(())) => return Poll::Ready(*slot_id),
+                    Poll::Ready(None) => {
+                        // An ended stream must be replaced, never selected repeatedly.
+                        thread.watch = None;
+                        return Poll::Ready(*slot_id);
+                    }
+                    Poll::Pending => {}
+                }
+            }
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Schedule one new thread plan while preserving the last completed routes.
+    /// Used by NDB notifications, expanded subscription coverage, and failed-job retries.
+    pub(super) fn apply_thread_change(
+        &mut self,
+        slot_id: AuthorOutboxPlanSlotId,
+    ) -> ScopedSubEffects {
+        let mut effects = ScopedSubEffects::default();
+        let Some(slot) = self.slots.get_mut(&slot_id) else {
+            return effects;
+        };
+        if slot.state.is_building() {
+            return effects;
+        }
+        let Some(thread) = &mut slot.thread else {
+            return effects;
+        };
+        thread.retry_after = None;
+        let previous = std::mem::replace(&mut slot.state, AuthorOutboxPlanState::BuildingInitial);
+        if let AuthorOutboxPlanState::Ready(plan) = previous {
+            thread.available_plan = Some(plan);
+        }
+        effects.push(ScopedSubEffect::from(AuthorOutboxPlanJobRequest::new(
+            slot_id,
+            AuthorOutboxBuildStage::Initial,
+            &slot.inputs,
+        )));
+        effects
     }
 
     /// Drop every cached or in-flight owner binding for one scoped subscription.
@@ -259,7 +468,8 @@ impl AuthorOutboxPlanRuntime {
     }
 
     /// Drop in-flight ownership tied to an inactive account while retaining
-    /// completed frozen plans for fast switch-back.
+    /// completed frozen author-filter plans for fast switch-back. Thread watches
+    /// belong only to the active account and are rebuilt on switch-back.
     pub(super) fn deactivate_account(&mut self, account_pubkey: Pubkey) -> ScopedSubOutboxOps {
         let owners = self
             .owner_slots
@@ -268,11 +478,11 @@ impl AuthorOutboxPlanRuntime {
                 if owner.account_pubkey != account_pubkey {
                     return None;
                 }
-                let is_ready = self
+                let retain = self
                     .slots
                     .get(slot_id)
-                    .is_some_and(AuthorOutboxPlanSlot::is_ready);
-                (!is_ready).then_some(owner.clone())
+                    .is_some_and(|slot| slot.thread.is_none() && slot.is_ready());
+                (!retain).then_some(owner.clone())
             })
             .collect::<Vec<_>>();
         let mut outbox_ops = ScopedSubOutboxOps::default();
@@ -309,7 +519,7 @@ impl AuthorOutboxPlanRuntime {
             account_pubkey,
             scoped,
         };
-        let inputs = AuthorOutboxPlanInputs::new(account_read_relays, spec);
+        let inputs = AuthorOutboxPlanInputs::new(account_read_relays, &self.bootstrap_relays, spec);
         let (slot_id, outbox_ops, slot_effects) = self.ensure_owner_slot(owner, inputs);
         effects.extend(slot_effects);
         let Some(slot_id) = slot_id else {
@@ -321,7 +531,7 @@ impl AuthorOutboxPlanRuntime {
         };
 
         if let Some(slot) = self.slots.get(&slot_id) {
-            if let AuthorOutboxPlanState::Ready(plan) = &slot.state {
+            if let Some(plan) = slot.ready_plan() {
                 return AuthorOutboxPlanAdvanceResult {
                     advance: AuthorOutboxPlanAdvance::Ready {
                         routes: &plan.routes,
@@ -382,6 +592,10 @@ impl AuthorOutboxPlanRuntime {
         self.slots.insert(
             slot_id,
             AuthorOutboxPlanSlot {
+                thread: inputs
+                    .spec
+                    .thread_notes()
+                    .map(|_| ThreadPlanState::default()),
                 inputs,
                 owners: HashSet::from([owner]),
                 state: Self::building_state(AuthorOutboxBuildStage::Initial),
@@ -404,10 +618,21 @@ impl AuthorOutboxPlanRuntime {
         let Some(slot) = self.slots.remove(&slot_id) else {
             return ScopedSubOutboxOps::default();
         };
-        if let AuthorOutboxPlanState::DiscoveringRelays { discovery, .. } = slot.state {
-            return discovery.unsubscribe_all();
+        let mut ops = ScopedSubOutboxOps::default();
+        if let Some(thread) = slot.thread {
+            for fetch in [thread.baseline_fetch, thread.bootstrap_fetch] {
+                if let Some(id) = fetch.id {
+                    ops.clear_fetch(id);
+                }
+            }
+            if let Some(discovery) = thread.discovery {
+                ops.extend(discovery.unsubscribe_all());
+            }
         }
-        ScopedSubOutboxOps::default()
+        if let AuthorOutboxPlanState::DiscoveringRelays { discovery, .. } = slot.state {
+            ops.extend(discovery.unsubscribe_all());
+        }
+        ops
     }
 
     /// Apply one relay request status fact to discovery slots that own the
@@ -422,8 +647,12 @@ impl AuthorOutboxPlanRuntime {
             .slots
             .iter()
             .filter_map(|(slot_id, slot)| {
-                matches!(slot.state, AuthorOutboxPlanState::DiscoveringRelays { .. })
-                    .then_some(*slot_id)
+                (matches!(slot.state, AuthorOutboxPlanState::DiscoveringRelays { .. })
+                    || slot
+                        .thread
+                        .as_ref()
+                        .is_some_and(|thread| thread.discovery.is_some()))
+                .then_some(*slot_id)
             })
             .collect::<Vec<_>>();
 
@@ -445,17 +674,19 @@ impl AuthorOutboxPlanRuntime {
         ids: &OutboxIdRegistry,
         completion: AuthorOutboxPlanJobCompletion,
         account_read_relays: &HashSet<NormRelayUrl>,
-    ) -> (Vec<ScopedSubKey>, ScopedSubOutboxOps) {
+        ndb: &Ndb,
+    ) -> (Vec<ScopedSubKey>, ScopedSubOutboxOps, ScopedSubEffects) {
         let slot_id = completion.slot_id;
-        let outbox_ops = self.apply_build_result(ids, completion, account_read_relays);
+        let (outbox_ops, effects) =
+            self.apply_build_result(ids, completion, account_read_relays, ndb);
         if !self.slot_is_ready(slot_id) {
-            return (Vec::new(), outbox_ops);
+            return (Vec::new(), outbox_ops, effects);
         }
 
-        (self.slot_scoped_keys(slot_id), outbox_ops)
+        (self.slot_scoped_keys(slot_id), outbox_ops, effects)
     }
 
-    /// Apply retained relay-list discovery retry and ingestion-wait deadlines.
+    /// Apply discovery retries, ingestion waits, and failed-thread-plan retries.
     pub(super) fn apply_relay_list_discovery_retry_due(
         &mut self,
         now: Instant,
@@ -464,12 +695,9 @@ impl AuthorOutboxPlanRuntime {
             .slots
             .iter()
             .filter_map(|(slot_id, slot)| {
-                matches!(
-                    slot.state,
-                    AuthorOutboxPlanState::DiscoveringRelays { .. }
-                        | AuthorOutboxPlanState::WaitingForRelayListIngestion(_)
-                )
-                .then_some(*slot_id)
+                slot.next_deadline()
+                    .is_some_and(|deadline| deadline <= now)
+                    .then_some(*slot_id)
             })
             .collect::<Vec<_>>();
 
@@ -488,34 +716,126 @@ impl AuthorOutboxPlanRuntime {
         ids: &OutboxIdRegistry,
         completion: AuthorOutboxPlanJobCompletion,
         account_read_relays: &HashSet<NormRelayUrl>,
-    ) -> ScopedSubOutboxOps {
+        ndb: &Ndb,
+    ) -> (ScopedSubOutboxOps, ScopedSubEffects) {
         let AuthorOutboxPlanJobCompletion {
             slot_id,
             build_stage,
-            result,
+            mut result,
         } = completion;
-        let Some(slot) = self.slots.get_mut(&slot_id) else {
-            return ScopedSubOutboxOps::default();
+        let Some(slot) = self.slots.get(&slot_id) else {
+            return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
         };
         if !slot.state.matches_build_stage(build_stage) {
-            return ScopedSubOutboxOps::default();
+            return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
         }
 
+        let discovery_relays = account_read_relays
+            .union(&slot.inputs.bootstrap_relays)
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        if let Some(snapshot) = result.thread.take() {
+            let snapshot = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    tracing::warn!(?err, "failed to read thread routing context");
+                    let slot = self.slots.get_mut(&slot_id).expect("validated plan slot");
+                    let thread = slot
+                        .thread
+                        .as_mut()
+                        .expect("thread snapshot for thread inputs");
+                    // Failure does not mean that ancestors or routes disappeared.
+                    // Keep the prior subscription, queued arrivals, and fetches.
+                    thread.record_failed_attempt();
+                    slot.state = thread
+                        .available_plan
+                        .take()
+                        .map(AuthorOutboxPlanState::Ready)
+                        .unwrap_or(AuthorOutboxPlanState::WaitingForThreadRetry);
+                    return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
+                }
+            };
+            // Account reads already have an explicit exact-ID fetch. A planned
+            // author route may still be unadmitted, so it cannot replace this demand.
+            let bootstrap_relays = slot
+                .inputs
+                .bootstrap_relays
+                .difference(&slot.inputs.account_read_relays)
+                .cloned()
+                .collect();
+            let missing_authors = std::mem::take(&mut result.missing_authors);
+            let cached = self.cached_plan_from_job_result(result);
+            let slot = self.slots.get_mut(&slot_id).expect("validated plan slot");
+            let thread = slot
+                .thread
+                .as_mut()
+                .expect("thread snapshot for thread inputs");
+            thread.retry_after = None;
+            let needs_watch = thread
+                .watch
+                .as_ref()
+                .is_none_or(|watch| !watch.covers(&snapshot.note_ids, &snapshot.authors));
+            let catch_up = if needs_watch {
+                match ThreadWatch::new(ndb, snapshot.note_ids, snapshot.authors) {
+                    Ok(watch) => {
+                        // Install before dropping the old subscription or scheduling
+                        // another job. That job also catches arrivals preceding setup.
+                        thread.watch = Some(watch);
+                        true
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, "failed to subscribe to thread routing changes");
+                        thread.record_failed_attempt();
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            // A successful read alone must not reset failed subscription setup.
+            if thread.retry_after.is_none() {
+                thread.retry_delay = THREAD_PLAN_RETRY_DELAY;
+            }
+            let policy = slot.inputs.spec.baseline_policy();
+            let policy =
+                RelayUrlPolicy::explicit(policy.demand_priority(), policy.routing_preference());
+            let mut ops = thread.baseline_fetch.update(
+                snapshot.missing_ids,
+                slot.inputs.account_read_relays.clone(),
+                ids,
+                policy,
+            );
+            ops.extend(thread.bootstrap_fetch.update(
+                snapshot.missing_ids_without_author,
+                bootstrap_relays,
+                ids,
+                policy,
+            ));
+            ops.extend(thread.discover_authors(ids, missing_authors, &discovery_relays));
+            thread.available_plan = None;
+            slot.state = AuthorOutboxPlanState::Ready(cached);
+            let effects = if catch_up {
+                self.apply_thread_change(slot_id)
+            } else {
+                ScopedSubEffects::default()
+            };
+            return (ops, effects);
+        }
+
+        let slot = self.slots.get_mut(&slot_id).expect("validated plan slot");
         if build_stage == AuthorOutboxBuildStage::Initial
             && !result.missing_authors.is_empty()
-            && !account_read_relays.is_empty()
+            && !discovery_relays.is_empty()
         {
             let original_missing_author_count = result.missing_authors.len();
-            let (discovery, outbox_ops) = start_relay_list_discovery(
-                ids,
-                result.missing_authors,
-                account_read_relays.clone(),
-            );
+            let (discovery, outbox_ops) =
+                start_relay_list_discovery(ids, result.missing_authors, discovery_relays);
             slot.state = AuthorOutboxPlanState::DiscoveringRelays {
                 discovery,
                 original_missing_author_count,
             };
-            return outbox_ops;
+            return (outbox_ops, ScopedSubEffects::default());
         }
 
         if let AuthorOutboxBuildStage::AfterRelayListDiscovery {
@@ -535,7 +855,7 @@ impl AuthorOutboxPlanRuntime {
                         Instant::now(),
                     ),
                 );
-                return ScopedSubOutboxOps::default();
+                return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
             }
         }
 
@@ -543,7 +863,7 @@ impl AuthorOutboxPlanRuntime {
         if let Some(slot) = self.slots.get_mut(&slot_id) {
             slot.state = AuthorOutboxPlanState::Ready(cached);
         }
-        ScopedSubOutboxOps::default()
+        (ScopedSubOutboxOps::default(), ScopedSubEffects::default())
     }
 
     fn apply_relay_req_status_to_discovery_slot(
@@ -557,6 +877,16 @@ impl AuthorOutboxPlanRuntime {
             let Some(slot) = self.slots.get_mut(&slot_id) else {
                 return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
             };
+            if let Some(thread) = &mut slot.thread {
+                let Some(discovery) = &mut thread.discovery else {
+                    return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
+                };
+                let (advance, ops) = discovery.apply_relay_req_status(id, relay, status);
+                if advance == RelayListDiscoveryAdvance::Complete {
+                    thread.discovery = None;
+                }
+                return (ops, ScopedSubEffects::default());
+            }
             let AuthorOutboxPlanState::DiscoveringRelays {
                 discovery,
                 original_missing_author_count,
@@ -585,6 +915,32 @@ impl AuthorOutboxPlanRuntime {
         slot_id: AuthorOutboxPlanSlotId,
         now: Instant,
     ) -> (ScopedSubOutboxOps, ScopedSubEffects) {
+        let retry_thread = self.slots.get(&slot_id).is_some_and(|slot| {
+            !slot.state.is_building()
+                && slot
+                    .thread
+                    .as_ref()
+                    .and_then(|thread| thread.retry_after)
+                    .is_some_and(|deadline| now >= deadline)
+        });
+        if retry_thread {
+            return (
+                ScopedSubOutboxOps::default(),
+                self.apply_thread_change(slot_id),
+            );
+        }
+        if let Some(slot) = self.slots.get_mut(&slot_id) {
+            if let Some(thread) = &mut slot.thread {
+                let Some(discovery) = &mut thread.discovery else {
+                    return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
+                };
+                let (advance, ops) = discovery.apply_retry_due(now);
+                if advance == RelayListDiscoveryAdvance::Complete {
+                    thread.discovery = None;
+                }
+                return (ops, ScopedSubEffects::default());
+            }
+        }
         match self.slots.get(&slot_id).map(|slot| &slot.state) {
             Some(AuthorOutboxPlanState::DiscoveringRelays { .. }) => {
                 self.apply_discovery_retry_due_to_slot(slot_id, now)
@@ -710,22 +1066,53 @@ impl AuthorOutboxPlanRuntime {
 }
 
 impl AuthorOutboxPlanSlot {
+    /// Keep usable thread routes available during the next background rebuild.
+    fn ready_plan(&self) -> Option<&CachedAuthorOutboxPlan> {
+        if let AuthorOutboxPlanState::Ready(plan) = &self.state {
+            return Some(plan);
+        }
+        self.thread.as_ref()?.available_plan.as_ref()
+    }
+
     fn is_ready(&self) -> bool {
-        matches!(self.state, AuthorOutboxPlanState::Ready(_))
+        self.ready_plan().is_some()
     }
 
     fn next_deadline(&self) -> Option<Instant> {
-        match &self.state {
+        let discovery = match &self.state {
             AuthorOutboxPlanState::DiscoveringRelays { discovery, .. } => discovery.next_deadline(),
             AuthorOutboxPlanState::WaitingForRelayListIngestion(wait) => Some(wait.ready_at),
             AuthorOutboxPlanState::BuildingInitial
+            | AuthorOutboxPlanState::WaitingForThreadRetry
             | AuthorOutboxPlanState::BuildingAfterRelayListDiscovery { .. }
             | AuthorOutboxPlanState::Ready(_) => None,
-        }
+        };
+        let retry = self
+            .thread
+            .as_ref()
+            .filter(|_| !self.state.is_building())
+            .and_then(|thread| thread.retry_after);
+        let thread_discovery = self
+            .thread
+            .as_ref()
+            .and_then(|thread| thread.discovery.as_ref())
+            .and_then(RelayListDiscovery::next_deadline);
+        discovery
+            .into_iter()
+            .chain(retry)
+            .chain(thread_discovery)
+            .min()
     }
 }
 
 impl AuthorOutboxPlanState {
+    fn is_building(&self) -> bool {
+        matches!(
+            self,
+            Self::BuildingInitial | Self::BuildingAfterRelayListDiscovery { .. }
+        )
+    }
+
     fn matches_build_stage(&self, build_stage: AuthorOutboxBuildStage) -> bool {
         match (self, build_stage) {
             (AuthorOutboxPlanState::BuildingInitial, AuthorOutboxBuildStage::Initial) => true,
@@ -771,7 +1158,7 @@ fn relay_list_ingestion_wait_delay(attempt: u8) -> Duration {
 fn send_author_outbox_plan_job_input(
     inputs: &AuthorOutboxPlanInputs,
 ) -> SendAuthorOutboxPlanJobInput {
-    SendAuthorOutboxPlanJobInput {
+    let config = SendAuthorOutboxPlanConfig {
         account_read_relays: inputs.account_read_relays.clone(),
         live_filters: send_plan_filters(inputs.spec.filters()),
         full_history_filters: inputs
@@ -779,6 +1166,13 @@ fn send_author_outbox_plan_job_input(
             .full_history_config()
             .map(|full_history| send_plan_filters(full_history.filters()))
             .unwrap_or_default(),
+    };
+    match inputs.spec.thread_notes() {
+        Some(note_ids) => SendAuthorOutboxPlanJobInput::Thread {
+            config,
+            note_ids: note_ids.clone(),
+        },
+        None => SendAuthorOutboxPlanJobInput::AuthorFilters(config),
     }
 }
 
@@ -797,6 +1191,21 @@ fn build_author_outbox_plan(
     ndb: Ndb,
     input: SendAuthorOutboxPlanJobInput,
 ) -> SendAuthorOutboxPlanJobResult {
+    match input {
+        SendAuthorOutboxPlanJobInput::AuthorFilters(config) => {
+            build_author_filter_plan(ndb, config)
+        }
+        SendAuthorOutboxPlanJobInput::Thread { config, note_ids } => {
+            build_thread_plan(ndb, config, note_ids)
+        }
+    }
+}
+
+/// Build routes for the authors named by the configured live and history filters.
+fn build_author_filter_plan(
+    ndb: Ndb,
+    input: SendAuthorOutboxPlanConfig,
+) -> SendAuthorOutboxPlanJobResult {
     let authors = send_plan_filter_authors(&input.live_filters, &input.full_history_filters);
     let directory = RelayDirectorySnapshot::from_ndb_authors(&ndb, &authors);
     let missing_authors = directory.missing_authors(&authors);
@@ -809,6 +1218,7 @@ fn build_author_outbox_plan(
         ),
     );
     SendAuthorOutboxPlanJobResult {
+        thread: None,
         live_routed_relays: send_routed_relays(routes.live_routed_relays),
         full_history_routed_relays: send_routed_relays(routes.full_history_routed_relays),
         missing_authors,
@@ -895,6 +1305,209 @@ fn planned_routed_relay_from_send(route: SendPlannedRoutedRelay) -> PlannedRoute
             .map(|(filter_index, authors)| (filter_index, authors.into_iter().collect()))
             .collect(),
     }
+}
+
+#[test]
+fn thread_plan_job_only_builds_a_snapshot_without_subscribing() {
+    let tmp = tempfile::TempDir::new().expect("temp dir");
+    let ndb = Ndb::new(tmp.path().to_str().expect("path"), &nostrdb::Config::new()).expect("ndb");
+    let missing = NoteId::new([42; 32]);
+    let spec = SubConfig::builder(vec![nostrdb::Filter::new().ids([missing.bytes()]).build()])
+        .accounts_read_important()
+        .with_author_outbox_augmentation()
+        .for_thread(missing, [])
+        .build();
+    let inputs = AuthorOutboxPlanInputs::new(&HashSet::new(), &HashSet::new(), &spec);
+    let job = AuthorOutboxPlanJobRequest::new(
+        AuthorOutboxPlanSlotId(1),
+        AuthorOutboxBuildStage::Initial,
+        &inputs,
+    );
+
+    let completion = job.run(ndb.clone());
+
+    assert_eq!(
+        ndb.subscription_count(),
+        0,
+        "a planning job must return its snapshot without creating a subscription"
+    );
+    assert_eq!(
+        completion
+            .result
+            .thread
+            .expect("thread result")
+            .expect("thread snapshot")
+            .missing_ids,
+        HashSet::from([missing])
+    );
+}
+
+#[test]
+fn thread_plan_reuses_partial_routes_rebuilds_on_ingestion_and_cleans_up_owners() {
+    use super::config::{ResolvedSubScope, SubKey};
+    use super::ScopedSubOutboxOp;
+    use crate::test_utils::{nip65_write_relay_note_for_test, wait_for_nip65_for_test};
+    use enostr::FullKeypair;
+    use futures_util::FutureExt;
+    use nostrdb::{Config, NoteBuilder, Transaction};
+
+    let tmp = tempfile::TempDir::new().expect("temp dir");
+    let ndb = Ndb::new(tmp.path().to_str().unwrap(), &Config::new()).expect("ndb");
+    let author = FullKeypair::generate();
+    let parent = NoteId::new([12; 32]);
+    let selected = NoteBuilder::new()
+        .kind(1)
+        .created_at(1)
+        .content("reply")
+        .start_tag()
+        .tag_str("e")
+        .tag_id(parent.bytes())
+        .tag_str("wss://hint.example.com/inbox")
+        .tag_str("reply")
+        .sign(&author.secret_key.secret_bytes())
+        .build()
+        .expect("note");
+    ndb.process_client_event(&selected.json().unwrap())
+        .expect("ingest");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let txn = Transaction::new(&ndb).unwrap();
+        if ndb.get_note_by_id(&txn, selected.id()).is_ok() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "note not ingested");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let selected_id = NoteId::new(*selected.id());
+    let spec = SubConfig::builder(vec![Filter::new().ids([selected.id()]).build()])
+        .accounts_read_important()
+        .with_author_outbox_augmentation()
+        .for_thread(selected_id, [])
+        .build();
+    let reads = HashSet::from([NormRelayUrl::new("wss://account.example.com").unwrap()]);
+    let scoped = ScopedSubKey {
+        scope: ResolvedSubScope::Global,
+        key: SubKey::new("thread"),
+    };
+    let second = ScopedSubKey {
+        scope: ResolvedSubScope::Global,
+        key: SubKey::new("second"),
+    };
+    let account = Pubkey::new([1; 32]);
+    let ids = OutboxIdRegistry::new();
+    let mut runtime = AuthorOutboxPlanRuntime::default();
+    let request = |scoped| AuthorOutboxPlanAdvanceRequest {
+        account_pubkey: account,
+        scoped,
+        account_read_relays: &reads,
+        spec: &spec,
+    };
+    let initial = runtime.advance(request(scoped.clone()));
+    assert!(matches!(initial.advance, AuthorOutboxPlanAdvance::Pending));
+    let mut jobs = initial.effects.into_effects();
+    assert_eq!(jobs.len(), 1);
+    let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = jobs.pop().unwrap();
+    let completion = job.run(ndb.clone());
+    assert_eq!(ndb.subscription_count(), 0);
+    let (owners, ops, effects) = runtime.apply_plan_slot_ready(&ids, completion, &reads, &ndb);
+    assert_eq!(ndb.subscription_count(), 1);
+    assert_eq!(
+        owners,
+        vec![scoped.clone()],
+        "hint route is ready before relay-list EOSE"
+    );
+    assert!(ops.into_ops().iter().any(|op| matches!(op, ScopedSubOutboxOp::StartFetch { filters, .. }
+        if filters.iter().any(|filter| filter.same_canonical_attributes(&Filter::new().ids([parent.bytes()]).build())))));
+    assert!(runtime
+        .slots
+        .values()
+        .next()
+        .unwrap()
+        .thread
+        .as_ref()
+        .unwrap()
+        .discovery
+        .is_some());
+    let mut jobs = effects.into_effects();
+    assert_eq!(jobs.len(), 1, "first subscription requires a catch-up job");
+    let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = jobs.pop().unwrap();
+    let (_, ops, effects) = runtime.apply_plan_slot_ready(&ids, job.run(ndb.clone()), &reads, &ndb);
+    assert!(ops.is_empty(), "catch-up retains the baseline fetch");
+    assert!(
+        effects.into_effects().is_empty(),
+        "unchanged coverage is ready"
+    );
+    let shared = runtime.advance(request(second.clone()));
+    assert!(matches!(
+        shared.advance,
+        AuthorOutboxPlanAdvance::Ready { .. }
+    ));
+    assert!(shared.effects.into_effects().is_empty());
+    assert_eq!(runtime.slots.len(), 1);
+    assert!(runtime.remove_scoped(&scoped).is_empty());
+    assert_eq!(ndb.subscription_count(), 1, "other owner retains the watch");
+    assert!(runtime.next_thread_change().now_or_never().is_none());
+
+    let list = nip65_write_relay_note_for_test(&author, &["wss://author.example.com"]);
+    ndb.process_client_event(&list.json().unwrap())
+        .expect("relay list ingestion");
+    wait_for_nip65_for_test(&ndb, &author.pubkey);
+    let changed = runtime
+        .next_thread_change()
+        .now_or_never()
+        .expect("relay-list notification");
+    let effects = runtime.apply_thread_change(changed);
+    let mut jobs = effects.into_effects();
+    assert_eq!(jobs.len(), 1, "new relay list rebuilds without EOSE");
+    assert!(
+        runtime
+            .apply_thread_change(changed)
+            .into_effects()
+            .is_empty(),
+        "one snapshot job at a time"
+    );
+    let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = jobs.pop().unwrap();
+    let (owners, ops, effects) =
+        runtime.apply_plan_slot_ready(&ids, job.run(ndb.clone()), &reads, &ndb);
+    assert!(effects.into_effects().is_empty());
+    assert_eq!(owners, vec![second.clone()]);
+    assert!(
+        ops.is_empty(),
+        "unchanged missing IDs do not restart the baseline fetch"
+    );
+    assert_eq!(
+        ndb.subscription_count(),
+        1,
+        "unchanged coverage retains the existing watch"
+    );
+    let slot = runtime.slots.values().next().unwrap();
+    let routes = &slot.ready_plan().unwrap().routes.live_routed_relays;
+    assert!(routes
+        .iter()
+        .any(|route| route.relay.as_str() == "wss://author.example.com/"));
+    assert!(routes
+        .iter()
+        .any(|route| route.relay.as_str() == "wss://hint.example.com/inbox"));
+    let cleanup = runtime.deactivate_account(account).into_ops();
+    assert!(cleanup
+        .iter()
+        .any(|op| matches!(op, ScopedSubOutboxOp::ClearFetch { .. })));
+    assert!(runtime.slots.is_empty());
+    assert_eq!(ndb.subscription_count(), 0);
+
+    // A job finishing after the last owner closes cannot resurrect subscriptions.
+    let mut jobs = runtime
+        .advance(request(second.clone()))
+        .effects
+        .into_effects();
+    let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = jobs.pop().unwrap();
+    let completion = job.run(ndb.clone());
+    runtime.remove_scoped(&second);
+    assert!(runtime
+        .apply_plan_slot_ready(&ids, completion, &reads, &ndb)
+        .0
+        .is_empty());
+    assert_eq!(ndb.subscription_count(), 0);
 }
 
 #[cfg(test)]
@@ -1016,11 +1629,22 @@ mod tests {
             match effect {
                 ScopedSubEffect::StartAuthorOutboxPlanJob(request) => {
                     let completion = request.run(ndb.clone());
-                    bridge.with_returned_outbox(|ids| {
-                        let (_, outbox_ops) =
-                            runtime.apply_plan_slot_ready(ids, completion, account_read_relays);
-                        outbox_ops
+                    let next_effects = bridge.with_returned_outbox(|ids| {
+                        let (_, outbox_ops, next_effects) = runtime.apply_plan_slot_ready(
+                            ids,
+                            completion,
+                            account_read_relays,
+                            ndb,
+                        );
+                        (next_effects, outbox_ops)
                     });
+                    apply_author_outbox_effects_for_test(
+                        runtime,
+                        bridge,
+                        account_read_relays,
+                        ndb,
+                        next_effects,
+                    );
                 }
             }
         }
@@ -1136,11 +1760,11 @@ mod tests {
             .kinds([1])
             .build();
         let filter = SendFilter::try_from_filter(filter).expect("sendable test filter");
-        let input = SendAuthorOutboxPlanJobInput {
+        let input = SendAuthorOutboxPlanJobInput::AuthorFilters(SendAuthorOutboxPlanConfig {
             account_read_relays: HashSet::new(),
             live_filters: send_plan_filters(&[filter]),
             full_history_filters: Vec::new(),
-        };
+        });
 
         let result = build_author_outbox_plan(ndb, input);
 
@@ -1182,6 +1806,371 @@ mod tests {
         assert_eq!(leg.relay, account_relay);
         assert!(leg.id.is_some());
         assert_eq!(discovery.chunks[0].authors_for_test(), vec![author]);
+    }
+
+    /// Metadata discovery adds injected bootstrap coverage without changing event reads.
+    #[test]
+    fn author_filter_discovery_adds_bootstrap_relays() {
+        let (_tmp, ndb) = new_ndb();
+        let account = test_pubkey(1);
+        let author = test_pubkey(2);
+        let read = NormRelayUrl::new("wss://account-read.example.com").expect("read relay");
+        let bootstrap = NormRelayUrl::new("wss://bootstrap.example.com").expect("bootstrap");
+        let reads = HashSet::from([read.clone()]);
+        let expected = HashSet::from([read.clone(), bootstrap.clone()]);
+        let mut runtime = runtime_with_ndb(&ndb);
+        runtime.bootstrap_relays = expected.clone();
+        let ids = OutboxIdRegistry::new();
+        let spec = author_outbox_config(author);
+        let initial = runtime.advance(AuthorOutboxPlanAdvanceRequest {
+            account_pubkey: account,
+            scoped: scoped_key("author-discovery-bootstrap"),
+            account_read_relays: &reads,
+            spec: &spec,
+        });
+        let mut effects = initial.effects.into_effects();
+        assert_eq!(effects.len(), 1);
+        let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = effects.pop().expect("job");
+        runtime.bootstrap_relays.clear();
+        let (_, ops, _) = runtime.apply_plan_slot_ready(&ids, job.run(ndb.clone()), &reads, &ndb);
+        let expected_filter = Filter::new()
+            .authors([author.bytes()])
+            .kinds([10002])
+            .build();
+        let mut destinations = HashSet::new();
+        let ops = ops.into_ops();
+        assert_eq!(
+            ops.len(),
+            expected.len(),
+            "discovery retains its input snapshot and deduplicates overlapping relays"
+        );
+        for op in ops {
+            let ScopedSubOutboxOp::StartFetch {
+                filters,
+                relay_pkgs,
+                ..
+            } = op
+            else {
+                panic!("discovery should stage a one-shot");
+            };
+            assert_eq!(filters.len(), 1);
+            assert!(filters[0].same_canonical_attributes(&expected_filter));
+            destinations.extend(relay_pkgs.urls().iter().cloned());
+        }
+        assert_eq!(destinations, expected);
+        assert_eq!(reads, HashSet::from([read]));
+    }
+
+    /// Empty account reads must not prevent configured metadata discovery.
+    #[test]
+    fn author_filter_discovery_uses_bootstrap_without_account_reads() {
+        let (_tmp, ndb) = new_ndb();
+        let author = test_pubkey(2);
+        let reads = HashSet::new();
+        let bootstrap = NormRelayUrl::new("wss://bootstrap.example.com").expect("bootstrap");
+        let mut runtime = runtime_with_ndb(&ndb);
+        runtime.bootstrap_relays = HashSet::from([bootstrap.clone()]);
+        let spec = author_outbox_config(author);
+        let initial = runtime.advance(AuthorOutboxPlanAdvanceRequest {
+            account_pubkey: test_pubkey(1),
+            scoped: scoped_key("bootstrap-only-discovery"),
+            account_read_relays: &reads,
+            spec: &spec,
+        });
+        let mut effects = initial.effects.into_effects();
+        assert_eq!(effects.len(), 1);
+        let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = effects.pop().expect("job");
+        let (_, ops, _) = runtime.apply_plan_slot_ready(
+            &OutboxIdRegistry::new(),
+            job.run(ndb.clone()),
+            &reads,
+            &ndb,
+        );
+        let mut ops = ops.into_ops();
+        assert_eq!(ops.len(), 1);
+        let ScopedSubOutboxOp::StartFetch {
+            filters,
+            relay_pkgs,
+            ..
+        } = ops.pop().unwrap()
+        else {
+            panic!("metadata discovery should stage a one-shot");
+        };
+        assert_eq!(relay_pkgs.urls(), &HashSet::from([bootstrap]));
+        assert_eq!(filters.len(), 1);
+        assert!(filters[0].same_canonical_attributes(
+            &Filter::new()
+                .authors([author.bytes()])
+                .kinds([10002])
+                .build()
+        ));
+    }
+
+    /// A missing thread parent discovers its author's list on reads plus bootstrap,
+    /// while the ordinary parent one-shot remains on selected-account reads.
+    #[test]
+    fn thread_discovery_adds_bootstrap_without_expanding_parent_reads() {
+        use nostrdb::{NoteBuilder, Transaction};
+
+        let (_tmp, ndb) = new_ndb();
+        let author = FullKeypair::generate();
+        let parent = NoteId::new([42; 32]);
+        let reply = NoteBuilder::new()
+            .kind(1)
+            .created_at(1)
+            .content("reply to a missing parent")
+            .start_tag()
+            .tag_str("e")
+            .tag_id(parent.bytes())
+            .tag_str("")
+            .tag_str("reply")
+            .tag_id(author.pubkey.bytes())
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("reply");
+        ndb.process_client_event(&reply.json().expect("reply JSON"))
+            .expect("ingest reply");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(&ndb).expect("transaction");
+            if ndb.get_note_by_id(&txn, reply.id()).is_ok() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "reply was not ingested");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let read = NormRelayUrl::new("wss://account-read.example.com").expect("read relay");
+        let bootstrap = NormRelayUrl::new("wss://bootstrap.example.com").expect("bootstrap");
+        let reads = HashSet::from([read.clone()]);
+        let expected_discovery = HashSet::from([read, bootstrap.clone()]);
+        let parent_filter = Filter::new().ids([parent.bytes()]).build();
+        let spec = SubConfig::builder(vec![parent_filter.clone()])
+            .accounts_read_important()
+            .with_author_outbox_augmentation()
+            .for_thread(parent, [NoteId::new(*reply.id())])
+            .build();
+        let mut runtime = runtime_with_ndb(&ndb);
+        runtime.bootstrap_relays = HashSet::from([bootstrap]);
+        let initial = runtime.advance(AuthorOutboxPlanAdvanceRequest {
+            account_pubkey: test_pubkey(1),
+            scoped: scoped_key("thread-discovery-bootstrap"),
+            account_read_relays: &reads,
+            spec: &spec,
+        });
+        let mut effects = initial.effects.into_effects();
+        assert_eq!(effects.len(), 1);
+        let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = effects.pop().expect("job");
+        let (_, ops, _) = runtime.apply_plan_slot_ready(
+            &OutboxIdRegistry::new(),
+            job.run(ndb.clone()),
+            &reads,
+            &ndb,
+        );
+        let relay_list_filter = Filter::new()
+            .authors([author.pubkey.bytes()])
+            .kinds([10002])
+            .build();
+        let mut discovery_destinations = HashSet::new();
+        let mut parent_destinations = HashSet::new();
+        let mut discovery_count = 0;
+        for op in ops.into_ops() {
+            let ScopedSubOutboxOp::StartFetch {
+                filters,
+                relay_pkgs,
+                ..
+            } = op
+            else {
+                panic!("initial thread discovery should stage one-shots");
+            };
+            assert_eq!(filters.len(), 1);
+            if filters[0].same_canonical_attributes(&relay_list_filter) {
+                discovery_count += 1;
+                discovery_destinations.extend(relay_pkgs.urls().iter().cloned());
+            } else {
+                assert!(filters[0].same_canonical_attributes(&parent_filter));
+                parent_destinations.extend(relay_pkgs.urls().iter().cloned());
+            }
+        }
+        assert_eq!(discovery_count, expected_discovery.len());
+        assert_eq!(discovery_destinations, expected_discovery);
+        assert_eq!(parent_destinations, reads);
+    }
+
+    /// Authorless parents retain explicit bootstrap ID requests even on a planned hint route.
+    #[test]
+    fn thread_bootstrap_fetch_is_explicit_exact_deduplicated_and_cleared_on_arrival() {
+        use futures_util::FutureExt;
+        use nostrdb::{NoteBuilder, Transaction};
+
+        let (_tmp, ndb) = new_ndb();
+        let author = FullKeypair::generate();
+        let unknown_parent = NoteBuilder::new()
+            .kind(1)
+            .created_at(1)
+            .content("parent whose author is not in the reply tag")
+            .sign(&[3; 32])
+            .build()
+            .expect("parent");
+        let unknown_id = NoteId::new(*unknown_parent.id());
+        let known_id = NoteId::new([42; 32]);
+        let read = NormRelayUrl::new("wss://account-read.example.com").expect("read relay");
+        let hint = NormRelayUrl::new("wss://hint.example.com").expect("hint relay");
+        let bootstrap = NormRelayUrl::new("ws://127.0.0.1:7777").expect("local bootstrap");
+        let reads = HashSet::from([read.clone()]);
+        let reply = NoteBuilder::new()
+            .kind(1)
+            .created_at(2)
+            .content("reply with one authorless and one author-tagged ancestor")
+            .start_tag()
+            .tag_str("e")
+            .tag_id(unknown_id.bytes())
+            .tag_str(hint.as_str())
+            .tag_str("root")
+            .start_tag()
+            .tag_str("e")
+            .tag_id(known_id.bytes())
+            .tag_str("")
+            .tag_str("reply")
+            .tag_id(author.pubkey.bytes())
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("reply");
+        ndb.process_client_event(&reply.json().expect("reply JSON"))
+            .expect("ingest reply");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(&ndb).expect("transaction");
+            if ndb.get_note_by_id(&txn, reply.id()).is_ok() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "reply was not ingested");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let spec = SubConfig::builder(vec![Filter::new()
+            .kinds([1])
+            .event(unknown_id.bytes())
+            .limit(500)
+            .build()])
+        .accounts_read_important()
+        .with_author_outbox_augmentation()
+        .for_thread(unknown_id, [NoteId::new(*reply.id())])
+        .build();
+        let mut runtime = runtime_with_ndb(&ndb);
+        runtime.bootstrap_relays = HashSet::from([read, hint.clone(), bootstrap.clone()]);
+        let ids = OutboxIdRegistry::new();
+        let initial = runtime.advance(AuthorOutboxPlanAdvanceRequest {
+            account_pubkey: test_pubkey(1),
+            scoped: scoped_key("explicit-authorless-bootstrap"),
+            account_read_relays: &reads,
+            spec: &spec,
+        });
+        let mut effects = initial.effects.into_effects();
+        assert_eq!(effects.len(), 1);
+        let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = effects.pop().expect("job");
+        let (_, ops, catch_up) =
+            runtime.apply_plan_slot_ready(&ids, job.run(ndb.clone()), &reads, &ndb);
+        let expected = Filter::new().ids([unknown_id.bytes()]).build();
+        let relay_list_filter = Filter::new()
+            .authors([author.pubkey.bytes()])
+            .kinds([10002])
+            .build();
+        let mut bootstrap_fetch = None;
+        for op in ops.into_ops() {
+            let ScopedSubOutboxOp::StartFetch {
+                id,
+                filters,
+                relay_pkgs,
+            } = op
+            else {
+                continue;
+            };
+            if !relay_pkgs.urls().contains(&bootstrap) {
+                continue;
+            }
+            if filters.len() == 1 && filters[0].same_canonical_attributes(&relay_list_filter) {
+                continue;
+            }
+            assert!(
+                bootstrap_fetch.replace(id).is_none(),
+                "only one bootstrap parent fetch"
+            );
+            assert_eq!(
+                filters.len(),
+                1,
+                "no reply/#e, kind, author, or limit filters"
+            );
+            assert!(filters[0].same_canonical_attributes(&expected));
+            assert_eq!(
+                relay_pkgs.urls(),
+                &HashSet::from([bootstrap.clone(), hint.clone()])
+            );
+            assert_eq!(relay_pkgs.source(), enostr::RelayUrlSource::Explicit);
+            assert_eq!(
+                relay_pkgs.demand_priority(),
+                enostr::RelayDemandPriority::Important
+            );
+            assert!(bootstrap.allowed_for_source(relay_pkgs.source()));
+            assert!(!bootstrap.allowed_for_source(enostr::RelayUrlSource::RemoteAdvertised));
+        }
+        let bootstrap_fetch = bootstrap_fetch.expect("explicit authorless parent fetch");
+        let slot = runtime.slots.values().next().expect("thread slot");
+        let routes = &slot
+            .ready_plan()
+            .expect("ready thread plan")
+            .routes
+            .live_routed_relays;
+        assert!(routes.iter().any(|route| route.relay == hint));
+        assert!(routes.iter().all(|route| route.relay != bootstrap));
+
+        let mut catch_up = catch_up.into_effects();
+        assert_eq!(catch_up.len(), 1);
+        let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = catch_up.pop().expect("catch-up job");
+        let (_, ops, effects) =
+            runtime.apply_plan_slot_ready(&ids, job.run(ndb.clone()), &reads, &ndb);
+        assert!(
+            ops.is_empty(),
+            "same snapshot must not restart either missing-ID fetch"
+        );
+        assert!(effects.into_effects().is_empty());
+
+        ndb.process_client_event(&unknown_parent.json().expect("parent JSON"))
+            .expect("ingest parent");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let changed = loop {
+            let present = {
+                let txn = Transaction::new(&ndb).expect("transaction");
+                let present = ndb.get_note_by_id(&txn, unknown_id.bytes()).is_ok();
+                present
+            };
+            if present {
+                if let Some(changed) = runtime.next_thread_change().now_or_never() {
+                    break changed;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "parent arrival did not notify thread watch"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let mut effects = runtime.apply_thread_change(changed).into_effects();
+        assert_eq!(effects.len(), 1);
+        let ScopedSubEffect::StartAuthorOutboxPlanJob(job) = effects.pop().expect("arrival job");
+        let (_, ops, _) = runtime.apply_plan_slot_ready(&ids, job.run(ndb.clone()), &reads, &ndb);
+        let ops = ops.into_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            ScopedSubOutboxOp::ClearFetch { id } if *id == bootstrap_fetch
+        )));
+        assert!(ops.iter().all(|op| !matches!(
+            op,
+            ScopedSubOutboxOp::StartFetch { filters, relay_pkgs, .. }
+                if relay_pkgs.urls().contains(&bootstrap)
+                    && filters.iter().any(|filter| filter.same_canonical_attributes(&expected))
+        )));
+        let txn = Transaction::new(&ndb).expect("transaction");
+        assert!(ndb.get_note_by_id(&txn, unknown_id.bytes()).is_ok());
+        assert!(ndb.get_note_by_id(&txn, known_id.bytes()).is_err());
     }
 
     #[test]
@@ -1471,7 +2460,8 @@ mod tests {
         runtime.slots.insert(
             ready_slot_id,
             AuthorOutboxPlanSlot {
-                inputs: AuthorOutboxPlanInputs::new(&account_read_relays, &spec),
+                inputs: AuthorOutboxPlanInputs::new(&account_read_relays, &HashSet::new(), &spec),
+                thread: None,
                 owners: HashSet::from([ready_owner.clone()]),
                 state: AuthorOutboxPlanState::Ready(CachedAuthorOutboxPlan {
                     generation: 42,
@@ -1562,6 +2552,7 @@ mod tests {
             .build();
         let send_filter = SendFilter::try_from_filter(filter).expect("send filter");
         let result = SendAuthorOutboxPlanJobResult {
+            thread: None,
             live_routed_relays: vec![SendPlannedRoutedRelay {
                 relay: relay.clone(),
                 relay_priority: RoutedRelayPriority::default(),
@@ -1596,6 +2587,7 @@ mod tests {
         let send_filter = SendFilter::try_from_filter(filter).expect("send filter");
         let route_count = 20;
         let result = SendAuthorOutboxPlanJobResult {
+            thread: None,
             live_routed_relays: (0..route_count)
                 .map(|index| SendPlannedRoutedRelay {
                     relay: NormRelayUrl::new(&format!(

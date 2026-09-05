@@ -2,11 +2,12 @@ use enostr::{
     NormRelayUrl, OutboxIdRegistry, OutboxSubId, OutboxSubRelayEose, Pubkey, RelayReqStatus,
 };
 use hashbrown::{HashMap, HashSet};
+use nostrdb::Ndb;
 use std::time::Instant;
 
 use super::author_plan::{
     AuthorOutboxPlanAdvance, AuthorOutboxPlanAdvanceRequest, AuthorOutboxPlanJobCompletion,
-    AuthorOutboxPlanRuntime,
+    AuthorOutboxPlanRuntime, AuthorOutboxPlanSlotId,
 };
 use super::author_runtime::ScopedAuthorOutboxRuntime;
 use super::config::{
@@ -202,6 +203,11 @@ fn advance_author_outbox_plan(
 }
 
 impl ScopedSubRuntime {
+    /// Update discovery coverage before the bridge applies the account transition.
+    pub(crate) fn set_bootstrap_relays(&mut self, relays: &HashSet<NormRelayUrl>) {
+        self.author_outbox_plans.bootstrap_relays.clone_from(relays);
+    }
+
     /// Create a runtime that allocates outbox ids from the bridge-owned outbox
     /// service namespace.
     pub(crate) fn with_ids(ids: OutboxIdRegistry) -> Self {
@@ -219,6 +225,25 @@ impl ScopedSubRuntime {
     /// relay-list discovery retry work.
     pub(crate) fn next_author_outbox_retry_deadline(&self) -> Option<Instant> {
         self.author_outbox_plans.next_deadline()
+    }
+
+    /// Wait for thread-note or relay-list ingestion covered by a retained plan.
+    /// The plan runtime keeps subscriptions alive when this wait is cancelled.
+    pub(crate) async fn next_author_outbox_thread_change(&mut self) -> AuthorOutboxPlanSlotId {
+        self.author_outbox_plans.next_thread_change().await
+    }
+
+    /// Schedule the next immutable plan after a retained thread watch changes.
+    pub(crate) fn apply_author_outbox_thread_change(
+        &mut self,
+        slot_id: AuthorOutboxPlanSlotId,
+    ) -> ScopedSubDelta {
+        let effects = self.author_outbox_plans.apply_thread_change(slot_id);
+        ScopedSubDelta::new_with_effects(
+            ScopedSubOutput::default(),
+            ScopedSubOutboxOps::default(),
+            effects,
+        )
     }
 
     /// Apply one committed relay request status event to retained author-outbox
@@ -242,6 +267,7 @@ impl ScopedSubRuntime {
         selected_account_pubkey: Pubkey,
         account_read_relays: &HashSet<NormRelayUrl>,
         completion: AuthorOutboxPlanJobCompletion,
+        ndb: &Ndb,
     ) -> ScopedSubDelta {
         let ids = self.ids();
         self.apply_author_outbox_plan_completed_with_ids(
@@ -249,6 +275,7 @@ impl ScopedSubRuntime {
             selected_account_pubkey,
             account_read_relays,
             completion,
+            ndb,
         )
     }
 
@@ -258,17 +285,20 @@ impl ScopedSubRuntime {
         selected_account_pubkey: Pubkey,
         account_read_relays: &HashSet<NormRelayUrl>,
         completion: AuthorOutboxPlanJobCompletion,
+        ndb: &Ndb,
     ) -> ScopedSubDelta {
-        let mut outbox_ops = ScopedSubOutboxOps::default();
-        let (scoped_keys, ops) =
-            self.author_outbox_plans
-                .apply_plan_slot_ready(ids, completion, account_read_relays);
-        outbox_ops.extend(ops);
+        let (scoped_keys, outbox_ops, effects) = self.author_outbox_plans.apply_plan_slot_ready(
+            ids,
+            completion,
+            account_read_relays,
+            ndb,
+        );
+        let mut delta =
+            ScopedSubDelta::new_with_effects(ScopedSubOutput::default(), outbox_ops, effects);
         if scoped_keys.is_empty() {
-            return ScopedSubDelta::new(ScopedSubOutput::default(), outbox_ops);
+            return delta;
         }
 
-        let mut delta = ScopedSubDelta::new(ScopedSubOutput::default(), outbox_ops);
         delta.extend(self.apply_author_outbox_plans_for_scoped_keys_with_effects(
             ids,
             selected_account_pubkey,
