@@ -5562,11 +5562,11 @@ fn handle_remote_permission_response(
             PermissionResponse::Allow { message }
         } else if cancel_turn {
             PermissionResponse::Cancel {
-                reason: message.unwrap_or_else(|| "Tool call exited by remote".to_string()),
+                reason: message.unwrap_or_else(|| messages::DEFAULT_REMOTE_EXIT_REASON.to_string()),
             }
         } else {
             PermissionResponse::Deny {
-                reason: message.unwrap_or_else(|| "Denied by remote".to_string()),
+                reason: message.unwrap_or_else(|| messages::DEFAULT_REMOTE_DENY_REASON.to_string()),
             }
         };
         for msg in chat.iter_mut() {

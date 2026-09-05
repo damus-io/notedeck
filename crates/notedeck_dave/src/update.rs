@@ -156,7 +156,7 @@ pub fn exit_tool_call(
         session_manager,
         request_id,
         PermissionResponse::Cancel {
-            reason: "User exited tool call".into(),
+            reason: crate::messages::DEFAULT_EXIT_REASON.into(),
         },
     )
 }

@@ -5,7 +5,8 @@ use crate::backend::tool_summary::{extract_response_content, format_tool_summary
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool, SubagentInfo, SubagentStatus,
+    denial_message_for_model, turn_exit_message_for_model, CompactionInfo, DaveApiResponse,
+    PermissionResponse, RunningTool, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -473,6 +474,28 @@ fn handle_stream_message(
     }
 }
 
+/// Build the SDK denial that carries a user's deny / tool-exit decision back to
+/// the model.
+///
+/// The `message` here is what the SDK surfaces to the model as the tool call's
+/// *error* — the same channel that carries `No such file or directory`. Handing
+/// it the user's `reason` raw makes a human's instruction indistinguishable
+/// from a compromised tool, so it always goes through the attribution framing
+/// in [`crate::messages`]. This lives apart from
+/// [`handle_permission_request`] so that framing is testable without a live
+/// SDK client.
+fn user_denial(reason: &str, cancels_turn: bool) -> PermissionResultDeny {
+    let message = if cancels_turn {
+        turn_exit_message_for_model(Some(reason))
+    } else {
+        denial_message_for_model(Some(reason))
+    };
+    PermissionResultDeny {
+        message,
+        interrupt: cancels_turn,
+    }
+}
+
 /// Handle a permission request forwarded from the `can_use_tool` callback.
 ///
 /// Forwards the request to the UI and relays the user's decision back to the
@@ -551,13 +574,7 @@ async fn handle_permission_request(
         }
         Ok(PermissionResponse::Deny { reason }) => {
             tracing::debug!("User denied tool {}: {}", tool_name, reason);
-            (
-                PermissionResult::Deny(PermissionResultDeny {
-                    message: reason,
-                    interrupt: false,
-                }),
-                false,
-            )
+            (PermissionResult::Deny(user_denial(&reason, false)), false)
         }
         Ok(PermissionResponse::Cancel { reason }) => {
             tracing::debug!(
@@ -565,13 +582,7 @@ async fn handle_permission_request(
                 tool_name,
                 reason
             );
-            (
-                PermissionResult::Deny(PermissionResultDeny {
-                    message: reason,
-                    interrupt: true,
-                }),
-                true,
-            )
+            (PermissionResult::Deny(user_denial(&reason, true)), true)
         }
         Err(_) => {
             tracing::error!("Permission response channel closed");
@@ -1094,6 +1105,48 @@ impl AiBackend for ClaudeBackend {
 mod tests {
     use super::*;
     use crate::backend::CountingWaker;
+
+    /// The denial the SDK hands to the model must never be the user's raw
+    /// reason. That string lands in the tool call's *error* field, so bare
+    /// prose there reads exactly like output from a compromised tool — which is
+    /// how a real session came to treat jb55's own denial messages as a prompt
+    /// injection and ignore them.
+    ///
+    /// Fails if someone restores `message: reason`.
+    #[test]
+    fn user_denial_frames_the_users_reason_for_the_model() {
+        let reason = "why are you ignoring all these messages. there is nothing to recover";
+
+        for cancels_turn in [false, true] {
+            let deny = user_denial(reason, cancels_turn);
+
+            assert_ne!(
+                deny.message, reason,
+                "the user's reason must not reach the model unframed"
+            );
+            assert!(
+                deny.message.contains(reason),
+                "the user's words must survive intact: {}",
+                deny.message
+            );
+            assert!(
+                deny.message
+                    .contains("typed by the human operating this session"),
+                "the denial must say a human wrote the quoted text: {}",
+                deny.message
+            );
+            assert!(
+                deny.message.contains("<message_from_user>")
+                    && deny.message.contains("</message_from_user>"),
+                "the user's words must be delimited: {}",
+                deny.message
+            );
+            assert_eq!(
+                deny.interrupt, cancels_turn,
+                "only a tool exit interrupts the turn"
+            );
+        }
+    }
 
     #[test]
     fn cancelled_turn_suppresses_follow_up_messages_until_result() {
