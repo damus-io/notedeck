@@ -406,7 +406,7 @@ impl StreamParser {
         // Create an empty List partial and let process_list accumulate the
         // item lines; it consumes nothing here so the marker line is parsed
         // uniformly with every following item.
-        if let Some(marker) = detect_list_marker(trimmed) {
+        if let Some(marker) = detect_list_marker(trimmed, LineEnd::Streaming) {
             let partial = Partial::new(
                 PartialKind::List {
                     ordered: marker.ordered,
@@ -698,7 +698,7 @@ impl StreamParser {
             return false;
         }
         let rest = &line[line.len() - line.trim_start().len()..];
-        if detect_list_marker(rest).is_some() || could_be_list_marker(rest) {
+        if detect_list_marker(rest, LineEnd::Streaming).is_some() || could_be_list_marker(rest) {
             // Either a complete item still missing its newline, or a marker the
             // user is mid-way through typing (e.g. a lone "-" before its space).
             // Wait for more input rather than splitting the list prematurely.
@@ -826,7 +826,7 @@ impl StreamParser {
     /// Content stays span-based (zero-copy) via [`parse_inline`].
     fn parse_list_item_line(&self, line: &str, line_abs: usize) -> Option<(bool, ListItem)> {
         let indent = line.len() - line.trim_start().len();
-        let marker = detect_list_marker(&line[indent..])?;
+        let marker = detect_list_marker(&line[indent..], LineEnd::Complete)?;
 
         // Skip the marker and the run of spaces between it and the content.
         let after_marker = &line[indent + marker.marker_len..];
@@ -1152,12 +1152,30 @@ struct ListMarker {
     marker_len: usize,
 }
 
+/// Whether the end of the text handed to [`detect_list_marker`] is a real end
+/// of line, or just where the stream happens to stop so far.
+#[derive(Clone, Copy, PartialEq)]
+enum LineEnd {
+    /// The text is a whole line: running out of characters means end-of-line.
+    Complete,
+    /// The text is the tail of a stream: more characters may still arrive.
+    Streaming,
+}
+
 /// Detect a list marker at the very start of `s` (leading whitespace already
 /// stripped). Recognizes `-`/`*`/`+ ` bullets and `N.`/`N)` ordered markers.
 /// The marker must be followed by a space, tab, or end-of-line so that text
-/// like `-foo` or a bare streaming `-` (which may still grow into `---`) is not
-/// mistaken for a list.
-fn detect_list_marker(s: &str) -> Option<ListMarker> {
+/// like `-foo` is not mistaken for a list.
+///
+/// `line_end` says what running out of characters means. On a
+/// [`LineEnd::Complete`] line a bare `-` is an empty list item; on a
+/// [`LineEnd::Streaming`] tail it is still ambiguous — it may yet grow into
+/// `- item` or `---` — so it is rejected until more input arrives.
+///
+/// Both views of the same line must agree, or the block parser loops: it opens
+/// a list here without consuming anything and then re-parses the line, so a
+/// marker that only one view accepts is never consumed and never dropped.
+fn detect_list_marker(s: &str, line_end: LineEnd) -> Option<ListMarker> {
     let bytes = s.as_bytes();
     let first = *bytes.first()?;
 
@@ -1166,9 +1184,8 @@ fn detect_list_marker(s: &str) -> Option<ListMarker> {
 
     if first == b'-' || first == b'*' || first == b'+' {
         let rest = &s[1..];
-        // An empty trailing item (no following space yet) is ambiguous while
-        // streaming, so require an explicit space/tab/newline after the marker.
-        if rest.starts_with([' ', '\t', '\n']) {
+        if rest.starts_with([' ', '\t', '\n']) || (rest.is_empty() && line_end == LineEnd::Complete)
+        {
             return Some(ListMarker {
                 ordered: false,
                 number: None,

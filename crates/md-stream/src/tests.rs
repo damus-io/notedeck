@@ -1403,3 +1403,64 @@ fn test_blockquote_terminates_into_paragraph() {
         .collect();
     assert_eq!(kinds, ["p", "quote", "p"]);
 }
+
+/// Parse `input` on a worker thread so a parser that stops making progress
+/// fails the test instead of wedging the whole run. The block detector opens a
+/// list without consuming anything and lets `process_list` consume the line, so
+/// a line the two disagree about loops forever inside `push` — which is a hang,
+/// not a wrong answer, and a plain call could not report it.
+fn parse_doc_bounded(input: &str) -> (Vec<MdElement>, String) {
+    let input = input.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut parser = StreamParser::new();
+        parser.push(&input);
+        parser.finalize();
+        let _ = tx.send(parser.into_parts());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("parser never finished — it is looping without consuming input")
+}
+
+#[test]
+fn test_bare_bullet_line_is_an_empty_item() {
+    // A line that is nothing but a bullet is an empty list item, the same way
+    // "1." alone already is. Once the newline is there the marker is no longer
+    // ambiguous, so both the block detector and the line parser must accept it.
+    for marker in ["-", "*", "+"] {
+        let (els, buf) = parse_doc_bounded(&format!("{marker}\n{marker} a\n"));
+        assert_eq!(els.len(), 1, "marker {marker:?}: {els:?}");
+        let items = unordered(&els[0]);
+        assert_eq!(items.len(), 2, "marker {marker:?}");
+        assert_eq!(item_text(&items[0], &buf), "");
+        assert_eq!(item_text(&items[1], &buf), "a");
+    }
+}
+
+#[test]
+fn test_bare_bullet_line_inside_prose_terminates() {
+    // The shape that hung the chat renderer: a pasted diff, whose blank added
+    // and removed lines are a lone "+" or "-" followed by more content.
+    let (els, _) = parse_doc_bounded("+\n+            Text(\"hi\")\n+\n");
+    assert!(!els.is_empty());
+
+    // And a bullet line mid-paragraph, where no list is open yet.
+    let (els, _) = parse_doc_bounded("before\n-\nafter\n");
+    assert!(!els.is_empty());
+}
+
+#[test]
+fn test_streaming_bare_bullet_stays_ambiguous() {
+    // Mid-stream a lone "-" may still grow into "- item" or "---", so it must
+    // not be committed to an empty item before the next chunk lands.
+    let mut parser = StreamParser::new();
+    parser.push("-");
+    assert!(parser.parsed().is_empty());
+    parser.push("--\n");
+    parser.finalize();
+    assert!(
+        matches!(parser.parsed(), [MdElement::ThematicBreak]),
+        "got {:?}",
+        parser.parsed()
+    );
+}
