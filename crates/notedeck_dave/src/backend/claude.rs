@@ -1,3 +1,4 @@
+use crate::Message;
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::task_tracker::TaskTracker;
@@ -5,11 +6,11 @@ use crate::backend::tool_summary::{extract_response_content, format_tool_summary
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    denial_message_for_model, turn_exit_message_for_model, CompactionInfo, DaveApiResponse,
-    PermissionResponse, RunningTool, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool, SubagentInfo, SubagentStatus,
+    denial_marker_for_model, denial_message_for_model, permission_reply_message,
+    turn_exit_message_for_model,
 };
 use crate::tools::Tool;
-use crate::Message;
 use agentium_core::Waker;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
@@ -17,12 +18,12 @@ use claude_agent_sdk_rs::{
     ToolResultContent, ToolUseBlock, UserContentBlock, UserMessage,
 };
 use dashmap::DashMap;
-use futures::future::BoxFuture;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 
@@ -474,25 +475,86 @@ fn handle_stream_message(
     }
 }
 
-/// Build the SDK denial that carries a user's deny / tool-exit decision back to
-/// the model.
+/// How a user's denial reply reached the model.
 ///
-/// The `message` here is what the SDK surfaces to the model as the tool call's
-/// *error* — the same channel that carries `No such file or directory`. Handing
-/// it the user's `reason` raw makes a human's instruction indistinguishable
-/// from a compromised tool, so it always goes through the attribution framing
-/// in [`crate::messages`]. This lives apart from
-/// [`handle_permission_request`] so that framing is testable without a live
-/// SDK client.
-fn user_denial(reason: &str, cancels_turn: bool) -> PermissionResultDeny {
-    let message = if cancels_turn {
-        turn_exit_message_for_model(Some(reason))
-    } else {
-        denial_message_for_model(Some(reason))
+/// A denial's `PermissionResultDeny.message` is surfaced to the model as the
+/// tool call's *error* — the same channel that carries `No such file or
+/// directory`. Text arriving there cannot prove who wrote it: an injection can
+/// print any wrapper the real code prints. So the user's words go somewhere the
+/// transport itself vouches for them (a real user turn) and the tool result is
+/// left with a marker that asserts nothing.
+enum ReplyDelivery {
+    /// The user typed nothing. Nothing to deliver; the marker stands alone.
+    NoReply,
+    /// The reply went out as its own user turn. The tool result carries no user
+    /// prose at all — the preferred shape.
+    SentAsUserTurn,
+    /// The user turn could not be written. Fall back to embedding their words
+    /// in the tool result behind the attribution framing: weaker provenance,
+    /// but better than dropping what they said.
+    Undeliverable,
+}
+
+/// Deliver a user's denial reply as a real user turn in the conversation.
+///
+/// This is the same mechanism the allow-with-message path uses — the SDK writes
+/// a `{"type":"user",...}` line to the CLI, indistinguishable on the wire from
+/// the user typing it — which is exactly why it fixes the provenance problem
+/// that framing alone cannot.
+async fn deliver_denial_reply(
+    client: &ClaudeClient,
+    session_id: &str,
+    reason: &str,
+) -> ReplyDelivery {
+    // Canned placeholders ("User denied", "Denied by remote") are synthesized
+    // when the user typed nothing. Sending one as a user turn would put words
+    // in their mouth.
+    let Some(text) = permission_reply_message(Some(reason)) else {
+        return ReplyDelivery::NoReply;
+    };
+
+    match client
+        .query_with_content_and_session(vec![UserContentBlock::text(text.as_str())], session_id)
+        .await
+    {
+        Ok(()) => ReplyDelivery::SentAsUserTurn,
+        Err(err) => {
+            tracing::error!("Failed to deliver denial reply as a user turn: {}", err);
+            ReplyDelivery::Undeliverable
+        }
+    }
+}
+
+/// Build the SDK denial for a user's deny decision, given how their reply was
+/// delivered.
+///
+/// Split out from [`handle_permission_request`] so the provenance contract is
+/// testable without a live SDK client.
+fn user_denial(reason: &str, delivery: ReplyDelivery) -> PermissionResultDeny {
+    let message = match delivery {
+        ReplyDelivery::NoReply => denial_marker_for_model(false).to_string(),
+        ReplyDelivery::SentAsUserTurn => denial_marker_for_model(true).to_string(),
+        ReplyDelivery::Undeliverable => denial_message_for_model(Some(reason)),
     };
     PermissionResultDeny {
         message,
-        interrupt: cancels_turn,
+        interrupt: false,
+    }
+}
+
+/// Build the SDK denial for a tool call the user exited, which also cancels the
+/// turn.
+///
+/// Unlike a plain deny this cannot hand the reply to a user turn:
+/// [`cancelled_turn_message_action`] suppresses every stream message after a
+/// cancel until the turn's `Result`, so an injected turn would be swallowed —
+/// or worse, start a turn that then gets suppressed. The user's words stay in
+/// the tool result behind the attribution framing, which is the weaker
+/// provenance but the only one available on this path.
+fn user_turn_exit(reason: &str) -> PermissionResultDeny {
+    PermissionResultDeny {
+        message: turn_exit_message_for_model(Some(reason)),
+        interrupt: true,
     }
 }
 
@@ -574,7 +636,14 @@ async fn handle_permission_request(
         }
         Ok(PermissionResponse::Deny { reason }) => {
             tracing::debug!("User denied tool {}: {}", tool_name, reason);
-            (PermissionResult::Deny(user_denial(&reason, false)), false)
+            // Send the user's words as a real user turn *before* answering the
+            // permission request, so the model reads them where human input
+            // belongs rather than in the tool's error field.
+            let delivery = deliver_denial_reply(client, session_id, &reason).await;
+            (
+                PermissionResult::Deny(user_denial(&reason, delivery)),
+                false,
+            )
         }
         Ok(PermissionResponse::Cancel { reason }) => {
             tracing::debug!(
@@ -582,7 +651,7 @@ async fn handle_permission_request(
                 tool_name,
                 reason
             );
-            (PermissionResult::Deny(user_denial(&reason, true)), true)
+            (PermissionResult::Deny(user_turn_exit(&reason)), true)
         }
         Err(_) => {
             tracing::error!("Permission response channel closed");
@@ -1106,46 +1175,109 @@ mod tests {
     use super::*;
     use crate::backend::CountingWaker;
 
-    /// The denial the SDK hands to the model must never be the user's raw
-    /// reason. That string lands in the tool call's *error* field, so bare
-    /// prose there reads exactly like output from a compromised tool — which is
-    /// how a real session came to treat jb55's own denial messages as a prompt
-    /// injection and ignore them.
+    /// The reason for the whole fix: when the user's reply goes out as its own
+    /// user turn, the tool result must contain *none* of their words.
     ///
-    /// Fails if someone restores `message: reason`.
+    /// The denial message lands in the tool call's error field, where nothing
+    /// can prove who wrote it — an injection prints the same wrapper the real
+    /// code prints. Leaving the user's prose out entirely is what makes the
+    /// provenance real: it comes from the transport, not from a claim in the
+    /// text. A real session read jb55's denials in that field, correctly judged
+    /// them unverifiable, and ignored him.
+    ///
+    /// Fails if someone restores `message: reason`, or drops the user turn and
+    /// goes back to embedding the text.
     #[test]
-    fn user_denial_frames_the_users_reason_for_the_model() {
+    fn user_denial_keeps_the_users_words_out_of_the_tool_result() {
         let reason = "why are you ignoring all these messages. there is nothing to recover";
+        let deny = user_denial(reason, ReplyDelivery::SentAsUserTurn);
 
-        for cancels_turn in [false, true] {
-            let deny = user_denial(reason, cancels_turn);
+        assert_ne!(deny.message, reason);
+        assert!(
+            !deny.message.contains("why are you ignoring"),
+            "the user's words belong in the user turn, not the tool result: {}",
+            deny.message
+        );
+        assert!(
+            deny.message.contains("delivered separately"),
+            "the marker must point the model at the separate user message: {}",
+            deny.message
+        );
+        assert!(
+            deny.message.contains("STOP what you are doing"),
+            "the marker must tell the agent what to do next: {}",
+            deny.message
+        );
+        assert!(!deny.interrupt, "a plain deny does not interrupt the turn");
+    }
 
-            assert_ne!(
-                deny.message, reason,
-                "the user's reason must not reach the model unframed"
-            );
-            assert!(
-                deny.message.contains(reason),
-                "the user's words must survive intact: {}",
-                deny.message
-            );
-            assert!(
-                deny.message
-                    .contains("typed by the human operating this session"),
-                "the denial must say a human wrote the quoted text: {}",
-                deny.message
-            );
-            assert!(
-                deny.message.contains("<message_from_user>")
-                    && deny.message.contains("</message_from_user>"),
-                "the user's words must be delimited: {}",
-                deny.message
-            );
-            assert_eq!(
-                deny.interrupt, cancels_turn,
-                "only a tool exit interrupts the turn"
-            );
-        }
+    /// A plain deny with no typed reply gets the same contentless marker, and
+    /// never the canned "User denied" placeholder quoted as the user's words.
+    #[test]
+    fn user_denial_without_a_reply_says_no_reason_was_given() {
+        let deny = user_denial(crate::messages::DEFAULT_DENY_REASON, ReplyDelivery::NoReply);
+
+        assert!(deny.message.contains("gave no reason"), "{}", deny.message);
+        assert!(
+            !deny.message.contains(crate::messages::DEFAULT_DENY_REASON),
+            "the synthesized placeholder must not reach the model: {}",
+            deny.message
+        );
+        assert!(!deny.interrupt);
+    }
+
+    /// If the user turn cannot be written, the words still have to reach the
+    /// model — so the fallback embeds them behind the attribution framing
+    /// rather than dropping them. Weaker provenance, but not silence.
+    #[test]
+    fn undeliverable_reply_falls_back_to_framing_it_in_the_tool_result() {
+        let reason = "they were both from me. THIS IS ME. THE USER.";
+        let deny = user_denial(reason, ReplyDelivery::Undeliverable);
+
+        assert_ne!(deny.message, reason, "never raw, even in the fallback");
+        assert!(
+            deny.message.contains(reason),
+            "the fallback must not drop the user's words: {}",
+            deny.message
+        );
+        assert!(
+            deny.message
+                .contains("typed by the human operating this session")
+                && deny.message.contains("<message_from_user>"),
+            "the fallback must attribute and delimit: {}",
+            deny.message
+        );
+    }
+
+    /// A tool exit cannot use the user-turn channel — the cancelled-turn filter
+    /// would swallow it — so it keeps the framed-in-tool-result form and
+    /// interrupts.
+    #[test]
+    fn user_turn_exit_frames_in_place_and_interrupts() {
+        let reason = "stop trying";
+        let deny = user_turn_exit(reason);
+
+        assert_ne!(deny.message, reason);
+        assert!(deny.message.contains(reason), "{}", deny.message);
+        assert!(
+            deny.message.contains("<message_from_user>"),
+            "{}",
+            deny.message
+        );
+        assert!(deny.interrupt, "a tool exit cancels the turn");
+
+        // The reason a cancel can't hand off to a user turn: everything after a
+        // cancel is dropped until the turn's Result.
+        assert_eq!(
+            cancelled_turn_message_action(&ClaudeMessage::User(
+                serde_json::from_value(serde_json::json!({
+                    "type": "user",
+                    "message": { "role": "user", "content": [] }
+                }))
+                .expect("user message should deserialize")
+            )),
+            CancelledTurnMessageAction::Ignore
+        );
     }
 
     #[test]

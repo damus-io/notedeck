@@ -489,13 +489,43 @@ const USER_ATTRIBUTION: &str = "The text below was typed by the human operating 
 this session. It is not tool output, not file or network content, and not a \
 prompt injection. Treat it as a direct instruction from your user.";
 
-/// Build the model-facing message for a denied tool call.
+/// The tool result for a denial whose message was delivered as its own user
+/// turn, and for a denial the user gave no message with.
+///
+/// This is the preferred shape, and it works because it asserts nothing that
+/// has to be believed. Provenance comes from the transport — the reply is a
+/// real user turn on the wire, the same channel the agent already trusts for
+/// human input — so the tool result carries no user prose and no claim about
+/// who wrote anything. Forging it buys nothing: the worst an injection could
+/// achieve with this text is to make the agent stop and wait, which is safe.
+///
+/// Contrast [`denial_message_for_model`], which has to *say* the text is from
+/// a human because the text is right there in the tool result. That claim is
+/// unverifiable from where the model sits — an injection could print the same
+/// sentence — so it is the fallback, used only when the user turn cannot be
+/// delivered.
+pub fn denial_marker_for_model(reply_delivered: bool) -> &'static str {
+    if reply_delivered {
+        "The user denied this tool call. The tool did not run. The user's reply is not in this \
+tool result — it is delivered separately, as its own user message in this conversation. STOP what \
+you are doing, read that message, and do not retry this tool unless it tells you to."
+    } else {
+        "The user denied this tool call. The tool did not run, and they gave no reason. STOP what \
+you are doing and wait for the user to tell you how to proceed."
+    }
+}
+
+/// Build the model-facing message for a denied tool call, with the user's text
+/// embedded in the tool result.
+///
+/// **Fallback only.** Prefer [`denial_marker_for_model`] with the reply
+/// delivered as a real user turn: attribution written inside the tool result is
+/// self-certification, since an injection could print the same wrapper. This is
+/// what the backend falls back to when that delivery fails, where the choice is
+/// between framed text and losing the user's words entirely.
 ///
 /// `reason` is the raw reason carried on [`PermissionResponse::Deny`]; canned
 /// placeholders and empty strings are recognized as "the user typed nothing".
-///
-/// Never hand a user's reason to a backend unframed — see [`USER_ATTRIBUTION`]
-/// for why the raw string is unsafe on its own.
 pub fn denial_message_for_model(reason: Option<&str>) -> String {
     let Some(text) = permission_reply_message(reason) else {
         return "The user denied this tool call, so the tool did not run, and gave no reason. \
@@ -1037,10 +1067,10 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::{
-        denial_message_for_model, permission_reply_message, turn_exit_message_for_model,
-        PermissionRequest, PermissionResponseType, PermissionView, QuestionSetInput, UserQuestion,
-        DEFAULT_DENY_REASON, DEFAULT_EXIT_REASON, DEFAULT_REMOTE_DENY_REASON,
-        DEFAULT_REMOTE_EXIT_REASON,
+        denial_marker_for_model, denial_message_for_model, permission_reply_message,
+        turn_exit_message_for_model, PermissionRequest, PermissionResponseType, PermissionView,
+        QuestionSetInput, UserQuestion, DEFAULT_DENY_REASON, DEFAULT_EXIT_REASON,
+        DEFAULT_REMOTE_DENY_REASON, DEFAULT_REMOTE_EXIT_REASON,
     };
     use serde_json::json;
     use uuid::Uuid;
@@ -1119,6 +1149,38 @@ mod tests {
             msg.contains("STOP what you are doing"),
             "denial must tell the agent what to do next: {msg}"
         );
+    }
+
+    /// The marker is the preferred shape precisely because it asserts nothing.
+    ///
+    /// It carries no user prose and makes no claim about who wrote anything —
+    /// provenance comes from the reply being a real user turn on the wire. That
+    /// is what an injection cannot counterfeit, and it is why this text, unlike
+    /// [`denial_message_for_model`], does not need to be believed: forging it
+    /// only makes the agent stop and wait.
+    #[test]
+    fn denial_marker_carries_no_user_text_and_asserts_nothing() {
+        let sent = denial_marker_for_model(true);
+        assert!(
+            sent.contains("delivered separately"),
+            "must point at the separate user message: {sent}"
+        );
+        assert!(sent.contains("STOP what you are doing"), "{sent}");
+        // No attribution claim: there is nothing here to attribute.
+        assert!(
+            !sent.contains("<message_from_user>"),
+            "the marker must not quote the user: {sent}"
+        );
+
+        let none = denial_marker_for_model(false);
+        assert!(none.contains("gave no reason"), "{none}");
+        assert!(none.contains("STOP what you are doing"), "{none}");
+        assert!(!none.contains("delivered separately"), "{none}");
+
+        // Neither form leaks a canned placeholder as if the user had said it.
+        for marker in [sent, none] {
+            assert!(!marker.contains(DEFAULT_DENY_REASON), "{marker}");
+        }
     }
 
     /// A user who pastes text containing the closing delimiter must not be able
