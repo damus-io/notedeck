@@ -387,7 +387,21 @@ impl<'a, 'd> NoteView<'a, 'd> {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
 
-                secondary_label(ui, "encrypted privately to");
+                // A green lock + green text, mirroring the private-reply badge on
+                // damus iOS: the treatment says at a glance that the note is private
+                // and names the one person who can see it.
+                let color = crate::colors::GREEN;
+                let (lock_rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 11.0), Sense::hover());
+                paint_lock(ui.painter(), lock_rect, color);
+
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("encrypted privately to")
+                            .size(10.0)
+                            .color(color),
+                    )
+                    .selectable(false),
+                );
 
                 crate::Mention::new(
                     note_context.ndb,
@@ -688,6 +702,30 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         resp
     }
+}
+
+/// Paints a small padlock glyph inside `rect`, in `color`.
+///
+/// The shackle is a full stroked ring whose lower half is then hidden by the
+/// filled body, leaving a clean semicircular arc above it. Drawing it this way
+/// (a ring plus a rect rather than a traced path) avoids allocating a point
+/// buffer, which matters because note headers redraw every frame.
+fn paint_lock(painter: &egui::Painter, rect: Rect, color: egui::Color32) {
+    let w = rect.width();
+    let stroke = egui::Stroke::new((w * 0.16).max(1.0), color);
+
+    // The body's top edge, which is also the shackle ring's centre so the body
+    // covers exactly the ring's lower half.
+    let body_top = rect.center().y - rect.height() * 0.05;
+    let cx = rect.center().x;
+
+    painter.circle_stroke(pos2(cx, body_top), w * 0.3, stroke);
+
+    let body = Rect::from_min_max(
+        pos2(rect.left(), body_top),
+        pos2(rect.right(), rect.bottom()),
+    );
+    painter.rect_filled(body, w * 0.2, color);
 }
 
 fn get_zapper<'a>(
@@ -1379,5 +1417,62 @@ fn zap_button<'a>(
         ));
 
         resp.union(put_resp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paint_lock;
+    use egui_kittest::Harness;
+
+    /// Renders the private-reply lock glyph at a range of sizes alongside the
+    /// green badge text, so the padlock shape and success-green treatment can be
+    /// eyeballed as a snapshot without standing up a full [`NoteView`].
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_private_reply_lock() {
+        let color = crate::colors::GREEN;
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 160.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                ui.spacing_mut().item_spacing.y = 10.0;
+
+                // The glyph on its own at increasing sizes, to check the shape holds.
+                ui.horizontal(|ui| {
+                    for size in [11.0f32, 16.0, 24.0, 40.0] {
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(size * 0.8, size),
+                            egui::Sense::hover(),
+                        );
+                        paint_lock(ui.painter(), rect, color);
+                    }
+                });
+
+                // The badge as drawn in a note header: lock + green label.
+                ui.horizontal(|ui| {
+                    // Mirror the header's tight spacing (see `header_ui`) so the
+                    // snapshot reflects the real gap rather than egui's default.
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(9.0, 11.0), egui::Sense::hover());
+                    paint_lock(ui.painter(), rect, color);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("encrypted privately to")
+                                .size(10.0)
+                                .color(color),
+                        )
+                        .selectable(false),
+                    );
+                    ui.add(
+                        egui::Label::new(egui::RichText::new("@jb55").size(10.0).color(color))
+                            .selectable(false),
+                    );
+                });
+            });
+
+        harness.run();
+        harness.snapshot("private_reply_lock");
     }
 }
