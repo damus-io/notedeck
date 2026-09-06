@@ -26,6 +26,14 @@ use nostrdb_net::relay::sync::Result;
 /// `~/.local/share/headway-cli` on Linux).
 const APP: &str = "headway-cli";
 
+/// Upper bound for a windowed reconcile's `created_at` search: `u32::MAX` (unix
+/// second `4294967295` ≈ year 2106) — past any real event time, yet within the
+/// 32-bit range nostrdb's filter `until` accepts (a larger value fails
+/// `Filter::from_json` with `BufferOverflow`). Windows over the relay's per-sync
+/// cap hone in by bisection, so an over-wide upper bound costs only a few cheap
+/// empty-range reconciles.
+const RECONCILE_UNTIL: u64 = u32::MAX as u64;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`headway show | head`) instead of
@@ -1057,15 +1065,16 @@ async fn sync_envelopes(relay: &mut nostrdb_net::relay::sync::Relay, ndb: &Ndb, 
 async fn pull_giftwraps(relay: &mut nostrdb_net::relay::sync::Relay, ndb: &Ndb, author: &Pubkey) {
     let filter = teams::giftwrap_filter(author);
     let wire = json!({ "kinds": [1059], "#p": [author.hex()] }).to_string();
-    let local = match nostrdb_net::relay::sync::local_set(ndb, &filter) {
-        Ok(local) => local,
-        Err(e) => {
-            eprintln!("warning: couldn't index local key-shares: {e}");
-            return;
-        }
-    };
     let before = count_matching(ndb, &filter);
-    if let Err(e) = nostrdb_net::relay::sync::pull_reconcile(relay, ndb, &wire, local).await {
+    // Windowed, not a plain `pull_reconcile`: an active account's kind-1059 inbox
+    // can exceed the relay's per-sync negentropy cap, and the un-windowed pull's
+    // capped-`REQ` fallback would then see only the newest slice and re-fetch it
+    // every run. `pull_reconcile_windowed` bisects `created_at` so each sub-sync
+    // stays under the cap. `RECONCILE_UNTIL` bounds the search past any real event
+    // time yet within nostrdb's 32-bit `until`.
+    if let Err(e) =
+        nostrdb_net::relay::sync::pull_reconcile_windowed(relay, ndb, &wire, RECONCILE_UNTIL).await
+    {
         eprintln!("warning: couldn't sync shared-board key-shares: {e}");
     }
     // Peel what just arrived, but only if something did. A gift-wrap is unwrapped
