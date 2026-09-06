@@ -711,3 +711,77 @@ fn wait_for_envelope_via_show(url: &str, db: &str, relay_store: &Ndb) {
     }
     panic!("sealed board never flushed its envelope to the relay");
 }
+
+/// An offline-born sealed board becomes joinable from a **fresh cache** after the
+/// owner reconnects — the push half of the giftwrap leg
+/// (headway:headway/basic-owner-torch).
+///
+/// [`sealed_board_converges_without_plaintext_leak`] proves the *content* flushes
+/// up on reconnect; this proves the *key* does too. Seed a sealed board while
+/// offline, so its self-share kind-1059 and its kind-1081 content land only in the
+/// owner's local cache. Reconnect the owner: `sync_envelopes` flushes the content
+/// and `flush_own_selfshares` flushes the self-share. A fresh cache with the same
+/// key then pulls the self-share, registers the root, pulls the content, and folds
+/// the board. Without the self-share flush the fresh cache pulls the envelopes but
+/// has no key to join — the board never folds — which is the exact gap
+/// box-shock-disorder could not cover.
+#[test]
+fn offline_born_board_joins_from_a_fresh_cache_after_reconnect() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+    let dead = "ws://127.0.0.1:1";
+
+    // Owner's cache: seed a non-default sealed board entirely offline, so its
+    // self-share and content stay local (the seed's publish is a no-op offline).
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner = owner_dir.path().to_str().unwrap();
+    assert!(
+        headway(dead, owner, &["--board", "work", "seed"])
+            .status
+            .success(),
+        "offline seed"
+    );
+
+    // Reconnect the owner: this flushes the self-share up (the leg under test).
+    // The marker then makes it a one-shot, so a later run won't re-flush.
+    let reconnect = headway(&url, owner, &["--board", "work", "show", "--json"]);
+    assert!(
+        reconnect.status.success(),
+        "reconnect: {}",
+        String::from_utf8_lossy(&reconnect.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&reconnect.stderr).contains("own self-share"),
+        "reconnect should flush the offline-born board's self-share up:\n{}",
+        String::from_utf8_lossy(&reconnect.stderr)
+    );
+
+    // A FRESH cache with the same key joins purely from the relay: it pulls the
+    // self-share, registers the root, pulls the content, and folds the board.
+    let fresh_dir = tempfile::tempdir().expect("fresh dir");
+    let fresh = fresh_dir.path().to_str().unwrap();
+    let board = show_board_until_cols(&url, fresh, "work", 5);
+    assert_eq!(
+        board["title"], "work",
+        "a fresh cache must fold the offline-born board after the owner reconnects: {board:#}"
+    );
+
+    // One-shot: a second owner run finds the self-share already flushed and says
+    // nothing more about it.
+    let again = headway(&url, owner, &["--board", "work", "show"]);
+    assert!(
+        !String::from_utf8_lossy(&again.stderr).contains("own self-share"),
+        "a settled self-share must not re-flush:\n{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+}

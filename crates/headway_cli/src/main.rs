@@ -388,6 +388,14 @@ async fn run() -> Result<()> {
         sync_envelopes(relay, &ndb, &roster).await;
     }
 
+    // Push half of the giftwrap leg: re-publish our own boards' self-shares so a
+    // fresh cache / another device can join a board sealed while offline (or by a
+    // front end that never fanned its self-share). Needs the signing key — a
+    // self-share is re-wrapped, not forwarded — and a reachable relay.
+    if let (Some(relay), Some((secret, _))) = (relay.as_mut(), cli.secret.as_ref()) {
+        flush_own_selfshares(relay, &ndb, &roster, &author, secret, cli.db.as_deref()).await;
+    }
+
     let board = cli.board;
     let board_explicit = cli.board_explicit;
     let as_json = cli.json;
@@ -1074,6 +1082,128 @@ async fn pull_giftwraps(relay: &mut nostrdb_net::relay::sync::Relay, ndb: &Ndb, 
     {
         ndb.process_giftwraps(&txn);
     }
+}
+
+/// Push half of the giftwrap leg (see headway:headway/basic-owner-torch): for
+/// every shared board we OWN, re-publish its kind-1059 self-share so another of
+/// the account's devices — or a co-member — can join it.
+///
+/// [`pull_giftwraps`] is pull-only, and neither the plaintext reconcile nor
+/// [`sync_envelopes`] carries a kind-1059: a board sealed while offline (or by a
+/// front end that never fanned its self-share) flushes its *content* up but not
+/// the *key* to read it, so a fresh cache pulls the envelopes and folds nothing.
+/// This closes that gap. A self-share's kind-1059 is authored by an ephemeral
+/// gift-wrap key, so we can't pick our own out of the stored wraps to forward
+/// them — instead we regenerate each from the roster's `team_root` via
+/// [`store::share_board`] (recipient = ourselves), exactly as `seed`/`migrate` do.
+///
+/// Scoped tightly, because re-wrapping is not idempotent (a fresh ephemeral key
+/// each run) so an ungated flush would spam the account's inbox every command:
+/// - **Own boards only** — never re-broadcast a co-member's inbound share.
+/// - **Once per cache** — a per-db marker records the roots already flushed
+///   ([`flushed_marker_path`]); a fresh cache re-flushes, a repeat run is a no-op.
+/// - **Real headway channels only** — skip a root whose coordinate doesn't fold a
+///   headway board. A slug can collide with another app's derived root (the
+///   notebook canvas also derives `derive_board_root(secret, "notebook")`), and
+///   re-advertising that root here would cross-wire this coordinate onto the
+///   foreign channel.
+async fn flush_own_selfshares(
+    relay: &mut nostrdb_net::relay::sync::Relay,
+    ndb: &Ndb,
+    roster: &Roster,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    db: Option<&str>,
+) {
+    // A board coordinate is `30619:<owner>:<slug>`; ours start with this prefix.
+    let owner_prefix = format!("{}:{}:", event::KIND_BOARD as u64, author.hex());
+    let mut flushed = read_flushed_selfshares(db);
+    let mut sink = Collect::default();
+    let mut newly: Vec<String> = Vec::new();
+    for team in &roster.teams {
+        if !team.board_addr.starts_with(&owner_prefix) || flushed.contains(&team.team_root) {
+            continue;
+        }
+        let Some(root) = team.root_bytes() else {
+            continue;
+        };
+        if !folds_headway_board(ndb, team) {
+            continue;
+        }
+        if store::share_board(ndb, secret, author, &team.board_addr, &root, &mut sink) {
+            newly.push(team.team_root.clone());
+        }
+    }
+    if sink.0.is_empty() {
+        return;
+    }
+    match relay.publish(&sink.0).await {
+        Ok(()) => {
+            eprintln!("flushed {} own self-share(s) to the relay", sink.0.len());
+            flushed.extend(newly);
+            if let Err(e) = write_flushed_selfshares(db, &flushed) {
+                eprintln!("warning: couldn't record flushed self-shares: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: couldn't flush self-shares: {e}"),
+    }
+}
+
+/// Whether `team`'s coordinate folds an actual headway board (its sealed
+/// definition is present), distinguishing a genuine shared board from a root that
+/// only collides with a foreign app's channel (which carries no headway events).
+fn folds_headway_board(ndb: &Ndb, team: &teams::Team) -> bool {
+    let Some(keys) = team.sns_keys() else {
+        return false;
+    };
+    let Ok(txn) = Transaction::new(ndb) else {
+        return false;
+    };
+    event::load_shared_board(ndb, &txn, &team.board_addr, &[keys.team_keypair.pubkey]).is_some()
+}
+
+/// Path of the per-cache marker listing the `team_root`s whose self-share this
+/// cache has already flushed up (see [`flush_own_selfshares`]). It lives in the db
+/// directory: per-cache, so a fresh cache re-flushes, and — with `--db` — isolated
+/// from the account's real cache, so a test never touches the developer's marker.
+/// Mirrors `open_ndb`'s path logic (`--db` verbatim, else the platform data dir).
+fn flushed_marker_path(db: Option<&str>) -> Option<std::path::PathBuf> {
+    match db {
+        Some(p) => Some(std::path::PathBuf::from(p).join("flushed_selfshares")),
+        None => nostrdb_net::relay::sync::config_path(APP, "flushed_selfshares").ok(),
+    }
+}
+
+/// The set of `team_root`s (hex) this cache has already flushed a self-share for.
+fn read_flushed_selfshares(db: Option<&str>) -> std::collections::HashSet<String> {
+    let Some(path) = flushed_marker_path(db) else {
+        return std::collections::HashSet::new();
+    };
+    std::fs::read_to_string(path)
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the flushed-root set (see [`read_flushed_selfshares`]).
+fn write_flushed_selfshares(
+    db: Option<&str>,
+    roots: &std::collections::HashSet<String>,
+) -> std::io::Result<()> {
+    let Some(path) = flushed_marker_path(db) else {
+        return Ok(());
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut sorted: Vec<&str> = roots.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    std::fs::write(path, sorted.join("\n"))
 }
 
 /// How many stored notes match `filter`, counted through the index walk rather
