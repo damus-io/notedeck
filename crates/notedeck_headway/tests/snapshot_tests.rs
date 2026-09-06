@@ -624,7 +624,7 @@ fn hide_subissues_view_option() {
     // to the prominent "Filtered" pill reporting 5 of the 7 cards showing.
     wait_for_absent(&mut harness, "Sync cards across relays");
     wait_for_absent(&mut harness, "Scaffold the Headway app crate");
-    harness.get_by_label("⚲ Filtered · 5 of 7 shown");
+    harness.get_by_label("Filtered · 5 of 7 shown");
 }
 
 /// The inline card widget must render its content left-aligned even though the

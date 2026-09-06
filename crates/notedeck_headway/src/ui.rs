@@ -1399,6 +1399,35 @@ fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
         });
 }
 
+/// Paint a small downward funnel — the "filtered" mark leading the
+/// [`filtered_badge`] — `size` px wide, vertically centered on the current text
+/// row, in `color`. Painted rather than drawn from a glyph because the bundled
+/// font has no funnel (and the near symbols render as tofu), and because the
+/// board already hand-paints its other status marks (the status circles, the
+/// sync dot) for the same reason.
+fn filter_funnel(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(size, ui.text_style_height(&egui::TextStyle::Body)),
+        egui::Sense::hover(),
+    );
+    // Normalised coordinates inside a `size`-square box centered in the row.
+    let origin = rect.center() - egui::vec2(size, size) * 0.5;
+    let p = |nx: f32, ny: f32| origin + egui::vec2(nx, ny) * size;
+    let painter = ui.painter();
+    // The bowl (wide mouth narrowing to the neck) and the stem below it, both
+    // filled — the silhouette reads as a funnel even at this size.
+    painter.add(egui::Shape::convex_polygon(
+        vec![p(0.12, 0.24), p(0.88, 0.24), p(0.56, 0.55), p(0.44, 0.55)],
+        color,
+        egui::Stroke::NONE,
+    ));
+    painter.add(egui::Shape::convex_polygon(
+        vec![p(0.44, 0.55), p(0.56, 0.55), p(0.56, 0.82), p(0.44, 0.82)],
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
 /// The header's "Filtered" affordance: an accent pill shown whenever the board
 /// is narrowing what it displays ([`ViewFilter::is_active`]). It states how many
 /// of how many cards are showing, so a board narrowed by a search or a view
@@ -1411,14 +1440,25 @@ fn filtered_badge(
     shown: usize,
     total: usize,
 ) -> egui::Response {
-    let accent = ui.visuals().selection.bg_fill;
+    // A filtered board is an *advisory* state — "heads up, you're not seeing
+    // everything" — so it wears the theme's warm `warning` hue rather than the
+    // raw selection purple, which read as garish against the neutral greys. A
+    // faint tint plus a defined border makes a crisp chip that clearly stands
+    // out without a heavy saturated fill (see [`label_chip`] for the fill-only
+    // idiom this deliberately departs from).
+    let accent = theme.warning;
     egui::Frame::new()
-        .fill(accent.gamma_multiply(0.30))
+        .fill(accent.gamma_multiply(0.14))
+        .stroke(egui::Stroke::new(STROKE_THIN, accent.gamma_multiply(0.55)))
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 2))
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_XS;
+            // The funnel leads the pill in the accent hue, tying the chip to the
+            // "narrowing" idea before the words are read.
+            filter_funnel(ui, accent, 11.0);
             ui.label(
-                egui::RichText::new(format!("⚲ Filtered · {shown} of {total} shown"))
+                egui::RichText::new(format!("Filtered · {shown} of {total} shown"))
                     .small()
                     .strong()
                     .color(theme.text_primary),
@@ -1437,9 +1477,11 @@ fn filtered_badge(
 /// stays open on toggle so several options can be flipped in one visit.
 fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
     // Tint the trigger when an option is active, so the menu itself signals that
-    // the grid is being narrowed even before it's opened.
+    // the grid is being narrowed even before it's opened. It wears the same warm
+    // `warning` hue as the [`filtered_badge`] pill — the two are the same signal
+    // — rather than the raw selection purple.
     let label = if state.hide_subissues {
-        egui::RichText::new("☰ View").color(ui.visuals().selection.bg_fill)
+        egui::RichText::new("☰ View").strong().color(theme.warning)
     } else {
         egui::RichText::new("☰ View").color(theme.text_secondary)
     };
