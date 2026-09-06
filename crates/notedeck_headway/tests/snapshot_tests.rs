@@ -313,6 +313,21 @@ fn snapshot_headway() {
     }
 }
 
+/// The header's narrowed state: hiding sub-issues via the "View" menu drops the
+/// two sub-issue cards from the grid, tints the "View" trigger, and swaps the
+/// muted size summary for the prominent "Filtered" pill.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_filtered() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    harness.get_by_label("☰ View").simulate_click();
+    harness.run_ok();
+    harness.get_by_label("Hide sub-issues").simulate_click();
+    harness.run_steps(3);
+    harness.snapshot("headway_filtered");
+}
+
 /// Open a card's detail view and snapshot it on both a wide and a narrow
 /// viewport to exercise the full-pane detail screen (which replaces the board
 /// while a card is open).
@@ -582,6 +597,34 @@ fn add_subissue_flow() {
     // The new child lands in the checklist (in Backlog, so not done).
     wait_for_label(&mut harness, "1/3");
     wait_for_label(&mut harness, "Write a relay conformance suite");
+}
+
+/// The header's "View" menu hides sub-issue cards from the grid, and the
+/// "Filtered" pill then reports the narrowed count — so a board narrowed by a
+/// view option (or a search) never passes for the whole board, the affordance
+/// gap the card `injury-enlist-swarm` flagged. Behavioural (accesskit only), so
+/// it runs without lavapipe.
+#[test]
+fn hide_subissues_view_option() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+
+    // Precondition: the demo board's two sub-issue cards sit on the grid and the
+    // header states the full, unnarrowed size.
+    harness.get_by_label("Sync cards across relays");
+    harness.get_by_label("Scaffold the Headway app crate");
+    harness.get_by_label("7 cards · 5 columns");
+
+    // Open the View menu and toggle "Hide sub-issues".
+    harness.get_by_label("☰ View").simulate_click();
+    harness.run_ok();
+    harness.get_by_label("Hide sub-issues").simulate_click();
+    harness.run_ok();
+
+    // Both sub-issue cards leave the grid, and the muted size summary gives way
+    // to the prominent "Filtered" pill reporting 5 of the 7 cards showing.
+    wait_for_absent(&mut harness, "Sync cards across relays");
+    wait_for_absent(&mut harness, "Scaffold the Headway app crate");
+    harness.get_by_label("⚲ Filtered · 5 of 7 shown");
 }
 
 /// The inline card widget must render its content left-aligned even though the

@@ -119,6 +119,12 @@ pub struct BoardUiState {
     /// card, switching boards first if it lives on another known board (see
     /// [`CardFilter`] and [`filter_ref_jump`]).
     filter: String,
+    /// Hide cards that are someone's sub-issue (they still show as checklist
+    /// rows inside their parent's detail). A Linear-style view option, toggled
+    /// from the header's "View" menu; folded into [`ViewFilter`] alongside the
+    /// text [`filter`](Self::filter) so every card-visibility check asks one
+    /// question.
+    hide_subissues: bool,
     /// Where each card was drawn last frame (screen rect + column), so a card
     /// that has jumped to a new column since can be animated sliding in from its
     /// previous slot rather than teleporting.
@@ -373,6 +379,38 @@ impl CardFilter {
     }
 }
 
+/// The complete "what shows on the board grid" predicate: the text/label
+/// [`CardFilter`] plus the board's view options (currently just
+/// [`hide_subissues`](BoardUiState::hide_subissues)). Bundling them means every
+/// visibility call site — the column drop zone, the per-column count badges and
+/// the header summary — asks one question ([`shows`](Self::shows)) rather than
+/// re-deriving the combination, and the "filtered" affordance keys off a single
+/// [`is_active`](Self::is_active).
+struct ViewFilter<'a> {
+    /// The parsed text/label filter from the header field.
+    filter: &'a CardFilter,
+    /// Whether sub-issue cards are hidden from the grid.
+    hide_subissues: bool,
+}
+
+impl ViewFilter<'_> {
+    /// Whether the board is currently narrowing what it shows — a text/label
+    /// filter, or a view option hiding some cards. Drives the header's
+    /// "Filtered" affordance and the switch to a matched/total count.
+    fn is_active(&self) -> bool {
+        self.filter.is_active() || self.hide_subissues
+    }
+
+    /// Whether `card` should be drawn on the board grid: not hidden by a view
+    /// option, and either the filter is inactive or the card matches it.
+    fn shows(&self, card: &CardView) -> bool {
+        if self.hide_subissues && card.parent.is_some() {
+            return false;
+        }
+        !self.filter.is_active() || self.filter.matches(card)
+    }
+}
+
 /// A full reference to a card on *another* board found in the filter query:
 /// the raw term as typed, the id words after the board segment, and the
 /// referenced board's slug. Borrowed from the query and the board list.
@@ -544,39 +582,49 @@ pub fn board_ui(
         .show(ui, |ui| {
             // Parsed once per frame from the persisted query; reflects the prior
             // frame's keystroke, which is imperceptible in an immediate-mode UI.
+            // Bundled with the view options into the single grid-visibility
+            // predicate the header and columns share.
             let filter = CardFilter::parse(&state.filter, &view.id);
+            let view_filter = ViewFilter {
+                filter: &filter,
+                hide_subissues: state.hide_subissues,
+            };
 
             // Board switcher: the active board's title as a dropdown listing the
             // account's other boards, plus a "+ New board" composer.
             board_switcher(ui, theme, view, boards, state);
             ui.add_space(SPACING_SM);
 
-            // Board header: a muted summary of its contents.
+            // Board header: how many cards it holds, or — when narrowed — how many
+            // of them are showing.
             let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
-            let summary_text = if filter.is_active() {
-                let matched = view
-                    .columns
-                    .iter()
-                    .flat_map(|c| &c.cards)
-                    .filter(|c| filter.matches(c))
-                    .count();
-                format!(
-                    "{matched} of {total} cards · {} columns",
-                    view.columns.len()
-                )
-            } else {
-                format!(
-                    "{total} card{} · {} columns",
-                    if total == 1 { "" } else { "s" },
-                    view.columns.len()
-                )
-            };
-            let summary = egui::RichText::new(summary_text).color(theme.text_muted);
+            let shown = view
+                .columns
+                .iter()
+                .flat_map(|c| &c.cards)
+                .filter(|c| view_filter.shows(c))
+                .count();
             ui.horizontal(|ui| {
                 // Sync affordance: is this board reaching a private relay?
                 sync_indicator(ui, theme, sync);
                 ui.add_space(SPACING_MD);
-                ui.label(summary);
+                // A narrowed board wears a prominent "Filtered" pill (click to
+                // clear); an unnarrowed one just states its size, muted.
+                if view_filter.is_active() {
+                    if filtered_badge(ui, theme, shown, total).clicked() {
+                        state.filter.clear();
+                        state.hide_subissues = false;
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{total} card{} · {} columns",
+                            if total == 1 { "" } else { "s" },
+                            view.columns.len()
+                        ))
+                        .color(theme.text_muted),
+                    );
+                }
                 // The archived entry point only appears when there's something
                 // behind it, so the header stays quiet on a fresh board.
                 if !view.archived.is_empty() {
@@ -591,8 +639,8 @@ pub fn board_ui(
                         state.showing_archived = true;
                     }
                 }
-                // Filter field, right-aligned. Packs from the right so the clear
-                // affordance trails the input.
+                // View menu + filter field, right-aligned. Packs from the right so
+                // the clear affordance trails the input and the View menu leads it.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !state.filter.is_empty()
                         && ui
@@ -616,6 +664,8 @@ pub fn board_ui(
                     if ui.add(field).changed() {
                         filter_ref_jump(view, boards, state);
                     }
+                    ui.add_space(SPACING_SM);
+                    view_options_menu(ui, theme, state);
                 });
             });
             ui.add_space(SPACING_SM);
@@ -634,7 +684,7 @@ pub fn board_ui(
                                 view,
                                 boards,
                                 state,
-                                &filter,
+                                &view_filter,
                                 col_idx,
                                 &mut action,
                                 &mut clicked,
@@ -788,7 +838,7 @@ fn column_ui(
     view: &BoardView,
     boards: &[BoardSummary],
     state: &mut BoardUiState,
-    filter: &CardFilter,
+    filter: &ViewFilter,
     col_idx: usize,
     action: &mut Option<BoardAction>,
     clicked: &mut Option<NoteId>,
@@ -831,10 +881,10 @@ fn column_ui(
                             14.0,
                         );
                         ui.label(egui::RichText::new(&column.name).strong());
-                        // When filtering, the badge reflects how many of this
-                        // column's cards match rather than the column's total.
+                        // When narrowed, the badge reflects how many of this
+                        // column's cards show rather than the column's total.
                         let count = if filter.is_active() {
-                            column.cards.iter().filter(|c| filter.matches(c)).count()
+                            column.cards.iter().filter(|c| filter.shows(c)).count()
                         } else {
                             column.cards.len()
                         };
@@ -868,7 +918,7 @@ fn cards_drop_zone(
     boards: &[BoardSummary],
     column: &ColumnView,
     state: &mut BoardUiState,
-    filter: &CardFilter,
+    filter: &ViewFilter,
     col_idx: usize,
     action: &mut Option<BoardAction>,
     clicked: &mut Option<NoteId>,
@@ -896,10 +946,11 @@ fn cards_drop_zone(
             ui.spacing_mut().item_spacing.y = SPACING_SM;
 
             for (row_idx, card) in column.cards.iter().enumerate() {
-                // Filtered-out cards are simply not drawn. `row_idx` stays the
-                // card's true position in the column, so drag-reorder targeting
-                // against the remaining visible cards still lands correctly.
-                if filter.is_active() && !filter.matches(card) {
+                // Filtered- or hidden-out cards are simply not drawn. `row_idx`
+                // stays the card's true position in the column, so drag-reorder
+                // targeting against the remaining visible cards still lands
+                // correctly.
+                if !filter.shows(card) {
                     continue;
                 }
 
@@ -1346,6 +1397,59 @@ fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
                     .color(theme.text_muted),
             );
         });
+}
+
+/// The header's "Filtered" affordance: an accent pill shown whenever the board
+/// is narrowing what it displays ([`ViewFilter::is_active`]). It states how many
+/// of how many cards are showing, so a board narrowed by a search or a view
+/// option never passes for the whole board — the gap the card
+/// `injury-enlist-swarm` flagged. Returns the pill's response so the caller can
+/// clear the narrowing on a click.
+fn filtered_badge(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    shown: usize,
+    total: usize,
+) -> egui::Response {
+    let accent = ui.visuals().selection.bg_fill;
+    egui::Frame::new()
+        .fill(accent.gamma_multiply(0.30))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("⚲ Filtered · {shown} of {total} shown"))
+                    .small()
+                    .strong()
+                    .color(theme.text_primary),
+            );
+        })
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Showing a narrowed view — click to clear the filter and view options")
+}
+
+/// The header's "View" menu: Linear-style display options for the board grid.
+/// Today it holds a single toggle — hide sub-issue cards — but it's a menu, not a
+/// lone checkbox, so further view options (grouping, ordering, hidden columns)
+/// can slot in beside it. Mutates [`BoardUiState::hide_subissues`] directly and
+/// stays open on toggle so several options can be flipped in one visit.
+fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
+    // Tint the trigger when an option is active, so the menu itself signals that
+    // the grid is being narrowed even before it's opened.
+    let label = if state.hide_subissues {
+        egui::RichText::new("☰ View").color(ui.visuals().selection.bg_fill)
+    } else {
+        egui::RichText::new("☰ View").color(theme.text_secondary)
+    };
+    ui.menu_button(label, |ui| {
+        ui.checkbox(&mut state.hide_subissues, "Hide sub-issues")
+            .on_hover_text(
+                "Hide cards that are a sub-issue of another card. They still \
+                 appear as checklist rows inside their parent.",
+            );
+    });
 }
 
 /// The board switcher in the header: the active board's title as a dropdown that
