@@ -1461,7 +1461,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 match res {
                     DaveApiResponse::Failed(ref err) => {
-                        session.chat.push(Message::Error(err.to_string()));
+                        session.insert_turn_content(Message::Error(err.to_string()));
                     }
                     DaveApiResponse::Token(token) => {
                         session.append_token(&token);
@@ -1520,7 +1520,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                     DaveApiResponse::TodoUpdate(todos) => {
                         tracing::debug!("Todo update for session {}", session_id);
-                        session.chat.push(Message::TodoUpdate(todos));
+                        session.insert_turn_content(Message::TodoUpdate(todos));
                     }
                 }
             }
@@ -5079,7 +5079,9 @@ fn handle_tool_calls(
     ndb: &nostrdb::Ndb,
 ) -> bool {
     tracing::info!("got tool calls: {:?}", toolcalls);
-    session.chat.push(Message::ToolCalls(toolcalls.to_vec()));
+    // Route through `insert_turn_content` so a message queued during this turn
+    // stays the trailing run and is redispatched afterwards.
+    session.insert_turn_content(Message::ToolCalls(toolcalls.to_vec()));
 
     let txn = Transaction::new(ndb).unwrap();
     let mut needs_send = false;
@@ -5087,14 +5089,14 @@ fn handle_tool_calls(
     for call in toolcalls {
         match call.calls() {
             ToolCalls::PresentNotes(present) => {
-                session.chat.push(Message::ToolResponse(ToolResponse::new(
+                session.insert_turn_content(Message::ToolResponse(ToolResponse::new(
                     call.id().to_owned(),
                     ToolResponses::PresentNotes(present.note_ids.len() as i32),
                 )));
                 needs_send = true;
             }
             ToolCalls::Invalid(invalid) => {
-                session.chat.push(Message::tool_error(
+                session.insert_turn_content(Message::tool_error(
                     call.id().to_string(),
                     invalid.error.clone(),
                 ));
@@ -5102,7 +5104,7 @@ fn handle_tool_calls(
             }
             ToolCalls::Query(search_call) => {
                 let resp = search_call.execute(&txn, ndb);
-                session.chat.push(Message::ToolResponse(ToolResponse::new(
+                session.insert_turn_content(Message::ToolResponse(ToolResponse::new(
                     call.id().to_owned(),
                     ToolResponses::Query(resp),
                 )));
@@ -5142,7 +5144,7 @@ fn handle_permission_request(
                 .response_tx
                 .send(PermissionResponse::Allow { message: None });
             let request = pending.request.auto_accept();
-            session.chat.push(Message::PermissionRequest(request));
+            session.insert_turn_content(Message::PermissionRequest(request));
             return;
         }
     }
@@ -5183,9 +5185,7 @@ fn handle_permission_request(
     }
 
     // Add the request to chat for UI display
-    session
-        .chat
-        .push(Message::PermissionRequest(pending.request));
+    session.insert_turn_content(Message::PermissionRequest(pending.request));
 }
 
 /// Result of processing a batch of conversation notes.
@@ -5620,8 +5620,9 @@ fn handle_subagent_spawned(session: &mut session::ChatSession, subagent: Subagen
         subagent.description
     );
     let task_id = subagent.task_id.clone();
-    let idx = session.chat.len();
-    session.chat.push(Message::Subagent(subagent));
+    // Insert before queued user messages (keeping them trailing) and record the
+    // position the subagent row actually landed at.
+    let idx = session.insert_turn_content(Message::Subagent(subagent));
     if let Some(agentic) = &mut session.agentic {
         agentic.subagent_indices.insert(task_id, idx);
     }
@@ -5653,7 +5654,7 @@ fn handle_compaction_complete(
             }
         }
     }
-    session.chat.push(Message::CompactionComplete(info));
+    session.insert_turn_content(Message::CompactionComplete(info));
 }
 
 /// Handle a per-turn usage update from an AssistantMessage.

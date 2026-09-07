@@ -467,14 +467,44 @@ impl DispatchState {
     }
 }
 
+/// Boundary in `chat` between this turn's content (dispatched user message(s)
+/// plus assistant/tool/todo output) and any queued (not-yet-dispatched) user
+/// messages — i.e. the index the next piece of content is inserted at, and
+/// equivalently where the queued-user run begins.
+///
+/// Queued user messages are always kept as the trailing run of `chat` (see
+/// [`ChatSession::insert_turn_content`]). The boundary sits after the last
+/// non-user message; before this turn has produced any content, the trailing
+/// user run still begins with the dispatched message(s), so those are skipped.
+/// `turn_has_content` is the single signal that distinguishes those two cases —
+/// a tool call can be a turn's first output without any token, so the state
+/// alone is not enough.
+fn turn_content_boundary(
+    chat: &[Message],
+    dispatch_state: DispatchState,
+    turn_has_content: bool,
+) -> usize {
+    let after_content = chat
+        .iter()
+        .rposition(|m| !matches!(m, Message::User(_)))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let skip = if turn_has_content {
+        0
+    } else {
+        dispatch_state.dispatched_count().max(1)
+    };
+    (after_content + skip).min(chat.len())
+}
+
 /// Index into `chat` at which queued (not-yet-dispatched) user messages start,
 /// or `None` when nothing is queued.
 ///
-/// While streaming, `append_token` inserts an `Assistant` between the
-/// dispatched `User` and any queued `User`s, so every trailing `User` after
-/// that assistant is queued. Before the first token arrives there is no
-/// assistant yet, so the dispatched count of trailing `User`s is skipped —
-/// they all went out in the prompt (1 for a single dispatch, N for a batch).
+/// This is exactly the [`turn_content_boundary`] when a queued message sits past
+/// it, so the "queued" indicator marks precisely the messages that will be
+/// redispatched. Reads `turn_has_content` so it stays correct through a
+/// tool-using turn, where the last non-user message is a tool row rather than a
+/// streaming assistant.
 ///
 /// This drives the "queued" indicator in `DaveUi::render_chat`. Tests must call
 /// it rather than reimplement it: a private copy in the test module cannot
@@ -483,22 +513,13 @@ pub fn queued_from(
     chat: &[Message],
     is_working: bool,
     dispatch_state: DispatchState,
+    turn_has_content: bool,
 ) -> Option<usize> {
     if !is_working {
         return None;
     }
 
-    let last_non_user = chat.iter().rposition(|m| !matches!(m, Message::User(_)))?;
-
-    let first_trailing = last_non_user + 1;
-    let queued_start = if matches!(chat[last_non_user], Message::Assistant(ref m) if m.is_streaming())
-    {
-        // A streaming assistant already separates dispatched from queued.
-        first_trailing
-    } else {
-        first_trailing + dispatch_state.dispatched_count().max(1)
-    };
-
+    let queued_start = turn_content_boundary(chat, dispatch_state, turn_has_content);
     (queued_start < chat.len()).then_some(queued_start)
 }
 
@@ -515,6 +536,14 @@ pub struct ChatSession {
     pub task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Tracks the dispatch lifecycle for redispatch and insert-position logic.
     pub dispatch_state: DispatchState,
+    /// Whether the current turn has produced any content (assistant text, a tool
+    /// row, a todo, …) yet. Reset in [`mark_dispatched`](Self::mark_dispatched)
+    /// and set the first time this turn inserts content via
+    /// [`insert_turn_content`](Self::insert_turn_content). Drives where new
+    /// content lands relative to the dispatched user message(s): before any
+    /// content exists, content must skip past the dispatched user(s); afterwards
+    /// it appends after the prior content but still before queued user messages.
+    turn_has_content: bool,
     /// Cached status for the agent (derived from session state)
     cached_status: AgentStatus,
     /// Set when cached_status changes, cleared after publishing state event
@@ -588,6 +617,7 @@ impl ChatSession {
             incoming_tokens: None,
             task_handle: None,
             dispatch_state: DispatchState::Idle,
+            turn_has_content: false,
             cached_status: AgentStatus::Idle,
             state_dirty: true,
             focus_requested: false,
@@ -657,6 +687,7 @@ impl ChatSession {
             incoming_tokens: None,
             task_handle: None,
             dispatch_state: DispatchState::Idle,
+            turn_has_content: false,
             cached_status: AgentStatus::Pending,
             state_dirty: false, // placeholder should not publish state events
             focus_requested: false,
@@ -890,9 +921,10 @@ impl ChatSession {
     /// is pushed on spawn (`handle_subagent_spawned`): the index is tracked only
     /// when agentic state exists, which is where running tools originate.
     pub fn push_running_tool(&mut self, running: RunningTool) {
-        let idx = self.chat.len();
         let tool_use_id = running.tool_use_id.clone();
-        self.chat.push(Message::ToolRunning(running));
+        // Insert before any queued user messages so they stay trailing, and
+        // record the position the row actually landed at.
+        let idx = self.insert_turn_content(Message::ToolRunning(running));
         if let Some(agentic) = &mut self.agentic {
             agentic.running_tool_indices.insert(tool_use_id, idx);
         }
@@ -914,7 +946,11 @@ impl ChatSession {
             Some(idx) if matches!(self.chat.get(idx), Some(Message::ToolRunning(_))) => {
                 self.chat[idx] = message;
             }
-            _ => self.chat.push(message),
+            // No running row to upgrade (auto-accepted tool, or a stale index):
+            // insert before queued user messages rather than at the very end.
+            _ => {
+                self.insert_turn_content(message);
+            }
         }
     }
 
@@ -1645,25 +1681,13 @@ impl ChatSession {
         }
 
         if !appended {
-            // No streaming assistant reachable — start a new one.
-            // Insert after the dispatched user messages but before
-            // any newly queued ones so the response appears in the
-            // right order and queued messages trigger redispatch.
+            // No streaming assistant reachable — start a new one. Route through
+            // `insert_turn_content` so it lands after the dispatched user
+            // message(s) and this turn's prior content, but before any queued
+            // user messages (which must stay trailing to trigger redispatch).
             let mut msg = crate::messages::AssistantMessage::new();
             msg.push_token(token);
-
-            let trailing_start = self
-                .chat
-                .iter()
-                .rposition(|m| !matches!(m, Message::User(_)))
-                .map(|i| i + 1)
-                .unwrap_or(0);
-
-            // Skip past the dispatched user messages (default 1 for
-            // single dispatch, more for batch redispatch)
-            let skip = self.dispatch_state.dispatched_count().max(1);
-            let insert_pos = (trailing_start + skip).min(self.chat.len());
-            self.chat.insert(insert_pos, Message::Assistant(msg));
+            self.insert_turn_content(Message::Assistant(msg));
         }
     }
 
@@ -1717,6 +1741,41 @@ impl ChatSession {
     pub fn mark_dispatched(&mut self) {
         let count = self.trailing_user_count();
         self.dispatch_state = DispatchState::AwaitingResponse { count };
+        // A fresh turn has produced nothing yet, so its first content must skip
+        // past the just-dispatched user message(s).
+        self.turn_has_content = false;
+    }
+
+    /// Index at which this turn's next content (assistant text, a tool row, a
+    /// todo, an error, a subagent, …) should be inserted so it lands after the
+    /// dispatched user message(s) and this turn's earlier content, but BEFORE any
+    /// queued (trailing) user messages.
+    ///
+    /// Keeping queued user messages as the trailing run of `chat` is load-bearing:
+    /// [`needs_redispatch_after_stream_end`](Self::needs_redispatch_after_stream_end)
+    /// and [`queued_from`] read the tail to find them, and the redispatch prompt
+    /// collects trailing user messages. Content pushed to the end would bury a
+    /// queued message and silently drop it.
+    fn turn_content_pos(&self) -> usize {
+        turn_content_boundary(&self.chat, self.dispatch_state, self.turn_has_content)
+    }
+
+    /// Whether the current turn has produced any content yet (drives the queued
+    /// indicator's insert-boundary — see [`queued_from`]).
+    pub fn turn_has_content(&self) -> bool {
+        self.turn_has_content
+    }
+
+    /// Insert this turn's content at [`turn_content_pos`](Self::turn_content_pos),
+    /// preserving the trailing queued-user invariant, and return the index it
+    /// landed at so callers that track message positions (running tools,
+    /// subagents) can record it. New content always lands after this turn's prior
+    /// content, so previously-recorded indices never shift.
+    pub fn insert_turn_content(&mut self, message: Message) -> usize {
+        let pos = self.turn_content_pos();
+        self.chat.insert(pos, message);
+        self.turn_has_content = true;
+        pos
     }
 
     /// Count trailing user messages at the end of the chat.
@@ -2047,8 +2106,11 @@ mod tests {
         session.append_token("first response");
         session.finalize_last_assistant();
 
-        // User sends a new message (primary, not queued)
+        // User sends a new message (primary, not queued). The real send path
+        // (`send_user_message_for`) marks it dispatched before streaming, which
+        // is what distinguishes a dispatched user message from a queued one.
         session.chat.push(Message::User("follow up".into()));
+        session.mark_dispatched();
 
         // Tokens arrive from Claude's new response
         session.append_token("second ");
@@ -2448,6 +2510,82 @@ mod tests {
         );
     }
 
+    /// Reproduction: a message queued *during* a tool-using turn must still be
+    /// redispatched after the turn ends. Any mid-turn message that lands at the
+    /// end of `chat` (a second tool's running row, a todo update, an error)
+    /// buries the queued user message so it is no longer `chat.last()`, and the
+    /// redispatch check (which looks at the last message) silently drops it.
+    ///
+    /// This is the concrete failure behind "queued sending doesn't work": a
+    /// plain-text turn works, but the common agentic case — queueing behind a
+    /// turn that keeps using tools — loses the queued message entirely.
+    #[test]
+    fn queued_message_survives_tool_activity_after_queue() {
+        let mut session = test_session();
+
+        // Turn 1 dispatched.
+        session.chat.push(Message::User("do the thing".into()));
+        let _tx = make_streaming(&mut session);
+
+        // Assistant text, then a tool starts running.
+        session.append_token("On it. ");
+        session.push_running_tool(running_tool("t1", "Read", "hostname"));
+
+        // User queues a follow-up while the first tool is in flight.
+        session
+            .chat
+            .push(Message::User("also check the tests".into()));
+
+        // First tool completes — resolved in place (fine).
+        session.place_tool_result(executed_tool("t1", "Read"));
+
+        // Claude keeps working: a SECOND tool. `push_running_tool` appends to the
+        // end of chat, landing *after* the queued user message and burying it.
+        session.push_running_tool(running_tool("t2", "Bash", "cargo test"));
+        session.place_tool_result(executed_tool("t2", "Bash"));
+        session.append_token("Done.");
+
+        // Turn ends.
+        session.finalize_last_assistant();
+        session.finalize_running_tools();
+
+        // The queued message must still be redispatched and its text recoverable.
+        assert!(
+            session.needs_redispatch_after_stream_end(),
+            "queued message must trigger redispatch after a tool-using turn; \
+             chat tail = {:?}",
+            session.chat.last().map(std::mem::discriminant)
+        );
+        let prompt = crate::backend::shared::get_pending_user_messages(&session.chat);
+        assert!(
+            prompt.contains("also check the tests"),
+            "queued prompt was lost; got {prompt:?}"
+        );
+    }
+
+    /// A message queued mid-turn followed by a `TodoUpdate` (pushed to the end
+    /// of chat in `process_events`) must likewise survive to redispatch.
+    #[test]
+    fn queued_message_survives_todo_update_after_queue() {
+        let mut session = test_session();
+
+        session.chat.push(Message::User("start".into()));
+        let _tx = make_streaming(&mut session);
+        session.append_token("working");
+
+        // Queue a follow-up, then a todo update lands. `process_events` routes
+        // TodoUpdate through `insert_turn_content` so it must not bury the queue.
+        session.chat.push(Message::User("one more thing".into()));
+        session.insert_turn_content(Message::TodoUpdate(serde_json::json!({"todos": []})));
+
+        session.finalize_last_assistant();
+
+        assert!(
+            session.needs_redispatch_after_stream_end(),
+            "queued message must survive a trailing TodoUpdate"
+        );
+    }
+
     /// When the backend returns immediately with no content (e.g. a
     /// skill command it can't handle), the dispatched user message is
     /// still the last in chat. Without the trailing-count guard this
@@ -2539,14 +2677,19 @@ mod tests {
     /// `render_chat` does (`i >= queued_from`, for `Message::User` only), so
     /// these cases fail when the production path changes.
     fn queued_texts(
-        chat: &[Message],
+        session: &ChatSession,
         is_working: bool,
         dispatch_state: DispatchState,
     ) -> Vec<&str> {
-        let Some(qi) = queued_from(chat, is_working, dispatch_state) else {
+        let Some(qi) = queued_from(
+            &session.chat,
+            is_working,
+            dispatch_state,
+            session.turn_has_content(),
+        ) else {
             return vec![];
         };
-        chat[qi..]
+        session.chat[qi..]
             .iter()
             .filter_map(|m| match m {
                 Message::User(s) => Some(s.as_str()),
@@ -2572,11 +2715,7 @@ mod tests {
         session.chat.push(Message::User("queued 2".into()));
 
         // Single dispatch
-        let queued = queued_texts(
-            &session.chat,
-            true,
-            DispatchState::AwaitingResponse { count: 1 },
-        );
+        let queued = queued_texts(&session, true, DispatchState::AwaitingResponse { count: 1 });
         assert_eq!(
             queued,
             vec!["queued 1", "queued 2"],
@@ -2596,11 +2735,7 @@ mod tests {
 
         // Dispatch state doesn't matter here — streaming assistant
         // branch doesn't use the dispatched count
-        let queued = queued_texts(
-            &session.chat,
-            true,
-            DispatchState::AwaitingResponse { count: 1 },
-        );
+        let queued = queued_texts(&session, true, DispatchState::AwaitingResponse { count: 1 });
         assert_eq!(
             queued,
             vec!["queued 1", "queued 2"],
@@ -2615,7 +2750,7 @@ mod tests {
         session.chat.push(Message::User("msg 1".into()));
         session.chat.push(Message::User("msg 2".into()));
 
-        let queued = queued_texts(&session.chat, false, DispatchState::Idle);
+        let queued = queued_texts(&session, false, DispatchState::Idle);
         assert!(
             queued.is_empty(),
             "nothing should be queued when not working"
@@ -2633,11 +2768,7 @@ mod tests {
             )));
         session.chat.push(Message::User("only one".into()));
 
-        let queued = queued_texts(
-            &session.chat,
-            true,
-            DispatchState::AwaitingResponse { count: 1 },
-        );
+        let queued = queued_texts(&session, true, DispatchState::AwaitingResponse { count: 1 });
         assert!(
             queued.is_empty(),
             "single dispatched message should not be queued"
@@ -2665,12 +2796,29 @@ mod tests {
         session.append_token("Found it.");
         session.chat.push(Message::User("queued".into()));
 
-        let queued = queued_texts(
-            &session.chat,
-            true,
-            DispatchState::AwaitingResponse { count: 1 },
-        );
+        let queued = queued_texts(&session, true, DispatchState::AwaitingResponse { count: 1 });
         assert_eq!(queued, vec!["queued"]);
+    }
+
+    /// The queued indicator must still mark a message queued when the last
+    /// non-user message is a tool row (not a streaming assistant). This is the
+    /// same tool-burial scenario as `queued_message_survives_tool_activity_after_queue`,
+    /// viewed from the UI: the badge marks exactly what will be redispatched.
+    #[test]
+    fn queued_indicator_after_tool_row() {
+        let mut session = test_session();
+        session.chat.push(Message::User("do the thing".into()));
+        let _tx = make_streaming(&mut session);
+        session.append_token("On it. ");
+        session.push_running_tool(running_tool("t1", "Read", "hostname"));
+        session.chat.push(Message::User("queued".into()));
+
+        let queued = queued_texts(&session, true, DispatchState::AwaitingResponse { count: 1 });
+        assert_eq!(
+            queued,
+            vec!["queued"],
+            "a message queued behind a tool row must still be marked queued"
+        );
     }
 
     /// Batch dispatch: when 3 messages were dispatched together,
@@ -2688,11 +2836,7 @@ mod tests {
         session.chat.push(Message::User("c".into()));
 
         // All 3 were batch-dispatched
-        let queued = queued_texts(
-            &session.chat,
-            true,
-            DispatchState::AwaitingResponse { count: 3 },
-        );
+        let queued = queued_texts(&session, true, DispatchState::AwaitingResponse { count: 3 });
         assert!(
             queued.is_empty(),
             "all 3 messages were dispatched — none should show queued"
@@ -2715,11 +2859,7 @@ mod tests {
         session.chat.push(Message::User("new queued".into()));
 
         // 3 were dispatched, 1 new arrival
-        let queued = queued_texts(
-            &session.chat,
-            true,
-            DispatchState::AwaitingResponse { count: 3 },
-        );
+        let queued = queued_texts(&session, true, DispatchState::AwaitingResponse { count: 3 });
         assert_eq!(
             queued,
             vec!["new queued"],
@@ -2742,13 +2882,13 @@ mod tests {
         session.chat.push(Message::User("dispatched".into()));
 
         assert!(
-            queued_texts(&session.chat, true, DispatchState::Idle).is_empty(),
+            queued_texts(&session, true, DispatchState::Idle).is_empty(),
             "the trailing user message is being worked on, not queued"
         );
 
         session.chat.push(Message::User("queued".into()));
         assert_eq!(
-            queued_texts(&session.chat, true, DispatchState::Idle),
+            queued_texts(&session, true, DispatchState::Idle),
             vec!["queued"],
             "only the message after the dispatched one should be queued"
         );
