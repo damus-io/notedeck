@@ -13,7 +13,7 @@ use notedeck_ui::{
     AnimationHelper, NoteOptions, NoteView,
 };
 
-use nostrdb::Transaction;
+use nostrdb::{Ndb, Transaction};
 
 use crate::{nav::RouterAction, ui::account_login_view::eye_button, Damus, Route};
 
@@ -145,7 +145,12 @@ impl SettingsAction {
                 let ndb = app_ctx.ndb.clone();
 
                 let receiver = app_ctx.job_pool.schedule_receivable(move || {
-                    ndb.compact(&compact_path_str, &own_pubkeys)
+                    // The keep-policy nostrdb's compaction used to apply on its
+                    // own: every kind-0 profile, plus everything we authored.
+                    let keep =
+                        Ndb::prune_default_filters(&own_pubkeys).map_err(|e| format!("{e}"))?;
+
+                    ndb.prune(&compact_path_str, &keep)
                         .map(|()| {
                             let new_size =
                                 std::fs::metadata(format!("{compact_path_str}/data.mdb"))
