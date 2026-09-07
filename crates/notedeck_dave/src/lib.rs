@@ -4182,6 +4182,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .agentic
             .as_ref()
             .and_then(|a| a.cli_resume_id().map(|s| s.to_string()));
+        // The session's initial permission mode, so a subprocess backend spawns
+        // its CLI in the mode the UI already shows (e.g. Auto) rather than
+        // Default. Only the turn that creates the session actor consumes it;
+        // later changes go through backend.set_permission_mode. Non-agentic
+        // sessions have no mode and fall back to Default.
+        let permission_mode = session
+            .agentic
+            .as_ref()
+            .map(|a| a.permission_mode)
+            .unwrap_or(claude_agent_sdk_rs::PermissionMode::Default);
         let backend_type = session.backend_type;
         let tools = self.tools.clone();
         let model_name = session.details.resolve_model();
@@ -4200,6 +4210,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             agentium_session_id,
             cwd,
             resume_session_id,
+            permission_mode,
             crate::backend::egui_waker(&ctx),
         );
         if let Some(rx) = rx {

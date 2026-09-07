@@ -157,7 +157,15 @@ pub trait AiBackend: Send + Sync {
     /// Subprocess backends export it so an in-session agent can identify its OWN
     /// session; it is `None` for non-agentic sessions, which don't have one.
     ///
+    /// `permission_mode` is the session's initial permission mode. Subprocess
+    /// backends (Claude) must apply it when they first spawn the CLI so the
+    /// subprocess starts in the mode the UI displays — otherwise a freshly-spawned
+    /// session that shows `Auto` would run the CLI in `Default` until the user
+    /// cycles the mode. It only takes effect on the turn that creates the session
+    /// actor; mid-session changes flow through [`set_permission_mode`] instead.
+    ///
     /// [`persistent_stream`]: AiBackend::persistent_stream
+    /// [`set_permission_mode`]: AiBackend::set_permission_mode
     #[allow(clippy::too_many_arguments)]
     fn stream_request(
         &self,
@@ -169,6 +177,7 @@ pub trait AiBackend: Send + Sync {
         agentium_session_id: Option<String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
+        permission_mode: PermissionMode,
         waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
