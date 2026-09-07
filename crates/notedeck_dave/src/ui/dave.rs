@@ -83,6 +83,9 @@ pub struct DaveUi<'a> {
     context_window: u64,
     /// Dispatch lifecycle state, used for queued indicator logic.
     dispatch_state: crate::session::DispatchState,
+    /// Whether the current turn has produced content yet, used with
+    /// `dispatch_state` for the queued indicator's insert-boundary.
+    turn_has_content: bool,
     /// Which backend this session uses
     backend_type: BackendType,
     /// Current permission mode (Default, Plan, AcceptEdits)
@@ -246,6 +249,7 @@ impl<'a> DaveUi<'a> {
             usage: None,
             context_window: crate::messages::context_window_for_model(None),
             dispatch_state: crate::session::DispatchState::default(),
+            turn_has_content: false,
             backend_type: BackendType::Remote,
             permission_mode: PermissionMode::Default,
             last_activity: None,
@@ -303,6 +307,13 @@ impl<'a> DaveUi<'a> {
 
     pub fn dispatch_state(mut self, state: crate::session::DispatchState) -> Self {
         self.dispatch_state = state;
+        self
+    }
+
+    /// Whether the current turn has produced content yet. Feeds `queued_from` so
+    /// the queued indicator stays correct through a tool-using turn.
+    pub fn turn_has_content(mut self, val: bool) -> Self {
+        self.turn_has_content = val;
         self
     }
 
@@ -543,6 +554,7 @@ impl<'a> DaveUi<'a> {
             self.chat,
             self.flags.contains(DaveUiFlags::IsWorking),
             self.dispatch_state,
+            self.turn_has_content,
         );
 
         for (i, message) in self.chat.iter().enumerate() {

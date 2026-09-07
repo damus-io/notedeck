@@ -1,4 +1,3 @@
-use crate::Message;
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::task_tracker::TaskTracker;
@@ -6,11 +5,12 @@ use crate::backend::tool_summary::{extract_response_content, format_tool_summary
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool, SubagentInfo, SubagentStatus,
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
-    turn_exit_message_for_model,
+    turn_exit_message_for_model, CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool,
+    SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
+use crate::Message;
 use agentium_core::Waker;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
@@ -18,12 +18,12 @@ use claude_agent_sdk_rs::{
     ToolResultContent, ToolUseBlock, UserContentBlock, UserMessage,
 };
 use dashmap::DashMap;
-use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 
@@ -711,6 +711,10 @@ async fn session_actor(
     cwd: Option<PathBuf>,
     resume_session_id: Option<String>,
     model: Option<String>,
+    // The permission mode the CLI subprocess starts in. Mirrors the session's UI
+    // mode at spawn time so a session shown as `Auto` actually runs the CLI in
+    // `Auto` — not `Default` until the user cycles the mode.
+    permission_mode: PermissionMode,
     mut command_rx: tokio_mpsc::Receiver<SessionCommand>,
     // The session-lifetime UI channel. Created once when the actor is spawned and
     // used for every turn — user-initiated AND spontaneous wake-up turns — so
@@ -784,7 +788,7 @@ async fn session_actor(
     // Using match to handle the TypedBuilder's strict type requirements
     let mut options = match (&cwd, &resume_session_id) {
         (Some(dir), Some(resume_id)) => ClaudeAgentOptions::builder()
-            .permission_mode(PermissionMode::Default)
+            .permission_mode(permission_mode)
             .stderr_callback(stderr_callback)
             .can_use_tool(can_use_tool)
             .include_partial_messages(true)
@@ -792,21 +796,21 @@ async fn session_actor(
             .resume(resume_id)
             .build(),
         (Some(dir), None) => ClaudeAgentOptions::builder()
-            .permission_mode(PermissionMode::Default)
+            .permission_mode(permission_mode)
             .stderr_callback(stderr_callback)
             .can_use_tool(can_use_tool)
             .include_partial_messages(true)
             .cwd(dir)
             .build(),
         (None, Some(resume_id)) => ClaudeAgentOptions::builder()
-            .permission_mode(PermissionMode::Default)
+            .permission_mode(permission_mode)
             .stderr_callback(stderr_callback)
             .can_use_tool(can_use_tool)
             .include_partial_messages(true)
             .resume(resume_id)
             .build(),
         (None, None) => ClaudeAgentOptions::builder()
-            .permission_mode(PermissionMode::Default)
+            .permission_mode(permission_mode)
             .stderr_callback(stderr_callback)
             .can_use_tool(can_use_tool)
             .include_partial_messages(true)
@@ -1025,6 +1029,7 @@ impl AiBackend for ClaudeBackend {
         agentium_session_id: Option<String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
+        permission_mode: PermissionMode,
         waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
@@ -1068,6 +1073,7 @@ impl AiBackend for ClaudeBackend {
                         cwd_clone,
                         resume_session_id_clone,
                         model_clone,
+                        permission_mode,
                         command_rx,
                         response_tx,
                         waker_clone,

@@ -1960,6 +1960,7 @@ impl AiBackend for CodexBackend {
         agentium_session_id: Option<String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
+        _permission_mode: PermissionMode,
         waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,

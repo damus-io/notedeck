@@ -68,6 +68,7 @@ fn build_dave_ui<'a>(
     let has_pending_permission = session.has_pending_permissions();
     let permission_mode = session.permission_mode();
     let is_remote = session.is_remote();
+    let turn_has_content = session.turn_has_content();
     // Look up the run configs for this session's CWD
     let session_run_configs: &'a [crate::config::RunConfig] = session
         .cwd()
@@ -93,6 +94,7 @@ fn build_dave_ui<'a>(
     .auto_steal_focus(auto_steal_focus)
     .is_remote(is_remote)
     .dispatch_state(session.dispatch_state)
+    .turn_has_content(turn_has_content)
     .details(&session.details)
     .backend_type(session.backend_type)
     .last_activity(session.last_activity)

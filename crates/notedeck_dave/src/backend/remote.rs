@@ -26,6 +26,7 @@ impl AiBackend for RemoteOnlyBackend {
         _agentium_session_id: Option<String>,
         _cwd: Option<PathBuf>,
         _resume_session_id: Option<String>,
+        _permission_mode: PermissionMode,
         _waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
