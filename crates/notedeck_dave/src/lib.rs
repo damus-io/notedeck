@@ -17,6 +17,7 @@ pub mod render;
 pub mod session;
 pub mod session_cache;
 pub mod session_discovery;
+mod session_restore_loader;
 
 // The pure, egui-free engine modules live in the platform-neutral
 // `agentium-core` crate. Re-export them under their historical `crate::` paths
@@ -75,6 +76,11 @@ pub use vec3::Vec3;
 
 /// How long a pending placeholder session waits before being removed.
 const PENDING_SESSION_TIMEOUT_SECS: f64 = 15.0;
+
+/// Per-frame time budget for draining background-restored sessions into the
+/// manager, so a large restore fills in over several frames without stalling any
+/// single one (mirrors `notedeck_columns`' `TIMELINE_LOADER_APPLY_BUDGET`).
+const SESSION_RESTORE_APPLY_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
@@ -541,6 +547,15 @@ pub struct Dave {
     run_config_sub: Option<nostrdb::Subscription>,
     /// Killed child processes waiting to be reaped via non-blocking try_wait() each frame.
     pending_reap: Vec<std::process::Child>,
+    /// Background worker that reads + renders an account's persisted sessions off
+    /// the render thread, streamed into the manager a few per frame by
+    /// [`Self::drain_session_restore`]. A shared pool, not per-account UI state,
+    /// so it is *not* swapped by [`PnsLocalRuntime`].
+    session_restore_loader: session_restore_loader::SessionRestoreLoader,
+    /// Accounts already dispatched to the restore loader, so re-selecting an
+    /// account (whose sessions are preserved in `pns_local_runtimes`) doesn't
+    /// re-restore. Guards one dispatch per account per process.
+    restored_accounts: HashSet<nostrdb_net::Pubkey>,
 }
 
 use update::PermissionPublish;
@@ -1066,6 +1081,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             run_configs: HashMap::new(),
             pending_reap: Vec::new(),
             run_config_sub: None,
+            session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
+            restored_accounts: HashSet::new(),
         }
     }
 
@@ -2571,116 +2588,144 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Restore selected-account sessions from kind-31988 state events in ndb.
-    fn restore_sessions_from_ndb(
-        &mut self,
-        ctx: &mut AppContext<'_>,
-        account: nostrdb_net::Pubkey,
-    ) {
-        let txn = match Transaction::new(ctx.ndb) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("failed to open txn for session restore: {:?}", e);
-                return;
-            }
-        };
+    /// Drain finished sessions from the background restore worker (see
+    /// [`session_restore_loader`]) into the session manager, a few per frame
+    /// under [`SESSION_RESTORE_APPLY_BUDGET`]. The worker does the expensive ndb
+    /// read + render off-thread; this only does the cheap `&mut self` work of
+    /// creating + hydrating each session.
+    ///
+    /// Coexists with the live-discovery path
+    /// ([`poll_session_state_events`](Self::poll_session_state_events)): both run
+    /// on the render thread and dedup by `event_session_id`, so whichever
+    /// materializes a session first wins and the other skips it.
+    fn drain_session_restore(&mut self, egui_ctx: &egui::Context) {
+        // Messages tagged with a different account are stale (the user switched
+        // accounts while an in-flight restore was streaming); drop them.
+        let current = self.pns_local_state.as_ref().map(|state| state.account);
 
-        let states = session_loader::load_session_states_for_author(ctx.ndb, &txn, &account);
-        if states.is_empty() {
-            return;
+        // Preserve the user's focus across restore. `new_resumed_session` sets
+        // `active` per call, so without this the newest restored session would
+        // yank focus every frame. Capture the active session *before* creating
+        // anything, and re-assert it after. In Agentic mode the manager starts
+        // empty (`None`), so focus lands once on the first restored session and
+        // then stays there as the rest stream in.
+        let keep_active = self.session_manager.active_id();
+        let mut first_created: Option<SessionId> = None;
+        let mut created_any = false;
+
+        let start = std::time::Instant::now();
+        let mut handled = 0usize;
+        loop {
+            if handled > 0 && start.elapsed() >= SESSION_RESTORE_APPLY_BUDGET {
+                egui_ctx.request_repaint();
+                break;
+            }
+            let Some(msg) = self.session_restore_loader.try_recv() else {
+                break;
+            };
+            handled += 1;
+
+            match msg {
+                session_restore_loader::SessionRestoreMsg::Started {
+                    account,
+                    live_count,
+                    host_paths,
+                } => {
+                    if Some(account) != current {
+                        continue;
+                    }
+                    self.directory_picker
+                        .seed_host_paths(host_paths, &self.hostname);
+                    // Skip the directory picker if this account has sessions to
+                    // restore; leave it up otherwise (empty account = new user).
+                    if live_count > 0 && matches!(self.active_overlay, DaveOverlay::DirectoryPicker)
+                    {
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                }
+                session_restore_loader::SessionRestoreMsg::Session {
+                    account,
+                    state,
+                    loaded,
+                } => {
+                    if Some(account) != current {
+                        continue;
+                    }
+                    // Dedup against the live manager (covers both a prior restore
+                    // batch and the live-discovery poll path).
+                    let exists = self.session_manager.iter().any(|session| {
+                        session.agentic.as_ref().is_some_and(|agentic| {
+                            agentic.event_session_id() == state.claude_session_id.as_str()
+                        })
+                    });
+                    if exists {
+                        continue;
+                    }
+
+                    let backend = state
+                        .backend
+                        .as_deref()
+                        .and_then(BackendType::from_tag_str)
+                        .unwrap_or(BackendType::Claude);
+                    let cwd = std::path::PathBuf::from(&state.cwd);
+
+                    // The d-tag is the event_id (Nostr identity). The cli_session
+                    // tag holds the real CLI session ID for --resume. If there's
+                    // no cli_session tag, this is a legacy event where d-tag was
+                    // the CLI session ID.
+                    let resume_id = match state.cli_session_id {
+                        Some(ref cli) if !cli.is_empty() => cli.clone(),
+                        // Empty cli_session — backend never started, nothing to resume.
+                        Some(_) => String::new(),
+                        // Legacy: d-tag IS the CLI session ID.
+                        None => state.claude_session_id.clone(),
+                    };
+
+                    let dave_sid = self.session_manager.new_resumed_session(
+                        cwd,
+                        resume_id,
+                        state.title.clone(),
+                        AiMode::Agentic,
+                        backend,
+                    );
+                    first_created.get_or_insert(dave_sid);
+
+                    if let Some(session) = self.session_manager.get_mut(dave_sid) {
+                        hydrate_session_from_state(session, &state, *loaded, &self.hostname);
+                    }
+                    created_any = true;
+                }
+                session_restore_loader::SessionRestoreMsg::Finished { account, restored } => {
+                    if Some(account) != current {
+                        continue;
+                    }
+                    tracing::info!("restored {restored} sessions from ndb");
+                }
+                session_restore_loader::SessionRestoreMsg::Failed { account, error } => {
+                    if Some(account) == current {
+                        tracing::error!("session restore failed: {error}");
+                    }
+                }
+            }
         }
 
-        // In Chat mode the manager already has the active default chat session.
-        // `new_resumed_session` steals focus for each restored session, so
-        // remember the active session and restore it afterwards — discovered
-        // agentic sessions should appear in the list, not yank the user away.
-        // In Agentic mode the manager starts empty (no prior active), so this
-        // is a no-op and startup focus behavior is unchanged.
-        let prior_active = (self.ai_mode == AiMode::Chat)
-            .then(|| self.session_manager.active_id())
-            .flatten();
-
-        tracing::info!("restoring {} sessions from ndb", states.len());
-        let mut existing_ids: std::collections::HashSet<String> = self
-            .session_manager
-            .iter()
-            .filter_map(|session| {
-                session
-                    .agentic
-                    .as_ref()
-                    .map(|agentic| agentic.event_session_id().to_string())
-            })
-            .collect();
-
-        for state in &states {
-            if existing_ids.contains(&state.claude_session_id) {
-                continue;
-            }
-            let backend = state
-                .backend
-                .as_deref()
-                .and_then(BackendType::from_tag_str)
-                .unwrap_or(BackendType::Claude);
-            let cwd = std::path::PathBuf::from(&state.cwd);
-
-            // The d-tag is the event_id (Nostr identity). The cli_session
-            // tag holds the real CLI session ID for --resume. If there's
-            // no cli_session tag, this is a legacy event where d-tag was
-            // the CLI session ID.
-            let resume_id = match state.cli_session_id {
-                Some(ref cli) if !cli.is_empty() => cli.clone(),
-                Some(_) => {
-                    // Empty cli_session — backend never started, nothing to resume
-                    String::new()
-                }
-                None => {
-                    // Legacy: d-tag IS the CLI session ID
-                    state.claude_session_id.clone()
-                }
-            };
-
-            let dave_sid = self.session_manager.new_resumed_session(
-                cwd,
-                resume_id,
-                state.title.clone(),
-                AiMode::Agentic,
-                backend,
-            );
-
-            // Load conversation history from kind-1988 events
-            let loaded = session_loader::load_session_messages_for_author(
-                ctx.ndb,
-                &txn,
-                &account,
-                &state.claude_session_id,
-            );
-
-            if let Some(session) = self.session_manager.get_mut(dave_sid) {
-                tracing::info!(
-                    "restored session '{}': {} messages",
-                    state.title,
-                    loaded.messages.len(),
-                );
-                hydrate_session_from_state(session, state, loaded, &self.hostname);
-            }
-            existing_ids.insert(state.claude_session_id.clone());
+        if !created_any {
+            return;
         }
 
         self.session_manager.rebuild_groups();
 
-        // Restore the pre-existing active session (Chat mode — see above).
-        if let Some(active) = prior_active {
-            self.session_manager.switch_to(active);
+        // Re-assert focus: restoring sessions must never yank the user (see above).
+        match keep_active {
+            Some(id) => {
+                self.session_manager.switch_to(id);
+            }
+            None => {
+                if let Some(first) = first_created {
+                    self.session_manager.switch_to(first);
+                }
+            }
         }
-
-        // Seed per-host recent paths from session state events
-        let host_paths =
-            session_loader::load_recent_paths_by_host_for_author(ctx.ndb, &txn, &account);
-        self.directory_picker
-            .seed_host_paths(host_paths, &self.hostname);
-
-        // Skip the directory picker since we restored sessions
-        self.active_overlay = DaveOverlay::None;
     }
 
     /// Advance the shared inline-session cache for the selected account so
@@ -4427,7 +4472,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         if self.run_config_sub.is_none() {
             self.subscribe_pns_run_configs(ctx.ndb, account);
         }
-        self.restore_sessions_from_ndb(ctx, account);
+        // Restore this account's sessions off the render thread (see
+        // `session_restore_loader`). Dispatch once per account — a re-selected
+        // account's sessions are preserved in `pns_local_runtimes`, so restoring
+        // again would only re-do work the dedup in `drain_session_restore` throws
+        // away. The results are drained a few per frame in `update`.
+        if self.restored_accounts.insert(account) {
+            self.session_restore_loader.restore_account(account);
+        }
         self.load_run_configs(ctx.ndb, account);
     }
 
@@ -4606,6 +4658,10 @@ pub fn is_agentium_kind(kind: u32) -> bool {
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        // Ensure the background session-restore worker is running (idempotent).
+        self.session_restore_loader
+            .start(egui_ctx.clone(), ctx.ndb.clone());
+
         // Focus a session whose inline chip was clicked in another app.
         self.process_pending_open(ctx.ndb);
         self.ensure_pns_local_state(ctx);
@@ -4633,6 +4689,9 @@ impl notedeck::App for Dave {
 
         // Poll for new session states from PNS-unwrapped relay events
         self.poll_session_state_events(ctx);
+
+        // Drain background-restored sessions into the manager (a few per frame).
+        self.drain_session_restore(egui_ctx);
 
         // Advance the shared inline-session cache backing `agentium:` chips.
         self.pump_session_cache(ctx, egui_ctx);
@@ -6761,6 +6820,107 @@ mod tests {
         assert!(
             session.state_dirty,
             "dirty so the next publish emits an active revision that overwrites the tombstone"
+        );
+    }
+
+    /// Background restore ([`Dave::drain_session_restore`]) streams sessions in
+    /// over many frames. It must never steal focus from the session the user is
+    /// already on — a hazard the old *synchronous* restore sidestepped only by
+    /// finishing within a single frame. Seed several persisted sessions, pin an
+    /// existing active session, drive the drain to completion, and assert focus
+    /// never moves while every seeded session still materializes.
+    #[tokio::test]
+    async fn background_restore_preserves_active_session() {
+        let sk = test_secret_key();
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let mut dave = test_dave(&data_path);
+        let host = dave.hostname.clone();
+
+        // Seed several persisted (kind-31988) sessions in a local ndb, authored
+        // by the account — the store the restore worker reads.
+        let ndb_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        const SEEDED: usize = 6;
+        let filter = nostrdb::Filter::new().build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        for i in 0..SEEDED {
+            let state = session_events::build_session_state_event(
+                &format!("restore-{i}"),
+                &format!("Restored {i}"),
+                None,
+                "/tmp/proj",
+                "idle",
+                None,
+                &host,
+                "/home/dev",
+                "claude",
+                "default",
+                Some(&format!("cli-{i}")),
+                None,
+                None,
+                None,
+                1_000 + i as u64,
+                &sk,
+            )
+            .unwrap();
+            ndb.process_event_with(&state.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+        }
+        ndb.wait_for_all_notes(sub, SEEDED as u32).await.unwrap();
+
+        // The session the user is on before restore begins.
+        let user_sid = dave.session_manager.new_resumed_session(
+            PathBuf::from("/tmp/user"),
+            String::new(),
+            "User".to_string(),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        assert_eq!(dave.session_manager.active_id(), Some(user_sid));
+
+        // Restore reads `pns_local_state.account` to drop stale cross-account
+        // results, so it must be set for the drain to apply anything.
+        dave.pns_local_state = Some(PnsLocalState {
+            account,
+            has_secret_key: true,
+        });
+
+        let egui_ctx = egui::Context::default();
+        dave.session_restore_loader
+            .start(egui_ctx.clone(), ndb.clone());
+        dave.session_restore_loader.restore_account(account);
+
+        // Drive the drain one "frame" at a time until every seeded session has
+        // materialized, asserting focus stays put on each frame.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while dave.session_manager.len() < SEEDED + 1 {
+            dave.drain_session_restore(&egui_ctx);
+            assert_eq!(
+                dave.session_manager.active_id(),
+                Some(user_sid),
+                "background restore must not steal focus from the user's active session"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "restore did not materialize all sessions in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(
+            dave.session_manager.len(),
+            SEEDED + 1,
+            "every seeded session is restored alongside the user's session"
+        );
+        assert_eq!(
+            dave.session_manager.active_id(),
+            Some(user_sid),
+            "focus remains on the user's session after restore completes"
         );
     }
 

@@ -23,6 +23,7 @@ egui-wgpu = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 nostrdb = { workspace = true }
+crossbeam-channel = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
