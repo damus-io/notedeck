@@ -1,4 +1,3 @@
-use crate::Message;
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::task_tracker::TaskTracker;
@@ -6,11 +5,12 @@ use crate::backend::tool_summary::{extract_response_content, format_tool_summary
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool, SubagentInfo, SubagentStatus,
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
-    turn_exit_message_for_model,
+    turn_exit_message_for_model, CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool,
+    SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
+use crate::Message;
 use agentium_core::Waker;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
@@ -18,12 +18,12 @@ use claude_agent_sdk_rs::{
     ToolResultContent, ToolUseBlock, UserContentBlock, UserMessage,
 };
 use dashmap::DashMap;
-use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 
