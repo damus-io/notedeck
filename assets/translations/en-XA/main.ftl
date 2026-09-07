@@ -109,8 +109,8 @@ Broadcast_fe43 = {"["}Bróàdçàst{"]"}
 # Broadcast the note only to local network relays
 Broadcast_Local_7e50 = {"["}Bróàdçàst Lóçàl{"]"}
 
-# Label for cancel compact database
-Cancel_0fef = {"["}Çàñçél{"]"}
+# Label for cancel prune database
+Cancel_6c39 = {"["}Çàñçél{"]"}
 
 # Button label to cancel an action
 Cancel_ed3b = {"["}Çàñçél{"]"}
@@ -133,29 +133,17 @@ ClnDash_2988 = {"["}ÇlñDàsh{"]"}
 # Button to go to the Columns app
 Columns_7215 = {"["}Çólúmñs{"]"}
 
-# Button to compact the database
-Compact_database_be7b = {"["}Çómpàçt dàtàbàsé{"]"}
-
-# Status label after database compaction completes
-Compacted_cbb8 = {"["}Çómpàçtéd!{"]"}
-
-# Status label while database compaction is running
-Compacting_3332 = {"["}Çómpàçtíñg...{"]"}
-
-# Status label when database compaction fails
-Compaction_error_7f8f = {"["}Çómpàçtíóñ érrór:{"]"}
-
 # Column title for note composition
 Compose_Note_c094 = {"["}Çómpósé Ñóté{"]"}
 
 # Label for configure relays, settings section
 Configure_relays_d156 = {"["}Çóñfígúré rélàys{"]"}
 
-# Label for confirm compact database
-Confirm_7a50 = {"["}Çóñfírm{"]"}
-
 # Label for confirm clear cache, Storage settings section
 Confirm_9d9d = {"["}Çóñfírm{"]"}
+
+# Label for confirm prune database
+Confirm_ae54 = {"["}Çóñfírm{"]"}
 
 # Button label to confirm an action
 Confirm_f8a6 = {"["}Çóñfírm{"]"}
@@ -394,8 +382,8 @@ k_5K_f7e6 = {"["}5K{"]"}
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = {"["}Kéép tràçk óf yóúr ñótés & réplíés{"]"}
 
-# Confirmation prompt for database compaction
-Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_c4a6 = {"["}Kééps àll prófílés àñd yóúr ñótés. Thé smàllér dàtàbàsé wíll bé úséd óñ ñéxt réstàrt.{"]"}
+# Confirmation prompt for database pruning
+Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_7b6b = {"["}Kééps àll prófílés àñd yóúr ñótés. Thé smàllér dàtàbàsé wíll bé úséd óñ ñéxt réstàrt.{"]"}
 
 # desc
 key_1dee = {"["}kéy{"]"}
@@ -595,6 +583,18 @@ Profile_c0ba = {"["}Prófílé{"]"}
 # Profile picture URL field label
 Profile_picture_81ff = {"["}Prófílé píçtúré{"]"}
 
+# Button to prune the database
+Prune_database_5912 = {"["}Prúñé dàtàbàsé{"]"}
+
+# Status label when database pruning fails
+Prune_error_7673 = {"["}Prúñé érrór:{"]"}
+
+# Status label after database pruning completes
+Pruned_4894 = {"["}Prúñéd!{"]"}
+
+# Status label while database pruning is running
+Pruning_1578 = {"["}Prúñíñg...{"]"}
+
 # label describing public key
 PUBLIC_ACCOUNT_ID_4394 = {"["}PÚBLÍÇ ÀÇÇÓÚÑT ÍD{"]"}
 
@@ -673,8 +673,8 @@ Reset_4998 = {"["}Rését{"]"}
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = {"["}Rését{"]"}
 
-# Instruction to restart after compaction
-Restart_to_apply_811d = {"["}Réstàrt tó àpply.{"]"}
+# Instruction to restart after pruning
+Restart_to_apply_f761 = {"["}Réstàrt tó àpply.{"]"}
 
 # Heading shown above search results
 Results_41bf = {"["}Résúlts{"]"}

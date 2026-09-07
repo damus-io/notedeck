@@ -556,7 +556,7 @@ impl Notedeck {
         };
 
         let mut unknown_ids = UnknownIds::default();
-        try_swap_compacted_db(&dbpath_str);
+        try_swap_pruned_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
         let runtime_budget = if parsed_args.options.contains(NotedeckOptions::Tests) {
@@ -894,52 +894,55 @@ impl<'a> NotedeckInternals<'a> {
     }
 }
 
-/// If a compacted database exists at `{dbpath}/compact/`, swap it into place
-/// before opening ndb. This replaces the main data.mdb with the compacted one.
-fn try_swap_compacted_db(dbpath: &str) {
+/// If a pruned database exists at `{dbpath}/compact/`, swap it into place
+/// before opening ndb. This replaces the main data.mdb with the pruned one.
+///
+/// The staging directory is still literally `compact/` — see
+/// [`Args::db_prune_path`], which is where the settings job writes it.
+fn try_swap_pruned_db(dbpath: &str) {
     let dbpath = Path::new(dbpath);
-    let compact_path = dbpath.join("compact");
-    let compact_data = compact_path.join("data.mdb");
+    let staged_path = dbpath.join("compact");
+    let staged_data = staged_path.join("data.mdb");
 
     info!(
-        "compact swap: checking for compacted db at '{}'",
-        compact_data.display()
+        "prune swap: checking for pruned db at '{}'",
+        staged_data.display()
     );
 
-    if !compact_data.exists() {
-        info!("compact swap: no compacted db found, skipping");
+    if !staged_data.exists() {
+        info!("prune swap: no pruned db found, skipping");
         return;
     }
 
-    let compact_size = std::fs::metadata(&compact_data)
+    let staged_size = std::fs::metadata(&staged_data)
         .map(|m| m.len())
         .unwrap_or(0);
-    info!("compact swap: found compacted db ({compact_size} bytes)");
+    info!("prune swap: found pruned db ({staged_size} bytes)");
 
     let db_data = dbpath.join("data.mdb");
     let db_old = dbpath.join("data.mdb.old");
 
     let old_size = std::fs::metadata(&db_data).map(|m| m.len()).unwrap_or(0);
     info!(
-        "compact swap: current db at '{}' ({old_size} bytes)",
+        "prune swap: current db at '{}' ({old_size} bytes)",
         db_data.display()
     );
 
     if let Err(e) = std::fs::rename(&db_data, &db_old) {
-        error!("compact swap: failed to rename old db: {e}");
+        error!("prune swap: failed to rename old db: {e}");
         return;
     }
 
-    if let Err(e) = std::fs::rename(&compact_data, &db_data) {
-        error!("compact swap: failed to move compacted db: {e}");
+    if let Err(e) = std::fs::rename(&staged_data, &db_data) {
+        error!("prune swap: failed to move pruned db: {e}");
         // Try to restore the original
         let _ = std::fs::rename(&db_old, &db_data);
         return;
     }
 
     let _ = std::fs::remove_file(&db_old);
-    let _ = std::fs::remove_dir_all(&compact_path);
-    info!("compact swap: success! {old_size} -> {compact_size} bytes");
+    let _ = std::fs::remove_dir_all(&staged_path);
+    info!("prune swap: success! {old_size} -> {staged_size} bytes");
 }
 
 #[cfg(test)]
@@ -1023,7 +1026,7 @@ mod render_nav_tests {
 }
 
 #[cfg(test)]
-mod compact_swap_tests {
+mod prune_swap_tests {
     use super::*;
     use nostrdb::Filter;
 
@@ -1053,26 +1056,26 @@ mod compact_swap_tests {
     /// the settings UI derives from it.
     struct TestPaths {
         db: std::path::PathBuf,
-        compact: std::path::PathBuf,
+        staged: std::path::PathBuf,
     }
 
     /// Derive both paths the way the app does, so the test breaks if the
-    /// settings UI's [`Args::db_compact_path`] and the `compact/` directory
-    /// [`try_swap_compacted_db`] looks in ever drift apart.
+    /// settings UI's [`Args::db_prune_path`] and the `compact/` directory
+    /// [`try_swap_pruned_db`] looks in ever drift apart.
     fn test_paths(base: &Path) -> TestPaths {
         let (args, _unrecognized) = Args::parse(&[]);
         let data_path = DataPath::new(base);
 
         let db = args.db_path(&data_path);
-        let compact = args.db_compact_path(&data_path);
+        let staged = args.db_prune_path(&data_path);
         std::fs::create_dir_all(&db).expect("create db dir");
 
-        TestPaths { db, compact }
+        TestPaths { db, staged }
     }
 
     /// Walk the whole user-visible prune flow: the settings button prunes into
     /// `{db}/compact/`, and the next launch swaps that in via
-    /// [`try_swap_compacted_db`]. Ingest our own note, a stranger's note and a
+    /// [`try_swap_pruned_db`]. Ingest our own note, a stranger's note and a
     /// third party's profile; prune under the default keep-policy; swap; then
     /// reopen the swapped-in database and confirm it is a valid nostrdb that
     /// still holds what the policy keeps and nothing it doesn't.
@@ -1085,11 +1088,7 @@ mod compact_swap_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = test_paths(tmp.path());
         let db_str = paths.db.to_str().expect("utf8 db path").to_string();
-        let compact_str = paths
-            .compact
-            .to_str()
-            .expect("utf8 compact path")
-            .to_string();
+        let staged_str = paths.staged.to_str().expect("utf8 staged path").to_string();
 
         let own_pubkey = pubkey_bytes(OWN_PUBKEY);
         let other_pubkey = pubkey_bytes(OTHER_PUBKEY);
@@ -1115,20 +1114,20 @@ mod compact_swap_tests {
             }
 
             let keep = Ndb::prune_default_filters(&[own_pubkey]).expect("default filters");
-            ndb.prune(&compact_str, &keep).expect("prune");
+            ndb.prune(&staged_str, &keep).expect("prune");
         }
 
         assert!(
-            paths.compact.join("data.mdb").exists(),
-            "prune should have written a database into the compact dir"
+            paths.staged.join("data.mdb").exists(),
+            "prune should have written a database into the staging dir"
         );
 
         // Next launch: swap the pruned database into place.
-        try_swap_compacted_db(&db_str);
+        try_swap_pruned_db(&db_str);
 
         assert!(
-            !paths.compact.exists(),
-            "a successful swap consumes the compact dir"
+            !paths.staged.exists(),
+            "a successful swap consumes the staging dir"
         );
         assert!(
             !paths.db.join("data.mdb.old").exists(),
@@ -1206,7 +1205,7 @@ mod compact_swap_tests {
         let db_data = paths.db.join("data.mdb");
         std::fs::write(&db_data, b"live db").expect("write live db");
 
-        try_swap_compacted_db(paths.db.to_str().expect("utf8 db path"));
+        try_swap_pruned_db(paths.db.to_str().expect("utf8 db path"));
 
         assert_eq!(
             std::fs::read(&db_data).expect("live db still readable"),

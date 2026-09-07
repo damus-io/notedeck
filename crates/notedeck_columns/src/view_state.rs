@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use nostrdb_net::Pubkey;
-use notedeck::compact::CompactState;
+use notedeck::prune::PruneState;
 use notedeck::Nip51SetCache;
 use notedeck::ReportType;
 use notedeck_ui::nip51_set::Nip51SetUiCache;
@@ -44,8 +44,8 @@ pub struct ViewState {
     /// Report screen selected report type
     pub selected_report_type: Option<ReportType>,
 
-    /// Database compaction state
-    pub compact: CompactState,
+    /// Database prune state
+    pub prune: PruneState,
 
     /// Draft state for settings controls that are applied explicitly.
     pub settings_ui: SettingsUiState,

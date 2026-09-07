@@ -1101,7 +1101,7 @@ fn render_nav_body(
                 &mut app.view_state.settings_ui,
                 &mut note_context,
                 &db_path,
-                &mut app.view_state.compact,
+                &mut app.view_state.prune,
             )
             .ui(ui)
             .map_output(RenderNavAction::SettingsAction)

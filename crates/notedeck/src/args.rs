@@ -32,8 +32,12 @@ impl Args {
             .unwrap_or_else(|| data_path.path(DataPathType::Db))
     }
 
-    /// Resolve the compact output path inside the db folder.
-    pub fn db_compact_path(&self, data_path: &DataPath) -> PathBuf {
+    /// Resolve the prune output path inside the db folder.
+    ///
+    /// The directory is still literally `compact/`: the feature was renamed
+    /// after it shipped, and a database already staged there has to keep
+    /// getting swapped in.
+    pub fn db_prune_path(&self, data_path: &DataPath) -> PathBuf {
         self.db_path(data_path).join("compact")
     }
 

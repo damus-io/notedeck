@@ -109,8 +109,8 @@ Broadcast_fe43 = Broadcast
 # Broadcast the note only to local network relays
 Broadcast_Local_7e50 = Broadcast Local
 
-# Label for cancel compact database
-Cancel_0fef = Cancel
+# Label for cancel prune database
+Cancel_6c39 = Cancel
 
 # Button label to cancel an action
 Cancel_ed3b = Cancel
@@ -133,29 +133,17 @@ ClnDash_2988 = ClnDash
 # Button to go to the Columns app
 Columns_7215 = Columns
 
-# Button to compact the database
-Compact_database_be7b = Compact database
-
-# Status label after database compaction completes
-Compacted_cbb8 = Compacted!
-
-# Status label while database compaction is running
-Compacting_3332 = Compacting...
-
-# Status label when database compaction fails
-Compaction_error_7f8f = Compaction error:
-
 # Column title for note composition
 Compose_Note_c094 = Compose Note
 
 # Label for configure relays, settings section
 Configure_relays_d156 = Configure relays
 
-# Label for confirm compact database
-Confirm_7a50 = Confirm
-
 # Label for confirm clear cache, Storage settings section
 Confirm_9d9d = Confirm
+
+# Label for confirm prune database
+Confirm_ae54 = Confirm
 
 # Button label to confirm an action
 Confirm_f8a6 = Confirm
@@ -394,8 +382,8 @@ k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 
-# Confirmation prompt for database compaction
-Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_c4a6 = Keeps all profiles and your notes. The smaller database will be used on next restart.
+# Confirmation prompt for database pruning
+Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_7b6b = Keeps all profiles and your notes. The smaller database will be used on next restart.
 
 # desc
 key_1dee = key
@@ -595,6 +583,18 @@ Profile_c0ba = Profile
 # Profile picture URL field label
 Profile_picture_81ff = Profile picture
 
+# Button to prune the database
+Prune_database_5912 = Prune database
+
+# Status label when database pruning fails
+Prune_error_7673 = Prune error:
+
+# Status label after database pruning completes
+Pruned_4894 = Pruned!
+
+# Status label while database pruning is running
+Pruning_1578 = Pruning...
+
 # label describing public key
 PUBLIC_ACCOUNT_ID_4394 = PUBLIC ACCOUNT ID
 
@@ -673,8 +673,8 @@ Reset_4998 = Reset
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = Reset
 
-# Instruction to restart after compaction
-Restart_to_apply_811d = Restart to apply.
+# Instruction to restart after pruning
+Restart_to_apply_f761 = Restart to apply.
 
 # Heading shown above search results
 Results_41bf = Results

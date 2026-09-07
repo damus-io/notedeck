@@ -46,7 +46,7 @@ pub enum SettingsAction {
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
-    CompactDatabase,
+    PruneDatabase,
     SetSoundsEnabled(bool),
     SetSoundVolume(f32),
 }
@@ -125,7 +125,7 @@ impl SettingsAction {
             Self::SetReleaseChannel(channel) => {
                 app_ctx.settings.set_release_channel(&channel);
             }
-            Self::CompactDatabase => {
+            Self::PruneDatabase => {
                 let own_pubkeys: Vec<[u8; 32]> = app_ctx
                     .accounts
                     .cache
@@ -134,14 +134,14 @@ impl SettingsAction {
                     .collect();
 
                 let db_path = app_ctx.args.db_path(app_ctx.path);
-                let compact_path = app_ctx.args.db_compact_path(app_ctx.path);
-                let _ = std::fs::create_dir_all(&compact_path);
+                let staged_path = app_ctx.args.db_prune_path(app_ctx.path);
+                let _ = std::fs::create_dir_all(&staged_path);
 
                 let old_size = std::fs::metadata(db_path.join("data.mdb"))
                     .map(|m| m.len())
                     .unwrap_or(0);
 
-                let compact_path_str = compact_path.to_str().unwrap_or("").to_string();
+                let staged_path_str = staged_path.to_str().unwrap_or("").to_string();
                 let ndb = app_ctx.ndb.clone();
 
                 let receiver = app_ctx.job_pool.schedule_receivable(move || {
@@ -150,18 +150,17 @@ impl SettingsAction {
                     let keep =
                         Ndb::prune_default_filters(&own_pubkeys).map_err(|e| format!("{e}"))?;
 
-                    ndb.prune(&compact_path_str, &keep)
+                    ndb.prune(&staged_path_str, &keep)
                         .map(|()| {
-                            let new_size =
-                                std::fs::metadata(format!("{compact_path_str}/data.mdb"))
-                                    .map(|m| m.len())
-                                    .unwrap_or(0);
-                            notedeck::compact::CompactResult { old_size, new_size }
+                            let new_size = std::fs::metadata(format!("{staged_path_str}/data.mdb"))
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+                            notedeck::prune::PruneResult { old_size, new_size }
                         })
                         .map_err(|e| format!("{e}"))
                 });
 
-                app.view_state.compact.status = notedeck::compact::CompactStatus::Running(receiver);
+                app.view_state.prune.status = notedeck::prune::PruneStatus::Running(receiver);
             }
         }
         response
@@ -173,7 +172,7 @@ pub struct SettingsView<'a> {
     state: &'a mut SettingsUiState,
     note_context: &'a mut NoteContext<'a>,
     db_path: &'a std::path::Path,
-    compact: &'a mut notedeck::compact::CompactState,
+    prune: &'a mut notedeck::prune::PruneState,
 }
 
 /// Ephemeral state for Settings UI controls that need an explicit apply step.
@@ -237,14 +236,14 @@ impl<'a> SettingsView<'a> {
         state: &'a mut SettingsUiState,
         note_context: &'a mut NoteContext<'a>,
         db_path: &'a std::path::Path,
-        compact: &'a mut notedeck::compact::CompactState,
+        prune: &'a mut notedeck::prune::PruneState,
     ) -> Self {
         Self {
             settings,
             state,
             note_context,
             db_path,
-            compact,
+            prune,
         }
     }
 
@@ -512,9 +511,9 @@ impl<'a> SettingsView<'a> {
         let id = ui.id();
         let mut action: Option<SettingsAction> = None;
 
-        // Poll compaction status; invalidate cached size when done
-        if self.compact.status.poll() {
-            self.compact.invalidate_size();
+        // Poll prune status; invalidate cached size when done
+        if self.prune.status.poll() {
+            self.prune.invalidate_size();
         }
 
         let title = tr!(
@@ -524,7 +523,7 @@ impl<'a> SettingsView<'a> {
         );
         settings_group(ui, title, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let db_size = self.compact.db_size(self.db_path);
+                let db_size = self.prune.db_size(self.db_path);
 
                 ui.label(
                     RichText::new(format!(
@@ -541,70 +540,70 @@ impl<'a> SettingsView<'a> {
 
                 ui.end_row();
 
-                match self.compact.status {
-                    notedeck::compact::CompactStatus::Running(_) => {
+                match self.prune.status {
+                    notedeck::prune::PruneStatus::Running(_) => {
                         ui.label(
                             richtext_small(tr!(
                                 self.note_context.i18n,
-                                "Compacting...",
-                                "Status label while database compaction is running"
+                                "Pruning...",
+                                "Status label while database pruning is running"
                             )),
                         );
                     }
-                    notedeck::compact::CompactStatus::Done(ref result) => {
+                    notedeck::prune::PruneStatus::Done(ref result) => {
                         ui.label(richtext_small(format!(
                             "{} {} → {}. {}",
                             tr!(
                                 self.note_context.i18n,
-                                "Compacted!",
-                                "Status label after database compaction completes"
+                                "Pruned!",
+                                "Status label after database pruning completes"
                             ),
                             format_size(result.old_size),
                             format_size(result.new_size),
                             tr!(
                                 self.note_context.i18n,
                                 "Restart to apply.",
-                                "Instruction to restart after compaction"
+                                "Instruction to restart after pruning"
                             ),
                         )));
                     }
-                    notedeck::compact::CompactStatus::Error(ref e) => {
+                    notedeck::prune::PruneStatus::Error(ref e) => {
                         ui.label(
                             richtext_small(format!(
                                 "{} {e}",
                                 tr!(
                                     self.note_context.i18n,
-                                    "Compaction error:",
-                                    "Status label when database compaction fails"
+                                    "Prune error:",
+                                    "Status label when database pruning fails"
                                 ),
                             ))
                             .color(Color32::LIGHT_RED),
                         );
                     }
-                    notedeck::compact::CompactStatus::Idle => {
-                        let compact_resp = ui.button(richtext_small(tr!(
+                    notedeck::prune::PruneStatus::Idle => {
+                        let prune_resp = ui.button(richtext_small(tr!(
                             self.note_context.i18n,
-                            "Compact database",
-                            "Button to compact the database"
+                            "Prune database",
+                            "Button to prune the database"
                         )));
 
-                        let id_compact = id.with("compact_db");
-                        if compact_resp.clicked() {
-                            ui.data_mut(|d| d.insert_temp(id_compact, true));
+                        let id_prune = id.with("prune_db");
+                        if prune_resp.clicked() {
+                            ui.data_mut(|d| d.insert_temp(id_prune, true));
                         }
 
-                        if ui.data_mut(|d| *d.get_temp_mut_or_default(id_compact)) {
+                        if ui.data_mut(|d| *d.get_temp_mut_or_default(id_prune)) {
                             let mut confirm_pressed = false;
-                            compact_resp.show_tooltip_ui(|ui| {
+                            prune_resp.show_tooltip_ui(|ui| {
                                 ui.label(tr!(
                                     self.note_context.i18n,
                                     "Keeps all profiles and your notes. The smaller database will be used on next restart.",
-                                    "Confirmation prompt for database compaction"
+                                    "Confirmation prompt for database pruning"
                                 ));
                                 let confirm_resp = ui.button(tr!(
                                     self.note_context.i18n,
                                     "Confirm",
-                                    "Label for confirm compact database"
+                                    "Label for confirm prune database"
                                 ));
                                 if confirm_resp.clicked() {
                                     confirm_pressed = true;
@@ -615,18 +614,18 @@ impl<'a> SettingsView<'a> {
                                         .button(tr!(
                                             self.note_context.i18n,
                                             "Cancel",
-                                            "Label for cancel compact database"
+                                            "Label for cancel prune database"
                                         ))
                                         .clicked()
                                 {
-                                    ui.data_mut(|d| d.insert_temp(id_compact, false));
+                                    ui.data_mut(|d| d.insert_temp(id_prune, false));
                                 }
                             });
 
                             if confirm_pressed {
-                                action = Some(SettingsAction::CompactDatabase);
-                            } else if !confirm_pressed && compact_resp.clicked_elsewhere() {
-                                ui.data_mut(|d| d.insert_temp(id_compact, false));
+                                action = Some(SettingsAction::PruneDatabase);
+                            } else if !confirm_pressed && prune_resp.clicked_elsewhere() {
+                                ui.data_mut(|d| d.insert_temp(id_prune, false));
                             }
                         }
                     }
