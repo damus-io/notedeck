@@ -1021,3 +1021,197 @@ mod render_nav_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod compact_swap_tests {
+    use super::*;
+    use nostrdb::Filter;
+
+    /// Our own pubkey — the account whose notes the keep-policy preserves.
+    const OWN_PUBKEY: &str = "32bf915904bfde2d136ba45dde32c88f4aca863783999faea2e847a8fafd2f15";
+    /// A stranger's pubkey; nothing they authored survives the prune.
+    const OTHER_PUBKEY: &str = "e586b8d54cfecacf251c71d0b2d9b01673c8870fb3fe82a20ce5afc44ce7fccc";
+    /// The author of the kind-0 profile below, kept because *all* profiles are.
+    const PROFILE_PUBKEY: &str = "3f770d65d3a764a9c5cb503ae123e62ec7598ad035d836e2a810f3877a745b24";
+
+    /// Our own kind-1 note.
+    const OWN_NOTE_ID: &str = "702555e52e82cc24ad517ba78c21879f6e47a7c0692b9b20df147916ae8731a3";
+    const OWN_NOTE: &str = r#"["EVENT","b",{"id": "702555e52e82cc24ad517ba78c21879f6e47a7c0692b9b20df147916ae8731a3","pubkey": "32bf915904bfde2d136ba45dde32c88f4aca863783999faea2e847a8fafd2f15","created_at": 1702675561,"kind": 1,"tags": [],"content": "hello, world","sig": "2275c5f5417abfd644b7bc74f0388d70feb5d08b6f90fa18655dda5c95d013bfbc5258ea77c05b7e40e0ee51d8a2efa931dc7a0ec1db4c0a94519762c6625675"}]"#;
+    /// The stranger's kind-1 note.
+    const OTHER_NOTE: &str = r#"["EVENT","b",{"id":"2e577580420c4ef02e8067aa842dd068be7c957f81a32b325fa1849b1650d98b","pubkey":"e586b8d54cfecacf251c71d0b2d9b01673c8870fb3fe82a20ce5afc44ce7fccc","created_at":1768414963,"kind":1,"tags":[],"content":"hi","sig":"662d45856ffc66c32df33ce5e8b7b9de14981774679b36bdb787bb8feda22b47eee7257756b915f7d54a53317151b0907a40847c635c9626debfb2a7b038c76f"}]"#;
+    /// A kind-0 profile authored by neither account.
+    const PROFILE_NOTE: &str = r#"["EVENT","b",{  "id": "0b9f0e14727733e430dcb00c69b12a76a1e100f419ce369df837f7eb33e4523c",  "pubkey": "3f770d65d3a764a9c5cb503ae123e62ec7598ad035d836e2a810f3877a745b24",  "created_at": 1736785355,  "kind": 0,  "tags": [    [      "alt",      "User profile for Derek Ross"    ],    [      "i",      "twitter:derekmross",      "1634343988407726081"    ],    [      "i",      "github:derekross",      "3edaf845975fa4500496a15039323fa3I"    ]  ],  "content": "{\"about\":\"Building NostrPlebs.com and NostrNests.com. The purple pill helps the orange pill go down. Nostr is the social glue that binds all of your apps together.\",\"banner\":\"https://i.nostr.build/O2JE.jpg\",\"display_name\":\"Derek Ross\",\"lud16\":\"derekross@strike.me\",\"name\":\"Derek Ross\",\"nip05\":\"derekross@nostrplebs.com\",\"picture\":\"https://i.nostr.build/MVIJ6OOFSUzzjVEc.jpg\",\"website\":\"https://nostrplebs.com\",\"created_at\":1707238393}",  "sig": "51e1225ccaf9b6739861dc218ac29045b09d5cf3a51b0ac6ea64bd36827d2d4394244e5f58a4e4a324c84eeda060e1a27e267e0d536e5a0e45b0b6bdc2c43bbc"}]"#;
+
+    fn pubkey_bytes(hex_str: &str) -> [u8; 32] {
+        hex::decode(hex_str)
+            .expect("valid hex")
+            .try_into()
+            .expect("32 bytes")
+    }
+
+    /// The database directory notedeck would use, plus the prune output path
+    /// the settings UI derives from it.
+    struct TestPaths {
+        db: std::path::PathBuf,
+        compact: std::path::PathBuf,
+    }
+
+    /// Derive both paths the way the app does, so the test breaks if the
+    /// settings UI's [`Args::db_compact_path`] and the `compact/` directory
+    /// [`try_swap_compacted_db`] looks in ever drift apart.
+    fn test_paths(base: &Path) -> TestPaths {
+        let (args, _unrecognized) = Args::parse(&[]);
+        let data_path = DataPath::new(base);
+
+        let db = args.db_path(&data_path);
+        let compact = args.db_compact_path(&data_path);
+        std::fs::create_dir_all(&db).expect("create db dir");
+
+        TestPaths { db, compact }
+    }
+
+    /// Walk the whole user-visible prune flow: the settings button prunes into
+    /// `{db}/compact/`, and the next launch swaps that in via
+    /// [`try_swap_compacted_db`]. Ingest our own note, a stranger's note and a
+    /// third party's profile; prune under the default keep-policy; swap; then
+    /// reopen the swapped-in database and confirm it is a valid nostrdb that
+    /// still holds what the policy keeps and nothing it doesn't.
+    ///
+    /// Note that pruning rewrites notes through the writer, so `NoteKey`s in
+    /// the swapped-in database are freshly assigned and relay provenance is not
+    /// carried over — the assertions below deliberately go by note id.
+    #[tokio::test]
+    async fn prune_then_swap_keeps_own_notes_and_profiles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = test_paths(tmp.path());
+        let db_str = paths.db.to_str().expect("utf8 db path").to_string();
+        let compact_str = paths
+            .compact
+            .to_str()
+            .expect("utf8 compact path")
+            .to_string();
+
+        let own_pubkey = pubkey_bytes(OWN_PUBKEY);
+        let other_pubkey = pubkey_bytes(OTHER_PUBKEY);
+        let profile_pubkey = pubkey_bytes(PROFILE_PUBKEY);
+
+        // Populate a database and prune it, exactly as the settings job does.
+        {
+            let ndb = Ndb::new(&db_str, &Config::new()).expect("open db");
+
+            let filters = vec![Filter::new().kinds(vec![0, 1]).build()];
+            let sub = ndb.subscribe(&filters).expect("subscribe");
+            let waiter = ndb.wait_for_all_notes(sub, 3);
+
+            ndb.process_event(OWN_NOTE).expect("ingest own note");
+            ndb.process_event(OTHER_NOTE).expect("ingest other note");
+            ndb.process_event(PROFILE_NOTE).expect("ingest profile");
+            waiter.await.expect("all three ingested");
+
+            {
+                let txn = Transaction::new(&ndb).expect("txn");
+                let all = ndb.query(&txn, &filters, 10).expect("query all");
+                assert_eq!(all.len(), 3, "source db should hold all three notes");
+            }
+
+            let keep = Ndb::prune_default_filters(&[own_pubkey]).expect("default filters");
+            ndb.prune(&compact_str, &keep).expect("prune");
+        }
+
+        assert!(
+            paths.compact.join("data.mdb").exists(),
+            "prune should have written a database into the compact dir"
+        );
+
+        // Next launch: swap the pruned database into place.
+        try_swap_compacted_db(&db_str);
+
+        assert!(
+            !paths.compact.exists(),
+            "a successful swap consumes the compact dir"
+        );
+        assert!(
+            !paths.db.join("data.mdb.old").exists(),
+            "a successful swap removes the backup of the old db"
+        );
+
+        // The swapped-in database must reopen and still hold the kept notes.
+        let ndb = Ndb::new(&db_str, &Config::new()).expect("reopen swapped db");
+        let txn = Transaction::new(&ndb).expect("txn");
+
+        let own = ndb
+            .query(
+                &txn,
+                &[Filter::new()
+                    .authors(vec![&own_pubkey])
+                    .kinds(vec![1])
+                    .build()],
+                10,
+            )
+            .expect("query own notes");
+        assert_eq!(own.len(), 1, "our own note should survive the prune");
+        assert_eq!(hex::encode(own[0].note.id()), OWN_NOTE_ID);
+
+        let other = ndb
+            .query(
+                &txn,
+                &[Filter::new()
+                    .authors(vec![&other_pubkey])
+                    .kinds(vec![1])
+                    .build()],
+                10,
+            )
+            .expect("query other notes");
+        assert!(
+            other.is_empty(),
+            "a stranger's note is outside the keep-policy"
+        );
+
+        let profiles = ndb
+            .query(
+                &txn,
+                &[Filter::new()
+                    .authors(vec![&profile_pubkey])
+                    .kinds(vec![0])
+                    .build()],
+                10,
+            )
+            .expect("query profiles");
+        assert_eq!(profiles.len(), 1, "every profile is kept");
+
+        // The user keeps using this database after the swap, so it has to
+        // accept writes too — not just answer queries.
+        let sub = ndb
+            .subscribe(&[Filter::new()
+                .authors(vec![&other_pubkey])
+                .kinds(vec![1])
+                .build()])
+            .expect("subscribe");
+        let waiter = ndb.wait_for_notes(sub, 1);
+        ndb.process_event(OTHER_NOTE)
+            .expect("ingest into swapped db");
+        // A rejected write would leave the waiter pending forever, so time out
+        // rather than hang the test suite.
+        tokio::time::timeout(Duration::from_secs(10), waiter)
+            .await
+            .expect("swapped db ingested a new note within 10s")
+            .expect("ingest notified the subscription");
+    }
+
+    /// With no pruned database staged, startup must leave the live one alone.
+    #[test]
+    fn swap_without_a_pruned_db_leaves_the_live_db_untouched() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = test_paths(tmp.path());
+        let db_data = paths.db.join("data.mdb");
+        std::fs::write(&db_data, b"live db").expect("write live db");
+
+        try_swap_compacted_db(paths.db.to_str().expect("utf8 db path"));
+
+        assert_eq!(
+            std::fs::read(&db_data).expect("live db still readable"),
+            b"live db",
+            "swap must not touch the live db when nothing is staged"
+        );
+    }
+}
