@@ -91,6 +91,9 @@ Amount_70f0 = Amount
 # Label for appearance settings section
 Appearance_4c7f = Appearance
 
+# Button label for applying websocket connection limit setting
+Apply_7d12 = Apply
+
 # Button to send message to Dave AI assistant
 Ask_b7f4 = Ask
 
@@ -313,6 +316,9 @@ Enter_your_key_0fca = Enter your key
 # Instructions for entering Nostr credentials
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = Enter your public key (npub), nostr address (e.g. {$address}), or private key (nsec). You must enter your private key to be able to post, reply, etc.
 
+# Setting to derive websocket connection limit from OS fd pressure
+Extreme_1d70 = Extreme
+
 # Column title for followers
 Followed_by_e8c2 = Followed by
 
@@ -420,6 +426,9 @@ Login_now___let_s_do_this_5630 = Login now — let's do this!
 
 # Label for max hashtags per note, others settings section
 Max_hashtags_per_note_90e5 = Max hashtags per note:
+
+# Label for relay websocket connection limit setting
+Max_websocket_connections_8f75 = Max websocket connections:
 
 # Text shown on blurred media from unfollowed users
 Media_from_someone_you_don_t_follow_5611 = Media from someone you don't follow
@@ -532,6 +541,9 @@ Notifications_ef56 = Notifications
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = now
 
+# Setting to enable explicit outbox relay routing
+On_7aa8 = On
+
 # Setting to turn on sorting replies so that the newest are shown first
 On_f412 = On
 
@@ -603,6 +615,9 @@ Refresh_feed_e03d = Refresh feed
 
 # Column title for relay management
 Relays_9d89 = Relays
+
+# Label for relay transport settings section
+Relays_ab62 = Relays
 
 # Label for relay list section
 Relays_ad5e = Relays
@@ -822,6 +837,9 @@ Unmute_User_5d5a = Unmute User
 
 # Unmute this user's content
 Unmute_User_bf35 = Unmute User
+
+# Label for toggling explicit outbox relay routing in Columns settings
+Use_outbox_relays_9e4d = Use outbox relays:
 
 # Checkbox label for using wallet only for current account
 Use_this_wallet_for_the_current_account_only_61dc = Use this wallet for the current account only

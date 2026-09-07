@@ -91,6 +91,9 @@ Amount_70f0 = {"["}Àmóúñt{"]"}
 # Label for appearance settings section
 Appearance_4c7f = {"["}Àppéàràñçé{"]"}
 
+# Button label for applying websocket connection limit setting
+Apply_7d12 = {"["}Àpply{"]"}
+
 # Button to send message to Dave AI assistant
 Ask_b7f4 = {"["}Àsk{"]"}
 
@@ -313,6 +316,9 @@ Enter_your_key_0fca = {"["}Éñtér yóúr kéy{"]"}
 # Instructions for entering Nostr credentials
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = {"["}Éñtér yóúr públíç kéy (ñpúb), ñóstr àddréss (é.g. {$address}), ór prívàté kéy (ñséç). Yóú múst éñtér yóúr prívàté kéy tó bé àblé tó póst, réply, étç.{"]"}
 
+# Setting to derive websocket connection limit from OS fd pressure
+Extreme_1d70 = {"["}Éxtrémé{"]"}
+
 # Column title for followers
 Followed_by_e8c2 = {"["}Fóllówéd by{"]"}
 
@@ -420,6 +426,9 @@ Login_now___let_s_do_this_5630 = {"["}Lógíñ ñów — lét's dó thís!{"]"}
 
 # Label for max hashtags per note, others settings section
 Max_hashtags_per_note_90e5 = {"["}Màx hàshtàgs pér ñóté:{"]"}
+
+# Label for relay websocket connection limit setting
+Max_websocket_connections_8f75 = {"["}Màx wébsóçkét çóññéçtíóñs:{"]"}
 
 # Text shown on blurred media from unfollowed users
 Media_from_someone_you_don_t_follow_5611 = {"["}Médíà fróm sóméóñé yóú dóñ't fóllów{"]"}
@@ -532,6 +541,9 @@ Notifications_ef56 = {"["}Ñótífíçàtíóñs{"]"}
 # Relative time for very recent events (less than 3 seconds)
 now_2181 = {"["}ñów{"]"}
 
+# Setting to enable explicit outbox relay routing
+On_7aa8 = {"["}Óñ{"]"}
+
 # Setting to turn on sorting replies so that the newest are shown first
 On_f412 = {"["}Óñ{"]"}
 
@@ -603,6 +615,9 @@ Refresh_feed_e03d = {"["}Réfrésh fééd{"]"}
 
 # Column title for relay management
 Relays_9d89 = {"["}Rélàys{"]"}
+
+# Label for relay transport settings section
+Relays_ab62 = {"["}Rélàys{"]"}
 
 # Label for relay list section
 Relays_ad5e = {"["}Rélàys{"]"}
@@ -822,6 +837,9 @@ Unmute_User_5d5a = {"["}Úñmúté Úsér{"]"}
 
 # Unmute this user's content
 Unmute_User_bf35 = {"["}Úñmúté Úsér{"]"}
+
+# Label for toggling explicit outbox relay routing in Columns settings
+Use_outbox_relays_9e4d = {"["}Úsé óútbóx rélàys:{"]"}
 
 # Checkbox label for using wallet only for current account
 Use_this_wallet_for_the_current_account_only_61dc = {"["}Úsé thís wàllét fór thé çúrréñt àççóúñt óñly{"]"}
