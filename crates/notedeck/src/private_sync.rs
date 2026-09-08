@@ -391,23 +391,47 @@ fn own_selfshare_giftwraps(
     wraps
 }
 
-/// Register every `root` with nostrdb so it auto-unwraps that channel's kind-1081
-/// envelopes, then run one [`Ndb::process_sns`] catch-up peel for envelopes that
-/// were ingested before the root was registered. Idempotent — call on boot and
-/// after every account switch (mirrors `add_key`). The catch-up walk is only paid
-/// when a root was actually newly registered.
-fn register_roots(ndb: &Ndb, roots: &[[u8; 32]]) {
-    let mut registered = false;
-    for root in roots {
-        registered |= ndb.add_team_root(root);
+/// The SNS team roots this session has already handed to nostrdb, so each one is
+/// registered exactly once.
+///
+/// Registering the same root twice is **not** free. nostrdb keeps its registered
+/// roots in a fixed-size per-ingester-thread array (`MAX_INGESTER_KEYS`, 128) and
+/// `ndb_add_team_root` appends unconditionally — it does not dedup. Since
+/// [`HostPrivateSync::update`] re-registers the *whole* root set every time the set
+/// changes, a long-running session with a couple of dozen boards fills that array
+/// with duplicates within a few roster changes. Once it is full, every genuinely
+/// new root is silently dropped: `ndb_add_team_root` reports whether the *dispatch*
+/// succeeded, not whether the key was accepted, so nothing here can see it happen.
+/// The board is then listed from its key-share but its kind-1081 envelopes are
+/// never peeled, and its shared fold stays empty until the app is restarted (the
+/// registration is process-lifetime, so this set matches it exactly).
+#[derive(Default)]
+struct RegisteredRoots(HashSet<[u8; 32]>);
+
+impl RegisteredRoots {
+    /// Register every not-yet-registered `root` with nostrdb so it auto-unwraps
+    /// that channel's kind-1081 envelopes, then run one [`Ndb::process_sns`]
+    /// catch-up peel for envelopes that were ingested before the root was
+    /// registered. Idempotent — call on boot and after every account switch
+    /// (mirrors `add_key`). The catch-up walk is only paid when a root was actually
+    /// new, which is now what the flag means: with the duplicate calls gone, the
+    /// walk runs on a real join rather than on every root-set change.
+    fn register(&mut self, ndb: &Ndb, roots: &[[u8; 32]]) {
+        let mut registered = false;
+        for root in roots {
+            if !self.0.insert(*root) {
+                continue;
+            }
+            registered |= ndb.add_team_root(root);
+        }
+        if !registered {
+            return;
+        }
+        let Ok(txn) = Transaction::new(ndb) else {
+            return;
+        };
+        ndb.process_sns(&txn);
     }
-    if !registered {
-        return;
-    }
-    let Ok(txn) = Transaction::new(ndb) else {
-        return;
-    };
-    ndb.process_sns(&txn);
 }
 
 /// The inputs the host's private [`Session`] subscription was last declared for.
@@ -543,6 +567,10 @@ pub struct HostPrivateSync {
     /// if its generation is still current, so a stale watcher from a superseded
     /// declaration (e.g. after an account switch) can't mark a fresh sync settled.
     settle_gen: Arc<AtomicU64>,
+    /// The roots already registered with nostrdb this session, so the re-registration
+    /// on each roster change doesn't fill nostrdb's fixed root table with duplicates
+    /// and start dropping new boards ([`RegisteredRoots`]).
+    registered: RegisteredRoots,
 }
 
 impl Default for HostPrivateSync {
@@ -565,6 +593,7 @@ impl HostPrivateSync {
             // Nothing declared yet ⇒ nothing to reconcile ⇒ settled.
             settled: Arc::new(AtomicBool::new(true)),
             settle_gen: Arc::new(AtomicU64::new(0)),
+            registered: RegisteredRoots::default(),
         }
     }
 
@@ -660,7 +689,7 @@ impl HostPrivateSync {
         // local 1081 sub that drives the outbound fan over *all* channels at once.
         let roots_changed = self.declared.as_ref().map(|d| d.roots.as_slice()) != Some(&roots);
         if roots_changed {
-            register_roots(ndb, &roots);
+            self.registered.register(ndb, &roots);
             if let Some(old) = self.local_sns_sub.take() {
                 let _ = ndb.unsubscribe(old);
             }
@@ -1920,13 +1949,102 @@ mod tests {
     fn registers_roots_and_derives_channel() {
         let (_dir, ndb) = test_ndb();
         let root = test_root(0x44);
-        // First registration reports newly-added; a repeat is a no-op.
-        register_roots(&ndb, &[root]);
-        register_roots(&ndb, &[root]);
+        // First registration reaches nostrdb; a repeat is dropped before it does,
+        // so nostrdb's fixed root table never sees the same root twice.
+        let mut registered = RegisteredRoots::default();
+        registered.register(&ndb, &[root]);
+        registered.register(&ndb, &[root]);
+        assert_eq!(registered.0.len(), 1, "the root is recorded once");
 
         let pk = team_pubkey(&root).expect("team pubkey");
         let filter = team_envelope_filter(&pk);
         // The filter targets the channel's 1081 stream authored by the team pubkey.
         assert!(filter.json().expect("filter json").contains("1081"));
+    }
+
+    /// A roster that grows one root at a time re-declares — and so re-registers —
+    /// the *whole* set each time. Those repeats must not cost anything in nostrdb's
+    /// fixed root table, or a board joined late in a long session never peels.
+    ///
+    /// nostrdb holds registered roots in a 128-slot per-ingester-thread array and
+    /// `ndb_add_team_root` appends without deduping, so twenty roots arriving one at
+    /// a time used to spend 1+2+…+20 = 210 of those slots. Every root after the
+    /// array filled was dropped *silently* — `add_team_root` reports the dispatch,
+    /// not the acceptance — leaving the board listed from its key-share with a
+    /// shared fold that never fills ("Loading shared board…" until a restart).
+    ///
+    /// The last channel's envelope is ingested *before* its root is registered, so
+    /// this exercises the [`Ndb::process_sns`] catch-up peel rather than the
+    /// ingest-time one — the order a board sealed on another device arrives in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn late_root_peels_after_a_roster_grew_one_root_at_a_time() {
+        use std::time::Duration;
+
+        let (_dir, mut ndb) = test_ndb();
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+        ndb.add_key(&secret);
+        let mut host = HostPrivateSync::new();
+
+        // Roots trickle in one at a time, as apps register them and key-shares land.
+        // Twenty is well past where re-registering the whole set each time overruns
+        // nostrdb's table: measured on this tree, 120 cumulative registrations still
+        // peel and 136 do not.
+        let mut roots: Vec<[u8; 32]> = Vec::new();
+        for i in 0..16u8 {
+            roots.push(test_root(i));
+            host.update(&mut ndb, &account.pubkey, &secret, &[], &roots);
+        }
+
+        // A genuinely new channel whose envelope is already in ndb — an envelope
+        // pushed in through the embedded relay before its root was known.
+        let root = test_root(200);
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
+        let rumor = NoteBuilder::new()
+            .kind(1)
+            .content("late board definition")
+            .created_at(HOST_TEST_TS)
+            .sign(&secret)
+            .build()
+            .expect("rumor");
+        let inner_id = *rumor.id();
+        let envelope = nostrdb_net::sns::wrap_rumor(
+            &sns_keys,
+            &account,
+            &rumor.json().expect("rumor json"),
+            HOST_TEST_TS,
+        )
+        .expect("sns envelope");
+        let envelope_id = *envelope.id();
+        ndb.process_event(&format!(
+            "[\"EVENT\",\"e\",{}]",
+            envelope.json().expect("envelope json")
+        ))
+        .expect("ingest envelope");
+        // Wait out the async ingest so the envelope is durably committed *before*
+        // the root is registered — the catch-up peel is what must find it.
+        for _ in 0..250 {
+            if ndb_has(&ndb, &envelope_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(ndb_has(&ndb, &envelope_id), "envelope never landed");
+
+        roots.push(root);
+        let mut peeled = false;
+        for _ in 0..250 {
+            host.update(&mut ndb, &account.pubkey, &secret, &[], &roots);
+            if ndb_has(&ndb, &inner_id) {
+                peeled = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            peeled,
+            "a root joined after the roster grew never peeled its envelope: \
+             nostrdb's root table was full of duplicate registrations"
+        );
     }
 }
