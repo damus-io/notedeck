@@ -254,7 +254,12 @@ fn pns_envelope_filter(pns_pubkey: &Pubkey) -> Filter {
 /// Filter for unwrapped SNS key-share rumors (kind-1082) — the shares nostrdb has
 /// peeled out of gift-wraps addressed to one of our account keys. The roster is
 /// derived from these (see [`registered_roots`]); a live subscription on the same
-/// filter surfaces new joins from the account's other devices.
+/// filter surfaces new joins from the account's other devices, and the same stream
+/// scopes the outbound gift-wrap leg ([`own_selfshare_giftwraps`]).
+///
+/// This is a **local** stream: a 1082 only ever exists after nostrdb peels a
+/// kind-1059 gift-wrap, so it is a local subscription/query filter, never a
+/// meaningful remote `REQ`.
 fn keyshare_filter() -> Filter {
     Filter::new()
         .kinds([nostrdb_net::sns::KEYSHARE_KIND as u64])
@@ -322,6 +327,68 @@ fn registered_roots(ndb: &Ndb, author: &Pubkey) -> Vec<[u8; 32]> {
         }
     }
     roots
+}
+
+/// Map kind-1082 key-share rumors to the **outer kind-1059 gift-wraps** that carry
+/// them, keeping only the *self-shares this account minted* — a share `account`
+/// authored and addressed to `account` itself, i.e. the key to one of our own
+/// team-of-one boards.
+///
+/// This is the key half of the account's private surface: a board's *content*
+/// rides its kind-1081 envelopes, but another device can only **join** the channel
+/// from the kind-1059 carrying its key-share. Every other sync leg here is
+/// author-keyed, and a gift-wrap's author is a throwaway ephemeral key by NIP-59
+/// design, so no author-keyed filter can ever select one — which is why a board
+/// sealed on one device used to be invisible on every other.
+///
+/// The scoping is deliberate. The only wire-visible handle on a gift-wrap is its
+/// `p` tag, but fanning *everything* `#p`-tagged to us would make notedeck a
+/// write-amplifier into our own private relay, and the seen-on check would not stop
+/// it: a wrap pulled in from a *public* accounts-read relay has seen-on = that
+/// public relay, so it looks unsent to the private one and gets forwarded. Anyone
+/// able to write a 1059 at any relay we read would then have unbounded write access
+/// to our private relay. So we scope on the **peeled rumor** instead — the one
+/// thing the ephemeral outer key cannot hide from us locally. A stranger's wrap
+/// peels to a rumor *they* authored and is dropped here, leaving no spam surface;
+/// a co-member's genuine invite is likewise not ours to republish.
+///
+/// The returned keys name the stored 1059s, which are forwarded **verbatim** by
+/// [`fan_keys_to_relays`]. Forwarding, not re-wrapping: a re-wrap mints a fresh
+/// ephemeral key and a new event id every run, so it is not idempotent, whereas
+/// forwarding the stored wrap is (and the seen-on check then actually works).
+fn own_selfshare_giftwraps(
+    ndb: &Ndb,
+    txn: &Transaction,
+    account: &Pubkey,
+    rumor_keys: impl IntoIterator<Item = NoteKey>,
+) -> Vec<NoteKey> {
+    let mut wraps: Vec<NoteKey> = Vec::new();
+    for key in rumor_keys {
+        let Ok(rumor) = ndb.get_note_by_key(txn, key) else {
+            continue;
+        };
+        // Minted by us (the rumor is signed by the sharer, so its author is real
+        // even though the wrap's author is not) *and* addressed to us.
+        if rumor.pubkey() != account.bytes()
+            || rumor.rumor_receiver_pubkey() != Some(account.bytes())
+        {
+            continue;
+        }
+        let Some(wrap_id) = rumor.rumor_giftwrap_id() else {
+            continue;
+        };
+        let Some(wrap_key) = ndb
+            .get_note_by_id(txn, wrap_id)
+            .ok()
+            .and_then(|wrap| wrap.key())
+        else {
+            continue;
+        };
+        if !wraps.contains(&wrap_key) {
+            wraps.push(wrap_key);
+        }
+    }
+    wraps
 }
 
 /// Register every `root` with nostrdb so it auto-unwraps that channel's kind-1081
@@ -419,9 +486,13 @@ impl PrivateChannels {
 ///   every roster channel's SNS 1081 stream drive an
 ///   [`is_rumor`](nostrdb::Note::is_rumor)-guarded fan-out of freshly-authored
 ///   envelopes (e.g. a notebook longform, or a headway shared-board edit made on
-///   this device) out to the private relays via [`Session::publish`]. The host
-///   owns the whole private wire — both kinds, both directions — so an SNS app
-///   never publishes its own sealed envelopes.
+///   this device) out to the private relays via [`Session::publish`]. The 1082
+///   key-share stream drives a third outbound leg: the kind-1059 gift-wrap of each
+///   self-share *we* minted is forwarded too ([`own_selfshare_giftwraps`]), because
+///   a channel's 1081 envelopes carry its content but only the gift-wrap carries
+///   the key another device needs to **join** it. The host owns the whole private
+///   wire — every kind, both directions — so an SNS app never publishes its own
+///   sealed envelopes or key-shares.
 ///
 /// Which filters to sync and the fan-out guard are host policy and live here; the
 /// [`Session`] itself is kind-agnostic. With no private relay marked the relay set
@@ -438,10 +509,11 @@ pub struct HostPrivateSync {
     /// fan-out.
     local_sub: Option<Subscription>,
     /// Local subscription over the account's kind-1082 key-share stream, re-created
-    /// when the selected account changes. Polled each frame purely as a cheap
-    /// change-detector: a fresh 1082 means a channel was joined (on this or another
-    /// device), so re-derive the SNS roster from ndb rather than querying it every
-    /// frame.
+    /// when the selected account changes. Polled each frame for two jobs: as a cheap
+    /// roster change-detector (a fresh 1082 means a channel was joined on this or
+    /// another device, so re-derive the SNS roster from ndb rather than querying it
+    /// every frame), and as the scope for the outbound gift-wrap leg — a fresh 1082
+    /// of our own naming a kind-1059 to forward ([`own_selfshare_giftwraps`]).
     roster_sub: Option<Subscription>,
     /// Local subscription over *every* roster channel's kind-1081 envelope stream
     /// (all team pubkeys at once), re-created when the roster changes. Polled each
@@ -510,9 +582,10 @@ impl HostPrivateSync {
     /// Bring the host sync in line with the selected account: (re)declare the
     /// private subscription over `private_urls` — the account's PNS 1080 stream, its
     /// joined SNS channels' 1081 streams, and its 1082 key-share stream — and fan
-    /// any freshly-authored local PNS envelopes out to them. Cheap to call every
-    /// frame — the remote declaration is deduped on `(account, urls, roster)` and
-    /// only the small fan-out + roster-change polls run otherwise.
+    /// any freshly-authored local PNS/SNS envelopes, and the gift-wraps of our own
+    /// key-shares, out to them. Cheap to call every frame — the remote declaration
+    /// is deduped on `(account, urls, roster)` and only the small fan-out +
+    /// roster-change polls run otherwise.
     ///
     /// `account`/`account_secret` are the selected account's pubkey and secret;
     /// `private_urls` its marked private-sync relays (empty ⇒ local-only). Must be
@@ -558,10 +631,13 @@ impl HostPrivateSync {
         // ndb for it is only paid when the account changed or the key-share sub
         // reports a fresh 1082 (a channel joined here or on another device);
         // otherwise the cached roster is reused.
-        let roster_dirty = account_changed
-            || self
-                .roster_sub
-                .is_some_and(|sub| !ndb.poll_for_notes(sub, 64).is_empty());
+        // The polled keys are kept, not just counted: a fresh 1082 of our own also
+        // means a gift-wrap to fan outbound (see [`own_selfshare_giftwraps`]).
+        let keyshare_keys = self
+            .roster_sub
+            .map(|sub| ndb.poll_for_notes(sub, 64))
+            .unwrap_or_default();
+        let roster_dirty = account_changed || !keyshare_keys.is_empty();
         if roster_dirty {
             self.roster_roots = registered_roots(ndb, account);
         }
@@ -612,10 +688,19 @@ impl HostPrivateSync {
         };
         if self.declared.as_ref() != Some(&next) {
             self.redeclare(&session, &pns_pubkey, private_urls, &next.roots);
+            // Catch up the outbound gift-wrap leg on the same (rare) trigger. The
+            // live poll below only reports 1082s committed *after* the sub opened,
+            // so every board sealed before this boot — the whole existing roster,
+            // and anything the CLI sealed while the app was closed — would never
+            // have its key fanned. Keyed off the declaration change so it also runs
+            // the moment the private relay set first resolves (the account-change
+            // pump usually sees no relays yet), and re-runs cost only the query
+            // thanks to the seen-on check.
+            self.fan_out_selfshare_catchup(ndb, &session, private_urls, account);
             self.declared = Some(next);
         }
 
-        self.fan_out_local_envelopes(ndb, &session, private_urls);
+        self.fan_out_local_envelopes(ndb, &session, private_urls, account, &keyshare_keys);
     }
 
     /// Replace the private declaration: close the prior `REQ` on every relay and,
@@ -680,17 +765,25 @@ impl HostPrivateSync {
     /// Poll the local envelope subscriptions — the account's kind-1080 PNS stream
     /// *and* every roster channel's kind-1081 SNS stream — and fan freshly-authored
     /// envelopes out to the private relays they have not been seen on yet, via
-    /// [`Session::publish`].
+    /// [`Session::publish`]. `keyshare_keys` are the kind-1082 rumors this frame's
+    /// roster poll reported, whose own gift-wraps are fanned alongside them.
     ///
     /// The seen-on check ([`fan_out_unseen_notes_with`]) keeps an envelope pulled
     /// *in* by the inbound leg from being echoed straight back out, and the
     /// `is_rumor` guard keeps a sealed rumor from ever leaking in the clear. Even
     /// with no private relay we still drain the polls so a later-marked relay does
-    /// not receive an unbounded backlog dump in one frame. Fanning both streams
+    /// not receive an unbounded backlog dump in one frame. Fanning all three streams
     /// here is what lets an SNS app (notebook, headway) never publish its own
-    /// sealed 1081 envelopes — the host owns the whole private wire, both kinds and
-    /// both directions.
-    fn fan_out_local_envelopes(&self, ndb: &Ndb, session: &Session, urls: &[NormRelayUrl]) {
+    /// sealed envelopes or key-shares — the host owns the whole private wire, every
+    /// kind, both directions.
+    fn fan_out_local_envelopes(
+        &self,
+        ndb: &Ndb,
+        session: &Session,
+        urls: &[NormRelayUrl],
+        account: &Pubkey,
+        keyshare_keys: &[NoteKey],
+    ) {
         let mut keys = self
             .local_sub
             .map(|sub| ndb.poll_for_notes(sub, 64))
@@ -698,12 +791,62 @@ impl HostPrivateSync {
         if let Some(sns_sub) = self.local_sns_sub {
             keys.extend(ndb.poll_for_notes(sns_sub, 64));
         }
-        if keys.is_empty() || urls.is_empty() {
+        if (keys.is_empty() && keyshare_keys.is_empty()) || urls.is_empty() {
             return;
         }
         let Ok(txn) = Transaction::new(ndb) else {
             return;
         };
+        // A fresh key-share rumor of our own means a board was just sealed here (a
+        // GUI create) or arrived from our CLI through the embedded relay: fan the
+        // outer 1059 that carries it, so the *key* to the board reaches our other
+        // devices and not just its content.
+        keys.extend(own_selfshare_giftwraps(
+            ndb,
+            &txn,
+            account,
+            keyshare_keys.iter().copied(),
+        ));
+        if keys.is_empty() {
+            return;
+        }
+        fan_keys_to_relays(session, ndb, &txn, &keys, urls);
+    }
+
+    /// Fan the outer kind-1059 gift-wrap of every self-share already in ndb that the
+    /// private relays haven't seen. The gift-wrap twin of
+    /// [`fan_out_channel_catchup`](Self::fan_out_channel_catchup): the live
+    /// [`roster_sub`](Self::roster_sub) only reports 1082s committed *after* it was
+    /// opened, so a board sealed on a previous run — or by the `headway`/`notebook`
+    /// CLI while the app was closed, which lands the wrap in ndb via the embedded
+    /// relay — predates it and would never have its key fanned. Without this, only
+    /// boards created while the app happened to be running with a private relay
+    /// marked would ever become joinable elsewhere.
+    ///
+    /// Run only on a declaration change (account / relay set / roster), and the
+    /// seen-on check ([`fan_out_unseen_notes_with`]) skips wraps the relays already
+    /// hold, so a re-run costs only the query.
+    fn fan_out_selfshare_catchup(
+        &self,
+        ndb: &Ndb,
+        session: &Session,
+        urls: &[NormRelayUrl],
+        account: &Pubkey,
+    ) {
+        if urls.is_empty() {
+            return;
+        }
+        let Ok(txn) = Transaction::new(ndb) else {
+            return;
+        };
+        let Ok(results) = ndb.query(&txn, &[keyshare_filter()], 500) else {
+            return;
+        };
+        let keys =
+            own_selfshare_giftwraps(ndb, &txn, account, results.iter().map(|res| res.note_key));
+        if keys.is_empty() {
+            return;
+        }
         fan_keys_to_relays(session, ndb, &txn, &keys, urls);
     }
 
@@ -1586,6 +1729,189 @@ mod tests {
         );
 
         relay.shutdown();
+    }
+
+    // ===== outbound gift-wrap (self-share) leg =====
+
+    /// The kind-1059 gift-wrap's event id, read off its wire JSON.
+    fn giftwrap_id(giftwrap_json: &str) -> [u8; 32] {
+        let wrap: serde_json::Value = serde_json::from_str(giftwrap_json).expect("giftwrap json");
+        let mut id = [0u8; 32];
+        hex::decode_to_slice(wrap["id"].as_str().expect("giftwrap id"), &mut id)
+            .expect("hex giftwrap id");
+        id
+    }
+
+    /// The outbound gift-wrap leg end to end: a board sealed on device A becomes
+    /// **joinable** on a fresh device B that only ever talks to the private relay A
+    /// fans out to.
+    ///
+    /// Device A mints a self-share (as `headway::store::create_shared_board` does)
+    /// and seals the board definition into the channel; its host fans out both the
+    /// kind-1059 gift-wrap carrying the *key* and the kind-1081 envelope carrying
+    /// the *content*. Device B starts with nothing but the account key. Its inbound
+    /// gift-wrap pull lives at the account level (`accounts.rs`'s `#p`-keyed
+    /// `giftwrap_live_filter`), so that one sub is modelled here; everything after
+    /// it is B's own host — nostrdb peels the key-share, the roster grows, the
+    /// channel is derived and registered, the 1081 backfills and unseals.
+    ///
+    /// Before this leg existed nothing ever carried a 1059 to a private relay, so
+    /// B's roster stayed empty forever and the board was invisible off-device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_fans_selfshare_so_sealed_board_joins_on_another_device() {
+        use nostrdb_net::relay::server;
+        use std::time::Duration;
+
+        let root = test_root(0x88);
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
+
+        // The shared private relay over its own opaque db: never seeded with the
+        // account key or the root, so it only ever holds the gift-wrap and the
+        // envelope, never anything it could read out of them.
+        let (_relay_dir, relay_ndb) = test_ndb();
+        let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
+            .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+
+        // Device A: mint the board's self-share — a key-share we author, addressed
+        // to ourselves — and let nostrdb peel it into the roster. This happens
+        // *before* the host exists, the real ordering for a board sealed on a
+        // previous run or by the CLI, so only the catch-up leg can fan it.
+        let (_a_dir, mut ndb_a) = test_ndb();
+        ndb_a.add_key(&secret);
+        ingest_giftwrap(
+            &ndb_a,
+            &gift_wrapped_keyshare(&account, &account.pubkey, &root, Some("30619:owner:board")),
+        );
+        wait_roots(&ndb_a, &account.pubkey, 1).await;
+
+        // One pump registers the root off the roster so nostrdb unseals the channel.
+        let mut host_a = HostPrivateSync::new();
+        host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, &[]);
+
+        // Seal the board definition into the channel, as `create_shared_board` does.
+        let definition = NoteBuilder::new()
+            .kind(1)
+            .content("sealed board definition")
+            .created_at(HOST_TEST_TS)
+            .sign(&secret)
+            .build()
+            .expect("definition rumor");
+        let definition_id = *definition.id();
+        let envelope = nostrdb_net::sns::wrap_rumor(
+            &sns_keys,
+            &account,
+            &definition.json().expect("json"),
+            HOST_TEST_TS,
+        )
+        .expect("sns envelope");
+        ndb_a
+            .process_event(&format!(
+                "[\"EVENT\",\"_local\",{}]",
+                envelope.json().expect("envelope json")
+            ))
+            .expect("local envelope ingest");
+
+        // Device B: a fresh cache holding only the account key, plus the
+        // account-level gift-wrap inbox sub against the same private relay.
+        let (_b_dir, mut ndb_b) = test_ndb();
+        ndb_b.add_key(&secret);
+        let giftwrap_filter = Filter::new()
+            .kinds([1059])
+            .pubkeys([account.pubkey.bytes()])
+            .build();
+        let inbox_b = Session::new(ndb_b.clone());
+        inbox_b.set_subscription(
+            "test/giftwrap-inbox",
+            url.to_string(),
+            vec![giftwrap_filter.clone()],
+            vec![giftwrap_filter],
+        );
+        let mut host_b = HostPrivateSync::new();
+
+        let mut joined = false;
+        for _ in 0..500 {
+            host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, &[]);
+            host_b.update(&mut ndb_b, &account.pubkey, &secret, relays, &[]);
+            if ndb_has(&ndb_b, &definition_id) {
+                joined = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            joined,
+            "A should fan its self-share gift-wrap so B joins the channel and \
+             unseals the board definition"
+        );
+        assert!(
+            registered_roots(&ndb_b, &account.pubkey).contains(&root),
+            "B's roster should have grown from the fanned-out gift-wrap"
+        );
+
+        inbox_b.drop_subscription("test/giftwrap-inbox");
+        relay.shutdown();
+    }
+
+    /// The scoping guard: of two gift-wraps addressed to us, only the one whose
+    /// peeled key-share *we* authored is fanned.
+    ///
+    /// The stranger's wrap is both a genuine co-member invite (not ours to
+    /// republish) and the shape a spammer would use. Fanning everything `#p`-tagged
+    /// to us would make notedeck a write-amplifier into our own private relay, and
+    /// the seen-on check would not catch it: a wrap pulled from a *public*
+    /// accounts-read relay has seen-on = that public relay, so it looks unsent to
+    /// the private one. Scoping on the peeled rumor's author closes that off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn foreign_giftwrap_addressed_to_us_is_not_fanned() {
+        let (_dir, ndb) = test_ndb();
+        let account = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        ndb.add_key(&account.secret_key.secret_bytes());
+
+        let ours = gift_wrapped_keyshare(
+            &account,
+            &account.pubkey,
+            &test_root(0x88),
+            Some("30619:us:mine"),
+        );
+        let theirs = gift_wrapped_keyshare(
+            &stranger,
+            &account.pubkey,
+            &test_root(0x99),
+            Some("30619:them:theirs"),
+        );
+        ingest_giftwrap(&ndb, &ours);
+        ingest_giftwrap(&ndb, &theirs);
+        // Both peel into the roster — the roster keeps a co-member's share, the
+        // outbound leg does not.
+        wait_roots(&ndb, &account.pubkey, 2).await;
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let rumors = ndb.query(&txn, &[keyshare_filter()], 500).expect("query");
+        let fanned_ids: Vec<[u8; 32]> = own_selfshare_giftwraps(
+            &ndb,
+            &txn,
+            &account.pubkey,
+            rumors.iter().map(|res| res.note_key),
+        )
+        .iter()
+        .map(|key| *ndb.get_note_by_key(&txn, *key).expect("wrap note").id())
+        .collect();
+
+        assert_eq!(
+            fanned_ids,
+            vec![giftwrap_id(&ours)],
+            "only the gift-wrap of the self-share we minted is fanned"
+        );
+        assert!(
+            !fanned_ids.contains(&giftwrap_id(&theirs)),
+            "a stranger's gift-wrap must never be amplified into our private relay"
+        );
     }
 
     /// A registered root derives a stable team pubkey and a well-formed envelope
