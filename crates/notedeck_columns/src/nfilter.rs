@@ -1,76 +1,48 @@
-//! A querystring encoding of a single NIP-01 filter.
+//! The **nfilter** encoding of a single NIP-01 filter as a query string.
 //!
-//! This module is the reference implementation of the format; the written spec
-//! lives in damus-api's `docs/`, beside `nip-http-req.md`. What follows is the
-//! set of properties this implementation actually relies on, so the two cannot
-//! drift silently.
+//! This module is the reference implementation. The format itself is specified
+//! in `docs/nfilter.md` in [damus-api][api], which is the normative document —
+//! when the two disagree, the spec is right and this is a bug. What follows is
+//! only what an implementation has to decide that the format does not.
 //!
-//! # Shape
+//! [api]: https://github.com/damus-io/api
 //!
-//! `key=value` pairs joined with `&`, e.g. `#t=bitcoin,nostr&kinds=1&limit=100`.
-//! The keys are the NIP-01 filter attribute names — `ids`, `authors`, `kinds`,
-//! `since`, `until`, `limit` — plus `search` and `relays`, which NIP-01 proper
-//! does not define, and `#x` for a single-letter tag filter.
+//! # Shape, in one line
 //!
-//! # Canonical form
+//! `key=value` pairs joined with `&`, values comma-joined, everything sorted:
+//! `#t=bitcoin,nostr&kinds=1&limit=100`. Keys are NIP-01's attribute names plus
+//! `search` and `relays`, and `#x` for a single-letter tag filter.
 //!
-//! The encoding is canonical so that the text can be used directly as a cache
-//! or identity key: keys are sorted, and each array value is sorted and
-//! comma-joined. Two filters with the same constraints therefore produce
-//! byte-identical text.
+//! # Typing tag elements, and the wart that follows
 //!
-//! Sorting array values is only sound because **NIP-01 filter arrays are sets**
-//! — order carries no meaning and multiplicity is not observable. An
-//! implementer who preserves the caller's order instead will produce a
-//! different string for the same filter and break the canonical property.
+//! The spec is explicit that an element is *text* and that the encoding does
+//! not distinguish a 32-byte id from a string of the same 64 characters —
+//! NIP-01 does not distinguish them either. nostrdb's filter model does, so
+//! this decoder has to make the choice the format declines to make, and the
+//! spec requires such a decoder to document its rule. This is that rule:
 //!
-//! # Tag filters
+//! > A tag list decodes to ids if **every** member is 64 hex characters, and to
+//! > strings otherwise.
 //!
-//! A tag filter is keyed `#x`, matching NIP-01's own JSON key. `#` is part of
-//! the key, not an encoding artifact — it is escaped as `%23` at the URL
-//! boundary because `#` would otherwise start the fragment. The key is `#`
-//! followed by exactly one character; `#tt` is not a spelling of `#t`.
+//! It is a property of the whole list rather than of each member because
+//! nostrdb requires the members of one field to share a type; a per-member
+//! choice builds a mixed field, which nostrdb rejects outright. It cannot be
+//! taken from the first member either — which is what nostrdb's own JSON filter
+//! parser does — because canonical form sorts the members, so "first" is not
+//! stable information about what the encoder meant.
 //!
-//! # Element types, and a known ambiguity
+//! The consequence is the wart the spec names: **a `#d` value that is genuinely
+//! a string and happens to be 64 hex characters decodes as an id**, and does
+//! not survive a round trip. Pinned by `test_tag_str_64hex_does_not_roundtrip`.
 //!
-//! nostrdb types the members of a tag filter as either 32-byte ids or strings,
-//! and requires the members of one field to share a type. This encoding has no
-//! syntax for that distinction: an id and a string holding the same 64 hex
-//! characters encode to identical text. So the decoder infers it — a tag list
-//! is a list of ids only if *every* member is 64 hex characters, and a list of
-//! strings otherwise.
+//! The test is applied to the raw, still-encoded member, so percent-encoding
+//! any one character of a value forces it to decode as the string it is.
 //!
-//! The inference is a property of the whole list rather than of each member on
-//! purpose. Deciding per-member would produce a mixed-type field, which nostrdb
-//! rejects outright; deciding from the first member (which is what nostrdb's
-//! own JSON filter parser does) would depend on order, and this encoding sorts.
+//! # What this implementation cannot encode
 //!
-//! What survives is a real gap: **a tag value that is genuinely a string and
-//! happens to be 64 hex characters decodes as an id.** A `#d` tag can hold such
-//! a value. Closing it needs the *encoder* to mark the distinction, which is a
-//! change to the format and therefore a decision for the spec, not for this
-//! implementation — see `test_tag_str_64hex_does_not_roundtrip`, which pins the
-//! current behavior so that a format change has to update it deliberately.
-//!
-//! Note that the 64-hex test is applied to the raw, still-percent-encoded
-//! member. Percent-encoding any one character of a value therefore already
-//! forces it to decode as a string, which is available as the escape hatch if
-//! the spec wants one.
-//!
-//! # Percent-encoding
-//!
-//! String values (tag members, `search`, `relays`) are percent-encoded with the
-//! unreserved set of RFC 3986, so `,`, `&` and `=` inside a value cannot be
-//! confused with the separators around it. Spaces become `%20`, never `+`, and
-//! the decoder does not treat `+` as a space. A consumer that carries this text
-//! as an `application/x-www-form-urlencoded` body must not run form decoding
-//! over it first, or a literal `+` in a value will be corrupted.
-//!
-//! # What the format cannot express
-//!
-//! - **A union.** [`filter_to_querystring`] takes one filter, but a NIP-01 REQ
-//!   is a list of them, and [`crate::timeline::kind::FilterVec`] keeps a `Vec`.
-//!   Every consumer invents its own way to carry the list.
+//! - **A union.** [`filter_to_querystring`] takes one filter, which is the
+//!   format's own decision, but [`crate::timeline::kind::FilterVec`] keeps a
+//!   `Vec` and carries the list itself.
 //! - **nostrdb custom predicates.** A filter carrying a `custom` callback is
 //!   not serializable at all, and the encoder drops it silently, which yields a
 //!   *wider* filter than the original. No caller does this today; making it
@@ -89,6 +61,7 @@ pub fn filter_to_querystring(filter: &Filter) -> String {
             FilterField::Ids(ids) => {
                 let mut arr: Vec<String> = ids.into_iter().map(hex::encode).collect();
                 arr.sort();
+                arr.dedup();
                 if !arr.is_empty() {
                     pairs.push(("ids".to_string(), arr.join(",")));
                 }
@@ -96,6 +69,7 @@ pub fn filter_to_querystring(filter: &Filter) -> String {
             FilterField::Authors(authors) => {
                 let mut arr: Vec<String> = authors.into_iter().map(hex::encode).collect();
                 arr.sort();
+                arr.dedup();
                 if !arr.is_empty() {
                     pairs.push(("authors".to_string(), arr.join(",")));
                 }
@@ -103,6 +77,7 @@ pub fn filter_to_querystring(filter: &Filter) -> String {
             FilterField::Kinds(kinds) => {
                 let mut arr: Vec<u64> = kinds.into_iter().collect();
                 arr.sort();
+                arr.dedup();
                 if !arr.is_empty() {
                     let val = arr
                         .iter()
@@ -126,6 +101,7 @@ pub fn filter_to_querystring(filter: &Filter) -> String {
                     }
                 }
                 arr.sort();
+                arr.dedup();
                 if !arr.is_empty() {
                     pairs.push((key, arr.join(",")));
                 }
@@ -148,6 +124,7 @@ pub fn filter_to_querystring(filter: &Filter) -> String {
                     .map(|s| urlencoding::encode(s).into_owned())
                     .collect();
                 arr.sort();
+                arr.dedup();
                 if !arr.is_empty() {
                     pairs.push(("relays".to_string(), arr.join(",")));
                 }
@@ -187,6 +164,12 @@ pub fn filter_from_querystring(qs: &str) -> Option<Filter> {
     for pair in qs.split('&') {
         let (key, val) = pair.split_once('=')?;
 
+        // An empty value reads as either "matches nothing" or "no constraint",
+        // and those two answers differ by the whole store.
+        if val.is_empty() {
+            return None;
+        }
+
         // A repeated key is ambiguous — first-wins, last-wins and union are all
         // defensible readings — so reject rather than silently pick one.
         if seen.contains(&key) {
@@ -213,7 +196,7 @@ pub fn filter_from_querystring(qs: &str) -> Option<Filter> {
                 builder.end_field();
             }
             "search" => {
-                let decoded = urlencoding::decode(val).ok()?;
+                let decoded = decode_element(val)?;
                 builder = builder.search(&decoded);
             }
             "since" => {
@@ -228,7 +211,7 @@ pub fn filter_from_querystring(qs: &str) -> Option<Filter> {
             "relays" => {
                 builder.start_relays_field().ok()?;
                 for relay in val.split(',') {
-                    let decoded = urlencoding::decode(relay).ok()?;
+                    let decoded = decode_element(relay)?;
                     builder.add_str_element(&decoded).ok()?;
                 }
                 builder.end_field();
@@ -243,14 +226,55 @@ pub fn filter_from_querystring(qs: &str) -> Option<Filter> {
     Some(builder.build())
 }
 
-/// The single character of a `#x` tag key, or `None` if `key` is not one.
+/// The single letter of a `#x` tag key, or `None` if `key` is not one.
 ///
-/// NIP-01 tag filters are single-letter, so `#tt` is rejected rather than read
-/// as `#t` with trailing junk.
+/// NIP-01 tag filters are one letter, so `#tt` is rejected rather than read as
+/// `#t` with trailing junk, and `#1` is rejected rather than quietly becoming a
+/// filter on a tag nobody indexes.
 fn tag_key_char(key: &str) -> Option<char> {
     let mut chars = key.strip_prefix('#')?.chars();
-    let tag_char = chars.next()?;
+    let tag_char = chars.next().filter(char::is_ascii_alphabetic)?;
     chars.next().is_none().then_some(tag_char)
+}
+
+/// Percent-decode one element.
+///
+/// [`urlencoding::decode`] is not usable here: it passes a malformed escape
+/// through as the literal text `%zz`, where the format requires rejecting it,
+/// and it does not read `+` as a space, which the format requires because it
+/// spells itself `application/x-www-form-urlencoded`. An encoder never emits a
+/// bare `+` — a literal plus is not unreserved and so encodes as `%2B` — so
+/// this only ever differs from plain percent-decoding on input some other
+/// encoder produced.
+fn decode_element(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' => {
+                // `u8::from_str_radix` would accept a leading sign, so the two
+                // digits are checked rather than left to the parse.
+                let digits = s.get(i + 1..i + 3)?;
+                if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return None;
+                }
+                out.push(u8::from_str_radix(digits, 16).ok()?);
+                i += 3;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+
+    String::from_utf8(out).ok()
 }
 
 /// A 32-byte id in the 64-character hex form the encoder emits.
@@ -286,7 +310,7 @@ fn add_tag_field(builder: &mut FilterBuilder, tag_char: char, val: &str) -> Opti
             let id: &[u8; 32] = bytes.as_slice().try_into().ok()?;
             builder.add_id_element(id).ok()?;
         } else {
-            let decoded = urlencoding::decode(elem).ok()?;
+            let decoded = decode_element(elem)?;
             builder.add_str_element(&decoded).ok()?;
         }
     }
@@ -528,5 +552,75 @@ mod tests {
     fn test_duplicate_key_is_rejected() {
         assert!(filter_from_querystring("kinds=1&kinds=2").is_none());
         assert!(filter_from_querystring("#t=a&#t=b").is_none());
+    }
+
+    /// An empty value reads as either "matches nothing" or "no constraint",
+    /// and the two differ by the entire store.
+    #[test]
+    fn test_empty_value_is_rejected() {
+        for qs in ["kinds=", "#t=", "search=", "relays=", "ids=", "limit="] {
+            assert!(
+                filter_from_querystring(qs).is_none(),
+                "expected {qs} to be rejected"
+            );
+        }
+    }
+
+    /// Tag keys are one *letter*. `#1` is not a tag filter.
+    #[test]
+    fn test_non_letter_tag_key_is_rejected() {
+        assert!(filter_from_querystring("#1=x").is_none());
+        assert!(filter_from_querystring("#-=x").is_none());
+        assert!(filter_from_querystring("#=x").is_none());
+    }
+
+    /// `+` is a space, as the media type the format names defines it.
+    #[test]
+    fn test_plus_decodes_as_space() {
+        let decoded = filter_from_querystring("search=hello+world").expect("decode failed");
+        assert_eq!(filter_to_querystring(&decoded), "search=hello%20world");
+    }
+
+    /// A malformed escape must be refused, not passed through as literal text.
+    #[test]
+    fn test_malformed_escape_is_rejected() {
+        for qs in ["#t=%zz", "#t=%2", "#t=%", "#t=%+2", "search=%zz"] {
+            assert!(
+                filter_from_querystring(qs).is_none(),
+                "expected {qs} to be rejected"
+            );
+        }
+    }
+
+    /// An escape that decodes to something that is not UTF-8 is refused.
+    #[test]
+    fn test_non_utf8_escape_is_rejected() {
+        assert!(filter_from_querystring("#t=%FF").is_none());
+    }
+
+    /// Canonical form deduplicates set-valued fields: "a repeat contributes
+    /// nothing", so it must not contribute a second spelling of one query.
+    #[test]
+    fn test_canonical_form_deduplicates() {
+        let filter = Filter::new()
+            .kinds([7, 1, 7])
+            .tags(["nostr", "bitcoin", "nostr"], 't')
+            .build();
+
+        assert_eq!(filter_to_querystring(&filter), "#t=bitcoin,nostr&kinds=1,7");
+    }
+
+    /// A decoder must accept a non-canonical spelling and read it as the query
+    /// it denotes — being non-canonical costs a cache miss, not an error.
+    #[test]
+    fn test_non_canonical_input_is_accepted() {
+        // unsorted pairs, unsorted elements, lowercase escapes, leading zeros
+        let decoded =
+            filter_from_querystring("limit=010&kinds=7,1&#t=nostr,%62itcoin").expect("decode");
+
+        assert_eq!(
+            filter_to_querystring(&decoded),
+            "#t=bitcoin,nostr&kinds=1,7&limit=10"
+        );
     }
 }
