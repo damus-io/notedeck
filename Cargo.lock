@@ -5582,6 +5582,7 @@ dependencies = [
  "bytemuck",
  "chrono",
  "claude-agent-sdk-rs",
+ "crossbeam-channel",
  "dashmap",
  "dirs",
  "eframe",
