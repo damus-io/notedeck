@@ -1,11 +1,12 @@
 //! The **nfilter** encoding of a single NIP-01 filter as a query string.
 //!
 //! This module is the reference implementation. The format itself is specified
-//! in `docs/nfilter.md` in [damus-api][api], which is the normative document —
-//! when the two disagree, the spec is right and this is a bug. What follows is
-//! only what an implementation has to decide that the format does not.
+//! by [DIP-05] in [damus-io/dips][dips], which is the normative document — when
+//! the two disagree, the spec is right and this is a bug. What follows is only
+//! what an implementation has to decide that the format does not.
 //!
-//! [api]: https://github.com/damus-io/api
+//! [DIP-05]: https://github.com/damus-io/dips/blob/master/05.md
+//! [dips]: https://github.com/damus-io/dips
 //!
 //! # Shape, in one line
 //!
@@ -15,11 +16,11 @@
 //!
 //! # Typing tag elements, and the wart that follows
 //!
-//! The spec is explicit that an element is *text* and that the encoding does
-//! not distinguish a 32-byte id from a string of the same 64 characters —
-//! NIP-01 does not distinguish them either. nostrdb's filter model does, so
-//! this decoder has to make the choice the format declines to make, and the
-//! spec requires such a decoder to document its rule. This is that rule:
+//! DIP-05 is explicit that an element is *text* and that the encoding does not
+//! distinguish a 32-byte id from a string of the same 64 characters — NIP-01
+//! does not distinguish them either. nostrdb's filter model does, so this
+//! decoder has to make the choice the format declines to make, and the spec
+//! requires such a decoder to document its rule. This is that rule:
 //!
 //! > A tag list decodes to ids if **every** member is 64 hex characters, and to
 //! > strings otherwise.
@@ -464,8 +465,8 @@ mod tests {
     /// A `#d` value that is genuinely a string but happens to be 64 hex
     /// characters comes back as a 32-byte id, because the encoding has no
     /// syntax that distinguishes the two. Closing this needs the encoder to
-    /// mark the difference, which is a format change and so a decision for the
-    /// spec — see the module documentation. Until then this asserts what
+    /// mark the difference, which is a format change and so a decision for
+    /// DIP-05 — see the module documentation. Until then this asserts what
     /// actually happens rather than what we would like to happen.
     #[test]
     fn test_tag_str_64hex_does_not_roundtrip() {
