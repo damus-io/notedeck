@@ -384,10 +384,12 @@ async fn run() -> Result<()> {
     if let Some(relay) = relay.as_mut() {
         pull_giftwraps(relay, &ndb, &author).await;
     }
-    // Join every shared board we hold a key for. `register_teams` re-peels any
-    // envelope that arrived before its root was registered, so it is safe for this
-    // to run after the sync above rather than before it.
-    let roster = Roster::load(&ndb, &author);
+    // Join every shared board we hold a key for. Registering a root re-peels any
+    // envelope that arrived before it, so it is safe for this to run after the sync
+    // above rather than before it. The registry is held across both loads below so
+    // a root is only ever handed to nostrdb once (see `teams::RootRegistry`).
+    let mut root_registry = teams::RootRegistry::default();
+    let roster = Roster::load(&ndb, &author, &mut root_registry);
 
     // Sync each joined board's kind-1081 SNS envelopes (see `sync_envelopes`).
     // Runs after `Roster::load` has registered the channel roots, so every pulled
@@ -420,7 +422,7 @@ async fn run() -> Result<()> {
         && let Some(relay) = relay.as_mut()
         && recover_derived_board(relay, &ndb, &author, secret, &cli.board).await
     {
-        roster = Roster::load(&ndb, &author);
+        roster = Roster::load(&ndb, &author, &mut root_registry);
     }
 
     let board = cli.board;
@@ -944,9 +946,9 @@ impl Roster {
     /// sealed edits are ingested as envelopes and only become board events once
     /// nostrdb peels them, so an unregistered root means a write we can't even
     /// read back ourselves.
-    fn load(ndb: &Ndb, author: &Pubkey) -> Self {
+    fn load(ndb: &Ndb, author: &Pubkey, registry: &mut teams::RootRegistry) -> Self {
         let teams = teams::teams_from_ndb(ndb, author);
-        teams::register_teams(ndb, &teams);
+        registry.register(ndb, &teams);
         Self {
             teams,
             author: *author,

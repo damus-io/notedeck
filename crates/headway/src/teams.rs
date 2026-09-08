@@ -18,8 +18,9 @@
 //! rumors back — so joined boards survive a restart (the rumors persist) and ride
 //! the account's NIP-59 inbox across devices, with no per-device config file. The
 //! `team_root`s themselves are ephemeral in nostrdb (registered keys don't survive
-//! a restart), so [`register_teams`] re-registers the derived roster each boot,
-//! mirroring `add_key` for account keys.
+//! a restart), so [`RootRegistry`] re-registers the derived roster each boot,
+//! mirroring `add_key` for account keys. It is a registry rather than a bare call
+//! because nostrdb's root table is fixed-size and does not dedup — see there.
 
 use nostrdb::{Filter, Ndb, Transaction};
 use nostrdb_net::Pubkey;
@@ -204,20 +205,53 @@ pub fn board_channel_pubkeys(teams: &[Team], board_addr: &str) -> Vec<Pubkey> {
         .collect()
 }
 
-/// Register every joined `team_root` with nostrdb so it auto-unwraps that
-/// channel's kind-1081 envelopes, then run one [`Ndb::process_sns`] catch-up peel
-/// for envelopes that were ingested before the root was registered. Idempotent —
-/// call on boot and after every account switch (mirrors `add_key`).
-pub fn register_teams(ndb: &Ndb, teams: &[Team]) {
-    let mut registered = false;
-    for team in teams {
-        if let Some(root) = team.root_bytes() {
+/// The team roots already handed to nostrdb this session, so each is registered
+/// exactly once.
+///
+/// Registering a root twice is **not** free. nostrdb keeps its registered roots in
+/// a fixed-size per-ingester-thread array (`MAX_INGESTER_KEYS`, 128) and
+/// `ndb_add_team_root` appends to it unconditionally — it does not dedup. Callers
+/// re-derive the roster and re-register *all* of it whenever it might have changed
+/// (the egui app does so on every arriving kind-1082), so with a couple of dozen
+/// boards those repeats fill the array within a handful of rounds. Once it is full
+/// every genuinely new root is dropped **silently**: `add_team_root` reports
+/// whether the *dispatch* succeeded, not whether the key was accepted. The board
+/// is then listed from its key-share while its kind-1081 envelopes are never
+/// peeled, so its shared fold stays empty until the process restarts.
+///
+/// The registration is process-lifetime (roots don't survive a restart), so a
+/// registry held for the life of the front end matches it exactly. Hold one per
+/// process and register through it rather than calling [`Ndb::add_team_root`]
+/// directly.
+#[derive(Default)]
+pub struct RootRegistry {
+    registered: std::collections::HashSet<[u8; 32]>,
+}
+
+impl RootRegistry {
+    /// Register every not-yet-registered joined `team_root` with nostrdb so it
+    /// auto-unwraps that channel's kind-1081 envelopes, then run one
+    /// [`Ndb::process_sns`] catch-up peel for envelopes that were ingested before
+    /// the root was registered. Idempotent — call on boot, after every account
+    /// switch, and whenever the roster may have grown (mirrors `add_key`).
+    ///
+    /// The catch-up walk is only paid when a root was actually new, which is now
+    /// what that means: with the repeats filtered out it runs on a real join
+    /// instead of on every rebuild of an unchanged roster.
+    pub fn register(&mut self, ndb: &Ndb, teams: &[Team]) {
+        let mut registered = false;
+        for team in teams {
+            let Some(root) = team.root_bytes() else {
+                continue;
+            };
+            if !self.registered.insert(root) {
+                continue;
+            }
             registered |= ndb.add_team_root(&root);
         }
-    }
-    // Only pay the catch-up walk when a root was actually (re-)registered.
-    if registered && let Ok(txn) = Transaction::new(ndb) {
-        ndb.process_sns(&txn);
+        if registered && let Ok(txn) = Transaction::new(ndb) {
+            ndb.process_sns(&txn);
+        }
     }
 }
 
@@ -279,6 +313,94 @@ mod tests {
                 Instant::now() < deadline,
                 "roster never reached {n} team(s)"
             );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A `Team` for `root` with a throwaway coordinate — enough for
+    /// [`RootRegistry::register`], which only reads the root.
+    fn test_team(root: [u8; 32]) -> Team {
+        Team {
+            team_root: hex::encode(root),
+            board_addr: format!("30619:owner:b{}", root[31]),
+            epoch: None,
+            shared_at: 1,
+        }
+    }
+
+    /// A roster that grows one board at a time is re-registered whole each time.
+    /// Those repeats must not reach nostrdb, or a board joined late in a long
+    /// session never peels its envelopes.
+    ///
+    /// nostrdb keeps registered roots in a 128-slot per-ingester-thread array and
+    /// `ndb_add_team_root` appends without deduping, so twenty boards arriving one
+    /// at a time used to spend 1+2+…+20 = 210 of those slots. Once it filled, every
+    /// later root was dropped **silently** — `add_team_root` reports the dispatch,
+    /// not the acceptance — leaving the board in the roster (its key-share is
+    /// readable) with a shared fold that never fills.
+    ///
+    /// The last channel's envelope is ingested *before* its root is registered, so
+    /// this covers the [`Ndb::process_sns`] catch-up peel — the order a board sealed
+    /// on another device actually arrives in.
+    #[test]
+    fn late_board_peels_after_a_roster_grew_one_board_at_a_time() {
+        let (_dir, ndb) = ndb();
+        let author = FullKeypair::generate();
+        let mut registry = RootRegistry::default();
+
+        // Twenty is well past where re-registering the whole roster each time
+        // overruns nostrdb's table.
+        let mut teams: Vec<Team> = Vec::new();
+        for i in 0..20u8 {
+            teams.push(test_team(test_root(i)));
+            registry.register(&ndb, &teams);
+        }
+
+        // A board joined last, whose envelope is already in ndb — a sealed edit that
+        // reached this cache before its key-share did.
+        let root = test_root(200);
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
+        let rumor = nostrdb::NoteBuilder::new()
+            .kind(1)
+            .content("late board definition")
+            .created_at(1)
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("rumor");
+        let inner_id = *rumor.id();
+        let envelope =
+            nostrdb_net::sns::wrap_rumor(&sns_keys, &author, &rumor.json().expect("rumor json"), 1)
+                .expect("sns envelope");
+        let envelope_id = *envelope.id();
+        ndb.process_event(&format!(
+            "[\"EVENT\",\"e\",{}]",
+            envelope.json().expect("envelope json")
+        ))
+        .expect("ingest envelope");
+        wait_for_note(&ndb, &envelope_id, "envelope never landed");
+
+        teams.push(test_team(root));
+        registry.register(&ndb, &teams);
+        wait_for_note(
+            &ndb,
+            &inner_id,
+            "a board joined after the roster grew never peeled its envelope: \
+             nostrdb's root table was full of duplicate registrations",
+        );
+    }
+
+    /// Block until `id` is queryable in `ndb` (ingest and the catch-up peel are
+    /// both async), or fail with `msg`.
+    fn wait_for_note(ndb: &Ndb, id: &[u8; 32], msg: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Transaction::new(ndb)
+                .ok()
+                .is_some_and(|txn| ndb.get_note_by_id(&txn, id).is_ok())
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{msg}");
             std::thread::sleep(Duration::from_millis(20));
         }
     }

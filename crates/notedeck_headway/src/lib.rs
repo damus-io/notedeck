@@ -71,6 +71,14 @@ pub struct Headway {
     /// keeps sealing edits — and stays in the roster — without a window where an
     /// edit would be written plaintext and then excluded from the shared fold.
     pending_teams: Vec<teams::Team>,
+    /// The team roots already handed to nostrdb this session. [`set_roster`] runs on
+    /// every arriving key-share and re-registers the *whole* roster, and nostrdb's
+    /// root table is fixed-size and does not dedup, so those repeats have to be
+    /// filtered here or a board joined late in a long session stops peeling (see
+    /// [`teams::RootRegistry`]).
+    ///
+    /// [`set_roster`]: Headway::set_roster
+    root_registry: teams::RootRegistry,
     /// Subscription to unwrapped kind-1082 key-share rumors, so a share that
     /// arrives while Headway is open is detected and accepted without a restart.
     keyshare_sub: Option<Subscription>,
@@ -111,6 +119,7 @@ impl Default for Headway {
             pending_open: None,
             teams: Vec::new(),
             pending_teams: Vec::new(),
+            root_registry: teams::RootRegistry::default(),
             keyshare_sub: None,
             pending_selfshares: Vec::new(),
             board_cache: Rc::new(RefCell::new(BoardCache::default())),
@@ -253,7 +262,7 @@ impl Headway {
                 .any(|t| t.team_root == p.team_root && t.board_addr == p.board_addr)
         });
         self.teams.extend(self.pending_teams.iter().cloned());
-        teams::register_teams(ndb, &self.teams);
+        self.root_registry.register(ndb, &self.teams);
     }
 
     /// Create a new team-of-one board (sealed + self-shared via

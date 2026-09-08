@@ -123,7 +123,7 @@ async fn main() {
     }
 
     let teams = teams::teams_from_ndb(&ndb, &author);
-    teams::register_teams(&ndb, &teams);
+    teams::RootRegistry::default().register(&ndb, &teams);
 
     let owner_prefix = format!("{}:{}:", event::KIND_BOARD as u64, author.hex());
     for team in &teams {
