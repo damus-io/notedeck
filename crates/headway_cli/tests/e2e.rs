@@ -785,3 +785,93 @@ fn offline_born_board_joins_from_a_fresh_cache_after_reconnect() {
         String::from_utf8_lossy(&again.stderr)
     );
 }
+
+/// A board whose kind-1059 self-share never reached the relay is still joinable
+/// from a fresh cache, because its channel root is *derivable* from its slug
+/// (headway:headway/rocket-group-ginger).
+///
+/// [`offline_born_board_joins_from_a_fresh_cache_after_reconnect`] covers the
+/// happy path where the self-share does flush. This covers the one that kept
+/// biting in production: the self-share was published somewhere the other device
+/// cannot read (an embedded relay), and the once-per-cache marker then records the
+/// root as flushed so it is never retried. The board's *content* is on the relay,
+/// the *key* is not, and every other device folds nothing.
+///
+/// Reproduced by pre-seeding the owner's `flushed_selfshares` marker with the
+/// board's derived root before the owner ever reconnects, which is exactly the
+/// state `damus-website` was found in. The reconnect then flushes the 1081
+/// content and deliberately not the 1059. A fresh cache therefore has no
+/// key-share to join from and must recover by deriving
+/// `derive_board_root(secret, slug)` itself.
+#[test]
+fn a_board_whose_selfshare_never_flushed_is_joinable_by_deriving_its_root() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+    let dead = "ws://127.0.0.1:1";
+
+    // Seed offline so the self-share lands only in the owner's cache.
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner = owner_dir.path().to_str().unwrap();
+    assert!(
+        headway(dead, owner, &["--board", "stranded", "seed"])
+            .status
+            .success(),
+        "offline seed"
+    );
+
+    // Pre-record the root as already-flushed, so the reconnect below pushes the
+    // board's content up but never its self-share — the production state.
+    let root = nostrdb_net::sns::derive_board_root(&SECRET, "stranded");
+    std::fs::write(
+        owner_dir.path().join("flushed_selfshares"),
+        format!("{}\n", hex::encode(root)),
+    )
+    .expect("write marker");
+
+    let reconnect = headway(&url, owner, &["--board", "stranded", "show"]);
+    assert!(
+        reconnect.status.success(),
+        "reconnect: {}",
+        String::from_utf8_lossy(&reconnect.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&reconnect.stderr).contains("own self-share"),
+        "the marker must suppress the self-share flush, or this test proves nothing:\n{}",
+        String::from_utf8_lossy(&reconnect.stderr)
+    );
+
+    // The fresh cache has no key-share for this board and must derive its way in.
+    let fresh_dir = tempfile::tempdir().expect("fresh dir");
+    let fresh = fresh_dir.path().to_str().unwrap();
+    let board = show_board_until_cols(&url, fresh, "stranded", 5);
+    assert_eq!(
+        board["title"], "stranded",
+        "a fresh cache must fold a board whose self-share never flushed: {board:#}"
+    );
+
+    // A slug that names no board must not be recovered into existence — the
+    // derivation is a lookup, not a create, so it stays a plain failure.
+    let missing = headway(&url, fresh, &["--board", "nosuchboard", "show"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&missing.stdout),
+        String::from_utf8_lossy(&missing.stderr),
+    );
+    assert!(
+        out.contains("no board 'nosuchboard'"),
+        "an unknown slug must still report no board, not be derived into one:\n{out}{err}"
+    );
+    assert!(
+        !err.contains("by deriving"),
+        "an unknown slug must not mint a key-share for a phantom channel:\n{err}"
+    );
+}

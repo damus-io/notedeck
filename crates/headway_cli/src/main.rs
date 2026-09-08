@@ -404,6 +404,25 @@ async fn run() -> Result<()> {
         flush_own_selfshares(relay, &ndb, &roster, &author, secret, cli.db.as_deref()).await;
     }
 
+    // Recover an own board named explicitly on the command line that the roster
+    // cannot see, by *deriving* its channel instead of waiting for a key-share.
+    // This is the whole reason `--board <slug>` now works on a second device even
+    // when the board's kind-1059 self-share never reached a relay this device
+    // reads (headway:headway/rocket-group-ginger): a root is
+    // `derive_board_root(secret, slug)` and is never randomly minted, so the slug
+    // alone reproduces the channel. Re-derive the roster afterwards so every
+    // downstream read and write routes through the recovered channel.
+    let mut roster = roster;
+    if cli.board_explicit
+        && let Some((secret, pk)) = cli.secret.as_ref()
+        && pk == &author
+        && load_board(&ndb, &roster, &author, &cli.board).is_none()
+        && let Some(relay) = relay.as_mut()
+        && recover_derived_board(relay, &ndb, &author, secret, &cli.board).await
+    {
+        roster = Roster::load(&ndb, &author);
+    }
+
     let board = cli.board;
     let board_explicit = cli.board_explicit;
     let as_json = cli.json;
@@ -1156,6 +1175,83 @@ async fn flush_own_selfshares(
         }
         Err(e) => eprintln!("warning: couldn't flush self-shares: {e}"),
     }
+}
+
+/// Join an own sealed board by *deriving* its channel from its slug, for the case
+/// where no kind-1059 key-share for it is in this cache.
+///
+/// `seed`/`migrate` derive a board's root as
+/// `derive_board_root(account secret, slug)` and never mint one randomly, exactly
+/// so the same slug converges to the same channel on every device. That makes the
+/// key-share redundant *for a board we own and can name*: the root is
+/// recomputable, so a device that never received the self-share can still
+/// register the channel, pull its envelopes and fold the board. The 1059 is still
+/// what *enumerates* boards — a slug nobody told us cannot be derived, so this
+/// only ever runs for a board named on the command line.
+///
+/// Returns whether the board now folds. On success it also self-shares the root,
+/// which both persists the join (the next run finds it in the roster with no
+/// derivation) and puts the missing 1059 back on the relay for the account's
+/// other devices. The self-share is deliberately emitted *after* the fold check,
+/// so a mistyped slug reports "no board" rather than minting a key-share and
+/// registering a phantom channel.
+async fn recover_derived_board(
+    relay: &mut nostrdb_net::relay::sync::Relay,
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+) -> bool {
+    let root = nostrdb_net::sns::derive_board_root(secret, board_id);
+    let Some(keys) = nostrdb_net::sns::derive_sns_keys(&root) else {
+        return false;
+    };
+    let team_pk = keys.team_keypair.pubkey;
+    // Register before pulling so arriving envelopes auto-unwrap; `process_sns`
+    // below still covers any that were already cached from an earlier run.
+    ndb.add_team_root(&root);
+
+    let filter = teams::envelope_filter(std::slice::from_ref(&team_pk));
+    let before = count_matching(ndb, &filter);
+    let wire_author = nostrdb_net::Pubkey::new(*team_pk.bytes());
+    if let Err(e) = nostrdb_net::relay::sync::reconcile_sync(
+        relay,
+        ndb,
+        &wire_author,
+        &[nostrdb_net::sns::SNS_ENVELOPE_KIND],
+        &filter,
+        &|_| false,
+    )
+    .await
+    {
+        eprintln!("warning: couldn't sync derived-board envelopes: {e}");
+    }
+    if count_matching(ndb, &filter) > before
+        && let Ok(txn) = Transaction::new(ndb)
+    {
+        ndb.process_sns(&txn);
+    }
+
+    let addr = event::board_address(author, board_id);
+    {
+        let Ok(txn) = Transaction::new(ndb) else {
+            return false;
+        };
+        if event::load_shared_board(ndb, &txn, &addr, &[team_pk]).is_none() {
+            return false;
+        }
+    }
+
+    // The board is real. Self-share the root so this device keeps the join and
+    // the account's other devices finally get the key-share they never saw.
+    let mut sink = Collect::default();
+    if store::share_board(ndb, secret, author, &addr, &root, &mut sink)
+        && let Err(e) = relay.publish(&sink.0).await
+    {
+        eprintln!("warning: couldn't publish the recovered self-share: {e}");
+    }
+    eprintln!("joined '{board_id}' by deriving its channel (no key-share was cached)");
+    true
 }
 
 /// Whether `team`'s coordinate folds an actual headway board (its sealed
