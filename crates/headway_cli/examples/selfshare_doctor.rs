@@ -11,8 +11,15 @@
 //! `--publish` it re-wraps one board's self-share and publishes it to `--relay`,
 //! which is the one-off remediation for a board whose 1059 never made it up.
 //!
+//! `--derive` works on a board this cache has *not* joined: a board root is
+//! `derive_board_root(account secret, slug)`, so the coordinate and team pubkey
+//! are recomputable from the slug alone, with no key-share present. That is what
+//! lets a second device diagnose — and join — a board whose self-share never
+//! reached a relay it reads.
+//!
 //! ```text
 //! cargo run -p headway_cli --example selfshare_doctor
+//! cargo run -p headway_cli --example selfshare_doctor -- --board noteguard --derive
 //! cargo run -p headway_cli --example selfshare_doctor -- \
 //!     --board damus-website --relay ws://relay.jb55.com --publish
 //! ```
@@ -48,12 +55,14 @@ async fn main() {
     let mut board: Option<String> = None;
     let mut relay_url = sync::DEFAULT_RELAY.to_string();
     let mut do_publish = false;
+    let mut derive = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--board" => board = args.next(),
             "--relay" => relay_url = args.next().unwrap_or(relay_url),
             "--publish" => do_publish = true,
+            "--derive" => derive = true,
             other => {
                 eprintln!("unknown argument: {other}");
                 std::process::exit(2);
@@ -82,6 +91,36 @@ async fn main() {
         }
     };
     ndb.add_key(&secret);
+
+    // `--derive` skips the roster entirely: recompute the root from the slug and
+    // report (or self-share) that channel even though no key-share for it is in
+    // this cache. `--publish` here both puts the 1059 on `--relay` and — because
+    // `share_board` ingests locally — joins the board on this device.
+    if derive {
+        let Some(slug) = board.as_deref() else {
+            eprintln!("--derive needs --board <slug>");
+            std::process::exit(2);
+        };
+        let root = nostrdb_net::sns::derive_board_root(&secret, slug);
+        let addr = event::board_address(&author, slug);
+        let team_pk = nostrdb_net::sns::derive_sns_keys(&root)
+            .map(|k| k.team_keypair.pubkey.hex())
+            .unwrap_or_else(|| "<no keys>".to_string());
+        println!("board       {slug} (derived)");
+        println!("  addr      {addr}");
+        println!("  root      {}", hex::encode(root));
+        println!("  team pk   {team_pk}");
+        if !do_publish {
+            return;
+        }
+        let mut sink = Collect::default();
+        if !store::share_board(&ndb, &secret, &author, &addr, &root, &mut sink) {
+            eprintln!("failed to wrap the self-share for '{slug}'");
+            std::process::exit(1);
+        }
+        publish_to(&relay_url, &sink.0, slug).await;
+        return;
+    }
 
     let teams = teams::teams_from_ndb(&ndb, &author);
     teams::register_teams(&ndb, &teams);
@@ -129,17 +168,24 @@ async fn main() {
         eprintln!("failed to re-wrap the self-share for '{slug}'");
         std::process::exit(1);
     }
-    let mut relay = match sync::Relay::connect(&relay_url).await {
+    publish_to(&relay_url, &sink.0, slug).await;
+}
+
+/// Send `frames` to `relay_url`, reporting what landed. Exits non-zero rather
+/// than returning on failure: a self-share that did not reach the relay is the
+/// whole bug this example exists to fix, so it must never look like success.
+async fn publish_to(relay_url: &str, frames: &[String], slug: &str) {
+    let mut relay = match sync::Relay::connect(relay_url).await {
         Ok(relay) => relay,
         Err(e) => {
             eprintln!("error: couldn't connect to {relay_url}: {e}");
             std::process::exit(1);
         }
     };
-    match relay.publish(&sink.0).await {
+    match relay.publish(frames).await {
         Ok(()) => println!(
             "published {} self-share(s) for '{slug}' to {relay_url}",
-            sink.0.len()
+            frames.len()
         ),
         Err(e) => {
             eprintln!("error: publish failed: {e}");
