@@ -46,7 +46,6 @@ impl View for DesktopSidePanel<'_> {
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SidePanelAction {
     Home,
-    Columns,
     ComposeNote,
     Search,
     ExpandSidePanel,
@@ -159,7 +158,6 @@ impl<'a> DesktopSidePanel<'a> {
                         ));
                         ui.add_space(8.0);
 
-                        let column_resp = ui.add(add_column_button());
                         let add_deck_resp = ui.add(add_deck_button(self.i18n));
 
                         let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
@@ -168,7 +166,6 @@ impl<'a> DesktopSidePanel<'a> {
                             home_resp,
                             compose_resp,
                             search_resp,
-                            column_resp,
                             settings_resp,
                             profile_resp,
                             wallet_resp,
@@ -183,7 +180,6 @@ impl<'a> DesktopSidePanel<'a> {
                 home_resp,
                 compose_resp,
                 search_resp,
-                column_resp,
                 settings_resp,
                 profile_resp,
                 wallet_resp,
@@ -283,11 +279,6 @@ impl<'a> DesktopSidePanel<'a> {
                 ))
             } else if search_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Search, search_resp))
-            } else if column_resp.clicked() {
-                Some(SidePanelResponse::new(
-                    SidePanelAction::Columns,
-                    column_resp,
-                ))
             } else if settings_resp.clicked() {
                 Some(SidePanelResponse::new(
                     SidePanelAction::Settings,
@@ -354,17 +345,6 @@ impl<'a> DesktopSidePanel<'a> {
                     // TODO: implement scroll to top when already on home route
                 } else {
                     router.route_to(home_route);
-                }
-            }
-            SidePanelAction::Columns => {
-                if router
-                    .routes()
-                    .iter()
-                    .any(|r| matches!(r, Route::AddColumn(_)))
-                {
-                    router.go_back();
-                } else {
-                    get_active_columns_mut(i18n, accounts, decks_cache).new_column_picker();
                 }
             }
             SidePanelAction::ComposeNote => {
@@ -477,7 +457,9 @@ impl<'a> DesktopSidePanel<'a> {
     }
 }
 
-fn add_column_button() -> impl Widget {
+/// The "add new column" button. Rendered at the end of the desktop column
+/// strip (browser new-tab style) to open the column picker.
+pub(crate) fn add_column_button() -> impl Widget {
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE; // max size of the widget

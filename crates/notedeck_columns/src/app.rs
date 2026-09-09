@@ -938,6 +938,10 @@ fn render_damus_desktop(
     }
 }
 
+/// Width of the trailing cell that holds the "add column" button at the end of
+/// the desktop column strip.
+const ADD_COLUMN_STRIP_WIDTH: f32 = 48.0;
+
 fn timelines_view(
     ui: &mut egui::Ui,
     sizes: Size,
@@ -947,12 +951,15 @@ fn timelines_view(
     let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
     let mut side_panel_action: Option<nav::SwitchingAction> = None;
     let mut responses = Vec::with_capacity(num_cols);
+    // Set when the trailing "add column" button (browser new-tab style) is clicked.
+    let mut add_column_clicked = false;
 
     let mut can_take_drag_from = Vec::new();
 
     StripBuilder::new(ui)
         .size(Size::exact(ui::side_panel::SIDE_PANEL_WIDTH))
         .sizes(sizes, num_cols)
+        .size(Size::exact(ADD_COLUMN_STRIP_WIDTH))
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
@@ -1037,6 +1044,17 @@ fn timelines_view(
 
                 //strip.cell(|ui| timeline::timeline_view(ui, app, timeline_ind));
             }
+
+            // Trailing "add column" button, placed at the end of the column
+            // strip so adding a column mirrors opening a new tab in a browser.
+            strip.cell(|ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.add_space(8.0);
+                    if ui.add(ui::side_panel::add_column_button()).clicked() {
+                        add_column_clicked = true;
+                    }
+                });
+            });
         });
 
     // process the side panel action after so we don't change the number of columns during
@@ -1044,6 +1062,20 @@ fn timelines_view(
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
         save_cols = save_cols || action.process(app, ctx);
+    }
+
+    // Open the column picker when the trailing "+" was clicked, unless one is
+    // already open (avoids stacking empty picker columns). Done after the strip
+    // so we don't grow the column count mid-render.
+    if add_column_clicked {
+        let cols = get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache);
+        let has_open_picker = cols
+            .columns()
+            .iter()
+            .any(|c| matches!(c.router().top(), Route::AddColumn(_)));
+        if !has_open_picker {
+            cols.new_column_picker();
+        }
     }
 
     let mut app_action: Option<AppAction> = None;
