@@ -233,14 +233,56 @@ fn seed_global_nav() -> NavStack<ChromeNavEntry> {
 }
 
 impl Chrome {
-    /// Create a new chrome with the default app setup
+    /// Create a new chrome with the default app setup, driven by an eframe
+    /// [`CreationContext`] (windowed/GUI runtime).
     pub fn new_with_apps(
         cc: &CreationContext,
         app_args: &[String],
         notedeck: &mut Notedeck,
     ) -> Result<Self, Error> {
+        Self::new_with_render_state(
+            &cc.egui_ctx,
+            cc.wgpu_render_state.as_ref(),
+            app_args,
+            notedeck,
+        )
+    }
+
+    /// Create a chrome for headless runtime mode — no eframe
+    /// [`CreationContext`] and no wgpu render state.
+    ///
+    /// Builds the exact same app roster as
+    /// [`new_with_apps`](Self::new_with_apps) (respecting `--no-columns-app` and
+    /// the same cargo-feature app gating, so a headless build runs exactly the
+    /// apps compiled in), just with a `None` render state so the GPU-backed
+    /// avatars/renderers fall back to their non-GPU paths (e.g. Dave's
+    /// `dave_button`). `egui_ctx` is a windowless [`egui::Context`] owned by the
+    /// headless run loop and used only for cheap `.clone()`/repaint handles.
+    pub fn new_headless(
+        egui_ctx: &egui::Context,
+        app_args: &[String],
+        notedeck: &mut Notedeck,
+    ) -> Result<Self, Error> {
+        Self::new_with_render_state(egui_ctx, None, app_args, notedeck)
+    }
+
+    /// Shared constructor backing [`new_with_apps`](Self::new_with_apps) and
+    /// [`new_headless`](Self::new_headless). `render_state` is `None` in the
+    /// headless case, which is exactly what the GPU-backed apps already tolerate.
+    fn new_with_render_state(
+        egui_ctx: &egui::Context,
+        render_state: Option<&eframe::egui_wgpu::RenderState>,
+        app_args: &[String],
+        notedeck: &mut Notedeck,
+    ) -> Result<Self, Error> {
+        // `egui_ctx`/`render_state` are only consumed by GPU-backed apps
+        // (Dave, Nostrverse) and the auto-updater; silence unused warnings when
+        // none of those are compiled in.
         #[cfg(not(feature = "dave"))]
-        let _ = cc;
+        {
+            let _ = egui_ctx;
+            let _ = render_state;
+        }
         let notedeck_options = notedeck.options();
         stop_debug_mode(notedeck_options);
 
@@ -250,9 +292,9 @@ impl Chrome {
         let app_ref = &mut notedeck_ref;
         #[cfg(feature = "dave")]
         let dave = Dave::new(
-            cc.wgpu_render_state.as_ref(),
+            render_state,
             app_ref.app_ctx.ndb.clone(),
-            cc.egui_ctx.clone(),
+            egui_ctx.clone(),
             app_ref.app_ctx.path,
         );
         #[cfg(feature = "wasm")]
@@ -278,7 +320,7 @@ impl Chrome {
             updater: notedeck::updater::Updater::new(
                 app_ref.app_ctx.path,
                 &app_ref.app_ctx.ndb,
-                &cc.egui_ctx,
+                egui_ctx,
                 notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
                 notedeck::updater::nostr::ReleaseChannel::from_setting(
                     app_ref.app_ctx.settings.release_channel(),
@@ -315,7 +357,7 @@ impl Chrome {
 
         #[cfg(feature = "nostrverse")]
         chrome.add_app(NotedeckApp::Nostrverse(Box::new(
-            notedeck_nostrverse::NostrverseApp::demo(cc.wgpu_render_state.as_ref()),
+            notedeck_nostrverse::NostrverseApp::demo(render_state),
         )));
 
         #[cfg(feature = "wasm")]
