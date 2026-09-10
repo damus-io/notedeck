@@ -161,6 +161,13 @@ impl Args {
                 res.options.set(NotedeckOptions::UseKeystore, true);
             } else if arg == "--all-apps-active" {
                 res.options.set(NotedeckOptions::AllAppsActive, true);
+            } else if arg == "--headless" {
+                // Headless implies all-apps-active: with no display stack there
+                // is no active app to render, so every app's update() loop runs.
+                res.options.set(
+                    NotedeckOptions::Headless | NotedeckOptions::AllAppsActive,
+                    true,
+                );
             } else if arg == "--title" {
                 i += 1;
                 let title = if let Some(next_arg) = args.get(i) {

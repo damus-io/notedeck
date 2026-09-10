@@ -26,6 +26,12 @@ bitflags! {
 
         /// Update all apps every frame, even if they haven't been opened yet
         const AllAppsActive = 1 << 8;
+
+        /// Run in headless mode: drive every app's per-frame `update()` loop
+        /// without a display stack (no eframe window, no winit event loop).
+        /// Implies [`AllAppsActive`](Self::AllAppsActive) since a headless run
+        /// renders nothing, so every app's background loop should stay active.
+        const Headless = 1 << 9;
     }
 }
 
