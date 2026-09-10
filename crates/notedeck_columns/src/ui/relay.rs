@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
+use egui::{
+    Align, Button, Color32, Frame, Id, Layout, Margin, Rect, RichText, Sense, Ui, UiBuilder, Vec2,
+};
 use egui_virtual_list::VirtualList;
 use enostr::{NormRelayUrl, RelayStatus};
 use notedeck::{
@@ -8,7 +10,10 @@ use notedeck::{
     RelayInspectEntry, RelaySpec,
 };
 use notedeck_ui::app_images;
-use notedeck_ui::{colors::PINK, padding};
+use notedeck_ui::{
+    colors::{GREEN, PINK},
+    padding,
+};
 use tracing::debug;
 
 use super::widgets::styled_button;
@@ -62,6 +67,8 @@ enum RelayListItem<'a> {
     Row {
         row: &'a RelayRow<'a>,
         section: RelaySection,
+        /// Last row of its section: suppresses the separator so groups stay distinct.
+        last: bool,
     },
     AddPrivateRelay(&'a str),
 }
@@ -200,8 +207,8 @@ impl<'a> RelayView<'a> {
                 match &items[index] {
                     RelayListItem::SectionHeader(title) => show_relay_section_header(ui, title),
                     RelayListItem::EmptySection => show_empty_relay_section(ui, i18n),
-                    RelayListItem::Row { row, section } => {
-                        let row_action = show_relay_row(ui, row, *section, i18n);
+                    RelayListItem::Row { row, section, last } => {
+                        let row_action = show_relay_row(ui, row, *section, *last, i18n);
                         if action.is_none() {
                             action = row_action;
                         }
@@ -235,6 +242,16 @@ impl<'a> RelayView<'a> {
 const RELAY_PREFILL: &str = "wss://";
 const RELAY_SECTION_ITEM_COUNT: usize = 2;
 
+/// Height of one relay list row.
+const ROW_HEIGHT: f32 = 38.0;
+/// Horizontal breathing room between a row's edge and its first/last element.
+const ROW_PADDING: f32 = 8.0;
+/// Left edge of a row's text, past the status dot.
+const ROW_TEXT_INSET: f32 = ROW_PADDING + STATUS_DOT_RADIUS * 2.0 + 10.0;
+const STATUS_DOT_RADIUS: f32 = 4.0;
+/// Square hit area reserved on the right of every row for the remove button.
+const ICON_SIZE: f32 = 24.0;
+
 fn push_relay_section_items<'a>(
     items: &mut Vec<RelayListItem<'a>>,
     title: &'a str,
@@ -247,72 +264,143 @@ fn push_relay_section_items<'a>(
         return;
     }
 
-    items.extend(rows.iter().map(|row| RelayListItem::Row { row, section }));
+    let last_index = rows.len() - 1;
+    items.extend(
+        rows.iter()
+            .enumerate()
+            .map(|(index, row)| RelayListItem::Row {
+                row,
+                section,
+                last: index == last_index,
+            }),
+    );
 }
 
 fn show_relay_section_header(ui: &mut Ui, title: &str) {
-    ui.add_space(8.0);
-    ui.label(
-        RichText::new(title)
-            .text_style(NotedeckTextStyle::Body.text_style())
-            .strong(),
-    );
-    ui.add_space(4.0);
+    ui.add_space(20.0);
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_PADDING);
+        ui.label(
+            RichText::new(title)
+                .text_style(NotedeckTextStyle::Small.text_style())
+                .color(ui.visuals().weak_text_color())
+                .strong(),
+        );
+    });
+    ui.add_space(6.0);
 }
 
 fn show_empty_relay_section(ui: &mut Ui, i18n: &mut Localization) {
-    ui.label(
-        RichText::new(tr!(i18n, "None", "Empty relay section placeholder"))
-            .text_style(NotedeckTextStyle::Body.text_style())
-            .weak(),
-    );
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_TEXT_INSET);
+        ui.label(
+            RichText::new(tr!(i18n, "None", "Empty relay section placeholder"))
+                .text_style(NotedeckTextStyle::Small.text_style())
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
 }
 
+/// Render one relay as a single-line list row: status dot, url, remove button.
+///
+/// The row is laid out from an explicitly allocated rect rather than nested
+/// layouts so the url always truncates against a fixed right gutter, whether or
+/// not the section has a remove button.
 fn show_relay_row(
     ui: &mut Ui,
     relay_row: &RelayRow,
     section: RelaySection,
+    last: bool,
     i18n: &mut Localization,
 ) -> Option<RelayAction> {
     let mut action = None;
     let relay_url = relay_row.relay_url.as_str();
+    let removable = section != RelaySection::Other;
 
-    ui.add_space(8.0);
-    ui.scope(|ui| {
-        ui.set_min_width(ui.available_width());
-        relay_frame(ui).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.vertical(|ui| {
-                let text_height = ui.text_style_height(&NotedeckTextStyle::Monospace.text_style());
-                let response = ui.add_sized(
-                    [ui.available_width(), text_height],
-                    egui::Label::new(
-                        RichText::new(relay_url)
-                            .text_style(NotedeckTextStyle::Monospace.text_style())
-                            .color(ui.style().visuals.noninteractive().fg_stroke.color),
-                    )
-                    .selectable(false)
-                    .truncate(),
-                );
-                response.on_hover_text(relay_url);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
 
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    show_connection_status(ui, i18n, relay_row.status);
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.active.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    } else if !last {
+        let separator_y = rect.bottom() - 0.5;
+        ui.painter().hline(
+            (rect.left() + ROW_TEXT_INSET)..=(rect.right() - ROW_PADDING),
+            separator_y,
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+    }
 
-                    if section != RelaySection::Other {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                                action = section.remove_action(relay_url.to_owned());
-                            }
-                        });
-                    }
-                });
-            });
-        });
+    ui.painter().circle_filled(
+        egui::pos2(
+            rect.left() + ROW_PADDING + STATUS_DOT_RADIUS,
+            rect.center().y,
+        ),
+        STATUS_DOT_RADIUS,
+        status_color(ui, relay_row.status),
+    );
+
+    let gutter = Rect::from_center_size(
+        egui::pos2(
+            rect.right() - ROW_PADDING - ICON_SIZE / 2.0,
+            rect.center().y,
+        ),
+        egui::Vec2::splat(ICON_SIZE),
+    );
+
+    if removable {
+        let mut gutter_ui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(gutter)
+                .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+        );
+        if gutter_ui
+            .add(delete_button(gutter_ui.visuals().dark_mode))
+            .clicked()
+        {
+            action = section.remove_action(relay_url.to_owned());
+        }
+    }
+
+    let text_rect = Rect::from_min_max(
+        egui::pos2(rect.left() + ROW_TEXT_INSET, rect.top()),
+        egui::pos2(gutter.left() - 8.0, rect.bottom()),
+    );
+    let mut text_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(text_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    text_ui.add(
+        egui::Label::new(
+            RichText::new(relay_display_name(relay_url))
+                .text_style(NotedeckTextStyle::Body.text_style()),
+        )
+        .selectable(false)
+        .truncate(),
+    );
+
+    response.on_hover_ui(|ui| {
+        ui.label(relay_url);
+        ui.label(
+            RichText::new(status_label(i18n, relay_row.status))
+                .color(status_color(ui, relay_row.status)),
+        );
     });
 
     action
+}
+
+/// Drop the `wss://` scheme and trailing slash so the host reads as the row's title.
+///
+/// `ws://` is left intact: an unencrypted relay is worth showing.
+fn relay_display_name(url: &str) -> &str {
+    let host = url.strip_prefix("wss://").unwrap_or(url);
+    host.strip_suffix('/').unwrap_or(host)
 }
 
 fn show_add_relay_entry_ui(
@@ -328,7 +416,9 @@ fn show_add_relay_entry_ui(
     let id = ui.id().with(id_key);
     match id_string_map.get(&id) {
         None => {
-            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_PADDING);
                 let relay_button = add_relay_button(button_label);
                 if ui.add(relay_button).clicked() {
                     debug!("add relay clicked");
@@ -434,9 +524,8 @@ fn relay_rows<'a>(
 
 fn add_relay_button(label: String) -> Button<'static> {
     Button::image_and_text(
-        app_images::add_relay_image().fit_to_exact_size(Vec2::new(48.0, 48.0)),
+        app_images::add_relay_image().fit_to_exact_size(Vec2::splat(ICON_SIZE)),
         RichText::new(label)
-            .size(16.0)
             // TODO: this color should not be hard coded. Find some way to add it to the visuals
             .color(PINK),
     )
@@ -458,48 +547,26 @@ fn delete_button(dark_mode: bool) -> egui::Button<'static> {
         app_images::delete_light_image()
     };
 
-    egui::Button::image(img.max_width(10.0)).frame(false)
+    egui::Button::image(img.max_width(14.0).tint(Color32::from_white_alpha(150))).frame(false)
 }
 
-fn relay_frame(ui: &mut Ui) -> Frame {
-    Frame::new()
-        .inner_margin(Margin::same(8))
-        .corner_radius(ui.style().noninteractive().corner_radius)
-        .stroke(ui.style().visuals.noninteractive().bg_stroke)
-}
-
-fn show_connection_status(ui: &mut Ui, i18n: &mut Localization, status: RelayStatus) {
-    let fg_color = match status {
-        RelayStatus::Connected => ui.visuals().selection.bg_fill,
+/// The dot color standing in for a relay's connection state.
+fn status_color(ui: &Ui, status: RelayStatus) -> Color32 {
+    match status {
+        RelayStatus::Connected => GREEN,
         RelayStatus::Connecting => ui.visuals().warn_fg_color,
         RelayStatus::Disconnected => ui.visuals().error_fg_color,
-    };
-    let bg_color = egui::lerp(Rgba::from(fg_color)..=Rgba::BLACK, 0.8).into();
+    }
+}
 
-    let label_text = match status {
+/// The localized name of a relay's connection state, shown on hover.
+fn status_label(i18n: &mut Localization, status: RelayStatus) -> String {
+    match status {
         RelayStatus::Connected => tr!(i18n, "Connected", "Status label for connected relay"),
         RelayStatus::Connecting => tr!(i18n, "Connecting...", "Status label for connecting relay"),
         RelayStatus::Disconnected => {
             tr!(i18n, "Not Connected", "Status label for disconnected relay")
         }
-    };
-
-    let frame = Frame::new()
-        .corner_radius(CornerRadius::same(100))
-        .fill(bg_color)
-        .inner_margin(Margin::symmetric(12, 4));
-
-    frame.show(ui, |ui| {
-        ui.label(RichText::new(label_text).color(fg_color));
-        ui.add(get_connection_icon(status));
-    });
-}
-
-fn get_connection_icon(status: RelayStatus) -> egui::Image<'static> {
-    match status {
-        RelayStatus::Connected => app_images::connected_image(),
-        RelayStatus::Connecting => app_images::connecting_image(),
-        RelayStatus::Disconnected => app_images::disconnected_image(),
     }
 }
 
