@@ -89,19 +89,6 @@ impl RelayView<'_> {
         let scroll_out = Frame::new()
             .inner_margin(Margin::symmetric(10, 0))
             .show(ui, |ui| {
-                ui.add_space(24.0);
-
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(tr!(self.i18n, "Relays", "Label for relay list section"))
-                                .text_style(NotedeckTextStyle::Heading2.text_style()),
-                        );
-                    });
-                });
-
-                ui.add_space(8.0);
-
                 egui::ScrollArea::vertical()
                     .id_salt(RelayView::scroll_id())
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)

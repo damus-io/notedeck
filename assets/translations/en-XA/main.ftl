@@ -619,9 +619,6 @@ Relays_9d89 = {"["}Rélàys{"]"}
 # Label for relay transport settings section
 Relays_ab62 = {"["}Rélàys{"]"}
 
-# Label for relay list section
-Relays_ad5e = {"["}Rélàys{"]"}
-
 # Column title for reply composition
 Reply_3bf1 = {"["}Réply{"]"}
 

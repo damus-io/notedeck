@@ -619,9 +619,6 @@ Relays_9d89 = Relays
 # Label for relay transport settings section
 Relays_ab62 = Relays
 
-# Label for relay list section
-Relays_ad5e = Relays
-
 # Column title for reply composition
 Reply_3bf1 = Reply
 
