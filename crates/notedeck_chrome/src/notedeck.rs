@@ -16,12 +16,17 @@ use tracing::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
-/// Fixed cadence of the headless run loop. A windowless `egui::Context` never
-/// self-schedules repaints, so this interval is the sole scheduler driving
-/// every app's background `update()` loop. This is a deliberate placeholder —
-/// the event-driven wake (bridge wake + idle sleep) is a follow-up
-/// (headway:notedeck/able-badge-brick).
-const HEADLESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
+/// Maximum time the headless run loop sleeps between ticks when no wake fires.
+///
+/// The loop is event-driven: it wakes promptly whenever the ndb ingester or the
+/// remote relay bridge signals [`Notedeck::headless_waker`], so relay traffic is
+/// applied with no polling latency. This cap is only the floor cadence — the
+/// safety net that still advances work no wake signal covers: promise-based
+/// background tasks that resolve off-thread (nip05 / zap verification, media
+/// jobs) and any time-based work — so it can stay coarse and let the loop idle
+/// cheaply. A windowless `egui::Context` never self-schedules repaints, so
+/// without this cap a quiet period would sleep forever.
+const HEADLESS_MAX_IDLE: Duration = Duration::from_secs(1);
 
 fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
     #[allow(unused_variables)] // need guard to live for lifetime of program
@@ -135,9 +140,16 @@ async fn async_main() {
 /// Drive Notedeck headless: no eframe window, no winit event loop, no wgpu
 /// surface. Boots the same app roster as the GUI path (via
 /// [`Chrome::new_headless`]) and runs every app's background `update()` loop
-/// from a fixed-cadence owned loop, exactly as `--all-apps-active` does in the
+/// from an owned event-driven loop, exactly as `--all-apps-active` does in the
 /// GUI — just without the render pass. Intended for a headless server / SSH run
 /// where no display stack is available.
+///
+/// The loop blocks on [`Notedeck::headless_waker`] — a signal fired by the ndb
+/// ingester and the remote relay bridge, standing in for the `request_repaint()`
+/// wake that is a no-op on a windowless context — with [`HEADLESS_MAX_IDLE`] as
+/// a hard cap so it still ticks periodically (and advances promise-based work)
+/// when the wake signal is quiet. A relay event thus wakes it immediately, but
+/// an idle process sleeps instead of spinning.
 ///
 /// On SIGINT/SIGTERM the loop breaks so `Notedeck` (and its `AppContext`) drop
 /// cleanly, which flushes the remote outbox (`AppContext::drop` -> `remote.flush()`);
@@ -145,8 +157,8 @@ async fn async_main() {
 #[cfg(not(target_arch = "wasm32"))]
 async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     // Windowless context: only used for cheap `.clone()`/repaint handles. A
-    // repaint request on it is a no-op, so HEADLESS_TICK_INTERVAL is the only
-    // thing scheduling work.
+    // repaint request on it is a no-op, so the headless waker below (not this
+    // context) is what schedules work.
     let ctx = egui::Context::default();
 
     let mut notedeck = Notedeck::init(&ctx, base_path, &args);
@@ -160,19 +172,29 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     };
     notedeck.set_app(chrome);
 
+    // Fired by the ndb ingester + remote relay bridge; present because we booted
+    // with `--headless`. Held for the life of the loop so stored wake permits
+    // aren't lost between ticks.
+    let wake = notedeck.headless_waker();
+
     info!(
-        "headless: running (tick every {}ms), Ctrl-C / SIGTERM to stop",
-        HEADLESS_TICK_INTERVAL.as_millis()
+        "headless: running (event-driven, max idle {}ms), Ctrl-C / SIGTERM to stop",
+        HEADLESS_MAX_IDLE.as_millis()
     );
 
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
-    let mut interval = tokio::time::interval(HEADLESS_TICK_INTERVAL);
 
     loop {
+        // Apply pending background work first (on entry: session restore,
+        // private-sync spawn, ...), then sleep until the next wake or the cap.
+        notedeck.tick_headless(&ctx);
+
+        let idle = tokio::time::sleep(HEADLESS_MAX_IDLE);
         tokio::select! {
             _ = &mut shutdown => break,
-            _ = interval.tick() => notedeck.tick_headless(&ctx),
+            _ = wait_for_wake(wake.as_deref()) => {}
+            _ = idle => {}
         }
     }
 
@@ -180,6 +202,19 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     // Drop `Notedeck` before returning so `AppContext::drop` flushes the outbox
     // while the bridge thread is still alive.
     drop(notedeck);
+}
+
+/// Resolve when the headless waker is signalled. `notify_one()` stores a permit
+/// if no task is currently waiting, so a wake that lands between ticks isn't
+/// lost — the next `notified()` returns immediately. With no waker (never the
+/// case under `--headless`) this never resolves, leaving the idle cap and the
+/// shutdown signal as the only arms of the loop's `select!`.
+#[cfg(not(target_arch = "wasm32"))]
+async fn wait_for_wake(wake: Option<&tokio::sync::Notify>) {
+    match wake {
+        Some(notify) => notify.notified().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Resolve once the process receives an interrupt/terminate signal. On unix

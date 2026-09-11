@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
@@ -306,6 +307,13 @@ pub struct Notedeck {
     #[allow(dead_code)]
     local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
 
+    /// In headless mode (`--headless`), a wake signal fired whenever the ndb
+    /// ingester or the remote bridge would `request_repaint()` — a no-op on the
+    /// windowless `egui::Context` headless uses. The headless run loop awaits
+    /// this to sleep-until-event instead of busy-polling a fixed interval.
+    /// `None` in GUI mode, where eframe's own repaint scheduling drives cadence.
+    headless_wake: Option<Arc<tokio::sync::Notify>>,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -422,6 +430,16 @@ impl Notedeck {
     /// subcard verifies ingest end-to-end).
     pub fn tick_headless(&mut self, ctx: &egui::Context) {
         self.tick_core(ctx, true);
+    }
+
+    /// Wake signal for the headless run loop, present only when booted with
+    /// `--headless`. Fired by the ndb ingester and the remote relay bridge
+    /// (both wired in [`init_with_remote_config`](Self::init_with_remote_config))
+    /// so the loop can await it and wake promptly on relay/ingest activity
+    /// instead of busy-polling; otherwise it sleeps until its idle cap. `None`
+    /// in GUI mode, where eframe drives the repaint cadence.
+    pub fn headless_waker(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.headless_wake.clone()
     }
 
     /// Shared body of [`tick`](Self::tick) and [`tick_headless`](Self::tick_headless).
@@ -609,12 +627,26 @@ impl Notedeck {
 
         let mut settings = SettingsHandler::new(&path).load();
 
+        // In headless mode both `request_repaint()` wake sources below (ndb
+        // ingest + remote bridge) are no-ops on the windowless context, so also
+        // signal this waker; the headless run loop awaits it to sleep-until-event.
+        let headless_wake = parsed_args
+            .options
+            .contains(NotedeckOptions::Headless)
+            .then(|| Arc::new(tokio::sync::Notify::new()));
+
         let config = Config::new()
             .set_ingester_threads(2)
             .set_mapsize(map_size)
             .set_sub_callback({
                 let ctx = ctx.clone();
-                move |_| ctx.request_repaint()
+                let wake = headless_wake.clone();
+                move |_| {
+                    ctx.request_repaint();
+                    if let Some(wake) = &wake {
+                        wake.notify_one();
+                    }
+                }
             });
 
         let keystore = if parsed_args.options.contains(NotedeckOptions::Tests) {
@@ -653,6 +685,7 @@ impl Notedeck {
             app_async_runtime.spawner(),
         );
         let remote_wake_ctx = ctx.clone();
+        let remote_wake = headless_wake.clone();
         let mut bridge_config = crate::remote_data::RemoteBridgeConfig::default();
         if let Some(timeout) = remote_config.pong_timeout {
             bridge_config = bridge_config.with_pong_timeout(timeout);
@@ -662,6 +695,9 @@ impl Notedeck {
             job_pool.spawner(),
             move || {
                 remote_wake_ctx.request_repaint();
+                if let Some(wake) = &remote_wake {
+                    wake.notify_one();
+                }
             },
             bridge_config,
         );
@@ -809,6 +845,7 @@ impl Notedeck {
             app_actions: AppActionQueue::default(),
             navigator: crate::Navigator::default(),
             local_relay,
+            headless_wake,
             #[cfg(target_os = "android")]
             android_app: None,
         }
