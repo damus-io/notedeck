@@ -11,8 +11,17 @@ static GLOBAL: AccountingAllocator<std::alloc::System> =
 
 use notedeck::{Args, DataPath, DataPathType, Notedeck, NotedeckOptions, RuntimeThreadBudget};
 use notedeck_chrome::{setup::generate_native_options, Chrome};
+use std::time::Duration;
+use tracing::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
+
+/// Fixed cadence of the headless run loop. A windowless `egui::Context` never
+/// self-schedules repaints, so this interval is the sole scheduler driving
+/// every app's background `update()` loop. This is a deliberate placeholder —
+/// the event-driven wake (bridge wake + idle sleep) is a follow-up
+/// (headway:notedeck/able-badge-brick).
+const HEADLESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
     #[allow(unused_variables)] // need guard to live for lifetime of program
@@ -95,6 +104,15 @@ async fn async_main() {
     // Pre-scan for --title so we can set the window title and show the
     // titlebar before eframe creates the window.
     let args_raw: Vec<String> = std::env::args().collect();
+
+    // Headless runtime mode: skip eframe/winit entirely and drive every app's
+    // background update() loop from an owned run loop on this Tokio runtime.
+    let (parsed, _) = Args::parse(&args_raw);
+    if parsed.options.contains(NotedeckOptions::Headless) {
+        run_headless(base_path, args_raw).await;
+        return;
+    }
+
     let (title, show_title) = resolve_native_title(&args_raw);
 
     let _res = eframe::run_native(
@@ -112,6 +130,78 @@ async fn async_main() {
             Ok(Box::new(notedeck))
         }),
     );
+}
+
+/// Drive Notedeck headless: no eframe window, no winit event loop, no wgpu
+/// surface. Boots the same app roster as the GUI path (via
+/// [`Chrome::new_headless`]) and runs every app's background `update()` loop
+/// from a fixed-cadence owned loop, exactly as `--all-apps-active` does in the
+/// GUI — just without the render pass. Intended for a headless server / SSH run
+/// where no display stack is available.
+///
+/// On SIGINT/SIGTERM the loop breaks so `Notedeck` (and its `AppContext`) drop
+/// cleanly, which flushes the remote outbox (`AppContext::drop` -> `remote.flush()`);
+/// the relay bridge thread stays alive until that final flush completes.
+#[cfg(not(target_arch = "wasm32"))]
+async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
+    // Windowless context: only used for cheap `.clone()`/repaint handles. A
+    // repaint request on it is a no-op, so HEADLESS_TICK_INTERVAL is the only
+    // thing scheduling work.
+    let ctx = egui::Context::default();
+
+    let mut notedeck = Notedeck::init(&ctx, base_path, &args);
+    notedeck.setup(&ctx);
+    let chrome = match Chrome::new_headless(&ctx, &args, &mut notedeck) {
+        Ok(chrome) => chrome,
+        Err(err) => {
+            error!("headless: failed to build chrome: {err}");
+            return;
+        }
+    };
+    notedeck.set_app(chrome);
+
+    info!(
+        "headless: running (tick every {}ms), Ctrl-C / SIGTERM to stop",
+        HEADLESS_TICK_INTERVAL.as_millis()
+    );
+
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    let mut interval = tokio::time::interval(HEADLESS_TICK_INTERVAL);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            _ = interval.tick() => notedeck.tick_headless(&ctx),
+        }
+    }
+
+    info!("headless: shutting down, flushing remote outbox");
+    // Drop `Notedeck` before returning so `AppContext::drop` flushes the outbox
+    // while the bridge thread is still alive.
+    drop(notedeck);
+}
+
+/// Resolve once the process receives an interrupt/terminate signal. On unix
+/// this covers both SIGINT (Ctrl-C) and SIGTERM (e.g. `systemctl stop`); on
+/// other platforms it falls back to Ctrl-C only.
+#[cfg(not(target_arch = "wasm32"))]
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /*
