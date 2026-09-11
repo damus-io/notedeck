@@ -270,9 +270,10 @@ async fn run() -> Result<()> {
 /// The host reopens the session — reviving its `agentium:` ref, rehydrating its
 /// history, and resuming the CLI backend with `claude --resume`.
 ///
-/// Errors early (before publishing) when nothing matches, or when the resolved
-/// session has no CLI session id to resume — i.e. its backend never started, so
-/// there is nothing for `--resume` to reconstruct.
+/// Errors early (before publishing) only when nothing matches the selector. A
+/// session whose backend never started (empty `cli_session`) or a legacy event
+/// (no `cli_session` tag) still resumes: the host reopens a fresh backend or
+/// resumes from the d-tag respectively, mirroring the GUI's click-to-reopen.
 async fn cmd_resume(engine: &Engine, author: &Pubkey, selector: &str) -> Result<()> {
     use agentium_core::session_loader::{
         load_deleted_session_states_for_author, load_session_states_for_author,
@@ -287,15 +288,21 @@ async fn cmd_resume(engine: &Engine, author: &Pubkey, selector: &str) -> Result<
         let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
         let state = resolve_session_including_deleted(&live, &deleted, selector)?;
 
+        // Resolve the `claude --resume` id exactly as the GUI's host-side
+        // hydrator does (`hydrate_session_from_state` in notedeck_dave): a
+        // non-empty `cli_session` is the real CLI id; an empty one means the
+        // backend never started, so the host reopens a *fresh* backend (no
+        // `--resume`); an absent tag is a legacy event whose d-tag *is* the CLI
+        // id. We never bail — the GUI reopens all three, so the CLI must too.
+        //
+        // This value is advisory: the host's `reopen_session` re-derives the
+        // resume id itself from the session's own state and ignores what the
+        // resume command carries. We still resolve it faithfully for
+        // forward-compat and so `--json`/logs report a sensible id.
         let cli = match state.cli_session_id.as_deref() {
             Some(cli) if !cli.is_empty() => cli.to_string(),
-            _ => {
-                return Err(format!(
-                    "{} has no CLI session to resume — its backend never started",
-                    state.agentium_uri()
-                )
-                .into());
-            }
+            Some(_) => String::new(),
+            None => state.claude_session_id.clone(),
         };
         (
             state.hostname.clone(),

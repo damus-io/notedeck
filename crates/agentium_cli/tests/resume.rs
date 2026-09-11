@@ -129,7 +129,7 @@ async fn resume_errors_on_unknown_selector() {
 }
 
 #[tokio::test]
-async fn resume_errors_when_backend_never_started() {
+async fn resume_reopens_session_whose_backend_never_started() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = dir.path().to_str().expect("path").to_string();
     {
@@ -140,16 +140,21 @@ async fn resume_errors_when_backend_never_started() {
         let sub = ndb
             .subscribe(std::slice::from_ref(&filter))
             .expect("subscribe");
-        // No cli_session tag: the backend never started, so there's nothing to
-        // --resume.
+        // No cli_session tag: the backend never started (or a legacy event
+        // where the d-tag itself is the CLI id). The GUI reopens these — a
+        // fresh backend or a d-tag resume respectively — so the CLI must too,
+        // publishing the resume command rather than refusing.
         seed_session(&ndb, "never-ran", "deleted", None);
         let _ = ndb.wait_for_notes(sub, 1).await.expect("indexed");
     }
 
-    let (ok, _stdout, stderr) = run_agentium(&db_path, &dir, &["resume", "never-ran"]);
-    assert!(!ok, "resume of a never-started session must fail");
+    let (ok, stdout, stderr) = run_agentium(&db_path, &dir, &["resume", "never-ran"]);
     assert!(
-        stderr.contains("no CLI session to resume"),
-        "expected a never-started error, got stderr:\n{stderr}"
+        ok,
+        "resume of a never-started session should still send the command\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("resume command sent") && stdout.contains("build-server"),
+        "expected a resume confirmation naming the host, got:\n{stdout}"
     );
 }

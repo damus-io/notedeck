@@ -74,10 +74,17 @@ paste it, which gives you the same self-contained, un-raceable targeting that
 `--board` does — prefer either over relying on the stateful switch. The
 scheme-less shorthand `commerce/purse-metal-toilet` self-routes too, and hex
 prefixes resolve against the current board (so they still need `--board` to reach
-another one). A **bare word-id** (`purse-metal-toilet`, no board segment) is no
-longer a card ref — it won't resolve; always include the board. Two refs naming
-different boards in one command — or a ref that disagrees with an explicit
-`--board` — are an error, not a silent resolution on the wrong board.
+another one). A **bare word-id** (`purse-metal-toilet`, no board segment) does
+*not* self-route — it can't pick a board on its own — but it *does* resolve
+against the board you've already selected, so `headway --board commerce show
+purse-metal-toilet` works without repeating the slug in the id. Like a hex prefix,
+a bare word-id also matches by **unique prefix** — `headway --board commerce show
+purse-metal` (or even `purse`) resolves as long as it's unambiguous. Anything that
+isn't purely hex digits is treated as a word-id, so only an all-`0-9a-f` selector
+is a hex prefix. When a guess misses, the error suggests the real cards that share
+its leading word instead of a bare "no card matching". Two refs naming different boards
+in one command — or a ref that disagrees with an explicit `--board` — are an
+error, not a silent resolution on the wrong board.
 
 `headway board` with **no argument** is a harmless read — it lists the boards in
 the cache and marks the current one with `*`; use it to discover slugs. Just

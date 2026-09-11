@@ -3191,10 +3191,19 @@ pub fn resolve_card_by_wordid(view: &BoardView, words: &str) -> Option<NoteId> {
 
 /// Resolve a card ref on `view` to its note id, accepting (in order): a full
 /// 64-char hex id; a reference `headway:<board>/<word-id>` or its scheme-less
-/// `<board>/<word-id>` shorthand (the board segment is required — a bare word-id
-/// is never a reference); or a unique hex prefix. The word-id is matched against
-/// every card on the board, archived ones included; the board segment is
-/// informational here (the caller already routed to `view`).
+/// `<board>/<word-id>` shorthand; a **bare word-id or any unique prefix of one**
+/// (matched against the already-routed board, exactly like a git short hash); or
+/// a unique hex prefix. The word-id is matched against every card on the board,
+/// archived ones included; the board segment is informational here (the caller
+/// already routed to `view`).
+///
+/// A bare word-id resolving here is *not* a self-routing reference — the board is
+/// already selected — so it stays consistent with [`crate::wordid::parse_ref`]
+/// (which still rejects bare word-ids for routing / inline parsing). It just
+/// means an agent that types `headway --board X show slush-derive-answer`, or the
+/// prefix `slush-derive` (or even `slush`), reaches the card without having to
+/// repeat the board segment it already passed. Only an all-`0-9a-f` selector is
+/// read as a hex prefix; anything with a non-hex letter or a `-` is a word-id.
 ///
 /// This is the single card-addressing entry point shared by the CLI and the
 /// in-app agent tools ([`notedeck_headway`](../../notedeck_headway)), so both
@@ -3205,13 +3214,27 @@ pub fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId, String> {
     }
     let sel = sel.to_lowercase();
 
-    // A `headway:<board>/<word-id>` reference (or its scheme-less shorthand):
-    // match the word-id by re-encoding each card, exactly how a git short hash
-    // resolves.
-    if let Some((_board, words)) = crate::wordid::parse_ref(&sel)
-        && let Some(id) = resolve_card_by_wordid(view, words)
-    {
-        return Ok(id);
+    // Strip the board segment off a `headway:<board>/<word-id>` reference (or its
+    // scheme-less shorthand) if present; otherwise treat the whole selector as a
+    // bare word-id / hex prefix. The board segment self-routed the fold already,
+    // so only the word-id half matters here.
+    let words = crate::wordid::parse_ref(&sel)
+        .map(|(_board, words)| words)
+        .unwrap_or(sel.as_str());
+
+    // Anything that isn't purely hex digits is a word-id selector, not a hex
+    // prefix (a real hex prefix can only contain `0-9a-f`; a word-id carries
+    // BIP-39 letters and `-`). Match it against the board like a git short hash:
+    // an exact word-id or any unique prefix resolves, and a miss suggests the
+    // near cards. Re-encoding each card is how word ids resolve everywhere (see
+    // [`resolve_card_by_wordid`]).
+    if !words.is_empty() && !words.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let mut hits = all_cards(view).filter(|c| wordid::encode(c.id.bytes()).starts_with(words));
+        return match (hits.next(), hits.next()) {
+            (Some(c), None) => Ok(c.id),
+            (Some(_), Some(_)) => Err(ambiguous_wordid_err(view, words)),
+            _ => Err(no_wordid_match_err(view, words)),
+        };
     }
 
     let mut hits = all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
@@ -3219,6 +3242,48 @@ pub fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId, String> {
         (Some(c), None) => Ok(c.id),
         (Some(_), Some(_)) => Err(format!("ambiguous card prefix '{sel}'")),
         _ => Err(format!("no card matching '{sel}'")),
+    }
+}
+
+/// Word ids on `view` that start with `words`, sorted for a stable message.
+/// Only used off the error path, so the allocation is fine.
+fn wordid_prefix_matches(view: &BoardView, words: &str) -> Vec<String> {
+    let mut matches: Vec<String> = all_cards(view)
+        .map(|c| wordid::encode(c.id.bytes()))
+        .filter(|w| w.starts_with(words))
+        .collect();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+/// Error for a word-id prefix that matches more than one card, listing the
+/// candidates so the caller can lengthen the prefix to disambiguate.
+fn ambiguous_wordid_err(view: &BoardView, words: &str) -> String {
+    format!(
+        "ambiguous word-id '{words}'; matches: {}",
+        wordid_prefix_matches(view, words).join(", ")
+    )
+}
+
+/// Error for a word-id that matches no card. Suggests cards sharing the query's
+/// leading word so a near-miss guess (a typo in the last word, a stale id) still
+/// points at the real card instead of a bare "no card matching".
+fn no_wordid_match_err(view: &BoardView, words: &str) -> String {
+    let lead = words.split(crate::wordid::SEP).next().unwrap_or(words);
+    let mut near: Vec<String> = all_cards(view)
+        .map(|c| wordid::encode(c.id.bytes()))
+        .filter(|w| w.split(crate::wordid::SEP).next() == Some(lead))
+        .collect();
+    near.sort();
+    near.dedup();
+    if near.is_empty() {
+        format!("no card matching word-id '{words}'; run `show` to list the board's cards")
+    } else {
+        format!(
+            "no card matching word-id '{words}'; did you mean: {}",
+            near.join(", ")
+        )
     }
 }
 
@@ -5300,5 +5365,133 @@ mod tests {
 
         // Unknown card id -> None.
         assert!(locate_card(&reducer, &owner.pubkey, &[0u8; 32]).is_none());
+    }
+
+    /// A minimal live card carrying only the id resolution keys off. Every other
+    /// field is a harmless default so the resolver tests can name a board full of
+    /// cards without spelling out the whole [`CardView`].
+    fn view_card(id: NoteId) -> CardView {
+        CardView {
+            id,
+            author: [0; 32],
+            title: String::new(),
+            description: String::new(),
+            labels: vec![],
+            priority: Priority::None,
+            due: None,
+            estimate: None,
+            rank: "m".into(),
+            seq: None,
+            placed_at: 0,
+            created_at: 0,
+            updated_at: 0,
+            comments: vec![],
+            activity: vec![],
+            parent: None,
+            subissues: vec![],
+            blocked_by: vec![],
+            blocks: vec![],
+            related: vec![],
+        }
+    }
+
+    /// A board named `commerce` holding `ids` in a single `todo` column.
+    fn view_with_cards(ids: &[NoteId]) -> BoardView {
+        BoardView {
+            id: "commerce".into(),
+            author: [0; 32],
+            title: "Commerce".into(),
+            description: String::new(),
+            created_at: 0,
+            columns: vec![ColumnView {
+                id: "todo".into(),
+                name: "Todo".into(),
+                cards: ids.iter().copied().map(view_card).collect(),
+            }],
+            archived: vec![],
+        }
+    }
+
+    /// An id whose first four bytes are `seed` (the rest zero), for scanning the
+    /// word-id space deterministically without `Date::now`/random.
+    fn seeded_id(seed: u32) -> NoteId {
+        let mut b = [0u8; 32];
+        b[..4].copy_from_slice(&seed.to_be_bytes());
+        NoteId::new(b)
+    }
+
+    /// Two distinct ids whose word-ids share a leading word — found by pigeonhole
+    /// over the 2048-word first slot, so it always terminates. Used to force the
+    /// ambiguous-prefix and near-miss error paths.
+    fn colliding_leading_word() -> (NoteId, NoteId, String) {
+        let mut seen: std::collections::HashMap<String, NoteId> = std::collections::HashMap::new();
+        for seed in 0u32.. {
+            let id = seeded_id(seed);
+            let lead = wordid::encode(id.bytes())
+                .split(crate::wordid::SEP)
+                .next()
+                .unwrap()
+                .to_string();
+            if let Some(&prev) = seen.get(&lead) {
+                return (prev, id, lead);
+            }
+            seen.insert(lead, id);
+        }
+        unreachable!("2049 ids must collide in 2048 leading words")
+    }
+
+    #[test]
+    fn resolve_card_accepts_bare_word_id_and_prefix() {
+        let card = NoteId::new([0x11; 32]);
+        let words = wordid::encode(card.bytes());
+        let view = view_with_cards(&[card, NoteId::new([0x22; 32])]);
+
+        // The full bare word-id (no board segment) resolves against the already
+        // routed board — what `headway --board commerce show <word-id>` reaches
+        // for without repeating the board.
+        assert_eq!(resolve_card(&view, &words), Ok(card));
+
+        // A hyphenated prefix resolves like a git short hash when unique.
+        let two_words = words.rsplit_once(crate::wordid::SEP).unwrap().0;
+        assert!(two_words.contains(crate::wordid::SEP));
+        assert_eq!(resolve_card(&view, two_words), Ok(card));
+
+        // Even a single leading word resolves when unique — a non-hex selector is
+        // a word-id, not a hex prefix. (The two seeded ids differ in word one.)
+        let first_word = words.split(crate::wordid::SEP).next().unwrap();
+        assert_eq!(resolve_card(&view, first_word), Ok(card));
+
+        // The scheme-less and full-scheme refs still route to the same card.
+        assert_eq!(resolve_card(&view, &format!("commerce/{words}")), Ok(card));
+        assert_eq!(
+            resolve_card(&view, &format!("headway:commerce/{words}")),
+            Ok(card)
+        );
+
+        // Case is normalised.
+        assert_eq!(resolve_card(&view, &words.to_uppercase()), Ok(card));
+    }
+
+    #[test]
+    fn resolve_card_word_id_errors_are_helpful() {
+        let (a, b, lead) = colliding_leading_word();
+        let view = view_with_cards(&[a, b, NoteId::new([0xee; 32])]);
+
+        // A hyphenated prefix matching more than one card reports the candidates.
+        let err = resolve_card(&view, &format!("{lead}{}", crate::wordid::SEP)).unwrap_err();
+        assert!(err.starts_with("ambiguous word-id"), "{err}");
+        assert!(err.contains(", "), "lists the matches: {err}");
+
+        // A near-miss (real leading word, bogus tail) suggests cards sharing it.
+        let err = resolve_card(&view, &format!("{lead}-nope-nope")).unwrap_err();
+        assert!(err.starts_with("no card matching word-id"), "{err}");
+        assert!(
+            err.contains("did you mean:"),
+            "suggests near matches: {err}"
+        );
+
+        // A word-id with no shared leading word falls back to the generic hint.
+        let err = resolve_card(&view, "zzzzz-nope-nope").unwrap_err();
+        assert!(err.contains("run `show`"), "{err}");
     }
 }
