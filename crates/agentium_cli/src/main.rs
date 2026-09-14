@@ -16,6 +16,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use agentium_core::Engine;
+use agentium_core::session_events::SpawnOptions;
 use agentium_core::session_loader::SessionState;
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
@@ -574,8 +575,10 @@ async fn cmd_spawn(
         &target.host,
         &target.cwd,
         &target.backend,
-        opts.title.as_deref(),
-        opts.prompt.as_deref(),
+        &SpawnOptions {
+            title: opts.title.as_deref(),
+            prompt: opts.prompt.as_deref(),
+        },
     )?;
 
     // Flush the publish (bounded) so an unreachable relay can't stall exit; the

@@ -117,7 +117,12 @@ async fn main() {
 
     // 5. spawn a brand-new session on another host
     let spawn_id = phone
-        .spawn_session("build-server", "/home/dev/project", "claude", None, None)
+        .spawn_session(
+            "build-server",
+            "/home/dev/project",
+            "claude",
+            &Default::default(),
+        )
         .unwrap();
     println!("phone.spawn_session(\"build-server\") -> spawn_id {spawn_id}");
 

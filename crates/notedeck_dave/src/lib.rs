@@ -7016,8 +7016,7 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            None,
-            None,
+            &Default::default(),
             "spawn-1",
             Some(&resume),
             &sk,
@@ -7027,8 +7026,10 @@ mod tests {
             "host-a",
             "/work/dir",
             "claude",
-            Some("Wire the widget"),
-            None,
+            &session_events::SpawnOptions {
+                title: Some("Wire the widget"),
+                ..Default::default()
+            },
             "spawn-2",
             None,
             &sk,

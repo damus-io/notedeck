@@ -1013,6 +1013,25 @@ pub struct ResumeSpawn<'a> {
     pub cli_session_id: &'a str,
 }
 
+/// The optional, per-spawn fields of a kind-31989 command.
+///
+/// Grouped into a struct rather than threaded through
+/// [`build_spawn_command_event`] as a run of positional `Option<&str>`
+/// arguments, so a call site names the field it is setting and adding another
+/// one doesn't renumber the rest. Every field is optional and defaults to
+/// absent: `SpawnOptions::default()` is a plain spawn that carries none of
+/// these tags, and the host falls back to its own defaults for each.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SpawnOptions<'a> {
+    /// An explicit, sticky session title (`custom_title` tag). `None`/empty lets
+    /// the host derive the title from the session's first message.
+    pub title: Option<&'a str>,
+    /// The session's first `user` message (`prompt` tag), delivered by the host
+    /// the moment it materializes the session. `None`/empty leaves the session
+    /// idle. Ignored on a resume.
+    pub prompt: Option<&'a str>,
+}
+
 /// Build a kind-31989 spawn command event.
 ///
 /// This is a fire-and-forget command that tells a remote host to create a
@@ -1024,23 +1043,21 @@ pub struct ResumeSpawn<'a> {
 /// (`command = "resume_session"`) that reopens the session named by
 /// [`ResumeSpawn::target_session_id`] — see [`ResumeSpawn`].
 ///
-/// A non-empty `title` stamps a `custom_title` tag on the command (mirroring the
-/// tag on kind-31988 state); the host materializes the new session with that
-/// value as its `custom_title` so it shows immediately and survives later
-/// messages. `None`/empty omits the tag and the host derives the title as before.
-///
-/// A non-empty `prompt` stamps a `prompt` tag carrying the session's first `user`
-/// message. The host injects it locally the moment it materializes the session,
-/// so delivery never depends on the spawner still waiting — a slow host that
-/// answers after the CLI has given up still starts the session with its prompt.
-/// `None`/empty omits the tag and the session comes up idle. Ignored on a resume.
-#[allow(clippy::too_many_arguments)]
+/// The per-spawn extras ride in `opts` (see [`SpawnOptions`]): a non-empty
+/// `title` stamps a `custom_title` tag on the command (mirroring the tag on
+/// kind-31988 state), so the host materializes the new session with that value
+/// as its `custom_title` and it shows immediately and survives later messages;
+/// a non-empty `prompt` stamps a `prompt` tag carrying the session's first
+/// `user` message, which the host injects the moment it materializes the
+/// session, so delivery never depends on the spawner still waiting — a slow host
+/// that answers after the CLI has given up still starts the session with its
+/// prompt. Each empty/absent field simply omits its tag, leaving the host's own
+/// default in place.
 pub fn build_spawn_command_event(
     target_host: &str,
     cwd: &str,
     backend: &str,
-    title: Option<&str>,
-    prompt: Option<&str>,
+    opts: &SpawnOptions<'_>,
     spawn_id: &str,
     resume: Option<&ResumeSpawn<'_>>,
     secret_key: &[u8; 32],
@@ -1066,7 +1083,7 @@ pub fn build_spawn_command_event(
     // An explicit session title, when the spawner set one. The host stamps it
     // into the new session's `custom_title` (not the derived `title`) so it
     // displays at once and no later message overwrites it.
-    if let Some(title) = title.filter(|t| !t.is_empty()) {
+    if let Some(title) = opts.title.filter(|t| !t.is_empty()) {
         builder = builder.start_tag().tag_str("custom_title").tag_str(title);
     }
 
@@ -1074,7 +1091,7 @@ pub fn build_spawn_command_event(
     // session. A resume reopens an existing conversation, so it carries no
     // prompt (guarded here rather than at the call site for defence in depth).
     if resume.is_none() {
-        if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
+        if let Some(prompt) = opts.prompt.filter(|p| !p.is_empty()) {
             builder = builder.start_tag().tag_str("prompt").tag_str(prompt);
         }
     }
@@ -2033,8 +2050,7 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            None,
-            None,
+            &SpawnOptions::default(),
             "spawn-1",
             None,
             &sk,
@@ -2065,8 +2081,10 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            Some("Fix the parser"),
-            None,
+            &SpawnOptions {
+                title: Some("Fix the parser"),
+                ..Default::default()
+            },
             "spawn-1",
             None,
             &sk,
@@ -2085,8 +2103,10 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            Some(""),
-            None,
+            &SpawnOptions {
+                title: Some(""),
+                ..Default::default()
+            },
             "spawn-1",
             None,
             &sk,
@@ -2108,8 +2128,10 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            None,
-            Some("do the thing"),
+            &SpawnOptions {
+                prompt: Some("do the thing"),
+                ..Default::default()
+            },
             "spawn-1",
             None,
             &sk,
@@ -2126,8 +2148,10 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            None,
-            Some(""),
+            &SpawnOptions {
+                prompt: Some(""),
+                ..Default::default()
+            },
             "spawn-1",
             None,
             &sk,
@@ -2148,8 +2172,10 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            None,
-            Some("ignored on resume"),
+            &SpawnOptions {
+                prompt: Some("ignored on resume"),
+                ..Default::default()
+            },
             "spawn-2",
             Some(&resume),
             &sk,
@@ -2173,8 +2199,7 @@ mod tests {
             "host-a",
             "/tmp/proj",
             "claude",
-            None,
-            None,
+            &SpawnOptions::default(),
             "spawn-2",
             Some(&resume),
             &sk,
