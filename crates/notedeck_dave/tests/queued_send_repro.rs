@@ -15,7 +15,7 @@
 
 use agentium_core::messages::PermissionResponse;
 use agentium_core::Waker;
-use claude_agent_sdk_rs::get_claude_code_version;
+use claude_agent_sdk_rs::{get_claude_code_version, PermissionMode};
 use notedeck_dave::backend::{AiBackend, BackendType, ClaudeBackend};
 use notedeck_dave::config::AiMode;
 use notedeck_dave::session::ChatSession;
@@ -101,6 +101,7 @@ async fn queued_message_gets_answered_after_turn_ends() {
         None,
         None,
         None,
+        PermissionMode::Default,
         waker.clone(),
     );
     let rx = rx.expect("first turn on a persistent backend mints the session receiver");
@@ -131,6 +132,7 @@ async fn queued_message_gets_answered_after_turn_ends() {
         None,
         None,
         None,
+        PermissionMode::Default,
         waker.clone(),
     );
     assert!(
@@ -219,6 +221,7 @@ async fn queued_message_survives_a_real_tool_using_turn() {
         None,
         Some(cwd.clone()),
         None,
+        PermissionMode::Default,
         waker.clone(),
     );
     let rx = rx.expect("first turn mints the session receiver");
@@ -278,6 +281,7 @@ async fn queued_message_survives_a_real_tool_using_turn() {
         None,
         Some(cwd.clone()),
         None,
+        PermissionMode::Default,
         waker.clone(),
     );
     assert!(rx2.is_none(), "persistent stream reuses the channel");
