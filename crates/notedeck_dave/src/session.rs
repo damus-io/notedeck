@@ -1839,6 +1839,22 @@ mod tests {
     use crate::messages::AssistantMessage;
     use std::sync::mpsc;
 
+    /// The wire vocabulary in `agentium_core` and this crate's mapping onto the
+    /// backend SDK's enum are declared in two places and must not drift: every
+    /// canonical mode a client may put on the wire has to survive a round trip
+    /// through the converters here. A mode added to one side and not the other
+    /// would silently arrive as `Default`.
+    #[test]
+    fn every_wire_permission_mode_round_trips() {
+        for mode in agentium_core::permission_mode::PERMISSION_MODES {
+            assert_eq!(
+                permission_mode_to_str(permission_mode_from_str(mode)),
+                mode,
+                "wire mode {mode} does not round-trip through this crate's converters",
+            );
+        }
+    }
+
     #[test]
     fn runtime_allowlist_grants_persist_per_session() {
         let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));

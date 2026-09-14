@@ -37,6 +37,7 @@ use backend::{
     AiBackend, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend, RemoteOnlyBackend,
 };
 use chrono::{Duration, Local};
+use claude_agent_sdk_rs::PermissionMode;
 use egui_wgpu::RenderState;
 use focus_queue::FocusQueue;
 use nostrdb::{NoteKey, Subscription, Transaction};
@@ -310,6 +311,11 @@ enum SessionCommand {
         /// for the spawner's own delivery to reach the session. `None` leaves the
         /// session idle awaiting a message.
         prompt: Option<String>,
+        /// The permission mode the spawner asked the session to start in, from
+        /// the command's `permission_mode` tag. `None` — the tag absent, or
+        /// naming a mode this build doesn't know — leaves the new session on the
+        /// host's own default rather than guessing.
+        permission_mode: Option<PermissionMode>,
     },
     /// Reopen + revive + resume an existing session (`command = "resume_session"`),
     /// named by its kind-31988 d-tag.
@@ -366,6 +372,24 @@ fn decode_session_command(
             let prompt = session_events::get_tag_value(note, "prompt")
                 .filter(|t| !t.is_empty())
                 .map(|s| s.to_string());
+            // Parsed strictly, via agentium-core's canonical vocabulary: an
+            // unknown mode stays `None` so the session keeps the host's default.
+            // `permission_mode_from_str` alone would map it to `Default`, quietly
+            // downgrading a session the host would otherwise have started in Auto.
+            let permission_mode = session_events::get_tag_value(note, "permission_mode")
+                .filter(|t| !t.is_empty())
+                .and_then(|raw| {
+                    let parsed = agentium_core::permission_mode::parse_permission_mode(raw);
+                    if parsed.is_none() {
+                        tracing::warn!(
+                            "spawn command {} names unknown permission mode '{}' — keeping the host default",
+                            command_id,
+                            raw,
+                        );
+                    }
+                    parsed
+                })
+                .map(crate::session::permission_mode_from_str);
             Some(SessionCommand::Spawn {
                 command_id,
                 cwd,
@@ -373,6 +397,7 @@ fn decode_session_command(
                 spawn_id,
                 custom_title,
                 prompt,
+                permission_mode,
             })
         }
         "resume_session" => {
@@ -3156,15 +3181,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         spawn_id,
                         custom_title,
                         prompt,
+                        permission_mode,
                     } => {
                         tracing::info!(
-                            "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}, title={:?}, prompt={}",
+                            "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}, title={:?}, prompt={}, mode={:?}",
                             command_id,
                             cwd,
                             backend,
                             spawn_id,
                             custom_title,
                             prompt.is_some(),
+                            permission_mode,
                         );
 
                         self.processed_commands.insert(command_id);
@@ -3192,6 +3219,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                             if let Some(title) = custom_title {
                                 session.details.custom_title = Some(title);
+                            }
+                            // Set the mode *here*, before the first message is
+                            // queued below: `dispatch` reads it to build the
+                            // backend's options, and that dispatch happens later
+                            // in this same frame. Applying it afterwards — via a
+                            // `set_permission_mode` command, say — would land
+                            // after the CLI subprocess had already launched in the
+                            // default mode, which is the bug this fixes.
+                            if let (Some(mode), Some(agentic)) =
+                                (permission_mode, session.agentic.as_mut())
+                            {
+                                agentic.permission_mode = mode;
                             }
                         }
 
@@ -7028,6 +7067,7 @@ mod tests {
             "claude",
             &session_events::SpawnOptions {
                 title: Some("Wire the widget"),
+                permission_mode: Some("plan"),
                 ..Default::default()
             },
             "spawn-2",
@@ -7035,21 +7075,36 @@ mod tests {
             &sk,
         )
         .unwrap();
+        // A spawn naming a mode this build doesn't know — e.g. from a newer peer.
+        let bogus_mode_cmd = session_events::build_spawn_command_event(
+            "host-a",
+            "/work/dir",
+            "claude",
+            &session_events::SpawnOptions {
+                permission_mode: Some("telepathy"),
+                ..Default::default()
+            },
+            "spawn-3",
+            None,
+            &sk,
+        )
+        .unwrap();
 
         let filter = nostrdb::Filter::new().build();
         let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
-        for ev in [&resume_cmd, &spawn_cmd] {
+        for ev in [&resume_cmd, &spawn_cmd, &bogus_mode_cmd] {
             ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
                 .unwrap();
         }
         // `wait_for_all_notes` accumulates to the full count; `wait_for_notes` can
         // return after the first note key, before both are queryable by id (a race
         // that made the `get_note_by_id` lookups below intermittently NotFound).
-        ndb.wait_for_all_notes(sub, 2).await.unwrap();
+        ndb.wait_for_all_notes(sub, 3).await.unwrap();
 
         let txn = Transaction::new(&ndb).unwrap();
         let resume_note = ndb.get_note_by_id(&txn, &resume_cmd.note_id).unwrap();
         let spawn_note = ndb.get_note_by_id(&txn, &spawn_cmd.note_id).unwrap();
+        let bogus_note = ndb.get_note_by_id(&txn, &bogus_mode_cmd.note_id).unwrap();
 
         // Resume command addressed to us decodes with the target session id.
         let Some(SessionCommand::Resume { session_id, .. }) =
@@ -7059,12 +7114,13 @@ mod tests {
         };
         assert_eq!(session_id, "sess-42", "reads the session_id tag");
 
-        // Spawn command decodes with its cwd / backend / spawn_id / title.
+        // Spawn command decodes with its cwd / backend / spawn_id / title / mode.
         let Some(SessionCommand::Spawn {
             cwd,
             backend,
             spawn_id,
             custom_title,
+            permission_mode,
             ..
         }) = decode_session_command(&spawn_note, "host-a", BackendType::Claude)
         else {
@@ -7074,6 +7130,17 @@ mod tests {
         assert_eq!(backend, BackendType::Claude);
         assert_eq!(spawn_id.as_deref(), Some("spawn-2"));
         assert_eq!(custom_title.as_deref(), Some("Wire the widget"));
+        assert_eq!(permission_mode, Some(PermissionMode::Plan));
+
+        // An unrecognized mode decodes to `None`, so the session is left on the
+        // host's default instead of being silently downgraded to Default.
+        let Some(SessionCommand::Spawn {
+            permission_mode, ..
+        }) = decode_session_command(&bogus_note, "host-a", BackendType::Claude)
+        else {
+            panic!("expected a Spawn command for this host");
+        };
+        assert_eq!(permission_mode, None);
 
         // The target-host gate drops commands meant for another host.
         assert!(
