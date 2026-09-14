@@ -29,6 +29,11 @@ a short TL;DR — not the card's full text.)
   in `agentium list` — e.g. the headway card's title or a terse summary of the
   task. Set it with `--title` rather than letting it derive from the first
   message.
+- If the new session should **investigate and get approval before writing code**,
+  pass `--permission-mode plan`. Writing "start in plan mode" in the prompt does
+  **not** work: the session's backend has already launched in the host's default
+  mode by the time it reads that first message. The flag is the only thing that
+  actually sets it.
 
 ## 2. Spawn + send, in one command
 
@@ -47,6 +52,9 @@ EOF
 )
 echo "$ref"
 ```
+
+Add `--permission-mode plan` when the task should be investigated and approved
+before any code is written.
 
 That's the whole handoff. Notes:
 

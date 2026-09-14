@@ -232,6 +232,7 @@ agentium spawn                                   # sibling in this session's own
 agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium: ref
 agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
 agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
+agentium spawn --permission-mode plan --prompt "design the migration" --wait  # plan first
 agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
 agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
 agentium spawn --title "Fix the parser" --prompt-file - <<'EOF'   # heredoc a long first message
@@ -263,6 +264,18 @@ Flags:
 - `--prompt <text>` — deliver `<text>` as the session's first `user` message once
   it's up. **Implies `--wait`** (you can't send to a session that doesn't exist),
   and also reports the message event id. Equivalent to `spawn --wait` then `send`.
+- `--permission-mode <mode>` — the permission mode the new session's agent
+  **starts in**, instead of the host's default: `default` (aka `manual`) | `plan`
+  | `accept_edits` | `auto` | `bypass`. Aliases are normalized, so `acceptEdits`
+  and `accept-edits` both work; an unknown mode is rejected before anything is
+  published. Use `plan` when the new session should investigate and get approval
+  before writing code. **Asking for a mode in the prompt does not work** — the
+  session's backend has already launched by the time it reads its first message,
+  so this flag is the only way to choose the starting mode. (`bypass` does no
+  safety checking at all; it exists here because a spawn is the one moment a
+  backend's mode is chosen, but reach for it deliberately.) To change the mode of
+  an *already running* session, use dave's Ctrl+M / mode badge — there is no CLI
+  verb for that yet.
 - `--prompt-file <path>` — the escaping-free alternative to `--prompt`: read the
   first message from a file, or from stdin when `<path>` is `-`, so a long
   multi-line prompt can heredoc in with no shell-escaping (the `/handoff` flow
