@@ -35,7 +35,8 @@ puffin_egui = { workspace = true, optional = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 strum = { workspace = true }
-tokio = { workspace = true }
+# `signal`/`time` back the headless run loop's graceful shutdown + tick cadence
+tokio = { workspace = true, features = ["signal", "time"] }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
