@@ -422,7 +422,8 @@ impl Engine {
     /// message, and a non-empty `prompt` rides it as a `prompt` tag that the host
     /// delivers as the new session's first `user` message the moment it
     /// materializes the session — so a first message lands even if the host
-    /// answers long after the caller stopped waiting for it.
+    /// answers long after the caller stopped waiting for it. A `permission_mode`
+    /// picks the mode the session starts in, rather than the host's default.
     ///
     /// [`SpawnOptions`]: crate::session_events::SpawnOptions
     pub fn spawn_session(

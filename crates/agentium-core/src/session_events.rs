@@ -1030,6 +1030,19 @@ pub struct SpawnOptions<'a> {
     /// the moment it materializes the session. `None`/empty leaves the session
     /// idle. Ignored on a resume.
     pub prompt: Option<&'a str>,
+    /// The permission mode the session starts in (`permission_mode` tag), as one
+    /// of [`PERMISSION_MODES`]. `None`/empty leaves the host's own default in
+    /// place — which is what an older host does with the tag regardless, since it
+    /// simply doesn't read it.
+    ///
+    /// Pass a canonical spelling; [`parse_permission_mode`] turns a human's
+    /// input into one. Nothing is validated here, so a caller that skips that
+    /// step can put an unknown mode on the wire — where a host will ignore it
+    /// and keep its default.
+    ///
+    /// [`PERMISSION_MODES`]: crate::permission_mode::PERMISSION_MODES
+    /// [`parse_permission_mode`]: crate::permission_mode::parse_permission_mode
+    pub permission_mode: Option<&'a str>,
 }
 
 /// Build a kind-31989 spawn command event.
@@ -1051,8 +1064,9 @@ pub struct SpawnOptions<'a> {
 /// `user` message, which the host injects the moment it materializes the
 /// session, so delivery never depends on the spawner still waiting — a slow host
 /// that answers after the CLI has given up still starts the session with its
-/// prompt. Each empty/absent field simply omits its tag, leaving the host's own
-/// default in place.
+/// prompt; a non-empty `permission_mode` stamps a `permission_mode` tag naming
+/// the mode the host should start the session in. Each empty/absent field simply
+/// omits its tag, leaving the host's own default in place.
 pub fn build_spawn_command_event(
     target_host: &str,
     cwd: &str,
@@ -1087,12 +1101,21 @@ pub fn build_spawn_command_event(
         builder = builder.start_tag().tag_str("custom_title").tag_str(title);
     }
 
-    // The first `user` message, delivered by the host when it materializes the
-    // session. A resume reopens an existing conversation, so it carries no
-    // prompt (guarded here rather than at the call site for defence in depth).
+    // Tags that only make sense for a *new* session. A resume reopens an existing
+    // conversation, which already has its own history and its own saved mode, so
+    // it carries neither (guarded here rather than at the call site for defence
+    // in depth).
     if resume.is_none() {
+        // The first `user` message, delivered by the host when it materializes
+        // the session.
         if let Some(prompt) = opts.prompt.filter(|p| !p.is_empty()) {
             builder = builder.start_tag().tag_str("prompt").tag_str(prompt);
+        }
+        // The mode the session starts in. Underscored to match this event's other
+        // multiword tags (`target_host`, `custom_title`, `spawn_id`) rather than
+        // kind-31988 state's hyphenated `permission-mode`.
+        if let Some(mode) = opts.permission_mode.filter(|m| !m.is_empty()) {
+            builder = builder.start_tag().tag_str("permission_mode").tag_str(mode);
         }
     }
 
@@ -2071,6 +2094,9 @@ mod tests {
         assert!(!json.contains("custom_title"), "json: {json}");
         // No prompt → no prompt tag on the command.
         assert!(!json.contains(r#""prompt"#), "json: {json}");
+        // No permission mode → no tag, so the host keeps its own default. This is
+        // also what an older CLI's command looks like to a newer host.
+        assert!(!json.contains("permission_mode"), "json: {json}");
     }
 
     #[test]
@@ -2186,6 +2212,105 @@ mod tests {
             "json: {}",
             resumed.note_json
         );
+    }
+
+    #[test]
+    fn spawn_command_carries_permission_mode_when_set() {
+        let sk = test_secret_key();
+        // A mode rides the command as a `permission_mode` tag, so the host starts
+        // the session's backend in it rather than in the host's own default.
+        let planned = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                permission_mode: Some("plan"),
+                ..Default::default()
+            },
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            planned.note_json.contains(r#""permission_mode","plan"#),
+            "json: {}",
+            planned.note_json
+        );
+
+        // An empty mode is treated as absent (no stray tag).
+        let empty = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                permission_mode: Some(""),
+                ..Default::default()
+            },
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !empty.note_json.contains("permission_mode"),
+            "json: {}",
+            empty.note_json
+        );
+
+        // A resume revives a session that already has a saved mode, so the tag is
+        // suppressed there even if one is passed.
+        let resume = ResumeSpawn {
+            target_session_id: "dead-session",
+            cli_session_id: "cli-uuid",
+        };
+        let resumed = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                permission_mode: Some("plan"),
+                ..Default::default()
+            },
+            "spawn-2",
+            Some(&resume),
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !resumed.note_json.contains("permission_mode"),
+            "json: {}",
+            resumed.note_json
+        );
+    }
+
+    /// Every mode the vocabulary declares is stampable on a spawn command, so the
+    /// CLI can offer the whole list without a mode that silently fails to travel.
+    #[test]
+    fn every_permission_mode_rides_the_spawn_command() {
+        let sk = test_secret_key();
+        for mode in crate::permission_mode::PERMISSION_MODES {
+            let event = build_spawn_command_event(
+                "host-a",
+                "/tmp/proj",
+                "claude",
+                &SpawnOptions {
+                    permission_mode: Some(mode),
+                    ..Default::default()
+                },
+                "spawn-1",
+                None,
+                &sk,
+            )
+            .unwrap();
+            assert!(
+                event
+                    .note_json
+                    .contains(&format!(r#""permission_mode","{mode}""#)),
+                "mode {mode} missing from json: {}",
+                event.note_json
+            );
+        }
     }
 
     #[test]
