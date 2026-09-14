@@ -126,12 +126,14 @@ const CWD: &str = "/home/u/proj";
 const SPAWNED_SID: &str = "spawned-session-1";
 
 /// What the helper host reads off the CLI's kind-31989 spawn command: the
-/// `spawn_id` it must echo back on the session state, and the `prompt` tag the
+/// `spawn_id` it must echo back on the session state, the `prompt` tag the
 /// command carries (the first `user` message a real host delivers itself when it
-/// materializes the session).
+/// materializes the session), and the `permission_mode` tag naming the mode a
+/// real host starts that session's backend in.
 struct SpawnCommand {
     spawn_id: String,
     prompt: Option<String>,
+    permission_mode: Option<String>,
 }
 
 /// Wait (bounded) for the helper host to see a kind-31989 spawn command in its
@@ -153,12 +155,15 @@ async fn await_spawn_command(host: &Engine) -> Option<SpawnCommand> {
     Some(SpawnCommand {
         spawn_id: session_events::get_tag_value(note, "spawn_id")?.to_string(),
         prompt: session_events::get_tag_value(note, "prompt").map(|s| s.to_string()),
+        permission_mode: session_events::get_tag_value(note, "permission_mode")
+            .map(|s| s.to_string()),
     })
 }
 
 /// The real `agentium spawn --wait --prompt` resolves the new session's ref, and
-/// the seeded first message rides the published command so the host can deliver
-/// it — driven by a same-key helper host answering over a live relay.
+/// the seeded first message and permission mode ride the published command so the
+/// host can deliver one and start the backend in the other — driven by a same-key
+/// helper host answering over a live relay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn spawn_wait_resolves_and_prompt_lands() {
     // A real relay backed by its own ndb — the seam every envelope crosses.
@@ -201,6 +206,10 @@ async fn spawn_wait_resolves_and_prompt_lands() {
                 CWD,
                 "--prompt",
                 "do the first thing",
+                // Deliberately an alias, so this also covers the CLI normalizing
+                // to the canonical wire spelling before publishing.
+                "--permission-mode",
+                "acceptEdits",
                 "--wait",
             ])
             .env("XDG_DATA_HOME", cli_dir.path())
@@ -262,6 +271,14 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         command.prompt.as_deref(),
         Some("do the first thing"),
         "the spawn command should carry --prompt as its `prompt` tag"
+    );
+
+    // Likewise the mode: a real host reads this before it starts the session's
+    // backend, which is the only moment the starting mode can be chosen.
+    assert_eq!(
+        command.permission_mode.as_deref(),
+        Some("accept_edits"),
+        "the spawn command should carry --permission-mode, canonically spelled"
     );
 
     relay.shutdown();

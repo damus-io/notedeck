@@ -73,6 +73,25 @@ fn resolve_spawn_wait(flag_secs: Option<u64>, env_secs: Option<&str>) -> Duratio
     SPAWN_WAIT_DEFAULT
 }
 
+/// Validate and normalize a `--permission-mode` value.
+///
+/// Rejected here rather than on the host: an unknown mode should fail the
+/// command visibly, before anything is published, instead of arriving as a tag a
+/// host quietly ignores while the session comes up in the wrong mode. The
+/// canonical spelling it returns is what rides the event, so aliases
+/// (`manual`, `acceptEdits`, `accept-edits`) never reach the wire.
+fn parse_mode_flag(value: &str) -> Result<String> {
+    agentium_core::permission_mode::parse_permission_mode(value)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "unknown permission mode '{value}' — expected one of: {}",
+                agentium_core::permission_mode::PERMISSION_MODES.join(", "),
+            )
+            .into()
+        })
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`agentium list | head`) instead of
@@ -134,13 +153,17 @@ enum Command {
     /// (`$AGENTIUM_SESSION`) so a bare `agentium spawn` starts a sibling in the
     /// same worktree on the same host. `--title` gives the session an explicit,
     /// sticky title; `--prompt` (which implies `--wait`) delivers a first `user`
-    /// message once the session exists.
+    /// message once the session exists; `--permission-mode` picks the mode the
+    /// session's agent starts in.
     Spawn {
         host: Option<String>,
         cwd: Option<String>,
         backend: Option<String>,
         title: Option<String>,
         prompt: Option<String>,
+        /// Already normalized to a canonical wire spelling by
+        /// [`parse_mode_flag`], so an alias can never reach the command event.
+        permission_mode: Option<String>,
         wait: bool,
         wait_timeout: Option<u64>,
     },
@@ -242,6 +265,7 @@ async fn run() -> Result<()> {
             backend,
             title,
             prompt,
+            permission_mode,
             wait,
             wait_timeout,
         } => {
@@ -251,6 +275,7 @@ async fn run() -> Result<()> {
                 backend,
                 title,
                 prompt,
+                permission_mode,
                 wait,
                 wait_timeout,
             };
@@ -425,6 +450,10 @@ struct SpawnOpts {
     /// so delivery is independent of `--wait`. Still implies `--wait` so the
     /// resolved `agentium:` ref gets reported when the host answers in time.
     prompt: Option<String>,
+    /// `--permission-mode`: the permission mode the new session's agent starts
+    /// in, already normalized to a canonical wire spelling. `None` leaves the
+    /// host's own default in place.
+    permission_mode: Option<String>,
     /// `--wait`: block (bounded by [`resolve_spawn_wait`]) until the host answers
     /// with the new session's kind-31988 state, then print its durable `agentium:`
     /// ref.
@@ -570,7 +599,9 @@ async fn cmd_spawn(
 
     // The first message rides the command as a `prompt` tag: the host delivers it
     // when it materializes the session, so it lands even if this CLI stops waiting
-    // before the host answers.
+    // before the host answers. The permission mode rides it for a sharper reason —
+    // the host has to know it *before* it starts the session's backend, which it
+    // does the moment it delivers that first message.
     let spawn_id = engine.spawn_session(
         &target.host,
         &target.cwd,
@@ -578,6 +609,7 @@ async fn cmd_spawn(
         &SpawnOptions {
             title: opts.title.as_deref(),
             prompt: opts.prompt.as_deref(),
+            permission_mode: opts.permission_mode.as_deref(),
         },
     )?;
 
@@ -2115,6 +2147,7 @@ impl Cli {
         let mut title = None;
         let mut prompt = None;
         let mut prompt_file = None;
+        let mut permission_mode = None;
         let mut wait = false;
         let mut wait_timeout = None;
         let mut positionals: Vec<String> = Vec::new();
@@ -2166,6 +2199,9 @@ impl Cli {
                 "--title" => title = Some(value("--title")?),
                 "--prompt" => prompt = Some(value("--prompt")?),
                 "--prompt-file" => prompt_file = Some(value("--prompt-file")?),
+                "--permission-mode" => {
+                    permission_mode = Some(parse_mode_flag(&value("--permission-mode")?)?)
+                }
                 "--wait" => wait = true,
                 "--wait-timeout" => {
                     wait_timeout = Some(
@@ -2220,6 +2256,7 @@ impl Cli {
                 backend: backend.clone(),
                 title,
                 prompt,
+                permission_mode,
                 wait,
                 wait_timeout,
             }
@@ -2363,7 +2400,8 @@ COMMANDS:
                       sticky session title; --wait blocks until the host answers;
                       --prompt <text> rides the command so the host delivers it as
                       the session's first message (delivery no longer depends on
-                      --wait, so a slow host still gets the prompt). --json emits
+                      --wait, so a slow host still gets the prompt);
+                      --permission-mode picks the mode its agent starts in. --json emits
                       {{ spawn_id, host, session }}.
     interrupt <session>
                       Abort a live session's in-flight turn on its host — the CLI
@@ -2429,6 +2467,12 @@ OPTIONS:
     --prompt-file <p> Like --prompt, but read the message from file <p> (or stdin
                       when <p> is `-`) — pass a long/multi-line prompt with no
                       shell-escaping. Mutually exclusive with --prompt.
+    --permission-mode <m>
+                      The mode the new session's agent starts in, rather than the
+                      host's default: default (aka manual) | plan | accept_edits |
+                      auto | bypass. Asking for it in --prompt does NOT work — the
+                      backend has already started by the time it reads that
+                      message. bypass does no safety checking at all.
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -3150,7 +3194,7 @@ mod tests {
         Cli::parse(args.iter().map(|s| s.to_string()))
     }
 
-    /// A [`SpawnOpts`] with the target flags set and no title/prompt/wait.
+    /// A [`SpawnOpts`] with the target flags set and no title/prompt/mode/wait.
     fn spawn_opts(host: Option<&str>, cwd: Option<&str>, backend: Option<&str>) -> SpawnOpts {
         SpawnOpts {
             host: host.map(str::to_string),
@@ -3158,6 +3202,7 @@ mod tests {
             backend: backend.map(str::to_string),
             title: None,
             prompt: None,
+            permission_mode: None,
             wait: false,
             wait_timeout: None,
         }
@@ -3179,6 +3224,8 @@ mod tests {
             "codex",
             "--title",
             "My Task",
+            "--permission-mode",
+            "plan",
             "--wait",
             "--wait-timeout",
             "45",
@@ -3194,6 +3241,7 @@ mod tests {
                 backend,
                 title,
                 prompt,
+                permission_mode,
                 wait,
                 wait_timeout,
             } => {
@@ -3202,6 +3250,7 @@ mod tests {
                 assert_eq!(backend.as_deref(), Some("codex"));
                 assert_eq!(title.as_deref(), Some("My Task"));
                 assert_eq!(prompt, None);
+                assert_eq!(permission_mode.as_deref(), Some("plan"));
                 assert!(wait);
                 assert_eq!(wait_timeout, Some(45));
             }
@@ -3221,15 +3270,64 @@ mod tests {
                 backend,
                 title,
                 prompt,
+                permission_mode,
                 wait,
                 wait_timeout,
             } => {
                 assert!(host.is_none() && cwd.is_none() && backend.is_none());
                 assert!(title.is_none() && prompt.is_none() && !wait);
+                // No mode asked for → nothing rides the command, and the host
+                // keeps whatever default it already applies to a new session.
+                assert!(permission_mode.is_none());
                 assert!(wait_timeout.is_none());
             }
             _ => panic!("expected Spawn"),
         }
+    }
+
+    #[test]
+    fn spawn_permission_mode_normalizes_aliases() {
+        // Whatever spelling a human reaches for, the canonical wire string is
+        // what's captured — so an alias can never reach the command event.
+        for (typed, canonical) in [
+            ("plan", "plan"),
+            ("manual", "default"),
+            ("acceptEdits", "accept_edits"),
+            ("accept-edits", "accept_edits"),
+            ("bypassPermissions", "bypass"),
+        ] {
+            let cli = parse_cli(&["--nsec", TEST_NSEC, "--permission-mode", typed, "spawn"])
+                .unwrap()
+                .unwrap();
+            match cli.command {
+                Command::Spawn {
+                    permission_mode, ..
+                } => assert_eq!(
+                    permission_mode.as_deref(),
+                    Some(canonical),
+                    "'{typed}' should normalize to '{canonical}'"
+                ),
+                _ => panic!("expected Spawn"),
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_rejects_an_unknown_permission_mode() {
+        // Rejected at parse time, before anything is published: a bad mode that
+        // reached the wire would be dropped by the host and the session would
+        // come up in the default mode with no sign anything went wrong.
+        let Err(err) = parse_cli(&["--nsec", TEST_NSEC, "--permission-mode", "yolo", "spawn"])
+        else {
+            panic!("an unknown mode must be rejected");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("yolo"),
+            "error should name the bad mode: {msg}"
+        );
+        // ...and say what the valid ones are.
+        assert!(msg.contains("plan"), "error should list the modes: {msg}");
     }
 
     #[test]
