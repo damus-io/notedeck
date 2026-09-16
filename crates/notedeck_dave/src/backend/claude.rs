@@ -11,7 +11,6 @@ use crate::messages::{
 };
 use crate::tools::Tool;
 use crate::Message;
-use agentium_core::Waker;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
     PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolResultBlock,
@@ -20,6 +19,7 @@ use claude_agent_sdk_rs::{
 use dashmap::DashMap;
 use futures::future::BoxFuture;
 use futures::StreamExt;
+use notedeck::Waker;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;

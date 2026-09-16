@@ -14,8 +14,8 @@
 //!   cargo test -p notedeck_dave --test queued_send_repro -- --ignored --nocapture
 
 use agentium_core::messages::PermissionResponse;
-use agentium_core::Waker;
 use claude_agent_sdk_rs::{get_claude_code_version, PermissionMode};
+use notedeck::Waker;
 use notedeck_dave::backend::{AiBackend, BackendType, ClaudeBackend};
 use notedeck_dave::config::AiMode;
 use notedeck_dave::session::ChatSession;

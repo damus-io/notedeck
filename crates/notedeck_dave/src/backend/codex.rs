@@ -11,9 +11,9 @@ use crate::messages::{
 };
 use crate::tools::Tool;
 use crate::Message;
-use agentium_core::Waker;
 use claude_agent_sdk_rs::PermissionMode;
 use dashmap::DashMap;
+use notedeck::Waker;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -10,8 +10,8 @@ use crate::messages::{
     PermissionView, UserMessage,
 };
 use crate::Message;
-use agentium_core::Waker;
 use claude_agent_sdk_rs::PermissionMode;
+use notedeck::Waker;
 use std::sync::mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;

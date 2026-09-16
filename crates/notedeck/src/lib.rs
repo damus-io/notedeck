@@ -66,6 +66,7 @@ mod unknowns;
 pub mod updater;
 mod urls;
 mod user_account;
+mod waker;
 mod wallet;
 mod zaps;
 
@@ -162,6 +163,7 @@ pub use unknowns::{
 };
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
+pub use waker::Waker;
 pub use wallet::{
     get_current_wallet, get_current_wallet_mut, get_wallet_for, GlobalWallet, Wallet, WalletError,
     WalletType, WalletUIState, ZapWallet,

@@ -1,7 +1,7 @@
 use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
-use agentium_core::Waker;
 use claude_agent_sdk_rs::PermissionMode;
+use notedeck::Waker;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;

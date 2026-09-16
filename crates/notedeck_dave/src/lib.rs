@@ -4448,7 +4448,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cwd,
             resume_session_id,
             permission_mode,
-            crate::backend::egui_waker(&ctx),
+            notedeck::Waker::egui(&ctx),
         );
         if let Some(rx) = rx {
             session.incoming_tokens = Some(rx);
@@ -5016,12 +5016,12 @@ impl notedeck::App for Dave {
             get_backend(&self.backends, apply.backend_type).set_permission_mode(
                 apply.backend_sid,
                 apply.mode,
-                crate::backend::egui_waker(egui_ctx),
+                notedeck::Waker::egui(egui_ctx),
             );
         }
         for apply in applies.interrupts {
             get_backend(&self.backends, apply.backend_type)
-                .interrupt_session(apply.backend_sid, crate::backend::egui_waker(egui_ctx));
+                .interrupt_session(apply.backend_sid, notedeck::Waker::egui(egui_ctx));
         }
 
         // Poll git status for local agentic sessions
@@ -6045,7 +6045,7 @@ fn dispatch_compact_for_active(
     tracing::info!("Compact requested for session {}", session_id);
     let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
-    if let Some(rx) = backend.compact_session(session_id.clone(), crate::backend::egui_waker(ctx)) {
+    if let Some(rx) = backend.compact_session(session_id.clone(), notedeck::Waker::egui(ctx)) {
         tracing::info!("Compact dispatched for session {}", session_id);
         if let Some(session) = session_manager.get_active_mut() {
             session.incoming_tokens = Some(rx);
@@ -6080,7 +6080,7 @@ fn dispatch_compact_for_session(
     );
     let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
-    let compact_rx = backend.compact_session(backend_session_id, crate::backend::egui_waker(ctx));
+    let compact_rx = backend.compact_session(backend_session_id, notedeck::Waker::egui(ctx));
     // A non-persistent backend that returned no receiver has no live session to
     // compact — nothing to do. A persistent backend reuses its existing channel
     // (None) and must still record the compact-and-proceed intent.

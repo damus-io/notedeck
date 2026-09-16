@@ -27,9 +27,7 @@ mod test_support;
 pub mod tool;
 pub mod tools;
 mod util;
-pub mod waker;
 pub mod wordid;
 
 pub use engine::{Engine, EngineError, SessionWatch};
 pub use tool::{ToolArg, ToolArgType, ToolSpec};
-pub use waker::Waker;
