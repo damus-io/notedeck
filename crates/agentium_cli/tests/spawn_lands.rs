@@ -290,6 +290,57 @@ async fn spawn_wait_resolves_and_prompt_lands() {
     relay.shutdown();
 }
 
+/// `spawn --json` is one line, so `| jq -r .session` (and the `tail -1`/`head -1`
+/// variants callers reach for) works instead of silently yielding nothing.
+///
+/// Driven without `--wait`: the point is the *shape* of the output, and a spawn
+/// that only publishes exercises it without waiting on a host.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_json_is_one_line() {
+    let relay_dir = TempDir::new().expect("relay tmp");
+    let relay_ndb =
+        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
+    let url = relay.url();
+
+    let cli_dir = TempDir::new().expect("cli tmp");
+    let db_path = cli_dir.path().to_str().expect("path").to_string();
+    let bin = agentium_bin();
+    let home = cli_dir.path().to_path_buf();
+
+    let out = tokio::task::spawn_blocking(move || {
+        Command::new(&bin)
+            .args([
+                "--nsec", NSEC, "--db", &db_path, "--relay", &url, "--json", "spawn", "--host",
+                HOST, "--cwd", CWD,
+            ])
+            .env("XDG_DATA_HOME", &home)
+            .env("HOME", &home)
+            .output()
+            .expect("run agentium spawn --json")
+    })
+    .await
+    .expect("join cli");
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "nonzero exit:\n{stdout}\n{stderr}");
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "spawn --json must be one line, or `| tail -1 | jq -r .session` yields \
+         nothing and the caller re-runs the spawn: {stdout:?}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
+    assert!(
+        v["spawn_id"].as_str().is_some(),
+        "the one line still carries the record: {stdout}"
+    );
+
+    relay.shutdown();
+}
+
 /// With no host answering, `spawn --wait` fails loudly (bounded) rather than
 /// hanging: the command is still published, but the wait times out with a clear
 /// "no host answered" error and a nonzero exit.

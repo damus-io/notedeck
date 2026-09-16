@@ -190,6 +190,14 @@ async fn send_json_reports_event_id_offline() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "nonzero exit:\n{stdout}\n{stderr}");
 
+    // One record, one line: `| tail -1 | jq -r .session` must not yield "".
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "send --json must be one line, or line-oriented pipelines silently \
+         yield nothing: {stdout:?}"
+    );
+
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
     assert!(
         v["session"]

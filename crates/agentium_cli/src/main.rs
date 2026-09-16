@@ -434,7 +434,7 @@ async fn cmd_send(
 
     if as_json {
         let obj = serde_json::json!({ "session": uri, "event_id": event_id });
-        println!("{}", serde_json::to_string_pretty(&obj)?);
+        println!("{}", json_line(&obj)?);
         return Ok(());
     }
 
@@ -817,12 +817,31 @@ async fn cmd_spawn(
     Ok(())
 }
 
+/// Render a single-record `--json` payload as exactly one line.
+///
+/// `spawn` and `send` each emit one object describing one action, so the
+/// line-oriented shell idioms apply to them — and pretty-printing broke every
+/// one of those idioms silently. `agentium spawn --json | tail -1 | jq -r
+/// .session` (or `head -1`, or `read -r`) yielded an empty string against a
+/// multi-line object, which reads as a failed spawn: the caller re-runs, and now
+/// there are two agents in the worktree. That is the concrete path a real
+/// duplicate took, so the compact form is part of the fix and not a cosmetic
+/// change.
+///
+/// `list`/`show`/`log --json` stay pretty-printed. Those are whole documents
+/// (an array, a nested object) that were never line-parseable in either form,
+/// so compacting them would trade readability for nothing.
+fn json_line(value: &serde_json::Value) -> Result<String> {
+    Ok(serde_json::to_string(value)?)
+}
+
 /// A short (8-char) prefix of an id, for the scannable one-line spawn report.
 fn short_id(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
-/// The `spawn --json` object: `{ spawn_id, host, session }`. `session` is `null`
+/// The `spawn --json` object: `{ spawn_id, host, session }`, emitted on one line
+/// by [`json_line`]. `session` is `null`
 /// until `--wait` resolves the new session's `agentium:` ref (and stays `null`
 /// when a slow host times out the wait — the spawn, and any `--prompt`, is still
 /// delivered). Built here (rather than inline in [`emit_spawn`]) so the shape is
@@ -838,7 +857,7 @@ fn spawn_json(host: &str, spawn_id: &str, session: Option<&str>) -> serde_json::
 fn emit_spawn(host: &str, spawn_id: &str, session: Option<&str>, as_json: bool) -> Result<()> {
     if as_json {
         let obj = spawn_json(host, spawn_id, session);
-        println!("{}", serde_json::to_string_pretty(&obj)?);
+        println!("{}", json_line(&obj)?);
         return Ok(());
     }
 
@@ -3773,6 +3792,23 @@ mod tests {
         assert_eq!(full["session"], "agentium:a-b-c");
         // Delivery moved to the host, so there is no event_id key either way.
         assert!(full.get("event_id").is_none());
+    }
+
+    /// The property `| jq -r .session` pipelines depend on: one record, one line.
+    /// A pretty-printed object silently defeats `tail -1`/`head -1`/`read -r`,
+    /// which reads as a failed spawn and invites the retry that duplicates it.
+    #[test]
+    fn json_line_emits_exactly_one_line() {
+        let rendered = json_line(&spawn_json("mac", "spawn-1", Some("agentium:a-b-c")))
+            .expect("render spawn json");
+
+        assert_eq!(rendered.lines().count(), 1, "rendered: {rendered:?}");
+        assert!(!rendered.contains('\n'), "rendered: {rendered:?}");
+        // Still the same object, just on one line.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rendered).expect("one-line output is still valid JSON");
+        assert_eq!(parsed["session"], "agentium:a-b-c");
+        assert_eq!(parsed["spawn_id"], "spawn-1");
     }
 
     #[test]
