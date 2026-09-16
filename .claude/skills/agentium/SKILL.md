@@ -225,7 +225,9 @@ Notes:
 with `--wait` — blocks until that host answers with the new session's kind-31988
 state and prints its durable `agentium:` ref. This is how you start a *new*
 session you can then drive with `send`. The host must be a running `notedeck_dave`
-on the target host; nothing answers otherwise (the wait times out cleanly).
+on the target host; with none running, nothing answers and the wait times out —
+but note the command is published *before* the wait, so a timeout is not proof
+nothing was created (see **Retrying a spawn is safe** below).
 
 ```bash
 agentium spawn                                   # sibling in this session's own host+cwd
@@ -283,14 +285,55 @@ Flags:
   (so it likewise **implies `--wait`** and reports the message event id), trims
   trailing whitespace (so a heredoc's closing newline doesn't ride along), and is
   **mutually exclusive** with `--prompt`.
+- `--idempotency-key <k>` / `--allow-duplicate` — duplicate control; see
+  **Retrying a spawn is safe** below. You rarely pass either: the key is derived
+  for you, and `--allow-duplicate` is only for deliberately starting a second
+  session the guard would refuse.
 
 Output: plain, no `--wait` → `spawn command sent to <host> (spawn <id8>…)`; with
 `--wait` → `spawned <agentium:ref> on <host> (spawn <id8>…)`, plus
 `, sent prompt (event <hex8>…)` when `--prompt` seeded a message. `--json` emits
-`{ "spawn_id", "host", "session", "event_id" }` — `session` is null until `--wait`
-resolves it, `event_id` present only with `--prompt`. On a `--wait` timeout the
-command was still published (a later `list` finds the session if the host was just
-slow); the error names the `spawn_id`.
+`{ "spawn_id", "host", "session", "event_id" }` **on one line** — `session` is null
+until `--wait` resolves it, `event_id` present only with `--prompt`. On a `--wait`
+timeout the command was still published, so the session may well exist; the error
+names the `spawn_id`. See **Retrying a spawn is safe** below before re-running.
+
+### Retrying a spawn is safe — but check `list` first
+
+`spawn` publishes the command **before** it starts waiting, so a `--wait` timeout
+means "we didn't see the answer in time", **not** "nothing was created". A slow
+host still materializes the session, and still delivers a `--prompt` (which rides
+the command). Re-running on a timeout is how you end up with two agents in one
+worktree.
+
+So on a timeout, look before you leap:
+
+```bash
+agentium list --cwd /path/to/worktree      # did the session actually appear?
+```
+
+Two defences also stand behind you:
+
+- A spawn that repeats a recent one — same host, cwd and `--title`, within ten
+  minutes — is **refused before publishing**, naming the session it would have
+  duplicated plus how to follow it. Untitled spawns aren't guarded (there is
+  nothing to compare), so they lean on the second defence.
+- Every spawn carries an `idempotency_key` derived from the request itself
+  (host+cwd+backend+title+prompt+mode). A host that has already materialized a
+  session for that key **answers the repeat with that session** instead of
+  creating another, and does not re-deliver its prompt. Pass
+  `--idempotency-key <k>` to name the request yourself when you have a better
+  notion of identity (a job id, say).
+
+`--allow-duplicate` opts out of both — use it when you really do want a second
+session in the same worktree. Neither defence helps against an old `agentium`
+binary or an old Dave host, so checking `list` stays the habit.
+
+**Don't add `tail -1`/`head -1`/`read -r` to a `--json` pipeline.** `spawn --json`
+and `send --json` each emit one record on one line, so `| jq -r .session` is all
+you need; against an older build that pretty-printed, those filters turn a
+*successful* spawn into an empty string — which reads as a failure and invites
+exactly the retry described above.
 
 ## `interrupt` — abort a session's in-flight turn
 

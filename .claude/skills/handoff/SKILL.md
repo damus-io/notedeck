@@ -67,9 +67,34 @@ That's the whole handoff. Notes:
   `hostname` / `pwd`).
 - `--prompt-file <path>` also takes a real file if you'd rather write the prompt
   to your scratchpad first; it's mutually exclusive with `--prompt`.
+- **Pipe the JSON straight into `jq`.** Don't add `tail -1`, `head -1`, or
+  `read -r` — you don't need them (the output is one line per record), and if you
+  ever hit an older `agentium` that pretty-prints, they turn a *successful* spawn
+  into an empty `$ref`, which looks like a failure and tempts a re-run.
 
-If `spawn --wait` times out, no Dave host is running on the target host (or the
-cwd is wrong) — report that; nothing was created.
+## A `--wait` timeout does NOT mean nothing was created
+
+`spawn` publishes the command **before** it starts waiting. So a timeout means
+"we didn't see the host's answer in time" — not "nothing happened". A slow host
+still materializes the session and still delivers the `--prompt`, because the
+prompt rides the command.
+
+**Never re-run the spawn on a timeout.** Check first:
+
+```bash
+agentium list --cwd "$(pwd)"
+```
+
+If the session is there, the handoff worked — take its ref and report it. Only if
+nothing appeared is it worth suspecting no Dave host is running on the target host
+(or that `--cwd` is wrong).
+
+Re-running is also *guarded* now, not just discouraged: an identical spawn within
+ten minutes is refused before publishing, naming the session it would have
+duplicated, and a host that does see a repeat answers it with the session it
+already made. `--allow-duplicate` overrides the guard when you genuinely want a
+second session in the same worktree. Treat the guard as a backstop, not a licence
+to retry blindly — check `list` first.
 
 ## 3. Report back
 
