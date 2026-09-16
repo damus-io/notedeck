@@ -17,7 +17,7 @@ pub mod ui;
 pub use cluster::AccountCluster;
 pub use device::{shutdown_device, AppFactory, DeviceDataDir, DeviceHarness, DeviceState};
 pub use relay::LocalRelayExt;
-pub use subscription::await_notes;
+pub use subscription::{await_batch, await_notes, await_notes_async};
 
 use std::sync::Once;
 

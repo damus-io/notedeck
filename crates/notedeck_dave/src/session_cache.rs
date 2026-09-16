@@ -433,7 +433,6 @@ impl AgentiumSessionCache {
 mod tests {
     use super::*;
     use agentium_core::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
-    use futures::StreamExt;
     use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use std::cell::RefCell;
@@ -527,12 +526,11 @@ mod tests {
                 .unwrap();
         }
 
-        /// Await `n` committed notes on the side subscription (writes commit async).
+        /// Await `n` committed notes on the side subscription (writes commit
+        /// async). Bounded, so a note that never lands fails with the running
+        /// total instead of hanging the suite.
         async fn await_notes(&mut self, n: usize) {
-            let mut seen = 0;
-            while seen < n {
-                seen += self.stream.next().await.expect("subscription open").len();
-            }
+            notedeck_testing::await_notes_async(&mut self.stream, n).await
         }
 
         /// Pump the shared cache under a fresh read txn.

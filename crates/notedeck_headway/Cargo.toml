@@ -23,7 +23,6 @@ notedeck = { workspace = true, features = ["snapshot-testing"] }
 notedeck_testing = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
-futures-util = { workspace = true }
 
 [features]
 default = []

@@ -1572,7 +1572,6 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::StreamExt;
     use nostrdb::{Config, Filter, Ndb, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
@@ -1711,13 +1710,8 @@ mod tests {
     }
 
     /// Await the next batch of ingested notes on `stream`, returning their keys.
-    /// Panics if the subscription closes first, so a predicate that never holds
-    /// surfaces as a test-timeout hang rather than a silent spin.
     async fn await_ingest(stream: &mut SubscriptionStream) -> Vec<NoteKey> {
-        stream
-            .next()
-            .await
-            .expect("subscription closed before predicate held")
+        notedeck_testing::await_batch(stream).await
     }
 
     /// Drain `stream` until the async writer has delivered `n` ingested notes in
@@ -1726,11 +1720,11 @@ mod tests {
     /// instant the whole seed has committed — a quiescence signal that, unlike a
     /// board-state predicate, can't be satisfied while trailing events are still
     /// in flight and doesn't depend on which event the seed writes last.
+    ///
+    /// Bounded: a seed count that can never be reached fails the test with the
+    /// running total instead of parking the thread until CI's own timeout.
     async fn await_ingested(stream: &mut SubscriptionStream, n: usize) {
-        let mut seen = 0;
-        while seen < n {
-            seen += await_ingest(stream).await.len();
-        }
+        notedeck_testing::await_notes_async(stream, n).await
     }
 
     fn total_cards(view: &BoardView) -> usize {

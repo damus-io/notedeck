@@ -128,7 +128,6 @@ mod tests {
     use super::*;
     use crate::session_cache::session_state_filter;
     use agentium_core::session_events::AI_SESSION_STATE_KIND;
-    use futures::StreamExt;
     use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream, Transaction};
     use nostrdb_net::{FullKeypair, NoteId};
 
@@ -211,7 +210,7 @@ mod tests {
 
         /// Await one committed note, then pump the shared cache so it folds it in.
         async fn await_and_poll(&mut self) {
-            self.stream.next().await.expect("subscription open");
+            notedeck_testing::await_batch(&mut self.stream).await;
             let txn = Transaction::new(&self.ndb).unwrap();
             self.cache
                 .borrow_mut()
