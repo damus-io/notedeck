@@ -65,6 +65,12 @@ pub struct AppContext<'a> {
     /// [`HostPrivateSync`](crate::HostPrivateSync) unions these onto its key-share
     /// roster and owns both directions of the wire from there.
     pub private_channels: &'a mut crate::PrivateChannels,
+    /// How this app asks the host for another pass — `request_repaint` in the
+    /// GUI, a run-loop signal headless. Call [`wake`](AppContext::wake) from an
+    /// `update` path that has just produced something to show, and clone it into
+    /// a worker or spawned task that will produce something later. Always
+    /// present: a host that cannot be woken would sit on completed work.
+    pub waker: &'a crate::Waker,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,
@@ -85,6 +91,13 @@ impl SoftKeyboardContext {
 }
 
 impl<'a> AppContext<'a> {
+    /// Ask the host for another pass, because this app has something new to
+    /// show. Shorthand for `self.waker.wake()`; clone [`waker`](Self::waker)
+    /// itself for anything that outlives this frame.
+    pub fn wake(&self) {
+        self.waker.wake();
+    }
+
     /// Ask the host to sync the SNS channel identified by `root`: register it with
     /// nostrdb (so its kind-1081 envelopes auto-unwrap), pull it inbound, and fan
     /// its locally-authored envelopes outbound — the app never touches the wire.

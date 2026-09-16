@@ -10,7 +10,7 @@ use crate::Error;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, UnknownIds, Waker,
 };
 use crate::{JobCache, JobPool, MediaJobs};
 use egui::Margin;
@@ -306,6 +306,14 @@ pub struct Notedeck {
     /// feature, which is disabled for Android builds.
     #[allow(dead_code)]
     local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
+
+    /// How anything off the render thread asks this host for another pass:
+    /// `request_repaint` in the GUI, a `Notify` signal headless.
+    ///
+    /// Built once at init and handed to every app through
+    /// [`AppContext::waker`](crate::AppContext::waker), so an app's background
+    /// path can wake the host without knowing which host it is running under.
+    waker: Waker,
 
     /// Monotonic count of [`tick_core`](Self::tick_core) passes, and the clock
     /// the texture caches age their entries against.
@@ -704,12 +712,25 @@ impl Notedeck {
             });
         }
 
+        // Everything that finishes work off the render thread wakes the host
+        // through this one handle: nostrdb's ingester callback and the relay
+        // bridge below, and every app's background path via
+        // `AppContext::waker`. Headless, waking the run loop's `Notify`
+        // directly is the whole signal — see `headless_wake` above.
+        let waker = match &headless_wake {
+            Some(wake) => {
+                let wake = wake.clone();
+                Waker::new(move || wake.notify_one())
+            }
+            None => Waker::egui(ctx),
+        };
+
         let config = Config::new()
             .set_ingester_threads(2)
             .set_mapsize(map_size)
             .set_sub_callback({
-                let ctx = ctx.clone();
-                move |_| ctx.request_repaint()
+                let waker = waker.clone();
+                move |_| waker.wake()
             });
 
         let keystore = if parsed_args.options.contains(NotedeckOptions::Tests) {
@@ -747,7 +768,7 @@ impl Notedeck {
             runtime_budget.sync_job_threads(),
             app_async_runtime.spawner(),
         );
-        let remote_wake_ctx = ctx.clone();
+        let remote_waker = waker.clone();
         let mut bridge_config = crate::remote_data::RemoteBridgeConfig::default();
         if let Some(timeout) = remote_config.pong_timeout {
             bridge_config = bridge_config.with_pong_timeout(timeout);
@@ -755,7 +776,7 @@ impl Notedeck {
         let mut remote = RemoteState::new_with_config(
             &ndb,
             job_pool.spawner(),
-            move || remote_wake_ctx.request_repaint(),
+            move || remote_waker.wake(),
             bridge_config,
         );
         remote
@@ -902,6 +923,7 @@ impl Notedeck {
             app_actions: AppActionQueue::default(),
             navigator: crate::Navigator::default(),
             local_relay,
+            waker,
             pass_nr: 0,
             headless_wake,
             #[cfg(target_os = "android")]
@@ -968,6 +990,7 @@ impl Notedeck {
                 app_actions: &mut self.app_actions,
                 navigator: &mut self.navigator,
                 private_channels: &mut self.private_channels,
+                waker: &self.waker,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
@@ -1610,6 +1633,56 @@ mod tick_headless_tests {
         assert!(
             notedeck.pass_nr() > before,
             "a headless tick must advance the host's pass counter"
+        );
+    }
+
+    /// An app's `ctx.wake()` must reach the headless run loop, and reach it
+    /// *directly*: the waker signals the loop's `Notify` itself rather than
+    /// going through `request_repaint` and the callback latch that made
+    /// headway:notedeck/ginger-twice-gate's stall possible. So it works with no
+    /// egui pass anywhere in sight, and it works twice.
+    #[tokio::test]
+    async fn an_apps_wake_reaches_the_headless_run_loop() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let (mut notedeck, _ui_ctx) = headless_notedeck(&tmp);
+        let wake = notedeck.headless_waker().expect("booted --headless");
+
+        assert!(!woke(&wake), "nothing has asked for a pass yet");
+
+        for round in 1..=2 {
+            notedeck.app_context().wake();
+            assert!(
+                woke(&wake),
+                "round {round}: an app's wake must reach the run loop"
+            );
+        }
+    }
+
+    /// A GUI boot's waker belongs to egui, so waking must request a repaint —
+    /// the thing eframe schedules the next frame off. Observed by installing our
+    /// own repaint callback, which only a GUI boot leaves free (headless takes
+    /// it; see `gui_boot_installs_no_headless_waker`).
+    #[tokio::test]
+    async fn a_gui_wake_requests_a_repaint() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let ui_ctx = egui::Context::default();
+        let mut notedeck = Notedeck::init(
+            &ui_ctx,
+            tmp.path(),
+            &["notedeck".to_owned(), "--testrunner".to_owned()],
+        );
+
+        let repaints = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = repaints.clone();
+        ui_ctx.set_request_repaint_callback(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        notedeck.app_context().wake();
+        assert_eq!(
+            repaints.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a GUI wake must ask egui for another frame"
         );
     }
 
