@@ -1043,6 +1043,81 @@ pub struct SpawnOptions<'a> {
     /// [`PERMISSION_MODES`]: crate::permission_mode::PERMISSION_MODES
     /// [`parse_permission_mode`]: crate::permission_mode::parse_permission_mode
     pub permission_mode: Option<&'a str>,
+    /// A key identifying this *request* rather than this transmission of it
+    /// (`idempotency_key` tag). Two commands carrying the same key are the same
+    /// spawn asked for twice, so a host that already materialized one answers
+    /// the other with the session it already has instead of creating a second.
+    ///
+    /// The `spawn_id` cannot serve here: it is minted fresh per invocation
+    /// precisely so a caller can correlate *its* request with the kind-31988
+    /// state that answers it. A retry therefore carries a new `spawn_id` and,
+    /// without this key, is indistinguishable from a deliberate second spawn —
+    /// which is how one mistaken retry becomes two agents in one worktree.
+    ///
+    /// [`spawn_idempotency_key`] derives one from the request's own fields, so an
+    /// identical retry produces an identical key with nothing for the caller to
+    /// thread through. A caller with a better notion of request identity (a job
+    /// id, say) can supply its own. `None`/empty omits the tag, leaving the spawn
+    /// with no idempotency at all — which is also what an older host that doesn't
+    /// read the tag effectively has.
+    pub idempotency_key: Option<&'a str>,
+}
+
+/// How long a host and client treat a spawn's [`idempotency_key`] as still
+/// naming a live request, in seconds.
+///
+/// Idempotency here is *windowed* rather than permanent, because the default key
+/// is derived from the request's own fields: spawning "fix the parser" in the
+/// same worktree tomorrow is a new piece of work, not a duplicate of today's, and
+/// a permanent key would refuse it forever. Ten minutes is far longer than the
+/// retry loop this guards — a caller that mis-parses `--json` and immediately
+/// re-runs — and far shorter than the gap between two genuinely separate spawns
+/// of the same task.
+///
+/// [`idempotency_key`]: SpawnOptions::idempotency_key
+pub const SPAWN_DEDUPE_WINDOW_SECS: u64 = 600;
+
+/// Derive a spawn command's idempotency key from the request itself, so an
+/// identical retry carries an identical key.
+///
+/// The digest covers exactly the fields that decide *what session you get*: the
+/// target host, the cwd it runs in, the backend, and each of `opts`' spawn
+/// extras (title, first prompt, permission mode). Two spawns differing in any of
+/// them are different requests and get different keys.
+///
+/// [`SpawnOptions::idempotency_key`] itself is excluded — it names the request,
+/// so it cannot be an input to its own name. That also makes the function safe to
+/// call on the same `opts` you are about to stamp the result onto.
+///
+/// Fields are length-prefixed before hashing so no two distinct field lists can
+/// concatenate to the same bytes (`title = "ab"` with no prompt must not collide
+/// with `title = "a"`, `prompt = "b"`), and the digest is domain-separated by a
+/// version string so a later change to the field set can't be confused with this
+/// one. The result is the first 128 bits, hex-encoded — short enough to read in a
+/// tag, wide enough that a collision (which would silently swallow an unrelated
+/// spawn) is not a practical concern.
+pub fn spawn_idempotency_key(
+    target_host: &str,
+    cwd: &str,
+    backend: &str,
+    opts: &SpawnOptions<'_>,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"agentium-spawn-idempotency-v1");
+    for field in [
+        target_host,
+        cwd,
+        backend,
+        opts.title.unwrap_or(""),
+        opts.prompt.unwrap_or(""),
+        opts.permission_mode.unwrap_or(""),
+    ] {
+        hasher.update((field.len() as u64).to_le_bytes());
+        hasher.update(field.as_bytes());
+    }
+    hex::encode(&hasher.finalize()[..16])
 }
 
 /// Build a kind-31989 spawn command event.
@@ -1065,8 +1140,12 @@ pub struct SpawnOptions<'a> {
 /// session, so delivery never depends on the spawner still waiting — a slow host
 /// that answers after the CLI has given up still starts the session with its
 /// prompt; a non-empty `permission_mode` stamps a `permission_mode` tag naming
-/// the mode the host should start the session in. Each empty/absent field simply
-/// omits its tag, leaving the host's own default in place.
+/// the mode the host should start the session in; a non-empty `idempotency_key`
+/// stamps an `idempotency_key` tag naming the *request*, so a host that already
+/// materialized a session for that key answers with it rather than creating a
+/// second (see [`SpawnOptions::idempotency_key`] and
+/// [`spawn_idempotency_key`]). Each empty/absent field simply omits its tag,
+/// leaving the host's own default in place.
 pub fn build_spawn_command_event(
     target_host: &str,
     cwd: &str,
@@ -1116,6 +1195,12 @@ pub fn build_spawn_command_event(
         // kind-31988 state's hyphenated `permission-mode`.
         if let Some(mode) = opts.permission_mode.filter(|m| !m.is_empty()) {
             builder = builder.start_tag().tag_str("permission_mode").tag_str(mode);
+        }
+        // The request's identity, so a host can tell a retry of *this* spawn from
+        // a deliberate second one. A resume already names the session it revives,
+        // so reviving it twice is idempotent on its own and needs no key.
+        if let Some(key) = opts.idempotency_key.filter(|k| !k.is_empty()) {
+            builder = builder.start_tag().tag_str("idempotency_key").tag_str(key);
         }
     }
 
@@ -2097,6 +2182,230 @@ mod tests {
         // No permission mode → no tag, so the host keeps its own default. This is
         // also what an older CLI's command looks like to a newer host.
         assert!(!json.contains("permission_mode"), "json: {json}");
+        // No idempotency key → no tag, so the host has nothing to dedupe on.
+        assert!(!json.contains("idempotency_key"), "json: {json}");
+    }
+
+    #[test]
+    fn spawn_command_carries_idempotency_key_when_set() {
+        let sk = test_secret_key();
+        let keyed = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                idempotency_key: Some("abc123"),
+                ..Default::default()
+            },
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            keyed.note_json.contains(r#""idempotency_key","abc123"#),
+            "json: {}",
+            keyed.note_json
+        );
+
+        // An empty key is treated as absent (no stray tag for a host to match on).
+        let empty = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                idempotency_key: Some(""),
+                ..Default::default()
+            },
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !empty.note_json.contains("idempotency_key"),
+            "json: {}",
+            empty.note_json
+        );
+    }
+
+    /// A resume names the session it revives, so reviving it twice is already
+    /// idempotent — the key would be noise, and the builder drops it with the
+    /// other new-session-only tags.
+    #[test]
+    fn resume_command_drops_the_idempotency_key() {
+        let sk = test_secret_key();
+        let event = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                idempotency_key: Some("abc123"),
+                ..Default::default()
+            },
+            "spawn-1",
+            Some(&ResumeSpawn {
+                target_session_id: "sess-1",
+                cli_session_id: "cli-1",
+            }),
+            &sk,
+        )
+        .unwrap();
+
+        assert!(
+            event.note_json.contains(r#""command","resume_session"#),
+            "json: {}",
+            event.note_json
+        );
+        assert!(
+            !event.note_json.contains("idempotency_key"),
+            "json: {}",
+            event.note_json
+        );
+    }
+
+    /// The property the whole dedupe rests on: re-issuing the *same* request
+    /// derives the *same* key, with nothing carried over between the two calls.
+    #[test]
+    fn spawn_idempotency_key_is_stable_across_identical_requests() {
+        let opts = || SpawnOptions {
+            title: Some("Fix the parser"),
+            prompt: Some("read crates/foo and fix it"),
+            permission_mode: Some("plan"),
+            ..Default::default()
+        };
+
+        let first = spawn_idempotency_key("host-a", "/tmp/proj", "claude", &opts());
+        let second = spawn_idempotency_key("host-a", "/tmp/proj", "claude", &opts());
+
+        assert_eq!(first, second);
+        // 128 bits, hex-encoded.
+        assert_eq!(first.len(), 32, "key: {first}");
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "key: {first}");
+    }
+
+    /// Every field that decides *what session you get* must change the key, or
+    /// two different requests would dedupe onto one session.
+    #[test]
+    fn spawn_idempotency_key_changes_with_every_request_field() {
+        let base_opts = SpawnOptions {
+            title: Some("t"),
+            prompt: Some("p"),
+            permission_mode: Some("plan"),
+            ..Default::default()
+        };
+        let base = spawn_idempotency_key("host-a", "/tmp/proj", "claude", &base_opts);
+
+        let variants = [
+            (
+                "host",
+                spawn_idempotency_key("host-b", "/tmp/proj", "claude", &base_opts),
+            ),
+            (
+                "cwd",
+                spawn_idempotency_key("host-a", "/tmp/other", "claude", &base_opts),
+            ),
+            (
+                "backend",
+                spawn_idempotency_key("host-a", "/tmp/proj", "codex", &base_opts),
+            ),
+            (
+                "title",
+                spawn_idempotency_key(
+                    "host-a",
+                    "/tmp/proj",
+                    "claude",
+                    &SpawnOptions {
+                        title: Some("t2"),
+                        ..base_opts
+                    },
+                ),
+            ),
+            (
+                "prompt",
+                spawn_idempotency_key(
+                    "host-a",
+                    "/tmp/proj",
+                    "claude",
+                    &SpawnOptions {
+                        prompt: Some("p2"),
+                        ..base_opts
+                    },
+                ),
+            ),
+            (
+                "permission_mode",
+                spawn_idempotency_key(
+                    "host-a",
+                    "/tmp/proj",
+                    "claude",
+                    &SpawnOptions {
+                        permission_mode: Some("acceptEdits"),
+                        ..base_opts
+                    },
+                ),
+            ),
+        ];
+
+        for (field, key) in variants {
+            assert_ne!(base, key, "changing {field} must change the key");
+        }
+    }
+
+    /// The key names the request, so it cannot be an input to itself: deriving
+    /// against `opts` you are about to stamp the result onto must be a no-op.
+    #[test]
+    fn spawn_idempotency_key_ignores_any_key_already_set() {
+        let plain = spawn_idempotency_key(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                title: Some("t"),
+                ..Default::default()
+            },
+        );
+        let restamped = spawn_idempotency_key(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                title: Some("t"),
+                idempotency_key: Some("some-earlier-key"),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(plain, restamped);
+    }
+
+    /// Length-prefixing, concretely: two requests whose fields concatenate to the
+    /// same bytes are still different requests and must get different keys.
+    /// Without the prefix both would hash `"ab"` and silently share a key.
+    #[test]
+    fn spawn_idempotency_key_distinguishes_field_boundaries() {
+        let split_left = spawn_idempotency_key(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                title: Some("ab"),
+                prompt: Some(""),
+                ..Default::default()
+            },
+        );
+        let split_right = spawn_idempotency_key(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &SpawnOptions {
+                title: Some("a"),
+                prompt: Some("b"),
+                ..Default::default()
+            },
+        );
+
+        assert_ne!(split_left, split_right);
     }
 
     #[test]

@@ -15,6 +15,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
+# sha2 backs `spawn_idempotency_key`: a spawn command's default idempotency key
+# is a digest of the request itself, so an identical retry carries an identical
+# key and the host can recognize it as the same request.
+sha2 = { workspace = true }
 uuid = { version = "1.10.0", features = ["v4"] }
 # Shared BIP-39 word-id rendering for sayable session references.
 wordid = { workspace = true }

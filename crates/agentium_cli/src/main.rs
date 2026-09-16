@@ -610,6 +610,9 @@ async fn cmd_spawn(
             title: opts.title.as_deref(),
             prompt: opts.prompt.as_deref(),
             permission_mode: opts.permission_mode.as_deref(),
+            // The CLI starts attaching a key in a following commit; until then it
+            // publishes as before, and the host has nothing to dedupe on.
+            idempotency_key: None,
         },
     )?;
 

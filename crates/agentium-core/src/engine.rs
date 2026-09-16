@@ -425,6 +425,14 @@ impl Engine {
     /// answers long after the caller stopped waiting for it. A `permission_mode`
     /// picks the mode the session starts in, rather than the host's default.
     ///
+    /// The returned `spawn_id` is **not** a dedupe key: it is minted fresh here
+    /// on every call so the caller can correlate *this* request with the state
+    /// that answers it, which means two identical calls produce two sessions.
+    /// Set `opts.idempotency_key` (from
+    /// [`spawn_idempotency_key`](crate::session_events::spawn_idempotency_key),
+    /// or a caller-owned request id) to make a retry safe — a host that already
+    /// materialized a session for that key answers with it instead.
+    ///
     /// [`SpawnOptions`]: crate::session_events::SpawnOptions
     pub fn spawn_session(
         &self,
