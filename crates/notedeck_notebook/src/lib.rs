@@ -1605,6 +1605,13 @@ mod tests {
             let dir = tempfile::TempDir::new().unwrap();
             let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
             let kp = FullKeypair::generate();
+            // Canvas writes are sealed into the account's SNS workspace, so
+            // register its derived root — production registers via the host
+            // (`AppContext::register_team_root`), the CLI via
+            // `store::register_workspace` — or nostrdb keeps the kind-1081
+            // envelopes opaque, the canvas rumors never surface, and the side
+            // subscription below never fires.
+            store::register_workspace(&ndb, &kp.secret_key.secret_bytes());
             // A separate subscription we can await on to know when ingests commit
             // (the cache's own subscription is polled, not awaited).
             let sub = ndb

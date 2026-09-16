@@ -406,6 +406,13 @@ mod tests {
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
+        // Canvas writes are sealed into the account's SNS workspace, so
+        // register its derived root — production registers via the host
+        // (`AppContext::register_team_root`), the CLI via
+        // `store::register_workspace` — or nostrdb keeps the kind-1081
+        // envelopes opaque, the canvas rumors never surface, and the side
+        // subscription below never fires.
+        store::register_workspace(&ndb, &secret);
         let sub = ndb
             .subscribe(&[event::notebook_filter(&kp.pubkey)])
             .unwrap();
