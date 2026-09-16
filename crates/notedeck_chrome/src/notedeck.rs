@@ -18,14 +18,14 @@ use tracing_subscriber::EnvFilter;
 
 /// Maximum time the headless run loop sleeps between ticks when no wake fires.
 ///
-/// The loop is event-driven: it wakes promptly whenever the ndb ingester or the
-/// remote relay bridge signals [`Notedeck::headless_waker`], so relay traffic is
-/// applied with no polling latency. This cap is only the floor cadence — the
-/// safety net that still advances work no wake signal covers: promise-based
+/// The loop is event-driven: every `egui::Context::request_repaint` on the
+/// headless context signals [`Notedeck::headless_waker`], so anything that asks
+/// for another frame — the ndb ingester, the remote relay bridge, an app or a
+/// worker thread — is served with no polling latency. This cap is only the floor
+/// cadence, the safety net for work that asks for no frame at all: promise-based
 /// background tasks that resolve off-thread (nip05 / zap verification, media
-/// jobs) and any time-based work — so it can stay coarse and let the loop idle
-/// cheaply. A windowless `egui::Context` never self-schedules repaints, so
-/// without this cap a quiet period would sleep forever.
+/// jobs) and any time-based work. So it can stay coarse and let the loop idle
+/// cheaply — but a quiet period would sleep forever without it.
 const HEADLESS_MAX_IDLE: Duration = Duration::from_secs(1);
 
 fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
@@ -144,21 +144,21 @@ async fn async_main() {
 /// GUI — just without the render pass. Intended for a headless server / SSH run
 /// where no display stack is available.
 ///
-/// The loop blocks on [`Notedeck::headless_waker`] — a signal fired by the ndb
-/// ingester and the remote relay bridge, standing in for the `request_repaint()`
-/// wake that is a no-op on a windowless context — with [`HEADLESS_MAX_IDLE`] as
-/// a hard cap so it still ticks periodically (and advances promise-based work)
-/// when the wake signal is quiet. A relay event thus wakes it immediately, but
-/// an idle process sleeps instead of spinning.
+/// The loop blocks on [`Notedeck::headless_waker`], the signal every
+/// `request_repaint()` on the headless context is routed into, with
+/// [`HEADLESS_MAX_IDLE`] as a hard cap so it still ticks periodically (and
+/// advances promise-based work) when nothing is asking for a frame. A relay
+/// event or a streaming dave session thus wakes it immediately, but an idle
+/// process sleeps instead of spinning.
 ///
 /// On SIGINT/SIGTERM the loop breaks so `Notedeck` (and its `AppContext`) drop
 /// cleanly, which flushes the remote outbox (`AppContext::drop` -> `remote.flush()`);
 /// the relay bridge thread stays alive until that final flush completes.
 #[cfg(not(target_arch = "wasm32"))]
 async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
-    // Windowless context: only used for cheap `.clone()`/repaint handles. A
-    // repaint request on it is a no-op, so the headless waker below (not this
-    // context) is what schedules work.
+    // Windowless context: nothing renders from it, but repaint requests against
+    // it are what schedule this loop's work — `Notedeck::init` routes them into
+    // the headless waker below.
     let ctx = egui::Context::default();
 
     let mut notedeck = Notedeck::init(&ctx, base_path, &args);
@@ -172,9 +172,9 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     };
     notedeck.set_app(chrome);
 
-    // Fired by the ndb ingester + remote relay bridge; present because we booted
-    // with `--headless`. Held for the life of the loop so stored wake permits
-    // aren't lost between ticks.
+    // Fired by every repaint request on `ctx`; present because we booted with
+    // `--headless`. Held for the life of the loop so stored wake permits aren't
+    // lost between ticks.
     let wake = notedeck.headless_waker();
 
     info!(

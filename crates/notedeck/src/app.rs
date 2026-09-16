@@ -307,11 +307,12 @@ pub struct Notedeck {
     #[allow(dead_code)]
     local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
 
-    /// In headless mode (`--headless`), a wake signal fired whenever the ndb
-    /// ingester or the remote bridge would `request_repaint()` — a no-op on the
-    /// windowless `egui::Context` headless uses. The headless run loop awaits
-    /// this to sleep-until-event instead of busy-polling a fixed interval.
-    /// `None` in GUI mode, where eframe's own repaint scheduling drives cadence.
+    /// In headless mode (`--headless`), the wake signal every immediate
+    /// `request_repaint()` on the windowless `egui::Context` is routed into —
+    /// standing in for the eframe integration that would otherwise answer them.
+    /// The headless run loop awaits this to sleep-until-event instead of
+    /// busy-polling a fixed interval. `None` in GUI mode, where eframe's own
+    /// repaint scheduling drives cadence.
     headless_wake: Option<Arc<tokio::sync::Notify>>,
 
     #[cfg(target_os = "android")]
@@ -400,9 +401,10 @@ impl Notedeck {
     /// behaviour.
     ///
     /// Intended for a `--headless` server run with no eframe window / wgpu
-    /// surface. `ctx` is a windowless [`egui::Context`] used only for its pass
-    /// counter and `.clone()`; `request_repaint` on it is a no-op, so the caller's
-    /// loop cadence is the sole scheduler.
+    /// surface. `ctx` is a windowless [`egui::Context`]: nothing renders from it,
+    /// but each tick still opens and closes an empty pass on it — see
+    /// [`run_empty_pass`](Self::run_empty_pass) for why that is load-bearing
+    /// rather than ceremony.
     ///
     /// ## Render-side side effects skipped headless (audit)
     ///
@@ -429,15 +431,45 @@ impl Notedeck {
     /// expected to drive their background sync from `update` (the smoke-test
     /// subcard verifies ingest end-to-end).
     pub fn tick_headless(&mut self, ctx: &egui::Context) {
+        Self::run_empty_pass(ctx);
         self.tick_core(ctx, true);
     }
 
+    /// Open and close an empty egui pass on the windowless headless context.
+    ///
+    /// Nothing is drawn — no app renders headless — and this exists for exactly
+    /// one reason: **it re-arms the repaint callback.** `request_repaint`
+    /// notifies the integration only when the request *lowers* the viewport's
+    /// `repaint_delay`, and once lowered to `ZERO` only `begin_pass` raises it
+    /// again. Without a pass the callback installed in
+    /// [`init_with_remote_config`](Self::init_with_remote_config) would fire once
+    /// and then go silent, and the run loop would stop hearing about work — which
+    /// is why a bare callback was rejected as the wake seam.
+    ///
+    /// It also advances the pass counter `tick_core` reads as the clock the
+    /// texture caches age entries against, which keeps that clock honest but
+    /// currently reclaims nothing: every texture-allocating closure captures its
+    /// context during *render* (`Images::get_or_request` and friends are only
+    /// ever handed a `ui.ctx()`), so a headless run allocates no textures and its
+    /// cache stays empty. Don't read this as load-bearing for eviction — it
+    /// becomes so only if background code ever starts allocating textures.
+    ///
+    /// The pass runs on default [`egui::RawInput`] and its [`egui::FullOutput`]
+    /// is dropped: with no widgets there is nothing to tessellate and nowhere to
+    /// send it.
+    fn run_empty_pass(ctx: &egui::Context) {
+        profiling::scope!("headless empty pass");
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+    }
+
     /// Wake signal for the headless run loop, present only when booted with
-    /// `--headless`. Fired by the ndb ingester and the remote relay bridge
-    /// (both wired in [`init_with_remote_config`](Self::init_with_remote_config))
-    /// so the loop can await it and wake promptly on relay/ingest activity
-    /// instead of busy-polling; otherwise it sleeps until its idle cap. `None`
-    /// in GUI mode, where eframe drives the repaint cadence.
+    /// `--headless`. Fired by every `egui::Context::request_repaint` on the
+    /// headless context, via the callback installed in
+    /// [`init_with_remote_config`](Self::init_with_remote_config) — so the loop
+    /// hears about relay/ingest traffic *and* about any app or worker thread
+    /// that asks for another frame (dave streaming a token, a budgeted loop
+    /// yielding mid-work), and otherwise sleeps until its idle cap. `None` in
+    /// GUI mode, where that callback is eframe's and it drives the cadence.
     pub fn headless_waker(&self) -> Option<Arc<tokio::sync::Notify>> {
         self.headless_wake.clone()
     }
@@ -627,26 +659,42 @@ impl Notedeck {
 
         let mut settings = SettingsHandler::new(&path).load();
 
-        // In headless mode both `request_repaint()` wake sources below (ndb
-        // ingest + remote bridge) are no-ops on the windowless context, so also
-        // signal this waker; the headless run loop awaits it to sleep-until-event.
+        // In headless mode nothing schedules work off `ctx.request_repaint()` —
+        // there is no eframe integration to answer it — so route every repaint
+        // request into this waker instead and let the headless run loop await it.
+        // Arming it is a two-part job: the callback below reports each request,
+        // and `tick_headless`'s empty pass resets the latch that would otherwise
+        // silence the callback after the first request (see `tick_headless`).
         let headless_wake = parsed_args
             .options
             .contains(NotedeckOptions::Headless)
             .then(|| Arc::new(tokio::sync::Notify::new()));
+
+        if let Some(wake) = &headless_wake {
+            // Only ever installed headless: in GUI mode this callback belongs to
+            // eframe (it is what wakes winit), and egui keeps just one.
+            let wake = wake.clone();
+            ctx.set_request_repaint_callback(move |info| {
+                // Only an immediate request means "there is work now" — that is
+                // what the ingester, the relay bridge, a streaming dave session
+                // and every budgeted loop that yields mid-work all ask for. A
+                // *delayed* request means "come back on this cadence", which
+                // headless has no animation to honor, so the run loop's idle cap
+                // serves it. Waking now on a delayed request would spin: the
+                // apps that ask for one (headway/notebook `pump_repaint`) ask
+                // again from the very `update` the wake would run.
+                if info.delay.is_zero() {
+                    wake.notify_one();
+                }
+            });
+        }
 
         let config = Config::new()
             .set_ingester_threads(2)
             .set_mapsize(map_size)
             .set_sub_callback({
                 let ctx = ctx.clone();
-                let wake = headless_wake.clone();
-                move |_| {
-                    ctx.request_repaint();
-                    if let Some(wake) = &wake {
-                        wake.notify_one();
-                    }
-                }
+                move |_| ctx.request_repaint()
             });
 
         let keystore = if parsed_args.options.contains(NotedeckOptions::Tests) {
@@ -685,7 +733,6 @@ impl Notedeck {
             app_async_runtime.spawner(),
         );
         let remote_wake_ctx = ctx.clone();
-        let remote_wake = headless_wake.clone();
         let mut bridge_config = crate::remote_data::RemoteBridgeConfig::default();
         if let Some(timeout) = remote_config.pong_timeout {
             bridge_config = bridge_config.with_pong_timeout(timeout);
@@ -693,12 +740,7 @@ impl Notedeck {
         let mut remote = RemoteState::new_with_config(
             &ndb,
             job_pool.spawner(),
-            move || {
-                remote_wake_ctx.request_repaint();
-                if let Some(wake) = &remote_wake {
-                    wake.notify_one();
-                }
-            },
+            move || remote_wake_ctx.request_repaint(),
             bridge_config,
         );
         remote
@@ -1364,6 +1406,34 @@ mod tick_headless_tests {
         )
     }
 
+    /// Booted `--headless`, so the repaint callback is installed on the returned
+    /// context — which the caller therefore has to keep and tick with, since the
+    /// wake seam lives on that one context.
+    fn headless_notedeck(tmp: &tempfile::TempDir) -> (Notedeck, egui::Context) {
+        let ui_ctx = egui::Context::default();
+        let notedeck = Notedeck::init(
+            &ui_ctx,
+            tmp.path(),
+            &[
+                "notedeck".to_owned(),
+                "--testrunner".to_owned(),
+                "--headless".to_owned(),
+            ],
+        );
+        (notedeck, ui_ctx)
+    }
+
+    /// Has a wake already landed on `notify`? `notify_one` stores its permit
+    /// synchronously, so one poll settles it: a wake that happened is ready on
+    /// the first poll, and a wake that never happened stays pending. No timer,
+    /// and no way for the test to hang waiting on a wake that isn't coming.
+    fn woke(notify: &tokio::sync::Notify) -> bool {
+        use std::future::Future as _;
+        let mut notified = Box::pin(notify.notified());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        notified.as_mut().poll(&mut cx).is_ready()
+    }
+
     /// The headless per-frame tick must drive the installed app's background
     /// `update` but never its egui `render` — that's the whole point of the
     /// mode. Driven through the real `tick_headless` entry point, which is safe
@@ -1424,5 +1494,101 @@ mod tick_headless_tests {
         });
         assert_eq!(updates.get(), 2, "gui render_notedeck must also update");
         assert_eq!(renders.get(), 1, "gui render_notedeck must render");
+    }
+
+    /// Everything that wants another frame headless asks for one the only way
+    /// egui offers: `request_repaint`. Each such request has to reach the run
+    /// loop's waker, tick after tick — this is the whole wake seam, and the
+    /// repeat is the point. egui reports a request only when it *lowers* the
+    /// viewport's repaint delay, and only `begin_pass` raises that again, so
+    /// without the empty pass in `tick_headless` the first round here passes and
+    /// every later one leaves the loop asleep on work it was told about.
+    #[tokio::test]
+    async fn headless_repaint_requests_keep_waking_the_loop() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let (mut notedeck, ui_ctx) = headless_notedeck(&tmp);
+        let wake = notedeck
+            .headless_waker()
+            .expect("--headless installs a waker");
+
+        for round in 1..=3 {
+            notedeck.tick_headless(&ui_ctx);
+            // Stand in for a dave backend thread streaming a token, or a
+            // budgeted loop yielding with work still to do.
+            ui_ctx.request_repaint();
+            assert!(
+                woke(&wake),
+                "round {round}: a repaint request must wake the headless loop"
+            );
+        }
+    }
+
+    /// A *delayed* repaint request must leave the loop asleep. `notedeck_headway`
+    /// and `notedeck_notebook` ask for one from their `update`, so a wake here
+    /// would re-enter the very update that asked for it and spin the process flat
+    /// out; headless has no animation to honor, and the loop's idle cap is the
+    /// right cadence for a "come back later". The immediate request at the end
+    /// keeps this honest: it proves the callback was live and filtering, not
+    /// silent.
+    #[tokio::test]
+    async fn headless_delayed_repaint_requests_do_not_wake_the_loop() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let (notedeck, ui_ctx) = headless_notedeck(&tmp);
+        let wake = notedeck
+            .headless_waker()
+            .expect("--headless installs a waker");
+
+        // Two passes to reach an armed callback: the first only clears whatever
+        // boot asked for (which leaves the delay latched at zero), the second
+        // finds nothing outstanding and raises it again. Then drop the permit
+        // those requests stored, so what follows is about this request alone.
+        for _ in 0..2 {
+            Notedeck::run_empty_pass(&ui_ctx);
+        }
+        let _ = woke(&wake);
+
+        ui_ctx.request_repaint_after(Duration::from_millis(60));
+        assert!(
+            !woke(&wake),
+            "a delayed repaint request must leave the headless loop asleep"
+        );
+
+        ui_ctx.request_repaint();
+        assert!(
+            woke(&wake),
+            "an immediate request must still wake the loop through that callback"
+        );
+    }
+
+    /// A GUI run must not get the headless waker: there, `request_repaint` is
+    /// eframe's to answer (it is what wakes winit), and egui keeps only one
+    /// callback — installing ours would take the window's repaints with it.
+    #[tokio::test]
+    async fn gui_boot_installs_no_headless_waker() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let notedeck = test_notedeck(&tmp);
+        assert!(
+            notedeck.headless_waker().is_none(),
+            "a GUI boot must leave the repaint callback to eframe"
+        );
+    }
+
+    /// The pass counter is the clock `tick_core` ages texture-cache entries
+    /// against, so a headless tick has to advance it rather than hand every
+    /// cache read the same frozen zero. (Nothing is evicted headless today —
+    /// the cache stays empty because texture allocation only ever happens
+    /// through a context captured at render — so this pins the clock, not a
+    /// reclaim.)
+    #[tokio::test]
+    async fn headless_tick_advances_the_pass_counter() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let (mut notedeck, ui_ctx) = headless_notedeck(&tmp);
+
+        let before = ui_ctx.cumulative_pass_nr();
+        notedeck.tick_headless(&ui_ctx);
+        assert!(
+            ui_ctx.cumulative_pass_nr() > before,
+            "a headless tick must advance the pass counter"
+        );
     }
 }
