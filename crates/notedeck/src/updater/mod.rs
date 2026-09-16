@@ -58,7 +58,9 @@ pub struct Updater {
     rx: mpsc::Receiver<UpdateMsg>,
     tx: mpsc::Sender<UpdateMsg>,
     staging_dir: PathBuf,
-    ctx: egui::Context,
+    /// Woken when the download finishes on its own thread — the only reason this
+    /// type needs to reach the host at all.
+    waker: crate::Waker,
     sent_relay_filter: bool,
     release_pubkey: [u8; 32],
     channel: nostr::ReleaseChannel,
@@ -70,7 +72,7 @@ impl Updater {
     pub fn new(
         data_path: &DataPath,
         ndb: &Ndb,
-        ctx: &egui::Context,
+        waker: crate::Waker,
         release_pubkey: [u8; 32],
         channel: nostr::ReleaseChannel,
     ) -> Self {
@@ -85,7 +87,7 @@ impl Updater {
             rx,
             tx,
             staging_dir,
-            ctx: ctx.clone(),
+            waker,
             sent_relay_filter: false,
             release_pubkey,
             channel,
@@ -299,7 +301,7 @@ impl Updater {
 
         let tx = self.tx.clone();
         let staging_dir = self.staging_dir.clone();
-        let ctx = self.ctx.clone();
+        let waker = self.waker.clone();
 
         let mut request = ehttp::Request::get(&release.asset_url);
         request
@@ -316,7 +318,7 @@ impl Updater {
                 &staging_dir,
             );
             let _ = tx.send(UpdateMsg::DownloadComplete(result));
-            ctx.request_repaint();
+            waker.wake();
         });
     }
 
@@ -532,11 +534,10 @@ mod tests {
 
         // Now create a fresh Updater (simulating a new app launch)
         let data_path = DataPath::new(tmp.path());
-        let ctx = egui::Context::default();
         let mut updater = Updater::new(
             &data_path,
             &ndb,
-            &ctx,
+            crate::Waker::noop(),
             TEST_PUBKEY,
             nostr::ReleaseChannel::Main,
         );

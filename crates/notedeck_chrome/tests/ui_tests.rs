@@ -254,7 +254,7 @@ async fn snapshot_update_bar() {
     // Create Chrome with updater, pointing at our test signing key
     let mut chrome = {
         let mut app_ctx = notedeck.app_context();
-        let chrome = Chrome::new_test(&mut app_ctx, &ctx, &args);
+        let chrome = Chrome::new_test(&mut app_ctx, &args);
         app_ctx.remote.flush();
         chrome
     };
@@ -352,7 +352,7 @@ async fn snapshot_global_nav_header() {
 
     let mut chrome = {
         let mut app_ctx = notedeck.app_context();
-        Chrome::new_test(&mut app_ctx, &ctx, &args)
+        Chrome::new_test(&mut app_ctx, &args)
     };
 
     // Two extra tabs so switching between apps builds real global history.
@@ -421,7 +421,7 @@ async fn mobile_chrome_add_account_stays_open() {
         let mut app_ctx = notedeck.app_context();
         app_ctx.settings.complete_welcome();
         app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
-        Chrome::new_test(&mut app_ctx, &ctx, &args)
+        Chrome::new_test(&mut app_ctx, &args)
     };
     chrome.toggle();
     notedeck.set_app(chrome);

@@ -1036,7 +1036,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     pub fn new(
         render_state: Option<&RenderState>,
         ndb: nostrdb::Ndb,
-        ctx: egui::Context,
+        waker: Waker,
         path: &DataPath,
     ) -> Self {
         let settings_serializer =
@@ -1113,7 +1113,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let directory_picker = DirectoryPicker::new();
 
         // Create IPC listener for external spawn-agent commands
-        let ipc_listener = ipc::create_listener(ctx);
+        let ipc_listener = ipc::create_listener(waker);
 
         let hostname = gethostname::gethostname().to_string_lossy().into_owned();
 
@@ -6424,7 +6424,7 @@ mod tests {
     fn test_dave(data_path: &DataPath) -> Dave {
         let ndb_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
-        Dave::new(None, ndb, egui::Context::default(), data_path)
+        Dave::new(None, ndb, Waker::noop(), data_path)
     }
 
     #[tokio::test]

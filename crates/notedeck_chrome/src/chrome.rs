@@ -240,12 +240,7 @@ impl Chrome {
         app_args: &[String],
         notedeck: &mut Notedeck,
     ) -> Result<Self, Error> {
-        Self::new_with_render_state(
-            &cc.egui_ctx,
-            cc.wgpu_render_state.as_ref(),
-            app_args,
-            notedeck,
-        )
+        Self::new_with_render_state(cc.wgpu_render_state.as_ref(), app_args, notedeck)
     }
 
     /// Create a chrome for headless runtime mode — no eframe
@@ -256,31 +251,27 @@ impl Chrome {
     /// the same cargo-feature app gating, so a headless build runs exactly the
     /// apps compiled in), just with a `None` render state so the GPU-backed
     /// avatars/renderers fall back to their non-GPU paths (e.g. Dave's
-    /// `dave_button`). `egui_ctx` is a windowless [`egui::Context`] owned by the
-    /// headless run loop and used only for cheap `.clone()`/repaint handles.
-    pub fn new_headless(
-        egui_ctx: &egui::Context,
-        app_args: &[String],
-        notedeck: &mut Notedeck,
-    ) -> Result<Self, Error> {
-        Self::new_with_render_state(egui_ctx, None, app_args, notedeck)
+    /// `dave_button`).
+    ///
+    /// Needs no `egui::Context`: the one thing construction used one for was to
+    /// hand Dave's IPC listener something to wake, and that takes the host's
+    /// [`Waker`](notedeck::Waker) now.
+    pub fn new_headless(app_args: &[String], notedeck: &mut Notedeck) -> Result<Self, Error> {
+        Self::new_with_render_state(None, app_args, notedeck)
     }
 
     /// Shared constructor backing [`new_with_apps`](Self::new_with_apps) and
     /// [`new_headless`](Self::new_headless). `render_state` is `None` in the
     /// headless case, which is exactly what the GPU-backed apps already tolerate.
     fn new_with_render_state(
-        egui_ctx: &egui::Context,
         render_state: Option<&eframe::egui_wgpu::RenderState>,
         app_args: &[String],
         notedeck: &mut Notedeck,
     ) -> Result<Self, Error> {
-        // `egui_ctx`/`render_state` are only consumed by GPU-backed apps
-        // (Dave, Nostrverse) and the auto-updater; silence unused warnings when
-        // none of those are compiled in.
-        #[cfg(not(feature = "dave"))]
+        // `render_state` is only consumed by the GPU-backed apps (Dave,
+        // Nostrverse); silence the unused warning when neither is compiled in.
+        #[cfg(not(any(feature = "dave", feature = "nostrverse")))]
         {
-            let _ = egui_ctx;
             let _ = render_state;
         }
         let notedeck_options = notedeck.options();
@@ -294,7 +285,7 @@ impl Chrome {
         let dave = Dave::new(
             render_state,
             app_ref.app_ctx.ndb.clone(),
-            egui_ctx.clone(),
+            app_ref.app_ctx.waker.clone(),
             app_ref.app_ctx.path,
         );
         #[cfg(feature = "wasm")]
@@ -320,7 +311,7 @@ impl Chrome {
             updater: notedeck::updater::Updater::new(
                 app_ref.app_ctx.path,
                 &app_ref.app_ctx.ndb,
-                egui_ctx,
+                app_ref.app_ctx.waker.clone(),
                 notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
                 notedeck::updater::nostr::ReleaseChannel::from_setting(
                     app_ref.app_ctx.settings.release_channel(),
@@ -411,11 +402,7 @@ impl Chrome {
 
     /// Create a Chrome for snapshot tests — no eframe CreationContext needed.
     #[cfg(feature = "auto-update")]
-    pub fn new_test(
-        ctx: &mut notedeck::AppContext,
-        egui_ctx: &egui::Context,
-        args: &[String],
-    ) -> Self {
+    pub fn new_test(ctx: &mut notedeck::AppContext, args: &[String]) -> Self {
         let damus = Damus::new(ctx, args);
         let mut chrome = Chrome {
             active: 0,
@@ -432,7 +419,7 @@ impl Chrome {
             updater: notedeck::updater::Updater::new(
                 ctx.path,
                 &ctx.ndb,
-                egui_ctx,
+                ctx.waker.clone(),
                 notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
                 notedeck::updater::nostr::ReleaseChannel::from_setting(
                     ctx.settings.release_channel(),

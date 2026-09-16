@@ -102,11 +102,15 @@ mod unix {
 
     /// Creates an IPC listener that runs in a background thread.
     ///
-    /// The background thread blocks on accept() and calls request_repaint()
-    /// when a connection arrives, ensuring the UI wakes up immediately.
+    /// The background thread blocks on accept() and wakes the host when a
+    /// connection arrives, so the spawn is picked up on the next tick rather
+    /// than whenever something else happens to schedule one. That wake is the
+    /// only reason this needs to reach the host, so it takes a
+    /// [`Waker`](notedeck::Waker) rather than an egui context — a `--headless`
+    /// run serves the `agentium` CLI over this same socket.
     ///
     /// Returns None if the socket cannot be created (e.g., permission issues).
-    pub fn create_listener(ctx: egui::Context) -> Option<IpcListener> {
+    pub fn create_listener(waker: notedeck::Waker) -> Option<IpcListener> {
         let path = socket_path();
 
         // Ensure parent directory exists
@@ -156,8 +160,8 @@ mod unix {
                                         tracing::debug!("IPC listener: main thread gone, exiting");
                                         break;
                                     }
-                                    // Wake up the UI to process the connection
-                                    ctx.request_repaint();
+                                    // Wake the host to process the connection
+                                    waker.wake();
                                 }
                                 Err(e) => {
                                     // Send error response directly
@@ -236,7 +240,7 @@ pub mod non_unix {
         }
     }
 
-    pub fn create_listener(_ctx: egui::Context) -> Option<IpcListener> {
+    pub fn create_listener(_waker: notedeck::Waker) -> Option<IpcListener> {
         tracing::info!("IPC spawn-agent not supported on this platform");
         None
     }

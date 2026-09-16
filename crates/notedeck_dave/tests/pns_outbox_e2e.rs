@@ -99,27 +99,27 @@ impl App for ControllableDave {
     }
 }
 fn dave_app_factory() -> AppFactory {
-    Box::new(move |notedeck, egui_ctx| {
+    Box::new(move |notedeck, _egui_ctx| {
         let app_ctx = notedeck.app_context();
         app_ctx.settings.complete_welcome();
         let settings = agentic_dave_settings();
         write_dave_settings(app_ctx.path, &settings);
         let ndb = app_ctx.ndb.clone();
-        let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
+        let dave = Dave::new(None, ndb, app_ctx.waker.clone(), app_ctx.path);
         drop(app_ctx);
 
         notedeck.set_app(dave);
     })
 }
 fn dave_agentic_app_factory() -> AppFactory {
-    Box::new(move |notedeck, egui_ctx| {
+    Box::new(move |notedeck, _egui_ctx| {
         let app_ctx = notedeck.app_context();
         app_ctx.settings.complete_welcome();
         let settings = agentic_dave_settings();
         write_dave_settings(app_ctx.path, &settings);
 
         let ndb = app_ctx.ndb.clone();
-        let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
+        let dave = Dave::new(None, ndb, app_ctx.waker.clone(), app_ctx.path);
         drop(app_ctx);
 
         notedeck.set_app(dave);
@@ -128,13 +128,13 @@ fn dave_agentic_app_factory() -> AppFactory {
 fn controllable_dave_app_factory() -> (AppFactory, Sender<ControllableDaveCommand>) {
     let (command_tx, command_rx) = mpsc::channel();
     let app_factory = Box::new(
-        move |notedeck: &mut notedeck::Notedeck, egui_ctx: &egui::Context| {
+        move |notedeck: &mut notedeck::Notedeck, _egui_ctx: &egui::Context| {
             let app_ctx = notedeck.app_context();
             app_ctx.settings.complete_welcome();
             let settings = agentic_dave_settings();
             write_dave_settings(app_ctx.path, &settings);
             let ndb = app_ctx.ndb.clone();
-            let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
+            let dave = Dave::new(None, ndb, app_ctx.waker.clone(), app_ctx.path);
             drop(app_ctx);
 
             notedeck.set_app(ControllableDave { dave, command_rx });
@@ -272,7 +272,7 @@ fn build_dave_device(
     // Dave's inbound PNS sync is now owned by the notedeck host, which is off
     // under the test harness by default — force it on so these tests exercise the
     // account's inbound path (dave reads the resulting local nostrdb state).
-    let app_factory: AppFactory = Box::new(move |notedeck, egui_ctx| {
+    let app_factory: AppFactory = Box::new(move |notedeck, _egui_ctx| {
         notedeck.enable_host_private_sync_for_test();
         app_factory(notedeck, egui_ctx);
     });

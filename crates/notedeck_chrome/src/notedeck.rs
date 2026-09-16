@@ -163,7 +163,7 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
 
     let mut notedeck = Notedeck::init(&ctx, base_path, &args);
     notedeck.setup(&ctx);
-    let chrome = match Chrome::new_headless(&ctx, &args, &mut notedeck) {
+    let chrome = match Chrome::new_headless(&args, &mut notedeck) {
         Ok(chrome) => chrome,
         Err(err) => {
             error!("headless: failed to build chrome: {err}");
