@@ -16,7 +16,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use agentium_core::Engine;
-use agentium_core::session_events::SpawnOptions;
+use agentium_core::session_events::{
+    SPAWN_DEDUPE_WINDOW_SECS, SpawnOptions, spawn_idempotency_key,
+};
 use agentium_core::session_loader::SessionState;
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
@@ -154,7 +156,8 @@ enum Command {
     /// same worktree on the same host. `--title` gives the session an explicit,
     /// sticky title; `--prompt` (which implies `--wait`) delivers a first `user`
     /// message once the session exists; `--permission-mode` picks the mode the
-    /// session's agent starts in.
+    /// session's agent starts in. `--allow-duplicate` opts out of both duplicate
+    /// defences (the pre-publish guard and the host's idempotency key).
     Spawn {
         host: Option<String>,
         cwd: Option<String>,
@@ -164,6 +167,8 @@ enum Command {
         /// Already normalized to a canonical wire spelling by
         /// [`parse_mode_flag`], so an alias can never reach the command event.
         permission_mode: Option<String>,
+        idempotency_key: Option<String>,
+        allow_duplicate: bool,
         wait: bool,
         wait_timeout: Option<u64>,
     },
@@ -266,6 +271,8 @@ async fn run() -> Result<()> {
             title,
             prompt,
             permission_mode,
+            idempotency_key,
+            allow_duplicate,
             wait,
             wait_timeout,
         } => {
@@ -276,6 +283,8 @@ async fn run() -> Result<()> {
                 title,
                 prompt,
                 permission_mode,
+                idempotency_key,
+                allow_duplicate,
                 wait,
                 wait_timeout,
             };
@@ -454,6 +463,17 @@ struct SpawnOpts {
     /// in, already normalized to a canonical wire spelling. `None` leaves the
     /// host's own default in place.
     permission_mode: Option<String>,
+    /// `--idempotency-key`: the caller's own name for this *request*, overriding
+    /// the one derived from the request's fields. Useful when the caller has a
+    /// better notion of identity than the fields give — retrying "the spawn for
+    /// job 4821" should dedupe even if its prompt was reworded between attempts.
+    idempotency_key: Option<String>,
+    /// `--allow-duplicate`: deliberately spawn a second session that a duplicate
+    /// defence would otherwise refuse. Skips the pre-publish guard *and* omits
+    /// the idempotency key from the command, so neither this CLI nor the host
+    /// treats the spawn as a retry — one flag for "I mean it", rather than a
+    /// guard the host would then silently re-impose.
+    allow_duplicate: bool,
     /// `--wait`: block (bounded by [`resolve_spawn_wait`]) until the host answers
     /// with the new session's kind-31988 state, then print its durable `agentium:`
     /// ref.
@@ -557,6 +577,60 @@ fn merge_spawn_target(
     Ok(SpawnTarget { host, cwd, backend })
 }
 
+/// A live session an about-to-be-published spawn looks like a retry of.
+///
+/// Matching is on what `list` can actually see — host, cwd, title, age — because
+/// the CLI cannot read the host's own idempotency bookkeeping. That makes this a
+/// second line of defence rather than the primary one: it still catches the retry
+/// against an *older* host that ignores the `idempotency_key` tag entirely.
+///
+/// A title is required for a match, and is the whole discriminator. Without one
+/// the new session's title would be derived from its first message, so there is
+/// nothing on either side to compare and every recent sibling in the worktree
+/// would look like a duplicate — including legitimate fan-out. Untitled spawns
+/// rely on the host's key instead. In practice the titled path is the one that
+/// bites: a handoff always names its session, and its prompt is long enough to
+/// live in a file, which is exactly the invocation a caller re-runs verbatim.
+fn find_duplicate_spawn<'a>(
+    live: &'a [SessionState],
+    target: &SpawnTarget,
+    title: Option<&str>,
+    now: u64,
+) -> Option<&'a SessionState> {
+    let title = title.filter(|t| !t.is_empty())?;
+    live.iter().find(|state| {
+        state.hostname == target.host
+            && state.cwd == target.cwd
+            && state.display_title() == title
+            // `saturating_sub`: a session stamped slightly ahead of this clock
+            // reads as age 0, i.e. inside the window — the safe direction, since
+            // it refuses rather than duplicates.
+            && now.saturating_sub(state.created_at) <= SPAWN_DEDUPE_WINDOW_SECS
+    })
+}
+
+/// The refusal a caught duplicate produces: names the session it would have
+/// duplicated, and the flag that overrides.
+///
+/// Built apart from [`cmd_spawn`] so the wording is unit-testable — the message
+/// *is* the feature here. A caller that only sees "refused" learns nothing and
+/// reaches for the retry again; one that sees the existing ref can check it and
+/// move on.
+fn duplicate_spawn_error(existing: &SessionState, title: &str, now: u64) -> String {
+    format!(
+        "{} is already running \"{}\" in {} on {} (started {}s ago) — not spawning a second \
+         agent in the same worktree.\n  follow it:  agentium log {} -f\n  list them:  agentium \
+         list --cwd {}\n  really want another: re-run with --allow-duplicate",
+        existing.agentium_uri(),
+        title,
+        existing.cwd,
+        existing.hostname,
+        now.saturating_sub(existing.created_at),
+        existing.agentium_uri(),
+        existing.cwd,
+    )
+}
+
 /// `agentium spawn` — tell a (local or remote) Dave host to create a fresh
 /// session, then optionally wait for it and hand it a first prompt.
 ///
@@ -584,6 +658,42 @@ async fn cmd_spawn(
 
     let target = resolve_spawn_target(engine, author, opts)?;
 
+    // Refuse an obvious retry *before* publishing anything. Cheaper and clearer
+    // than letting the host dedupe it — the caller gets the existing ref instead
+    // of a second `agentium:` ref it has to reconcile — and it is the only defence
+    // that works against an older host that ignores the idempotency key.
+    if !opts.allow_duplicate {
+        let now = agentium_core::session_events::now_secs();
+        let txn = Transaction::new(engine.ndb())?;
+        let live = load_session_states_for_author(engine.ndb(), &txn, author);
+        if let Some(existing) = find_duplicate_spawn(&live, &target, opts.title.as_deref(), now) {
+            // `title` is `Some` and non-empty whenever a match was found.
+            let title = opts.title.as_deref().unwrap_or_default();
+            return Err(duplicate_spawn_error(existing, title, now).into());
+        }
+    }
+
+    // The request's identity, so a host recognizes a retry that slips past the
+    // guard above (an untitled spawn, or one whose earlier session has already
+    // aged out of the recent window) as the same spawn rather than a second one.
+    // `--allow-duplicate` omits it: opting out of the guard has to opt out of the
+    // host's dedupe too, or the host would just re-impose it.
+    let idempotency_key = (!opts.allow_duplicate).then(|| {
+        opts.idempotency_key.clone().unwrap_or_else(|| {
+            spawn_idempotency_key(
+                &target.host,
+                &target.cwd,
+                &target.backend,
+                &SpawnOptions {
+                    title: opts.title.as_deref(),
+                    prompt: opts.prompt.as_deref(),
+                    permission_mode: opts.permission_mode.as_deref(),
+                    idempotency_key: None,
+                },
+            )
+        })
+    });
+
     // `--wait` (also implied by `--prompt`) blocks to *report* the resolved
     // `agentium:` ref. Delivery no longer needs it — a `--prompt` rides the
     // command and the host delivers it — so a slow host is not a failure here.
@@ -610,9 +720,7 @@ async fn cmd_spawn(
             title: opts.title.as_deref(),
             prompt: opts.prompt.as_deref(),
             permission_mode: opts.permission_mode.as_deref(),
-            // The CLI starts attaching a key in a following commit; until then it
-            // publishes as before, and the host has nothing to dedupe on.
-            idempotency_key: None,
+            idempotency_key: idempotency_key.as_deref(),
         },
     )?;
 
@@ -2151,6 +2259,8 @@ impl Cli {
         let mut prompt = None;
         let mut prompt_file = None;
         let mut permission_mode = None;
+        let mut idempotency_key = None;
+        let mut allow_duplicate = false;
         let mut wait = false;
         let mut wait_timeout = None;
         let mut positionals: Vec<String> = Vec::new();
@@ -2205,6 +2315,8 @@ impl Cli {
                 "--permission-mode" => {
                     permission_mode = Some(parse_mode_flag(&value("--permission-mode")?)?)
                 }
+                "--idempotency-key" => idempotency_key = Some(value("--idempotency-key")?),
+                "--allow-duplicate" => allow_duplicate = true,
                 "--wait" => wait = true,
                 "--wait-timeout" => {
                     wait_timeout = Some(
@@ -2260,6 +2372,8 @@ impl Cli {
                 title,
                 prompt,
                 permission_mode,
+                idempotency_key,
+                allow_duplicate,
                 wait,
                 wait_timeout,
             }
@@ -2405,7 +2519,11 @@ COMMANDS:
                       the session's first message (delivery no longer depends on
                       --wait, so a slow host still gets the prompt);
                       --permission-mode picks the mode its agent starts in. --json emits
-                      {{ spawn_id, host, session }}.
+                      {{ spawn_id, host, session }} on one line. A spawn that looks
+                      like a retry of a recent one (same host+cwd+title) is refused,
+                      naming the session it would have duplicated; the host also
+                      answers a retried spawn with the session it already made, so
+                      re-running after a timeout is safe. --allow-duplicate opts out.
     interrupt <session>
                       Abort a live session's in-flight turn on its host — the CLI
                       companion to pressing Esc in Dave. Takes any selector `list`
@@ -2476,6 +2594,15 @@ OPTIONS:
                       auto | bypass. Asking for it in --prompt does NOT work — the
                       backend has already started by the time it reads that
                       message. bypass does no safety checking at all.
+    --idempotency-key <k>
+                      Name this *request*, so a retry of it is recognized as the
+                      same spawn. Defaults to a digest of the request itself
+                      (host+cwd+backend+title+prompt+mode), which already makes an
+                      identical re-run safe; pass your own when you have a better
+                      notion of identity (a job id, say).
+    --allow-duplicate Really spawn a second session the duplicate guard would
+                      refuse. Also drops the idempotency key, so the host doesn't
+                      re-impose the dedupe.
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -3206,8 +3333,162 @@ mod tests {
             title: None,
             prompt: None,
             permission_mode: None,
+            idempotency_key: None,
+            allow_duplicate: false,
             wait: false,
             wait_timeout: None,
+        }
+    }
+
+    /// The pre-publish guard. Each case is a way it could refuse the wrong thing
+    /// or wave through the duplicate it exists to catch.
+    #[test]
+    fn find_duplicate_spawn_matches_only_a_recent_same_target_same_title() {
+        const NOW: u64 = 1_800_000_000;
+        let target = SpawnTarget {
+            host: "mbp".to_string(),
+            cwd: "/home/u/proj".to_string(),
+            backend: "claude".to_string(),
+        };
+        // `session()` puts every row in /home/u/proj, which is the target's cwd.
+        let live = vec![session("mbp", "Fix the parser", "working", NOW - 30)];
+
+        // The duplicate this exists to catch: same host, cwd and title, 30s ago.
+        assert!(
+            find_duplicate_spawn(&live, &target, Some("Fix the parser"), NOW).is_some(),
+            "a titled re-run against a live session must be refused",
+        );
+
+        // Different title — a second, genuinely different task in this worktree.
+        assert!(find_duplicate_spawn(&live, &target, Some("Wire the widget"), NOW).is_none());
+
+        // No title: nothing to compare, so the guard must stand down rather than
+        // refuse every recent sibling in the worktree.
+        assert!(find_duplicate_spawn(&live, &target, None, NOW).is_none());
+        assert!(find_duplicate_spawn(&live, &target, Some(""), NOW).is_none());
+
+        // ...and "no title" must not degenerate into "the empty title", which
+        // would match a session that happens to have one and refuse an untitled
+        // spawn on a coincidence.
+        let untitled = vec![session("mbp", "", "working", NOW - 30)];
+        assert_eq!(untitled[0].display_title(), "");
+        assert!(find_duplicate_spawn(&untitled, &target, None, NOW).is_none());
+        assert!(find_duplicate_spawn(&untitled, &target, Some(""), NOW).is_none());
+
+        // Another host, and another worktree, are not duplicates.
+        let other_host = SpawnTarget {
+            host: "studio".to_string(),
+            cwd: target.cwd.clone(),
+            backend: target.backend.clone(),
+        };
+        assert!(find_duplicate_spawn(&live, &other_host, Some("Fix the parser"), NOW).is_none());
+        let other_cwd = SpawnTarget {
+            host: target.host.clone(),
+            cwd: "/home/u/other".to_string(),
+            backend: target.backend.clone(),
+        };
+        assert!(find_duplicate_spawn(&live, &other_cwd, Some("Fix the parser"), NOW).is_none());
+
+        // Past the window the same title is the same *task* asked for again
+        // later, which is new work.
+        let stale = vec![session(
+            "mbp",
+            "Fix the parser",
+            "working",
+            NOW - SPAWN_DEDUPE_WINDOW_SECS - 1,
+        )];
+        assert!(find_duplicate_spawn(&stale, &target, Some("Fix the parser"), NOW).is_none());
+        // ...but exactly at the window it is still a duplicate.
+        let edge = vec![session(
+            "mbp",
+            "Fix the parser",
+            "working",
+            NOW - SPAWN_DEDUPE_WINDOW_SECS,
+        )];
+        assert!(find_duplicate_spawn(&edge, &target, Some("Fix the parser"), NOW).is_some());
+    }
+
+    /// A `--title` lands in `custom_title`, so the guard has to compare against
+    /// the *displayed* title — not the derived one, which churns with the first
+    /// message and would never match what the caller passed.
+    #[test]
+    fn find_duplicate_spawn_compares_the_displayed_title() {
+        const NOW: u64 = 1_800_000_000;
+        let target = SpawnTarget {
+            host: "mbp".to_string(),
+            cwd: "/home/u/proj".to_string(),
+            backend: "claude".to_string(),
+        };
+        let mut renamed = session("mbp", "read crates/foo and fix…", "working", NOW - 30);
+        renamed.custom_title = Some("Fix the parser".to_string());
+        let live = vec![renamed];
+
+        assert!(
+            find_duplicate_spawn(&live, &target, Some("Fix the parser"), NOW).is_some(),
+            "the sticky title the spawner set is what a retry would pass again",
+        );
+        assert!(
+            find_duplicate_spawn(&live, &target, Some("read crates/foo and fix…"), NOW).is_none()
+        );
+    }
+
+    /// The refusal has to leave the caller somewhere to go, or they reach for the
+    /// retry again — which is how the duplicate happened in the first place.
+    #[test]
+    fn duplicate_spawn_error_names_the_session_and_the_override() {
+        const NOW: u64 = 1_800_000_000;
+        let existing = session("mbp", "Fix the parser", "working", NOW - 42);
+        let message = duplicate_spawn_error(&existing, "Fix the parser", NOW);
+
+        assert!(
+            message.contains(&existing.agentium_uri()),
+            "must name the session it would have duplicated: {message}",
+        );
+        assert!(message.contains("Fix the parser"), "message: {message}");
+        assert!(message.contains("/home/u/proj"), "message: {message}");
+        assert!(message.contains("42s ago"), "message: {message}");
+        assert!(
+            message.contains("--allow-duplicate"),
+            "must name the override, or a caller who really wants two is stuck: {message}",
+        );
+    }
+
+    #[test]
+    fn spawn_captures_duplicate_flags() {
+        let cli = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "--idempotency-key",
+            "job-4821",
+            "--allow-duplicate",
+            "spawn",
+        ])
+        .unwrap()
+        .unwrap();
+        match cli.command {
+            Command::Spawn {
+                idempotency_key,
+                allow_duplicate,
+                ..
+            } => {
+                assert_eq!(idempotency_key.as_deref(), Some("job-4821"));
+                assert!(allow_duplicate);
+            }
+            _ => panic!("expected Spawn"),
+        }
+
+        // Neither flag set is the default: derive the key, and keep the guard on.
+        let bare = parse_cli(&["--nsec", TEST_NSEC, "spawn"]).unwrap().unwrap();
+        match bare.command {
+            Command::Spawn {
+                idempotency_key,
+                allow_duplicate,
+                ..
+            } => {
+                assert_eq!(idempotency_key, None);
+                assert!(!allow_duplicate);
+            }
+            _ => panic!("expected Spawn"),
         }
     }
 
@@ -3247,6 +3528,7 @@ mod tests {
                 permission_mode,
                 wait,
                 wait_timeout,
+                ..
             } => {
                 assert_eq!(host.as_deref(), Some("mac"));
                 assert_eq!(cwd.as_deref(), Some("/x/y"));
@@ -3276,6 +3558,7 @@ mod tests {
                 permission_mode,
                 wait,
                 wait_timeout,
+                ..
             } => {
                 assert!(host.is_none() && cwd.is_none() && backend.is_none());
                 assert!(title.is_none() && prompt.is_none() && !wait);

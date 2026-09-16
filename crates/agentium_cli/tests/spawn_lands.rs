@@ -134,6 +134,10 @@ struct SpawnCommand {
     spawn_id: String,
     prompt: Option<String>,
     permission_mode: Option<String>,
+    /// The `idempotency_key` tag naming the *request*, which a host keys its
+    /// duplicate-spawn dedupe on. Absent when the CLI was told
+    /// `--allow-duplicate`.
+    idempotency_key: Option<String>,
 }
 
 /// Wait (bounded) for the helper host to see a kind-31989 spawn command in its
@@ -156,6 +160,8 @@ async fn await_spawn_command(host: &Engine) -> Option<SpawnCommand> {
         spawn_id: session_events::get_tag_value(note, "spawn_id")?.to_string(),
         prompt: session_events::get_tag_value(note, "prompt").map(|s| s.to_string()),
         permission_mode: session_events::get_tag_value(note, "permission_mode")
+            .map(|s| s.to_string()),
+        idempotency_key: session_events::get_tag_value(note, "idempotency_key")
             .map(|s| s.to_string()),
     })
 }
@@ -334,6 +340,179 @@ async fn spawn_wait_times_out_without_a_host() {
     assert!(
         stderr.contains("no host answered"),
         "should surface the bounded-wait timeout:\n{stderr}"
+    );
+
+    relay.shutdown();
+}
+
+/// Count the kind-31989 spawn commands an engine's cache has seen — the number
+/// of *sessions* a host would have materialized from them.
+fn spawn_command_count(host: &Engine) -> usize {
+    let filter = nostrdb::Filter::new()
+        .kinds([AI_SESSION_COMMAND_KIND as u64])
+        .build();
+    let Ok(txn) = nostrdb::Transaction::new(host.ndb()) else {
+        return 0;
+    };
+    host.ndb().query(&txn, &[filter], 64).map_or(0, |r| r.len())
+}
+
+/// The duplicate, for real: run the actual binary twice with identical spawn
+/// flags — a caller that mis-read the first run's output and re-ran the same
+/// command — and assert the second refuses *before publishing*, so exactly one
+/// kind-31989 command exists and a host would materialize exactly one session.
+///
+/// This is the failure the whole change exists to stop, driven through the real
+/// CLI rather than a unit seam: two invocations, one session. `--allow-duplicate`
+/// is then exercised on a third run to prove the guard is a guard and not a hard
+/// stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_repeated_spawn_publishes_one_command() {
+    const TITLE: &str = "Fix the parser";
+
+    let relay_dir = TempDir::new().expect("relay tmp");
+    let relay_ndb =
+        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
+    let url = relay.url();
+
+    let host_dir = TempDir::new().expect("host tmp");
+    let mut host =
+        Engine::open(host_dir.path().to_str().expect("path"), SECKEY).expect("host engine");
+    host.connect(&url).expect("host connect");
+
+    // One cache dir shared by every run, so the second run sees what the first
+    // produced — exactly as a real retry from the same shell would.
+    let cli_dir = TempDir::new().expect("cli tmp");
+    let db_path = cli_dir.path().to_str().expect("path").to_string();
+    let bin = agentium_bin();
+
+    // The command the caller runs, and then re-runs verbatim.
+    let spawn_run = {
+        let bin = bin.clone();
+        let db_path = db_path.clone();
+        let url = url.clone();
+        let home = cli_dir.path().to_path_buf();
+        move |extra: Vec<&'static str>| {
+            let mut args = vec![
+                "--nsec".to_string(),
+                NSEC.to_string(),
+                "--db".to_string(),
+                db_path.clone(),
+                "--relay".to_string(),
+                url.clone(),
+                "spawn".to_string(),
+                "--host".to_string(),
+                HOST.to_string(),
+                "--cwd".to_string(),
+                CWD.to_string(),
+                "--title".to_string(),
+                TITLE.to_string(),
+                "--wait".to_string(),
+            ];
+            args.extend(extra.into_iter().map(str::to_string));
+            Command::new(&bin)
+                .args(&args)
+                .env("XDG_DATA_HOME", &home)
+                .env("HOME", &home)
+                .output()
+                .expect("run agentium spawn")
+        }
+    };
+
+    // Run 1: a normal spawn, answered by the helper host. The state must carry the
+    // title as `custom_title` (what `--title` becomes) and a *current*
+    // `created_at`, since the guard only refuses against a recent session.
+    let first = {
+        let run = spawn_run.clone();
+        tokio::task::spawn_blocking(move || run(vec![]))
+    };
+    let command = await_spawn_command(&host)
+        .await
+        .expect("host should see the first spawn command");
+    // Derived and attached by the CLI with nothing asked of the caller — the key
+    // is what lets a host recognize a retry that slips past the guard below.
+    assert!(
+        command.idempotency_key.is_some(),
+        "an ordinary spawn must carry an idempotency key",
+    );
+    let state = build_session_state_event(
+        SPAWNED_SID,
+        "Connecting...",
+        Some(TITLE),
+        CWD,
+        "working",
+        None,
+        HOST,
+        "/home/u",
+        "claude",
+        "default",
+        Some(""),
+        Some(&command.spawn_id),
+        None,
+        None,
+        session_events::now_secs(),
+        &SECKEY,
+    )
+    .expect("build state");
+    host.publish_event(&state).expect("publish state");
+    let _ = tokio::time::timeout(Duration::from_secs(5), host.wait_for_sync()).await;
+
+    let out = first.await.expect("join first cli");
+    assert!(
+        out.status.success(),
+        "the first spawn must succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        spawn_command_count(&host),
+        1,
+        "one spawn, one command on the wire"
+    );
+
+    // Run 2: the retry. Identical flags, and it must refuse.
+    let retry = {
+        let run = spawn_run.clone();
+        tokio::task::spawn_blocking(move || run(vec![]))
+    }
+    .await
+    .expect("join retry cli");
+
+    let retry_err = String::from_utf8_lossy(&retry.stderr).into_owned();
+    assert!(
+        !retry.status.success(),
+        "a retried spawn must fail rather than quietly create a second session\nstdout:\n{}",
+        String::from_utf8_lossy(&retry.stdout),
+    );
+    assert!(
+        retry_err.contains("agentium:") && retry_err.contains("--allow-duplicate"),
+        "the refusal must name the existing session and the override:\n{retry_err}",
+    );
+
+    // The assertion that matters: nothing new reached the wire, so a host has
+    // exactly one session to materialize.
+    let _ = tokio::time::timeout(Duration::from_secs(2), host.wait_for_sync()).await;
+    assert_eq!(
+        spawn_command_count(&host),
+        1,
+        "the retry must not publish a second spawn command:\n{retry_err}",
+    );
+
+    // Run 3: the caller really does want a sibling. The guard yields, and a
+    // second command reaches the wire.
+    let forced = tokio::task::spawn_blocking(move || spawn_run(vec!["--allow-duplicate"]))
+        .await
+        .expect("join forced cli");
+    // No host answers this one, so `--wait` times out (nonzero) — but the command
+    // is published before the wait, which is what we are counting.
+    let _ = tokio::time::timeout(Duration::from_secs(30), host.wait_for_sync()).await;
+    assert_eq!(
+        spawn_command_count(&host),
+        2,
+        "--allow-duplicate must still publish\nstderr:\n{}",
+        String::from_utf8_lossy(&forced.stderr),
     );
 
     relay.shutdown();
