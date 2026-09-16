@@ -1678,15 +1678,8 @@ mod tests {
                 .await;
         }
 
-        /// Like [`wait`](Self::wait) but keyed on the switcher's board list —
-        /// used when the quiescence signal is a *second* board appearing rather
-        /// than a change to the default board.
-        async fn wait_boards<F: Fn(&[BoardSummary]) -> bool>(&mut self, pred: F) {
-            self.wait_until(|t| pred(&t.boards())).await;
-        }
-
-        /// Shared loop for [`wait`](Self::wait) / [`wait_boards`](Self::wait_boards):
-        /// pump the reducer until `done` holds, awaiting the writer's own ingest
+        /// Shared loop for [`wait`](Self::wait): pump the reducer until `done`
+        /// holds, awaiting the writer's own ingest
         /// notification (see [`await_ingest`]) between folds rather than polling
         /// against a wall-clock deadline — the only race-free way to wait on an
         /// async ingest. Used when the test waits for a *specific* change to
@@ -1879,20 +1872,23 @@ mod tests {
         let mut t = TestSync::new();
         // Subscribe first so the seeds' ingests arrive as subscription deltas.
         t.poll();
-        t.seed();
-        store::seed_board(
-            &t.ndb,
-            &t.kp.pubkey,
-            &t.secret(),
-            "work",
-            "Work",
-            &mut store::NoPublish,
-        );
+        let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
+        let n = t.seed()
+            + store::seed_board(
+                &t.ndb,
+                &t.kp.pubkey,
+                &t.secret(),
+                "work",
+                "Work",
+                &mut store::NoPublish,
+            );
 
-        // The 'work' board is seeded after the whole demo board, so its event is
-        // the last one ingested: waiting for it to appear means every demo event
-        // has folded in too, with no quiescence guess.
-        t.wait_boards(|bs| bs.iter().any(|b| b.id == "work")).await;
+        // Both seeds counted together, because the writer is free to commit them
+        // out of order: "the 'work' board has appeared" would hold while demo
+        // events were still in flight, and folding those stragglers after the
+        // snapshot below is exactly what this test must not race.
+        await_ingested(&mut stream, n).await;
+        t.poll();
         let folds = t.cache.authors.stats().full_reloads;
 
         // Both boards are discoverable from the one reducer.

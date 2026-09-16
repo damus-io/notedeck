@@ -977,7 +977,7 @@ fn board_arg() -> ToolArg {
 mod tests {
     use super::*;
     use headway::wordid;
-    use nostrdb::{Config, Ndb};
+    use nostrdb::{Config, Ndb, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use notedeck::{Accounts, NoteCache, UnknownIds};
     use serde_json::json;
@@ -993,7 +993,14 @@ mod tests {
         let mut ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
-        store::seed_demo_board(
+
+        // Ingest is async, so subscribe *before* seeding: every event the seed
+        // writes from here on wakes the stream.
+        let sub = ndb
+            .subscribe(&[event::headway_filter(&kp.pubkey)])
+            .expect("subscribe");
+        let mut stream = SubscriptionStream::new(ndb.clone(), sub);
+        let seeded = store::seed_demo_board(
             &ndb,
             &kp.pubkey,
             &secret,
@@ -1002,20 +1009,16 @@ mod tests {
             &mut store::NoPublish,
         );
 
-        // Ingest is async — wait for the board to materialise with all 7 cards.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let txn = Transaction::new(&ndb).expect("txn");
-            let ready = event::load_board(&ndb, &txn, &kp.pubkey, store::BOARD_ID)
-                .map(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7)
-                .unwrap_or(false);
-            drop(txn);
-            if ready {
-                break;
-            }
-            assert!(Instant::now() < deadline, "seeded board never materialised");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // Wait on the seed's own event count rather than on the board's shape.
+        // The seed lands in phases — board/columns/cards, then the dependency
+        // edges, then the post-creation history (subject edits, labels, a
+        // placement, priorities) — so a "7 cards are present" predicate is
+        // satisfied at the end of phase one, with the blockers and priorities
+        // these tests assert on still in flight. The count is reported by the
+        // seeder itself, so it can't drift as seed events are added or removed,
+        // and the wait is bounded: a count that can never be reached fails the
+        // test with the running total instead of hanging.
+        notedeck_testing::await_notes(&mut stream, seeded);
 
         let txn = Transaction::new(&ndb).expect("txn");
         let mut unknown_ids = UnknownIds::default();
