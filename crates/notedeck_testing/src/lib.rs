@@ -11,11 +11,13 @@ pub mod ndb;
 pub mod negentropy_relay;
 pub mod relay;
 pub mod stepping;
+pub mod subscription;
 pub mod ui;
 
 pub use cluster::AccountCluster;
 pub use device::{shutdown_device, AppFactory, DeviceDataDir, DeviceHarness, DeviceState};
 pub use relay::LocalRelayExt;
+pub use subscription::await_notes;
 
 use std::sync::Once;
 

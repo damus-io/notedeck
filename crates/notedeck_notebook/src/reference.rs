@@ -138,7 +138,6 @@ mod tests {
     use super::*;
     use crate::event;
     use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-    use futures_util::StreamExt;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
 
@@ -209,12 +208,7 @@ mod tests {
 
         /// Await `n` committed notes on the side subscription.
         fn await_notes(&mut self, n: usize) {
-            pollster::block_on(async {
-                let mut seen = 0;
-                while seen < n {
-                    seen += self.stream.next().await.expect("subscription open").len();
-                }
-            });
+            notedeck_testing::await_notes(&mut self.stream, n);
         }
 
         /// Pump the shared cache under a fresh read txn.

@@ -398,7 +398,6 @@ mod tests {
     #[test]
     fn live_node_reflects_the_current_content_not_the_snapshot() {
         use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-        use futures_util::StreamExt;
         use nostrdb::{Config, SubscriptionStream};
         use nostrdb_net::FullKeypair;
 
@@ -417,14 +416,7 @@ mod tests {
             .subscribe(&[event::notebook_filter(&kp.pubkey)])
             .unwrap();
         let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
-        let mut await_notes = |n: usize| {
-            pollster::block_on(async {
-                let mut seen = 0;
-                while seen < n {
-                    seen += stream.next().await.expect("subscription open").len();
-                }
-            });
-        };
+        let mut await_notes = |n: usize| notedeck_testing::await_notes(&mut stream, n);
 
         let cache = Rc::new(RefCell::new(NotebookCache::default()));
         let poll_canvas = |cache: &Rc<RefCell<NotebookCache>>| -> Option<crate::event::CanvasView> {
