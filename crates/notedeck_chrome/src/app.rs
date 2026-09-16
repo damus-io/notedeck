@@ -60,34 +60,34 @@ pub enum NotedeckApp {
 
 impl notedeck::App for NotedeckApp {
     #[profiling::function]
-    fn update(&mut self, ctx: &mut AppContext, egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext) {
         match self {
             #[cfg(feature = "dave")]
-            NotedeckApp::Dave(dave) => dave.update(ctx, egui_ctx),
-            NotedeckApp::Columns(columns) => columns.update(ctx, egui_ctx),
+            NotedeckApp::Dave(dave) => dave.update(ctx),
+            NotedeckApp::Columns(columns) => columns.update(ctx),
 
             #[cfg(feature = "notebook")]
-            NotedeckApp::Notebook(notebook) => notebook.update(ctx, egui_ctx),
+            NotedeckApp::Notebook(notebook) => notebook.update(ctx),
 
             #[cfg(feature = "headway")]
-            NotedeckApp::Headway(headway) => headway.update(ctx, egui_ctx),
+            NotedeckApp::Headway(headway) => headway.update(ctx),
 
             #[cfg(feature = "clndash")]
-            NotedeckApp::ClnDash(clndash) => clndash.update(ctx, egui_ctx),
+            NotedeckApp::ClnDash(clndash) => clndash.update(ctx),
 
             #[cfg(feature = "messages")]
-            NotedeckApp::Messages(dms) => dms.update(ctx, egui_ctx),
+            NotedeckApp::Messages(dms) => dms.update(ctx),
 
             #[cfg(feature = "dashboard")]
-            NotedeckApp::Dashboard(db) => db.update(ctx, egui_ctx),
+            NotedeckApp::Dashboard(db) => db.update(ctx),
 
             #[cfg(feature = "horizon")]
-            NotedeckApp::Horizon(horizon) => horizon.update(ctx, egui_ctx),
+            NotedeckApp::Horizon(horizon) => horizon.update(ctx),
 
             #[cfg(feature = "nostrverse")]
-            NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx, egui_ctx),
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx),
 
-            NotedeckApp::Other(_name, other) => other.update(ctx, egui_ctx),
+            NotedeckApp::Other(_name, other) => other.update(ctx),
         }
     }
 

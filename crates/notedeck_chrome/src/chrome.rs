@@ -1258,7 +1258,7 @@ impl notedeck::App for Chrome {
         )
     }
 
-    fn update(&mut self, ctx: &mut notedeck::AppContext, _egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut notedeck::AppContext) {
         ctx.sound.update();
 
         #[cfg(feature = "auto-update")]
@@ -1271,7 +1271,7 @@ impl notedeck::App for Chrome {
         let all_active = self.options.contains(ChromeOptions::AllAppsActive);
         for (i, app) in self.apps.iter_mut().enumerate() {
             if all_active || bitset_get(&self.opened, i as u16) {
-                app.update(ctx, _egui_ctx);
+                app.update(ctx);
             }
         }
     }

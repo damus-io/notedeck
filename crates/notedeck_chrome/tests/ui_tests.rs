@@ -172,7 +172,7 @@ fn render_damus_frame_with_update(ctx: &egui::Context, state: &mut TestState) {
     }
     let mut app_ctx = state.notedeck.app_context();
     app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
-    state.damus.update(&mut app_ctx, ctx);
+    state.damus.update(&mut app_ctx);
     egui::CentralPanel::default().show(ctx, |ui| {
         state.damus.render(&mut app_ctx, ui);
     });

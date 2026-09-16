@@ -842,7 +842,7 @@ impl NostrverseApp {
 }
 
 impl notedeck::App for NostrverseApp {
-    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         self.initialize(ctx);
         self.poll_space_updates(ctx.ndb);
         self.poll_model_downloads();

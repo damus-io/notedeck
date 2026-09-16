@@ -44,7 +44,7 @@ use nostrdb::{NoteKey, Subscription, Transaction};
 use nostrdb_net::KeypairUnowned;
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType,
+    DataPathType, Waker,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -2707,7 +2707,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// ([`poll_session_state_events`](Self::poll_session_state_events)): both run
     /// on the render thread and dedup by `event_session_id`, so whichever
     /// materializes a session first wins and the other skips it.
-    fn drain_session_restore(&mut self, waker: &notedeck::Waker) {
+    fn drain_session_restore(&mut self, waker: &Waker) {
         // Messages tagged with a different account are stale (the user switched
         // accounts while an in-flight restore was streaming); drop them.
         let current = self.pns_local_state.as_ref().map(|state| state.account);
@@ -2846,7 +2846,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// re-publishes, which would double-write. The cache is shared (cloned `Rc`)
     /// into the reference parser and renderer, so the fold happens once per account.
     #[profiling::function]
-    fn pump_session_cache(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    fn pump_session_cache(&mut self, ctx: &mut AppContext<'_>) {
         let author = *ctx.accounts.selected_account_pubkey();
         let Ok(txn) = Transaction::new(ctx.ndb) else {
             return;
@@ -2857,7 +2857,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .poll(ctx.ndb, &txn, &author)
             .changed;
         if changed {
-            egui_ctx.request_repaint();
+            ctx.wake();
         }
     }
 
@@ -4089,7 +4089,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             ui.ctx(),
         ) {
             SendActionResult::SendMessage => {
-                self.handle_user_send(ctx, ui);
+                self.handle_user_send(ctx);
             }
             SendActionResult::NeedsRelayPublish(publish) => {
                 self.pending_perm_responses.push(publish);
@@ -4315,7 +4315,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Handle a user send action triggered by the ui
-    fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
+    fn handle_user_send(&mut self, app_ctx: &AppContext) {
         // Check for /cd command first (agentic only)
         let cd_result = self
             .session_manager
@@ -4375,18 +4375,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 return;
             }
         }
-        self.send_user_message(app_ctx, ui.ctx());
+        self.send_user_message(app_ctx, app_ctx.waker);
     }
 
-    fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
+    fn send_user_message(&mut self, app_ctx: &AppContext, waker: &Waker) {
         let Some(active_id) = self.session_manager.active_id() else {
             return;
         };
-        self.send_user_message_for(active_id, app_ctx, ctx);
+        self.send_user_message_for(active_id, app_ctx, waker);
     }
 
     /// Send a message for a specific session by ID
-    fn send_user_message_for(&mut self, sid: SessionId, app_ctx: &AppContext, ctx: &egui::Context) {
+    fn send_user_message_for(&mut self, sid: SessionId, app_ctx: &AppContext, waker: &Waker) {
         let Some(session) = self.session_manager.get_mut(sid) else {
             return;
         };
@@ -4432,8 +4432,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let backend_type = session.backend_type;
         let tools = self.tools.clone();
         let model_name = session.details.resolve_model();
-        let ctx = ctx.clone();
-
         // Use backend to stream request. `rx` is `None` for persistent-stream
         // backends on subsequent turns — the session already owns a long-lived
         // channel we must keep, so only replace `incoming_tokens` when a new
@@ -4448,7 +4446,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cwd,
             resume_session_id,
             permission_mode,
-            notedeck::Waker::egui(&ctx),
+            waker.clone(),
         );
         if let Some(rx) = rx {
             session.incoming_tokens = Some(rx);
@@ -4851,10 +4849,15 @@ pub fn is_agentium_kind(kind: u32) -> bool {
 }
 
 impl notedeck::App for Dave {
-    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
+        // Copied out up front: the backend dispatches below hand a clone of this
+        // to worker tasks, and each of those calls needs it while `ctx` is
+        // mut-borrowed elsewhere.
+        let waker = ctx.waker;
+
         // Ensure the background session-restore worker is running (idempotent).
         self.session_restore_loader
-            .start(ctx.waker.clone(), ctx.ndb.clone());
+            .start(waker.clone(), ctx.ndb.clone());
 
         // Focus a session whose inline chip was clicked in another app.
         self.process_pending_open(ctx.ndb);
@@ -4871,7 +4874,7 @@ impl notedeck::App for Dave {
         let pending = std::mem::take(&mut self.pending_summaries);
         for note_id in pending {
             if let Some(sid) = self.build_summary_session(ctx.ndb, &note_id) {
-                self.send_user_message_for(sid, ctx, egui_ctx);
+                self.send_user_message_for(sid, ctx, waker);
             }
         }
 
@@ -4888,14 +4891,14 @@ impl notedeck::App for Dave {
         self.drain_session_restore(ctx.waker);
 
         // Advance the shared inline-session cache backing `agentium:` chips.
-        self.pump_session_cache(ctx, egui_ctx);
+        self.pump_session_cache(ctx);
 
         // Poll for spawn commands targeting this host. A spawn carrying a `prompt`
         // tag returns its new session with the first message already in chat;
         // dispatch it to the backend now (we hold the egui context it needs).
         let spawned_with_prompt = self.poll_session_command_events(ctx);
         for sid in spawned_with_prompt {
-            self.send_user_message_for(sid, ctx, egui_ctx);
+            self.send_user_message_for(sid, ctx, waker);
         }
 
         // Poll for live run-config updates from PNS relay
@@ -4941,7 +4944,7 @@ impl notedeck::App for Dave {
                 .get(sid)
                 .is_some_and(|s| s.should_dispatch_remote_message());
             if should_dispatch {
-                self.send_user_message_for(sid, ctx, egui_ctx);
+                self.send_user_message_for(sid, ctx, waker);
             }
         }
 
@@ -5016,12 +5019,12 @@ impl notedeck::App for Dave {
             get_backend(&self.backends, apply.backend_type).set_permission_mode(
                 apply.backend_sid,
                 apply.mode,
-                notedeck::Waker::egui(egui_ctx),
+                waker.clone(),
             );
         }
         for apply in applies.interrupts {
             get_backend(&self.backends, apply.backend_type)
-                .interrupt_session(apply.backend_sid, notedeck::Waker::egui(egui_ctx));
+                .interrupt_session(apply.backend_sid, waker.clone());
         }
 
         // Poll git status for local agentic sessions
@@ -5092,7 +5095,14 @@ impl notedeck::App for Dave {
         // the steal logic executes (even if no switch was needed).
         // Stays Pending while the user is typing or holding modifier keys
         // so it retries next frame.
-        if self.auto_steal == focus_queue::AutoStealState::Pending {
+        //
+        // The whole thing is about which session the *window* shows, so it needs
+        // one: it reads held modifiers and raises the app. With no window
+        // (`--headless`) there is nothing to focus and no keyboard to suppress
+        // it, so the request stays Pending — a display that appears later can
+        // still honour it — and nothing else here depends on it clearing.
+        if let (focus_queue::AutoStealState::Pending, Some(egui_ctx)) = (self.auto_steal, ctx.egui)
+        {
             let user_is_typing = self
                 .session_manager
                 .get_active()
@@ -5128,7 +5138,7 @@ impl notedeck::App for Dave {
                 "Session {}: dispatching queued message via send_user_message_for",
                 session_id
             );
-            self.send_user_message_for(session_id, ctx, egui_ctx);
+            self.send_user_message_for(session_id, ctx, waker);
         }
 
         // Dispatch compact queries for sessions in compact-and-proceed flow
@@ -5137,7 +5147,7 @@ impl notedeck::App for Dave {
                 &mut self.session_manager,
                 &self.backends,
                 session_id,
-                egui_ctx,
+                waker,
             );
         }
     }
@@ -6067,7 +6077,7 @@ fn dispatch_compact_for_session(
     session_manager: &mut session::SessionManager,
     backends: &HashMap<BackendType, Box<dyn AiBackend>>,
     session_id: SessionId,
-    ctx: &egui::Context,
+    waker: &Waker,
 ) {
     let Some(session) = session_manager.get(session_id) else {
         return;
@@ -6080,7 +6090,7 @@ fn dispatch_compact_for_session(
     );
     let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
-    let compact_rx = backend.compact_session(backend_session_id, notedeck::Waker::egui(ctx));
+    let compact_rx = backend.compact_session(backend_session_id, waker.clone());
     // A non-persistent backend that returned no receiver has no live session to
     // compact — nothing to do. A persistent backend reuses its existing channel
     // (None) and must still record the compact-and-proceed intent.

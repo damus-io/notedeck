@@ -65,7 +65,7 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
     let mut app_ctx = state.notedeck.app_context();
     // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
     // every opened app each frame, then `render` for the foreground one.
-    state.headway.update(&mut app_ctx, ctx);
+    state.headway.update(&mut app_ctx);
 
     // The inline-reference snapshot views a kind-1 note through NoteView rather
     // than the Headway app; the board sync above keeps its cache live either way.

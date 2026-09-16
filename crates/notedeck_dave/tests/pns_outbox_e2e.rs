@@ -88,9 +88,9 @@ impl ControllableDave {
 }
 
 impl App for ControllableDave {
-    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         self.apply_pending_commands(ctx);
-        self.dave.update(ctx, egui_ctx);
+        self.dave.update(ctx);
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {

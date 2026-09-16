@@ -65,8 +65,12 @@ impl Drop for MessagesApp {
 
 impl App for MessagesApp {
     #[profiling::function]
-    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        let is_narrow = is_narrow(egui_ctx);
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
+        // Whether to start on the list (narrow) or straight in a conversation
+        // (wide). With no window there is no width, so take the desktop shape:
+        // headless nothing is drawn either way, and this beats deciding it off a
+        // screen rect a windowless context made up.
+        let is_narrow = ctx.egui.is_some_and(is_narrow);
         let Some(cache) = self.messages.get_current_mut(ctx.accounts) else {
             return;
         };

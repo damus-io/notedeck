@@ -50,7 +50,7 @@ fn render_horizon(ctx: &egui::Context, state: &mut HorizonTestState) {
 
     let mut app_ctx = state.notedeck.app_context();
     // Drive the app's data load (subscribe + reload) then render.
-    state.horizon.update(&mut app_ctx, ctx);
+    state.horizon.update(&mut app_ctx);
     egui::CentralPanel::default().show(ctx, |ui| {
         state.horizon.render(&mut app_ctx, ui);
     });

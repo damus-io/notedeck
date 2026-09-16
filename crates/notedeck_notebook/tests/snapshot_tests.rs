@@ -108,7 +108,7 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
     let mut app_ctx = state.notedeck.app_context();
     // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
     // every opened app each frame, then `render` for the foreground one.
-    state.notebook.update(&mut app_ctx, ctx);
+    state.notebook.update(&mut app_ctx);
 
     // Reference-chip mode: draw note/Dave surfaces holding an inline
     // `notebook:<word-id>` instead of the canvas. `update` above already folded

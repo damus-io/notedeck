@@ -273,10 +273,10 @@ impl Default for Dashboard {
 }
 
 impl notedeck::App for Dashboard {
-    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         if !self.initialized {
             self.initialized = true;
-            self.init(egui_ctx.clone(), ctx);
+            self.init(ctx.waker.clone(), ctx);
         }
 
         self.process_worker_msgs();
@@ -298,7 +298,7 @@ impl Dashboard {
         }
     }
 
-    fn init(&mut self, egui_ctx: egui::Context, ctx: &mut AppContext<'_>) {
+    fn init(&mut self, waker: notedeck::Waker, ctx: &mut AppContext<'_>) {
         // spawn single worker thread and keep it alive
         let (cmd_tx, cmd_rx) = chan::unbounded::<WorkerCmd>();
         let (msg_tx, msg_rx) = chan::unbounded::<WorkerMsg>();
@@ -309,7 +309,7 @@ impl Dashboard {
         // Clone the DB handle into the worker thread (Ndb is typically cheap/cloneable)
         let ndb = ctx.ndb.clone();
 
-        spawn_worker(egui_ctx, ndb, cmd_rx, msg_tx);
+        spawn_worker(waker, ndb, cmd_rx, msg_tx);
 
         // kick the first run immediately
         let _ = cmd_tx.send(WorkerCmd::Refresh);
@@ -436,8 +436,10 @@ impl Dashboard {
 // Worker side (single pass, periodic snapshots)
 // ----------------------
 
+/// Run the dashboard's fold on its own thread, waking the host (via `waker`)
+/// each time it emits a partial snapshot the UI could show.
 fn spawn_worker(
-    ctx: egui::Context,
+    waker: notedeck::Waker,
     ndb: Ndb,
     cmd_rx: chan::Receiver<WorkerCmd>,
     msg_tx: chan::Sender<WorkerMsg>,
@@ -452,7 +454,7 @@ fn spawn_worker(
                     Ok(WorkerCmd::Refresh) => {
                         let started_at = Instant::now();
 
-                        match materialize_single_pass(&ctx, &ndb, &msg_tx, started_at) {
+                        match materialize_single_pass(&waker, &ndb, &msg_tx, started_at) {
                             Ok(state) => {
                                 let _ = msg_tx.send(WorkerMsg::Finished {
                                     started_at,
@@ -491,7 +493,7 @@ struct Acc {
 }
 
 fn materialize_single_pass(
-    ctx: &egui::Context,
+    waker: &notedeck::Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<WorkerMsg>,
     started_at: Instant,
@@ -557,7 +559,7 @@ fn materialize_single_pass(
                 state: acc.state.clone(),
             }));
 
-            ctx.request_repaint();
+            waker.wake();
         }
 
         acc

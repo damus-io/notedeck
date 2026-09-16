@@ -99,8 +99,13 @@ impl NotedeckRemoteConfig {
 }
 
 pub trait App {
-    /// Background processing — called every frame for ALL apps.
-    fn update(&mut self, _ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {}
+    /// Background processing — called every frame for ALL apps, including under
+    /// `--headless` where nothing renders.
+    ///
+    /// Everything this needs is on [`AppContext`]: `ctx.wake()` to ask the host
+    /// for another pass, `ctx.waker` to clone into a worker, and
+    /// `ctx.egui` — `None` headless — for the rare display-coupled read.
+    fn update(&mut self, _ctx: &mut AppContext<'_>) {}
 
     /// UI rendering — called only for the active/visible app.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
@@ -307,6 +312,15 @@ pub struct Notedeck {
     #[allow(dead_code)]
     local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
 
+    /// This host's egui context, or `None` under `--headless`, where there is no
+    /// window to read input from, send viewport commands to, or animate.
+    ///
+    /// Handed to each frame's [`AppContext::egui`](crate::AppContext::egui). A
+    /// handle rather than the live pass context: `egui::Context` is an `Arc` over
+    /// the shared per-viewport state, so the one captured at init reads the same
+    /// input and screen rect as the one eframe passes to `update`.
+    egui: Option<egui::Context>,
+
     /// How anything off the render thread asks this host for another pass:
     /// `request_repaint` in the GUI, a `Notify` signal headless.
     ///
@@ -368,7 +382,7 @@ fn render_notedeck(
     ctx: &egui::Context,
     headless: bool,
 ) {
-    app.borrow_mut().update(app_ctx, ctx);
+    app.borrow_mut().update(app_ctx);
     if headless {
         return;
     }
@@ -725,6 +739,10 @@ impl Notedeck {
             None => Waker::egui(ctx),
         };
 
+        // A headless run has no window, so apps get no context to read one
+        // from; `headless_wake` is exactly the `--headless` bit.
+        let egui = headless_wake.is_none().then(|| ctx.clone());
+
         let config = Config::new()
             .set_ingester_threads(2)
             .set_mapsize(map_size)
@@ -923,6 +941,7 @@ impl Notedeck {
             app_actions: AppActionQueue::default(),
             navigator: crate::Navigator::default(),
             local_relay,
+            egui,
             waker,
             pass_nr: 0,
             headless_wake,
@@ -991,6 +1010,7 @@ impl Notedeck {
                 navigator: &mut self.navigator,
                 private_channels: &mut self.private_channels,
                 waker: &self.waker,
+                egui: self.egui.as_ref(),
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
@@ -1426,12 +1446,27 @@ mod tick_headless_tests {
     }
 
     impl App for CountingApp {
-        fn update(&mut self, _ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+        fn update(&mut self, _ctx: &mut AppContext<'_>) {
             self.updates.set(self.updates.get() + 1);
         }
 
         fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
             self.renders.set(self.renders.get() + 1);
+            AppResponse::none()
+        }
+    }
+
+    /// An app that records whether the host handed it a display this tick.
+    struct DisplayProbe {
+        saw_egui: Rc<Cell<Option<bool>>>,
+    }
+
+    impl App for DisplayProbe {
+        fn update(&mut self, ctx: &mut AppContext<'_>) {
+            self.saw_egui.set(Some(ctx.egui.is_some()));
+        }
+
+        fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
             AppResponse::none()
         }
     }
@@ -1683,6 +1718,52 @@ mod tick_headless_tests {
             repaints.load(std::sync::atomic::Ordering::Relaxed),
             1,
             "a GUI wake must ask egui for another frame"
+        );
+    }
+
+    /// `AppContext::egui` is the whole of what an app can still learn about the
+    /// display, so what a `--headless` tick puts there is the contract: `None`,
+    /// not a windowless context standing in for one. An app that guards its
+    /// display-coupled work on this (columns' input handler, dave's focus
+    /// steal, headway/notebook's animation repaints) is only correct if
+    /// headless actually says so.
+    #[tokio::test]
+    async fn a_headless_tick_hands_the_app_no_display() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let (mut notedeck, ui_ctx) = headless_notedeck(&tmp);
+
+        let saw_egui = Rc::new(Cell::new(None));
+        notedeck.set_app(DisplayProbe {
+            saw_egui: saw_egui.clone(),
+        });
+
+        notedeck.tick_headless(&ui_ctx);
+        assert_eq!(
+            saw_egui.get(),
+            Some(false),
+            "a headless app must be told there is no display, not handed a \
+             windowless context"
+        );
+    }
+
+    /// And the GUI tick does hand one over, or every app that guards on it would
+    /// quietly stop reading input.
+    #[tokio::test]
+    async fn a_gui_tick_hands_the_app_its_display() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let mut notedeck = test_notedeck(&tmp);
+
+        let saw_egui = Rc::new(Cell::new(None));
+        notedeck.set_app(DisplayProbe {
+            saw_egui: saw_egui.clone(),
+        });
+
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| notedeck.tick(ctx));
+        assert_eq!(
+            saw_egui.get(),
+            Some(true),
+            "a GUI app must get its host's egui context"
         );
     }
 

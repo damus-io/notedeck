@@ -71,6 +71,16 @@ pub struct AppContext<'a> {
     /// a worker or spawned task that will produce something later. Always
     /// present: a host that cannot be woken would sit on completed work.
     pub waker: &'a crate::Waker,
+    /// This host's egui context, or `None` when it has no display at all — a
+    /// `--headless` run.
+    ///
+    /// Only for what genuinely needs a window: reading input, the screen rect, a
+    /// viewport command, a *delayed* repaint for an animation. To ask for
+    /// another pass use [`wake`](AppContext::wake), which always works; to draw,
+    /// use the `ui.ctx()` that `render` is given. A `None` here means there is
+    /// no window to read, command or animate, so the right response is to skip
+    /// the work rather than to fabricate a default.
+    pub egui: Option<&'a egui::Context>,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

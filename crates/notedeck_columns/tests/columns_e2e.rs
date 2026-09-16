@@ -62,7 +62,7 @@ impl ThreadLoadApp {
 }
 
 impl App for ThreadLoadApp {
-    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         if self.opened {
             return;
         }
@@ -128,7 +128,7 @@ impl SingleTimelineApp {
 }
 
 impl App for SingleTimelineApp {
-    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         if self.opened {
             return;
         }
@@ -157,7 +157,7 @@ impl App for SingleTimelineApp {
 }
 
 impl App for TimelineAndThreadLoadApp {
-    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         let txn = Transaction::new(ctx.ndb).expect("txn");
         let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
         let account_pk = scoped_subs.selected_account_pubkey();

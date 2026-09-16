@@ -274,7 +274,7 @@ impl Default for Horizon {
 }
 
 impl notedeck::App for Horizon {
-    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         // Sync this account's own calendar events across its devices over the
         // private relays, and remember the resolved set as our publish targets.
         let author = *ctx.accounts.selected_account_pubkey();

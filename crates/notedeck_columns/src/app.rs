@@ -173,12 +173,16 @@ fn handle_egui_events(
     }
 }
 
-#[profiling::function]
-fn try_process_event(
-    damus: &mut Damus,
-    app_ctx: &mut AppContext<'_>,
-    ctx: &egui::Context,
-) -> Result<()> {
+/// Route this frame's keyboard/pointer input into the active columns.
+///
+/// Only reachable with a window: headless there is no input to read, which is
+/// what `AppContext::egui` being `None` says. That was already a no-op there —
+/// the fabricated context's input was always empty — so skipping it changes
+/// nothing except that nothing has to fabricate a context to be read.
+///
+/// (Running this from `update` at all is a separate bug: a backgrounded columns
+/// still consumes Escape. See headway:notedeck/spoil-diary-squirrel.)
+fn handle_input(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
     let wants_keyboard_input = ctx.wants_keyboard_input();
@@ -206,8 +210,18 @@ fn try_process_event(
     {
         current_columns.get_selected_router().go_back();
     }
+}
+
+#[profiling::function]
+fn try_process_event(damus: &mut Damus, app_ctx: &mut AppContext<'_>) -> Result<()> {
+    if let Some(ctx) = app_ctx.egui {
+        handle_input(damus, app_ctx, ctx);
+    }
 
     let selected_account_pk = *app_ctx.accounts.selected_account_pubkey();
+    // Copied out so the loop below can wake the host while holding disjoint
+    // `&mut` reborrows of `app_ctx`.
+    let waker = app_ctx.waker;
     for (kind, timeline) in &mut damus.timeline_cache {
         if timeline.subscription.dependers(&selected_account_pk) == 0 {
             continue;
@@ -258,7 +272,7 @@ fn try_process_event(
             ) {
                 Ok(new_note_keys) => {
                     if !new_note_keys.is_empty() {
-                        ctx.request_repaint();
+                        waker.wake();
                     }
                     if !new_note_keys.is_empty() && matches!(kind, TimelineKind::Notifications(_)) {
                         let txn = Transaction::new(app_ctx.ndb).expect("txn");
@@ -377,7 +391,7 @@ fn handle_timeline_loader_messages(
 }
 
 #[profiling::function]
-fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
+fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
     app_ctx.img_cache.urls.cache.handle_io();
 
     damus
@@ -421,7 +435,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
         follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
     }
 
-    if let Err(err) = try_process_event(damus, app_ctx, ctx) {
+    if let Err(err) = try_process_event(damus, app_ctx) {
         error!("error processing event: {}", err);
     }
 }
@@ -1113,8 +1127,8 @@ fn timelines_view(
 
 impl notedeck::App for Damus {
     #[profiling::function]
-    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        update_damus(self, ctx, egui_ctx);
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
+        update_damus(self, ctx);
     }
 
     #[profiling::function]

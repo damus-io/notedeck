@@ -705,11 +705,23 @@ impl Notebook {
     /// Driven from [`update`](notedeck::App::update) (which runs every frame for
     /// all opened apps), so the poll/fan-out loop keeps ticking even
     /// off-foreground.
-    fn pump_repaint(&mut self, ctx: &egui::Context) {
-        if self.repaint_frames > 0 {
-            self.repaint_frames -= 1;
-            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+    /// Spend one of the follow-up frames [`wake`](Self::wake) queued, asking
+    /// egui to come back in 60ms.
+    ///
+    /// A *delayed* repaint rather than `ctx.wake()`: this paces a poll of the
+    /// writer thread, so an immediate wake would spin (the wake's own `update`
+    /// asks for the next one). It therefore needs a window, and does nothing
+    /// without one — a headless host has no animation clock, and its run loop
+    /// already drops delayed requests in favour of its own idle cap.
+    fn pump_repaint(&mut self, egui: Option<&egui::Context>) {
+        if self.repaint_frames == 0 {
+            return;
         }
+        let Some(ctx) = egui else {
+            return;
+        };
+        self.repaint_frames -= 1;
+        ctx.request_repaint_after(std::time::Duration::from_millis(60));
     }
 
     /// Render the full-screen longform editor and act on the frame's
@@ -1106,7 +1118,7 @@ impl notedeck::App for Notebook {
     /// host (which syncs the sealed channel both directions off-foreground), pumps
     /// the local canvas + vault folds, and auto-seeds a default canvas. Rendering
     /// happens separately in [`render`].
-    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         let author = *ctx.accounts.selected_account_pubkey();
         // Copy the secret out so we don't hold a borrow on `accounts` while we
         // also touch `ndb`/`remote`. `None` for a pubkey-only (watch) account.
@@ -1219,7 +1231,7 @@ impl notedeck::App for Notebook {
             self.wake();
         }
 
-        self.pump_repaint(egui_ctx);
+        self.pump_repaint(ctx.egui);
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {

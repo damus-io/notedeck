@@ -176,11 +176,23 @@ impl Headway {
     /// Burn down the repaint countdown, requesting a delayed repaint each step.
     /// Driven from [`update`](App::update) (which runs every frame for all opened
     /// apps), so the poll/fan-out loop keeps ticking even off-foreground.
-    fn pump_repaint(&mut self, ctx: &egui::Context) {
-        if self.repaint_frames > 0 {
-            self.repaint_frames -= 1;
-            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+    /// Spend one of the follow-up frames [`wake`](Self::wake) queued, asking
+    /// egui to come back in 60ms.
+    ///
+    /// A *delayed* repaint rather than `ctx.wake()`: this paces a poll of the
+    /// writer thread, so an immediate wake would spin (the wake's own `update`
+    /// asks for the next one). It therefore needs a window, and does nothing
+    /// without one — a headless host has no animation clock, and its run loop
+    /// already drops delayed requests in favour of its own idle cap.
+    fn pump_repaint(&mut self, egui: Option<&egui::Context>) {
+        if self.repaint_frames == 0 {
+            return;
         }
+        let Some(ctx) = egui else {
+            return;
+        };
+        self.repaint_frames -= 1;
+        ctx.request_repaint_after(std::time::Duration::from_millis(60));
     }
 
     /// Poll the live key-share subscription (creating it on first use), returning
@@ -494,7 +506,7 @@ impl App for Headway {
     /// while the user is on another tab still sync out. Polls the account's board
     /// subscription, fans freshly-ingested events out to its private relays, and
     /// auto-seeds a default board. Rendering happens separately in [`render`].
-    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         let author = *ctx.accounts.selected_account_pubkey();
         // Copy the secret out so we don't hold a borrow on `accounts` while we
         // also touch `ndb`/`remote`. `None` for a pubkey-only (watch) account.
@@ -658,7 +670,7 @@ impl App for Headway {
             }
         }
 
-        self.pump_repaint(egui_ctx);
+        self.pump_repaint(ctx.egui);
     }
 
     /// Render Headway's currently-open board or card detail (whichever

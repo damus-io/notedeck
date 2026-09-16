@@ -27,7 +27,7 @@ fn render_dashboard(ctx: &egui::Context, state: &mut DashTestState) {
     }
 
     let mut app_ctx = state.notedeck.app_context();
-    state.dashboard.update(&mut app_ctx, ctx);
+    state.dashboard.update(&mut app_ctx);
     egui::CentralPanel::default().show(ctx, |ui| {
         state.dashboard.render(&mut app_ctx, ui);
     });

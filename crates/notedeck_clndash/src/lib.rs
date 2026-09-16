@@ -60,7 +60,7 @@ struct CommChannel {
 }
 
 impl notedeck::App for ClnDash {
-    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         if !self.initialized {
             self.connection_state = ConnectionState::Connecting;
             self.setup_connection();
