@@ -144,25 +144,20 @@ async fn async_main() {
 /// GUI — just without the render pass. Intended for a headless server / SSH run
 /// where no display stack is available.
 ///
-/// The loop blocks on [`Notedeck::headless_waker`], the signal every
-/// `request_repaint()` on the headless context is routed into, with
-/// [`HEADLESS_MAX_IDLE`] as a hard cap so it still ticks periodically (and
-/// advances promise-based work) when nothing is asking for a frame. A relay
-/// event or a streaming dave session thus wakes it immediately, but an idle
-/// process sleeps instead of spinning.
+/// The loop blocks on [`Notedeck::headless_waker`], the signal every wake is
+/// routed into, with [`HEADLESS_MAX_IDLE`] as a hard cap so it still ticks
+/// periodically (and advances promise-based work) when nothing is asking for
+/// one. A relay event or a streaming dave session thus wakes it immediately, but
+/// an idle process sleeps instead of spinning.
 ///
 /// On SIGINT/SIGTERM the loop breaks so `Notedeck` (and its `AppContext`) drop
 /// cleanly, which flushes the remote outbox (`AppContext::drop` -> `remote.flush()`);
 /// the relay bridge thread stays alive until that final flush completes.
 #[cfg(not(target_arch = "wasm32"))]
 async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
-    // Windowless context: nothing renders from it, but repaint requests against
-    // it are what schedule this loop's work — `Notedeck::init` routes them into
-    // the headless waker below.
-    let ctx = egui::Context::default();
-
-    let mut notedeck = Notedeck::init(&ctx, base_path, &args);
-    notedeck.setup(&ctx);
+    // No egui::Context anywhere: nothing renders, nothing reads input, and wakes
+    // reach this loop through the waker below rather than through a repaint.
+    let mut notedeck = Notedeck::init_headless(base_path, &args);
     let chrome = match Chrome::new_headless(&args, &mut notedeck) {
         Ok(chrome) => chrome,
         Err(err) => {
@@ -172,9 +167,8 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     };
     notedeck.set_app(chrome);
 
-    // Fired by every repaint request on `ctx`; present because we booted with
-    // `--headless`. Held for the life of the loop so stored wake permits aren't
-    // lost between ticks.
+    // Fired by every wake; present because we booted headless. Held for the life
+    // of the loop so stored wake permits aren't lost between ticks.
     let wake = notedeck.headless_waker();
 
     info!(
@@ -188,7 +182,7 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     loop {
         // Apply pending background work first (on entry: session restore,
         // private-sync spawn, ...), then sleep until the next wake or the cap.
-        notedeck.tick_headless(&ctx);
+        notedeck.tick_headless();
 
         let idle = tokio::time::sleep(HEADLESS_MAX_IDLE);
         tokio::select! {

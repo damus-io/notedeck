@@ -272,7 +272,7 @@ fn build_dave_device(
     // Dave's inbound PNS sync is now owned by the notedeck host, which is off
     // under the test harness by default — force it on so these tests exercise the
     // account's inbound path (dave reads the resulting local nostrdb state).
-    let app_factory: AppFactory = Box::new(move |notedeck, _egui_ctx| {
+    let app_factory: AppFactory = Box::new(move |notedeck, egui_ctx| {
         notedeck.enable_host_private_sync_for_test();
         app_factory(notedeck, egui_ctx);
     });
