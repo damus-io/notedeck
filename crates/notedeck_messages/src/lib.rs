@@ -71,7 +71,7 @@ impl App for MessagesApp {
             return;
         };
 
-        self.loader.start(egui_ctx.clone(), ctx.ndb.clone());
+        self.loader.start(ctx.waker.clone(), ctx.ndb.clone());
 
         ensure_selected_account_dm_relay_list(ctx.ndb, &mut ctx.remote, ctx.accounts, cache);
 

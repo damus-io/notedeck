@@ -337,13 +337,13 @@ fn schedule_timeline_load(
 fn handle_timeline_loader_messages(
     damus: &mut Damus,
     app_ctx: &mut AppContext<'_>,
-    ctx: &egui::Context,
+    waker: &notedeck::Waker,
 ) {
     let start = Instant::now();
     let mut handled = 0;
     loop {
         if handled > 0 && start.elapsed() >= TIMELINE_LOADER_APPLY_BUDGET {
-            ctx.request_repaint();
+            waker.wake();
             break;
         }
 
@@ -382,7 +382,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
 
     damus
         .timeline_loader
-        .start(ctx.clone(), app_ctx.ndb.clone());
+        .start(app_ctx.waker.clone(), app_ctx.ndb.clone());
 
     if damus.columns(app_ctx.accounts).columns().is_empty() {
         damus
@@ -413,7 +413,9 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
         DamusState::Initialized => (),
     };
 
-    handle_timeline_loader_messages(damus, app_ctx, ctx);
+    // Copy the shared `&Waker` out before the `&mut app_ctx` reborrow below.
+    let waker = app_ctx.waker;
+    handle_timeline_loader_messages(damus, app_ctx, waker);
 
     if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
         follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);

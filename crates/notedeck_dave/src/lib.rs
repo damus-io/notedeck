@@ -2707,7 +2707,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// ([`poll_session_state_events`](Self::poll_session_state_events)): both run
     /// on the render thread and dedup by `event_session_id`, so whichever
     /// materializes a session first wins and the other skips it.
-    fn drain_session_restore(&mut self, egui_ctx: &egui::Context) {
+    fn drain_session_restore(&mut self, waker: &notedeck::Waker) {
         // Messages tagged with a different account are stale (the user switched
         // accounts while an in-flight restore was streaming); drop them.
         let current = self.pns_local_state.as_ref().map(|state| state.account);
@@ -2726,7 +2726,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let mut handled = 0usize;
         loop {
             if handled > 0 && start.elapsed() >= SESSION_RESTORE_APPLY_BUDGET {
-                egui_ctx.request_repaint();
+                waker.wake();
                 break;
             }
             let Some(msg) = self.session_restore_loader.try_recv() else {
@@ -4854,7 +4854,7 @@ impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         // Ensure the background session-restore worker is running (idempotent).
         self.session_restore_loader
-            .start(egui_ctx.clone(), ctx.ndb.clone());
+            .start(ctx.waker.clone(), ctx.ndb.clone());
 
         // Focus a session whose inline chip was clicked in another app.
         self.process_pending_open(ctx.ndb);
@@ -4885,7 +4885,7 @@ impl notedeck::App for Dave {
         self.poll_session_state_events(ctx);
 
         // Drain background-restored sessions into the manager (a few per frame).
-        self.drain_session_restore(egui_ctx);
+        self.drain_session_restore(ctx.waker);
 
         // Advance the shared inline-session cache backing `agentium:` chips.
         self.pump_session_cache(ctx, egui_ctx);
@@ -7084,16 +7084,18 @@ mod tests {
             has_secret_key: true,
         });
 
-        let egui_ctx = egui::Context::default();
+        // A noop waker: this test drives the drain itself rather than
+        // waiting to be woken.
+        let waker = notedeck::Waker::noop();
         dave.session_restore_loader
-            .start(egui_ctx.clone(), ndb.clone());
+            .start(waker.clone(), ndb.clone());
         dave.session_restore_loader.restore_account(account);
 
         // Drive the drain one "frame" at a time until every seeded session has
         // materialized, asserting focus stays put on each frame.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while dave.session_manager.len() < SEEDED + 1 {
-            dave.drain_session_restore(&egui_ctx);
+            dave.drain_session_restore(&waker);
             assert_eq!(
                 dave.session_manager.active_id(),
                 Some(user_sid),

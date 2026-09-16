@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use crossbeam_channel as chan;
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
-use notedeck::{worker_count, AsyncLoader};
+use notedeck::{worker_count, AsyncLoader, Waker};
 
 use agentium_core::session_loader::{self, LoadedSession, SessionState};
 
@@ -102,11 +102,11 @@ impl SessionRestoreLoader {
 
     /// Start the loader workers if they have not been started yet. Idempotent —
     /// safe to call every frame.
-    pub fn start(&mut self, egui_ctx: egui::Context, ndb: Ndb) {
+    pub fn start(&mut self, waker: Waker, ndb: Ndb) {
         let workers = worker_count(MAX_SESSION_RESTORE_WORKERS);
         let started = self
             .loader
-            .start(egui_ctx, ndb, workers, "dave-session-restore", handle_cmd);
+            .start(waker, ndb, workers, "dave-session-restore", handle_cmd);
         if started {
             info!(workers, "starting session restore workers");
         }
@@ -133,13 +133,13 @@ impl Default for SessionRestoreLoader {
 /// Handle a restore command on a worker thread.
 fn handle_cmd(
     cmd: SessionRestoreCmd,
-    egui_ctx: &egui::Context,
+    waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<SessionRestoreMsg>,
 ) {
     match cmd {
         SessionRestoreCmd::RestoreAccount { account } => {
-            restore_account(egui_ctx, ndb, msg_tx, account)
+            restore_account(waker, ndb, msg_tx, account)
         }
     }
 }
@@ -149,7 +149,7 @@ fn handle_cmd(
 /// early on a transaction error; otherwise emits `Started`, then a `Session` per
 /// live session, then `Finished`.
 fn restore_account(
-    egui_ctx: &egui::Context,
+    waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<SessionRestoreMsg>,
     account: Pubkey,
@@ -161,7 +161,7 @@ fn restore_account(
                 account,
                 error: format!("failed to open txn for session restore: {e:?}"),
             });
-            egui_ctx.request_repaint();
+            waker.wake();
             return;
         }
     };
@@ -182,7 +182,7 @@ fn restore_account(
     {
         return;
     }
-    egui_ctx.request_repaint();
+    waker.wake();
 
     let mut restored = 0usize;
     for state in states {
@@ -206,10 +206,10 @@ fn restore_account(
         }
         restored += 1;
         if restored.is_multiple_of(REPAINT_EVERY) {
-            egui_ctx.request_repaint();
+            waker.wake();
         }
     }
 
     let _ = msg_tx.send(SessionRestoreMsg::Finished { account, restored });
-    egui_ctx.request_repaint();
+    waker.wake();
 }

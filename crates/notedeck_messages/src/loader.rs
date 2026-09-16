@@ -4,7 +4,7 @@ use crossbeam_channel as chan;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use nostrdb_net::Pubkey;
 
-use notedeck::AsyncLoader;
+use notedeck::{AsyncLoader, Waker};
 
 use crate::{
     cache::ConversationId,
@@ -67,10 +67,10 @@ impl MessagesLoader {
     }
 
     /// Start the loader workers if they have not been started yet.
-    pub fn start(&mut self, egui_ctx: egui::Context, ndb: Ndb) {
+    pub fn start(&mut self, waker: Waker, ndb: Ndb) {
         let _ = self
             .loader
-            .start(egui_ctx, ndb, 1, "messages-loader", handle_cmd);
+            .start(waker, ndb, 1, "messages-loader", handle_cmd);
     }
 
     /// Request a conversation list load for the given account.
@@ -121,7 +121,7 @@ enum FoldKind {
 struct FoldAcc {
     batch: Vec<NoteKey>,
     msg_tx: chan::Sender<LoaderMsg>,
-    egui_ctx: egui::Context,
+    waker: Waker,
     kind: FoldKind,
 }
 
@@ -158,41 +158,36 @@ impl FoldAcc {
         self.msg_tx
             .send(msg)
             .map_err(|_| "messages loader channel closed".to_string())?;
-        self.egui_ctx.request_repaint();
+        self.waker.wake();
         Ok(())
     }
 }
 
 /// Run a conversation list load and stream note keys.
 fn load_conversation_list(
-    egui_ctx: &egui::Context,
+    waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<LoaderMsg>,
     account_pubkey: Pubkey,
 ) -> Result<(), String> {
     let filters = conversation_filter(&account_pubkey);
     fold_note_keys(
-        egui_ctx,
+        waker,
         ndb,
         msg_tx,
         &filters,
         FoldKind::ConversationList { account_pubkey },
     )?;
     let _ = msg_tx.send(LoaderMsg::ConversationFinished { account_pubkey });
-    egui_ctx.request_repaint();
+    waker.wake();
     Ok(())
 }
 
 /// Handle loader commands on a worker thread.
-fn handle_cmd(
-    cmd: LoaderCmd,
-    egui_ctx: &egui::Context,
-    ndb: &Ndb,
-    msg_tx: &chan::Sender<LoaderMsg>,
-) {
+fn handle_cmd(cmd: LoaderCmd, waker: &Waker, ndb: &Ndb, msg_tx: &chan::Sender<LoaderMsg>) {
     let result = match cmd {
         LoaderCmd::LoadConversationList { account_pubkey } => {
-            load_conversation_list(egui_ctx, ndb, msg_tx, account_pubkey).map_err(|error| {
+            load_conversation_list(waker, ndb, msg_tx, account_pubkey).map_err(|error| {
                 LoaderFailure {
                     account_pubkey,
                     conversation_id: None,
@@ -205,7 +200,7 @@ fn handle_cmd(
             participants,
             account_pubkey,
         } => load_conversation_messages(
-            egui_ctx,
+            waker,
             ndb,
             msg_tx,
             conversation_id,
@@ -225,7 +220,7 @@ fn handle_cmd(
             conversation_id: failure.conversation_id,
             error: failure.error,
         });
-        egui_ctx.request_repaint();
+        waker.wake();
     }
 }
 
@@ -237,7 +232,7 @@ struct LoaderFailure {
 
 /// Run a conversation messages load and stream note keys.
 fn load_conversation_messages(
-    egui_ctx: &egui::Context,
+    waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<LoaderMsg>,
     conversation_id: ConversationId,
@@ -249,7 +244,7 @@ fn load_conversation_messages(
     let filters = chatroom_filter(participant_refs, account_pubkey.bytes());
 
     fold_note_keys(
-        egui_ctx,
+        waker,
         ndb,
         msg_tx,
         &filters,
@@ -263,13 +258,13 @@ fn load_conversation_messages(
         account_pubkey,
         conversation_id,
     });
-    egui_ctx.request_repaint();
+    waker.wake();
     Ok(())
 }
 
 /// Fold over NostrDB results and emit note key batches.
 fn fold_note_keys(
-    egui_ctx: &egui::Context,
+    waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<LoaderMsg>,
     filters: &[Filter],
@@ -280,7 +275,7 @@ fn fold_note_keys(
     let acc = FoldAcc {
         batch: Vec::with_capacity(FOLD_BATCH_SIZE),
         msg_tx: msg_tx.clone(),
-        egui_ctx: egui_ctx.clone(),
+        waker: waker.clone(),
         kind,
     };
 

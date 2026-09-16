@@ -1,5 +1,6 @@
 //! Async loader helpers for background NostrDB work.
 
+use crate::Waker;
 use crossbeam_channel as chan;
 use nostrdb::Ndb;
 use std::sync::Arc;
@@ -28,13 +29,17 @@ where
     }
 
     /// Start the loader workers if they have not been started yet.
+    ///
+    /// `waker` is how a worker tells the host it has produced something; each
+    /// worker gets its own clone. Workers run off the render thread, so this is
+    /// their only way to get the result looked at — see [`Waker`].
     pub fn start(
         &mut self,
-        egui_ctx: egui::Context,
+        waker: Waker,
         ndb: Ndb,
         workers: usize,
         worker_name: &str,
-        handler: impl Fn(Cmd, &egui::Context, &Ndb, &chan::Sender<Msg>) + Send + Sync + 'static,
+        handler: impl Fn(Cmd, &Waker, &Ndb, &chan::Sender<Msg>) + Send + Sync + 'static,
     ) -> bool {
         if self.cmd_tx.is_some() {
             return false;
@@ -51,7 +56,7 @@ where
         for idx in 0..workers {
             let cmd_rx = cmd_rx.clone();
             let msg_tx = msg_tx.clone();
-            let egui_ctx = egui_ctx.clone();
+            let waker = waker.clone();
             let ndb = ndb.clone();
             let handler = handler.clone();
             let name = if workers == 1 {
@@ -64,7 +69,7 @@ where
                 .name(name)
                 .spawn(move || {
                     while let Ok(cmd) = cmd_rx.recv() {
-                        (handler)(cmd, &egui_ctx, &ndb, &msg_tx);
+                        (handler)(cmd, &waker, &ndb, &msg_tx);
                     }
                 })
                 .expect("failed to spawn async loader worker");

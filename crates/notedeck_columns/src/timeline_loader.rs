@@ -2,7 +2,7 @@
 
 use crossbeam_channel as chan;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{worker_count, AsyncLoader, FilterState, NoteRef};
+use notedeck::{worker_count, AsyncLoader, FilterState, NoteRef, Waker};
 
 use crate::timeline::kind::AlgoTimeline;
 use crate::timeline::TimelineKind;
@@ -50,15 +50,11 @@ impl TimelineLoader {
     }
 
     /// Start the loader workers if they have not been started yet.
-    pub fn start(&mut self, egui_ctx: egui::Context, ndb: Ndb) {
+    pub fn start(&mut self, waker: Waker, ndb: Ndb) {
         let workers = worker_count(MAX_TIMELINE_LOADER_WORKERS);
-        let started = self.loader.start(
-            egui_ctx,
-            ndb,
-            workers,
-            "columns-timeline-loader",
-            handle_cmd,
-        );
+        let started = self
+            .loader
+            .start(waker, ndb, workers, "columns-timeline-loader", handle_cmd);
         if started {
             info!(workers, "starting timeline loader workers");
         }
@@ -84,17 +80,17 @@ impl Default for TimelineLoader {
 /// Handle loader commands on a worker thread.
 fn handle_cmd(
     cmd: TimelineLoaderCmd,
-    egui_ctx: &egui::Context,
+    waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<TimelineLoaderMsg>,
 ) {
     let result = match cmd {
-        TimelineLoaderCmd::LoadTimeline { kind } => load_timeline(egui_ctx, ndb, msg_tx, kind),
+        TimelineLoaderCmd::LoadTimeline { kind } => load_timeline(waker, ndb, msg_tx, kind),
     };
 
     if let Err((kind, err)) = result {
         let _ = msg_tx.send(TimelineLoaderMsg::Failed { kind, error: err });
-        egui_ctx.request_repaint();
+        waker.wake();
     }
 }
 
@@ -102,7 +98,7 @@ fn handle_cmd(
 struct FoldAcc {
     batch: Vec<NoteRef>,
     msg_tx: chan::Sender<TimelineLoaderMsg>,
-    egui_ctx: egui::Context,
+    waker: Waker,
     kind: TimelineKind,
 }
 
@@ -127,14 +123,14 @@ impl FoldAcc {
                 notes,
             })
             .map_err(|_| "timeline loader channel closed".to_string())?;
-        self.egui_ctx.request_repaint();
+        self.waker.wake();
         Ok(())
     }
 }
 
 /// Run an initial timeline load and stream note ref batches.
 fn load_timeline(
-    egui_ctx: &egui::Context,
+    waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<TimelineLoaderMsg>,
     kind: TimelineKind,
@@ -149,7 +145,7 @@ fn load_timeline(
     let mut acc = FoldAcc {
         batch: Vec::with_capacity(FOLD_BATCH_SIZE),
         msg_tx: msg_tx.clone(),
-        egui_ctx: egui_ctx.clone(),
+        waker: waker.clone(),
         kind: kind.clone(),
     };
 
@@ -198,6 +194,6 @@ fn load_timeline(
 
     acc.flush().map_err(|e| (kind.clone(), e))?;
     let _ = msg_tx.send(TimelineLoaderMsg::TimelineFinished { kind });
-    egui_ctx.request_repaint();
+    waker.wake();
     Ok(())
 }
