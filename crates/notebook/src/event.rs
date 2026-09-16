@@ -2114,7 +2114,6 @@ mod tests {
     /// out with [`load_canvas`] and check the canvas reconstructs.
     #[test]
     fn load_canvas_roundtrips_through_ndb() {
-        use futures_util::StreamExt;
         use nostrdb::{Config, IngestMetadata, Ndb, SubscriptionStream};
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -2144,11 +2143,11 @@ mod tests {
         ingest(build_content("c1", &addr, &a, &text("A (renamed)")));
 
         // Wait for all four events to commit by draining the subscription.
-        pollster::block_on(async {
-            let mut seen = 0;
-            while seen < 4 {
-                seen += stream.next().await.expect("subscription open").len();
-            }
+        crate::block_on(async {
+            stream
+                .wait_for_notes(4, crate::INGEST_TIMEOUT)
+                .await
+                .expect("the four seeded notes ingested before the deadline");
         });
 
         let txn = Transaction::new(&ndb).unwrap();

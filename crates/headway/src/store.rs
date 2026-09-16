@@ -1731,7 +1731,6 @@ pub use event::load_board;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::StreamExt;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
 
@@ -1803,14 +1802,18 @@ mod tests {
         SubscriptionStream::new(ndb.clone(), sub)
     }
 
-    /// Await the next batch of ingested notes on `stream`. Panics if the
-    /// subscription closes first, so a predicate that never holds surfaces as a
-    /// test-timeout hang rather than a silent spin.
+    /// Await the next batch of ingested notes on `stream`, bounded by
+    /// [`crate::INGEST_TIMEOUT`] so a write whose notes never arrive fails here
+    /// instead of parking the test thread forever.
+    ///
+    /// Note what this does *not* bound: a caller looping on a predicate that
+    /// never holds while notes keep arriving still spins. The deadline covers
+    /// the case that actually bites — nothing being ingested at all.
     async fn await_ingest(stream: &mut SubscriptionStream) {
         stream
-            .next()
+            .wait_for_notes(1, crate::INGEST_TIMEOUT)
             .await
-            .expect("subscription closed before predicate held");
+            .expect("a note ingested before the deadline");
     }
 
     fn col_titles(view: &BoardView) -> Vec<String> {
@@ -3437,7 +3440,10 @@ mod tests {
             want: &event::BoardCoord,
         ) {
             while event::load_board_pref(ndb, author).as_ref() != Some(want) {
-                stream.next().await.expect("subscription open");
+                stream
+                    .wait_for_notes(1, crate::INGEST_TIMEOUT)
+                    .await
+                    .expect("a note ingested before the deadline");
             }
         }
 
@@ -3485,7 +3491,10 @@ mod tests {
         // It resolves to an own-board coordinate.
         let want = event::BoardCoord::new(*kp.pubkey.bytes(), "work");
         while event::load_board_pref(&ndb, &kp.pubkey).as_ref() != Some(&want) {
-            stream.next().await.expect("subscription open");
+            stream
+                .wait_for_notes(1, crate::INGEST_TIMEOUT)
+                .await
+                .expect("a note ingested before the deadline");
         }
     }
 }

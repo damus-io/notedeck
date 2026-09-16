@@ -14,5 +14,4 @@ profiling = { workspace = true }
 [dev-dependencies]
 nostr = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
-futures-util = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

@@ -684,7 +684,6 @@ pub use event::{VaultDoc, VaultDocKind, list_canvases, list_vault};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::StreamExt;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
 
@@ -737,7 +736,7 @@ mod tests {
         where
             F: Fn(&CanvasView) -> bool,
         {
-            pollster::block_on(async {
+            crate::block_on(async {
                 loop {
                     {
                         let txn = Transaction::new(&self.ndb).unwrap();
@@ -747,7 +746,10 @@ mod tests {
                             return view;
                         }
                     }
-                    self.stream.next().await.expect("subscription open");
+                    self.stream
+                        .wait_for_notes(1, crate::INGEST_TIMEOUT)
+                        .await
+                        .expect("a note ingested before the deadline");
                 }
             })
         }
@@ -755,7 +757,7 @@ mod tests {
         /// Drain the subscription until the canvas keyed by `d` no longer loads —
         /// its winning revision is a tombstone, so the fold drops it.
         fn gone(&mut self, d: &str) -> bool {
-            pollster::block_on(async {
+            crate::block_on(async {
                 loop {
                     {
                         let txn = Transaction::new(&self.ndb).unwrap();
@@ -763,7 +765,10 @@ mod tests {
                             return true;
                         }
                     }
-                    self.stream.next().await.expect("subscription open");
+                    self.stream
+                        .wait_for_notes(1, crate::INGEST_TIMEOUT)
+                        .await
+                        .expect("a note ingested before the deadline");
                 }
             })
         }
@@ -1116,10 +1121,10 @@ mod tests {
         /// `next` calls, since a batch may carry several), so a following
         /// [`LongformTest::load`] sees them. Mirrors lib.rs's `await_notes`.
         async fn await_notes(&mut self, n: usize) {
-            let mut seen = 0;
-            while seen < n {
-                seen += self.stream.next().await.expect("subscription open").len();
-            }
+            self.stream
+                .wait_for_notes(n, crate::INGEST_TIMEOUT)
+                .await
+                .expect("the written notes ingested before the deadline");
         }
 
         fn load(&self, d: &str) -> Option<LongformNote> {
@@ -1359,7 +1364,10 @@ mod tests {
                     break docs;
                 }
             }
-            stream.next().await.expect("subscription open");
+            stream
+                .wait_for_notes(1, crate::INGEST_TIMEOUT)
+                .await
+                .expect("a note ingested before the deadline");
         };
 
         // Exactly the two documents, one of each kind, each projected correctly.
@@ -1459,7 +1467,10 @@ mod tests {
                     break docs;
                 }
             }
-            stream.next().await.expect("subscription open");
+            stream
+                .wait_for_notes(1, crate::INGEST_TIMEOUT)
+                .await
+                .expect("a note ingested before the deadline");
         };
         assert!(
             docs.iter()

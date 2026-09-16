@@ -13,6 +13,4 @@ profiling = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-pollster = { workspace = true }
-futures-util = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

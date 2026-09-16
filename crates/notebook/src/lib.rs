@@ -18,3 +18,26 @@
 pub mod event;
 pub mod store;
 pub mod wordid;
+/// Backstop for the tests' nostrdb-ingest waits (see
+/// [`nostrdb::SubscriptionStream::wait_for_notes`]). A local ingest commits in
+/// microseconds, so seconds of headroom only ever trips when a note is
+/// genuinely never coming — a subscription filter that cannot match what the
+/// write produced, or a write that silently failed — never on a slow machine.
+/// Without it an await like that parks the test thread forever at 0% CPU
+/// instead of failing.
+#[cfg(test)]
+pub(crate) const INGEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `block_on` for the tests, on a current-thread runtime with timers enabled.
+///
+/// The ingest waits below are bounded with [`tokio::time::timeout`], which needs
+/// a Tokio timer; `pollster::block_on` drives a future with no reactor at all, so
+/// a wait under it panics with "there is no reactor running".
+#[cfg(test)]
+pub(crate) fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("current-thread runtime")
+        .block_on(fut)
+}
