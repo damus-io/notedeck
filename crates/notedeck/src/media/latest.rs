@@ -189,7 +189,7 @@ impl<'a> TrustedMediaLatestTex<'a> {
             LatestImageTex::Pending => (),
             LatestImageTex::Error(error) => return MediaRenderState::Error(error),
             LatestImageTex::Loaded(texture_handle) => {
-                let Some(blur) = self.blur_cache.get(url, ctx.cumulative_pass_nr()) else {
+                let Some(blur) = self.blur_cache.get(url) else {
                     return MediaRenderState::ActualImage(texture_handle);
                 };
 

@@ -112,20 +112,27 @@ struct Harness {
     job_pool: JobPool,
     frame: usize,
     total_frames: usize,
+
+    /// The harness's own pass counter, published to the caches each pass.
+    pass_nr: u64,
 }
 
 impl eframe::App for Harness {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let pass_nr = ctx.cumulative_pass_nr();
+        // This harness is its own host, so it owns the clock the caches age
+        // entries against, exactly as `Notedeck::tick_core` does.
+        self.pass_nr += 1;
+        let pass_nr = self.pass_nr;
+        self.images.textures.begin_pass(pass_nr);
 
         self.jobs.run_received(&mut self.job_pool, |id| {
-            notedeck::run_media_job_pre_action(id, &mut self.images.textures, pass_nr);
+            notedeck::run_media_job_pre_action(id, &mut self.images.textures);
         });
         self.jobs.deliver_all_completed(|completed| {
-            notedeck::deliver_completed_media_job(completed, &mut self.images.textures, pass_nr)
+            notedeck::deliver_completed_media_job(completed, &mut self.images.textures)
         });
 
-        self.images.textures.evict_over_budget(pass_nr);
+        self.images.textures.evict_over_budget();
 
         // Scroll: each frame the visible window slides forward by one image, so
         // after IMAGE_COUNT frames every image has been on screen once.
@@ -223,6 +230,7 @@ fn main() -> eframe::Result {
         job_pool: JobPool::new(2),
         frame: 0,
         total_frames,
+        pass_nr: 0,
     };
 
     let res = eframe::run_native(

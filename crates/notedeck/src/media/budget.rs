@@ -16,8 +16,11 @@
 //!
 //! # Policy
 //!
-//! - Eviction is least-recently-used, where "recently" is measured in egui pass
-//!   numbers recorded by [`TexEntry::touch`] on every read.
+//! - Eviction is least-recently-used, where "recently" is measured in the host's
+//!   pass numbers ([`crate::Notedeck::pass_nr`]), recorded by
+//!   [`TexEntry::touch`] on every read. The host publishes its current pass into
+//!   each cache once per pass, so a read and the sweep that measures its age
+//!   cannot end up on different clocks.
 //! - A sweep only runs when the total is over budget, and evicts down to
 //!   [`low_water`] rather than to exactly the budget, so that uploading one more
 //!   texture does not immediately trigger another sweep.
@@ -65,9 +68,10 @@ pub const DEFAULT_TEXTURE_BUDGET: usize = if cfg!(any(target_os = "android", tar
 ///
 /// This is a safety floor rather than a retention policy — retention comes from
 /// the budget, and LRU order means a sweep takes the coldest entries first. The
-/// floor exists because egui may run several passes per frame and discard their
-/// output, so "not touched during the pass that is about to start" is not on its
-/// own enough to prove a texture is off screen.
+/// floor exists because the host ticks once per egui pass and egui may run
+/// several passes per frame, discarding their output, so "not touched during the
+/// pass that is about to start" is not on its own enough to prove a texture is
+/// off screen.
 pub const MIN_UNUSED_PASSES: u64 = 3;
 
 /// The level a sweep evicts down to, as a fraction of `budget`.
@@ -200,6 +204,11 @@ pub struct VariantTexCache<T> {
     /// Maintained incrementally so that the common in-budget case costs a
     /// comparison rather than a walk of every entry.
     loaded_bytes: usize,
+
+    /// The host pass this cache is currently serving, as published by
+    /// [`begin_pass`](Self::begin_pass). Reads are recorded against it; see
+    /// [`get`](Self::get).
+    current_pass: u64,
 }
 
 impl<T> Default for VariantTexCache<T> {
@@ -207,19 +216,26 @@ impl<T> Default for VariantTexCache<T> {
         Self {
             urls: Default::default(),
             loaded_bytes: 0,
+            current_pass: 0,
         }
     }
 }
 
 impl<T: TextureBytes> VariantTexCache<T> {
-    /// Reads a variant, recording it as used during `pass_nr`.
-    pub fn get(
-        &self,
-        url: &str,
-        variant: TextureRequestVariant,
-        pass_nr: u64,
-    ) -> Option<&TextureState<T>> {
-        Some(self.urls.get(url)?.get(&variant)?.touch(pass_nr))
+    /// Records the host pass this cache is now serving.
+    ///
+    /// Held rather than taken per read because reads come from the render path
+    /// through `&self`, which has no `&mut` to update and no handle on the host
+    /// to ask; keeping it here is what guarantees a read and the sweep that
+    /// measures its age are on the same clock.
+    pub fn begin_pass(&mut self, pass_nr: u64) {
+        self.current_pass = pass_nr;
+    }
+
+    /// Reads a variant, recording it as used during the pass last published by
+    /// [`begin_pass`](Self::begin_pass).
+    pub fn get(&self, url: &str, variant: TextureRequestVariant) -> Option<&TextureState<T>> {
+        Some(self.urls.get(url)?.get(&variant)?.touch(self.current_pass))
     }
 
     /// Whether any variant of `url` has ever been requested.
@@ -619,15 +635,16 @@ mod tests {
 
     #[test]
     fn get_records_a_use_and_protects_the_entry() {
-        let cache = cache_with(&[("a", 100, 1)]);
+        let mut cache = cache_with(&[("a", 100, 1)]);
         let current = 1 + MIN_UNUSED_PASSES;
+        cache.begin_pass(current);
 
         let mut candidates = Vec::new();
         cache.collect_evictable(current, &mut candidates);
         assert_eq!(candidates.len(), 1, "cold before it is read");
 
         cache
-            .get("a", TextureRequestVariant::Full, current)
+            .get("a", TextureRequestVariant::Full)
             .expect("still cached");
 
         candidates.clear();

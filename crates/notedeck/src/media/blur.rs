@@ -242,6 +242,10 @@ pub struct BlurCache {
 
     /// Running total of the bytes held by loaded entries.
     loaded_bytes: usize,
+
+    /// The host pass this cache is currently serving, as published by
+    /// [`begin_pass`](BlurCache::begin_pass). Reads are recorded against it.
+    current_pass: u64,
 }
 
 pub struct BlurState {
@@ -260,10 +264,18 @@ impl BlurState {
 }
 
 impl BlurCache {
-    /// Reads the blur state for `url`, recording it as used during `pass_nr`.
-    pub fn get(&self, url: &str, pass_nr: u64) -> Option<&BlurState> {
+    /// Records the host pass this cache is now serving; see
+    /// [`VariantTexCache::begin_pass`](crate::media::budget::VariantTexCache::begin_pass)
+    /// for why the clock is held here rather than taken per read.
+    pub fn begin_pass(&mut self, pass_nr: u64) {
+        self.current_pass = pass_nr;
+    }
+
+    /// Reads the blur state for `url`, recording it as used during the pass last
+    /// published by [`begin_pass`](Self::begin_pass).
+    pub fn get(&self, url: &str) -> Option<&BlurState> {
         let state = self.cache.get(url)?;
-        state.entry.touch(pass_nr);
+        state.entry.touch(self.current_pass);
         Some(state)
     }
 
@@ -287,7 +299,7 @@ impl BlurCache {
         blurhash: &ImageMetadata,
         available: PointDimensions,
     ) -> Option<&TextureHandle> {
-        if let Some(res) = self.get(url, ctx.cumulative_pass_nr()) {
+        if let Some(res) = self.get(url) {
             return match res.tex_state() {
                 TextureState::Loaded(texture) => Some(texture),
                 TextureState::Pending | TextureState::Error(_) => None,

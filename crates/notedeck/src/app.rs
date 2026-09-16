@@ -307,6 +307,16 @@ pub struct Notedeck {
     #[allow(dead_code)]
     local_relay: Option<nostrdb_net::relay::server::RelayHandle>,
 
+    /// Monotonic count of [`tick_core`](Self::tick_core) passes, and the clock
+    /// the texture caches age their entries against.
+    ///
+    /// Host-owned rather than read off [`egui::Context::cumulative_pass_nr`]:
+    /// it is notedeck's clock for notedeck's caches, and a headless tick has no
+    /// window whose pass number would mean anything. Published to the caches
+    /// once per pass by [`TexturesCache::begin_pass`](crate::TexturesCache::begin_pass)
+    /// so that every read and write within a pass agrees on it.
+    pass_nr: u64,
+
     /// In headless mode (`--headless`), the wake signal every immediate
     /// `request_repaint()` on the windowless `egui::Context` is routed into —
     /// standing in for the eframe integration that would otherwise answer them.
@@ -387,6 +397,12 @@ impl Notedeck {
         self.tick_core(ctx, false);
     }
 
+    /// The host's current pass number: how many [`tick_core`](Self::tick_core)
+    /// passes have run, and the clock the texture caches age entries against.
+    pub fn pass_nr(&self) -> u64 {
+        self.pass_nr
+    }
+
     /// Headless per-frame tick: the background half of [`tick`](Self::tick)
     /// without any egui render pass.
     ///
@@ -446,13 +462,9 @@ impl Notedeck {
     /// and then go silent, and the run loop would stop hearing about work — which
     /// is why a bare callback was rejected as the wake seam.
     ///
-    /// It also advances the pass counter `tick_core` reads as the clock the
-    /// texture caches age entries against, which keeps that clock honest but
-    /// currently reclaims nothing: every texture-allocating closure captures its
-    /// context during *render* (`Images::get_or_request` and friends are only
-    /// ever handed a `ui.ctx()`), so a headless run allocates no textures and its
-    /// cache stays empty. Don't read this as load-bearing for eviction — it
-    /// becomes so only if background code ever starts allocating textures.
+    /// It also advances egui's own `cumulative_pass_nr`, but nothing reads that:
+    /// the texture caches' clock is [`Notedeck::pass_nr`], incremented by
+    /// `tick_core` itself. Re-arming the repaint callback is the whole job here.
     ///
     /// The pass runs on default [`egui::RawInput`] and its [`egui::FullOutput`]
     /// is dropped: with no widgets there is nothing to tessellate and nowhere to
@@ -484,23 +496,26 @@ impl Notedeck {
     /// the persistence tail runs.
     fn tick_core(&mut self, ctx: &egui::Context, headless: bool) {
         // The pass number is the clock the texture caches age entries against,
-        // so every read and write below has to agree on it.
-        let pass_nr = ctx.cumulative_pass_nr();
+        // and publishing it is the only way one enters the cache layer — so the
+        // reads the render path makes below, the writes the job seam makes, and
+        // the sweep's notion of age are all on this one number.
+        self.pass_nr += 1;
+        self.img_cache.textures.begin_pass(self.pass_nr);
 
         {
             profiling::scope!("media jobs");
             self.media_jobs.run_received(&mut self.job_pool, |id| {
-                crate::run_media_job_pre_action(id, &mut self.img_cache.textures, pass_nr);
+                crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
             });
             self.media_jobs.deliver_all_completed(|completed| {
-                crate::deliver_completed_media_job(completed, &mut self.img_cache.textures, pass_nr)
+                crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
             });
         }
 
         // Bound GPU texture memory before drawing anything. Doing it here rather
         // than after the UI means no texture can be dropped while this pass
         // still holds a reference to it.
-        self.img_cache.textures.evict_over_budget(pass_nr);
+        self.img_cache.textures.evict_over_budget();
 
         self.remote.poll_bridge();
         self.pump_host_private_sync();
@@ -887,6 +902,7 @@ impl Notedeck {
             app_actions: AppActionQueue::default(),
             navigator: crate::Navigator::default(),
             local_relay,
+            pass_nr: 0,
             headless_wake,
             #[cfg(target_os = "android")]
             android_app: None,
@@ -1573,22 +1589,47 @@ mod tick_headless_tests {
         );
     }
 
-    /// The pass counter is the clock `tick_core` ages texture-cache entries
-    /// against, so a headless tick has to advance it rather than hand every
-    /// cache read the same frozen zero. (Nothing is evicted headless today —
-    /// the cache stays empty because texture allocation only ever happens
-    /// through a context captured at render — so this pins the clock, not a
-    /// reclaim.)
+    /// The host's pass counter is the clock `tick_core` ages texture-cache
+    /// entries against, so a headless tick has to advance it rather than hand
+    /// every cache read the same frozen zero. (Nothing is evicted headless
+    /// today — the cache stays empty because texture allocation only ever
+    /// happens through a context captured at render — so this pins the clock,
+    /// not a reclaim.)
+    ///
+    /// Asserted on `Notedeck::pass_nr` rather than the windowless context's
+    /// `cumulative_pass_nr`: that egui counter also moves (`run_empty_pass`
+    /// opens a pass), but it is an artifact of re-arming the repaint callback
+    /// and nothing reads it.
     #[tokio::test]
     async fn headless_tick_advances_the_pass_counter() {
         let tmp = tempfile::TempDir::new().expect("tmp dir");
         let (mut notedeck, ui_ctx) = headless_notedeck(&tmp);
 
-        let before = ui_ctx.cumulative_pass_nr();
+        let before = notedeck.pass_nr();
         notedeck.tick_headless(&ui_ctx);
         assert!(
-            ui_ctx.cumulative_pass_nr() > before,
-            "a headless tick must advance the pass counter"
+            notedeck.pass_nr() > before,
+            "a headless tick must advance the host's pass counter"
         );
+    }
+
+    /// Advancing the counter is only half of it: the render path records cache
+    /// reads against whatever pass the caches were last told, so a tick that
+    /// bumps `pass_nr` without publishing it would leave reads stamped with a
+    /// stale pass and a sweep measuring their age from a newer one — cold-
+    /// looking textures that are in fact on screen.
+    #[tokio::test]
+    async fn a_tick_publishes_its_pass_to_the_texture_caches() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let (mut notedeck, ui_ctx) = headless_notedeck(&tmp);
+
+        for _ in 0..3 {
+            notedeck.tick_headless(&ui_ctx);
+            assert_eq!(
+                notedeck.img_cache.textures.current_pass(),
+                notedeck.pass_nr(),
+                "the caches must age entries against the host's current pass"
+            );
+        }
     }
 }

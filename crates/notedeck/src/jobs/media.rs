@@ -31,12 +31,15 @@ fn into_texture_state<T>(result: Result<T, Error>) -> TextureState<T> {
     }
 }
 
+/// Stores a finished media job's texture (or its error) in the cache it was
+/// requested from, marked as used on the cache's current pass — see
+/// [`TexturesCache::begin_pass`], which the host must have called this pass.
 #[profiling::function]
 pub fn deliver_completed_media_job(
     completed: JobComplete<MediaJobKind, MediaJobResult>,
     tex_cache: &mut TexturesCache,
-    pass_nr: u64,
 ) {
+    let pass_nr = tex_cache.current_pass();
     let JobComplete { job_id, response } = completed;
     let id = job_id.id;
     let id_c = id.clone();
@@ -88,12 +91,15 @@ pub fn deliver_completed_media_job(
     tracing::trace!("Delivered job for {id_c}");
 }
 
+/// Marks a just-dispatched media job's cache slot `Pending`, on the cache's
+/// current pass — see [`TexturesCache::begin_pass`], which the host must have
+/// called this pass.
+///
+/// The `Pending` entry is what stops the same job being requested again every
+/// frame while it is in flight.
 #[profiling::function]
-pub fn run_media_job_pre_action(
-    job_id: &JobId<MediaJobKind>,
-    tex_cache: &mut TexturesCache,
-    pass_nr: u64,
-) {
+pub fn run_media_job_pre_action(job_id: &JobId<MediaJobKind>, tex_cache: &mut TexturesCache) {
+    let pass_nr = tex_cache.current_pass();
     let id = job_id.id.clone();
     match &job_id.job_kind {
         MediaJobKind::Blurhash => {

@@ -131,6 +131,12 @@ impl AnimatedImgTexCache {
         self.textures.contains(url)
     }
 
+    /// Records the host pass this cache is now serving; see
+    /// [`VariantTexCache::begin_pass`].
+    pub fn begin_pass(&mut self, pass_nr: u64) {
+        self.textures.begin_pass(pass_nr);
+    }
+
     pub(crate) fn set_pending(&mut self, request_key: TextureRequestKey, pass_nr: u64) {
         self.set_state(request_key, TextureState::Pending, pass_nr);
     }
@@ -164,10 +170,7 @@ impl AnimatedImgTexCache {
     ) -> &TextureState<Animation> {
         let imgtype = normalize_image_type_for_request(imgtype);
         let request_variant = TextureRequestKey::variant_for_image_type(imgtype);
-        if let Some(res) = self
-            .textures
-            .get(url, request_variant, ctx.cumulative_pass_nr())
-        {
+        if let Some(res) = self.textures.get(url, request_variant) {
             return res;
         };
         let request_key = TextureRequestKey::from_variant(url, request_variant);

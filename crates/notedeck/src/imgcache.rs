@@ -43,6 +43,10 @@ pub struct TexturesCache {
     /// Reused between sweeps so that a sweep costs no allocation once the
     /// process has swept a large cache at least once.
     sweep_scratch: Vec<EvictCandidate>,
+
+    /// The host pass these caches are currently serving; see
+    /// [`begin_pass`](Self::begin_pass).
+    current_pass: u64,
 }
 
 impl TexturesCache {
@@ -57,12 +61,33 @@ impl TexturesCache {
             ),
             budget: budget::DEFAULT_TEXTURE_BUDGET,
             sweep_scratch: Vec::new(),
+            current_pass: 0,
         }
     }
 
     /// Overrides the GPU texture budget. For tests and the measurement harness.
     pub fn set_budget(&mut self, budget: usize) {
         self.budget = budget;
+    }
+
+    /// Publishes the host's pass number ([`crate::Notedeck::pass_nr`]) to these
+    /// caches, once per pass and before anything reads or writes them.
+    ///
+    /// This is the only way a pass number enters the cache layer. The render
+    /// path reaches the caches through `&self` and has no way to ask the host
+    /// for its clock, so each cache holds a copy: the pass a read is recorded
+    /// against and the pass a sweep measures age from are then the same number
+    /// by construction, rather than by two callers happening to agree.
+    pub fn begin_pass(&mut self, pass_nr: u64) {
+        self.current_pass = pass_nr;
+        self.static_image.begin_pass(pass_nr);
+        self.animated.begin_pass(pass_nr);
+        self.blurred.begin_pass(pass_nr);
+    }
+
+    /// The pass last published by [`begin_pass`](Self::begin_pass).
+    pub fn current_pass(&self) -> u64 {
+        self.current_pass
     }
 
     /// GPU bytes currently held across all three caches.
@@ -82,14 +107,15 @@ impl TexturesCache {
 
     /// Evicts least-recently-used textures until the caches fit the budget.
     ///
-    /// Call once per pass before drawing any UI. `current_pass` must be
-    /// [`egui::Context::cumulative_pass_nr`], the same clock the caches record
-    /// reads against.
+    /// Call once per pass before drawing any UI, after
+    /// [`begin_pass`](Self::begin_pass) — ages are measured from the pass that
+    /// published, the same clock the caches record reads against.
     ///
     /// Returns the number of bytes freed, which is zero on the common in-budget
     /// path.
     #[profiling::function]
-    pub fn evict_over_budget(&mut self, current_pass: u64) -> usize {
+    pub fn evict_over_budget(&mut self) -> usize {
+        let current_pass = self.current_pass;
         let total = self.loaded_bytes();
         if total <= self.budget {
             return 0;
