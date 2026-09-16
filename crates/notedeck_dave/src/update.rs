@@ -106,43 +106,48 @@ pub fn handle_interrupt_request(
         };
     }
 
-    // Second Escape within timeout - confirm interrupt.
-    let publish = session_manager.get_active().and_then(|session| {
-        if let Some(publish) = remote_interrupt_publish(session) {
-            return Some(publish);
-        }
-        let session_id = format!("dave-session-{}", session.id);
-        backend.interrupt_session(session_id, notedeck::Waker::egui(ctx));
-        None
-    });
-
+    // Second Escape within timeout — confirm, then take the one interrupt path.
     InterruptOutcome {
         pending_since: None,
-        publish,
+        publish: execute_interrupt(session_manager, backend, ctx),
     }
 }
 
 /// Execute the actual interrupt on the active session.
 ///
-/// For a remote session this returns the [`InterruptPublish`] the caller forwards
-/// to the host (there is nothing local to abort); for a local session it aborts
-/// the backend turn directly and clears the local stream state.
+/// The single place both interrupt gestures land — the Stop button directly, and
+/// Escape once its double-press is confirmed — so the two cannot drift apart.
+///
+/// Interrupting asks the backend to abort the in-flight turn and does nothing
+/// else. In particular it must NOT tear down local session state: on a
+/// persistent-stream backend (Claude) `incoming_tokens` is the session's one
+/// long-lived channel rather than a per-turn one, and the session actor outlives
+/// an interrupt, so `stream_request` hands back no replacement receiver on the
+/// next turn. Dropping it here left the session permanently deaf —
+/// `process_events` skips a session with no receiver, so the aborted turn's
+/// `QueryComplete` never arrived and `handle_stream_end` never ran: the partial
+/// assistant message was never finalized or archived, `task_handle` was never
+/// cleared, and the kind-31988 state carrying the `cli_session` tag that
+/// `claude --resume` needs was never republished. Likewise the pending
+/// permission map holds the oneshot senders answering the CLI's `can_use_tool`
+/// RPCs; clearing it cancelled those while their request rows stayed unanswered
+/// in chat. Winding the turn down is the stream's job, not the interrupt's.
+///
+/// For a remote session there is nothing local to abort, so this returns the
+/// [`InterruptPublish`] the caller forwards to the host as a command; the host
+/// applies it the same way (see `Dave::poll_remote_conversation_actions`).
 pub fn execute_interrupt(
-    session_manager: &mut SessionManager,
+    session_manager: &SessionManager,
     backend: &dyn AiBackend,
     ctx: &egui::Context,
 ) -> Option<InterruptPublish> {
-    let session = session_manager.get_active_mut()?;
+    let session = session_manager.get_active()?;
     if let Some(publish) = remote_interrupt_publish(session) {
         tracing::debug!("Interrupting remote session {}", session.id);
         return Some(publish);
     }
     let session_id = format!("dave-session-{}", session.id);
     backend.interrupt_session(session_id, notedeck::Waker::egui(ctx));
-    session.incoming_tokens = None;
-    if let Some(agentic) = &mut session.agentic {
-        agentic.permissions.pending.clear();
-    }
     tracing::debug!("Interrupted session {}", session.id);
     None
 }
@@ -2501,7 +2506,7 @@ mod tests {
             .event_session_id()
             .to_string();
 
-        let publish = execute_interrupt(&mut sm, &backend, &ctx);
+        let publish = execute_interrupt(&sm, &backend, &ctx);
         assert_eq!(publish.map(|p| p.session_id), Some(expected));
     }
 
@@ -2524,7 +2529,403 @@ mod tests {
         );
         sm.switch_to(id);
 
-        let publish = execute_interrupt(&mut sm, &backend, &ctx);
+        let publish = execute_interrupt(&sm, &backend, &ctx);
         assert!(publish.is_none());
+    }
+
+    // =========================================================================
+    // Interrupt: Escape and the Stop button must be the same thing
+    // =========================================================================
+
+    /// A fake backend with Claude's persistent-stream semantics — the property
+    /// that makes the interrupt path's local teardown destructive.
+    ///
+    /// The session actor owns ONE response channel for the whole session, so
+    /// `stream_request` hands back a receiver only on the turn that spawns the
+    /// actor and `None` on every turn after. An interrupt aborts the in-flight
+    /// turn but leaves the actor (and its channel) alive, so a caller that drops
+    /// its receiver never gets another one.
+    struct PersistentStreamFake {
+        /// The one receiver this backend will ever hand out, taken on the first
+        /// `stream_request` (the turn that "spawns the actor").
+        rx: std::sync::Mutex<Option<std::sync::mpsc::Receiver<crate::DaveApiResponse>>>,
+        interrupts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl PersistentStreamFake {
+        /// Returns the backend plus the actor-side sender, so a test can push a
+        /// response the way a live actor would and prove the channel still works.
+        fn new() -> (Self, std::sync::mpsc::Sender<crate::DaveApiResponse>) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (
+                Self {
+                    rx: std::sync::Mutex::new(Some(rx)),
+                    interrupts: std::sync::atomic::AtomicUsize::new(0),
+                },
+                tx,
+            )
+        }
+
+        fn interrupt_count(&self) -> usize {
+            self.interrupts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl crate::backend::AiBackend for PersistentStreamFake {
+        fn stream_request(
+            &self,
+            _messages: Vec<crate::Message>,
+            _tools: std::sync::Arc<std::collections::HashMap<String, crate::tools::Tool>>,
+            _model: Option<String>,
+            _user_id: String,
+            _session_id: String,
+            _agentium_session_id: Option<String>,
+            _cwd: Option<PathBuf>,
+            _resume_session_id: Option<String>,
+            _permission_mode: PermissionMode,
+            _waker: notedeck::Waker,
+        ) -> (
+            Option<std::sync::mpsc::Receiver<crate::DaveApiResponse>>,
+            Option<tokio::task::JoinHandle<()>>,
+        ) {
+            (self.rx.lock().unwrap().take(), None)
+        }
+
+        fn persistent_stream(&self) -> bool {
+            true
+        }
+
+        fn cleanup_session(&self, _session_id: String) {}
+
+        fn interrupt_session(&self, _session_id: String, _waker: notedeck::Waker) {
+            self.interrupts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn set_permission_mode(
+            &self,
+            _session_id: String,
+            _mode: PermissionMode,
+            _waker: notedeck::Waker,
+        ) {
+        }
+    }
+
+    /// Dispatch a turn exactly the way `Dave::send_user_message_for` does: only
+    /// install a receiver when the backend minted one, because a persistent
+    /// backend's `None` means "you already hold the session's channel".
+    fn dispatch_turn(session: &mut ChatSession, backend: &dyn crate::backend::AiBackend) {
+        let (rx, _handle) = backend.stream_request(
+            vec![],
+            std::sync::Arc::new(std::collections::HashMap::new()),
+            None,
+            String::new(),
+            format!("dave-session-{}", session.id),
+            None,
+            None,
+            None,
+            PermissionMode::Default,
+            notedeck::Waker::noop(),
+        );
+        if let Some(rx) = rx {
+            session.incoming_tokens = Some(rx);
+        }
+    }
+
+    /// Set up a local agentic session mid-turn on a persistent-stream backend.
+    fn session_mid_turn(
+        sm: &mut SessionManager,
+        backend: &dyn crate::backend::AiBackend,
+    ) -> SessionId {
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_named_agent_session(
+            sm,
+            &mut picker,
+            &mut scene,
+            "local-host",
+            "/tmp/project",
+            "local",
+        );
+        sm.switch_to(id);
+        dispatch_turn(sm.get_mut(id).expect("session"), backend);
+        assert!(
+            sm.get(id).unwrap().incoming_tokens.is_some(),
+            "precondition: the turn installed the session's stream"
+        );
+        id
+    }
+
+    /// The regression: interrupting must not cost the session its stream.
+    ///
+    /// On a persistent-stream backend `incoming_tokens` is the session's ONE
+    /// long-lived channel, not a per-turn one. Dropping it on interrupt leaves
+    /// the session permanently deaf — `process_events` skips a session with no
+    /// receiver, and the next turn's `stream_request` returns `None` because the
+    /// actor is still alive, so nothing ever reinstalls it. The turn's
+    /// `QueryComplete` never lands, so `handle_stream_end` never finalizes and
+    /// archives the assistant message, never clears `task_handle`, and never
+    /// republishes the kind-31988 state carrying the `cli_session` tag that
+    /// `claude --resume` needs.
+    #[test]
+    fn interrupt_keeps_the_session_stream_alive() {
+        let ctx = egui::Context::default();
+        let (backend, actor_tx) = PersistentStreamFake::new();
+        let mut sm = SessionManager::new();
+        let id = session_mid_turn(&mut sm, &backend);
+
+        execute_interrupt(&sm, &backend, &ctx);
+        assert_eq!(
+            backend.interrupt_count(),
+            1,
+            "the backend was asked to abort"
+        );
+
+        // The next turn: a persistent backend hands back no receiver.
+        dispatch_turn(sm.get_mut(id).expect("session"), &backend);
+
+        let session = sm.get(id).expect("session");
+        let recvr = session
+            .incoming_tokens
+            .as_ref()
+            .expect("session still owns its stream after an interrupt");
+
+        // ...and it is a live channel, not just a `Some`: the actor can still
+        // reach the session.
+        actor_tx
+            .send(crate::DaveApiResponse::Token("after interrupt".into()))
+            .expect("actor's sender is still connected");
+        assert!(
+            matches!(recvr.try_recv(), Ok(crate::DaveApiResponse::Token(t)) if t == "after interrupt"),
+            "the post-interrupt turn's output must still reach the session"
+        );
+    }
+
+    /// Escape (confirmed) and the Stop button must leave a session in the same
+    /// state. They are the same gesture; only the confirmation differs, and the
+    /// confirmation gates *whether* the interrupt fires, never *what* it does.
+    #[test]
+    fn esc_and_stop_interrupts_leave_the_same_state() {
+        let ctx = egui::Context::default();
+
+        // Stop button.
+        let (stop_backend, _stop_tx) = PersistentStreamFake::new();
+        let mut stop_sm = SessionManager::new();
+        let stop_id = session_mid_turn(&mut stop_sm, &stop_backend);
+        execute_interrupt(&stop_sm, &stop_backend, &ctx);
+
+        // Escape, confirmed by a second press inside the window.
+        let (esc_backend, _esc_tx) = PersistentStreamFake::new();
+        let mut esc_sm = SessionManager::new();
+        let esc_id = session_mid_turn(&mut esc_sm, &esc_backend);
+        let first = handle_interrupt_request(&esc_sm, &esc_backend, None, &ctx);
+        assert!(
+            first.pending_since.is_some(),
+            "the first Escape only arms the confirmation"
+        );
+        assert_eq!(
+            esc_backend.interrupt_count(),
+            0,
+            "the first Escape must not interrupt"
+        );
+        let second = handle_interrupt_request(&esc_sm, &esc_backend, first.pending_since, &ctx);
+        assert!(second.pending_since.is_none(), "confirmation is consumed");
+
+        assert_eq!(
+            esc_backend.interrupt_count(),
+            stop_backend.interrupt_count()
+        );
+        let esc = esc_sm.get(esc_id).expect("session");
+        let stop = stop_sm.get(stop_id).expect("session");
+        // Agreeing is not enough — they must agree on the *correct* behaviour,
+        // or converging the two paths onto the broken one would satisfy this.
+        assert!(
+            esc.incoming_tokens.is_some() && stop.incoming_tokens.is_some(),
+            "Escape and Stop must agree about the session's stream, and keep it"
+        );
+        assert_eq!(
+            esc.has_pending_permissions(),
+            stop.has_pending_permissions(),
+            "Escape and Stop must agree about pending permissions"
+        );
+        assert_eq!(
+            esc.status(),
+            stop.status(),
+            "Escape and Stop must agree about status"
+        );
+    }
+
+    /// An interrupt must not silently drop the tool permission the user is
+    /// being asked about. Dropping the pending oneshot answers the CLI's
+    /// `can_use_tool` RPC with a cancellation while the request row in chat
+    /// stays unanswered, so the UI and the CLI disagree about what happened.
+    #[test]
+    fn interrupt_keeps_a_pending_permission_answerable() {
+        let ctx = egui::Context::default();
+        let (backend, _tx) = PersistentStreamFake::new();
+        let mut sm = SessionManager::new();
+        let id = session_mid_turn(&mut sm, &backend);
+
+        let (perm_tx, mut perm_rx) = tokio::sync::oneshot::channel();
+        let perm_id = uuid::Uuid::new_v4();
+        sm.get_mut(id)
+            .unwrap()
+            .agentic
+            .as_mut()
+            .unwrap()
+            .permissions
+            .pending
+            .insert(perm_id, perm_tx);
+
+        execute_interrupt(&sm, &backend, &ctx);
+
+        assert!(
+            sm.get(id)
+                .unwrap()
+                .agentic
+                .as_ref()
+                .unwrap()
+                .permissions
+                .pending
+                .contains_key(&perm_id),
+            "the pending permission survives the interrupt so the user can still answer it"
+        );
+        assert!(
+            !matches!(
+                perm_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "the CLI's can_use_tool RPC must not be cancelled out from under the request row"
+        );
+    }
+
+    // =========================================================================
+    // The two gestures, driven through the real widgets
+    // =========================================================================
+    //
+    // The tests above start at `execute_interrupt` / `handle_interrupt_request`
+    // and so take the wiring on faith. These drive the actual Stop button and
+    // the actual Escape key through an egui harness, so "Escape and Stop are
+    // the same thing" is asserted over the whole path a user travels rather
+    // than from the seam inward.
+
+    /// Click the real Stop button in a real `InputboxLayout` and return the
+    /// action it raises.
+    fn click_stop_button() -> Option<crate::ui::DaveAction> {
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = egui_kittest::Harness::new_ui_state(
+            |ui, raised: &mut Option<crate::ui::DaveAction>| {
+                let mut text = String::new();
+                // `show_stop(true)` is the IsWorking state — the only state the
+                // Stop button is drawn in.
+                let result = crate::ui::InputboxLayout::new_default(&mut text)
+                    .show_stop(true)
+                    .show(ui);
+                if let Some(action) = result.action().action {
+                    *raised = Some(action);
+                }
+            },
+            None,
+        );
+        harness.run();
+        assert!(
+            harness.state().is_none(),
+            "no action before anyone clicks anything"
+        );
+        harness.get_by_label("Stop").click();
+        harness.run();
+        harness.state_mut().take()
+    }
+
+    /// Press Escape in a real egui frame and return the keybinding it triggers.
+    fn press_escape() -> Option<crate::ui::keybindings::KeyAction> {
+        let mut harness = egui_kittest::Harness::new_ui_state(
+            |ui, action: &mut Option<crate::ui::keybindings::KeyAction>| {
+                // Accumulate: `press_key` runs a key-down frame and then a
+                // key-up frame, whose `None` would otherwise clobber the hit.
+                if let Some(a) = crate::ui::keybindings::check_keybindings(
+                    ui.ctx(),
+                    false,
+                    false,
+                    false,
+                    AiMode::Agentic,
+                ) {
+                    *action = Some(a);
+                }
+            },
+            None,
+        );
+        harness.run();
+        harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::Escape);
+        harness.state().clone()
+    }
+
+    /// Both gestures reach the interrupt, and both leave the session usable.
+    ///
+    /// End-to-end over the real widgets: a click on the rendered Stop button
+    /// and a real Escape keypress each arrive at the shared interrupt path, and
+    /// the session still owns a live stream afterwards either way.
+    #[test]
+    fn stop_button_and_escape_key_both_interrupt_without_breaking_the_session() {
+        let ctx = egui::Context::default();
+
+        // --- Stop button: click the real widget, follow the action it raises.
+        let action = click_stop_button();
+        assert!(
+            matches!(action, Some(crate::ui::DaveAction::Interrupt)),
+            "clicking Stop must raise Interrupt, got {action:?}"
+        );
+
+        let (stop_backend, stop_tx) = PersistentStreamFake::new();
+        let mut stop_sm = SessionManager::new();
+        let stop_id = session_mid_turn(&mut stop_sm, &stop_backend);
+        let mut overlay = crate::DaveOverlay::None;
+        let mut show_list = false;
+        crate::ui::handle_ui_action(
+            action.expect("Stop raised an action"),
+            &mut stop_sm,
+            &stop_backend,
+            &mut overlay,
+            &mut show_list,
+            &ctx,
+        );
+        assert_eq!(stop_backend.interrupt_count(), 1, "Stop aborted the turn");
+
+        // --- Escape: press the real key, follow the keybinding it triggers.
+        let key_action = press_escape();
+        assert!(
+            matches!(
+                key_action,
+                Some(crate::ui::keybindings::KeyAction::Interrupt)
+            ),
+            "Escape must trigger Interrupt, got {key_action:?}"
+        );
+
+        let (esc_backend, esc_tx) = PersistentStreamFake::new();
+        let mut esc_sm = SessionManager::new();
+        let esc_id = session_mid_turn(&mut esc_sm, &esc_backend);
+        let first = handle_interrupt_request(&esc_sm, &esc_backend, None, &ctx);
+        let second = handle_interrupt_request(&esc_sm, &esc_backend, first.pending_since, &ctx);
+        assert!(second.pending_since.is_none(), "confirmation is consumed");
+        assert_eq!(esc_backend.interrupt_count(), 1, "Escape aborted the turn");
+
+        // --- Both sessions are still reachable by their actor.
+        for (label, sm, id, tx) in [
+            ("Stop", &stop_sm, stop_id, &stop_tx),
+            ("Escape", &esc_sm, esc_id, &esc_tx),
+        ] {
+            let session = sm.get(id).expect("session");
+            let recvr = session
+                .incoming_tokens
+                .as_ref()
+                .unwrap_or_else(|| panic!("{label} left the session without a stream"));
+            tx.send(crate::DaveApiResponse::Token("still here".into()))
+                .unwrap_or_else(|_| panic!("{label} disconnected the actor's sender"));
+            assert!(
+                matches!(recvr.try_recv(), Ok(crate::DaveApiResponse::Token(t)) if t == "still here"),
+                "{label} left the session unable to receive"
+            );
+        }
     }
 }

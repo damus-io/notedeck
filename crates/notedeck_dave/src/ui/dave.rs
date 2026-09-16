@@ -1655,14 +1655,7 @@ impl<'a> DaveUi<'a> {
             }
         }
 
-        if result.ask_clicked {
-            return DaveResponse::send();
-        }
-        if result.stop_clicked {
-            return DaveResponse::new(DaveAction::Interrupt);
-        }
-
-        DaveResponse::none()
+        result.action()
     }
 
     #[profiling::function]
@@ -1771,6 +1764,24 @@ pub struct InputboxResult {
     pub ask_clicked: bool,
     pub stop_clicked: bool,
     pub text_response: Option<egui::Response>,
+}
+
+impl InputboxResult {
+    /// The action these buttons raise, if any.
+    ///
+    /// The single place an inputbox click becomes a [`DaveAction`]. Lifted out
+    /// of [`DaveUi::inputbox`], which needs an `AppContext` — this seam lets a
+    /// test click the real Stop button and follow the click all the way to the
+    /// action it raises, instead of asserting a mapping it restates itself.
+    pub fn action(&self) -> DaveResponse {
+        if self.ask_clicked {
+            return DaveResponse::send();
+        }
+        if self.stop_clicked {
+            return DaveResponse::new(DaveAction::Interrupt);
+        }
+        DaveResponse::none()
+    }
 }
 
 /// Extracted inputbox layout used by both DaveUi and tests.
