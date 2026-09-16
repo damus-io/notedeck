@@ -11,8 +11,8 @@ use notedeck_notebook::event::{
     build_longform, build_node, build_transform, canvas_address,
 };
 use notedeck_notebook::store::{
-    CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_canvases, list_longform,
-    load_canvas, load_longform,
+    self, CANVAS_ID, LongformNote, NoPublish, create_longform, ingest, list_canvases,
+    list_longform, load_canvas, load_longform,
 };
 use notedeck_notebook::wordid;
 use notedeck_ui::markdown::render_markdown_with_refs;
@@ -84,6 +84,13 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
         app_ctx.select_account(&pubkey);
 
         let secret = state.account.secret_key.secret_bytes();
+        // Seeding below writes through `store::ingest`, which seals each event
+        // into the account's SNS workspace. nostrdb only peels those kind-1081
+        // envelopes back to the rumor once the workspace root is registered, and
+        // the app's own registration doesn't happen until its first `update` —
+        // which is a frame away. Register it here so the seed barrier can
+        // actually see the canvases it is waiting for.
+        store::register_workspace(app_ctx.ndb, &secret);
         let mut seeded_canvas_ids: Vec<String> = Vec::new();
         if state.seed_colors {
             seed_colored_canvas(app_ctx.ndb, &pubkey, &secret);
