@@ -3629,7 +3629,6 @@ dependencies = [
 name = "headway"
 version = "0.11.0-beta.1"
 dependencies = [
- "futures-util",
  "hex",
  "nostr 0.37.0",
  "nostrdb",
@@ -5275,7 +5274,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.10.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=ad190e07d15e#ad190e07d15e8d7741996a9d510514338ccf5119"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=7d495ae2e7d2#7d495ae2e7d2f4595c0c55f8031ad650c077cf26"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -5291,7 +5290,7 @@ dependencies = [
 [[package]]
 name = "nostrdb_net"
 version = "0.1.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=ad190e07d15e#ad190e07d15e8d7741996a9d510514338ccf5119"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=7d495ae2e7d2#7d495ae2e7d2f4595c0c55f8031ad650c077cf26"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -5319,11 +5318,9 @@ dependencies = [
 name = "notebook"
 version = "0.11.0-beta.1"
 dependencies = [
- "futures-util",
  "nostr 0.37.0",
  "nostrdb",
  "nostrdb_net",
- "pollster",
  "profiling",
  "serde_json",
  "tempfile",

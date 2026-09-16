@@ -5,13 +5,14 @@
 //! event and immediately queries for it races the ingest. The event-driven way to
 //! close that gap is to subscribe *before* writing and await the subscription, so
 //! the test advances on the writer's own notification instead of a wall-clock
-//! sleep. [`await_notes`] and [`await_notes_async`] do that — with a deadline, so
-//! a note that never arrives fails the test instead of parking the thread
-//! forever.
+//! sleep.
+//!
+//! The wait itself lives in nostrdb ([`SubscriptionStream::wait_for_notes`]);
+//! what this module adds is the test ergonomics — a panic carrying the diagnosis
+//! instead of a `Result` to unwrap, and a sync entry point for a plain `#[test]`.
 
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use nostrdb::{NoteKey, SubscriptionStream};
 
 /// Backstop for the waits in this module. A local ingest commits in
@@ -49,37 +50,25 @@ pub fn await_notes(stream: &mut SubscriptionStream, n: usize) {
 /// # Panics
 ///
 /// If the subscription closes early, or if fewer than `n` notes arrive within
-/// [`INGEST_TIMEOUT`] — reporting how many did arrive, because the usual cause is
-/// a subscription filter that doesn't match what the write actually produced.
+/// [`INGEST_TIMEOUT`]. nostrdb's error carries how many notes *did* arrive,
+/// which is the useful part: 0 means the subscription filter doesn't match what
+/// the write produced, fewer-than-`n` means `n` is wrong.
 pub async fn await_notes_async(stream: &mut SubscriptionStream, n: usize) {
-    let mut seen = 0usize;
-
-    let wait = async {
-        while seen < n {
-            seen += await_batch(stream).await.len();
-        }
-    };
-
-    assert!(
-        tokio::time::timeout(INGEST_TIMEOUT, wait).await.is_ok(),
-        "timed out after {INGEST_TIMEOUT:?} awaiting {n} ingested note(s); saw {seen} — \
-         does the subscription filter match what the write produced?"
-    );
+    if let Err(err) = stream.wait_for_notes(n, INGEST_TIMEOUT).await {
+        panic!("awaiting {n} ingested note(s): {err}");
+    }
 }
 
 /// Await the next batch of ingested notes on `stream`, returning their keys, for
 /// the callers that care *which* notes landed rather than how many.
 ///
-/// Unbounded on purpose: this is the single-batch primitive the bounded waits
-/// above are built from, and it inherits their deadline when called through them.
-/// Prefer [`await_notes`] / [`await_notes_async`] unless you need the keys.
-///
 /// # Panics
 ///
-/// If the subscription closes before a batch arrives.
+/// If no batch arrives within [`INGEST_TIMEOUT`], or the subscription closes
+/// first.
 pub async fn await_batch(stream: &mut SubscriptionStream) -> Vec<NoteKey> {
-    stream
-        .next()
-        .await
-        .expect("subscription closed while awaiting ingested notes")
+    match stream.wait_for_notes(1, INGEST_TIMEOUT).await {
+        Ok(notes) => notes,
+        Err(err) => panic!("awaiting the next batch of ingested notes: {err}"),
+    }
 }
