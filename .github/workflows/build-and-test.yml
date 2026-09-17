@@ -29,6 +29,49 @@ jobs:
         env:
           CI: true
 
+      # TEMPORARY diagnostics for headway:notedeck/purse-happy-else — the Windows
+      # STATUS_ACCESS_VIOLATION in notedeck's lib tests. Remove once attributed.
+      #
+      # The disk theory these replace is refuted by its own measurement. Run
+      # 35182038873 printed Get-PSDrive either side of the crashing step: at the
+      # moment of the access violation D had 204 GB free and C 27.8 GB. Nothing
+      # ran out of disk, so capping the test mapsize was never going to help,
+      # and 3f6a84fbc9f4 duly did not help.
+      #
+      # What those same logs do show is that the two things being compared were
+      # never the same build. `cargo test --workspace` unifies notedeck's
+      # features across the members that depend on it — sound (notedeck_chrome),
+      # snapshot-testing (chrome, ui, headway, horizon, dashboard) and
+      # auto-update (chrome's dev-deps) — and runs
+      # target\debug\deps\notedeck-74cc77e3dd7d6cf9.exe with "running 342 tests",
+      # whereas `cargo test -p notedeck --lib` runs notedeck-1e7c175da93d939e.exe
+      # with 321. Reproduced locally: those two feature sets give exactly 342 and
+      # 321 tests. The 21 extras are all `updater::*`, from auto-update.
+      #
+      # So "the identical binary is clean standalone" compared a 342-test build
+      # against a 321-test one. This step closes that gap — same feature set,
+      # same 342 tests, but standalone — and then narrows.
+      #
+      # Reading the result:
+      #   both crash            -> auto-update is the trigger
+      #   only the first crashes -> sound and/or snapshot-testing is
+      #   neither crashes       -> not the feature set; it is something else the
+      #                            workspace run does, and the next thing to look
+      #                            at is the teardown of prune_swap_tests, which
+      #                            in all six observed crashes reports ok and is
+      #                            followed 40-200ms later by the fault.
+      - name: Windows crash, standalone with the workspace feature set (temporary)
+        if: always() && runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          cargo test -p notedeck --lib --features sound,snapshot-testing,auto-update
+          "RESULT unified (sound,snapshot-testing,auto-update): exit $LASTEXITCODE"
+          cargo test -p notedeck --lib --features auto-update
+          "RESULT auto-update only: exit $LASTEXITCODE"
+        env:
+          CI: true
+
       - name: Run notedeck_notebook Tests
         run: cargo test -p notedeck_notebook -- --test-threads=1
         env:
