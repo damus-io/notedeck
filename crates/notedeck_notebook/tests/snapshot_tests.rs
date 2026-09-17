@@ -36,8 +36,32 @@ struct NotebookTestState {
     /// wall-clock `created_at`, which shuffles ordering run-to-run). The earliest to
     /// fold suppresses the auto-seed, exactly as `seed_colors` does with `CANVAS_ID`.
     seed_canvases: Vec<SeedCanvas>,
+    /// A longform note to seed on the injection frame, before the scene first
+    /// lays out. See [`SeedLongform`].
+    seed_longform: Option<SeedLongform>,
     _tmpdir: tempfile::TempDir,
     setup_done: bool,
+}
+
+/// A longform note to seed deterministically on the injection frame.
+///
+/// It has to be seeded *there* rather than after `build_harness_inner` returns,
+/// because the vault sidebar appears as soon as any note exists
+/// (`show_vault = vault_rows.len() >= 2 || any note`) and it is a 230px-wide
+/// `SidePanel`. Seed it afterwards and the canvas may already have laid out at
+/// the full window width, keeping that zoom in `scene_rect` — whose *size encodes
+/// the zoom*, so the whole canvas then renders at a different scale.
+///
+/// That is what made both note-embed snapshots bistable. Tracing the two
+/// outcomes frame by frame, they differ on frame 0, before any animation:
+/// `scene=(8,44 684x328)` versus `scene=(238,44 454x328)` — exactly the
+/// sidebar's 230px. The injection frame already guards the same hazard for
+/// canvases (see `wait_canvases_committed`); this extends it to notes.
+struct SeedLongform {
+    d: String,
+    title: String,
+    summary: String,
+    body: String,
 }
 
 /// A canvas to seed deterministically on the injection frame: a fixed `d`, title
@@ -107,6 +131,20 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
         // is the test-side stand-in for the deferred sync-caught-up seed gate
         // (headway:notebook/social-genuine-crane).
         wait_canvases_committed(app_ctx.ndb, &pubkey, &seeded_canvas_ids);
+        // Same reasoning, for the vault sidebar: a note seeded after this frame
+        // pops the sidebar open once it folds, which narrows the canvas and
+        // rescales everything on it.
+        if let Some(note) = &state.seed_longform {
+            seed_embed_note(
+                app_ctx.ndb,
+                &secret,
+                &note.d,
+                &note.title,
+                &note.summary,
+                &note.body,
+            );
+            wait_longform_committed(app_ctx.ndb, &pubkey, &note.d);
+        }
 
         state.setup_done = true;
         return;
@@ -323,12 +361,44 @@ fn wait_canvases_committed(ndb: &Ndb, author: &Pubkey, ids: &[String]) {
     }
 }
 
+/// Block until the seeded longform note is readable, so the first history fold
+/// already sees it and the vault sidebar's presence is settled before the scene
+/// lays out. The note-shaped twin of [`wait_canvases_committed`].
+fn wait_longform_committed(ndb: &Ndb, author: &Pubkey, d: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let present = {
+            let txn = Transaction::new(ndb).expect("txn");
+            load_longform(ndb, &txn, author, d).is_some()
+        };
+        if present {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "seeded longform note never committed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn build_harness(
     size: egui::Vec2,
     seed_colors: bool,
     renderer: bool,
 ) -> Harness<'static, NotebookTestState> {
-    build_harness_inner(size, seed_colors, renderer, vec![])
+    build_harness_inner(size, seed_colors, renderer, vec![], None)
+}
+
+/// A harness whose vault already holds `note` on the first laid-out frame — for
+/// the note-embed snapshots, which need the sidebar's width settled before
+/// `scene_rect` is fixed. See [`SeedLongform`].
+fn build_harness_with_longform(
+    size: egui::Vec2,
+    renderer: bool,
+    note: SeedLongform,
+) -> Harness<'static, NotebookTestState> {
+    build_harness_inner(size, false, renderer, vec![], Some(note))
 }
 
 /// Build a harness that seeds a fixed set of `canvases` on the injection frame
@@ -339,7 +409,7 @@ fn build_harness_canvases(
     renderer: bool,
     canvases: Vec<SeedCanvas>,
 ) -> Harness<'static, NotebookTestState> {
-    build_harness_inner(size, false, renderer, canvases)
+    build_harness_inner(size, false, renderer, canvases, None)
 }
 
 fn build_harness_inner(
@@ -347,6 +417,7 @@ fn build_harness_inner(
     seed_colors: bool,
     renderer: bool,
     seed_canvases: Vec<SeedCanvas>,
+    seed_longform: Option<SeedLongform>,
 ) -> Harness<'static, NotebookTestState> {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
@@ -374,6 +445,7 @@ fn build_harness_inner(
         seed_colors,
         ref_surface: None,
         seed_canvases,
+        seed_longform,
         _tmpdir: tmpdir,
         setup_done: false,
     };
@@ -710,7 +782,26 @@ fn seed_embed_canvas(
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_note_embed() {
-    let mut harness = build_harness(egui::Vec2::new(700.0, 380.0), false, true);
+    // The note is seeded on the injection frame, not here: it is what makes the
+    // vault sidebar appear, and the sidebar's width has to be settled before the
+    // canvas lays out or `scene_rect` keeps the full-width zoom. See
+    // [`SeedLongform`].
+    let mut harness = build_harness_with_longform(
+        egui::Vec2::new(700.0, 380.0),
+        true,
+        SeedLongform {
+            d: "embed-00".to_string(),
+            title: "Q3 planning notes".to_string(),
+            summary: "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review."
+                .to_string(),
+            body: "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
+                   ## Stretch goals\n\n\
+                   - Cross-device longform sync\n\
+                   - Note templates and daily notes\n\n\
+                   Revisit these at the **mid-point review**."
+                .to_string(),
+        },
+    );
 
     let secret = harness.state().account.secret_key.secret_bytes();
     let author = harness.state().account.pubkey;
@@ -725,22 +816,11 @@ fn snapshot_notebook_note_embed() {
         .to_string();
     {
         let app_ctx = harness.state_mut().notedeck.app_context();
-        seed_embed_note(
-            app_ctx.ndb,
-            &secret,
-            "embed-00",
-            "Q3 planning notes",
-            "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review.",
-            "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
-             ## Stretch goals\n\n\
-             - Cross-device longform sync\n\
-             - Note templates and daily notes\n\n\
-             Revisit these at the **mid-point review**.",
-        );
         seed_embed_canvas(app_ctx.ndb, &author, &secret, &canvas_id, &reference);
     }
 
-    // The longform note must fold in before the embed can resolve it.
+    // The longform note was seeded on the injection frame, so it is already in
+    // the vault; this just confirms it before the embed resolves against it.
     wait_for_vault(&mut harness, 1);
     // And the embed node must fold into the canvas.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -749,6 +829,11 @@ fn snapshot_notebook_note_embed() {
         assert!(Instant::now() < deadline, "embed node never folded");
         std::thread::sleep(Duration::from_millis(25));
     }
+    // The node's box is max(declared height, rendered content height), and the
+    // rendered height is only known once a frame has actually drawn the body —
+    // so wait for a heading from deep inside that body before capturing.
+    // "Stretch goals" only ever comes from the embed, never the vault row.
+    wait_for_label(&mut harness, "Stretch goals");
     harness.run_steps(3);
     harness.snapshot("notebook_note_embed");
 }
@@ -760,24 +845,25 @@ fn snapshot_notebook_note_embed() {
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_note_embed_drag() {
-    let mut harness = build_harness(egui::Vec2::new(900.0, 560.0), false, true);
-
-    let secret = harness.state().account.secret_key.secret_bytes();
-    {
-        let app_ctx = harness.state_mut().notedeck.app_context();
-        seed_embed_note(
-            app_ctx.ndb,
-            &secret,
-            "drag-00",
-            "Q3 planning notes",
-            "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review.",
-            "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
-             ## Stretch goals\n\n\
-             - Cross-device longform sync\n\
-             - Note templates and daily notes\n\n\
-             Revisit these at the **mid-point review**.",
-        );
-    }
+    // Seeded on the injection frame so the vault sidebar is present before the
+    // canvas lays out — otherwise `scene_rect` keeps the full-width zoom and the
+    // whole canvas renders at a different scale. See [`SeedLongform`].
+    let mut harness = build_harness_with_longform(
+        egui::Vec2::new(900.0, 560.0),
+        true,
+        SeedLongform {
+            d: "drag-00".to_string(),
+            title: "Q3 planning notes".to_string(),
+            summary: "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review."
+                .to_string(),
+            body: "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
+                   ## Stretch goals\n\n\
+                   - Cross-device longform sync\n\
+                   - Note templates and daily notes\n\n\
+                   Revisit these at the **mid-point review**."
+                .to_string(),
+        },
+    );
 
     // The row must render (and the note fold in, so the embed resolves) before we
     // drag it.
@@ -797,6 +883,9 @@ fn snapshot_notebook_note_embed_drag() {
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+    // As above: the dropped node's box only reaches its content height once a
+    // frame has drawn the body.
+    wait_for_label(&mut harness, "Stretch goals");
     harness.run_steps(3);
     harness.snapshot("notebook_note_embed_drag");
 }
