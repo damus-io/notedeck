@@ -105,8 +105,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libasound2-dev mesa-vulkan-drivers
-      - name: Run snapshot tests
-        run: ./scripts/snapshot-test
+      # TEMPORARY diagnostic for headway:notedeck/man-eight-damp — the SIGILL
+      # that intermittently kills notedeck_headway's snapshot binary, now
+      # pinned to snapshot_switcher_same_slug_boards.
+      #
+      # It is *intermittent* on a fixed job definition, which is what makes the
+      # runner's CPU worth recording: GitHub's ubuntu-22.04 pool is
+      # heterogeneous, and both live suspects — lavapipe's LLVM JIT and
+      # runtime CPU-feature dispatch in the crypto that test's NIP-59 unwrap
+      # goes through — pick their code path off exactly these flags. Correlate
+      # the model and flag set against which runs fault. Drop with the phase
+      # markers once the fault is understood.
+      - name: Runner CPU (temporary)
+        if: always()
+        run: |
+          grep -m1 'model name' /proc/cpuinfo || true
+          grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' \
+            | grep -E '^(avx|avx2|avx512[a-z]*|sha_ni|bmi[12]|f16c|fma)$' \
+            | sort | tr '\n' ' ' || true
+          echo
+          nproc
 
   macos-test:
     name: Test (macOS)
