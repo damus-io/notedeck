@@ -26,6 +26,7 @@ use notedeck_dave::session_cache::AgentiumSessionCache;
 use notedeck_ui::markdown::render_markdown_with_refs;
 
 use agentium_core::session_events::AI_SESSION_STATE_KIND;
+use notedeck_testing::fixtures::test_config;
 
 struct RefChipState {
     notedeck: Notedeck,
@@ -280,7 +281,7 @@ fn snapshot_agentium_deleted_chip() {
 #[test]
 fn seeded_session_resolves_through_the_shared_cache() {
     let tmpdir = tempfile::TempDir::new().unwrap();
-    let ndb = Ndb::new(tmpdir.path().to_str().unwrap(), &nostrdb::Config::new()).unwrap();
+    let ndb = Ndb::new(tmpdir.path().to_str().unwrap(), &test_config()).unwrap();
     let kp = FullKeypair::generate();
     let session_id = "claude-session-headless";
 
@@ -308,6 +309,15 @@ fn seeded_session_resolves_through_the_shared_cache() {
     let parser = AgentiumRefParser::new(cache.clone());
     let words = agentium_core::wordid::session_ref(session_id);
     let author: Pubkey = kp.pubkey;
+
+    // In the app the parser shares the cache Dave's `update` already drives, so it
+    // reads an already-seeded one. Here it owns a fresh cache, so drive the two
+    // advances that seed it — the first opens the subscription, the next folds the
+    // history from a snapshot taken after it (see `notedeck::RealtimeCache`).
+    for _ in 0..2 {
+        let txn = Transaction::new(&ndb).unwrap();
+        cache.borrow_mut().poll(&ndb, &txn, &kp.pubkey);
+    }
 
     let txn = Transaction::new(&ndb).unwrap();
     let ctx = notedeck::ReferenceResolveCtx {
