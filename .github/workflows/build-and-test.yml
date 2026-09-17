@@ -45,10 +45,10 @@ jobs:
       # fault needs parallelism, and the cut in the last parallel log puts it in
       # `app::` (everything before it finished, nothing after it started). This
       # runs just that module, still parallel, to confirm.
-      - name: Attribute the notedeck lib crash, app:: only (Windows, temporary)
+      - name: "Attribute the notedeck lib crash, app:: only (Windows, temporary)"
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p notedeck --lib app:: -- --nocapture
+        run: 'cargo test -p notedeck --lib app:: -- --nocapture'
         env:
           CI: true
 
