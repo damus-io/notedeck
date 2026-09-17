@@ -372,6 +372,7 @@ cargo test i18n
    - Ensure the database path is writable
    - Check for database corruption
    - Increase map size if needed
+   - On macOS, see [`DbOpenFailed` with errno 28](#dbopenfailed-with-errno-28-macos)
 
 3. **Performance Issues**
    - Monitor the frame history
@@ -383,6 +384,42 @@ cargo test i18n
    - Check that locale codes are valid (e.g., `en-US`, `es-ES`)
    - Ensure FTL files are properly formatted
    - Look for missing translation keys in logs
+
+### `DbOpenFailed` with errno 28 (macOS)
+
+A panic like this, especially from several E2E tests at once:
+
+```
+mdb_env_open failed, error 28
+thread '...' panicked at crates/notedeck/src/app.rs:
+could not open nostrdb at '/var/folders/.../db' with a 33554432 byte mapsize: DbOpenFailed
+```
+
+is not a full disk and not a mapsize problem. errno 28 is `ENOSPC` out of the
+POSIX *named semaphore* namespace, which on macOS is where LMDB keeps an
+environment's locks: two named semaphores per open environment, unlinked only
+when the closing process holds that environment's exclusive lock. Any run that
+is killed or aborts mid-flight — a `^C`, a CI step timeout, a `SIGILL` — leaks
+its pairs into a namespace that is system-wide, capped by
+`kern.posix.sem.max` (10000 by default), and reclaimed by nothing short of a
+reboot. Linux never sees this: there LMDB puts pthread mutexes in `lock.mdb`,
+which dies with the directory.
+
+The suites that open the most environments at once fail first, which is why
+this tends to show up as a dozen `notedeck_messages` E2E failures while the
+unit tests stay green, and why each failing test still passes in isolation.
+
+Check where the namespace stands:
+
+```bash
+./scripts/posix-sem-capacity
+```
+
+Then either reboot to clear the leaked names, or buy headroom for this boot:
+
+```bash
+sudo sysctl -w kern.posix.sem.max=20000
+```
 
 ## Contributing
 
