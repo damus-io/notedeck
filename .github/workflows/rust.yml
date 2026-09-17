@@ -74,6 +74,11 @@ jobs:
           distribution: 'temurin'
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default is "tools platform-tools", but the legacy
+          # "tools" package was removed from Google's SDK repository, so
+          # sdkmanager fails to find it. jni-check only needs the NDK.
+          packages: platform-tools
       - name: Add android rust target
         run: rustup target add aarch64-linux-android
       - name: Install Cargo NDK
