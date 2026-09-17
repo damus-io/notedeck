@@ -1732,8 +1732,9 @@ pub use event::load_board;
 mod tests {
     use super::*;
     use crate::test_config;
-    use nostrdb::{Ndb, SubscriptionStream, Transaction};
+    use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
+    use std::time::Duration;
 
     struct TestNdb {
         ndb: Ndb,
@@ -2213,7 +2214,7 @@ mod tests {
     #[tokio::test]
     async fn reorder_subissues_promotes_unsequenced_children_into_exact_order() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
 
         // A parent with three children, all left unsequenced (creation order).
@@ -2279,30 +2280,39 @@ mod tests {
     /// Columns: Backlog, Todo, In Progress, In Review, Done; cards 3 / 2 / 1 / 0 / 1.
     /// Seeded in the past so follow-up edits (stamped with the wall clock)
     /// always sort after it.
-    /// The demo seed, fully folded: all seven cards *and* the subject amendment
-    /// that renames the first backlog card.
+    /// The demo seed, fully folded.
     ///
-    /// Both halves have to be waited on. `seed_demo_board` ingests seven cards and
-    /// then a subject edit renaming one of them, and the two land independently —
-    /// a run on CI folded the rename while only six cards were visible, failing
-    /// `seed_demo_materialises_cards` with left: 6, right: 7. Waiting on the
-    /// rename alone (which that test's comment claimed implied the cards) or on a
-    /// single column's count (which the rest did) leaves the remaining seed events
-    /// in flight, so a test that then adds or moves a card races the stragglers
-    /// and can see them land after its own edit.
+    /// Trivial now that [`seed_demo`] does not return until every seeded event
+    /// is committed; kept because the tests read better naming the barrier, and
+    /// because the fold still has to run once to produce the view.
     async fn wait_for_demo_seed(t: &TestNdb) -> BoardView {
-        t.wait(|v| {
-            v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7
-                && v.columns[0]
-                    .cards
-                    .first()
-                    .is_some_and(|c| c.title == "Define nostr event model for boards")
-        })
-        .await
+        t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7)
+            .await
     }
 
-    fn seed_demo(t: &TestNdb) {
-        seed_demo_board(
+    /// Seed the demo board and wait for *all* of it to land.
+    ///
+    /// The count comes from `seed_demo_board` itself, which returns how many
+    /// events it ingested. That matters because the seed has a tail: it writes
+    /// seven cards and then amends some of them — renaming the event-model card,
+    /// moving the drag card out of Todo — and the amendments land independently
+    /// of the cards. Every predicate tried here before enumerated some of that
+    /// tail and missed the rest. Waiting on seven cards alone let a test add a
+    /// card and then race the move; waiting on seven cards plus the rename (the
+    /// previous attempt) still missed the move, and `add_card_appends_to_column`
+    /// failed on CI with left: "Drag-and-drop between columns", right: "New
+    /// idea" — its `columns[1].len() == 3` barrier was satisfied by the drag
+    /// card that had not moved out yet, not by the card it had just added.
+    ///
+    /// Counting the seed's own events needs no such enumeration and cannot go
+    /// stale when the fixture gains an event.
+    async fn seed_demo(t: &TestNdb) {
+        // Subscribed before the first write, so nothing can commit unseen.
+        let sub = t
+            .ndb
+            .subscribe(&[Filter::new().authors([t.kp.pubkey.bytes()]).build()])
+            .expect("subscribe");
+        let expected = seed_demo_board(
             &t.ndb,
             &t.kp.pubkey,
             &t.secret(),
@@ -2310,6 +2320,10 @@ mod tests {
             1_700_000_000,
             &mut NoPublish,
         );
+        t.ndb
+            .wait_for_all_notes_within(sub, expected as u32, Duration::from_secs(30))
+            .await
+            .expect("demo seed ingested");
     }
 
     #[tokio::test]
@@ -2329,7 +2343,7 @@ mod tests {
     #[tokio::test]
     async fn seed_demo_materialises_cards() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
 
         // Both halves of the seed, cards and the subject amendment that renames
         // the first backlog card — neither implies the other (see
@@ -2345,7 +2359,7 @@ mod tests {
     #[tokio::test]
     async fn add_card_appends_to_column() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
 
         t.apply(
@@ -2366,7 +2380,7 @@ mod tests {
     #[tokio::test]
     async fn add_card_with_labels_tags_the_new_card() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
 
         t.apply(
@@ -2399,7 +2413,7 @@ mod tests {
     #[tokio::test]
     async fn add_card_with_description_sets_cover_note() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
 
         // A non-empty description on `AddCard` should surface as the card's
@@ -2436,7 +2450,7 @@ mod tests {
     #[tokio::test]
     async fn block_and_unblock_edit_the_dependency_set() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let mut view = wait_for_demo_seed(&t).await;
 
         // Three fresh cards to wire edges between.
@@ -2528,7 +2542,7 @@ mod tests {
     #[tokio::test]
     async fn relate_and_unrelate_edit_the_related_set() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let mut view = wait_for_demo_seed(&t).await;
 
         // Three fresh cards to wire relations between.
@@ -2630,7 +2644,7 @@ mod tests {
     #[tokio::test]
     async fn declined_edge_edits_report_a_reason() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let mut view = wait_for_demo_seed(&t).await;
 
         for title in ["first", "second", "third"] {
@@ -2765,7 +2779,7 @@ mod tests {
         }
 
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
 
         // AddCard ingests two events — the issue and its placement — so the
@@ -2799,7 +2813,7 @@ mod tests {
     #[tokio::test]
     async fn move_card_changes_column() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
 
         // Move a Backlog card into Done (the last column, which seeds one card).
@@ -2822,7 +2836,7 @@ mod tests {
     #[tokio::test]
     async fn edit_title_description_and_labels() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
         // The second Todo card ("Column reordering") is seeded without labels,
         // so the SetLabels union below is exactly the two we add.
@@ -2869,7 +2883,7 @@ mod tests {
     #[tokio::test]
     async fn add_comment_and_reply_fold_onto_the_card() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
         let card = view.columns[1].cards[0].id;
 
@@ -2931,7 +2945,7 @@ mod tests {
     #[tokio::test]
     async fn delete_card_removes_it() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = wait_for_demo_seed(&t).await;
         let card = view.columns[0].cards[0].id;
 
@@ -2944,7 +2958,7 @@ mod tests {
     #[tokio::test]
     async fn archive_then_restore_round_trips_to_origin() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         // Pick a card out of "In Progress" (column 2), not the first column, so a
         // restore that ignored the origin would land it somewhere else.
         let view = t.wait(|v| v.columns[2].cards.len() == 1).await;
@@ -2975,7 +2989,7 @@ mod tests {
     #[tokio::test]
     async fn column_ops_round_trip() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = t.wait(|v| v.columns.len() == 5).await;
 
         t.apply(
@@ -3010,7 +3024,7 @@ mod tests {
     #[tokio::test]
     async fn rename_board_changes_title_preserving_columns_and_cards() {
         let t = TestNdb::new();
-        seed_demo(&t);
+        seed_demo(&t).await;
         let view = t
             .wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7)
             .await;
