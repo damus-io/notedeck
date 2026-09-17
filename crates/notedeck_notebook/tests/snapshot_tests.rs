@@ -346,7 +346,7 @@ fn wait_canvases_committed(ndb: &Ndb, author: &Pubkey, ids: &[String]) {
     if ids.is_empty() {
         return;
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         let all_present = {
             let txn = Transaction::new(ndb).expect("txn");
@@ -365,7 +365,7 @@ fn wait_canvases_committed(ndb: &Ndb, author: &Pubkey, ids: &[String]) {
 /// already sees it and the vault sidebar's presence is settled before the scene
 /// lays out. The note-shaped twin of [`wait_canvases_committed`].
 fn wait_longform_committed(ndb: &Ndb, author: &Pubkey, d: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         let present = {
             let txn = Transaction::new(ndb).expect("txn");
@@ -462,10 +462,26 @@ fn build_harness_inner(
     harness
 }
 
+/// Ceiling for the frame-pumping barriers in this file.
+///
+/// These wait on asynchronous nostrdb ingest and on canvas folds, so the bound
+/// has to cover a loaded CI runner rather than a quiet laptop. Reproduced
+/// locally at the old five seconds by running the whole snapshot suite the way
+/// CI does (`scripts/snapshot-test` with no `-p`): on the second pass
+/// `snapshot_notebook_note_embed_drag` failed with "the dropped embed node never
+/// folded", while the same test passes every time when its crate is run alone.
+///
+/// Matches `notedeck_headway`'s SETTLE_TIMEOUT and `common::CONVERGE_TIMEOUT`:
+/// long enough for a slow runner, short enough that a genuinely stuck fold still
+/// fails rather than hangs. Costs nothing when things are healthy — every loop
+/// returns as soon as its condition holds, so only a run that was already going
+/// to fail waits longer.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Pump frames (ndb ingest is async) until a widget with `label` appears, or
 /// panic after a deadline.
 fn wait_for_label(harness: &mut Harness<'static, NotebookTestState>, label: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness.query_by_label(label).is_some() {
@@ -483,7 +499,7 @@ fn wait_for_label(harness: &mut Harness<'static, NotebookTestState>, label: &str
 /// that clicks or drags a node right after would race the stragglers. Use this
 /// as the setup barrier for any test that interacts with the seeded canvas.
 fn wait_for_seed(harness: &mut Harness<'static, NotebookTestState>) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let canvas = harness.state().notebook.canvas();
@@ -504,7 +520,7 @@ fn wait_for_seed(harness: &mut Harness<'static, NotebookTestState>) {
 /// snapshot taken too early would render a nondeterministic subset (and, with
 /// them, a nondeterministic row order). Use this as the vault setup barrier.
 fn wait_for_vault(harness: &mut Harness<'static, NotebookTestState>, expected: usize) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness.state().notebook.notes().len() >= expected {
@@ -692,7 +708,7 @@ fn snapshot_notebook_editor() {
     // Open the note from the vault into the editor.
     wait_for_label(&mut harness, "Q3 Planning");
     harness.get_by_label("Q3 Planning").simulate_click();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness.state().notebook.editor_is_open() {
@@ -823,7 +839,7 @@ fn snapshot_notebook_note_embed() {
     // the vault; this just confirms it before the embed resolves against it.
     wait_for_vault(&mut harness, 1);
     // And the embed node must fold into the canvas.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     while harness.state().notebook.canvas().get_nodes().is_empty() {
         harness.run_ok();
         assert!(Instant::now() < deadline, "embed node never folded");
@@ -845,25 +861,24 @@ fn snapshot_notebook_note_embed() {
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_note_embed_drag() {
-    // Seeded on the injection frame so the vault sidebar is present before the
-    // canvas lays out — otherwise `scene_rect` keeps the full-width zoom and the
-    // whole canvas renders at a different scale. See [`SeedLongform`].
-    let mut harness = build_harness_with_longform(
-        egui::Vec2::new(900.0, 560.0),
-        true,
-        SeedLongform {
-            d: "drag-00".to_string(),
-            title: "Q3 planning notes".to_string(),
-            summary: "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review."
-                .to_string(),
-            body: "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
-                   ## Stretch goals\n\n\
-                   - Cross-device longform sync\n\
-                   - Note templates and daily notes\n\n\
-                   Revisit these at the **mid-point review**."
-                .to_string(),
-        },
-    );
+    let mut harness = build_harness(egui::Vec2::new(900.0, 560.0), false, true);
+
+    let secret = harness.state().account.secret_key.secret_bytes();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context();
+        seed_embed_note(
+            app_ctx.ndb,
+            &secret,
+            "drag-00",
+            "Q3 planning notes",
+            "Quarterly goals, milestones, and a few stretch items to revisit at the mid-point review.",
+            "# Milestones\n\nShip the notebook vault and the longform editor.\n\n\
+             ## Stretch goals\n\n\
+             - Cross-device longform sync\n\
+             - Note templates and daily notes\n\n\
+             Revisit these at the **mid-point review**.",
+        );
+    }
 
     // The row must render (and the note fold in, so the embed resolves) before we
     // drag it.
@@ -871,10 +886,10 @@ fn snapshot_notebook_note_embed_drag() {
     wait_for_label(&mut harness, "Q3 planning notes");
     harness.run_steps(3);
 
-    drag_first_vault_row(&mut harness, egui::pos2(560.0, 250.0));
+    drag_vault_row(&mut harness, "Q3 planning notes", egui::pos2(560.0, 250.0));
 
     // The dropped embed node folds in asynchronously; wait for it before snapshotting.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     while harness.state().notebook.canvas().get_nodes().is_empty() {
         harness.run_ok();
         assert!(
@@ -985,7 +1000,7 @@ fn snapshot_notebook_reference_chip() {
     // *both* surfaces, proving the parser + renderer folded it from the shared
     // cache. `query_all_by_label` (not `query_by_label`) because the title is
     // deliberately shown twice — once per surface.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness.query_all_by_label(title).count() >= 2 {
@@ -1041,7 +1056,7 @@ fn open_pans_the_canvas_to_an_offscreen_node() {
 
     // Wait until the node folds into the canvas, then let `notebook_ui` lay out
     // the scene (`scene_rect`) at least once.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness
@@ -1077,7 +1092,7 @@ fn open_pans_the_canvas_to_an_offscreen_node() {
     // The reveal selects immediately but pans over several frames (it's animated),
     // so pump until the pan settles and the node is actually in view. Terminal
     // state, not a fixed step count, so the animation length can't flake it.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let selected = harness.state().notebook.selected() == Some(&jc_id);
@@ -1152,7 +1167,7 @@ fn drag_and_select_nodes() {
 
     // The move is ingested asynchronously and folds back in; wait for it.
     let target = egui::pos2(190.0, 120.0);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if let Some(p) = harness.state().notebook.node_position(&id)
@@ -1212,7 +1227,7 @@ fn connect_nodes_with_edge() {
     release(&mut harness, into);
 
     // The edge is ingested asynchronously and folds back in; wait for it.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let canvas = harness.state().notebook.canvas();
@@ -1276,7 +1291,7 @@ fn connect_from_hovered_node() {
     release(&mut harness, into);
 
     // The edge is ingested asynchronously and folds back in; wait for it.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let canvas = harness.state().notebook.canvas();
@@ -1315,7 +1330,7 @@ fn delete_edge_via_handle() {
     click_at(&mut harness, egui::pos2(140.0, 165.0));
 
     // The delete is ingested asynchronously and folds back in; wait for it.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if edge_count(&harness) < before {
@@ -1353,11 +1368,11 @@ fn drag_vault_note_creates_embed_node() {
     harness.run_steps(3);
     let before = harness.state().notebook.canvas().get_nodes().len();
 
-    drag_first_vault_row(&mut harness, egui::pos2(600.0, 320.0));
+    drag_vault_row(&mut harness, "Draggable note", egui::pos2(600.0, 320.0));
 
     // The drop ingests a note-embed Link node (async) referencing the note by naddr.
     let reference = event::longform_naddr(&author, "drag-00").expect("naddr");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let canvas = harness.state().notebook.canvas();
@@ -1385,7 +1400,7 @@ fn wait_for_longform(
     d: &str,
     pred: impl Fn(&LongformNote) -> bool,
 ) -> LongformNote {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let pubkey = harness.state().account.pubkey;
@@ -1438,7 +1453,7 @@ fn create_and_edit_longform_via_editor() {
     // (d, created_at) within a frame or two.
     harness.get_by_label("Save").simulate_click();
     let (d, created_at) = {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
         loop {
             harness.run_ok();
             if let Some((d, ca)) = harness.state().notebook.editor_saved() {
@@ -1466,7 +1481,7 @@ fn create_and_edit_longform_via_editor() {
     harness.run_ok();
     harness.get_by_label("Save").simulate_click();
     {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
         loop {
             harness.run_ok();
             if let Some((d2, ca2)) = harness.state().notebook.editor_saved()
@@ -1491,7 +1506,7 @@ fn create_and_edit_longform_via_editor() {
     // it reopens the editor bound to that same note.
     wait_for_label(&mut harness, "My first note");
     harness.get_by_label("My first note").simulate_click();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness.state().notebook.editor_is_open()
@@ -1589,7 +1604,7 @@ fn rename_note_via_vault_context_menu() {
     key_press(&mut harness, egui::Key::Enter);
 
     // The rename supersedes the note in place: both notes remain, one now edited.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let titles = vault_titles(&mut harness);
@@ -1641,7 +1656,7 @@ fn delete_note_via_vault_context_menu() {
 
     // The tombstone ingests + unwraps asynchronously; poll until the vault drops
     // to a single note.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if vault_len(&mut harness) == 1 {
@@ -1706,7 +1721,7 @@ fn two_seed_canvases() -> Vec<SeedCanvas> {
 /// asynchronously like the notes, so a mixed-vault snapshot taken too early would
 /// render a partial (nondeterministic) list.
 fn wait_for_vault_docs(harness: &mut Harness<'static, NotebookTestState>, expected: usize) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let docs = harness.state().notebook.notes().len() + canvas_titles(harness).len();
@@ -1734,7 +1749,7 @@ fn open_canvas_swaps_active_surface() {
     // Both canvases fold; the newer one ("Ideas") is the adopted active surface.
     wait_for_vault_docs(&mut harness, 2);
     wait_for_label(&mut harness, "Roadmap");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     while harness.state().notebook.active_canvas() != Some("cv-ideas") {
         harness.run_ok();
         assert!(
@@ -1749,7 +1764,7 @@ fn open_canvas_swaps_active_surface() {
     // Click the *other* canvas's vault row (by its title label — the same way the
     // note tests open a note). It must swap the surface, not open the editor.
     harness.get_by_label("Roadmap").simulate_click();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let nb = &harness.state().notebook;
@@ -1805,7 +1820,7 @@ fn rename_canvas_via_vault_context_menu() {
 
     // The rename supersedes that canvas doc in place: one canvas now ends " v2",
     // both canvases still exist (the other untouched).
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let titles = canvas_titles(&mut harness);
@@ -1849,7 +1864,7 @@ fn delete_canvas_via_vault_context_menu() {
 
     // The tombstone folds in and drops the clicked canvas; exactly one survives,
     // and it's one of the two seeded (not a re-seeded replacement).
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if canvas_titles(&mut harness).len() == 1 {
@@ -1907,7 +1922,7 @@ fn snapshot_notebook_canvas_open() {
 
     wait_for_vault_docs(&mut harness, 2);
     wait_for_label(&mut harness, "Roadmap");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     while harness.state().notebook.active_canvas() != Some("cv-ideas") {
         harness.run_ok();
         assert!(Instant::now() < deadline, "active canvas never settled");
@@ -1915,7 +1930,7 @@ fn snapshot_notebook_canvas_open() {
     }
 
     harness.get_by_label("Roadmap").simulate_click();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     while harness.state().notebook.active_canvas() != Some("cv-roadmap") {
         harness.run_ok();
         assert!(
@@ -1973,8 +1988,27 @@ fn secondary_click_at(harness: &mut Harness<'static, NotebookTestState>, pos: eg
 /// vault tests target) onto the canvas and release at `onto`, so the drop lands a
 /// note-embed node there. Mirrors the node-drag tests' press → drag → drag →
 /// release, with intermediate moves to cross egui's drag threshold.
-fn drag_first_vault_row(harness: &mut Harness<'static, NotebookTestState>, onto: egui::Pos2) {
-    let from = egui::pos2(120.0, 120.0);
+/// Drag the vault row labelled `label` onto `onto`.
+///
+/// The row is located by its label rather than by a fixed point in the sidebar:
+/// the vault lists canvases and notes together, so which row sits at any given
+/// y depends on what else has folded in and in what order. Grabbing a hardcoded
+/// coordinate silently drags whatever happens to be there — which, once the
+/// seeded note moved to the injection frame, was no longer the note, and the
+/// drop produced no embed node at all.
+fn drag_vault_row(
+    harness: &mut Harness<'static, NotebookTestState>,
+    label: &str,
+    onto: egui::Pos2,
+) {
+    let row = harness
+        .get_by_label(label)
+        .bounding_box()
+        .unwrap_or_else(|| panic!("vault row {label:?} has no bounding box"));
+    let from = egui::pos2(
+        (row.x0 + row.x1) as f32 / 2.0,
+        (row.y0 + row.y1) as f32 / 2.0,
+    );
     press(harness, from);
     drag_to(harness, egui::pos2(300.0, 200.0));
     drag_to(harness, onto);
