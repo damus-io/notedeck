@@ -237,7 +237,35 @@ fn behavioral_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
 /// header's full-count summary rather than just the first column, so every test
 /// starts from a fully-materialised board instead of a half-ingested one.
 fn wait_for_board(harness: &mut Harness<'static, HeadwayTestState>) {
-    wait_for_label(harness, "7 cards · 5 columns");
+    const SUMMARY: &str = "7 cards · 5 columns";
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        if harness.query_by_label(SUMMARY).is_some() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            // This barrier hangs intermittently on loaded runners
+            // (headway:notedeck/awesome-purpose-fossil), and the bare
+            // "timed out waiting for X" a generic barrier prints says only that
+            // the board never reached seven cards — not whether it reached
+            // *any*. Report the summary the header actually rendered, because
+            // that one string separates the two candidate failures: no summary
+            // at all means the board never materialised, while "3 cards · 5
+            // columns" means the fold ran and the seed went missing partway.
+            let seen: Vec<String> = harness
+                .query_all_by_label_contains(" columns")
+                .filter_map(|node| node.label())
+                .collect();
+            let seen = if seen.is_empty() {
+                "no board summary rendered at all".to_owned()
+            } else {
+                format!("header showed {seen:?}")
+            };
+            panic!("timed out waiting for {SUMMARY:?}: {seen}");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Seed the populated demo board for the snapshot/flow tests to render against.
