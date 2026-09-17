@@ -697,14 +697,6 @@ impl HostPrivateSync {
             self.local_sns_sub = (!team_pubkeys.is_empty())
                 .then(|| ndb.subscribe(&[team_envelopes_filter(&team_pubkeys)]).ok())
                 .flatten();
-            // Catch up: fan any channel envelope already in ndb that the private
-            // relays haven't seen. The live sub above only reports *future* commits,
-            // so an envelope sealed before its root was registered — e.g. a board
-            // definition, or the notebook's first canvas, ingested before the app
-            // registered the channel — would otherwise never leave this device.
-            // Bounded to a roster change (rare), and the seen-on check skips
-            // anything already sent, so this is not a per-frame rescan.
-            self.fan_out_channel_catchup(ndb, &session, private_urls, &team_pubkeys);
         }
 
         // (Re)declare the remote subscription on any account / relay-set / roster
@@ -717,6 +709,15 @@ impl HostPrivateSync {
         };
         if self.declared.as_ref() != Some(&next) {
             self.redeclare(&session, &pns_pubkey, private_urls, &next.roots);
+            // Catch up the outbound envelope leg. Keyed off the declaration change
+            // rather than the root-set change above for the same reason as the
+            // gift-wrap leg below: a board sealed before any private relay was
+            // marked changes the roots while `private_urls` is still empty, and a
+            // catchup run then has nowhere to publish. Gated on the roots alone it
+            // would never run again — the roots do not change a second time — and
+            // the channel's envelopes would stay on this device forever.
+            let team_pubkeys: Vec<Pubkey> = next.roots.iter().filter_map(team_pubkey).collect();
+            self.fan_out_channel_catchup(ndb, &session, private_urls, &team_pubkeys);
             // Catch up the outbound gift-wrap leg on the same (rare) trigger. The
             // live poll below only reports 1082s committed *after* the sub opened,
             // so every board sealed before this boot — the whole existing roster,
@@ -885,9 +886,10 @@ impl HostPrivateSync {
     /// committed *after* it was opened: an envelope sealed and locally-ingested
     /// before its root was registered (a board definition, the notebook's first
     /// canvas) predates the sub and would never be fanned otherwise. Run only on a
-    /// roster change, and the seen-on check ([`fan_out_unseen_notes_with`]) skips
-    /// envelopes the relays already hold, so a co-member's inbound edits are not
-    /// echoed back and a re-run costs only the query.
+    /// declaration change (account / relay set / roster), and the seen-on check
+    /// ([`fan_out_unseen_notes_with`]) skips envelopes the relays already hold, so a
+    /// co-member's inbound edits are not echoed back and a re-run costs only the
+    /// query.
     fn fan_out_channel_catchup(
         &self,
         ndb: &Ndb,
