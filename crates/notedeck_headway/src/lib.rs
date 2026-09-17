@@ -2119,7 +2119,9 @@ mod tests {
         let det = ndb.subscribe(&[event::headway_filter(&kp.pubkey)]).unwrap();
         seed("alpha", "Alpha");
         wait_commit(det);
-        {
+        // Two advances: the first subscribes, the next seeds from a snapshot
+        // taken after it (see `RealtimeCache::advance`).
+        for _ in 0..2 {
             let txn = Transaction::new(&ndb).unwrap();
             cache.poll(&ndb, &txn, &kp.pubkey);
         }
@@ -2241,6 +2243,16 @@ mod tests {
         let matched = format!("headway:{}/{}", store::BOARD_ID, words);
 
         let p = ref_parser();
+        // In the app the parser shares the board cache `update` already drives
+        // (see `reference_parsers`), so it reads an already-seeded one. This
+        // parser owns a fresh cache, so drive the two advances that seed it —
+        // the first subscribes, the next folds the history (see
+        // `RealtimeCache::advance`) — before resolving against it.
+        for _ in 0..2 {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            p.cache.borrow_mut().poll(&t.ndb, &txn, &t.kp.pubkey);
+        }
+
         let txn = Transaction::new(&t.ndb).unwrap();
         let ctx = ReferenceResolveCtx {
             ndb: &t.ndb,

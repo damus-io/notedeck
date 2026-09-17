@@ -61,8 +61,10 @@ pub trait Reducer: Sized {
     /// the one-time seed. `None` if nothing folded (e.g. a query error); the cache
     /// re-attempts on the next touch.
     ///
-    /// Called once on first touch, because a freshly-opened subscription only
-    /// reports *future* ingests; thereafter the cache folds deltas via
+    /// Called once, on the advance *after* the one that opened the subscription,
+    /// because a freshly-opened subscription only reports *future* ingests and the
+    /// seed's snapshot has to postdate it to cover the rest (see
+    /// [`RealtimeCache::advance`]); thereafter the cache folds deltas via
     /// [`reduce_delta`](Self::reduce_delta) rather than re-walking the history.
     fn fold(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Self>;
 
@@ -213,6 +215,28 @@ impl<R: Reducer> RealtimeCache<R> {
         let entry = self.authors.entry(*author).or_default();
         if entry.sub.is_none() {
             entry.sub = ndb.subscribe(&[R::filter(author)]).ok();
+            if entry.sub.is_some() {
+                // Subscribe now, seed on a *later* advance — never from this
+                // call's `txn`, which the caller opened before the subscription
+                // existed. A note that commits in that window is in neither half
+                // of the seed: too new for this snapshot, too old for a
+                // subscription that only reports ingests after `subscribe`. And
+                // nothing re-seeds afterwards, so it stays missing for the life of
+                // the process — a board permanently one card short.
+                //
+                // A later advance is safe because nostrdb allows one live
+                // transaction per thread (`Transaction::new` fails while another
+                // is open), so whatever `txn` the next advance is handed was
+                // opened after this one was dropped, hence after the subscribe.
+                // Its snapshot therefore holds everything the subscription
+                // doesn't, and the two cover the history between them.
+                //
+                // Reported as a change so the caller's pump schedules that next
+                // frame. Nothing folded yet, but a caller that only wakes on
+                // `changed` would otherwise have no reason to advance again, and
+                // the seed would wait for whatever unrelated event repainted next.
+                return true;
+            }
         }
         let (changed, fresh) = match entry.sub {
             // No subscription: fold the whole history each frame so edits still show.
@@ -223,13 +247,23 @@ impl<R: Reducer> RealtimeCache<R> {
             Some(sub) => {
                 let polled = ndb.poll_for_notes(sub, 64);
                 if entry.reducer.is_none() {
-                    // First touch (a fresh subscription only reports *future*
-                    // ingests): fold the existing history once to seed. Notes
-                    // just drained by `polled` may postdate this seed's snapshot,
-                    // so carry them into `pending` to fold in next advance rather
-                    // than lose them.
+                    // The seed, on the first advance after the one that
+                    // subscribed (see above): a fresh subscription only reports
+                    // *future* ingests, so fold the existing history once here and
+                    // take deltas from the subscription thereafter.
+                    //
+                    // `polled` spans the subscribe-to-seed window, so unlike a
+                    // steady-state drain it can hold keys this snapshot already
+                    // folded. Carry forward only the ones it can't see: the rest
+                    // are in the seed, and re-folding them would walk the whole
+                    // history a second time on the very next advance (harmless —
+                    // the `Reducer` contract is idempotent — but it doubles the
+                    // startup fold for no gain).
                     entry.reducer = R::fold(ndb, txn, author);
-                    entry.pending = polled;
+                    entry.pending = polled
+                        .into_iter()
+                        .filter(|key| ndb.get_note_by_key(txn, *key).is_err())
+                        .collect();
                     (true, Vec::new())
                 } else if polled.is_empty() && entry.pending.is_empty() {
                     (false, Vec::new())
@@ -514,6 +548,20 @@ mod tests {
         }
     }
 
+    /// Bring `cache` to the state every test below starts from: subscribed and
+    /// seeded, with the reducer live.
+    ///
+    /// That takes two advances, each under its own transaction. The first only
+    /// subscribes — it must not seed from a snapshot the caller opened before the
+    /// subscription existed (see `advance`) — and the second seeds from a snapshot
+    /// that postdates it.
+    fn seed_cache(ndb: &Ndb, cache: &mut RealtimeCache<ToyReducer>, author: &Pubkey) {
+        for _ in 0..2 {
+            let txn = Transaction::new(ndb).unwrap();
+            cache.poll(ndb, &txn, author);
+        }
+    }
+
     /// A fresh subscription reports only future ingests, so the cache seeds the
     /// history once and folds every later arrival as a delta — never re-seeding.
     #[test]
@@ -523,12 +571,22 @@ mod tests {
         let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
 
-        // First touch on an empty db seeds an empty reducer and opens the sub.
+        // First touch on an empty db opens the sub; the advance after it seeds an
+        // empty reducer (see `seed_cache`).
         {
             let txn = Transaction::new(&ndb).unwrap();
             cache.poll(&ndb, &txn, &kp.pubkey);
         }
-        assert_eq!(cache.stats().full_reloads, 1, "first touch seeds once");
+        assert_eq!(
+            cache.stats().full_reloads,
+            0,
+            "the subscribing touch must not seed from the caller's older snapshot"
+        );
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            cache.poll(&ndb, &txn, &kp.pubkey);
+        }
+        assert_eq!(cache.stats().full_reloads, 1, "the next advance seeds once");
 
         // Two notes arrive after the subscription exists; each folds as a delta.
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
@@ -588,6 +646,50 @@ mod tests {
         );
     }
 
+    /// A note that commits between the caller's read txn and the cache's *first*
+    /// touch must still be folded. The first touch both subscribes and seeds, and
+    /// a note in that window is in neither half: too new for the seed's snapshot
+    /// (the caller opened it first), too old for the subscription (it only reports
+    /// ingests after `subscribe`). Nothing re-seeds afterwards, so losing it here
+    /// loses it for the life of the process.
+    #[test]
+    fn seeds_a_note_committed_between_the_callers_txn_and_the_first_subscribe() {
+        reset_counters();
+        let (ndb, _dir) = test_ndb();
+        let kp = nostrdb_net::FullKeypair::generate();
+        let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
+        let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
+
+        // The frame opens its read txn, as every caller does, *then* a note
+        // commits — an async ingest landing off the writer thread mid-frame.
+        let txn = Transaction::new(&ndb).unwrap();
+        write_note(&ndb, &kp, "one");
+        wait_commit(&ndb, det);
+
+        // Only now does the cache get its first touch, so it subscribes after the
+        // commit and seeds from a snapshot taken before it.
+        cache.poll(&ndb, &txn, &kp.pubkey);
+        drop(txn);
+
+        // Later frames each open a fresh snapshot, which can see the note.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            let views = cache
+                .with_views(&ndb, &txn, &kp.pubkey, |views| views.to_vec())
+                .unwrap();
+            if views.len() == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a note committed between the caller's txn and the first subscribe \
+                 was never folded"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// A note committed *after* the read txn a delta was polled with must be
     /// retained and retried, not dropped — the cross-device-edit-lands-mid-frame
     /// case. Recovers by folding a delta, not by re-seeding.
@@ -600,10 +702,7 @@ mod tests {
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
 
         // Seed the cache (opens its own subscription) before any notes exist.
-        {
-            let txn = Transaction::new(&ndb).unwrap();
-            cache.poll(&ndb, &txn, &kp.pubkey);
-        }
+        seed_cache(&ndb, &mut cache, &kp.pubkey);
 
         // Open a stale snapshot, *then* commit a note after it: the note enters
         // the cache's subscription inbox but is invisible to this older txn.
@@ -651,10 +750,7 @@ mod tests {
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
 
         // Seed the cache (opens its own subscription) before any notes exist.
-        {
-            let txn = Transaction::new(&ndb).unwrap();
-            cache.poll(&ndb, &txn, &kp.pubkey);
-        }
+        seed_cache(&ndb, &mut cache, &kp.pubkey);
 
         // A note arrives, then a *read* — not the fan-out poll — drains it off the
         // shared subscription and folds it, exactly as an inline chip render does a

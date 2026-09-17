@@ -1750,7 +1750,12 @@ mod tests {
         );
         t.await_notes(1);
 
-        // First poll seeds the reducer with a full fold; the canvas materialises.
+        // The first poll opens the subscription — reported as changed so the pump
+        // schedules another frame, but nothing has folded yet. The poll after it
+        // seeds the reducer with a full fold, from a snapshot taken after the
+        // subscribe (see `RealtimeCache::advance`), and the canvas materialises.
+        assert!(t.poll().changed);
+        assert_eq!(t.full_reloads(), 0);
         assert!(t.poll().changed);
         assert_eq!(t.full_reloads(), 1);
         let view = t.canvas().expect("canvas seeded");
