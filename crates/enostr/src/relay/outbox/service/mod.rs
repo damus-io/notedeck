@@ -2481,7 +2481,12 @@ mod tests {
         state.in_flight_attempt = None;
         state.next_fetch_at = now.checked_add(retry_after);
 
-        assert!(!state.ready_to_fetch(now + retry_after - Duration::from_nanos(1)));
+        // Step back by a millisecond rather than a nanosecond: Windows backs
+        // SystemTime with a FILETIME, whose resolution is 100ns, so subtracting
+        // 1ns lands back on the deadline itself and the state reads as ready.
+        // The backoff is NIP11_FAILURE_BACKOFF_BASE (5s) or more, so 1ms is still
+        // comfortably inside it.
+        assert!(!state.ready_to_fetch(now + retry_after - Duration::from_millis(1)));
         assert!(state.ready_to_fetch(now + retry_after));
     }
 
