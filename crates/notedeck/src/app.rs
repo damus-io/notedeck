@@ -1350,47 +1350,56 @@ mod prune_swap_tests {
         // The swapped-in database must reopen and still hold the kept notes.
         let ndb = Ndb::new(&db_str, &Config::new()).expect("reopen swapped db");
         phase("after-reopen");
-        let txn = Transaction::new(&ndb).expect("txn");
 
-        let own = ndb
-            .query(
-                &txn,
-                &[Filter::new()
-                    .authors(vec![&own_pubkey])
-                    .kinds(vec![1])
-                    .build()],
-                10,
-            )
-            .expect("query own notes");
-        assert_eq!(own.len(), 1, "our own note should survive the prune");
-        assert_eq!(hex::encode(own[0].note.id()), OWN_NOTE_ID);
+        // Scoped, so the read transaction and everything borrowing from it are
+        // gone before the write below. nostrdb transactions are meant to be
+        // short-lived, and holding a reader open across a write that grows the
+        // map lets the writer remap underneath it — the results here point into
+        // the old mapping, so reading them afterwards is a use-after-free.
+        {
+            let txn = Transaction::new(&ndb).expect("txn");
 
-        let other = ndb
-            .query(
-                &txn,
-                &[Filter::new()
-                    .authors(vec![&other_pubkey])
-                    .kinds(vec![1])
-                    .build()],
-                10,
-            )
-            .expect("query other notes");
-        assert!(
-            other.is_empty(),
-            "a stranger's note is outside the keep-policy"
-        );
+            let own = ndb
+                .query(
+                    &txn,
+                    &[Filter::new()
+                        .authors(vec![&own_pubkey])
+                        .kinds(vec![1])
+                        .build()],
+                    10,
+                )
+                .expect("query own notes");
+            assert_eq!(own.len(), 1, "our own note should survive the prune");
+            assert_eq!(hex::encode(own[0].note.id()), OWN_NOTE_ID);
 
-        let profiles = ndb
-            .query(
-                &txn,
-                &[Filter::new()
-                    .authors(vec![&profile_pubkey])
-                    .kinds(vec![0])
-                    .build()],
-                10,
-            )
-            .expect("query profiles");
-        assert_eq!(profiles.len(), 1, "every profile is kept");
+            let other = ndb
+                .query(
+                    &txn,
+                    &[Filter::new()
+                        .authors(vec![&other_pubkey])
+                        .kinds(vec![1])
+                        .build()],
+                    10,
+                )
+                .expect("query other notes");
+            assert!(
+                other.is_empty(),
+                "a stranger's note is outside the keep-policy"
+            );
+
+            let profiles = ndb
+                .query(
+                    &txn,
+                    &[Filter::new()
+                        .authors(vec![&profile_pubkey])
+                        .kinds(vec![0])
+                        .build()],
+                    10,
+                )
+                .expect("query profiles");
+            assert_eq!(profiles.len(), 1, "every profile is kept");
+        }
+        phase("after-queries");
 
         // The user keeps using this database after the swap, so it has to
         // accept writes too — not just answer queries.
@@ -1409,6 +1418,7 @@ mod prune_swap_tests {
             .await
             .expect("swapped db ingested a new note within 10s")
             .expect("ingest notified the subscription");
+        phase("after-write");
     }
 
     /// With no pruned database staged, startup must leave the live one alone.
