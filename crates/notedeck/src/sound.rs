@@ -61,6 +61,28 @@ mod inner {
                 }
             };
 
+            Self::build(stream, handle, enabled, volume)
+        }
+
+        /// A manager that never opens an audio device, for hosts that must not
+        /// touch the sound hardware at all — see
+        /// [`Notedeck::init`](crate::Notedeck::init) under
+        /// [`NotedeckOptions::Tests`](crate::NotedeckOptions::Tests).
+        ///
+        /// Not the same as constructing one with `enabled: false`: that still
+        /// opens the default output device, and opening it is the part a test
+        /// binary cannot afford. `play` already no-ops without a handle, so a
+        /// silent manager is inert whatever the enabled flag is later set to.
+        pub fn silent() -> Self {
+            Self::build(None, None, false, 0.0)
+        }
+
+        fn build(
+            stream: Option<rodio::OutputStream>,
+            handle: Option<rodio::OutputStreamHandle>,
+            enabled: bool,
+            volume: f32,
+        ) -> Self {
             let mut sounds = HashMap::new();
             sounds.insert(
                 SoundEffect::Hover,
@@ -188,6 +210,11 @@ mod inner {
 
     impl SoundManager {
         pub fn new(_enabled: bool, _volume: f32) -> Self {
+            Self
+        }
+
+        /// Mirrors the real [`SoundManager::silent`]; already device-less here.
+        pub fn silent() -> Self {
             Self
         }
 

@@ -855,7 +855,17 @@ impl Notedeck {
         let (send_new_jobs, receive_new_jobs) = std::sync::mpsc::channel();
         let media_job_cache = JobCache::new(receive_new_jobs, send_new_jobs);
 
-        let sound = {
+        // Opening the default output device is not free of side effects: on
+        // Windows it initialises WASAPI/COM on a thread rodio owns. A test binary
+        // builds many `Notedeck`s in parallel on a runner that has no audio
+        // device at all, and that faults the process outright
+        // (STATUS_ACCESS_VIOLATION) — measured: with `sound` linked, `cargo test
+        // -p notedeck --lib` dies; with it off, the same 321 tests pass. Tests
+        // never play anything, so give them a manager that never opens a device,
+        // the same way the private relay pool is left inert just below.
+        let sound = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            crate::SoundManager::silent()
+        } else {
             let s = settings.get_settings_mut();
             crate::SoundManager::new(s.sounds_enabled, s.sound_volume)
         };
