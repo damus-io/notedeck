@@ -1255,9 +1255,18 @@ fn ingest_keyshare(
     board_addr: &str,
 ) {
     let root = [root_fill; 32];
+    // TEMPORARY, with the phase markers in `snapshot_switcher_same_slug_boards`
+    // (headway:notedeck/man-eight-damp). Those narrowed the SIGILL to this
+    // function; these two split it again, because the crypto here runs in two
+    // different places. `gift_wrapped_keyshare` seals in Rust on this thread;
+    // `process_event` hands the wrap to nostrdb's ingester thread, which
+    // unwraps it in C. Which marker is last says which. Remove with them.
+    eprintln!("PHASE keyshare {root_fill:#x}: sealing");
     let giftwrap = common::gift_wrapped_keyshare(sender, recipient, &root, Some(board_addr), None);
+    eprintln!("PHASE keyshare {root_fill:#x}: sealed, submitting");
     ndb.process_event(&format!("[\"EVENT\",\"kg\",{giftwrap}]"))
         .expect("ingest keyshare giftwrap");
+    eprintln!("PHASE keyshare {root_fill:#x}: submitted");
 }
 
 /// Deliverable 1 (behavioural, no lavapipe): a board you OWN and shared routes
