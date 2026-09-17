@@ -304,7 +304,13 @@ fn wait_for_board(harness: &mut Harness<'static, HeadwayTestState>) {
 /// Losing that race needs the ingest to lag a frame, which is why it only ever
 /// showed up on loaded CI runners.
 fn seed_demo(ndb: &Ndb, pubkey: &Pubkey, secret: &[u8; 32]) {
-    store::seed_demo_board(
+    // Subscribed before the first write, so the drain below cannot miss an
+    // event that commits while the seed is still running.
+    let sub = ndb
+        .subscribe(&[Filter::new().authors([pubkey.bytes()]).build()])
+        .expect("subscribe");
+
+    let expected = store::seed_demo_board(
         ndb,
         pubkey,
         secret,
@@ -313,26 +319,41 @@ fn seed_demo(ndb: &Ndb, pubkey: &Pubkey, secret: &[u8; 32]) {
         &mut store::NoPublish,
     );
 
-    // Committed *and* complete: the app's `has_board` check is satisfied by the
-    // definition alone, but a board that folds with only some of its cards would
-    // just move the flakiness into the assertions, so wait for all seven.
+    // Wait for *every* event the seed wrote, which is what `seed_demo_board`
+    // returns a count of — not merely for enough of them to make the board look
+    // right. The two differ: a card's issue event carries the title it was
+    // created with, and the seed then amends some of them (the event-model card
+    // is born "Nostr event model" and renamed to "Define nostr event model for
+    // boards"), so a barrier that stops at "seven cards have folded" can hand
+    // back a board whose cards still answer to their pre-amendment titles — and
+    // the tests address cards by their final title (`demo_card_id`,
+    // `get_by_label`). Counting the seed's own events covers the amendments,
+    // the placements and the relations without this barrier having to know what
+    // any of them are.
     let deadline = Instant::now() + SETTLE_TIMEOUT;
-    loop {
-        {
-            let txn = Transaction::new(ndb).expect("txn");
-            if let Some(view) = event::load_board(ndb, &txn, pubkey, store::BOARD_ID) {
-                let cards: usize = view.columns.iter().map(|c| c.cards.len()).sum();
-                if cards == DEMO_CARDS {
-                    return;
-                }
-            }
-        }
+    let mut seen = 0usize;
+    while seen < expected {
+        seen += ndb.poll_for_notes(sub, 256).len();
         assert!(
             Instant::now() < deadline,
-            "demo board never folded its {DEMO_CARDS} cards after seeding"
+            "demo seed never committed: {seen} of {expected} events ingested"
         );
-        std::thread::sleep(Duration::from_millis(5));
+        if seen < expected {
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
+    // (the subscription is left to the harness's temporary ndb, which is
+    // dropped with the test — `unsubscribe` needs `&mut Ndb` and the fixture
+    // only ever holds `&Ndb`.)
+
+    // Every seeded event is committed, so one fold now sees the finished board.
+    let txn = Transaction::new(ndb).expect("txn");
+    let view = event::load_board(ndb, &txn, pubkey, store::BOARD_ID).expect("demo board folds");
+    let cards: usize = view.columns.iter().map(|c| c.cards.len()).sum();
+    assert_eq!(
+        cards, DEMO_CARDS,
+        "demo board folded {cards} cards from a fully-ingested seed"
+    );
 }
 
 /// The focused text input — the field a just-opened composer or rename editor
