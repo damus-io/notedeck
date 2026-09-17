@@ -24,6 +24,34 @@ jobs:
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
 
+      # TEMPORARY diagnostic for headway:notedeck/purse-happy-else — the Windows
+      # STATUS_ACCESS_VIOLATION in `cargo test -p notedeck --lib`. Remove once it
+      # has named the faulting test.
+      #
+      # The parallel run below can't attribute it: libtest buffers each result
+      # and an aborting process loses the buffer, so a test that *completed* can
+      # also show no result line. Running serially makes libtest print the test's
+      # name before it runs, so the last line in the log is the faulting test.
+      # `continue-on-error` so this only ever adds information — the real steps
+      # still run and still decide the job.
+      - name: Attribute the notedeck lib crash, serially (Windows, temporary)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: cargo test -p notedeck --lib -- --test-threads=1 --nocapture
+        env:
+          CI: true
+
+      # Second half of the same diagnostic: if the serial run above is clean, the
+      # fault needs parallelism, and the cut in the last parallel log puts it in
+      # `app::` (everything before it finished, nothing after it started). This
+      # runs just that module, still parallel, to confirm.
+      - name: Attribute the notedeck lib crash, app:: only (Windows, temporary)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: cargo test -p notedeck --lib app:: -- --nocapture
+        env:
+          CI: true
+
       - name: Run Tests (Native Only)
         run: cargo test --workspace --exclude notedeck_columns --exclude notedeck_dave --exclude notedeck_messages --exclude notedeck_notebook
         env:
