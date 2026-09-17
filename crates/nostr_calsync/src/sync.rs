@@ -77,7 +77,7 @@ mod tests {
     use crate::event::{KIND_DATE_BASED, KIND_TIME_BASED, d_tag};
     use crate::test_config;
     use chrono::{TimeZone, Utc};
-    use nostrdb::{Config, Filter, Ndb, Transaction};
+    use nostrdb::{Filter, Ndb, Transaction};
     use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
 

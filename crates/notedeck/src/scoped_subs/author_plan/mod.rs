@@ -909,7 +909,7 @@ mod tests {
     use crate::test_utils::RemoteOutboxReadModelHarness;
     use crate::test_utils::{nip65_write_relay_note_for_test, wait_for_nip65_for_test};
     use enostr::{FullKeypair, RelayDemandPriority, RelayReqStatus, RelayRoutingPreference};
-    use nostrdb::{Config, Filter, Ndb};
+    use nostrdb::{Filter, Ndb};
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 

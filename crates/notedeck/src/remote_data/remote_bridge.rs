@@ -1316,7 +1316,6 @@ mod tests {
         SubConfig, SubKey, SubOwnerKey, SubRelayPolicy, SubScope,
     };
     use enostr::{FullKeypair, RelayStatus};
-    use nostrdb::Config;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use tempfile::TempDir;
 

@@ -816,7 +816,6 @@ mod tests {
         construct_nip65_relays_note, remote_data::RemoteState, JobPool, RelaySpec,
         ScopedSubReadiness, FALLBACK_PUBKEY,
     };
-    use nostrdb::Config;
     use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;

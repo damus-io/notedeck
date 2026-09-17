@@ -259,7 +259,6 @@ impl RootRegistry {
 mod tests {
     use super::*;
     use crate::test_config;
-    use nostrdb::Config;
     use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
 

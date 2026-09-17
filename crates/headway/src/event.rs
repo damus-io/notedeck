@@ -4196,7 +4196,7 @@ mod tests {
     /// (including a subject rename overriding the issue's original subject).
     #[test]
     fn load_board_roundtrips_through_ndb() {
-        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+        use nostrdb::{IngestMetadata, Ndb, Transaction};
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -4252,7 +4252,7 @@ mod tests {
 
     #[test]
     fn current_blockers_reads_latest_set_from_ndb() {
-        use nostrdb::{Config, IngestMetadata, Ndb};
+        use nostrdb::{IngestMetadata, Ndb};
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -4302,7 +4302,7 @@ mod tests {
     #[test]
     fn fold_shared_board_gathers_and_trusts_all_team_members() {
         use crate::store::{self, NoPublish, Signer, SnsChannel};
-        use nostrdb::{Config, Ndb, Transaction};
+        use nostrdb::{Ndb, Transaction};
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -4448,7 +4448,7 @@ mod tests {
     #[test]
     fn shared_fold_sees_sealed_definition_behind_a_later_plaintext_one() {
         use crate::store::{self, NoPublish, Signer, SnsChannel};
-        use nostrdb::{Config, Ndb, Transaction};
+        use nostrdb::{Ndb, Transaction};
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -4878,7 +4878,7 @@ mod tests {
 
     #[test]
     fn current_related_reads_latest_set_from_ndb() {
-        use nostrdb::{Config, IngestMetadata, Ndb};
+        use nostrdb::{IngestMetadata, Ndb};
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();

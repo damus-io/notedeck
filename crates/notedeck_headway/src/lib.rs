@@ -1600,7 +1600,7 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostrdb::{Config, Filter, Ndb, SubscriptionStream};
+    use nostrdb::{Filter, Ndb, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use notedeck_testing::fixtures::test_config;
     use std::time::{Duration, Instant};

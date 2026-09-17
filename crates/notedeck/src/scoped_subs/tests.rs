@@ -15,7 +15,7 @@ use enostr::{
     RelayDemandPriority, RelayLegReadiness, RelayReqStatus, RelayRoutingPreference, RelayUrlSource,
 };
 use hashbrown::HashSet;
-use nostrdb::{Config, Filter, SendFilter};
+use nostrdb::{Filter, SendFilter};
 use std::hash::Hash;
 use tempfile::TempDir;
 

@@ -433,7 +433,7 @@ impl AgentiumSessionCache {
 mod tests {
     use super::*;
     use agentium_core::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
-    use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream};
+    use nostrdb::{Ndb, NoteBuilder, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use notedeck_testing::fixtures::test_config;
     use std::cell::RefCell;

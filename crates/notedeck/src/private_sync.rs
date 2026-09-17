@@ -1076,7 +1076,7 @@ mod tests {
         ExplicitPublishApi,
     };
     use enostr::NormRelayUrl;
-    use nostrdb::{Config, IngestMetadata, NoteBuilder};
+    use nostrdb::{IngestMetadata, NoteBuilder};
     use nostrdb_net::FullKeypair;
     use tempfile::TempDir;
 

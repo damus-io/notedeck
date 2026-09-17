@@ -205,7 +205,6 @@ mod tests {
     use crate::author_outbox::RelayDirectorySnapshot;
     use crate::test_util::test_config;
     use crate::test_utils::{nip65_note_for_test, wait_for_nip65_for_test};
-    use nostrdb::Config;
     use serde_json::Value;
     use tempfile::TempDir;
 

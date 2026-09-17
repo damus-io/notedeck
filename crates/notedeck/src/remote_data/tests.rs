@@ -10,7 +10,7 @@ use enostr_test_support::relay::{
     create_filtered_capture_relay_with_handler,
     create_text_capture_relay as create_shared_text_capture_relay, CaptureRelayResponse,
 };
-use nostrdb::{Config, Filter, Ndb, NoteBuilder, Transaction};
+use nostrdb::{Filter, Ndb, NoteBuilder, Transaction};
 use nostrdb_net::{FullKeypair, NoteId};
 use std::{
     sync::{Arc, Mutex},

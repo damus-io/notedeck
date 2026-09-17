@@ -2115,7 +2115,7 @@ mod tests {
     /// out with [`load_canvas`] and check the canvas reconstructs.
     #[test]
     fn load_canvas_roundtrips_through_ndb() {
-        use nostrdb::{Config, IngestMetadata, Ndb, SubscriptionStream};
+        use nostrdb::{IngestMetadata, Ndb, SubscriptionStream};
 
         let dir = tempfile::TempDir::new().unwrap();
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();

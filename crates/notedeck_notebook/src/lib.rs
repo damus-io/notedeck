@@ -1573,7 +1573,7 @@ impl VaultSync {
 mod tests {
     use super::*;
     use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-    use nostrdb::{Config, SubscriptionStream};
+    use nostrdb::SubscriptionStream;
     use nostrdb_net::FullKeypair;
     use notedeck_testing::fixtures::test_config;
 

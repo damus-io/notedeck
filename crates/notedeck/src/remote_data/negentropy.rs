@@ -48,7 +48,7 @@ mod tests {
     use super::*;
     use crate::test_util::test_config;
     use negentropy::{Item, NegentropyStorageBase};
-    use nostrdb::{Config, IngestMetadata, NoteBuilder};
+    use nostrdb::{IngestMetadata, NoteBuilder};
     use nostrdb_net::FullKeypair;
     use nostrdb_net::NoteId;
     use std::time::{Duration, Instant};

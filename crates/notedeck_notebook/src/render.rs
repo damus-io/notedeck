@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn live_node_reflects_the_current_content_not_the_snapshot() {
         use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-        use nostrdb::{Config, SubscriptionStream};
+        use nostrdb::SubscriptionStream;
         use nostrdb_net::FullKeypair;
 
         let dir = tempfile::TempDir::new().unwrap();

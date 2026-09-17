@@ -685,7 +685,7 @@ pub use event::{VaultDoc, VaultDocKind, list_canvases, list_vault};
 mod tests {
     use super::*;
     use crate::test_config;
-    use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
+    use nostrdb::{Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
 
     /// A headless harness: ingest actions against a bare `Ndb` and wait on a

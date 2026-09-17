@@ -977,7 +977,7 @@ fn board_arg() -> ToolArg {
 mod tests {
     use super::*;
     use headway::wordid;
-    use nostrdb::{Config, Ndb, SubscriptionStream};
+    use nostrdb::{Ndb, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use notedeck::{Accounts, NoteCache, UnknownIds};
     use notedeck_testing::fixtures::test_config;

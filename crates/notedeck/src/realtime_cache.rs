@@ -415,7 +415,7 @@ impl<R: Reducer> RealtimeCache<R> {
 mod tests {
     use super::*;
     use crate::test_util::test_config;
-    use nostrdb::{Config, Ndb};
+    use nostrdb::Ndb;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
 

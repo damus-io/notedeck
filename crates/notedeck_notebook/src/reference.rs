@@ -138,7 +138,7 @@ mod tests {
     use super::*;
     use crate::event;
     use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
-    use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
+    use nostrdb::{Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
     use notedeck_testing::fixtures::test_config;
 

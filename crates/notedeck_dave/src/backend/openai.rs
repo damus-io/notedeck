@@ -325,7 +325,6 @@ mod tests {
     use super::*;
     use crate::messages::AssistantMessage;
     use crate::tools::{dave_tools, ToolCall};
-    use nostrdb::Config;
     use notedeck_testing::fixtures::test_config;
 
     fn test_ndb() -> (tempfile::TempDir, Ndb) {

@@ -128,7 +128,7 @@ mod tests {
     use super::*;
     use crate::session_cache::session_state_filter;
     use agentium_core::session_events::AI_SESSION_STATE_KIND;
-    use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream, Transaction};
+    use nostrdb::{Ndb, NoteBuilder, SubscriptionStream, Transaction};
     use nostrdb_net::{FullKeypair, NoteId};
     use notedeck_testing::fixtures::test_config;
 

@@ -175,7 +175,7 @@ mod tests {
     use crate::source::{ExternalEvent, SourceError};
     use crate::test_config;
     use chrono::{DateTime, TimeZone};
-    use nostrdb::{Config, Filter, Transaction};
+    use nostrdb::{Filter, Transaction};
     use nostrdb_net::FullKeypair;
     use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
