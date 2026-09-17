@@ -112,6 +112,9 @@ async fn send_publishes_user_message_to_the_relay() {
     let mut verifier =
         Engine::open(verifier_dir.path().to_str().expect("path"), SECKEY).expect("verifier engine");
     verifier.connect(&url).expect("verifier connect");
+    // Flush the connect through the Session's FIFO before the sender publishes —
+    // same ordering requirement as interrupt_lands, see the note there.
+    let _ = tokio::time::timeout(Duration::from_secs(5), verifier.wait_for_sync()).await;
     let mut watch = verifier.watch_session("sess-send").expect("watch");
 
     // Run the real binary: connect → settle → publish the user message → exit

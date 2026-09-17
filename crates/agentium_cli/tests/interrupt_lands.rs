@@ -132,6 +132,16 @@ async fn interrupt_reaches_the_relay() {
     let mut verifier =
         Engine::open(verifier_dir.path().to_str().expect("path"), SECKEY).expect("verifier engine");
     verifier.connect(&url).expect("verifier connect");
+    // Flush the connect through the Session's FIFO before the sender publishes.
+    // `watch_session` subscribes to the *local* ndb, so installing it early only
+    // helps once the event has been ingested here; what has to win the race is
+    // the verifier's REQ reaching the relay first. `wait_for_sync` gives exactly
+    // that ordering — its settle barrier rides the same FIFO as `connect`'s
+    // subscription — whereas without it the binary below can publish and exit
+    // while the REQ is still queued, and the event is then neither replayed nor
+    // pushed. That is the 20s timeout this test has been failing with on CI.
+    // The sibling tests (spawn_lands, log_renders) already do this.
+    let _ = tokio::time::timeout(Duration::from_secs(5), verifier.wait_for_sync()).await;
     let mut watch = verifier.watch_session("sess-int").expect("watch");
 
     // Run the real binary: connect → settle → publish the interrupt → exit after
