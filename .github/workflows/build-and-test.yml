@@ -32,43 +32,40 @@ jobs:
       # TEMPORARY diagnostics for headway:notedeck/purse-happy-else — the Windows
       # STATUS_ACCESS_VIOLATION in notedeck's lib tests. Remove once attributed.
       #
-      # The disk theory these replace is refuted by its own measurement. Run
-      # 35182038873 printed Get-PSDrive either side of the crashing step: at the
-      # moment of the access violation D had 204 GB free and C 27.8 GB. Nothing
-      # ran out of disk, so capping the test mapsize was never going to help,
-      # and 3f6a84fbc9f4 duly did not help.
+      # Round one (c05475c5e59d) answered the big question: the fault is NOT the
+      # workspace, the runner or the disk. Standalone, with the feature set
+      # `cargo test --workspace` unifies onto notedeck, it crashes on its own:
       #
-      # What those same logs do show is that the two things being compared were
-      # never the same build. `cargo test --workspace` unifies notedeck's
-      # features across the members that depend on it — sound (notedeck_chrome),
-      # snapshot-testing (chrome, ui, headway, horizon, dashboard) and
-      # auto-update (chrome's dev-deps) — and runs
-      # target\debug\deps\notedeck-74cc77e3dd7d6cf9.exe with "running 342 tests",
-      # whereas `cargo test -p notedeck --lib` runs notedeck-1e7c175da93d939e.exe
-      # with 321. Reproduced locally: those two feature sets give exactly 342 and
-      # 321 tests. The 21 extras are all `updater::*`, from auto-update.
+      #   cargo test -p notedeck --lib --features sound,snapshot-testing,auto-update
+      #       -> STATUS_ACCESS_VIOLATION, exit -1073741819
+      #   cargo test -p notedeck --lib --features auto-update
+      #       -> exit 0
       #
-      # So "the identical binary is clean standalone" compared a 342-test build
-      # against a 321-test one. This step closes that gap — same feature set,
-      # same 342 tests, but standalone — and then narrows.
+      # Both run the same 342 tests — auto-update is the only one of the three
+      # that adds any (the 21 `updater::*`) — so the trigger is `sound` and/or
+      # `snapshot-testing` being *linked*, not any test's logic, and not anything
+      # left behind by another crate's binary.
       #
-      # Reading the result:
-      #   both crash            -> auto-update is the trigger
-      #   only the first crashes -> sound and/or snapshot-testing is
-      #   neither crashes       -> not the feature set; it is something else the
-      #                            workspace run does, and the next thing to look
-      #                            at is the teardown of prune_swap_tests, which
-      #                            in all six observed crashes reports ok and is
-      #                            followed 40-200ms later by the fault.
+      # `sound` is the favourite: it makes `SoundManager::new` real, and
+      # `Notedeck::init` calls it unconditionally, so every test that builds a
+      # `Notedeck` (app::tick_headless_tests, app::render_nav_tests,
+      # app::prune_swap_tests — exactly the region all six crashes land in) opens
+      # a real audio device via `rodio::OutputStream::try_default()` on a headless
+      # runner with no audio device. That also fits `--test-threads=1` being
+      # clean. `snapshot-testing` only adds `software_renderer()`, which
+      # notedeck's own tests never call, so it would have to fault purely from
+      # linking egui-wgpu.
+      #
+      # This round splits them so the fix lands on the right one.
       - name: Windows crash, standalone with the workspace feature set (temporary)
         if: always() && runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         run: |
-          cargo test -p notedeck --lib --features sound,snapshot-testing,auto-update
-          "RESULT unified (sound,snapshot-testing,auto-update): exit $LASTEXITCODE"
-          cargo test -p notedeck --lib --features auto-update
-          "RESULT auto-update only: exit $LASTEXITCODE"
+          cargo test -p notedeck --lib --features sound
+          "RESULT sound only: exit $LASTEXITCODE"
+          cargo test -p notedeck --lib --features snapshot-testing
+          "RESULT snapshot-testing only: exit $LASTEXITCODE"
         env:
           CI: true
 
