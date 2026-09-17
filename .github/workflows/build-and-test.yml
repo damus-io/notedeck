@@ -24,59 +24,10 @@ jobs:
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
 
-      # TEMPORARY diagnostics for headway:notedeck/purse-happy-else — the Windows
-      # STATUS_ACCESS_VIOLATION in notedeck's lib tests. Remove once attributed.
-      #
-      # Round two narrowed it a lot, all by passing rather than crashing:
-      #
-      #   - `--test-threads=1`: clean. Needs parallelism.
-      #   - parallel, narrowed to `app::` (where both crashes cut off): clean.
-      #   - parallel, the whole lib suite, run *standalone*: clean.
-      #
-      # That last one is the interesting one. The fault has only ever appeared
-      # inside `cargo test --workspace`, which runs a dozen other crates' test
-      # binaries first — and the identical binary, with the identical test set and
-      # parallelism, is fine on its own. So this is very likely not an interaction
-      # between notedeck's own tests at all, but something those earlier binaries
-      # leave behind on the runner.
-      #
-      # The obvious suspect is disk. Every test that opens an `Ndb` gets nostrdb's
-      # default 32 GiB LMDB mapsize, and on Windows LMDB `SetEndOfFile`s the data
-      # file to the full mapsize; a tempdir whose file Windows won't let go of is
-      # deleted on a best-effort basis and the error is dropped. nostrdb's C
-      # doesn't check every LMDB return, so a full disk is exactly the kind of
-      # thing that surfaces as an access violation rather than an error.
-      #
-      # So: measure the runner before and after, and re-run the standalone suite
-      # that was clean beforehand. If it crashes the second time, the workspace run
-      # degraded the environment, and the free-space numbers say whether that's
-      # disk.
-      - name: Windows crash, runner state before (temporary)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Get-PSDrive C, D | Format-Table Name, Used, Free
-          "TEMP=$env:TEMP"
-          "temp entries: " + (Get-ChildItem $env:TEMP -Force -ErrorAction SilentlyContinue).Count
-
       - name: Run Tests (Native Only)
         run: cargo test --workspace --exclude notedeck_columns --exclude notedeck_dave --exclude notedeck_messages --exclude notedeck_notebook
         env:
           CI: true
-
-      - name: Windows crash, runner state after + re-run standalone (temporary)
-        if: always() && runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Get-PSDrive C, D | Format-Table Name, Used, Free
-          "temp entries: " + (Get-ChildItem $env:TEMP -Force -ErrorAction SilentlyContinue).Count
-          "largest temp entries:"
-          Get-ChildItem $env:TEMP -Force -ErrorAction SilentlyContinue |
-            Select-Object -First 5 Name, LastWriteTime | Format-Table
-          "re-running the standalone suite that passed before the workspace step:"
-          cargo test -p notedeck --lib
 
       - name: Run notedeck_notebook Tests
         run: cargo test -p notedeck_notebook -- --test-threads=1
