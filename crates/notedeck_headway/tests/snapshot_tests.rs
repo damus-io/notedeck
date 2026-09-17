@@ -268,8 +268,24 @@ fn wait_for_board(harness: &mut Harness<'static, HeadwayTestState>) {
     }
 }
 
-/// Seed the populated demo board for the snapshot/flow tests to render against.
-/// The production seed is card-less; the fixture lives in [`store::seed_demo_board`].
+/// Seed the populated demo board for the snapshot/flow tests to render against,
+/// and **block until it is visible to the app**.
+///
+/// The production seed is card-less; the fixture lives in
+/// [`store::seed_demo_board`]. Writing it only queues the events on nostrdb's
+/// ingest thread, so without this barrier the app's very next `update` can run
+/// its `has_board` check against a snapshot that predates the commit. That check
+/// is the only thing stopping the app from auto-seeding a default board of its
+/// own — and the one it creates is a *sealed, self-shared team-of-one* at the
+/// same coordinate, which puts the coordinate in the roster. From then on the
+/// board folds the shared way, and the shared fold takes only team-sealed rumors
+/// (`event::fold_shared_board`), so these plaintext demo cards are invisible to
+/// it for the life of the process: the board renders its five default columns
+/// with nothing in them, and `wait_for_board` burns its whole timeout
+/// (headway:notedeck/awesome-purpose-fossil).
+///
+/// Losing that race needs the ingest to lag a frame, which is why it only ever
+/// showed up on loaded CI runners.
 fn seed_demo(ndb: &Ndb, pubkey: &Pubkey, secret: &[u8; 32]) {
     store::seed_demo_board(
         ndb,
@@ -279,6 +295,27 @@ fn seed_demo(ndb: &Ndb, pubkey: &Pubkey, secret: &[u8; 32]) {
         SEED_AT,
         &mut store::NoPublish,
     );
+
+    // Committed *and* complete: the app's `has_board` check is satisfied by the
+    // definition alone, but a board that folds with only some of its cards would
+    // just move the flakiness into the assertions, so wait for all seven.
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        {
+            let txn = Transaction::new(ndb).expect("txn");
+            if let Some(view) = event::load_board(ndb, &txn, pubkey, store::BOARD_ID) {
+                let cards: usize = view.columns.iter().map(|c| c.cards.len()).sum();
+                if cards == DEMO_CARDS {
+                    return;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "demo board never folded its {DEMO_CARDS} cards after seeding"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The focused text input — the field a just-opened composer or rename editor
@@ -304,6 +341,11 @@ fn focused_text_input<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> No
 /// Raising it costs nothing when things are healthy: every loop returns as soon
 /// as its condition holds, so only a run that was going to fail waits longer.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How many cards [`store::seed_demo_board`] puts on the demo board. The seed
+/// barrier in [`seed_demo`] waits for exactly this many, and it's the count
+/// `wait_for_board`'s summary asserts.
+const DEMO_CARDS: usize = 7;
 
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
 /// with `label` appears, or panic after a deadline.
