@@ -679,6 +679,23 @@ fn print_node_line(n: &NodeView) {
     );
 }
 
+/// Print a node's full text body when it's an explicit `show` target, headed by a
+/// dimmed ref + geometry line (mirrors how [`print_vault_bodies`] heads each note).
+/// A `show` on a single node wants the whole content, not the truncated one-line
+/// listing form [`print_node_line`] uses inside [`print_canvas`].
+fn print_node_body(n: &NodeView) {
+    let geo = nostrdb_net::relay::sync::dim(&format!(
+        "({},{} {}×{})",
+        n.geo.x, n.geo.y, n.geo.w, n.geo.h
+    ));
+    println!("{}  {}", word_ref(&n.id), geo);
+    print!("{}", n.content.text);
+    // Ensure a trailing newline so the shell prompt isn't glued to the body.
+    if !n.content.text.ends_with('\n') {
+        println!();
+    }
+}
+
 /// Render already-resolved `show` targets, dispatching each on its type. A single
 /// target prints in its natural shape — a whole canvas, a note's raw markdown body
 /// (so `notebook show <note> > note.md` round-trips), or a node line, the machine
@@ -711,7 +728,7 @@ fn show_targets(
             NotebookTarget::Note { author, d } => {
                 print_vault_bodies(&[find_target_note(notes, author, d)?], false);
             }
-            NotebookTarget::Node { id } => print_node_line(find_target_node(canvases, *id)?),
+            NotebookTarget::Node { id } => print_node_body(find_target_node(canvases, *id)?),
         }
     }
     Ok(())
