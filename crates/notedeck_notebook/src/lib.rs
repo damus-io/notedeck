@@ -538,6 +538,15 @@ impl Notebook {
         self.scene_rect
     }
 
+    /// Whether the canvas Scene has laid out this session. Until it has,
+    /// [`scene_rect`](Self::scene_rect) is not a real viewport (see `loaded`), so
+    /// anything mapped through it — a drop's canvas coordinates, a reveal pan —
+    /// resolves against a zero-sized rect. Exposed for tests/introspection so a
+    /// drag test can wait for the canvas before dropping onto it.
+    pub fn canvas_is_laid_out(&self) -> bool {
+        self.loaded
+    }
+
     /// The cached vault note list (newest-edited first). Exposed for
     /// tests/introspection so a seed barrier can wait for every longform note to
     /// fold in before snapshotting.
