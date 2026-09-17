@@ -1419,6 +1419,14 @@ mod prune_swap_tests {
             .expect("swapped db ingested a new note within 10s")
             .expect("ingest notified the subscription");
         phase("after-write");
+
+        // Teardown, made explicit so the markers say which drop faults. Implicit
+        // scope exit would drop these in the same order (reverse declaration:
+        // ndb, then paths, then tmp) but tell us nothing about where it died.
+        drop(ndb);
+        phase("after-ndb2-drop");
+        drop(tmp);
+        phase("after-tmpdir-drop");
     }
 
     /// With no pruned database staged, startup must leave the live one alone.
