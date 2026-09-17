@@ -746,7 +746,7 @@ impl Notedeck {
 
         let mut unknown_ids = UnknownIds::default();
         try_swap_pruned_db(&dbpath_str);
-        let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
+        let mut ndb = open_host_ndb(&dbpath_str, &config, map_size);
         let txn = Transaction::new(&ndb).expect("txn");
         let runtime_budget = if parsed_args.options.contains(NotedeckOptions::Tests) {
             RuntimeThreadBudget::for_test_runner()
@@ -1094,6 +1094,84 @@ impl<'a> NotedeckInternals<'a> {
         }
 
         Ok(())
+    }
+}
+
+/// Opens the host's nostrdb, or dies with a message worth reading.
+///
+/// nostrdb collapses every LMDB failure into a single opaque
+/// [`nostrdb::Error::DbOpenFailed`]; the real errno is only ever printed to raw
+/// stderr by the C side, where a test harness capturing output buries it. A
+/// failure here is fatal either way, so spend the panic message on what the
+/// operator cannot recover from the error value: where we were looking, how big
+/// a map we asked for, and the one failure mode that is about neither.
+fn open_host_ndb(dbpath: &str, config: &Config, map_size: usize) -> Ndb {
+    match Ndb::new(dbpath, config) {
+        Ok(ndb) => ndb,
+        Err(err) => panic!("{}", ndb_open_report(dbpath, map_size, err)),
+    }
+}
+
+/// The text [`open_host_ndb`] dies with. Split out so it can be read without
+/// arranging for an unopenable database.
+fn ndb_open_report(dbpath: &str, map_size: usize, err: nostrdb::Error) -> String {
+    let mut report = format!(
+        "could not open nostrdb at '{dbpath}' with a {map_size} byte mapsize: {err:?}. \
+         nostrdb reports the underlying reason on stderr as \
+         'mdb_env_open failed, error <errno>' — look for that line just above this panic"
+    );
+
+    // ENOSPC here reads as a full disk and almost never is one. LMDB on Apple
+    // platforms locks an environment with two *named* POSIX semaphores, and
+    // unlinks them only when the closing process holds the environment's
+    // exclusive lock — so every run that is killed or aborts mid-test leaks a
+    // pair into a system-wide namespace that nothing else reclaims. Once it
+    // fills, every open fails until the names go away.
+    if cfg!(target_os = "macos") {
+        report.push_str(
+            ". On macOS, errno 28 (ENOSPC) means the system-wide POSIX named \
+             semaphore namespace is full rather than the disk: LMDB leaks two \
+             names per environment whenever a process dies without closing it. \
+             `sysctl kern.posix.sem.max` is the cap; reboot to clear the leaked \
+             names, or raise the cap for this boot with `sudo sysctl -w \
+             kern.posix.sem.max=<larger>`",
+        );
+    }
+
+    report
+}
+
+#[cfg(test)]
+mod ndb_open_report_tests {
+    use super::*;
+
+    /// A failed open has to name the database it failed on and point at the
+    /// stderr line carrying the errno, because [`nostrdb::Error::DbOpenFailed`]
+    /// carries neither.
+    #[test]
+    fn report_names_the_db_and_where_the_errno_went() {
+        let report = ndb_open_report(
+            "/tmp/whatever/db",
+            32 * 1024 * 1024,
+            nostrdb::Error::DbOpenFailed,
+        );
+
+        assert!(report.contains("/tmp/whatever/db"), "{report}");
+        assert!(report.contains("33554432 byte mapsize"), "{report}");
+        assert!(report.contains("mdb_env_open failed"), "{report}");
+    }
+
+    /// The named-semaphore exhaustion story is Apple-specific, so only macOS
+    /// builds should be told to go look at `kern.posix.sem.max`.
+    #[test]
+    fn semaphore_advice_is_macos_only() {
+        let report = ndb_open_report("/tmp/whatever/db", 1, nostrdb::Error::DbOpenFailed);
+
+        assert_eq!(
+            report.contains("kern.posix.sem.max"),
+            cfg!(target_os = "macos"),
+            "{report}"
+        );
     }
 }
 
