@@ -105,18 +105,26 @@ suites=(
     # never sets. Swept in they returned early and counted as passes.
     "notedeck_dave|--lib --test dave_button_tests --test ask_question_wrap_tests --test markdown_table_tests --test reference_chip_tests|--skip test_real_codex"
     "notedeck_nostrverse|--test snapshot_tests|"
-    # --test-threads=1: this suite intermittently dies with SIGILL on CI's
-    # x86_64 lavapipe (headway:notedeck/man-eight-damp), taking the run's real
-    # result with it. It is the largest suite — 19 tests, each standing up its
-    # own wgpu device — so it JITs the most lavapipe shaders concurrently, and
-    # it is the only suite that has ever faulted. Concurrent LLVM JIT is the
-    # leading suspect; serialising is the cheap test of that (~4s) and, if the
-    # suspicion is right, the fix. If it faults anyway, one thread at least
-    # makes the crash attributable: the culprit is the test after the last
-    # reported pass. Unproven either way until several CI runs say so — it has
-    # never reproduced locally, including 100 runs on aarch64 lavapipe both
-    # pinned to two cores and unpinned across 18.
-    "notedeck_headway|--features snapshot-testing --test snapshot_tests|--test-threads=1"
+    # --test-threads=1 --nocapture: this suite intermittently dies with SIGILL
+    # on CI's x86_64 lavapipe (headway:notedeck/man-eight-damp), taking the
+    # run's real result with it.
+    #
+    # One thread was first tried as a *fix* — the suite stands up 19 wgpu
+    # devices, so concurrent lavapipe JIT was the leading suspect. It faulted
+    # anyway, which refutes that and leaves the serialisation earning its ~4s a
+    # different way: it attributes the crash. 18 tests now pass and the process
+    # dies inside snapshot_switcher_same_slug_boards, which had never been
+    # pinned down before.
+    #
+    # --nocapture because libtest buffers a test's stdout *and* stderr in memory
+    # and prints them only on failure — so a SIGILL discards them, which is why
+    # this went unattributed for so long. It is what lets that test's temporary
+    # phase markers reach the log.
+    #
+    # Keep until the fault is understood; it has never reproduced locally,
+    # including 100+ runs on aarch64 lavapipe both pinned to two cores and
+    # unpinned across 18.
+    "notedeck_headway|--features snapshot-testing --test snapshot_tests|--test-threads=1 --nocapture"
     "notedeck_notebook|--test snapshot_tests|"
     "notedeck_horizon|--test snapshot_tests|"
     # dashboard disabled for now: can't seem to regenerate its snapshots

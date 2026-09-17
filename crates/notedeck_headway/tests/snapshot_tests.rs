@@ -1673,7 +1673,23 @@ fn unfolded_shared_board_keeps_the_switcher_reachable() {
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_switcher_same_slug_boards() {
+    // TEMPORARY phase markers for headway:notedeck/man-eight-damp. This test is
+    // the one the snapshot suite dies in with SIGILL on CI's x86_64 lavapipe,
+    // established by serialising the suite (ebef5dcf4f06): 18 tests pass and
+    // this one prints its name and never returns. It never reproduces locally
+    // (100+ runs on aarch64 lavapipe), so the phase has to be read off CI.
+    //
+    // Unbuffered via eprintln! — libtest block-buffers stdout into cargo's pipe,
+    // so a SIGILL loses whatever is still sitting in it, which is how the crash
+    // stayed unattributed for so long. Remove once the phase is known.
+    macro_rules! phase {
+        ($p:expr) => {
+            eprintln!("PHASE switcher: {}", $p)
+        };
+    }
+    phase!("start");
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    phase!("harness built");
     let account = test_keypair();
 
     // Two co-members whose boards collide on the slug `notes` but not on owner.
@@ -1696,6 +1712,7 @@ fn snapshot_switcher_same_slug_boards() {
             "Roadmap",
             &mut store::NoPublish,
         );
+        phase!("own board seeded");
         ingest_keyshare(
             ndb,
             &account,
@@ -1703,6 +1720,7 @@ fn snapshot_switcher_same_slug_boards() {
             0x30,
             &event::board_address(&account.pubkey, "roadmap"),
         );
+        phase!("self-share ingested");
 
         // Two joined boards, same slug `notes`, different owners → two entries.
         ingest_keyshare(
@@ -1719,10 +1737,12 @@ fn snapshot_switcher_same_slug_boards() {
             0xb5,
             &event::board_address(&bob.pubkey, "notes"),
         );
+        phase!("both joined boards ingested");
     }
 
     // Open the switcher and wait until every joined board has been picked up and
     // listed: the own+shared `roadmap` once, and both same-slug `notes` boards.
+    phase!("switcher clicked");
     harness.get_by_label(SWITCHER_LABEL).simulate_click();
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
@@ -1740,6 +1760,9 @@ fn snapshot_switcher_same_slug_boards() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
+    phase!("boards listed");
     harness.run_steps(3);
+    phase!("stepped, about to rasterise");
     harness.snapshot("headway_switcher_same_slug");
+    phase!("done");
 }
