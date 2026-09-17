@@ -245,22 +245,39 @@ fn wait_for_board(harness: &mut Harness<'static, HeadwayTestState>) {
             return;
         }
         if Instant::now() >= deadline {
-            // This barrier hangs intermittently on loaded runners
-            // (headway:notedeck/awesome-purpose-fossil), and the bare
-            // "timed out waiting for X" a generic barrier prints says only that
-            // the board never reached seven cards — not whether it reached
-            // *any*. Report the summary the header actually rendered, because
-            // that one string separates the two candidate failures: no summary
-            // at all means the board never materialised, while "3 cards · 5
-            // columns" means the fold ran and the seed went missing partway.
-            let seen: Vec<String> = harness
-                .query_all_by_label_contains(" columns")
-                .filter_map(|node| node.label())
-                .collect();
-            let seen = if seen.is_empty() {
-                "no board summary rendered at all".to_owned()
-            } else {
-                format!("header showed {seen:?}")
+            // Report the summary the header actually rendered: that one string
+            // separates the two candidate failures — no summary at all means the
+            // board never materialised, while "0 cards · 5 columns" means it
+            // folded and the seed went missing (which is what
+            // headway:notedeck/awesome-purpose-fossil turned out to be).
+            //
+            // Probed one exact label at a time rather than by substring, because
+            // `query_all_by_label_contains` does not see these nodes: on a run
+            // where `query_by_label(SUMMARY)` succeeds, a sibling
+            // `query_all_by_label_contains(" columns")` still comes back empty,
+            // and `query_all_by_role(Role::Label)` returns nothing even though
+            // the summary node's own role *is* `Label`. So the substring probe
+            // this replaces reported "no board summary rendered at all"
+            // unconditionally — including when the header was plainly there —
+            // and cost two sessions chasing a board that had in fact folded.
+            let seen = (0..=DEMO_CARDS)
+                .map(|n| {
+                    format!(
+                        "{n} card{} · {DEMO_COLUMNS} columns",
+                        if n == 1 { "" } else { "s" }
+                    )
+                })
+                .find(|label| harness.query_by_label(label).is_some());
+            let seen = match seen {
+                Some(label) => format!("header showed {label:?}"),
+                None => format!(
+                    "no board summary rendered at all (board switcher {}present)",
+                    if harness.query_by_label(SWITCHER_LABEL).is_some() {
+                        ""
+                    } else {
+                        "not "
+                    }
+                ),
             };
             panic!("timed out waiting for {SUMMARY:?}: {seen}");
         }
@@ -346,6 +363,11 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// barrier in [`seed_demo`] waits for exactly this many, and it's the count
 /// `wait_for_board`'s summary asserts.
 const DEMO_CARDS: usize = 7;
+
+/// How many columns the demo board has — the other half of the summary
+/// [`wait_for_board`] waits for, and the fixed column count its timeout probes
+/// card counts against.
+const DEMO_COLUMNS: usize = 5;
 
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
 /// with `label` appears, or panic after a deadline.
