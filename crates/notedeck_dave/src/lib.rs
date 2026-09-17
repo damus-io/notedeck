@@ -6424,7 +6424,38 @@ mod tests {
     fn test_dave(data_path: &DataPath) -> Dave {
         let ndb_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        seed_agentic_settings(data_path);
         Dave::new(None, ndb, Waker::noop(), data_path)
+    }
+
+    /// Pin the constructed [`Dave`] to [`AiMode::Agentic`], which every test using
+    /// [`test_dave`] assumes — the session manager starts empty there.
+    ///
+    /// Without this the mode is whatever the machine running the test happens to
+    /// have installed. `Dave::new` falls back to `ModelConfig::default()` when no
+    /// settings are saved, and that is
+    /// `from_env(env, has_binary_on_path("claude"), has_binary_on_path("codex"))`:
+    /// a dev box with the claude CLI resolves to `BackendType::Claude` and so
+    /// Agentic, while CI — where neither CLI is on PATH — falls through to OpenAI
+    /// and so `AiMode::Chat`, which *creates a default session immediately*. That
+    /// phantom session shifts every session count by one, which is exactly how
+    /// these tests passed locally and failed in CI.
+    ///
+    /// Writing settings first takes `Dave::new`'s saved-settings branch instead,
+    /// and `AiProvider::Anthropic` maps to `BackendType::Claude` (see
+    /// `ModelConfig::from_settings`), so the mode is the same everywhere.
+    fn seed_agentic_settings(data_path: &DataPath) {
+        use crate::config::{AiProvider, DaveSettings};
+        let mut settings = TimedSerializer::<DaveSettings>::new(
+            data_path,
+            DataPathType::Setting,
+            "dave_settings.json".to_owned(),
+        )
+        .with_delay(Duration::ZERO);
+        assert!(
+            settings.try_save(DaveSettings::with_provider(AiProvider::Anthropic)),
+            "seed dave settings so the test runs in a deterministic AiMode"
+        );
     }
 
     #[tokio::test]
