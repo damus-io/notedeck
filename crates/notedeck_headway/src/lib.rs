@@ -607,11 +607,11 @@ impl App for Headway {
         if !self.teams.is_empty()
             && let Ok(txn) = Transaction::new(ctx.ndb)
         {
-            let fresh_envelopes =
-                self.board_cache
-                    .borrow_mut()
-                    .poll_shared(ctx.ndb, &txn, &self.teams);
-            if !fresh_envelopes.is_empty() {
+            let shared = self
+                .board_cache
+                .borrow_mut()
+                .poll_shared(ctx.ndb, &txn, &self.teams);
+            if !shared.fresh.is_empty() || shared.subscribed {
                 self.wake();
             }
         }
@@ -1181,6 +1181,19 @@ struct SharedBoard {
     sub: Option<Subscription>,
 }
 
+/// What one [`BoardCache::poll_shared`] pass found.
+#[derive(Default)]
+struct SharedPoll {
+    /// Freshly-arrived envelope keys. The envelope, not the unwrapped rumor, is
+    /// the sync unit (the rumor is skipped by
+    /// [`notedeck::fan_out_unseen_notes`]'s `is_rumor` guard).
+    fresh: Vec<NoteKey>,
+    /// A channel subscribed on this pass and so deliberately didn't fold yet (see
+    /// [`BoardCache::poll_shared`]). The caller has to schedule another frame, or
+    /// the fold waits for whatever repaints next.
+    subscribed: bool,
+}
+
 impl BoardCache {
     /// Advance `author`'s reducer and report the change — the per-frame pump
     /// called from [`update`](App::update). Fan out
@@ -1242,15 +1255,12 @@ impl BoardCache {
 
     /// Advance every joined shared board: ensure a kind-1081 envelope subscription
     /// per channel and re-fold (by coordinate, gathering all members) any whose
-    /// subscription reports new envelopes or that hasn't folded yet. Returns the
-    /// fresh envelope keys, which the caller fans out to the channel's relays — the
-    /// envelope, not the unwrapped rumor, is the sync unit (the rumor is skipped by
-    /// [`notedeck::fan_out_unseen_notes`]'s `is_rumor` guard).
+    /// subscription reports new envelopes or that hasn't folded yet.
     ///
     /// Re-fold is full each time rather than incremental: shared boards are few and
     /// only re-fold when a member actually edits (every edit is one 1081 envelope).
-    fn poll_shared(&mut self, ndb: &Ndb, txn: &Transaction, teams: &[teams::Team]) -> Vec<NoteKey> {
-        let mut fresh = Vec::new();
+    fn poll_shared(&mut self, ndb: &Ndb, txn: &Transaction, teams: &[teams::Team]) -> SharedPoll {
+        let mut poll = SharedPoll::default();
         // One pass per *board*, not per key-share: a board with several channels
         // (a rotation epoch, or a re-seal that ran under a fresh root) has its
         // content split across them irrecoverably, so it folds — and watches —
@@ -1269,6 +1279,24 @@ impl BoardCache {
             let entry = self.shared.entry(team.board_addr.clone()).or_default();
             if entry.sub.is_none() {
                 entry.sub = ndb.subscribe(&[teams::envelope_filter(&channels)]).ok();
+                if entry.sub.is_some() {
+                    // Don't fold on the pass that subscribes — `txn` was opened
+                    // before this subscription existed, and an envelope that
+                    // committed in between is in neither: too new for the snapshot,
+                    // too old for a subscription that only reports later ingests.
+                    // Since this leg only re-folds when the subscription reports
+                    // something, a board whose *only* envelope landed in that
+                    // window would never fold at all. Same hazard, and the same
+                    // shape of fix, as the author leg's seed
+                    // (`notedeck::RealtimeCache::advance`).
+                    //
+                    // Leaving `reducer` unset defers the fold to the next toucher —
+                    // the next pass here, or `shared_board` during this frame's
+                    // render — each of which opens its own transaction after this
+                    // one is dropped, so its snapshot postdates the subscribe.
+                    poll.subscribed = true;
+                    continue;
+                }
             }
             let polled = match entry.sub {
                 Some(sub) => ndb.poll_for_notes(sub, 64),
@@ -1278,9 +1306,9 @@ impl BoardCache {
                 entry.reducer = event::fold_shared_board(ndb, txn, &team.board_addr, &channels);
                 entry.finalized = None;
             }
-            fresh.extend(polled);
+            poll.fresh.extend(polled);
         }
-        fresh
+        poll
     }
 
     /// Fold (memoized) a joined shared board by coordinate and return its view.
@@ -2353,6 +2381,70 @@ mod tests {
             .into_iter(),
         );
         assert_eq!(with_own.iter().filter(|b| b.id == "roadmap").count(), 1);
+    }
+
+    /// An envelope that commits between the caller's transaction and the shared
+    /// leg's *first* subscribe must still fold. This leg only re-folds when its
+    /// subscription reports something, so a board whose only envelope landed in
+    /// that window would never fold at all — the board stays blank for the life of
+    /// the process, not just for a frame. The author-leg twin of this is
+    /// `notedeck::realtime_cache`'s
+    /// `seeds_a_note_committed_between_the_callers_txn_and_the_first_subscribe`.
+    #[tokio::test]
+    async fn shared_board_folds_an_envelope_that_landed_before_the_first_subscribe() {
+        let mut t = TestSync::new();
+        let mut root = [0u8; 32];
+        root[0] = 0x33;
+        root[31] = 0x44;
+        assert!(t.ndb.add_team_root(&root));
+        let channel = store::SnsChannel {
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
+        };
+        let team = teams::Team {
+            team_root: hex::encode(root),
+            board_addr: event::board_address(&t.kp.pubkey, store::BOARD_ID),
+            epoch: None,
+            shared_at: 0,
+        };
+        let teams = vec![team.clone()];
+        let team_pubkey = channel.keys.team_keypair.pubkey;
+
+        // The frame opens its read transaction first, as every caller does...
+        let txn = Transaction::new(&t.ndb).unwrap();
+
+        // ...and the board's one and only envelope commits after it, while the
+        // cache has still never been touched for this coordinate.
+        let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
+        let cols = vec![
+            event::ColumnDef::new("backlog", "Backlog"),
+            event::ColumnDef::new("todo", "Todo"),
+        ];
+        store::ingest_signed(
+            &t.ndb,
+            event::build_board(store::BOARD_ID, "Shared", "", &cols),
+            &store::Signer::shared(&t.secret(), &channel),
+            &mut store::NoPublish,
+        );
+        await_ingest(&mut stream).await;
+
+        // First touch: subscribes, from a frame whose snapshot predates the commit.
+        t.cache.poll_shared(&t.ndb, &txn, &teams);
+        drop(txn);
+
+        // No further envelope is ever published, so nothing re-arms the fold; the
+        // board has to come from a later pass seeding off a fresher snapshot.
+        let txn = Transaction::new(&t.ndb).unwrap();
+        t.cache.poll_shared(&t.ndb, &txn, &teams);
+        let view = t
+            .cache
+            .shared_board(
+                &t.ndb,
+                &txn,
+                &team.board_addr,
+                std::slice::from_ref(&team_pubkey),
+            )
+            .expect("the definition that landed before the subscribe must fold in");
+        assert_eq!(view.title, "Shared");
     }
 
     /// The shared-board read path: an edit applied over an SNS channel is folded
