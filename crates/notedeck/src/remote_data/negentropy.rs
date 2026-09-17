@@ -46,6 +46,7 @@ fn insert_negentropy_record(storage: &mut NegentropyStorageVector, created_at: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::test_config;
     use negentropy::{Item, NegentropyStorageBase};
     use nostrdb::{Config, IngestMetadata, NoteBuilder};
     use nostrdb_net::FullKeypair;
@@ -56,7 +57,7 @@ mod tests {
     /// Creates one temporary `nostrdb` instance for negentropy adapter tests.
     fn test_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         (tmp, ndb)
     }
 

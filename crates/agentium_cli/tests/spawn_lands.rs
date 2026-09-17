@@ -20,6 +20,20 @@ use agentium_core::session_events::{self, AI_SESSION_COMMAND_KIND, build_session
 use nostrdb::{Config, Ndb};
 use tempfile::TempDir;
 
+/// A [`Config`] with a small mapsize, for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so a test taking nostrdb's large default eats the CI
+/// runner's disk. Mirrors `notedeck::test_util::test_config`, which this crate
+/// can't reach (it doesn't depend on notedeck).
+fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        Config::new()
+    }
+}
+
 /// Resolve a path to *this* worktree's freshly-built `agentium` binary, robust to
 /// the shared-target uplift hazard that otherwise makes these tests fail under
 /// `cargo test --workspace` while passing under `cargo test -p agentium_cli`.
@@ -198,7 +212,7 @@ async fn spawn_wait_resolves_and_prompt_lands() {
     // A real relay backed by its own ndb — the seam every envelope crosses.
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
-        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+        Ndb::new(relay_dir.path().to_str().expect("path"), &test_config()).expect("relay ndb");
     let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
         .expect("spawn relay");
     let url = relay.url();
@@ -322,7 +336,7 @@ async fn spawn_wait_resolves_and_prompt_lands() {
 async fn spawn_json_is_one_line() {
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
-        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+        Ndb::new(relay_dir.path().to_str().expect("path"), &test_config()).expect("relay ndb");
     let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
         .expect("spawn relay");
     let url = relay.url();
@@ -372,7 +386,7 @@ async fn spawn_wait_times_out_without_a_host() {
     // A reachable but host-less relay: the command publishes fine, nothing answers.
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
-        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+        Ndb::new(relay_dir.path().to_str().expect("path"), &test_config()).expect("relay ndb");
     let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
         .expect("spawn relay");
     let url = relay.url();
@@ -446,7 +460,7 @@ async fn a_repeated_spawn_publishes_one_command() {
 
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
-        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+        Ndb::new(relay_dir.path().to_str().expect("path"), &test_config()).expect("relay ndb");
     let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
         .expect("spawn relay");
     let url = relay.url();

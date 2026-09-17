@@ -357,6 +357,7 @@ fn head(s: &str, max: usize) -> (&str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notedeck_testing::fixtures::test_config;
 
     #[test]
     fn head_returns_whole_short_string_untruncated() {
@@ -402,7 +403,7 @@ mod tests {
         use nostrdb_net::FullKeypair;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
         // Canvas writes are sealed into the account's SNS workspace, so

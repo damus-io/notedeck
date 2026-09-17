@@ -215,12 +215,12 @@ impl TimelineSub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notedeck_testing::fixtures::test_config;
     use tempfile::TempDir;
 
     fn new_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
-        let ndb =
-            Ndb::new(tmp.path().to_str().expect("path"), &nostrdb::Config::new()).expect("ndb");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         (tmp, ndb)
     }
 

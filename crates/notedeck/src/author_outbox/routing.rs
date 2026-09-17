@@ -235,6 +235,7 @@ fn copy_tag_field<'a>(
 mod tests {
     use super::*;
     use crate::author_outbox::RelayDirectorySnapshot;
+    use crate::test_util::test_config;
     use crate::test_utils::{nip65_note_for_test, wait_for_nip65_for_test};
     use nostrdb::Config;
     use serde_json::Value;
@@ -264,7 +265,7 @@ mod tests {
     fn new_ndb() -> (TempDir, nostrdb::Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
         let ndb =
-            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         (tmp, ndb)
     }
 

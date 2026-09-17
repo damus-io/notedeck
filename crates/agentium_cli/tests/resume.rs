@@ -11,6 +11,20 @@ use std::process::Command;
 use nostrdb::{Config, Ndb, NoteBuilder};
 use tempfile::TempDir;
 
+/// A [`Config`] with a small mapsize, for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so a test taking nostrdb's large default eats the CI
+/// runner's disk. Mirrors `notedeck::test_util::test_config`, which this crate
+/// can't reach (it doesn't depend on notedeck).
+fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        Config::new()
+    }
+}
+
 /// `[7u8; 32]` as an nsec — the key the seeded events are signed with, so the
 /// engine (which reads sessions authored by its own key) finds them.
 const NSEC: &str = "nsec1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursl6edet";
@@ -87,7 +101,7 @@ async fn resume_reports_command_for_deleted_session() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = dir.path().to_str().expect("path").to_string();
     {
-        let ndb = Ndb::new(&db_path, &Config::new()).expect("ndb");
+        let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
         let filter = nostrdb::Filter::new()
             .kinds([KIND_SESSION_STATE as u64])
             .build();
@@ -116,7 +130,7 @@ async fn resume_errors_on_unknown_selector() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = dir.path().to_str().expect("path").to_string();
     {
-        let ndb = Ndb::new(&db_path, &Config::new()).expect("ndb");
+        let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
         seed_session(&ndb, "dead-1", "deleted", Some("cli-abc"));
     }
 
@@ -133,7 +147,7 @@ async fn resume_reopens_session_whose_backend_never_started() {
     let dir = TempDir::new().expect("tmp dir");
     let db_path = dir.path().to_str().expect("path").to_string();
     {
-        let ndb = Ndb::new(&db_path, &Config::new()).expect("ndb");
+        let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
         let filter = nostrdb::Filter::new()
             .kinds([KIND_SESSION_STATE as u64])
             .build();

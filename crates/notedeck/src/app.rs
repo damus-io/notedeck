@@ -1221,6 +1221,7 @@ mod render_nav_tests {
 #[cfg(test)]
 mod prune_swap_tests {
     use super::*;
+    use crate::test_util::test_config;
     use nostrdb::Filter;
 
     /// Our own pubkey — the account whose notes the keep-policy preserves.
@@ -1289,7 +1290,7 @@ mod prune_swap_tests {
 
         // Populate a database and prune it, exactly as the settings job does.
         {
-            let ndb = Ndb::new(&db_str, &Config::new()).expect("open db");
+            let ndb = Ndb::new(&db_str, &test_config()).expect("open db");
 
             let filters = vec![Filter::new().kinds(vec![0, 1]).build()];
             let sub = ndb.subscribe(&filters).expect("subscribe");
@@ -1328,7 +1329,7 @@ mod prune_swap_tests {
         );
 
         // The swapped-in database must reopen and still hold the kept notes.
-        let ndb = Ndb::new(&db_str, &Config::new()).expect("reopen swapped db");
+        let ndb = Ndb::new(&db_str, &test_config()).expect("reopen swapped db");
 
         // Scoped, so the read transaction and everything borrowing from it are
         // gone before the write below. nostrdb transactions are meant to be

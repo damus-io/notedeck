@@ -414,6 +414,7 @@ impl<R: Reducer> RealtimeCache<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::test_config;
     use nostrdb::{Config, Ndb};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
@@ -512,7 +513,7 @@ mod tests {
 
     fn test_ndb() -> (Ndb, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         (ndb, dir)
     }
 

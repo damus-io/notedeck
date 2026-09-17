@@ -3340,6 +3340,7 @@ pub fn rank_between(left: Option<&str>, right: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_config;
     use nostrdb_net::FullKeypair;
 
     /// The relay-sync dedup keys off [`is_addressable`]: an addressable kind is
@@ -4199,7 +4200,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let addr = board_address(&kp.pubkey, "headway");
 
@@ -4255,7 +4256,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
 
         let ingest = |b: NoteBuilder| {
@@ -4305,7 +4306,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let owner = FullKeypair::generate();
         let member = FullKeypair::generate();
@@ -4451,7 +4452,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let owner = FullKeypair::generate();
         let secret = owner.secret_key.secret_bytes();
@@ -4881,7 +4882,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
 
         let ingest = |b: NoteBuilder| {

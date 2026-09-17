@@ -14,6 +14,20 @@ use nostrdb::{Config, Filter, Ndb, SubscriptionStream, Transaction};
 use nostrdb_net::relay::server::{self, RelayHandle};
 use tempfile::TempDir;
 
+/// A [`Config`] with a small mapsize.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so a test taking nostrdb's large default eats the CI
+/// runner's disk. Mirrors `notedeck::test_util::test_config`, which this crate
+/// can't reach (it doesn't depend on notedeck).
+pub(crate) fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        Config::new()
+    }
+}
+
 /// A fixed, deterministic secret key for signing test events. Doubles as the
 /// engine device key in tests, so signed events author-match the engine.
 pub(crate) const TEST_SECKEY: [u8; 32] = [7u8; 32];
@@ -22,7 +36,7 @@ pub(crate) const TEST_SECKEY: [u8; 32] = [7u8; 32];
 /// must be kept alive for as long as the db is used.
 pub(crate) fn temp_ndb() -> (TempDir, Ndb) {
     let dir = TempDir::new().expect("tmp dir");
-    let ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
+    let ndb = Ndb::new(dir.path().to_str().expect("path"), &test_config()).expect("ndb");
     (dir, ndb)
 }
 

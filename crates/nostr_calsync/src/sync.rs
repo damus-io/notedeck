@@ -75,6 +75,7 @@ fn ingest(
 mod tests {
     use super::*;
     use crate::event::{KIND_DATE_BASED, KIND_TIME_BASED, d_tag};
+    use crate::test_config;
     use chrono::{TimeZone, Utc};
     use nostrdb::{Config, Filter, Ndb, Transaction};
     use nostrdb_net::FullKeypair;
@@ -89,7 +90,7 @@ mod tests {
     impl TestNdb {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             Self {
                 ndb,
                 _dir: dir,

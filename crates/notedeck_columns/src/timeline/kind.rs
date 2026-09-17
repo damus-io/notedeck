@@ -996,6 +996,7 @@ fn generic_filter_state(filter_vec: &FilterVec) -> FilterState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notedeck_testing::fixtures::test_config;
 
     #[test]
     fn empty_hashtag_filter_state_is_broken() {
@@ -1008,8 +1009,7 @@ mod tests {
     #[test]
     fn empty_generic_timeline_filter_state_is_broken() {
         let tmp = tempfile::TempDir::new().expect("tmp dir");
-        let ndb =
-            Ndb::new(tmp.path().to_str().expect("path"), &nostrdb::Config::new()).expect("ndb");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
         let kind = TimelineKind::Generic(FilterVec::new(Vec::new()));
 

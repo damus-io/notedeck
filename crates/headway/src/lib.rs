@@ -25,6 +25,21 @@ pub mod store;
 #[cfg(test)]
 pub(crate) const INGEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// A [`nostrdb::Config`] with a small mapsize, for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so tests taking nostrdb's large default exhaust the
+/// disk on CI runners. Mirrors `notedeck::test_util::test_config`, which this
+/// crate can't reach (it doesn't depend on notedeck).
+#[cfg(test)]
+pub(crate) fn test_config() -> nostrdb::Config {
+    if cfg!(target_os = "windows") {
+        nostrdb::Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        nostrdb::Config::new()
+    }
+}
+
 pub mod teams;
 pub mod traversal;
 pub mod wordid;

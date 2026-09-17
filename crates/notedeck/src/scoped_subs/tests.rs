@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_util::test_config;
 use crate::{
     remote_data::RemoteIntentBatchBuilder,
     test_utils::RemoteOutboxReadModelHarness,
@@ -382,7 +383,7 @@ fn make_key(parts: impl Hash) -> SubKey {
 
 fn new_ndb() -> (TempDir, nostrdb::Ndb) {
     let tmp = TempDir::new().expect("tmp dir");
-    let ndb = nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+    let ndb = nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
     (tmp, ndb)
 }
 

@@ -1612,6 +1612,7 @@ pub fn rank_between(left: Option<&str>, right: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_config;
     use nostrdb_net::FullKeypair;
 
     fn parse_signed(builder: NoteBuilder, kp: &FullKeypair) -> NotebookEvent {
@@ -2117,7 +2118,7 @@ mod tests {
         use nostrdb::{Config, IngestMetadata, Ndb, SubscriptionStream};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let addr = canvas_address(&kp.pubkey, "c1");
 

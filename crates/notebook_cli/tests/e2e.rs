@@ -9,6 +9,20 @@ use std::time::Duration;
 use nostrdb::{Config, Ndb};
 use serde_json::Value;
 
+/// A [`Config`] with a small mapsize, for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so a test taking nostrdb's large default eats the CI
+/// runner's disk. Mirrors `notedeck::test_util::test_config`, which this crate
+/// can't reach (it doesn't depend on notedeck).
+fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        Config::new()
+    }
+}
+
 /// Test signing key — the same all-`0x42` secret the relay's own roundtrip test
 /// uses (a valid secp256k1 key).
 const SECRET: [u8; 32] = [0x42; 32];
@@ -121,7 +135,7 @@ fn vault_lists_and_prints_local_longform() {
     // its derived root — nostrdb only unwraps the kind-1081 envelopes once it is
     // registered — mirroring what the CLI/app does before reading.
     let d = {
-        let ndb = Ndb::new(db, &Config::new().set_ingester_threads(1)).expect("ndb");
+        let ndb = Ndb::new(db, &test_config().set_ingester_threads(1)).expect("ndb");
         store::register_workspace(&ndb, &SECRET);
         let input = LongformInput {
             title: "My Article".to_string(),
@@ -198,7 +212,7 @@ fn seed_show_and_add_round_trip() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -255,7 +269,7 @@ fn write_local_longform(db: &str, title: &str, summary: Option<&str>, content: &
     let (_sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec()).expect("nsec");
     let author = nostrdb_net::Pubkey::new(*pk.bytes());
 
-    let ndb = Ndb::new(db, &Config::new().set_ingester_threads(1)).expect("ndb");
+    let ndb = Ndb::new(db, &test_config().set_ingester_threads(1)).expect("ndb");
     // Register the vault's derived SNS workspace root so nostrdb unwraps the sealed
     // kind-1081 longform envelope this injects.
     store::register_workspace(&ndb, &SECRET);
@@ -295,7 +309,7 @@ fn show_lists_mixed_vault() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -357,7 +371,7 @@ fn show_ref_dispatches_by_type() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -443,7 +457,7 @@ fn reconcile_converges_after_replacing_a_transform() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();

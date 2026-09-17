@@ -7,6 +7,20 @@ use std::time::Duration;
 use nostrdb::{Config, Filter, Ndb, Transaction};
 use serde_json::Value;
 
+/// A [`Config`] with a small mapsize, for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so a test taking nostrdb's large default eats the CI
+/// runner's disk. Mirrors `notedeck::test_util::test_config`, which this crate
+/// can't reach (it doesn't depend on notedeck).
+fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        Config::new()
+    }
+}
+
 /// Test signing key — the same all-`0x42` secret the relay's own roundtrip test
 /// uses (a valid secp256k1 key).
 const SECRET: [u8; 32] = [0x42; 32];
@@ -166,7 +180,7 @@ fn non_default_seed_titles_by_slug_and_seals() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let relay_store = app_ndb.clone();
@@ -210,7 +224,7 @@ fn seed_title_flag_overrides_slug() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -243,7 +257,7 @@ fn seed_show_and_add_round_trip() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -334,7 +348,7 @@ fn offline_edits_flush_on_reconnect() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let relay_store = app_ndb.clone();
@@ -374,7 +388,7 @@ fn reconcile_converges_after_replacing_a_placement() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -450,7 +464,7 @@ fn multiple_boards_are_independent() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -530,7 +544,7 @@ fn sealed_board_round_trips_to_fresh_cache() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     // A handle onto the relay's own store, to inspect what actually landed on it.
@@ -586,7 +600,7 @@ fn offline_sealed_edit_flushes_on_reconnect() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -645,7 +659,7 @@ fn sealed_board_converges_without_plaintext_leak() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let relay_store = app_ndb.clone();
@@ -732,7 +746,7 @@ fn offline_born_board_joins_from_a_fresh_cache_after_reconnect() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();
@@ -810,7 +824,7 @@ fn a_board_whose_selfshare_never_flushed_is_joinable_by_deriving_its_root() {
     let app_dir = tempfile::tempdir().expect("app dir");
     let app_ndb = Ndb::new(
         app_dir.path().to_str().unwrap(),
-        &Config::new().set_ingester_threads(1),
+        &test_config().set_ingester_threads(1),
     )
     .expect("app ndb");
     let _guard = rt.enter();

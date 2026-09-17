@@ -1575,6 +1575,7 @@ mod tests {
     use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
     use nostrdb::{Config, SubscriptionStream};
     use nostrdb_net::FullKeypair;
+    use notedeck_testing::fixtures::test_config;
 
     /// Only a body that is *exactly* one `nostr:` reference (whitespace aside)
     /// promotes to a note-embed node; a reference mixed with other text, or plain
@@ -1611,7 +1612,7 @@ mod tests {
     impl TestCache {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             let kp = FullKeypair::generate();
             // Canvas writes are sealed into the account's SNS workspace, so
             // register its derived root — production registers via the host

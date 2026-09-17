@@ -173,6 +173,7 @@ fn run(
 mod tests {
     use super::*;
     use crate::source::{ExternalEvent, SourceError};
+    use crate::test_config;
     use chrono::{DateTime, TimeZone};
     use nostrdb::{Config, Filter, Transaction};
     use nostrdb_net::FullKeypair;
@@ -216,7 +217,7 @@ mod tests {
     #[test]
     fn worker_mirrors_then_stops() {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let secret = FullKeypair::generate().secret_key.secret_bytes();
         let fetches = Arc::new(AtomicUsize::new(0));
 

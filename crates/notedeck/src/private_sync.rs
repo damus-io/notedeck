@@ -1070,6 +1070,7 @@ impl PrivateRelaySync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::test_config;
     use crate::{
         remote_data::{RemoteIntent, RemoteIntentBatchBuilder, RemotePublishCommand},
         ExplicitPublishApi,
@@ -1149,7 +1150,7 @@ mod tests {
     /// A temporary nostrdb for the seen-on fan-out tests.
     fn test_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         (tmp, ndb)
     }
 

@@ -1602,6 +1602,7 @@ mod tests {
     use super::*;
     use nostrdb::{Config, Filter, Ndb, SubscriptionStream};
     use nostrdb_net::FullKeypair;
+    use notedeck_testing::fixtures::test_config;
     use std::time::{Duration, Instant};
 
     /// The board↔card selection change → global-history request mapping (see
@@ -1638,7 +1639,7 @@ mod tests {
     impl TestSync {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             Self {
                 ndb,
                 _dir: dir,
@@ -2005,7 +2006,7 @@ mod tests {
     #[tokio::test]
     async fn board_cache_folds_once_then_deltas() {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let mut cache = BoardCache::default();
 
@@ -2044,7 +2045,7 @@ mod tests {
     #[tokio::test]
     async fn board_cache_finalizes_once_per_fold() {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let mut cache = BoardCache::default();
 
@@ -2111,7 +2112,7 @@ mod tests {
     #[test]
     fn board_cache_retries_deltas_committed_after_the_read_txn() {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let mut cache = BoardCache::default();
 

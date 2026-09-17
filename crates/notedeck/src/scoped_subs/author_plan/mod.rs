@@ -905,6 +905,7 @@ mod tests {
     };
     use super::*;
     use crate::scoped_subs::ScopedSubOutboxOp;
+    use crate::test_util::test_config;
     use crate::test_utils::RemoteOutboxReadModelHarness;
     use crate::test_utils::{nip65_write_relay_note_for_test, wait_for_nip65_for_test};
     use enostr::{FullKeypair, RelayDemandPriority, RelayReqStatus, RelayRoutingPreference};
@@ -934,7 +935,7 @@ mod tests {
 
     fn new_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         (tmp, ndb)
     }
 

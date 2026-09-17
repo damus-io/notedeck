@@ -203,6 +203,7 @@ fn relay_coverage_candidate_is_current(
 mod tests {
     use super::*;
     use crate::author_outbox::RelayDirectorySnapshot;
+    use crate::test_util::test_config;
     use crate::test_utils::{nip65_note_for_test, wait_for_nip65_for_test};
     use nostrdb::Config;
     use serde_json::Value;
@@ -308,7 +309,7 @@ mod tests {
     fn plan_omits_augmentation_filters_already_covered_by_baseline_relays() {
         let tmp = TempDir::new().expect("tmp dir");
         let mut ndb =
-            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         let erin = enostr::FullKeypair::generate();
         let alice = enostr::FullKeypair::generate();
         let bob = enostr::FullKeypair::generate();
@@ -389,7 +390,7 @@ mod tests {
     fn plan_excludes_baseline_and_keeps_all_allowed_routed_relays() {
         let tmp = TempDir::new().expect("tmp dir");
         let mut ndb =
-            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         let shared_relay = relay("wss://relay-shared.example.com");
         let baseline_relay = relay("wss://relay-000.example.com");
         let shared_authors = (0..65)
@@ -459,7 +460,7 @@ mod tests {
     fn plan_keeps_all_routed_relays_without_baseline_coverage() {
         let tmp = TempDir::new().expect("tmp dir");
         let mut ndb =
-            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         let authors = (0..20)
             .map(|_| enostr::FullKeypair::generate())
             .collect::<Vec<_>>();
@@ -502,7 +503,7 @@ mod tests {
     fn plan_filters_blocked_remote_advertised_relays_before_routed_output() {
         let tmp = TempDir::new().expect("tmp dir");
         let mut ndb =
-            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         let blocked_authors = (0..20)
             .map(|_| enostr::FullKeypair::generate())
             .collect::<Vec<_>>();

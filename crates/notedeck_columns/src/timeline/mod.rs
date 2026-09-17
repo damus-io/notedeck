@@ -1027,6 +1027,7 @@ mod tests {
     use enostr::{FullKeypair, NormRelayUrl};
     use nostrdb::{NoteBuilder, Transaction};
     use notedeck::{Accounts, Notedeck, ScopedSubApi};
+    use notedeck_testing::fixtures::test_config;
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -1106,8 +1107,7 @@ mod tests {
 
     fn new_test_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
-        let ndb =
-            Ndb::new(tmp.path().to_str().expect("path"), &nostrdb::Config::new()).expect("ndb");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         (tmp, ndb)
     }
 

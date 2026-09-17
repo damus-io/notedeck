@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_util::test_config;
 use crate::{
     Accounts, EnsureSubResult, FullHistoryConfig, JobPool, Notedeck, ScopedSubCommand,
     ScopedSubIdentity, ScopedSubReadiness, ScopedSubsState, SubConfig, SubKey, SubOwnerKey,
@@ -20,7 +21,7 @@ use tokio::sync::Notify;
 
 fn test_ndb() -> (TempDir, Ndb) {
     let tmp = TempDir::new().expect("tmp dir");
-    let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+    let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
     (tmp, ndb)
 }
 

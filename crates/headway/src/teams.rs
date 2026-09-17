@@ -258,6 +258,7 @@ impl RootRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_config;
     use nostrdb::Config;
     use nostrdb_net::FullKeypair;
     use std::time::{Duration, Instant};
@@ -271,7 +272,7 @@ mod tests {
 
     fn ndb() -> (tempfile::TempDir, Ndb) {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         (dir, ndb)
     }
 

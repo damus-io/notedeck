@@ -1310,6 +1310,7 @@ async fn wait_for_timer(timer: Option<Instant>) -> Option<Instant> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::test_config;
     use crate::{
         test_utils::{nip65_write_relay_note_for_test, wait_for_nip65_for_test},
         SubConfig, SubKey, SubOwnerKey, SubRelayPolicy, SubScope,
@@ -1329,7 +1330,7 @@ mod tests {
 
     fn test_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         (tmp, ndb)
     }
 

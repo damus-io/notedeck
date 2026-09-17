@@ -435,6 +435,7 @@ mod tests {
     use agentium_core::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
     use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream};
     use nostrdb_net::FullKeypair;
+    use notedeck_testing::fixtures::test_config;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -452,7 +453,7 @@ mod tests {
     impl TestCache {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             let kp = FullKeypair::generate();
             // Await both kinds the fold observes, so a test can wait on a
             // conversation message committing just as it waits on a state event.

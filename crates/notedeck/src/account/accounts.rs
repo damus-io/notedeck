@@ -811,6 +811,7 @@ impl AccountNdbSubs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::test_config;
     use crate::{
         construct_nip65_relays_note, remote_data::RemoteState, JobPool, RelaySpec,
         ScopedSubReadiness, FALLBACK_PUBKEY,
@@ -836,7 +837,7 @@ mod tests {
         fn with_forced_relays(forced_relays: Vec<String>) -> Self {
             let tmp = TempDir::new().expect("tmp dir");
             let mut ndb =
-                Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+                Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
             let txn = Transaction::new(&ndb).expect("txn");
             let mut unknown_ids = UnknownIds::default();
             let accounts = Accounts::new(

@@ -326,10 +326,11 @@ mod tests {
     use crate::messages::AssistantMessage;
     use crate::tools::{dave_tools, ToolCall};
     use nostrdb::Config;
+    use notedeck_testing::fixtures::test_config;
 
     fn test_ndb() -> (tempfile::TempDir, Ndb) {
         let dir = tempfile::tempdir().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         (dir, ndb)
     }
 

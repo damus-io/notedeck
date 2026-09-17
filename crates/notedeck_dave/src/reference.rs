@@ -130,6 +130,7 @@ mod tests {
     use agentium_core::session_events::AI_SESSION_STATE_KIND;
     use nostrdb::{Config, Ndb, NoteBuilder, SubscriptionStream, Transaction};
     use nostrdb_net::{FullKeypair, NoteId};
+    use notedeck_testing::fixtures::test_config;
 
     /// A `find`-only check: the parser matches a whole `agentium:<word-id>` token
     /// and rejects the near-misses (a bare word-id, a glued scheme, a bare scheme,
@@ -168,7 +169,7 @@ mod tests {
     impl TestParser {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             let kp = FullKeypair::generate();
             let sub = ndb.subscribe(&[session_state_filter(&kp.pubkey)]).unwrap();
             let stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);

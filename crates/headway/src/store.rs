@@ -1731,6 +1731,7 @@ pub use event::load_board;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_config;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
 
@@ -1743,7 +1744,7 @@ mod tests {
     impl TestNdb {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             Self {
                 ndb,
                 _dir: dir,
@@ -1982,7 +1983,7 @@ mod tests {
 
         // Device A seeds the default under the derived root and publishes it.
         let dir_a = tempfile::TempDir::new().unwrap();
-        let ndb_a = Ndb::new(dir_a.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb_a = Ndb::new(dir_a.path().to_str().unwrap(), &test_config()).unwrap();
         ndb_a.add_key(&secret);
         let mut wire = Recorder::default();
         assert!(create_shared_board(
@@ -1991,7 +1992,7 @@ mod tests {
 
         // Device B seeds the default independently, before it has synced A's board.
         let dir_b = tempfile::TempDir::new().unwrap();
-        let ndb_b = Ndb::new(dir_b.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb_b = Ndb::new(dir_b.path().to_str().unwrap(), &test_config()).unwrap();
         ndb_b.add_key(&secret);
         assert!(create_shared_board(
             &ndb_b,
@@ -2145,7 +2146,7 @@ mod tests {
 
         // Session 1: build a plaintext board + card, then migrate in place.
         {
-            let ndb = Ndb::new(&path, &Config::new()).unwrap();
+            let ndb = Ndb::new(&path, &test_config()).unwrap();
             ndb.add_key(&secret);
             seed_default_board(&ndb, &kp.pubkey, &secret, BOARD_ID, &mut NoPublish);
             let view = wait_plaintext(&ndb, &kp.pubkey, |v| v.columns.len() == 5).await;
@@ -2197,7 +2198,7 @@ mod tests {
         }
 
         // Session 2: reopen the same dir (an app restart) and re-register the root.
-        let ndb = Ndb::new(&path, &Config::new()).unwrap();
+        let ndb = Ndb::new(&path, &test_config()).unwrap();
         assert!(ndb.add_team_root(&root));
         let txn = Transaction::new(&ndb).unwrap();
         let reopened =
@@ -3430,7 +3431,7 @@ mod tests {
     #[tokio::test]
     async fn board_pref_round_trip_latest_wins() {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
         assert!(ndb.add_key(&secret));
@@ -3480,7 +3481,7 @@ mod tests {
     #[tokio::test]
     async fn board_pref_reads_legacy_bare_slug() {
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
         assert!(ndb.add_key(&secret));

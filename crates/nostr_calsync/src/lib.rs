@@ -26,3 +26,18 @@ pub use eventkit::EventKitSource;
 pub use source::{CalendarSource, ExternalEvent, NullSource, SourceError};
 pub use sync::{NoPublish, Publisher, sync_events};
 pub use worker::{SyncConfig, SyncHandle, default_source, spawn, spawn_default};
+
+/// A [`nostrdb::Config`] with a small mapsize, for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so tests taking nostrdb's large default exhaust the
+/// disk on CI runners. Mirrors `notedeck::test_util::test_config`, which this
+/// crate can't reach (it doesn't depend on notedeck).
+#[cfg(test)]
+pub(crate) fn test_config() -> nostrdb::Config {
+    if cfg!(target_os = "windows") {
+        nostrdb::Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        nostrdb::Config::new()
+    }
+}

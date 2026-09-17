@@ -684,6 +684,7 @@ pub use event::{VaultDoc, VaultDocKind, list_canvases, list_vault};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_config;
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
 
@@ -699,7 +700,7 @@ mod tests {
     impl TestNdb {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             let kp = FullKeypair::generate();
             // The vault is sealed into the account's SNS workspace, so register its
             // derived root — production registers via the host / CLI, tests do it
@@ -1094,7 +1095,7 @@ mod tests {
     impl LongformTest {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             let kp = FullKeypair::generate();
             // Longform notes are sealed into the vault's SNS workspace (kind 1081);
             // nostrdb only unwraps them — exposing the inner kind-30023 to queries
@@ -1326,7 +1327,7 @@ mod tests {
         // note (kind-30023) — now that both are sealed into the same SNS workspace
         // (kind-1081) and only surface to the fold once its root is registered.
         let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
         let kp = FullKeypair::generate();
         register_workspace(&ndb, &kp.secret_key.secret_bytes());
         let secret = kp.secret_key.secret_bytes();
@@ -1413,7 +1414,7 @@ mod tests {
     async fn vault_converges_across_devices() {
         let make = || {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             (dir, ndb)
         };
         let kp = FullKeypair::generate();

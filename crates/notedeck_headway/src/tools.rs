@@ -980,6 +980,7 @@ mod tests {
     use nostrdb::{Config, Ndb, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use notedeck::{Accounts, NoteCache, UnknownIds};
+    use notedeck_testing::fixtures::test_config;
     use serde_json::json;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
@@ -990,7 +991,7 @@ mod tests {
     /// outlive the borrows a `ToolContext` takes.
     fn seeded_env() -> (TempDir, Ndb, Accounts, NoteCache) {
         let dir = TempDir::new().expect("tmp dir");
-        let mut ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let mut ndb = Ndb::new(dir.path().to_str().expect("path"), &test_config()).expect("ndb");
         let kp = FullKeypair::generate();
         let secret = kp.secret_key.secret_bytes();
 
@@ -1058,7 +1059,7 @@ mod tests {
     #[test]
     fn resolve_target_seals_a_shared_board() {
         let dir = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(dir.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let ndb = Ndb::new(dir.path().to_str().expect("path"), &test_config()).expect("ndb");
         let owner = FullKeypair::generate();
         let member = FullKeypair::generate();
 

@@ -140,6 +140,7 @@ mod tests {
     use crate::store::{self, CANVAS_ID, CanvasAction, NoPublish};
     use nostrdb::{Config, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
+    use notedeck_testing::fixtures::test_config;
 
     /// A `find`-only check: the parser matches a whole `notebook:<word-id>` token
     /// and rejects the near-misses (a bare word-id, a glued scheme, a bare
@@ -180,7 +181,7 @@ mod tests {
     impl TestParser {
         fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
-            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
             let kp = FullKeypair::generate();
             // Canvas writes are sealed into the account's SNS workspace, so
             // register its derived root — production registers via the host

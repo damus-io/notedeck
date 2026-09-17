@@ -20,6 +20,20 @@ use std::time::{Duration, Instant};
 use nostrdb::{Config, Ndb, NoteBuilder};
 use tempfile::TempDir;
 
+/// A [`Config`] with a small mapsize, for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk rather than only
+/// mapping it virtually, so a test taking nostrdb's large default eats the CI
+/// runner's disk. Mirrors `notedeck::test_util::test_config`, which this crate
+/// can't reach (it doesn't depend on notedeck).
+fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        Config::new()
+    }
+}
+
 /// `[7u8; 32]` as an nsec — the same key the seeded events are signed with, so
 /// the engine (which reads sessions authored by its own key) finds them.
 const NSEC: &str = "nsec1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursl6edet";
@@ -149,7 +163,7 @@ fn run_log(db_path: &str, dir: &TempDir, args: &[&str]) -> String {
 /// subprocess opens the committed cache cleanly.
 async fn seed_conversation(dir: &TempDir) -> String {
     let db_path = dir.path().to_str().expect("path").to_string();
-    let ndb = Ndb::new(&db_path, &Config::new()).expect("ndb");
+    let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
     let filter = nostrdb::Filter::new()
         .kinds([KIND_SESSION_STATE as u64, KIND_CONVERSATION as u64])
         .build();
@@ -374,7 +388,7 @@ async fn follow_streams_a_live_message() {
     // cross-process cache write can't fire the child's in-process subscription).
     let relay_dir = TempDir::new().expect("relay tmp");
     let relay_ndb =
-        Ndb::new(relay_dir.path().to_str().expect("path"), &Config::new()).expect("relay ndb");
+        Ndb::new(relay_dir.path().to_str().expect("path"), &test_config()).expect("relay ndb");
     let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
         .expect("spawn relay");
     let url = relay.url();
@@ -385,7 +399,7 @@ async fn follow_streams_a_live_message() {
     let child_dir = TempDir::new().expect("child tmp");
     let db_path = child_dir.path().to_str().expect("path").to_string();
     {
-        let ndb = Ndb::new(&db_path, &Config::new()).expect("seed ndb");
+        let ndb = Ndb::new(&db_path, &test_config()).expect("seed ndb");
         let filter = nostrdb::Filter::new()
             .kinds([KIND_SESSION_STATE as u64, KIND_CONVERSATION as u64])
             .build();
@@ -447,7 +461,7 @@ async fn log_jsonl_reconstructs_source_archive_in_seq_order() {
     let db_path = dir.path().to_str().expect("path").to_string();
 
     {
-        let ndb = Ndb::new(&db_path, &Config::new()).expect("ndb");
+        let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
         let filter = nostrdb::Filter::new()
             .kinds([KIND_SESSION_STATE as u64, KIND_SOURCE_DATA as u64])
             .build();
