@@ -78,13 +78,21 @@ fn agentium_bin() -> PathBuf {
     })
 }
 
-/// A `deps/agentium-<hash>` runnable executable — the extensionless sibling of the
+/// A `deps/agentium-<hash>` runnable executable — the sibling of the
 /// `.d`/`.rmeta`/`.o` files cargo drops next to it under the same stem.
+///
+/// The binary is extensionless on unix but carries [`std::env::consts::EXE_SUFFIX`]
+/// on Windows, so strip that first and reject a dot only in what remains: matching
+/// on the raw name would throw `agentium-<hash>.exe` out with the build artifacts
+/// and leave the search with no candidate at all.
 fn is_agentium_exe(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
-    name.starts_with("agentium-") && !name.contains('.') && path.is_file()
+    let Some(stem) = name.strip_suffix(std::env::consts::EXE_SUFFIX) else {
+        return false;
+    };
+    stem.starts_with("agentium-") && !stem.contains('.') && path.is_file()
 }
 
 /// Cargo's dep-info (`agentium-<hash>.d`) names its target by absolute path through
