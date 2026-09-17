@@ -24,33 +24,53 @@ jobs:
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
 
-      # TEMPORARY diagnostic for headway:notedeck/purse-happy-else — the Windows
-      # STATUS_ACCESS_VIOLATION in `cargo test -p notedeck --lib`. Remove once it
-      # has named the faulting test.
+      # TEMPORARY diagnostics for headway:notedeck/purse-happy-else — the Windows
+      # STATUS_ACCESS_VIOLATION in notedeck's lib tests. Remove once attributed.
       #
-      # The parallel run below can't attribute it: libtest buffers each result
-      # and an aborting process loses the buffer, so a test that *completed* can
-      # also show no result line. Running serially makes libtest print the test's
-      # name before it runs, so the last line in the log is the faulting test.
-      # `continue-on-error` so this only ever adds information — the real steps
-      # still run and still decide the job.
-      - name: Attribute the notedeck lib crash, serially (Windows, temporary)
+      # The first round ruled out two whole explanations: the same binary passes
+      # run serially (`--test-threads=1`), and passes run parallel with the test
+      # set narrowed to `app::` — the module the crash's cut points at. So it is
+      # an interaction that needs both parallelism and a wider test set, and no
+      # single test is broken.
+      #
+      # These three split the remaining space in one job. `continue-on-error`
+      # throughout: they only add information, and the real steps below still
+      # decide the job.
+      #
+      # 1. Standalone. The crash has only ever been seen inside
+      #    `cargo test --workspace`, which runs a dozen other crates' binaries
+      #    first. If this passes and the workspace step still crashes, the
+      #    interaction is with what those leave behind, not with notedeck's own
+      #    tests — a completely different search.
+      - name: Windows crash, notedeck lib standalone (temporary)
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p notedeck --lib -- --test-threads=1 --nocapture
+        run: cargo test -p notedeck --lib
         env:
           CI: true
+          RUST_BACKTRACE: 1
 
-      # Second half of the same diagnostic: if the serial run above is clean, the
-      # fault needs parallelism, and the cut in the last parallel log puts it in
-      # `app::` (everything before it finished, nothing after it started). This
-      # runs just that module, still parallel, to confirm.
-      - name: "Attribute the notedeck lib crash, app:: only (Windows, temporary)"
+      # 2. Everything except the headless-tick tests. Both crashes cut off in
+      #    their neighbourhood, so if this passes they are necessary — and since
+      #    `app::` alone was clean, necessary but not sufficient.
+      - name: Windows crash, notedeck lib without tick_headless (temporary)
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: 'cargo test -p notedeck --lib app:: -- --nocapture'
+        run: cargo test -p notedeck --lib -- --skip tick_headless
         env:
           CI: true
+          RUST_BACKTRACE: 1
+
+      # 3. Everything except `app::`, the mirror of the run that was already
+      #    clean. Passing here too would put the fault squarely on `app::`
+      #    running alongside the rest.
+      - name: "Windows crash, notedeck lib without app:: (temporary)"
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: 'cargo test -p notedeck --lib -- --skip app::'
+        env:
+          CI: true
+          RUST_BACKTRACE: 1
 
       - name: Run Tests (Native Only)
         run: cargo test --workspace --exclude notedeck_columns --exclude notedeck_dave --exclude notedeck_messages --exclude notedeck_notebook
