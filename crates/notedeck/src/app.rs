@@ -1238,6 +1238,21 @@ mod prune_swap_tests {
     /// A kind-0 profile authored by neither account.
     const PROFILE_NOTE: &str = r#"["EVENT","b",{  "id": "0b9f0e14727733e430dcb00c69b12a76a1e100f419ce369df837f7eb33e4523c",  "pubkey": "3f770d65d3a764a9c5cb503ae123e62ec7598ad035d836e2a810f3877a745b24",  "created_at": 1736785355,  "kind": 0,  "tags": [    [      "alt",      "User profile for Derek Ross"    ],    [      "i",      "twitter:derekmross",      "1634343988407726081"    ],    [      "i",      "github:derekross",      "3edaf845975fa4500496a15039323fa3I"    ]  ],  "content": "{\"about\":\"Building NostrPlebs.com and NostrNests.com. The purple pill helps the orange pill go down. Nostr is the social glue that binds all of your apps together.\",\"banner\":\"https://i.nostr.build/O2JE.jpg\",\"display_name\":\"Derek Ross\",\"lud16\":\"derekross@strike.me\",\"name\":\"Derek Ross\",\"nip05\":\"derekross@nostrplebs.com\",\"picture\":\"https://i.nostr.build/MVIJ6OOFSUzzjVEc.jpg\",\"website\":\"https://nostrplebs.com\",\"created_at\":1707238393}",  "sig": "51e1225ccaf9b6739861dc218ac29045b09d5cf3a51b0ac6ea64bd36827d2d4394244e5f58a4e4a324c84eeda060e1a27e267e0d536e5a0e45b0b6bdc2c43bbc"}]"#;
 
+    /// TEMPORARY, for diagnosing the Windows STATUS_ACCESS_VIOLATION in
+    /// `prune_then_swap_keeps_own_notes_and_profiles`
+    /// (headway:notedeck/purse-happy-else). Remove once that is understood.
+    ///
+    /// Writes straight to fd 2 rather than using `eprintln!`: the test harness
+    /// captures the print macros and throws the buffer away when a test dies by
+    /// signal, so a captured marker would never reach the CI log — which is the
+    /// only place this reproduces. A direct write is unbuffered and has already
+    /// landed by the time the fault happens.
+    fn phase(marker: &str) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "PRUNE-PHASE {marker}");
+        let _ = std::io::stderr().flush();
+    }
+
     fn pubkey_bytes(hex_str: &str) -> [u8; 32] {
         hex::decode(hex_str)
             .expect("valid hex")
@@ -1307,8 +1322,11 @@ mod prune_swap_tests {
             }
 
             let keep = Ndb::prune_default_filters(&[own_pubkey]).expect("default filters");
+            phase("before-prune");
             ndb.prune(&staged_str, &keep).expect("prune");
+            phase("after-prune");
         }
+        phase("after-ndb-drop");
 
         assert!(
             paths.staged.join("data.mdb").exists(),
@@ -1316,7 +1334,9 @@ mod prune_swap_tests {
         );
 
         // Next launch: swap the pruned database into place.
+        phase("before-swap");
         try_swap_pruned_db(&db_str);
+        phase("after-swap");
 
         assert!(
             !paths.staged.exists(),
@@ -1329,6 +1349,7 @@ mod prune_swap_tests {
 
         // The swapped-in database must reopen and still hold the kept notes.
         let ndb = Ndb::new(&db_str, &Config::new()).expect("reopen swapped db");
+        phase("after-reopen");
         let txn = Transaction::new(&ndb).expect("txn");
 
         let own = ndb
