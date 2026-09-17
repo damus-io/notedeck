@@ -33,10 +33,41 @@ const APP: &str = "agentium-cli";
 /// read: past this we give up on the reconcile and read whatever the cache holds.
 const SYNC_MAX: Duration = Duration::from_secs(6);
 
-/// Bound on the post-publish flush (see [`cmd_resume`]). The publish rides the
-/// engine loop's FIFO, so this only needs to outlast the loop draining that one
-/// command — the initial [`SYNC_MAX`] reconcile already settled the backfill.
+/// Bound on the settle half of the post-publish flush (see [`flush_publish`]).
 const PUBLISH_FLUSH: Duration = Duration::from_secs(2);
+
+/// How long [`flush_publish`] lets the session drain an already-handed-off
+/// publish before the process exits out from under it.
+///
+/// Sized from the failure it fixes rather than from a happy-path round trip: on
+/// a two-core Linux box `agentium interrupt` lost its event outright in roughly
+/// one run in ten, and 500ms closed that to 0 in 60 runs.
+const PUBLISH_DRAIN: Duration = Duration::from_millis(500);
+
+/// Flush a just-published event before the process exits.
+///
+/// Two waits, because one command has to cross two hand-offs and only the first
+/// of them is observable.
+///
+/// [`Engine::wait_for_sync`] is a FIFO barrier, so once it resolves the loop has
+/// dequeued our `Publish` and handed the event to the relay pool. That is *not*
+/// the same as the event having been sent: `Session::publish` is
+/// fire-and-forget, and a publish for a relay whose socket is still opening sits
+/// in the pool's pending map. Exiting there drops it with the process — the CLI
+/// prints "sent" and the relay never sees the event. (Measured against the
+/// relay's own ndb on a Linux reproducer: `relay_notes=0` on a run the CLI had
+/// reported success for.)
+///
+/// Nothing in the transport reports the second hand-off — there is no publish
+/// ack or drained-pending signal on `Session` — so the second wait is a bounded
+/// drain rather than a barrier. It should become one: the right fix is a
+/// publish-completion barrier upstream in nostrdb_net's `Session`
+/// (headway:notedeck/physical-pink-universe), at which point this takes a
+/// condition to wait on and [`PUBLISH_DRAIN`] goes away.
+async fn flush_publish(engine: &agentium_core::Engine) {
+    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+    tokio::time::sleep(PUBLISH_DRAIN).await;
+}
 
 /// Default bound on `spawn --wait` (see [`cmd_spawn`]): how long to wait for the
 /// target host to answer a spawn command with the new session's kind-31988 state.
@@ -358,11 +389,7 @@ async fn cmd_resume(engine: &Engine, author: &Pubkey, selector: &str) -> Result<
 
     engine.resume_session(&target_host, &cwd, &backend, &target_sid, &cli_sid)?;
 
-    // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
-    // after it resolves once the loop has drained (sent) the publish. Bounded so
-    // an unreachable relay can't stall exit — the event is already ingested
-    // locally regardless.
-    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+    flush_publish(engine).await;
 
     println!("resume command sent to {target_host} for {uri}");
     Ok(())
@@ -430,7 +457,7 @@ async fn cmd_send(
     // after it resolves once the loop has drained (sent) the publish. Bounded so
     // an unreachable relay can't stall exit — the event is already ingested
     // locally regardless.
-    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+    flush_publish(engine).await;
 
     if as_json {
         let obj = serde_json::json!({ "session": uri, "event_id": event_id });
@@ -724,9 +751,7 @@ async fn cmd_spawn(
         },
     )?;
 
-    // Flush the publish (bounded) so an unreachable relay can't stall exit; the
-    // command is ingested locally regardless.
-    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+    flush_publish(engine).await;
 
     // No `--wait`: only the spawn_id is known — report it and return.
     let Some(watch) = watch.as_mut() else {
@@ -911,7 +936,7 @@ async fn cmd_interrupt(engine: &Engine, author: &Pubkey, selector: &str) -> Resu
     // after it resolves once the loop has drained (sent) the publish. Bounded so
     // an unreachable relay can't stall exit — the event is already ingested
     // locally regardless.
-    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+    flush_publish(engine).await;
 
     println!("interrupt sent to {uri}");
     Ok(())
