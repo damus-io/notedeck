@@ -69,13 +69,28 @@ fn agentium_bin() -> PathBuf {
         }
     }
 
-    newest.map(|(_, p)| p).unwrap_or_else(|| {
-        panic!(
-            "no current `agentium` artifact built by this worktree under {} — \
-             run `cargo build -p agentium_cli --bin agentium` first",
-            deps.display()
-        )
-    })
+    if let Some((_, path)) = newest {
+        return path;
+    }
+
+    // Nothing in `deps` was identifiable as ours. That is a miss by the
+    // *heuristic*, not proof the binary is wrong: the scan reads cargo's dep-info
+    // to tell our artifacts from a sibling worktree's, and its file naming is not
+    // contractual (on Windows CI it identifies nothing at all). The hazard it
+    // guards against — several worktrees sharing one `target/` — needs sibling
+    // worktrees to exist, which on a CI runner's single fresh checkout they do
+    // not. So fall back to the uplifted binary, still gated on the check that
+    // actually matters: that it is a current build and so this worktree's code.
+    if is_current_build(uplifted) {
+        return uplifted.to_path_buf();
+    }
+
+    panic!(
+        "no `agentium` under {} and no current uplifted binary at {} — \
+         run `cargo build -p agentium_cli --bin agentium` first",
+        deps.display(),
+        uplifted.display()
+    )
 }
 
 /// A `deps/agentium-<hash>` runnable executable — the sibling of the
