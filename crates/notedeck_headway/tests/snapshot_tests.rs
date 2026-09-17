@@ -264,10 +264,23 @@ fn focused_text_input<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> No
         .expect("a focused text input")
 }
 
+/// Ceiling for the frame-pumping barriers below.
+///
+/// These wait on asynchronous nostrdb ingest, so the bound has to cover a loaded
+/// CI runner rather than a quiet laptop: four of these tests timed out together
+/// on one Linux run at the old five seconds, all on the same seed barrier, while
+/// passing everywhere else. Matches `common::CONVERGE_TIMEOUT`, whose comment
+/// already settles the tradeoff for this crate — long enough for a slow runner,
+/// short enough that a genuinely stuck fold still fails rather than hangs.
+///
+/// Raising it costs nothing when things are healthy: every loop returns as soon
+/// as its condition holds, so only a run that was going to fail waits longer.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
 /// with `label` appears, or panic after a deadline.
 fn wait_for_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness.query_by_label(label).is_some() {
@@ -280,7 +293,7 @@ fn wait_for_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str)
 
 /// Pump frames until no widget with `label` is present, or panic after a deadline.
 fn wait_for_absent(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         if harness.query_by_label(label).is_none() {
@@ -903,7 +916,7 @@ fn reorder_column_flow() {
     harness.get_by_label("Move right").simulate_click();
 
     // Wait for the reordered board to materialise (Backlog moves right of Todo).
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let backlog_x = harness.get_by_label("Backlog").bounding_box().unwrap().x0;
@@ -1055,7 +1068,7 @@ const SWITCHER_LABEL: &str = "Headway  ⏷";
 /// rather than pumping frames — the caller holds an `AppContext` borrow — so it
 /// waits on the ndb writer thread, not the render loop. Panics past a deadline.
 fn wait_shared_board(ndb: &Ndb, board_addr: &str, team_pubkey: &Pubkey) -> event::BoardView {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         {
             let txn = Transaction::new(ndb).expect("txn");
@@ -1076,7 +1089,7 @@ fn wait_shared_board(ndb: &Ndb, board_addr: &str, team_pubkey: &Pubkey) -> event
 /// Poll `author`'s own board `slug` (async ingest) until it has folded in,
 /// returning the folded view. The own-board analogue of [`wait_shared_board`].
 fn wait_own_board(ndb: &Ndb, author: &Pubkey, slug: &str) -> event::BoardView {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         {
             let txn = Transaction::new(ndb).expect("txn");
@@ -1097,7 +1110,7 @@ fn wait_for_saved_slug(
     author: &Pubkey,
     slug: &str,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         let saved = {
@@ -1641,7 +1654,7 @@ fn snapshot_switcher_same_slug_boards() {
     // Open the switcher and wait until every joined board has been picked up and
     // listed: the own+shared `roadmap` once, and both same-slug `notes` boards.
     harness.get_by_label(SWITCHER_LABEL).simulate_click();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
         // `query_all_*` (unlike `get_all_*`) yields an empty iterator instead of
