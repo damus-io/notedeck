@@ -2213,7 +2213,7 @@ mod tests {
     async fn reorder_subissues_promotes_unsequenced_children_into_exact_order() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let view = wait_for_demo_seed(&t).await;
 
         // A parent with three children, all left unsequenced (creation order).
         t.apply(
@@ -2278,6 +2278,28 @@ mod tests {
     /// Columns: Backlog, Todo, In Progress, In Review, Done; cards 3 / 2 / 1 / 0 / 1.
     /// Seeded in the past so follow-up edits (stamped with the wall clock)
     /// always sort after it.
+    /// The demo seed, fully folded: all seven cards *and* the subject amendment
+    /// that renames the first backlog card.
+    ///
+    /// Both halves have to be waited on. `seed_demo_board` ingests seven cards and
+    /// then a subject edit renaming one of them, and the two land independently —
+    /// a run on CI folded the rename while only six cards were visible, failing
+    /// `seed_demo_materialises_cards` with left: 6, right: 7. Waiting on the
+    /// rename alone (which that test's comment claimed implied the cards) or on a
+    /// single column's count (which the rest did) leaves the remaining seed events
+    /// in flight, so a test that then adds or moves a card races the stragglers
+    /// and can see them land after its own edit.
+    async fn wait_for_demo_seed(t: &TestNdb) -> BoardView {
+        t.wait(|v| {
+            v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7
+                && v.columns[0]
+                    .cards
+                    .first()
+                    .is_some_and(|c| c.title == "Define nostr event model for boards")
+        })
+        .await
+    }
+
     fn seed_demo(t: &TestNdb) {
         seed_demo_board(
             &t.ndb,
@@ -2308,20 +2330,10 @@ mod tests {
         let t = TestNdb::new();
         seed_demo(&t);
 
-        // seed_demo_board renames the first backlog card ("Nostr event model" →
-        // "Define nostr event model for boards") via a subject edit ingested
-        // *after* all seven cards land. Waiting only for the card count would
-        // race that amendment, so wait for the renamed title itself — the
-        // amendment folds after every card, so its presence also implies all
-        // seven cards are here.
-        let view = t
-            .wait(|v| {
-                v.columns[0]
-                    .cards
-                    .first()
-                    .is_some_and(|c| c.title == "Define nostr event model for boards")
-            })
-            .await;
+        // Both halves of the seed, cards and the subject amendment that renames
+        // the first backlog card — neither implies the other (see
+        // `wait_for_demo_seed`).
+        let view = wait_for_demo_seed(&t).await;
         assert_eq!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 7);
         assert_eq!(view.columns[0].cards.len(), 3);
         // Done is the last column; the seeded "done" card lands there.
@@ -2333,7 +2345,7 @@ mod tests {
     async fn add_card_appends_to_column() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let view = wait_for_demo_seed(&t).await;
 
         t.apply(
             &view,
@@ -2354,7 +2366,7 @@ mod tests {
     async fn add_card_with_labels_tags_the_new_card() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let view = wait_for_demo_seed(&t).await;
 
         t.apply(
             &view,
@@ -2387,7 +2399,7 @@ mod tests {
     async fn add_card_with_description_sets_cover_note() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let view = wait_for_demo_seed(&t).await;
 
         // A non-empty description on `AddCard` should surface as the card's
         // description, exactly as a follow-up `EditDescription` would — proving
@@ -2424,7 +2436,7 @@ mod tests {
     async fn block_and_unblock_edit_the_dependency_set() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let mut view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let mut view = wait_for_demo_seed(&t).await;
 
         // Three fresh cards to wire edges between.
         for title in ["blocked", "dep one", "dep two"] {
@@ -2516,7 +2528,7 @@ mod tests {
     async fn relate_and_unrelate_edit_the_related_set() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let mut view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let mut view = wait_for_demo_seed(&t).await;
 
         // Three fresh cards to wire relations between.
         for title in ["hub", "sib one", "sib two"] {
@@ -2618,7 +2630,7 @@ mod tests {
     async fn declined_edge_edits_report_a_reason() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let mut view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let mut view = wait_for_demo_seed(&t).await;
 
         for title in ["first", "second", "third"] {
             t.apply(
@@ -2753,7 +2765,7 @@ mod tests {
 
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let view = wait_for_demo_seed(&t).await;
 
         // AddCard ingests two events — the issue and its placement — so the
         // publisher should see exactly two ready-to-send EVENT frames.
@@ -2787,7 +2799,7 @@ mod tests {
     async fn move_card_changes_column() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[0].cards.len() == 3).await;
+        let view = wait_for_demo_seed(&t).await;
 
         // Move a Backlog card into Done (the last column, which seeds one card).
         let done = view.columns.len() - 1;
@@ -2810,7 +2822,7 @@ mod tests {
     async fn edit_title_description_and_labels() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let view = wait_for_demo_seed(&t).await;
         // The second Todo card ("Column reordering") is seeded without labels,
         // so the SetLabels union below is exactly the two we add.
         let card = view.columns[1].cards[1].id;
@@ -2857,7 +2869,7 @@ mod tests {
     async fn add_comment_and_reply_fold_onto_the_card() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[1].cards.len() == 2).await;
+        let view = wait_for_demo_seed(&t).await;
         let card = view.columns[1].cards[0].id;
 
         // Top-level comment.
@@ -2919,7 +2931,7 @@ mod tests {
     async fn delete_card_removes_it() {
         let t = TestNdb::new();
         seed_demo(&t);
-        let view = t.wait(|v| v.columns[0].cards.len() == 3).await;
+        let view = wait_for_demo_seed(&t).await;
         let card = view.columns[0].cards[0].id;
 
         t.apply(&view, BoardAction::DeleteCard { card });
