@@ -543,6 +543,34 @@ fn snapshot_headway_graph_hover() {
     harness.snapshot("headway_graph_hover");
 }
 
+/// The dependency-graph view in its resting state: the demo epic's laid-out
+/// nodes and every blocking arrow between them, with nothing hovered. Locks in
+/// the layered auto-layout ([`notedeck_ui::graph::layout::layered_layout`]) and
+/// the node/edge drawing — the epic ("Define nostr event model for boards") owns
+/// the sync and scaffold sub-issues, and the seed's dependency chain pulls the
+/// epic itself in as an upstream *ghost* blocker of the sync card plus the
+/// card-detail card as a downstream ghost, so the frame exercises primary and
+/// ghost nodes, cleared (done) and open edges, and multiple ranks at once. The
+/// companion [`snapshot_headway_graph_hover`] captures the hover state (incident-
+/// edge highlight + connection handles) on top of this baseline.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_graph() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    // Open the epic's detail, then its dependency graph from the detail action —
+    // the same entry point the hover snapshot uses, minus the pointer move.
+    harness
+        .get_by_label("Define nostr event model for boards")
+        .simulate_click();
+    harness.run_steps(3);
+    harness
+        .get_by_label("⧉ View dependency graph")
+        .simulate_click();
+    harness.run_steps(3);
+    harness.snapshot("headway_graph");
+}
+
 /// A blocked card's detail shows its dependency edges: the demo seed blocks the
 /// sync card on the event-model card (open) and the scaffold card (in Done, so a
 /// *cleared*, struck-through blocker), so its detail carries a "Blocked by" list
