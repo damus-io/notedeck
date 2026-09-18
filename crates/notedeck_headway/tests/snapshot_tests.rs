@@ -1412,7 +1412,7 @@ fn opening_a_card_pushes_a_global_nav_entry() {
         "opening a card pushes exactly one global-nav entry"
     );
     assert_eq!(
-        pushed[0].card_id(),
+        pushed[0].selected_card(),
         Some(card),
         "push targets the clicked card"
     );
@@ -1532,7 +1532,7 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
             .top()
             .token
             .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.card_id()),
+            .and_then(|r| r.selected_card()),
         Some(card),
         "the pushed entry is the clicked card"
     );
@@ -1571,7 +1571,7 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
             .top()
             .token
             .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.card_id()),
+            .and_then(|r| r.selected_card()),
         Some(subissue),
         "the pushed entry is the subissue"
     );
@@ -1587,11 +1587,124 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
             .top()
             .token
             .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.card_id()),
+            .and_then(|r| r.selected_card()),
         Some(card),
         "back from the subissue returns to the parent card"
     );
 
+    stack.go_to_route(stack.len() - 2);
+    assert_eq!(stack.len(), 1, "a second back pops to the board root");
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_absent(&mut harness, "← Back");
+    assert!(
+        harness.query_by_label("7 cards · 5 columns").is_some(),
+        "back returns to the board grid"
+    );
+}
+
+/// Full chrome round-trip for the graph view (behavioural, no lavapipe): the same
+/// stack loop as [`chrome_nav_loop_card_open_then_back_returns_to_board`], but
+/// exercising the graph leg — opening an epic's card, then its dependency graph
+/// from the detail's "View dependency graph" action, pushes a `Graph` entry one
+/// level deeper than the card, and a global-back off the graph returns to the
+/// epic's detail (not straight to the board). This is the app-side proof that the
+/// graph joins the chrome global-nav stack as its own entry.
+#[test]
+fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
+    use notedeck::{AppId, ChromeNavEntry, NavRequest, NavStack};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+
+    let mut stack: NavStack<ChromeNavEntry> =
+        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+
+    // One chrome frame: draw the stack top via `render_nav`, pump the harness, then
+    // drain the app's queued nav requests into the stack exactly as
+    // `Chrome::apply_nav_requests` does. Mirrors the card-loop test's helper.
+    fn chrome_frame(
+        harness: &mut Harness<'static, HeadwayTestState>,
+        stack: &mut NavStack<ChromeNavEntry>,
+    ) {
+        harness.state_mut().nav_token = Some(stack.top().token.clone());
+        harness.run_ok();
+
+        let state = harness.state_mut();
+        let app_ctx = state.notedeck.app_context();
+        let active = stack.top().app;
+        for request in app_ctx.navigator.take() {
+            match request {
+                NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
+                NavRequest::Back => {
+                    stack.go_back();
+                }
+                _ => panic!("unexpected nav request kind from Headway"),
+            }
+        }
+    }
+
+    // Open the epic's card — it carries sub-issues, so its detail offers the graph.
+    const EPIC: &str = "Define nostr event model for boards";
+    let epic = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        demo_card_id(app_ctx.ndb, &author, EPIC)
+    };
+    chrome_frame(&mut harness, &mut stack);
+    harness.get_by_label(EPIC).simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 2, "opening the epic card grows the stack");
+    // Render the card detail and wait for its graph entry point.
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "⧉ View dependency graph");
+
+    // Click the graph entry point. It sets local graph mode, which the app diffs
+    // into a pushed `Graph` route — the stack grows to three, one deeper than the
+    // card, carrying the epic id.
+    harness
+        .get_by_label("⧉ View dependency graph")
+        .simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(
+        stack.len(),
+        3,
+        "opening the graph pushes an entry deeper than the epic card"
+    );
+    assert_eq!(
+        stack
+            .top()
+            .token
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(|r| r.graph_epic()),
+        Some(epic),
+        "the pushed entry is the epic's graph"
+    );
+
+    // Render the graph top: the graph view's breadcrumb ("· dependency graph")
+    // only exists in the graph top bar, so its presence proves the graph is up.
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "· dependency graph");
+
+    // Browser back from the graph returns to the epic's card (not the board): the
+    // popped entry is the `Card` route the graph was entered from.
+    stack.go_to_route(stack.len() - 2);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(
+        stack
+            .top()
+            .token
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(|r| r.selected_card()),
+        Some(epic),
+        "back from the graph returns to the epic card"
+    );
+    // The graph is gone and the epic's detail (with its graph entry point) is back.
+    wait_for_absent(&mut harness, "· dependency graph");
+    wait_for_label(&mut harness, "⧉ View dependency graph");
+
+    // A second back pops to the board root.
     stack.go_to_route(stack.len() - 2);
     assert_eq!(stack.len(), 1, "a second back pops to the board root");
     chrome_frame(&mut harness, &mut stack);

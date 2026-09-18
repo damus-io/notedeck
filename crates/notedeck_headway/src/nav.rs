@@ -13,9 +13,14 @@
 //! token. So it enqueues untagged via
 //! [`Navigator::push_active_route`](notedeck::Navigator::push_active_route) and
 //! the chrome stamps the active slot on drain (see the `push_active` primitive).
-//! Board↔card depth never exceeds one — a card→card swap
-//! [`replace`](notedeck::Navigator::replace_active_route)s in place rather than
-//! growing the stack — so a single global-back always returns to the board.
+//!
+//! The three view depths — board (root), a card's detail, and an epic's
+//! dependency [`Graph`](HeadwayRoute::Graph) — each push a new entry, so the
+//! global back/forward trail walks board → card → graph and back the same way a
+//! browser does. Drilling deeper always pushes (a card→card jump too, so back
+//! climbs from a sub-issue up to its parent); leaving a screen backs out one
+//! entry. The graph is entered from its epic's detail and carries that epic id,
+//! so a single global-back off the graph returns to the epic's card.
 
 use nostrdb_net::NoteId;
 
@@ -24,8 +29,9 @@ use nostrdb_net::NoteId;
 /// The chrome hands this back (as `Rc<dyn Any>`) to
 /// [`Headway::render_nav`](crate::Headway), which downcasts it to pick a render
 /// path: [`Board`](Self::Board) — or any unrecognized token, such as the `()` a
-/// plain app-switch entry carries — draws the board grid (the root), while
-/// [`Card`](Self::Card) draws that card's full-pane detail.
+/// plain app-switch entry carries — draws the board grid (the root),
+/// [`Card`](Self::Card) draws that card's full-pane detail, and
+/// [`Graph`](Self::Graph) draws an epic's dependency-graph view.
 pub enum HeadwayRoute {
     /// The board grid — the root view [`App::render`](notedeck::App::render)
     /// draws. A plain app-switch entry's `()` token renders identically.
@@ -47,6 +53,21 @@ pub enum HeadwayRoute {
         /// be resolved at push time, so the dropdown falls back to the app label.
         title: Option<String>,
     },
+
+    /// An epic's full-pane dependency-graph view, drilled into from that epic's
+    /// card detail. `render_nav` seeds both the graph mode *and* the underlying
+    /// card selection from `epic`, so a global-back off the graph lands on the
+    /// epic's detail rather than skipping straight to the board.
+    Graph {
+        /// The epic whose dependency graph this entry renders. Resolved live
+        /// against the freshly-folded board each frame, like a [`Card`](Self::Card).
+        epic: NoteId,
+
+        /// The epic's title *at the moment the graph was opened*, snapshotted for
+        /// [`nav_title`](notedeck::App::nav_title) exactly as a card's is — the
+        /// hook has no [`Ndb`](nostrdb::Ndb) handle to re-resolve through.
+        title: Option<String>,
+    },
 }
 
 impl HeadwayRoute {
@@ -55,19 +76,39 @@ impl HeadwayRoute {
         HeadwayRoute::Card { id, title }
     }
 
-    /// The card this route drills into, if it is a [`Card`](Self::Card).
-    pub fn card_id(&self) -> Option<NoteId> {
+    /// Build a [`Graph`](Self::Graph) route for `epic`, snapshotting `title`.
+    pub fn graph(epic: NoteId, title: Option<String>) -> Self {
+        HeadwayRoute::Graph { epic, title }
+    }
+
+    /// The card whose detail this route seeds as selected: a [`Card`](Self::Card)'s
+    /// own id, or a [`Graph`](Self::Graph)'s `epic` (so closing the graph returns to
+    /// the epic's detail). `None` for the board.
+    pub fn selected_card(&self) -> Option<NoteId> {
         match self {
             HeadwayRoute::Card { id, .. } => Some(*id),
+            HeadwayRoute::Graph { epic, .. } => Some(*epic),
             HeadwayRoute::Board => None,
         }
     }
 
-    /// The history-dropdown title for this entry: a card's snapshotted title, or
-    /// `None` for the board (so the chrome falls back to the "Headway" app label).
+    /// The epic whose dependency graph this route opens, if it is a
+    /// [`Graph`](Self::Graph).
+    pub fn graph_epic(&self) -> Option<NoteId> {
+        match self {
+            HeadwayRoute::Graph { epic, .. } => Some(*epic),
+            HeadwayRoute::Board | HeadwayRoute::Card { .. } => None,
+        }
+    }
+
+    /// The history-dropdown title for this entry: a card's or graph's snapshotted
+    /// title, or `None` for the board (so the chrome falls back to the "Headway"
+    /// app label).
     pub fn title(&self) -> Option<&str> {
         match self {
-            HeadwayRoute::Card { title, .. } => title.as_deref(),
+            HeadwayRoute::Card { title, .. } | HeadwayRoute::Graph { title, .. } => {
+                title.as_deref()
+            }
             HeadwayRoute::Board => None,
         }
     }
@@ -77,16 +118,30 @@ impl HeadwayRoute {
 mod tests {
     use super::*;
 
-    /// `card_id` yields the id only for the `Card` variant, so `Board` (and, by
-    /// the same `None`, any unrecognized token) drives the board-grid render path.
+    /// A `Card` route seeds its own id as the selection and opens no graph, so
+    /// `Board` (and, by the same `None`, any unrecognized token) drives the
+    /// board-grid render path with nothing selected.
     #[test]
-    fn card_id_only_matches_the_card_variant() {
-        assert!(HeadwayRoute::Board.card_id().is_none());
+    fn card_route_seeds_its_selection_only() {
+        assert!(HeadwayRoute::Board.selected_card().is_none());
+        assert!(HeadwayRoute::Board.graph_epic().is_none());
 
         let id = NoteId::new([7u8; 32]);
         let route = HeadwayRoute::card(id, Some("Fix the thing".to_string()));
-        assert_eq!(route.card_id(), Some(id));
+        assert_eq!(route.selected_card(), Some(id));
+        assert!(route.graph_epic().is_none());
         assert_eq!(route.title(), Some("Fix the thing"));
+    }
+
+    /// A `Graph` route opens the epic's graph *and* seeds the epic as the selected
+    /// card, so a global-back off the graph returns to the epic's detail.
+    #[test]
+    fn graph_route_seeds_both_graph_and_selection() {
+        let epic = NoteId::new([9u8; 32]);
+        let route = HeadwayRoute::graph(epic, Some("The epic".to_string()));
+        assert_eq!(route.graph_epic(), Some(epic));
+        assert_eq!(route.selected_card(), Some(epic));
+        assert_eq!(route.title(), Some("The epic"));
     }
 
     /// The board carries no per-entry title, so the chrome falls back to the app

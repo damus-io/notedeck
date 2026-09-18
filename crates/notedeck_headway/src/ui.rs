@@ -192,6 +192,20 @@ impl BoardUiState {
         self.graph_epic
     }
 
+    /// Seed whether the graph view is open from the chrome global-history route
+    /// this frame renders, the graph counterpart to [`set_selected`](Self::set_selected).
+    ///
+    /// Unlike [`open_graph`](Self::open_graph) this leaves
+    /// [`graph_scene_rect`](Self::graph_scene_rect) untouched, so re-visiting a
+    /// graph entry via back/forward keeps its pan/zoom — only a fresh open (the
+    /// detail entry-point button) reframes. Called at the top of each render pass
+    /// so a global back/forward/jump onto (or off) a graph entry is reflected
+    /// before the board draws; the UI may then close the graph, and the app diffs
+    /// the result back into a nav request.
+    pub fn set_graph_epic(&mut self, epic: Option<NoteId>) {
+        self.graph_epic = epic;
+    }
+
     /// The card whose detail is currently open, if any.
     ///
     /// The app diffs this against the [`selection it seeded from the nav
@@ -2472,11 +2486,12 @@ fn detail_body_ui(
     ui.add_space(SPACING_LG);
     detail_subissues_section_ui(ui, theme, ctx, state, outcome);
 
-    // A card with sub-issues is an epic, so offer its dependency graph. This is a
-    // temporary local trigger to make the new view reachable and testable; the
-    // proper epic entry point wired into chrome global nav is
-    // headway:headway/reopen-rug-oppose, which will replace this direct call with
-    // a pushed HeadwayRoute.
+    // A card with sub-issues is an epic, so offer its dependency graph. This is
+    // the epic entry point into the graph view: `open_graph` sets the local graph
+    // mode (and reframes the scene), which the app's `reconcile_nav` diffs into a
+    // pushed `HeadwayRoute::Graph` — exactly as a card click becomes a pushed
+    // `Card` entry — so opening the graph joins the chrome global-nav stack and a
+    // global-back returns to this epic's detail.
     if !ctx.subissues.is_empty() {
         ui.add_space(SPACING_MD);
         let graph_btn =

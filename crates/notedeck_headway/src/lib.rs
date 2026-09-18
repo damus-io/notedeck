@@ -689,22 +689,30 @@ impl App for Headway {
         self.render_board(ctx, ui)
     }
 
-    /// Draw one chrome global-history entry. Seeds the open-card selection from the
-    /// entry's route token — [`HeadwayRoute::Card`] ⇒ that card's full-pane detail,
-    /// [`Board`](HeadwayRoute::Board) or any unrecognized token (the `()` a plain
-    /// app-switch entry carries) ⇒ the board grid — so the nav stack, not stale
-    /// view-state, decides which screen shows. A global back/forward/jump is
-    /// honored here before the board draws.
+    /// Draw one chrome global-history entry. Seeds the view mode from the entry's
+    /// route token — [`HeadwayRoute::Card`] ⇒ that card's full-pane detail,
+    /// [`Graph`](HeadwayRoute::Graph) ⇒ that epic's dependency graph (with the epic
+    /// also seeded as the selected card underneath, so a back off the graph lands
+    /// on its detail), [`Board`](HeadwayRoute::Board) or any unrecognized token (the
+    /// `()` a plain app-switch entry carries) ⇒ the board grid — so the nav stack,
+    /// not stale view-state, decides which screen shows. A global back/forward/jump
+    /// is honored here before the board draws.
     fn render_nav(
         &mut self,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
         token: &Rc<dyn std::any::Any>,
     ) -> AppResponse {
-        let seed = token
-            .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.card_id());
-        self.state.set_selected(seed);
+        let route = token.downcast_ref::<HeadwayRoute>();
+        // Seed both dimensions from the route: the selected card (a `Graph`
+        // route seeds its epic here too) and, separately, whether the graph is
+        // open. Seeding graph mode via `set_graph_epic` rather than `open_graph`
+        // leaves the persisted scene rect untouched, so re-visiting a graph entry
+        // (back/forward) keeps its pan/zoom.
+        self.state
+            .set_selected(route.and_then(|r| r.selected_card()));
+        self.state
+            .set_graph_epic(route.and_then(|r| r.graph_epic()));
         self.render_board(ctx, ui)
     }
 
@@ -722,17 +730,21 @@ impl App for Headway {
 }
 
 impl Headway {
-    /// Render one board↔card view and reconcile the chrome global-history stack.
+    /// Render one board↔card↔graph view and reconcile the chrome global-history
+    /// stack.
     ///
-    /// The open card is whatever [`state.selected`](BoardUiState::selected) already
-    /// names — seeded from the nav route by [`render_nav`](Self::render_nav) in
-    /// production, or persisted across frames in a chrome-less embedding. The UI may
-    /// then move the selection (a card click, a detail close, a subissue swap); we
-    /// diff the result against where it started back into a nav request afterward —
-    /// board→card pushes, a card→card swap replaces in place (so depth never
-    /// exceeds one), and closing/deleting a card is a single global-back to the
-    /// board. The chrome fills in Headway's own [`AppId`](notedeck::AppId) on
-    /// drain, since `render_nav` never tells the app its own slot.
+    /// The open screen is whatever [`state.selected`](BoardUiState::selected) and
+    /// [`state.graph_epic`](BoardUiState::graph_epic) already name — seeded from the
+    /// nav route by [`render_nav`](Self::render_nav) in production, or persisted
+    /// across frames in a chrome-less embedding. The UI may then move (a card click,
+    /// a detail close, a subissue swap, opening or closing an epic's graph); we diff
+    /// the resulting [`NavPos`] against where it started into a nav request
+    /// afterward — a drill (board→card, card→card, card→graph) pushes a walkable
+    /// entry, and stepping shallower (close a card, close the graph) is a single
+    /// global-back. Card→card pushes rather than replaces so the back trail stays
+    /// walkable (see [`NavReconcile`]). The chrome fills in Headway's own
+    /// [`AppId`](notedeck::AppId) on drain, since `render_nav` never tells the app
+    /// its own slot.
     fn render_board(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let theme = ColorTheme::current(ui.ctx());
 
@@ -744,10 +756,11 @@ impl Headway {
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
-        // Snapshot the open card before the UI runs so we can diff the frame's
-        // board↔card move into a nav request afterward. In production this is the
-        // route `render_nav` just seeded; a cross-app `open` may override it below.
-        let before = self.state.selected();
+        // Snapshot the view position before the UI runs so we can diff the frame's
+        // board↔card↔graph move into a nav request afterward. In production this is
+        // the route `render_nav` just seeded; a cross-app `open` may override it
+        // below.
+        let before = NavPos::of(self.state.selected(), self.state.graph_epic());
 
         // Navigate to an entity a click elsewhere asked us to open (see `open`).
         self.process_pending_open(ctx, &author);
@@ -851,11 +864,12 @@ impl Headway {
         let sync = sync_status(ctx);
         let action = board_ui(ui, &theme, ctx, &view, &boards, sync, &mut self.state);
 
-        // Reconcile the chrome global-history stack with the selection the board UI
-        // left, comparing it against `before` (seeded from this entry's route). The
-        // card title is snapshotted from the freshly-folded `view` for the entry's
-        // history-dropdown label.
-        match reconcile_nav(before, self.state.selected()) {
+        // Reconcile the chrome global-history stack with the view position the board
+        // UI left, comparing it against `before` (seeded from this entry's route).
+        // The card/epic title is snapshotted from the freshly-folded `view` for the
+        // entry's history-dropdown label.
+        let after = NavPos::of(self.state.selected(), self.state.graph_epic());
+        match reconcile_nav(before, after) {
             // Opening a card — from the board, or drilling from one card into a
             // subissue/parent/blocker — pushes a new detail entry (the chrome tags
             // Headway's own slot on drain, since `render_nav` never told us our
@@ -865,11 +879,17 @@ impl Headway {
             // prior app so a global-back had nothing to return to. Pushing keeps a
             // browser-style trail — back walks from a subissue up to its parent and
             // on to the board.
-            Some(NavReconcile::Push(card)) => ctx
+            Some(NavReconcile::PushCard(card)) => ctx
                 .navigator
                 .push_active_route(HeadwayRoute::card(card, card_title(&view, card))),
-            // Leaving a card with none open (close, delete, or a card that vanished)
-            // steps one entry back in the global history.
+            // Opening an epic's dependency graph from its detail pushes a graph
+            // entry on top of the card — a sibling one level deeper — so a single
+            // global-back returns to the epic's detail.
+            Some(NavReconcile::PushGraph(epic)) => ctx
+                .navigator
+                .push_active_route(HeadwayRoute::graph(epic, card_title(&view, epic))),
+            // Leaving a card (close, delete, or a card that vanished) or closing the
+            // graph steps one entry back in the global history.
             Some(NavReconcile::Back) => ctx.navigator.back(),
             // Steady frame — nothing moved, so enqueue nothing (this doesn't spin).
             None => {}
@@ -1032,7 +1052,44 @@ fn placeholder_board(active: &event::BoardCoord, boards: &[BoardSummary]) -> Boa
     }
 }
 
-/// The chrome global-history request a board↔card selection change calls for,
+/// Which of Headway's three view depths a frame is showing, derived from the two
+/// [`BoardUiState`](ui::BoardUiState) fields the nav stack seeds: the open-graph
+/// epic and the selected card. The graph wins over the card when both are set (an
+/// epic's graph is entered from — and drawn over — its own detail), matching the
+/// order [`ui::board_ui`] renders them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavPos {
+    /// The board grid (root) — nothing selected, no graph open.
+    Board,
+    /// A card's full-pane detail.
+    Card(NoteId),
+    /// An epic's dependency-graph view.
+    Graph(NoteId),
+}
+
+impl NavPos {
+    /// Fold the `(selected, graph_epic)` state pair into the view position. The
+    /// graph takes precedence, mirroring the branch order in [`ui::board_ui`].
+    fn of(selected: Option<NoteId>, graph_epic: Option<NoteId>) -> Self {
+        match (graph_epic, selected) {
+            (Some(epic), _) => NavPos::Graph(epic),
+            (None, Some(card)) => NavPos::Card(card),
+            (None, None) => NavPos::Board,
+        }
+    }
+
+    /// Nesting depth: board (root) `0`, a card's detail `1`, an epic's graph `2`.
+    /// Drilling to a strictly greater depth pushes; stepping to a lesser one backs.
+    fn depth(&self) -> u8 {
+        match self {
+            NavPos::Board => 0,
+            NavPos::Card(_) => 1,
+            NavPos::Graph(_) => 2,
+        }
+    }
+}
+
+/// The chrome global-history request a board↔card↔graph transition calls for,
 /// decided by [`reconcile_nav`] and dispatched onto the [`Navigator`](notedeck::Navigator)
 /// in [`Headway::render_board`].
 #[derive(Debug, PartialEq, Eq)]
@@ -1041,29 +1098,39 @@ enum NavReconcile {
     /// subissue/parent/blocker jump). Both push a new detail entry: the `replace`
     /// primitive collapses the whole history rather than swapping the top, so a
     /// card→card drill pushes to keep a walkable back trail.
-    Push(NoteId),
-    /// The open card was dismissed (a close, a delete, or a card that vanished from
-    /// the folded view): step one entry back in the global history.
+    PushCard(NoteId),
+    /// An epic's dependency graph was opened from its detail: push a graph entry
+    /// one level deeper than the card.
+    PushGraph(NoteId),
+    /// The open screen was dismissed (a card close/delete/vanish, or the graph
+    /// closing back to its epic): step one entry back in the global history.
     Back,
 }
 
-/// Map a board↔card selection change to its chrome global-history request.
+/// Map a board↔card↔graph transition to its chrome global-history request.
 ///
-/// `before` is the open-card seeded from the entry's route this frame; `after` is
-/// what the board UI left after the user interacted. A frame that changed nothing
-/// yields `None`, so a steady detail view enqueues no request and the nav stack
-/// doesn't spin. Kept a pure function (no `egui`/`Ndb`) so the open ⇒ push /
-/// dismiss ⇒ back mapping is unit-tested on its own.
-fn reconcile_nav(before: Option<NoteId>, after: Option<NoteId>) -> Option<NavReconcile> {
-    // A steady frame (same card open, or the board still showing) moves nothing.
+/// `before` is the view position seeded from the entry's route this frame; `after`
+/// is what the board UI left after the user interacted. A frame that changed
+/// nothing yields `None`, so a steady view enqueues no request and the nav stack
+/// doesn't spin. Landing deeper (board→card, card→graph) — or drilling across at
+/// the same card depth (card→other-card) — pushes a walkable entry; stepping
+/// shallower (card→board, graph→card) backs out one. Kept a pure function (no
+/// `egui`/`Ndb`) so the mapping is unit-tested on its own.
+fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcile> {
+    // A steady frame (same screen still showing) moves nothing.
     if before == after {
         return None;
     }
     match after {
-        // Newly on a (different) card: push its detail entry.
-        Some(card) => Some(NavReconcile::Push(card)),
-        // Left the card with none open: back out one entry.
-        None => Some(NavReconcile::Back),
+        // The graph is only ever reachable from its epic's detail (one level
+        // deeper), so landing on it always pushes.
+        NavPos::Graph(epic) => Some(NavReconcile::PushGraph(epic)),
+        // Newly on a card that sits deeper than or level with where we started
+        // (board→card, or a card→card drill): push its detail. Reaching a card from
+        // *deeper* (graph→card) instead means the graph closed — that backs out.
+        NavPos::Card(card) if before.depth() <= after.depth() => Some(NavReconcile::PushCard(card)),
+        // Stepped to a shallower screen (card→board, or graph→card): back out one.
+        NavPos::Card(_) | NavPos::Board => Some(NavReconcile::Back),
     }
 }
 
@@ -1608,25 +1675,47 @@ mod tests {
     use notedeck_testing::fixtures::test_config;
     use std::time::{Duration, Instant};
 
-    /// The board↔card selection change → global-history request mapping (see
+    /// The board↔card↔graph transition → global-history request mapping (see
     /// [`reconcile_nav`]): opening a card from the board pushes, drilling from one
     /// card into another pushes too (a walkable trail — not a stack-collapsing
-    /// replace), and clearing the selection backs out — while a frame that left the
-    /// selection unchanged enqueues nothing.
+    /// replace), opening an epic's graph pushes one level deeper, and stepping to a
+    /// shallower screen backs out — while a frame that left the position unchanged
+    /// enqueues nothing.
     #[test]
-    fn reconcile_nav_maps_board_card_transitions() {
+    fn reconcile_nav_maps_board_card_graph_transitions() {
         let a = NoteId::new([1u8; 32]);
         let b = NoteId::new([2u8; 32]);
+        let board = NavPos::Board;
+        let card_a = NavPos::Card(a);
+        let card_b = NavPos::Card(b);
+        let graph_a = NavPos::Graph(a);
 
         // Steady frames — nothing moved — enqueue no request, so the stack doesn't
-        // spin while a board or a detail sits open.
-        assert_eq!(reconcile_nav(None, None), None);
-        assert_eq!(reconcile_nav(Some(a), Some(a)), None);
+        // spin while a board, detail, or graph sits open.
+        assert_eq!(reconcile_nav(board, board), None);
+        assert_eq!(reconcile_nav(card_a, card_a), None);
+        assert_eq!(reconcile_nav(graph_a, graph_a), None);
 
-        // Board → card and card → other-card both push; card → board backs out.
-        assert_eq!(reconcile_nav(None, Some(a)), Some(NavReconcile::Push(a)));
-        assert_eq!(reconcile_nav(Some(a), Some(b)), Some(NavReconcile::Push(b)));
-        assert_eq!(reconcile_nav(Some(a), None), Some(NavReconcile::Back));
+        // Board → card and card → other-card both push a detail entry.
+        assert_eq!(
+            reconcile_nav(board, card_a),
+            Some(NavReconcile::PushCard(a))
+        );
+        assert_eq!(
+            reconcile_nav(card_a, card_b),
+            Some(NavReconcile::PushCard(b))
+        );
+
+        // A card → its graph pushes a graph entry one level deeper.
+        assert_eq!(
+            reconcile_nav(card_a, graph_a),
+            Some(NavReconcile::PushGraph(a))
+        );
+
+        // Closing the graph steps back to the epic's card; closing the card steps
+        // back to the board.
+        assert_eq!(reconcile_nav(graph_a, card_a), Some(NavReconcile::Back));
+        assert_eq!(reconcile_nav(card_a, board), Some(NavReconcile::Back));
     }
 
     /// A headless harness driving a [`BoardCache`] against a bare `Ndb` — the
