@@ -804,6 +804,10 @@ fn graph_view_ui(
     let active_edge = theme.border_strong;
     let done_edge = theme.border_default.gamma_multiply(0.5);
 
+    // A node clicked this frame; opens that card's detail after the scene closes
+    // (we can't touch `state` while the closure borrows the graph and rects).
+    let mut open: Option<NoteId> = None;
+
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
@@ -829,12 +833,43 @@ fn graph_view_ui(
                 .unwrap_or_else(|| graph_bounds(&rects).unwrap_or(ui.available_rect_before_wrap()));
 
             egui::Scene::new().show(ui, &mut scene_rect, |ui| {
+                // Which node the pointer sits over, so its incident edges can be
+                // highlighted below. This is a geometric test in scene space, not
+                // egui hover: the edges are painted before the nodes are allocated,
+                // so their responses don't exist yet this frame. Project the global
+                // pointer through the scene's layer transform (mirroring notebook's
+                // handle hit-test) and test it against each node rect; scan topmost
+                // (last-drawn) first so an overlap resolves to the visible node.
+                let ptr = ui.ctx().pointer_latest_pos().map(|p| {
+                    ui.ctx()
+                        .layer_transform_from_global(ui.layer_id())
+                        .map_or(p, |t| t * p)
+                });
+                let hovered = ptr.and_then(|p| {
+                    (0..graph.nodes.len())
+                        .rev()
+                        .find(|&i| !graph.nodes[i].ghost && rects[i].contains(p))
+                });
+
                 // Edges first, under the nodes, so the arrowheads tuck beneath the
-                // boxes rather than painting over their borders.
+                // boxes rather than painting over their borders. While a node is
+                // hovered its incident edges jump to the accent colour and the rest
+                // recede, so the hovered card's dependencies read at a glance.
                 for edge in &graph.edges {
                     let (from_rect, to_rect) = (rects[edge.from], rects[edge.to]);
                     let (from_side, to_side) = edge_sides(from_rect, to_rect);
-                    let color = if edge.done { done_edge } else { active_edge };
+                    let incident = hovered == Some(edge.from) || hovered == Some(edge.to);
+                    let base = if edge.done { done_edge } else { active_edge };
+                    let color = match hovered {
+                        Some(_) if incident => theme.accent,
+                        Some(_) => base.gamma_multiply(0.35),
+                        None => base,
+                    };
+                    let width = if incident {
+                        notedeck_ui::graph::EDGE_STROKE * 1.6
+                    } else {
+                        notedeck_ui::graph::EDGE_STROKE
+                    };
                     notedeck_ui::graph::draw_edge(
                         ui.painter(),
                         from_rect,
@@ -842,7 +877,7 @@ fn graph_view_ui(
                         to_rect,
                         to_side,
                         color,
-                        egui::Stroke::new(notedeck_ui::graph::EDGE_STROKE, color),
+                        egui::Stroke::new(width, color),
                     );
                 }
 
@@ -858,7 +893,12 @@ fn graph_view_ui(
                         blocked: card.is_some_and(|c| c.is_blocked()),
                         ghost: node.ghost,
                     };
-                    graph_node_ui(ui, theme, rects[i], &node_view);
+                    let resp = graph_node_ui(ui, theme, rects[i], &node_view);
+                    // Clicking a node opens that card. Ghost context nodes aren't the
+                    // epic's own work (and may be off this board), so they stay inert.
+                    if resp.clicked() && !node.ghost {
+                        open = Some(node.id);
+                    }
                 }
             });
 
@@ -868,6 +908,15 @@ fn graph_view_ui(
     if close {
         state.graph_epic = None;
         state.graph_scene_rect = None;
+    }
+
+    // Open a clicked node's card: leave the graph and select the card so this
+    // frame's nav reconcile (see `reconcile_nav`) pushes its detail on top of the
+    // graph entry — a back then returns to the graph. The scene rect is left intact
+    // so returning keeps the graph's pan/zoom.
+    if let Some(card) = open {
+        state.graph_epic = None;
+        state.selected = Some(card);
     }
 
     // No board mutation yet; kept as `Option<BoardAction>` for a uniform branch.
@@ -4696,6 +4745,90 @@ mod tests {
             state.graph_scene_rect.is_some(),
             "first draw frames the graph into the scene rect"
         );
+    }
+
+    /// Clicking a node in the graph opens that card: the click lands on the node's
+    /// [`egui::Response`], which sets `selected` and closes graph mode so the frame's
+    /// nav reconcile (see `crate::reconcile_nav`) pushes the card's detail on top of
+    /// the graph. Drives a real click through the `egui::Scene`: accesskit reports
+    /// node boxes in scene-local space, so the click point is mapped to global
+    /// through the scene layer's `to_global` transform, and delivered as move-then-
+    /// press so egui resolves it against the node (see the node-interaction card
+    /// headway:headway/hybrid-blossom-menu).
+    #[test]
+    fn graph_node_click_selects_card_and_closes_graph() {
+        use egui_kittest::Harness;
+        use std::cell::RefCell;
+
+        // Epic E(1) owns A(2) and B(3); B is blocked by A — one internal edge.
+        let epic = graph_card(1, None, &[2, 3], &[]);
+        let a = graph_card(2, Some(1), &[], &[]);
+        let b = graph_card(3, Some(1), &[], &[2]);
+        let view = graph_board(vec![epic, a, b]);
+        let epic_id = NoteId::new([1u8; 32]);
+        let a_id = NoteId::new([2u8; 32]);
+
+        // Rebuild the model + layout the view uses so we know where node A lands in
+        // scene coordinates without scraping it back out of the render.
+        let graph = headway::graph::dependency_graph(&view, epic_id.bytes());
+        let edges: Vec<(usize, usize)> = graph.edges.iter().map(|e| (e.from, e.to)).collect();
+        let cfg = notedeck_ui::graph::layout::LayoutConfig {
+            node_size: GRAPH_NODE_SIZE,
+            ..Default::default()
+        };
+        let rects = notedeck_ui::graph::layout::layered_layout(graph.nodes.len(), &edges, &cfg);
+        let a_idx = graph
+            .nodes
+            .iter()
+            .position(|n| n.id == a_id)
+            .expect("A is one of the epic's nodes");
+        let a_center = rects[a_idx].center();
+
+        let state = RefCell::new(BoardUiState::default());
+        state.borrow_mut().open_graph(epic_id);
+
+        let mut harness = Harness::new_ui(|ui| {
+            let theme = ColorTheme::current(ui.ctx());
+            graph_view_ui(ui, &theme, &view, &mut state.borrow_mut());
+        });
+        // First frame seeds + settles the scene transform.
+        harness.run();
+
+        // Map A's scene-local centre to global through the scene layer transform.
+        let to_global = harness
+            .ctx
+            .memory(|m| {
+                m.to_global
+                    .values()
+                    .find(|t| **t != egui::emath::TSTransform::IDENTITY)
+                    .copied()
+            })
+            .unwrap_or(egui::emath::TSTransform::IDENTITY);
+        let target = to_global * a_center;
+
+        // Move onto the node first so egui resolves the following click against it.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(target));
+        harness.run();
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: target,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        harness.run();
+
+        let state = state.borrow();
+        assert_eq!(
+            state.selected(),
+            Some(a_id),
+            "clicking node A selects its card"
+        );
+        assert_eq!(state.graph_epic(), None, "opening a card leaves graph mode");
     }
 
     /// A blocker above the card it blocks anchors bottom→top; a back-edge (blocked

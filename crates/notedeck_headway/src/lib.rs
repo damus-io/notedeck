@@ -1113,9 +1113,10 @@ enum NavReconcile {
 /// is what the board UI left after the user interacted. A frame that changed
 /// nothing yields `None`, so a steady view enqueues no request and the nav stack
 /// doesn't spin. Landing deeper (board→card, card→graph) — or drilling across at
-/// the same card depth (card→other-card) — pushes a walkable entry; stepping
-/// shallower (card→board, graph→card) backs out one. Kept a pure function (no
-/// `egui`/`Ndb`) so the mapping is unit-tested on its own.
+/// the same card depth (card→other-card), or clicking a node in an epic's graph
+/// (graph→another-card) — pushes a walkable entry; stepping shallower (card→board,
+/// or the graph closing back to its own epic) backs out one. Kept a pure function
+/// (no `egui`/`Ndb`) so the mapping is unit-tested on its own.
 fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcile> {
     // A steady frame (same screen still showing) moves nothing.
     if before == after {
@@ -1125,11 +1126,21 @@ fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcile> {
         // The graph is only ever reachable from its epic's detail (one level
         // deeper), so landing on it always pushes.
         NavPos::Graph(epic) => Some(NavReconcile::PushGraph(epic)),
-        // Newly on a card that sits deeper than or level with where we started
-        // (board→card, or a card→card drill): push its detail. Reaching a card from
-        // *deeper* (graph→card) instead means the graph closed — that backs out.
-        NavPos::Card(card) if before.depth() <= after.depth() => Some(NavReconcile::PushCard(card)),
-        // Stepped to a shallower screen (card→board, or graph→card): back out one.
+        // Push a walkable card entry when opening a card that sits deeper than or
+        // level with where we started (board→card, or a card→card drill), OR when a
+        // node was clicked inside an epic's graph. That last step reads as *shallower*
+        // (graph→card) yet still pushes, because the graph entry stays on the stack
+        // beneath the opened card — a back returns to the graph, not past it. Closing
+        // the graph is the other graph→card step: it re-selects the epic itself
+        // (card == epic), the genuine back handled below.
+        NavPos::Card(card)
+            if before.depth() <= after.depth()
+                || matches!(before, NavPos::Graph(epic) if epic != card) =>
+        {
+            Some(NavReconcile::PushCard(card))
+        }
+        // Stepped to a shallower screen (card→board, or the graph closing back to its
+        // own epic): back out one.
         NavPos::Card(_) | NavPos::Board => Some(NavReconcile::Back),
     }
 }
@@ -1712,8 +1723,16 @@ mod tests {
             Some(NavReconcile::PushGraph(a))
         );
 
-        // Closing the graph steps back to the epic's card; closing the card steps
-        // back to the board.
+        // Clicking a node in an epic's graph opens *another* card: even though the
+        // card sits shallower than the graph, it pushes (the graph entry stays
+        // beneath, so a back returns to it).
+        assert_eq!(
+            reconcile_nav(graph_a, card_b),
+            Some(NavReconcile::PushCard(b))
+        );
+
+        // Closing the graph re-selects the epic's *own* card (graph_a → card_a), a
+        // genuine back; closing the card steps back to the board.
         assert_eq!(reconcile_nav(graph_a, card_a), Some(NavReconcile::Back));
         assert_eq!(reconcile_nav(card_a, board), Some(NavReconcile::Back));
     }

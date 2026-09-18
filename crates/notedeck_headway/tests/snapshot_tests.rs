@@ -495,6 +495,54 @@ fn snapshot_headway_subissue_detail() {
     harness.snapshot("headway_subissue_detail");
 }
 
+/// The dependency-graph view with a node hovered: the hovered card's incident
+/// edges brighten to the accent colour while the rest recede, and the node itself
+/// takes its hover border. Doubles as a rasterising regression guard for the
+/// graph's edge rendering (an open bezier fill panics the tessellator — see the
+/// shared `draw_edge` fix in `notedeck_ui`), which the non-rendering behavioural
+/// tests can't catch.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_graph_hover() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    // Open the epic's detail, then its dependency graph from the detail action.
+    harness
+        .get_by_label("Define nostr event model for boards")
+        .simulate_click();
+    harness.run_steps(3);
+    harness
+        .get_by_label("⧉ View dependency graph")
+        .simulate_click();
+    harness.run_steps(3);
+
+    // Hover the sync card's node so its incident edges highlight. The node lives
+    // inside an `egui::Scene`, so accesskit reports its box in scene-local space;
+    // map the box centre to global through the scene layer's `to_global` transform
+    // before moving the pointer there (the edge highlight is a geometric hit-test in
+    // scene space, so this positions it deterministically).
+    let bb = harness
+        .get_by_label("Sync cards across relays")
+        .bounding_box()
+        .expect("the graph node has an on-screen box");
+    let local = egui::pos2((bb.x0 + bb.x1) as f32 / 2.0, (bb.y0 + bb.y1) as f32 / 2.0);
+    let to_global = harness
+        .ctx
+        .memory(|m| {
+            m.to_global
+                .values()
+                .find(|t| **t != egui::emath::TSTransform::IDENTITY)
+                .copied()
+        })
+        .unwrap_or(egui::emath::TSTransform::IDENTITY);
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(to_global * local));
+    harness.run_steps(3);
+    harness.snapshot("headway_graph_hover");
+}
+
 /// A blocked card's detail shows its dependency edges: the demo seed blocks the
 /// sync card on the event-model card (open) and the scaffold card (in Done, so a
 /// *cleared*, struck-through blocker), so its detail carries a "Blocked by" list
