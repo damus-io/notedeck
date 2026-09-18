@@ -153,6 +153,13 @@ pub struct BoardUiState {
     /// thereafter it tracks the user's panning/zooming. Reset to `None` on each
     /// [`open_graph`](Self::open_graph) so a freshly opened epic re-frames.
     graph_scene_rect: Option<egui::Rect>,
+    /// The node a connect-drag is currently dragging a new blocking edge *from*,
+    /// kept across frames so its side handles are re-created (and the drag keeps
+    /// reporting) after the pointer leaves the source node — egui only promotes a
+    /// press to a `dragged()` once the threshold is crossed, by which point the
+    /// pointer has usually left the handle. Mirrors notebook's `connecting`.
+    /// Transient: cleared whenever the graph view is left.
+    graph_connecting: Option<NoteId>,
 }
 
 impl BoardUiState {
@@ -185,6 +192,7 @@ impl BoardUiState {
     pub fn open_graph(&mut self, epic: NoteId) {
         self.graph_epic = Some(epic);
         self.graph_scene_rect = None;
+        self.graph_connecting = None;
     }
 
     /// The epic whose dependency-graph view is open, if any.
@@ -601,6 +609,7 @@ pub fn board_ui(
         }
         state.graph_epic = None;
         state.graph_scene_rect = None;
+        state.graph_connecting = None;
     }
 
     // A selected card takes over the whole view as a full-pane detail screen,
@@ -769,10 +778,14 @@ pub fn board_ui(
 /// blocker) exactly like the detail sheet's per-frame fold. Node ids are node
 /// indices, so a layout [`Rect`] and its [`GraphNode`] share the loop index.
 ///
-/// Returns any [`BoardAction`] the view produced; today it never mutates the
-/// board (node/edge interactions land in later subissues), so it always returns
-/// `None`, but keeps `board_ui`'s branch contract uniform. Dismissing (back / ✕ /
-/// Escape) clears [`BoardUiState::graph_epic`], falling back to the epic's detail.
+/// Beyond viewing, the graph edits blocking edges directly: dragging from a
+/// node's side handle onto another node draws a `blocker → blocked` edge
+/// ([`BoardAction::Block`], cycle-/duplicate-filtered by [`graph_can_connect`]),
+/// and an edge's midpoint delete handle removes it ([`BoardAction::Unblock`]) —
+/// the same actions the detail pane's blocker editor drives, routed back through
+/// `board_ui`. Returns the edit produced this frame, or `None` on a frame that
+/// only panned/hovered/opened. Dismissing (back / ✕ / Escape) clears
+/// [`BoardUiState::graph_epic`], falling back to the epic's detail.
 #[profiling::function]
 fn graph_view_ui(
     ui: &mut egui::Ui,
@@ -807,6 +820,17 @@ fn graph_view_ui(
     // A node clicked this frame; opens that card's detail after the scene closes
     // (we can't touch `state` while the closure borrows the graph and rects).
     let mut open: Option<NoteId> = None;
+
+    // The blocking-edge edit this frame's interactions produced — a drag between
+    // two nodes (draw) or a click on an edge's delete handle (remove) — applied
+    // after the scene closes. Returned as this view's `BoardAction`.
+    let mut edit: Option<BoardAction> = None;
+
+    // The connect-drag in flight, read from state so its source node's handles
+    // stay live after the pointer leaves it. The scene closure refreshes it to the
+    // node still being dragged from (or none once the button releases).
+    let connecting = state.graph_connecting;
+    let mut next_connecting: Option<NoteId> = None;
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
@@ -870,7 +894,7 @@ fn graph_view_ui(
                     } else {
                         notedeck_ui::graph::EDGE_STROKE
                     };
-                    notedeck_ui::graph::draw_edge(
+                    let drawn = notedeck_ui::graph::draw_edge(
                         ui.painter(),
                         from_rect,
                         from_side,
@@ -879,6 +903,19 @@ fn graph_view_ui(
                         color,
                         egui::Stroke::new(width, color),
                     );
+
+                    // A midpoint delete handle removes the edge. Only offered when the
+                    // *blocked* endpoint is a live card on this board — that card's
+                    // blocker set is what an `Unblock` republishes, so a downstream
+                    // ghost (blocked card off this board) can't be edited from here.
+                    if !graph.nodes[edge.to].ghost
+                        && graph_edge_delete_ui(ui, theme, (edge.from, edge.to), &drawn)
+                    {
+                        edit = Some(BoardAction::Unblock {
+                            card: graph.nodes[edge.to].id,
+                            on: graph.nodes[edge.from].id,
+                        });
+                    }
                 }
 
                 // Nodes on top. Title/blocked come straight off the live card
@@ -900,14 +937,110 @@ fn graph_view_ui(
                         open = Some(node.id);
                     }
                 }
+
+                // Connection handles: dots on the sides of a node that draw a new
+                // blocking edge when dragged onto another node. Like notebook, they
+                // only appear on the node under the pointer and the node a drag is
+                // currently coming from, so they don't clutter the whole graph.
+                // Ghosts (context, possibly off-board) never sprout handles — they
+                // aren't the epic's own work to wire up.
+                let connecting_idx = connecting
+                    .and_then(|id| graph.nodes.iter().position(|n| n.id == id))
+                    .filter(|&i| !graph.nodes[i].ghost);
+                let handle_nodes = [hovered.filter(|&i| !graph.nodes[i].ghost), connecting_idx];
+                // The live drag this frame: (source node index, source side, pointer
+                // pos), and — separately — whether the button is merely held on a
+                // handle pre-threshold, so the source survives into next frame.
+                let mut dragging: Option<(usize, notedeck_ui::graph::Side, egui::Pos2)> = None;
+                let mut released: Option<(usize, egui::Pos2)> = None;
+                let mut pressed: Option<usize> = None;
+                for slot in 0..handle_nodes.len() {
+                    let Some(ni) = handle_nodes[slot] else {
+                        continue;
+                    };
+                    // Skip a node already handled in an earlier slot (hovered == connecting).
+                    if handle_nodes[..slot].iter().flatten().any(|&j| j == ni) {
+                        continue;
+                    }
+                    let rect = rects[ni];
+                    let id = graph.nodes[ni].id;
+                    for (si, side) in GRAPH_SIDES.iter().copied().enumerate() {
+                        let center = notedeck_ui::graph::side_point(side, rect);
+                        let hit = egui::Rect::from_center_size(
+                            center,
+                            egui::vec2(GRAPH_HANDLE_HIT, GRAPH_HANDLE_HIT),
+                        );
+                        let resp = ui.interact(
+                            hit,
+                            ui.id().with(("hw-graph-handle", id.bytes(), si)),
+                            egui::Sense::click_and_drag(),
+                        );
+                        graph_handle_ui(ui, theme, center, resp.hovered() || resp.dragged());
+                        if resp.is_pointer_button_down_on() {
+                            pressed = Some(ni);
+                        }
+                        let pos = resp.interact_pointer_pos();
+                        if resp.drag_stopped() {
+                            released = Some((ni, pos.unwrap_or(center)));
+                        } else if resp.dragged()
+                            && let Some(pos) = pos
+                        {
+                            dragging = Some((ni, side, pos));
+                        }
+                    }
+                }
+
+                // Preview an in-progress drag: a line from the source handle to the
+                // pointer, plus a highlight on the node it would legally land on.
+                if let Some((ni, side, pos)) = dragging {
+                    graph_connection_preview_ui(
+                        ui,
+                        theme,
+                        notedeck_ui::graph::side_point(side, rects[ni]),
+                        pos,
+                    );
+                    if let Some(ti) = graph_node_at(&graph.nodes, &rects, pos, graph.nodes[ni].id)
+                        .filter(|&ti| {
+                            graph_can_connect(view, graph.nodes[ni].id, graph.nodes[ti].id)
+                        })
+                    {
+                        ui.painter().rect_stroke(
+                            rects[ti],
+                            egui::CornerRadius::same(RADIUS_MD as u8),
+                            egui::Stroke::new(STROKE_MEDIUM, theme.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+
+                // A released drag that landed on a legal target draws the edge:
+                // the source is the blocker, the target the blocked card, so the
+                // arrow follows the drag (blocker → blocked), matching the layout.
+                if let Some((ni, pos)) = released {
+                    let from = graph.nodes[ni].id;
+                    if let Some(to) = graph_node_at(&graph.nodes, &rects, pos, from)
+                        .map(|ti| graph.nodes[ti].id)
+                        .filter(|&to| graph_can_connect(view, from, to))
+                    {
+                        edit = Some(BoardAction::Block { card: to, on: from });
+                    }
+                }
+
+                // Keep the source node's handles alive while its handle is dragged
+                // or merely held (pre-threshold); cleared once the button releases.
+                next_connecting = dragging
+                    .map(|(ni, _, _)| graph.nodes[ni].id)
+                    .or_else(|| pressed.map(|ni| graph.nodes[ni].id));
             });
 
             state.graph_scene_rect = Some(scene_rect);
+            state.graph_connecting = next_connecting;
         });
 
     if close {
         state.graph_epic = None;
         state.graph_scene_rect = None;
+        state.graph_connecting = None;
     }
 
     // Open a clicked node's card: leave the graph and select the card so this
@@ -916,11 +1049,14 @@ fn graph_view_ui(
     // so returning keeps the graph's pan/zoom.
     if let Some(card) = open {
         state.graph_epic = None;
+        state.graph_connecting = None;
         state.selected = Some(card);
     }
 
-    // No board mutation yet; kept as `Option<BoardAction>` for a uniform branch.
-    None
+    // Any blocking-edge edit (draw / remove) the interactions produced this frame,
+    // routed back through `board_ui` to `store::apply` like the detail pane's
+    // blocker editor. `None` on a frame that only panned/hovered/opened.
+    edit
 }
 
 /// The graph view's top bar: a back affordance and the epic's title as a
@@ -988,6 +1124,152 @@ fn graph_bounds(rects: &[egui::Rect]) -> Option<egui::Rect> {
         it.fold(first, |acc, r| acc.union(r))
             .expand(SPACING_LG * 2.0),
     )
+}
+
+/// The four sides a graph node's connection handles sit on. A fixed array so the
+/// handle loop can key each side's handle by its index.
+const GRAPH_SIDES: [notedeck_ui::graph::Side; 4] = [
+    notedeck_ui::graph::Side::Top,
+    notedeck_ui::graph::Side::Right,
+    notedeck_ui::graph::Side::Bottom,
+    notedeck_ui::graph::Side::Left,
+];
+/// Visible radius of a node's connection handle, in scene pixels.
+const GRAPH_HANDLE_RADIUS: f32 = 3.5;
+/// Click/drag target size of a connection handle — larger than it looks so it's
+/// easy to grab on a node's border, mirroring notebook's `HANDLE_HIT`.
+const GRAPH_HANDLE_HIT: f32 = 18.0;
+
+/// The topmost non-ghost node whose rect contains `pos`, other than `exclude` —
+/// where a connect-drag would land. Scans last-drawn first so an overlap resolves
+/// to the visible node, mirroring the hover hit-test. Ghosts are context (possibly
+/// off-board) and never a drop target.
+fn graph_node_at(
+    nodes: &[headway::graph::GraphNode],
+    rects: &[egui::Rect],
+    pos: egui::Pos2,
+    exclude: NoteId,
+) -> Option<usize> {
+    (0..nodes.len())
+        .rev()
+        .find(|&i| !nodes[i].ghost && nodes[i].id != exclude && rects[i].contains(pos))
+}
+
+/// Whether a blocking edge `blocker → blocked` may be drawn — the write path's
+/// rule ([`store::apply`]) pre-checked so an illegal drop is refused before it
+/// emits a [`BoardAction`] the reducer would decline. The *blocked* card must be a
+/// live card on this board (its blocker set is what an `Add` republishes), the
+/// edge must be new, and it mustn't close a dependency cycle
+/// ([`store::would_block_cycle`], which also rejects a self-edge). Mirrors the
+/// detail pane's blocker picker ([`card_blocker_menu`]).
+fn graph_can_connect(view: &BoardView, blocker: NoteId, blocked: NoteId) -> bool {
+    find_card(view, blocked).is_some_and(|(_, c)| !c.blocked_by.iter().any(|e| e.id == blocker))
+        && !crate::store::would_block_cycle(view, blocked, blocker)
+}
+
+/// Draw a node's connection handle: a small dot on a side that starts a blocking
+/// edge when dragged. Brightens and grows while grabbable or being dragged from,
+/// mirroring notebook's `connection_handle_ui`. Neutral-toned (the text palette)
+/// so it doesn't read as a stray accent dot on the graph.
+fn graph_handle_ui(ui: &egui::Ui, theme: &ColorTheme, center: egui::Pos2, active: bool) {
+    let (color, radius) = if active {
+        (theme.text_primary, GRAPH_HANDLE_RADIUS + 1.5)
+    } else {
+        (theme.text_muted, GRAPH_HANDLE_RADIUS)
+    };
+    let painter = ui.painter();
+    painter.circle_filled(center, radius, color);
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(1.0_f32, theme.surface_primary),
+    );
+}
+
+/// Draw an in-progress connect-drag: a line from the source handle to the pointer
+/// with a dot marking where the edge would land.
+fn graph_connection_preview_ui(
+    ui: &egui::Ui,
+    theme: &ColorTheme,
+    from: egui::Pos2,
+    to: egui::Pos2,
+) {
+    let painter = ui.painter();
+    painter.line_segment(
+        [from, to],
+        egui::Stroke::new(notedeck_ui::graph::EDGE_STROKE, theme.text_muted),
+    );
+    painter.circle_filled(to, GRAPH_HANDLE_RADIUS, theme.text_muted);
+}
+
+/// Draw and interact an edge's midpoint delete handle, returning `true` on the
+/// frame it's clicked. Like notebook's `edge_ui`, the handle only shows while the
+/// pointer is near the edge's *curve* (not just its bounding box) or over the
+/// handle itself, and reads as a subtle dot that turns into a red ✕ under the
+/// pointer. `key` (the edge's node-index pair) gives the interactions a stable id.
+fn graph_edge_delete_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    key: (usize, usize),
+    drawn: &notedeck_ui::graph::DrawnEdge,
+) -> bool {
+    // Hover the curve itself, not its (often large) bounding box: interact over the
+    // bounds for a pointer position, then measure distance to the flattened curve.
+    let bounds =
+        egui::Rect::from_points(&drawn.polyline).expand(notedeck_ui::graph::EDGE_HOVER_DIST);
+    let hover = ui.interact(
+        bounds,
+        ui.id().with(("hw-graph-edge", key)),
+        egui::Sense::hover(),
+    );
+    let over_edge = hover.hover_pos().is_some_and(|p| {
+        notedeck_ui::graph::dist_to_polyline(&drawn.polyline, p)
+            <= notedeck_ui::graph::EDGE_HOVER_DIST
+    });
+
+    let hit =
+        egui::Rect::from_center_size(drawn.mid, egui::vec2(GRAPH_HANDLE_HIT, GRAPH_HANDLE_HIT));
+    let resp = ui.interact(
+        hit,
+        ui.id().with(("hw-graph-edge-del", key)),
+        egui::Sense::click(),
+    );
+    if over_edge || resp.hovered() {
+        graph_edge_delete_handle_ui(ui.painter(), theme, drawn.mid, resp.hovered());
+    }
+    resp.clicked()
+}
+
+/// Draw an edge's midpoint delete handle: a faint dot at rest, a filled red circle
+/// with a white ✕ under the pointer (signalling a click removes the edge). Mirrors
+/// notebook's `edge_delete_handle_ui`, themed off [`ColorTheme::destructive`].
+fn graph_edge_delete_handle_ui(
+    painter: &egui::Painter,
+    theme: &ColorTheme,
+    center: egui::Pos2,
+    active: bool,
+) {
+    if active {
+        let radius = 8.0;
+        painter.circle_filled(center, radius, theme.destructive);
+        let d = radius * 0.45;
+        let cross = egui::Stroke::new(2.0_f32, egui::Color32::WHITE);
+        painter.line_segment(
+            [center + egui::vec2(-d, -d), center + egui::vec2(d, d)],
+            cross,
+        );
+        painter.line_segment(
+            [center + egui::vec2(-d, d), center + egui::vec2(d, -d)],
+            cross,
+        );
+    } else {
+        painter.circle_filled(center, 3.0, theme.text_muted);
+        painter.circle_stroke(
+            center,
+            3.0,
+            egui::Stroke::new(1.0_f32, theme.surface_primary),
+        );
+    }
 }
 
 /// Render the board chrome around a board whose contents haven't folded yet: the
@@ -4736,7 +5018,10 @@ mod tests {
         let mut harness = Harness::new_ui(|ui| {
             let theme = ColorTheme::current(ui.ctx());
             let action = graph_view_ui(ui, &theme, &view, &mut state);
-            assert!(action.is_none(), "graph view mutates nothing yet");
+            assert!(
+                action.is_none(),
+                "a plain render frame (no edge drag/delete) mutates nothing"
+            );
         });
         harness.run();
         drop(harness);
@@ -4829,6 +5114,214 @@ mod tests {
             "clicking node A selects its card"
         );
         assert_eq!(state.graph_epic(), None, "opening a card leaves graph mode");
+    }
+
+    /// [`graph_can_connect`] mirrors the write path: a new, acyclic edge to a live
+    /// on-board card is allowed; a duplicate, a self-edge, a cycle-closing edge, or
+    /// an edge into an unknown card is refused.
+    #[test]
+    fn graph_can_connect_matches_write_rule() {
+        // A(2) blocks B(3): B already has A as a blocker. C(4) is unconnected.
+        let a = graph_card(2, None, &[], &[]);
+        let b = graph_card(3, None, &[], &[2]);
+        let c = graph_card(4, None, &[], &[]);
+        let view = graph_board(vec![a, b, c]);
+        let a_id = NoteId::new([2u8; 32]);
+        let b_id = NoteId::new([3u8; 32]);
+        let c_id = NoteId::new([4u8; 32]);
+        let unknown = NoteId::new([9u8; 32]);
+
+        // A fresh acyclic edge C → A (A blocked by C) is fine.
+        assert!(graph_can_connect(&view, c_id, a_id));
+        // A → B already exists — refused as a duplicate.
+        assert!(!graph_can_connect(&view, a_id, b_id));
+        // B → A would close the A → B → A loop — refused as a cycle.
+        assert!(!graph_can_connect(&view, b_id, a_id));
+        // A self-edge is refused (would_block_cycle rejects card == on).
+        assert!(!graph_can_connect(&view, a_id, a_id));
+        // An edge into a card not on this board can't be edited here.
+        assert!(!graph_can_connect(&view, a_id, unknown));
+    }
+
+    /// Dragging from one node's side handle onto another node draws a blocking
+    /// edge: the source is the blocker, the target the blocked card, so the view
+    /// emits `Block { card: target, on: source }` — the same action the detail
+    /// pane's blocker picker drives. Drives a real drag through the `egui::Scene`,
+    /// mapping scene-local anchors to global through the layer transform and
+    /// delivering move → press → move → release (see the node-interaction card
+    /// headway:headway/hybrid-blossom-menu for the transform gotcha).
+    #[test]
+    fn graph_drag_draws_block_edge() {
+        use egui_kittest::Harness;
+        use std::cell::RefCell;
+
+        // Epic E(1) owns A(2), B(3), C(4) with no blockers — a legal A → C draw.
+        let epic = graph_card(1, None, &[2, 3, 4], &[]);
+        let a = graph_card(2, Some(1), &[], &[]);
+        let b = graph_card(3, Some(1), &[], &[]);
+        let c = graph_card(4, Some(1), &[], &[]);
+        let view = graph_board(vec![epic, a, b, c]);
+        let epic_id = NoteId::new([1u8; 32]);
+        let a_id = NoteId::new([2u8; 32]);
+        let c_id = NoteId::new([4u8; 32]);
+
+        // Rebuild the model + layout to find where A's handles and C sit.
+        let graph = headway::graph::dependency_graph(&view, epic_id.bytes());
+        let edges: Vec<(usize, usize)> = graph.edges.iter().map(|e| (e.from, e.to)).collect();
+        let cfg = notedeck_ui::graph::layout::LayoutConfig {
+            node_size: GRAPH_NODE_SIZE,
+            ..Default::default()
+        };
+        let rects = notedeck_ui::graph::layout::layered_layout(graph.nodes.len(), &edges, &cfg);
+        let idx = |id: NoteId| graph.nodes.iter().position(|n| n.id == id).unwrap();
+        let (a_idx, c_idx) = (idx(a_id), idx(c_id));
+        let c_center = rects[c_idx].center();
+        // Start the drag from A's handle nearest C, in scene-local space.
+        let a_handle = GRAPH_SIDES
+            .iter()
+            .map(|&s| notedeck_ui::graph::side_point(s, rects[a_idx]))
+            .min_by(|p, q| p.distance(c_center).total_cmp(&q.distance(c_center)))
+            .unwrap();
+
+        let state = RefCell::new(BoardUiState::default());
+        state.borrow_mut().open_graph(epic_id);
+        let captured: RefCell<Option<BoardAction>> = RefCell::new(None);
+
+        let mut harness = Harness::new_ui(|ui| {
+            let theme = ColorTheme::current(ui.ctx());
+            if let Some(action) = graph_view_ui(ui, &theme, &view, &mut state.borrow_mut()) {
+                *captured.borrow_mut() = Some(action);
+            }
+        });
+        harness.run();
+
+        let to_global = harness
+            .ctx
+            .memory(|m| {
+                m.to_global
+                    .values()
+                    .find(|t| **t != egui::emath::TSTransform::IDENTITY)
+                    .copied()
+            })
+            .unwrap_or(egui::emath::TSTransform::IDENTITY);
+        let from = to_global * a_handle;
+        let to = to_global * c_center;
+
+        // Hover the source handle so A's handles are laid out, then press it.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(from));
+        harness.run();
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.run();
+        // Drag across to C (crosses the drag threshold), then release on it.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(to));
+        harness.run();
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.run();
+
+        match captured.borrow().as_ref() {
+            Some(BoardAction::Block { card, on }) => {
+                assert_eq!(*card, c_id, "the blocked card is the drop target C");
+                assert_eq!(*on, a_id, "the blocker is the dragged source A");
+            }
+            _ => panic!("dragging A → C should emit a Block edge"),
+        }
+    }
+
+    /// Clicking an edge's midpoint delete handle removes that edge: the view emits
+    /// `Unblock { card: blocked, on: blocker }`, mirroring the detail pane's ✕.
+    #[test]
+    fn graph_edge_delete_handle_unblocks() {
+        use egui_kittest::Harness;
+        use std::cell::RefCell;
+
+        // Epic E(1) owns A(2) and B(3); B is blocked by A — one internal edge.
+        let epic = graph_card(1, None, &[2, 3], &[]);
+        let a = graph_card(2, Some(1), &[], &[]);
+        let b = graph_card(3, Some(1), &[], &[2]);
+        let view = graph_board(vec![epic, a, b]);
+        let epic_id = NoteId::new([1u8; 32]);
+        let a_id = NoteId::new([2u8; 32]);
+        let b_id = NoteId::new([3u8; 32]);
+
+        let graph = headway::graph::dependency_graph(&view, epic_id.bytes());
+        let edges: Vec<(usize, usize)> = graph.edges.iter().map(|e| (e.from, e.to)).collect();
+        let cfg = notedeck_ui::graph::layout::LayoutConfig {
+            node_size: GRAPH_NODE_SIZE,
+            ..Default::default()
+        };
+        let rects = notedeck_ui::graph::layout::layered_layout(graph.nodes.len(), &edges, &cfg);
+        let idx = |id: NoteId| graph.nodes.iter().position(|n| n.id == id).unwrap();
+        // The blocker (A) ranks above the blocked card (B): the edge leaves A's
+        // bottom for B's top, so its midpoint sits between them in the gap where no
+        // node occludes the delete handle (within its 18px hit of the true bezier
+        // midpoint).
+        let (a_idx, b_idx) = (idx(a_id), idx(b_id));
+        let top = rects[a_idx].center_bottom();
+        let bottom = rects[b_idx].center_top();
+        let mid = top + (bottom - top) * 0.5;
+
+        let state = RefCell::new(BoardUiState::default());
+        state.borrow_mut().open_graph(epic_id);
+        let captured: RefCell<Option<BoardAction>> = RefCell::new(None);
+
+        let mut harness = Harness::new_ui(|ui| {
+            let theme = ColorTheme::current(ui.ctx());
+            if let Some(action) = graph_view_ui(ui, &theme, &view, &mut state.borrow_mut()) {
+                *captured.borrow_mut() = Some(action);
+            }
+        });
+        harness.run();
+
+        let to_global = harness
+            .ctx
+            .memory(|m| {
+                m.to_global
+                    .values()
+                    .find(|t| **t != egui::emath::TSTransform::IDENTITY)
+                    .copied()
+            })
+            .unwrap_or(egui::emath::TSTransform::IDENTITY);
+        let target = to_global * mid;
+
+        // Hover the edge so the delete handle appears, then click it.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(target));
+        harness.run();
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: target,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        harness.run();
+
+        match captured.borrow().as_ref() {
+            Some(BoardAction::Unblock { card, on }) => {
+                assert_eq!(*card, b_id, "the unblocked card is the blocked endpoint B");
+                assert_eq!(*on, a_id, "the removed blocker is A");
+            }
+            _ => panic!("clicking the delete handle should emit an Unblock edge"),
+        }
     }
 
     /// A blocker above the card it blocks anchors bottom→top; a back-edge (blocked
