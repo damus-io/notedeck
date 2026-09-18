@@ -4065,6 +4065,137 @@ pub fn card_chip_ui(
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// The fixed on-screen size of a dependency-graph node box.
+///
+/// A graph node is drawn at a rect the layered layout hands it, so the layout
+/// has to know how much space to reserve *before* any node renders — it can't
+/// measure an immediate-mode widget ahead of time. Pinning the size to this
+/// constant (fed into [`notedeck_ui::graph::layout::LayoutConfig::node_size`])
+/// keeps the reserved rect and the drawn box in lockstep: every node is this big,
+/// so titles truncate rather than reflowing the graph. One text row plus the
+/// icon, the ⊘/title gaps, and the box's own margins fit inside the height.
+pub const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(220.0, 56.0);
+
+/// The display state of one dependency-graph node — everything
+/// [`graph_node_ui`] needs to paint a card as a positioned node, resolved by the
+/// caller from the graph model and board.
+///
+/// It is the render-time view of a [`headway::graph::GraphNode`]: `column` and
+/// `ghost` come straight off the model node, `title` is looked up from the board
+/// by the node's id, and `blocked` is [`CardView::is_blocked`] for that card.
+pub struct GraphNodeView<'a> {
+    /// The card's title, drawn (truncated) beside the status icon.
+    pub title: &'a str,
+    /// The card's live [`ColumnPos`], driving the Linear-style status circle and
+    /// the node's done/cleared recede. `None` (archived / off-board) draws the
+    /// unstarted backlog icon, mirroring [`card_chip_ui`].
+    pub column: Option<ColumnPos>,
+    /// The card is held back by an unfinished blocker ([`CardView::is_blocked`]);
+    /// leads the title with a dim ⊘, the same tell as [`card_ui`].
+    pub blocked: bool,
+    /// This node is a *ghost* — pulled into the graph only to anchor a
+    /// cross-subtree edge, not one of the epic's own cards. Drawn as recessed
+    /// context (muted surface, dimmed content, no hover affordance).
+    pub ghost: bool,
+}
+
+/// Draw a card as a graph node inside `rect` and return its (clickable) response.
+///
+/// The node reads like the inline [`card_chip_ui`] — the same status circle and
+/// title — but sits in a fixed [`GRAPH_NODE_SIZE`] box with a border so it holds
+/// its place in the laid-out graph, and it carries the two graph-only tells the
+/// chip has no room for: a leading ⊘ for a [`GraphNodeView::blocked`] card, and a
+/// recessed style for nodes that should stay out of the eye's way — *ghost*
+/// context nodes and *done* cards, so the unfinished critical path is what pops.
+///
+/// The returned [`egui::Response`] senses clicks for every node so a view can
+/// open the card; only non-ghost nodes get the hover border and pointing-hand
+/// cursor, since ghosts are context rather than the epic's own work.
+pub fn graph_node_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    rect: egui::Rect,
+    node: &GraphNodeView,
+) -> egui::Response {
+    let response = ui.allocate_rect(rect, egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    // Derive the status circle exactly as the inline chip does, so a node and a
+    // chip of the same card read identically; the last column is `Done`.
+    let icon = match node.column {
+        Some(pos) => StatusIcon::for_column(pos.index, pos.count),
+        None => StatusIcon::Backlog,
+    };
+    let done = matches!(icon, StatusIcon::Done);
+
+    // Ghost (out-of-subtree context) and cleared/done cards recede so the
+    // unfinished critical path stays the focus: ghosts get a muted surface and
+    // softer border, and both dim their content below.
+    let recede = node.ghost || done;
+    let fill = if node.ghost {
+        theme.surface_secondary
+    } else {
+        theme.surface_elevated
+    };
+    let border = if node.ghost {
+        theme.border_default.gamma_multiply(0.6)
+    } else {
+        theme.border_default
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(RADIUS_MD as u8),
+        fill,
+        egui::Stroke::new(STROKE_THIN, border),
+        egui::StrokeKind::Inside,
+    );
+
+    // Hover affordance for the epic's own cards only; ghosts stay inert.
+    if response.hovered() && !node.ghost {
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(RADIUS_MD as u8),
+            egui::Stroke::new(STROKE_MEDIUM, theme.border_strong),
+            egui::StrokeKind::Inside,
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    // Content: status icon, an optional ⊘, then the truncated title, laid out in
+    // a child clipped to the box's interior so a long title can't overflow it.
+    let mut content = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink(SPACING_SM))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    if recede {
+        content.set_opacity(0.55);
+    }
+    content.spacing_mut().item_spacing.x = SPACING_XS;
+    let row_height = content.text_style_height(&egui::TextStyle::Body);
+    let icon_size = (row_height * 0.85).round();
+    content.allocate_ui_with_layout(
+        egui::vec2(icon_size, row_height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            status_icon_ui(ui, theme, icon, icon_size);
+        },
+    );
+    if node.blocked {
+        content
+            .label(egui::RichText::new("⊘").small().color(theme.text_muted))
+            .on_hover_text("Blocked by unfinished work");
+    }
+    content.add(
+        egui::Label::new(egui::RichText::new(node.title).color(theme.text_primary))
+            .wrap_mode(egui::TextWrapMode::Truncate),
+    );
+
+    response
+}
+
 /// Render a single headway issue (kind 1621) from its *creation-time* snapshot:
 /// the subject, body and inline labels on the 1621 note itself, before any later
 /// rename/label/cover edits. Used only as a fallback for [`card_inline_ui`] when
@@ -4153,6 +4284,67 @@ mod tests {
 
     /// Board slug used by tests that don't care about reference parsing.
     const BOARD: &str = "headway";
+
+    /// Every node variant — plain, blocked, done, and ghost — renders through a
+    /// live frame without panicking and reports back exactly the fixed
+    /// [`GRAPH_NODE_SIZE`] rect it was handed, so the layout's reserved space and
+    /// the drawn box stay in lockstep. Exercises the whole paint path (status
+    /// icon, ⊘ glyph, recede opacity) the geometry alone can't.
+    #[test]
+    fn graph_node_renders_variants_at_its_rect() {
+        use egui_kittest::Harness;
+
+        let three = |idx: usize| {
+            Some(ColumnPos {
+                index: idx,
+                count: 3,
+            })
+        };
+        let cases = [
+            GraphNodeView {
+                title: "plain in-progress node",
+                column: three(1),
+                blocked: false,
+                ghost: false,
+            },
+            GraphNodeView {
+                title: "blocked node",
+                column: three(0),
+                blocked: true,
+                ghost: false,
+            },
+            GraphNodeView {
+                title: "done node recedes",
+                column: three(2),
+                blocked: false,
+                ghost: false,
+            },
+            GraphNodeView {
+                title: "off-board ghost node",
+                column: None,
+                blocked: false,
+                ghost: true,
+            },
+        ];
+
+        for node in &cases {
+            let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), GRAPH_NODE_SIZE);
+            let mut got = None;
+            let mut harness = Harness::new_ui(|ui| {
+                let theme = ColorTheme::current(ui.ctx());
+                got = Some(graph_node_ui(ui, &theme, rect, node).rect);
+            });
+            harness.run();
+            // Drop the harness so its closure releases its borrow of `got`.
+            drop(harness);
+            assert_eq!(
+                got.expect("node body always runs"),
+                rect,
+                "{}: node should occupy exactly the rect it was given",
+                node.title
+            );
+        }
+    }
 
     #[test]
     fn empty_filter_is_inactive_and_matches_all() {

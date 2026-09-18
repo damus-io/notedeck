@@ -15,7 +15,10 @@ mod ui;
 
 pub use nav::HeadwayRoute;
 use ui::{BoardNav, CardBoardOp, board_ui, card_title, empty_state};
-pub use ui::{BoardUiState, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
+pub use ui::{
+    BoardUiState, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui, card_inline_ui,
+    graph_node_ui, issue_inline_ui,
+};
 
 use event::{BoardReducer, BoardView};
 
