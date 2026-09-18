@@ -234,6 +234,46 @@ rebalance (future work).
   only freshly-arrived notes as an ndb subscription reports them (an incremental
   `reduce_delta`), so editing doesn't re-walk the event history every frame.
 
+## Dependency-graph view
+
+An **epic** (a card with sub-issues) has a full-pane **dependency-graph view**:
+its sub-issues drawn as nodes, with a directed arrow per blocking relationship
+(`from` blocks `to`). It is reached from the epic's card detail — the
+"⧉ View dependency graph" action — and joins the chrome global-nav stack as a new
+`HeadwayRoute::Graph` entry (opened via `BoardUiState::open_graph`), so a single
+global-back off the graph returns to the epic's card. See `nav.rs` for the route
+variant and `ui.rs` (`graph_view_ui`) for the view.
+
+The view is assembled from three pieces:
+
+- **Model** (`crates/headway/src/graph.rs`, `dependency_graph`) — a pure function
+  over a folded `BoardView` that produces the node set and directed blocking
+  edges. Nodes are the epic's sub-issue subtree (shared `traversal::work_order`);
+  a blocking edge that crosses the subtree pulls the outside card in as a *ghost*
+  node so the edge keeps both endpoints. Edges come only from
+  `blocked_by`/`blocks` — parent/sub-issue *containment* is conveyed by
+  membership, not drawn. No egui, no I/O.
+- **Layout** (`notedeck_ui::graph::layout::layered_layout`) — a layered
+  (Sugiyama-style) auto-layout: rank by longest path over the edges (roots on
+  top), order within a rank by a barycenter heuristic to reduce crossings, then
+  place. Deterministic — the same graph always yields the same rects — which is
+  what the `snapshot_headway_graph` test locks in. Notebook's canvas hand-places
+  every node; a dependency graph has no coordinates, so this derives them.
+- **Rendering** — nodes via `graph_node_ui` (a card chip in a fixed
+  `GRAPH_NODE_SIZE` box, ghosts and done cards receding), edges via the shared
+  `notedeck_ui::graph::draw_edge` (a cubic-bezier curve ending in a filled
+  arrowhead). Pan/zoom is an `egui::Scene`. Beyond viewing, the graph **edits**
+  edges directly: dragging from a node's side handle onto another node emits
+  `BoardAction::Block` (cycle-/duplicate-filtered by `graph_can_connect`, which
+  mirrors `store::would_block_cycle`), and an edge's hovered midpoint ✕ emits
+  `BoardAction::Unblock`.
+
+The edge/arrow geometry and the layout live in `notedeck_ui::graph` (not headway)
+because both this view and notebook's canvas draw directed edges between boxes;
+the module is egui-only (rects, sides, colors) and carries no board or jsoncanvas
+data, so each caller maps its own edge model onto it. See the notedeck_ui
+[component guide](../notedeck_ui/docs/components.md#graph-edges--layout).
+
 ## Source map
 
 - `src/event.rs` — the pure schema: builders, parsers, the reducer
@@ -245,6 +285,13 @@ rebalance (future work).
 - `src/lib.rs` — the `Headway` Notedeck `App`: `BoardSync` subscribes to the
   account's events and keeps a live reducer, folding new notes in incrementally;
   the app renders the cached `BoardView` and collects `BoardAction`s.
+- `crates/headway/src/graph.rs` — the pure dependency-graph **model**
+  (`dependency_graph`): node set + directed blocking edges off a `BoardView`. No
+  egui, no I/O.
+- `src/ui.rs` (`graph_view_ui`, `graph_node_ui`) and `src/nav.rs`
+  (`HeadwayRoute::Graph`) — the full-pane graph **view** and its global-nav route.
+  Edge/arrow drawing and the layered auto-layout are shared in
+  `notedeck_ui::graph`.
 
 Tracking issue: [damus-io/notedeck#1479][issue].
 
