@@ -142,6 +142,17 @@ pub struct BoardUiState {
     /// move lands, leaving two cards awaiting their move at once. Each entry is
     /// consumed when its move is observed (see [`start_move_anims`]).
     suppress_anim: HashSet<NoteId>,
+    /// The epic whose dependency-graph view is open, taking over the whole pane
+    /// like the card detail. `None` outside graph mode; set by
+    /// [`open_graph`](Self::open_graph) and checked before the detail branch in
+    /// [`board_ui`], so it wins the pane while it's set.
+    graph_epic: Option<NoteId>,
+    /// Persisted pan/zoom of the graph's [`egui::Scene`] (the scene-space region
+    /// shown in the pane), mirroring notebook's canvas `scene_rect`. `None` until
+    /// the graph first draws, when it is seeded to frame the whole laid-out graph;
+    /// thereafter it tracks the user's panning/zooming. Reset to `None` on each
+    /// [`open_graph`](Self::open_graph) so a freshly opened epic re-frames.
+    graph_scene_rect: Option<egui::Rect>,
 }
 
 impl BoardUiState {
@@ -163,6 +174,22 @@ impl BoardUiState {
     /// `detail_for` now differs from `selected`.
     pub fn open_card(&mut self, card: NoteId) {
         self.selected = Some(card);
+    }
+
+    /// Open the dependency-graph view for `epic`, taking over the whole pane
+    /// until it's dismissed. Resets the persisted scene rect so the newly opened
+    /// epic re-frames its graph rather than inheriting the last one's pan/zoom.
+    ///
+    /// The card the graph was entered from stays [`selected`](Self::selected), so
+    /// closing the graph returns to that card's detail rather than the board.
+    pub fn open_graph(&mut self, epic: NoteId) {
+        self.graph_epic = Some(epic);
+        self.graph_scene_rect = None;
+    }
+
+    /// The epic whose dependency-graph view is open, if any.
+    pub fn graph_epic(&self) -> Option<NoteId> {
+        self.graph_epic
     }
 
     /// The card whose detail is currently open, if any.
@@ -550,6 +577,18 @@ pub fn board_ui(
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
+    // A dependency-graph view takes over the whole pane like the detail screen,
+    // and wins over it while open (an epic's graph is entered from that epic's
+    // detail, which stays selected underneath). An epic that has left the board
+    // drops back to the grid rather than rendering an empty pane.
+    if let Some(epic) = state.graph_epic {
+        if find_card(view, epic).is_some() {
+            return graph_view_ui(ui, theme, view, state);
+        }
+        state.graph_epic = None;
+        state.graph_scene_rect = None;
+    }
+
     // A selected card takes over the whole view as a full-pane detail screen,
     // replacing the board grid until dismissed (back / ✕ / Escape). A selection
     // pointing at a card that no longer exists is dropped so we fall back to the
@@ -703,6 +742,189 @@ pub fn board_ui(
     archived_sheet_ui(ui, theme, view, state, &mut action);
 
     action
+}
+
+/// Render the epic's dependency graph as a full-pane, pannable/zoomable
+/// [`egui::Scene`]: the epic's cards as positioned [`graph_node_ui`] nodes, and a
+/// blocking arrow ([`notedeck_ui::graph::draw_edge`]) per dependency, laid out by
+/// the layered [`layout`](notedeck_ui::graph::layout::layered_layout).
+///
+/// The model ([`headway::graph::dependency_graph`]) and layout are rebuilt each
+/// frame off the freshly folded `view` — an epic's graph is small, and rebuilding
+/// keeps the drawing in lockstep with live board edits (a `headway move`, a new
+/// blocker) exactly like the detail sheet's per-frame fold. Node ids are node
+/// indices, so a layout [`Rect`] and its [`GraphNode`] share the loop index.
+///
+/// Returns any [`BoardAction`] the view produced; today it never mutates the
+/// board (node/edge interactions land in later subissues), so it always returns
+/// `None`, but keeps `board_ui`'s branch contract uniform. Dismissing (back / ✕ /
+/// Escape) clears [`BoardUiState::graph_epic`], falling back to the epic's detail.
+#[profiling::function]
+fn graph_view_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let epic = state.graph_epic?;
+
+    // Escape backs out. Consumed so it doesn't also fall through to Chrome's
+    // Escape handler (which would toggle the side menu), mirroring the detail pane.
+    let mut close = ui
+        .ctx()
+        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+
+    // Build the model and lay it out. `GRAPH_NODE_SIZE` overrides the layout's
+    // default box height so the reserved rect matches the drawn node exactly (the
+    // node renderer's landing note): a mismatch would leave gaps or overlaps.
+    let graph = headway::graph::dependency_graph(view, epic.bytes());
+    let edges: Vec<(usize, usize)> = graph.edges.iter().map(|e| (e.from, e.to)).collect();
+    let cfg = notedeck_ui::graph::layout::LayoutConfig {
+        node_size: GRAPH_NODE_SIZE,
+        ..Default::default()
+    };
+    let rects = notedeck_ui::graph::layout::layered_layout(graph.nodes.len(), &edges, &cfg);
+
+    // Cleared/done dependencies dim so the unfinished critical path is what pops;
+    // active ones use a strong line so the arrows read against the node borders.
+    let active_edge = theme.border_strong;
+    let done_edge = theme.border_default.gamma_multiply(0.5);
+
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(SPACING_LG as i8))
+        .show(ui, |ui| {
+            graph_topbar_ui(ui, theme, view, epic, &mut close);
+            ui.add_space(SPACING_SM);
+            ui.separator();
+            ui.add_space(SPACING_MD);
+
+            if graph.nodes.is_empty() {
+                ui.label(
+                    egui::RichText::new(
+                        "This epic has no sub-issues yet, so there's no dependency graph to show.",
+                    )
+                    .color(theme.text_muted),
+                );
+                return;
+            }
+
+            // Seed the scene to frame the whole graph on first open; thereafter the
+            // persisted rect follows the user's panning/zooming.
+            let mut scene_rect = state
+                .graph_scene_rect
+                .unwrap_or_else(|| graph_bounds(&rects).unwrap_or(ui.available_rect_before_wrap()));
+
+            egui::Scene::new().show(ui, &mut scene_rect, |ui| {
+                // Edges first, under the nodes, so the arrowheads tuck beneath the
+                // boxes rather than painting over their borders.
+                for edge in &graph.edges {
+                    let (from_rect, to_rect) = (rects[edge.from], rects[edge.to]);
+                    let (from_side, to_side) = edge_sides(from_rect, to_rect);
+                    let color = if edge.done { done_edge } else { active_edge };
+                    notedeck_ui::graph::draw_edge(
+                        ui.painter(),
+                        from_rect,
+                        from_side,
+                        to_rect,
+                        to_side,
+                        color,
+                        egui::Stroke::new(notedeck_ui::graph::EDGE_STROKE, color),
+                    );
+                }
+
+                // Nodes on top. Title/blocked come straight off the live card
+                // (borrowed, no per-frame clone); column/ghost off the model node.
+                // A ghost off this board has no card here — an empty title and an
+                // unstarted icon, which the node renderer already handles.
+                for (i, node) in graph.nodes.iter().enumerate() {
+                    let card = find_card(view, node.id).map(|(_, c)| c);
+                    let node_view = GraphNodeView {
+                        title: card.map(|c| c.title.as_str()).unwrap_or(""),
+                        column: node.column,
+                        blocked: card.is_some_and(|c| c.is_blocked()),
+                        ghost: node.ghost,
+                    };
+                    graph_node_ui(ui, theme, rects[i], &node_view);
+                }
+            });
+
+            state.graph_scene_rect = Some(scene_rect);
+        });
+
+    if close {
+        state.graph_epic = None;
+        state.graph_scene_rect = None;
+    }
+
+    // No board mutation yet; kept as `Option<BoardAction>` for a uniform branch.
+    None
+}
+
+/// The graph view's top bar: a back affordance and the epic's title as a
+/// breadcrumb, matching the detail pane's chrome. `close` is raised on back / ✕.
+fn graph_topbar_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    epic: NoteId,
+    close: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        let back = egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
+            .fill(egui::Color32::TRANSPARENT)
+            .frame(false);
+        if ui.add(back).clicked() {
+            *close = true;
+        }
+        ui.label(egui::RichText::new("›").color(theme.text_muted));
+        let title = card_title(view, epic);
+        ui.label(
+            egui::RichText::new(title.as_deref().unwrap_or("Dependency graph"))
+                .strong()
+                .color(theme.text_primary),
+        );
+        ui.label(
+            egui::RichText::new("· dependency graph")
+                .small()
+                .color(theme.text_muted),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
+                .fill(egui::Color32::TRANSPARENT)
+                .frame(false);
+            if ui.add(x).clicked() {
+                *close = true;
+            }
+        });
+    });
+}
+
+/// Pick which sides a dependency arrow anchors to, from the two laid-out node
+/// rects. Ranks stack downward, so a blocker normally sits above the card it
+/// blocks: the arrow leaves the blocker's bottom and enters the blocked card's
+/// top. A rare back-edge (blocked above blocker) flips so the arrow still runs
+/// the short way between the boxes.
+fn edge_sides(
+    from: egui::Rect,
+    to: egui::Rect,
+) -> (notedeck_ui::graph::Side, notedeck_ui::graph::Side) {
+    use notedeck_ui::graph::Side;
+    if to.center().y >= from.center().y {
+        (Side::Bottom, Side::Top)
+    } else {
+        (Side::Top, Side::Bottom)
+    }
+}
+
+/// The bounding rect of a laid-out graph, expanded by a margin so the framed
+/// scene doesn't crop the outermost nodes. `None` for an empty graph.
+fn graph_bounds(rects: &[egui::Rect]) -> Option<egui::Rect> {
+    let mut it = rects.iter().copied();
+    let first = it.next()?;
+    Some(
+        it.fold(first, |acc, r| acc.union(r))
+            .expand(SPACING_LG * 2.0),
+    )
 }
 
 /// Render the board chrome around a board whose contents haven't folded yet: the
@@ -2249,6 +2471,22 @@ fn detail_body_ui(
 
     ui.add_space(SPACING_LG);
     detail_subissues_section_ui(ui, theme, ctx, state, outcome);
+
+    // A card with sub-issues is an epic, so offer its dependency graph. This is a
+    // temporary local trigger to make the new view reachable and testable; the
+    // proper epic entry point wired into chrome global nav is
+    // headway:headway/reopen-rug-oppose, which will replace this direct call with
+    // a pushed HeadwayRoute.
+    if !ctx.subissues.is_empty() {
+        ui.add_space(SPACING_MD);
+        let graph_btn =
+            egui::Button::new(egui::RichText::new("⧉ View dependency graph").color(theme.accent))
+                .fill(egui::Color32::TRANSPARENT)
+                .frame(false);
+        if ui.add(graph_btn).clicked() {
+            state.open_graph(ctx.card_id);
+        }
+    }
 }
 
 /// The card's properties — status, labels, dependency edges, dates and the
@@ -4344,6 +4582,133 @@ mod tests {
                 node.title
             );
         }
+    }
+
+    /// A card with a distinct id (`n`), the given column placement, parent,
+    /// sub-issues and blockers — enough to fold a small dependency graph.
+    fn graph_card(
+        n: u8,
+        parent: Option<u8>,
+        subissues: &[u8],
+        blocked_by: &[u8],
+    ) -> event::CardView {
+        let eref = |m: &u8| event::EdgeRef {
+            id: NoteId::new([*m; 32]),
+            title: format!("card {m}"),
+            done: false,
+        };
+        let subv = |m: &u8| event::SubissueView {
+            id: NoteId::new([*m; 32]),
+            title: format!("card {m}"),
+            column: Some("backlog".to_string()),
+            done: false,
+            archived: false,
+            seq: None,
+        };
+        event::CardView {
+            id: NoteId::new([n; 32]),
+            author: [0u8; 32],
+            title: format!("card {n}"),
+            description: String::new(),
+            labels: vec![],
+            priority: headway::event::Priority::None,
+            due: None,
+            estimate: None,
+            rank: "m".to_string(),
+            seq: None,
+            placed_at: 0,
+            created_at: 0,
+            updated_at: 0,
+            comments: vec![],
+            activity: vec![],
+            parent: parent.map(|p| NoteId::new([p; 32])),
+            subissues: subissues.iter().map(subv).collect(),
+            blocked_by: blocked_by.iter().map(eref).collect(),
+            blocks: vec![],
+            related: vec![],
+        }
+    }
+
+    /// A one-column board holding `cards`, so the whole set folds and every card
+    /// resolves a live [`ColumnPos`].
+    fn graph_board(cards: Vec<event::CardView>) -> BoardView {
+        BoardView {
+            id: BOARD.to_string(),
+            author: [0u8; 32],
+            title: "b".to_string(),
+            description: String::new(),
+            created_at: 0,
+            columns: vec![ColumnView {
+                id: "backlog".to_string(),
+                name: "Backlog".to_string(),
+                cards,
+            }],
+            archived: vec![],
+        }
+    }
+
+    /// The assembled graph view renders an epic's chain through a live frame
+    /// without panicking and, on first draw, seeds the persisted scene rect so
+    /// pan/zoom carries across frames.
+    #[test]
+    fn graph_view_renders_and_seeds_scene() {
+        use egui_kittest::Harness;
+
+        // Epic E(1) owns A(2) and B(3); B is blocked by A — one internal edge.
+        let epic = graph_card(1, None, &[2, 3], &[]);
+        let a = graph_card(2, Some(1), &[], &[]);
+        let b = graph_card(3, Some(1), &[], &[2]);
+        let view = graph_board(vec![epic, a, b]);
+        let epic_id = NoteId::new([1u8; 32]);
+
+        let mut state = BoardUiState::default();
+        state.open_graph(epic_id);
+        assert_eq!(state.graph_epic(), Some(epic_id));
+        assert!(
+            state.graph_scene_rect.is_none(),
+            "scene rect unseeded on open"
+        );
+
+        let mut harness = Harness::new_ui(|ui| {
+            let theme = ColorTheme::current(ui.ctx());
+            let action = graph_view_ui(ui, &theme, &view, &mut state);
+            assert!(action.is_none(), "graph view mutates nothing yet");
+        });
+        harness.run();
+        drop(harness);
+
+        assert!(
+            state.graph_scene_rect.is_some(),
+            "first draw frames the graph into the scene rect"
+        );
+    }
+
+    /// A blocker above the card it blocks anchors bottom→top; a back-edge (blocked
+    /// above its blocker) flips to top→bottom so the arrow runs the short way.
+    #[test]
+    fn edge_sides_follow_rank_stacking() {
+        use notedeck_ui::graph::Side;
+        let upper = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), GRAPH_NODE_SIZE);
+        let lower = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), GRAPH_NODE_SIZE);
+        assert_eq!(edge_sides(upper, lower), (Side::Bottom, Side::Top));
+        assert_eq!(edge_sides(lower, upper), (Side::Top, Side::Bottom));
+    }
+
+    /// The framed scene bounds enclose every node with margin to spare, and an
+    /// empty layout frames nothing.
+    #[test]
+    fn graph_bounds_encloses_nodes() {
+        let rects = [
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), GRAPH_NODE_SIZE),
+            egui::Rect::from_min_size(egui::pos2(300.0, 200.0), GRAPH_NODE_SIZE),
+        ];
+        let bounds = graph_bounds(&rects).expect("non-empty layout has bounds");
+        assert!(bounds.contains_rect(rects[0]) && bounds.contains_rect(rects[1]));
+        assert!(
+            bounds.min.x < 0.0 && bounds.min.y < 0.0,
+            "expanded past the nodes"
+        );
+        assert!(graph_bounds(&[]).is_none(), "empty layout frames nothing");
     }
 
     #[test]
