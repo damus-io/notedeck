@@ -200,6 +200,351 @@ fn arrow_verts(side: Side, point: Pos2) -> [Pos2; 3] {
     }
 }
 
+/// Layered (Sugiyama-style) auto-layout for a directed acyclic graph, computing
+/// a [`Rect`] per node from the graph's blocking edges alone.
+///
+/// Notebook's canvas positions every node by hand; a dependency graph has no
+/// hand-placed coordinates, so this module derives them. It is pure geometry —
+/// plain node indices and `(from, to)` edge pairs in, a `Vec<Rect>` aligned to
+/// the input node order out — carrying no headway or jsoncanvas data, so a
+/// caller maps its own node model (e.g. `NoteId`s) onto `0..node_count` and
+/// reads its rects back by the same index.
+///
+/// The three classic phases:
+/// 1. **Rank** by longest path over the edges ([`rank_nodes`]): roots — nodes
+///    nothing in the set points at — sit at rank 0, everything else one past its
+///    deepest predecessor.
+/// 2. **Order** within each rank by a barycenter heuristic to reduce edge
+///    crossings.
+/// 3. **Place**: map `(rank, order)` to an `x`/`y` [`Rect`] with a configurable
+///    node size and inter-node / inter-rank gaps.
+pub mod layout {
+    use egui::{Pos2, Rect, Vec2};
+
+    /// Node size and spacing for [`layered_layout`]. Ranks stack down the `y`
+    /// axis (roots at the top); nodes within a rank spread along `x`.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct LayoutConfig {
+        /// Size of every node's box.
+        pub node_size: Vec2,
+        /// Horizontal gap between adjacent nodes in the same rank.
+        pub node_gap: f32,
+        /// Vertical gap between one rank and the next.
+        pub rank_gap: f32,
+        /// Top-left of the laid-out area; the whole graph is offset by this.
+        pub origin: Pos2,
+    }
+
+    impl Default for LayoutConfig {
+        fn default() -> Self {
+            LayoutConfig {
+                node_size: Vec2::new(220.0, 96.0),
+                node_gap: 32.0,
+                rank_gap: 64.0,
+                origin: Pos2::ZERO,
+            }
+        }
+    }
+
+    /// How many barycenter ordering sweeps to run. Crossing-reduction converges
+    /// fast; a handful of down/up passes is plenty and keeps the layout stable.
+    const ORDER_SWEEPS: usize = 4;
+
+    /// Assign every node a rank by longest path over the edges, where an edge
+    /// `(a, b)` means "a blocks b" so `a` is upstream of `b`. Roots — nodes with
+    /// no in-set predecessor — get rank 0; every other node gets one more than
+    /// its deepest predecessor's rank. Returns a rank per node, indexed `0..n`.
+    ///
+    /// The write path forbids block cycles within a board
+    /// (`store::would_block_cycle`), but a cross-board mutual edge could still
+    /// slip in, so this guards defensively: an edge that closes a cycle (a
+    /// back-edge into a node still being resolved) contributes nothing to the
+    /// rank, mirroring the visited-set discipline of the store's DFS traversal.
+    /// The layout is therefore always finite and never loops.
+    pub fn rank_nodes(node_count: usize, edges: &[(usize, usize)]) -> Vec<u32> {
+        let preds = predecessors(node_count, edges);
+        let mut rank = vec![None; node_count];
+        let mut resolving = vec![false; node_count];
+        for v in 0..node_count {
+            rank_of(v, &preds, &mut rank, &mut resolving);
+        }
+        // Every node is resolved to `Some` by the loop above.
+        rank.into_iter().map(|r| r.unwrap_or(0)).collect()
+    }
+
+    /// Longest-path rank of `v`, memoized into `rank`. `resolving[u]` marks a
+    /// node on the current DFS stack; a predecessor that is still resolving is a
+    /// back-edge (a cycle) and is skipped so the recursion always terminates.
+    fn rank_of(
+        v: usize,
+        preds: &[Vec<usize>],
+        rank: &mut [Option<u32>],
+        resolving: &mut [bool],
+    ) -> u32 {
+        if let Some(r) = rank[v] {
+            return r;
+        }
+        resolving[v] = true;
+        let mut best = 0;
+        for &u in &preds[v] {
+            if resolving[u] {
+                continue; // back-edge: ignore so a cycle can't loop
+            }
+            best = best.max(rank_of(u, preds, rank, resolving) + 1);
+        }
+        resolving[v] = false;
+        rank[v] = Some(best);
+        best
+    }
+
+    /// Predecessor adjacency: `preds[b]` lists every `a` with an edge `a -> b`.
+    fn predecessors(node_count: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
+        let mut preds = vec![Vec::new(); node_count];
+        for &(a, b) in edges {
+            if a < node_count && b < node_count && a != b {
+                preds[b].push(a);
+            }
+        }
+        preds
+    }
+
+    /// Lay a directed graph out in layers and return a [`Rect`] per node, indexed
+    /// to match the `0..node_count` node ids. `edges` are `(from, to)` pairs where
+    /// `from` blocks `to`; out-of-range indices and self-edges are ignored.
+    ///
+    /// Ranks stack downward (roots on top); within each rank nodes are ordered by
+    /// a barycenter heuristic to reduce crossings and then centered horizontally
+    /// so narrower ranks sit under the middle of wider ones. Determinism: equal
+    /// barycenters preserve input order (stable sort), so the same graph always
+    /// yields the same rects.
+    pub fn layered_layout(
+        node_count: usize,
+        edges: &[(usize, usize)],
+        cfg: &LayoutConfig,
+    ) -> Vec<Rect> {
+        if node_count == 0 {
+            return Vec::new();
+        }
+
+        let ranks = rank_nodes(node_count, edges);
+        let preds = predecessors(node_count, edges);
+        let succs = successors(node_count, edges);
+
+        // Group node ids by rank, in input order to start.
+        let max_rank = ranks.iter().copied().max().unwrap_or(0) as usize;
+        let mut rows: Vec<Vec<usize>> = vec![Vec::new(); max_rank + 1];
+        for (v, &r) in ranks.iter().enumerate() {
+            rows[r as usize].push(v);
+        }
+
+        order_rows(&mut rows, &preds, &succs);
+        place(&rows, node_count, cfg)
+    }
+
+    /// Successor adjacency: `succs[a]` lists every `b` with an edge `a -> b`.
+    fn successors(node_count: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
+        let mut succs = vec![Vec::new(); node_count];
+        for &(a, b) in edges {
+            if a < node_count && b < node_count && a != b {
+                succs[a].push(b);
+            }
+        }
+        succs
+    }
+
+    /// Reorder each rank's nodes to reduce edge crossings via barycenter sweeps:
+    /// down passes order a rank by the mean position of its predecessors in the
+    /// rank above, up passes by its successors in the rank below. A node with no
+    /// neighbour in the reference rank keeps its slot (stable sort on the current
+    /// position), so ordering stays deterministic.
+    fn order_rows(rows: &mut [Vec<usize>], preds: &[Vec<usize>], succs: &[Vec<usize>]) {
+        let node_count = preds.len();
+        for _ in 0..ORDER_SWEEPS {
+            for r in 1..rows.len() {
+                let pos = positions(rows, node_count);
+                sort_by_barycenter(&mut rows[r], preds, &pos);
+            }
+            for r in (0..rows.len().saturating_sub(1)).rev() {
+                let pos = positions(rows, node_count);
+                sort_by_barycenter(&mut rows[r], succs, &pos);
+            }
+        }
+    }
+
+    /// Position of each node within its own rank (its index in the row). Nodes in
+    /// no row (unreachable in practice) map to 0.
+    fn positions(rows: &[Vec<usize>], node_count: usize) -> Vec<f32> {
+        let mut pos = vec![0.0; node_count];
+        for row in rows {
+            for (i, &v) in row.iter().enumerate() {
+                pos[v] = i as f32;
+            }
+        }
+        pos
+    }
+
+    /// Stably sort a rank by each node's barycenter — the mean position of its
+    /// neighbours (`neigh[v]`) in the adjacent rank. Nodes with no neighbour keep
+    /// their current relative order.
+    fn sort_by_barycenter(row: &mut [usize], neigh: &[Vec<usize>], pos: &[f32]) {
+        // Snapshot each node's current slot so a node with no neighbour sorts on
+        // where it already is, leaving it put.
+        let current: Vec<f32> = (0..row.len()).map(|i| i as f32).collect();
+        let key = |v: usize, fallback: f32| -> f32 {
+            let ns = &neigh[v];
+            if ns.is_empty() {
+                fallback
+            } else {
+                ns.iter().map(|&u| pos[u]).sum::<f32>() / ns.len() as f32
+            }
+        };
+        let mut keyed: Vec<(f32, usize)> = row
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (key(v, current[i]), v))
+            .collect();
+        // Stable sort keeps equal barycenters in their prior order → deterministic.
+        keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for (slot, (_, v)) in keyed.into_iter().enumerate() {
+            row[slot] = v;
+        }
+    }
+
+    /// Turn ranked, ordered rows into a rect per node. Each rank is a horizontal
+    /// row; rows are centered against the widest rank so the graph is balanced.
+    fn place(rows: &[Vec<usize>], node_count: usize, cfg: &LayoutConfig) -> Vec<Rect> {
+        let step_x = cfg.node_size.x + cfg.node_gap;
+        let step_y = cfg.node_size.y + cfg.rank_gap;
+        let widest = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+
+        // A default rect for any node that somehow lands in no row; it never
+        // happens for `0..node_count`, but keeps the returned Vec fully populated.
+        let mut rects = vec![Rect::from_min_size(cfg.origin, cfg.node_size); node_count];
+        for (r, row) in rows.iter().enumerate() {
+            // Center this row under the widest one.
+            let offset = (widest - row.len()) as f32 * 0.5 * step_x;
+            let y = cfg.origin.y + r as f32 * step_y;
+            for (i, &v) in row.iter().enumerate() {
+                let x = cfg.origin.x + offset + i as f32 * step_x;
+                rects[v] = Rect::from_min_size(Pos2::new(x, y), cfg.node_size);
+            }
+        }
+        rects
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A blocking chain a -> b -> c -> d ranks as four descending layers.
+        #[test]
+        fn chain_ranks_descend() {
+            let ranks = rank_nodes(4, &[(0, 1), (1, 2), (2, 3)]);
+            assert_eq!(ranks, vec![0, 1, 2, 3]);
+        }
+
+        /// Fork/join: 0 blocks both 1 and 2, which both block 3 (the diamond).
+        /// 0 is the sole root (rank 0), 1 and 2 share rank 1, and 3 sits below
+        /// both at rank 2 by longest path.
+        #[test]
+        fn diamond_ranks_by_longest_path() {
+            let ranks = rank_nodes(4, &[(0, 1), (0, 2), (1, 3), (2, 3)]);
+            assert_eq!(ranks[0], 0);
+            assert_eq!(ranks[1], 1);
+            assert_eq!(ranks[2], 1);
+            assert_eq!(ranks[3], 2);
+        }
+
+        /// Longest path, not shortest: 0 -> 3 directly and 0 -> 1 -> 2 -> 3 both
+        /// reach 3, and 3 must rank past the *longest* of the two (3), not the
+        /// short hop (1).
+        #[test]
+        fn rank_takes_longest_path() {
+            let ranks = rank_nodes(4, &[(0, 3), (0, 1), (1, 2), (2, 3)]);
+            assert_eq!(ranks, vec![0, 1, 2, 3]);
+        }
+
+        /// A defensive cross-board mutual edge (0 <-> 1) must not loop; ranking
+        /// stays finite and every node still gets a rank.
+        #[test]
+        fn cycle_is_safe() {
+            let ranks = rank_nodes(2, &[(0, 1), (1, 0)]);
+            assert_eq!(ranks.len(), 2);
+            // Whichever way the back-edge is broken, both nodes are ranked and
+            // the result is small and finite.
+            assert!(ranks.iter().all(|&r| r < 2));
+        }
+
+        /// Disconnected nodes are all roots at rank 0.
+        #[test]
+        fn isolated_nodes_are_roots() {
+            let ranks = rank_nodes(3, &[]);
+            assert_eq!(ranks, vec![0, 0, 0]);
+        }
+
+        /// The chain places each node in its own rank, one full step below the
+        /// last, with no two rects overlapping.
+        #[test]
+        fn chain_layout_stacks_without_overlap() {
+            let cfg = LayoutConfig::default();
+            let rects = layered_layout(4, &[(0, 1), (1, 2), (2, 3)], &cfg);
+            assert_eq!(rects.len(), 4);
+
+            let step_y = cfg.node_size.y + cfg.rank_gap;
+            for w in rects.windows(2) {
+                assert!(
+                    (w[1].min.y - w[0].min.y - step_y).abs() < 0.01,
+                    "each rank should sit one step below the previous"
+                );
+            }
+            assert_no_overlap(&rects);
+        }
+
+        /// A wider graph still produces strictly non-overlapping boxes, including
+        /// the two siblings that share a rank.
+        #[test]
+        fn diamond_layout_no_overlap() {
+            let cfg = LayoutConfig::default();
+            let rects = layered_layout(4, &[(0, 1), (0, 2), (1, 3), (2, 3)], &cfg);
+            // Siblings 1 and 2 share a rank (same y) but different x.
+            assert!((rects[1].min.y - rects[2].min.y).abs() < 0.01);
+            assert!((rects[1].min.x - rects[2].min.x).abs() > 0.01);
+            assert_no_overlap(&rects);
+        }
+
+        /// Same graph, same rects — the barycenter ordering is deterministic.
+        #[test]
+        fn layout_is_deterministic() {
+            let cfg = LayoutConfig::default();
+            let edges = [(0, 1), (0, 2), (1, 3), (2, 4), (3, 5), (4, 5)];
+            let a = layered_layout(6, &edges, &cfg);
+            let b = layered_layout(6, &edges, &cfg);
+            assert_eq!(a, b);
+        }
+
+        /// An empty graph lays out to nothing.
+        #[test]
+        fn empty_graph() {
+            assert!(layered_layout(0, &[], &LayoutConfig::default()).is_empty());
+        }
+
+        /// No pair of rects overlaps (touching edges are allowed).
+        fn assert_no_overlap(rects: &[Rect]) {
+            for i in 0..rects.len() {
+                for j in (i + 1)..rects.len() {
+                    let a = rects[i];
+                    let b = rects[j];
+                    let disjoint = a.max.x <= b.min.x + 0.01
+                        || b.max.x <= a.min.x + 0.01
+                        || a.max.y <= b.min.y + 0.01
+                        || b.max.y <= a.min.y + 0.01;
+                    assert!(disjoint, "rects {i} {a:?} and {j} {b:?} overlap");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
