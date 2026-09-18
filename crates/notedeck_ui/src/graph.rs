@@ -105,8 +105,8 @@ pub struct DrawnEdge {
 /// Draw a directed edge between two boxes: a cubic-bezier curve from
 /// `from_rect`'s `from_side` to `to_rect`'s `to_side`, ending in a filled
 /// triangular arrowhead whose tip touches the target box. `color` fills the
-/// arrowhead and (for an open curve) is nominal; `stroke` draws the line.
-/// Returns the curve's midpoint and flattened polyline for the caller.
+/// arrowhead; `stroke` draws the line. Returns the curve's midpoint and
+/// flattened polyline for the caller.
 pub fn draw_edge(
     painter: &egui::Painter,
     from_rect: Rect,
@@ -117,7 +117,13 @@ pub fn draw_edge(
     stroke: Stroke,
 ) -> DrawnEdge {
     let EdgeCurve { points, to_anchor } = edge_curve(from_rect, from_side, to_rect, to_side);
-    let bezier = CubicBezierShape::from_points_stroke(points, false, color, stroke);
+    // The line is an *open* cubic bezier, so its fill must be transparent: the
+    // epaint tessellator panics ("fill a bezier path that is not closed") if
+    // handed a non-transparent fill on an unclosed path — which only surfaces
+    // once the shape is actually rasterized (a non-rendering test harness builds
+    // the shape but never tessellates it). The visible line is the `stroke`; the
+    // arrowhead is filled separately by `draw_arrow`.
+    let bezier = CubicBezierShape::from_points_stroke(points, false, Color32::TRANSPARENT, stroke);
 
     // The curve midpoint and flattened polyline, captured before the shape is
     // moved into the painter (used by the caller for a midpoint handle and
@@ -641,5 +647,40 @@ mod tests {
             });
             harness.run();
         }
+    }
+
+    /// Rasterizing regression for the "fill a bezier path that is not closed"
+    /// tessellator panic: [`draw_edge`]'s open curve must carry a transparent
+    /// fill. Unlike [`draw_edge_renders_line_and_arrow`], which uses a
+    /// non-rendering harness that builds the shape but never tessellates it, this
+    /// drives the software renderer so the bezier is actually rasterized — the
+    /// only path that trips the assert. lavapipe-gated like the app pixel
+    /// snapshots, so `#[ignore]`d under plain `cargo test` and run via
+    /// `scripts/snapshot-test`.
+    #[test]
+    #[ignore]
+    fn draw_edge_rasterizes_without_panicking() {
+        let from_rect = Rect::from_min_size(Pos2::new(20.0, 20.0), vec2(120.0, 80.0));
+        let to_rect = Rect::from_min_size(Pos2::new(20.0, 320.0), vec2(120.0, 80.0));
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(200.0, 440.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let color = ui.visuals().noninteractive().bg_stroke.color;
+                let stroke = Stroke::new(EDGE_STROKE, color);
+                draw_edge(
+                    ui.painter(),
+                    from_rect,
+                    Side::Bottom,
+                    to_rect,
+                    Side::Top,
+                    color,
+                    stroke,
+                );
+            });
+        harness.run();
+        // Rasterize: tessellates the shapes, which is exactly where the open
+        // curve panicked when it was given a non-transparent fill.
+        harness.render().expect("software render");
     }
 }
