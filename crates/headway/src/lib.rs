@@ -7,6 +7,9 @@
 //!
 //! - [`event`] — the pure schema: builders, parsers, and the reducer that folds
 //!   a set of nostr events into a [`event::BoardView`]. No I/O.
+//! - [`graph`] — the pure dependency-graph model: folds an epic's subtree +
+//!   blocking edges out of a [`event::BoardView`] into nodes + directed edges for
+//!   the graph view's layout and rendering. No egui.
 //! - [`store`] — sign + ingest into a local nostrdb, board seeding, and
 //!   [`store::apply`], which turns a [`store::BoardAction`] into events.
 //! - [`teams`] — the joined-shared-board roster: which SNS channels this account
@@ -14,6 +17,7 @@
 
 pub mod event;
 pub mod fmt;
+pub mod graph;
 pub mod store;
 /// Backstop for the tests' nostrdb-ingest waits (see
 /// [`nostrdb::SubscriptionStream::wait_for_notes`]). A local ingest commits in

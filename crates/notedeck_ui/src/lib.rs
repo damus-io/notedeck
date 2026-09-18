@@ -6,6 +6,7 @@ pub mod contacts_list;
 pub mod context_menu;
 pub mod debug;
 pub mod focus;
+pub mod graph;
 pub mod header;
 pub mod icons;
 pub mod images;

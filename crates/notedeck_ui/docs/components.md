@@ -16,6 +16,7 @@ This guide provides detailed documentation for the major UI components in the No
   - [Images](#images)
   - [GIF Animation](#gif-animation)
 - [Widgets & Utilities](#widgets--utilities)
+- [Graph edges & layout](#graph-edges--layout)
 
 ## Notes
 
@@ -319,3 +320,58 @@ if let Some(action) = NoteContextButton::menu(ui, resp) {
     // Handle context action
 }
 ```
+
+## Graph edges & layout
+
+The `notedeck_ui::graph` module provides the shared, **egui-only** pieces for
+drawing graph-style views — directed edges between boxes and a layered
+auto-layout for placing the boxes. Two very different callers use it: notebook's
+hand-placed canvas and headway's dependency-graph view. To stay reusable it
+carries **no** caller data (no jsoncanvas, no board model) — you map your own
+edge model onto plain `Rect`s, `Side`s, and colors.
+
+### Edges
+
+`draw_edge` draws one directed edge as an "Obsidian-style" cubic-bezier curve
+that ends in a filled triangular arrowhead whose tip touches the target box:
+
+```rust
+use notedeck_ui::graph::{draw_edge, Side, EDGE_STROKE};
+
+let stroke = egui::Stroke::new(EDGE_STROKE, color);
+let drawn = draw_edge(
+    ui.painter(),
+    from_rect, Side::Bottom,   // leave the source box's bottom…
+    to_rect,   Side::Top,      // …and enter the target box's top
+    color,                      // fills the arrowhead
+    stroke,                     // draws the curve
+);
+// `drawn.mid` is the curve midpoint (e.g. anchor a delete handle there);
+// `drawn.polyline` is the flattened curve for hover tests via `dist_to_polyline`
+// (paired with the `EDGE_HOVER_DIST` threshold).
+```
+
+The curve is an **open** bezier, so it must be filled `TRANSPARENT` (the visible
+line is the `stroke`, the arrowhead is filled separately) — a non-transparent
+fill on an unclosed path panics the epaint tessellator, and only when the shape
+is actually rasterized, so a non-rendering test harness won't catch it. Helpers
+`side_point`/`side_tangent` give a side's midpoint and outward normal.
+
+### Layout
+
+`graph::layout::layered_layout` computes a `Rect` per node from the blocking
+edges alone, for graphs with no hand-placed coordinates:
+
+```rust
+use notedeck_ui::graph::layout::{layered_layout, LayoutConfig};
+
+// Nodes are identified by index `0..node_count`; edges are `(from, to)` pairs
+// where `from` blocks `to`. The returned Vec is aligned to the node order.
+let cfg = LayoutConfig { node_size, ..Default::default() };
+let rects = layered_layout(node_count, &edges, &cfg);
+```
+
+Three classic Sugiyama phases: rank by longest path (roots on top), order within
+a rank by a barycenter heuristic to reduce crossings, then place. It is
+**deterministic** — equal barycenters keep input order — so the same graph always
+yields the same rects, and a cycle (a defensive back-edge) can't loop the ranking.

@@ -1,6 +1,6 @@
 use crate::editor::VaultDrag;
 use crate::{LiveGeometry, NEW_NODE_SIZE, NodeEdit, Notebook, UiIntent};
-use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
+use egui::{Color32, Pos2, Rect, Stroke, vec2};
 use jsoncanvas::{
     FileNode, GroupNode, JsonCanvas, LinkNode, Node, NodeId, TextNode,
     color::{Color, PresetColor},
@@ -8,8 +8,8 @@ use jsoncanvas::{
     node::GenericNode,
 };
 use notedeck::AppContext;
+use notedeck_ui::graph;
 use std::collections::HashMap;
-use std::ops::Neg;
 
 /// An in-progress edge-drawing gesture, dragged from a node's side handle. The
 /// payload is the same for both phases — only whether the drag is still live or
@@ -39,6 +39,17 @@ pub(crate) fn side_str(side: &Side) -> &'static str {
     }
 }
 
+/// Map a jsoncanvas [`Side`] onto the shared [`graph::Side`], so the edge/arrow
+/// geometry can live in `notedeck_ui` without depending on jsoncanvas.
+fn graph_side(side: &Side) -> graph::Side {
+    match side {
+        Side::Top => graph::Side::Top,
+        Side::Left => graph::Side::Left,
+        Side::Right => graph::Side::Right,
+        Side::Bottom => graph::Side::Bottom,
+    }
+}
+
 /// Visible radius of a node's connection handle, in canvas pixels.
 const HANDLE_RADIUS: f32 = 3.5;
 /// Click/drag target size of a connection handle (larger than it looks, so it's
@@ -55,19 +66,6 @@ const MIN_NODE_WIDTH: f32 = 80.0;
 /// never collapses to an ungrabbable sliver. The box can still render taller when
 /// its content needs more room (see [`Notebook::node_rect`]).
 const MIN_NODE_HEIGHT: f32 = 40.0;
-/// How close (canvas pixels) the pointer must be to an edge's curve to count as
-/// hovering it — the threshold that reveals the edge's midpoint delete handle.
-const EDGE_HOVER_DIST: f32 = 8.0;
-/// Stroke width of an edge's curve, in canvas pixels.
-const EDGE_STROKE: f32 = 2.0;
-/// Length of an edge's arrowhead, tip to base. Shared so the curve can end flush
-/// against the arrow's base rather than poking through its tip.
-const ARROW_LEN: f32 = 11.0;
-/// Width of an edge's arrowhead base.
-const ARROW_WIDTH: f32 = 9.0;
-/// How hard an edge's curve bows out from its anchors — the tangent handles are
-/// pulled this fraction of the anchor-to-anchor distance. ¼-ish feels "Obsidian".
-const EDGE_BEND: f32 = 0.28;
 
 /// The single pointer gesture a frame's [`egui::Scene`] closure resolves to.
 /// One pointer does one thing per frame, so these are mutually exclusive and
@@ -465,7 +463,7 @@ pub fn notebook_ui(
             }
             let rect = rects[nid];
             for side in sides() {
-                let center = side_point(&side, rect);
+                let center = graph::side_point(graph_side(&side), rect);
                 let hit = Rect::from_center_size(center, vec2(HANDLE_HIT, HANDLE_HIT));
                 let resp = ui.interact(
                     hit,
@@ -510,7 +508,7 @@ pub fn notebook_ui(
         if let Some(Gesture::Connect(Connect::Dragging { node, side, pos })) = &out.gesture
             && let Some(from_rect) = rects.get(node)
         {
-            connection_preview_ui(ui, side_point(side, *from_rect), *pos);
+            connection_preview_ui(ui, graph::side_point(graph_side(side), *from_rect), *pos);
             if let Some(target) = node_at(&rects, *pos, node) {
                 let target_rect = rects[target];
                 ui.painter().rect_stroke(
@@ -525,7 +523,11 @@ pub fn notebook_ui(
                 // Enlarge the anchor the edge would attach to, so it's clear
                 // which side the connection lands on before releasing.
                 let to_side = nearest_side(target_rect, *pos);
-                connection_handle_ui(ui, side_point(&to_side, target_rect), HandleState::Target);
+                connection_handle_ui(
+                    ui,
+                    graph::side_point(graph_side(&to_side), target_rect),
+                    HandleState::Target,
+                );
             }
         }
     });
@@ -867,25 +869,6 @@ fn scene_pointer_pos(ui: &egui::Ui) -> Option<Pos2> {
     )
 }
 
-fn side_point(side: &Side, rect: Rect) -> Pos2 {
-    match side {
-        Side::Top => rect.center_top(),
-        Side::Left => rect.left_center(),
-        Side::Right => rect.right_center(),
-        Side::Bottom => rect.center_bottom(),
-    }
-}
-
-/// a unit vector pointing outward from the given side
-fn side_tangent(side: &Side) -> egui::Vec2 {
-    match side {
-        Side::Top => vec2(0.0, -1.0),
-        Side::Bottom => vec2(0.0, 1.0),
-        Side::Left => vec2(-1.0, 0.0),
-        Side::Right => vec2(1.0, 0.0),
-    }
-}
-
 /// The topmost node whose rect contains `pos`, other than `exclude` — the node a
 /// connection drag would attach to on release. Iteration order is arbitrary, so
 /// overlapping nodes resolve to an unspecified one; good enough for picking a
@@ -950,78 +933,41 @@ fn connection_handle_ui(ui: &egui::Ui, center: Pos2, state: HandleState) {
 fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
     let color = ui.visuals().weak_text_color();
     let painter = ui.painter();
-    painter.line_segment([from, to], Stroke::new(EDGE_STROKE, color));
+    painter.line_segment([from, to], Stroke::new(graph::EDGE_STROKE, color));
     painter.circle_filled(to, 3.5, color);
-}
-
-/// The cubic-bezier control points of an edge plus where its arrowhead tip
-/// touches the target node. Pulled out of [`edge_ui`] so the geometry — in
-/// particular that the curve ends on the arrow's base centre, aligned with the
-/// arrow axis — can be unit-tested without a live frame.
-struct EdgeCurve {
-    /// Bezier control points: start, two tangent handles, end.
-    points: [Pos2; 4],
-    /// Where the arrowhead's tip sits, on the target node's side.
-    to_anchor: Pos2,
-}
-
-/// Compute an edge's curve from the two node rects and the sides it anchors to.
-///
-/// The curve ends on the arrow's *base centre* (a hair inside it so no seam
-/// shows), not at the box edge: the arrow's tip touches the box at `to_anchor`
-/// and its base sits [`ARROW_LEN`] out along the side's outward normal, so ending
-/// the curve there makes the line flow straight into the arrow instead of poking
-/// out through its tip. The end tangent runs along that same axis for the same
-/// reason.
-fn edge_curve(from_rect: Rect, from_side: &Side, to_rect: Rect, to_side: &Side) -> EdgeCurve {
-    let p0 = side_point(from_side, from_rect);
-    let to_anchor = side_point(to_side, to_rect);
-    let p3 = to_anchor + side_tangent(to_side) * (ARROW_LEN - 0.5);
-
-    // How far to pull the tangent handles out from each anchor.
-    let d = (p3 - p0).length() * EDGE_BEND;
-    let c1 = p0 + side_tangent(from_side) * d;
-    let c2 = p3 - side_tangent(to_side).neg() * d;
-
-    EdgeCurve {
-        points: [p0, c1, c2, p3],
-        to_anchor,
-    }
 }
 
 /// Render one edge as a bezier with an arrow, plus a small midpoint handle that
 /// deletes the edge when clicked. Returns a [`UiIntent::DisconnectEdge`] on the
-/// frame the handle is clicked.
+/// frame the handle is clicked. The curve/arrow geometry lives in
+/// [`notedeck_ui::graph`]; this only maps the jsoncanvas edge onto it and layers
+/// on the delete-handle interaction.
 pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) -> Option<UiIntent> {
     let from_rect = *rects.get(edge.from_node())?;
     let to_rect = *rects.get(edge.to_node())?;
     let to_side = edge.to_side()?;
     let from_side = edge.from_side()?;
 
-    let EdgeCurve { points, to_anchor } = edge_curve(from_rect, from_side, to_rect, to_side);
-
     let color = edge
         .color()
         .map(canvas_color)
         .unwrap_or_else(|| ui.visuals().noninteractive().bg_stroke.color);
-    let stroke = egui::Stroke::new(EDGE_STROKE, color);
-    let bezier = CubicBezierShape::from_points_stroke(points, false, color, stroke);
-
-    // The curve midpoint and flattened polyline, captured before the shape is
-    // moved into the painter (used for the midpoint handle and edge-hover test).
-    let mid = bezier.sample(0.5);
-    // Explicit tolerance: the default derives from the curve's horizontal span,
-    // which is zero for a vertical edge and trips a "tolerance must be positive"
-    // assert. Half a pixel is plenty fine for a hover-distance polyline.
-    let polyline = bezier.flatten(Some(0.5));
-    ui.painter().add(Shape::CubicBezier(bezier));
-    arrow_ui(ui, to_side, to_anchor, color);
+    let stroke = egui::Stroke::new(graph::EDGE_STROKE, color);
+    let graph::DrawnEdge { mid, polyline } = graph::draw_edge(
+        ui.painter(),
+        from_rect,
+        graph_side(from_side),
+        to_rect,
+        graph_side(to_side),
+        color,
+        stroke,
+    );
 
     // The edge is "hovered" when the pointer is close to the curve itself, not
     // just inside its (often large) bounding box. A hover-only interaction over
     // that box yields the pointer position; nodes drawn on top occlude it, so
     // hovering a node never counts as hovering the edge beneath it.
-    let bounds = Rect::from_points(&polyline).expand(EDGE_HOVER_DIST);
+    let bounds = Rect::from_points(&polyline).expand(graph::EDGE_HOVER_DIST);
     let hover = ui.interact(
         bounds,
         ui.id().with(("notebook_edge", edge.id().as_str())),
@@ -1029,7 +975,7 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     );
     let over_edge = hover
         .hover_pos()
-        .is_some_and(|p| dist_to_polyline(&polyline, p) <= EDGE_HOVER_DIST);
+        .is_some_and(|p| graph::dist_to_polyline(&polyline, p) <= graph::EDGE_HOVER_DIST);
 
     // Midpoint delete handle: only shown while the edge is hovered. It reads as a
     // subtle dot, turning into a red ✕ when the pointer is over the handle
@@ -1054,26 +1000,6 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     None
 }
 
-/// Shortest distance from `p` to a polyline (a flattened curve).
-fn dist_to_polyline(points: &[Pos2], p: Pos2) -> f32 {
-    points
-        .windows(2)
-        .map(|w| dist_to_segment(p, w[0], w[1]))
-        .fold(f32::INFINITY, f32::min)
-}
-
-/// Shortest distance from `p` to the line segment `a`–`b`.
-fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
-    let ab = b - a;
-    let len_sq = ab.length_sq();
-    let t = if len_sq <= f32::EPSILON {
-        0.0
-    } else {
-        ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
-    };
-    (p - (a + ab * t)).length()
-}
-
 /// Draw an edge's midpoint delete handle: a faint dot at rest, a filled red
 /// circle with a white ✕ when hovered (signalling a click removes the edge).
 fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
@@ -1092,52 +1018,6 @@ fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
             3.0,
             Stroke::new(1.0_f32, ui.visuals().extreme_bg_color),
         );
-    }
-}
-
-/// Paint a tiny triangular “arrow”.
-///
-/// * `ui`    – the egui `Ui` you’re painting in
-/// * `side`  – which edge of the box we’re attaching to
-/// * `point` – the exact spot on that edge the arrow’s tip should touch
-/// * `fill`  – colour to fill the arrow with (usually your popup’s background)
-pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32) {
-    let verts = arrow_verts(side, point);
-    ui.painter().add(egui::Shape::convex_polygon(
-        verts.to_vec(),
-        fill,
-        Stroke::new(1.0_f32, fill), // outline; matches the fill so it reads as solid
-    ));
-}
-
-/// The three vertices of an edge's arrowhead: `verts[0]` is the tip (at `point`,
-/// on the node's side), `verts[1]`/`verts[2]` are the base corners — [`ARROW_LEN`]
-/// out from the tip along the side's outward normal and [`ARROW_WIDTH`] apart.
-/// Their midpoint is the base centre, where the edge's curve should terminate.
-fn arrow_verts(side: &Side, point: Pos2) -> [Pos2; 3] {
-    let len = ARROW_LEN; // distance from tip to base
-    let half = ARROW_WIDTH * 0.5; // half the base width
-    match side {
-        Side::Top => [
-            point,                                    // tip
-            Pos2::new(point.x - half, point.y - len), // base‑left (above)
-            Pos2::new(point.x + half, point.y - len), // base‑right (above)
-        ],
-        Side::Bottom => [
-            point,
-            Pos2::new(point.x + half, point.y + len), // below
-            Pos2::new(point.x - half, point.y + len),
-        ],
-        Side::Left => [
-            point,
-            Pos2::new(point.x - len, point.y + half), // left
-            Pos2::new(point.x - len, point.y - half),
-        ],
-        Side::Right => [
-            point,
-            Pos2::new(point.x + len, point.y - half), // right
-            Pos2::new(point.x + len, point.y + half),
-        ],
     }
 }
 
@@ -1445,106 +1325,5 @@ mod tests {
             h < 400.0,
             "content height {h} should hug the one-line label, not the 400px box"
         );
-    }
-
-    /// The arrowhead bug that "looked broken": the curve's end didn't meet the
-    /// centre of the arrow's base, so the line poked out past the tip and the
-    /// head sat crooked on the line. Guard the geometry the renderer actually
-    /// uses — [`edge_curve`] (the line) and [`arrow_verts`] (the triangle) — for
-    /// every side an arrow can attach to: the line must terminate on the base
-    /// centre and approach it straight along the arrow's axis.
-    #[test]
-    fn arrowhead_base_centre_lines_up_with_curve() {
-        // Source box fixed; target box placed so the arrow side genuinely faces
-        // it, mirroring how edges are actually drawn.
-        let from_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(120.0, 80.0));
-        let cases = [
-            (Side::Right, Pos2::new(400.0, 20.0)),
-            (Side::Left, Pos2::new(-400.0, 20.0)),
-            (Side::Bottom, Pos2::new(20.0, 400.0)),
-            (Side::Top, Pos2::new(20.0, -400.0)),
-        ];
-
-        for (to_side, to_min) in cases {
-            let to_rect = Rect::from_min_size(to_min, vec2(120.0, 80.0));
-            let curve = edge_curve(from_rect, &Side::Right, to_rect, &to_side);
-            let verts = arrow_verts(&to_side, curve.to_anchor);
-
-            let base_centre = verts[1] + (verts[2] - verts[1]) * 0.5;
-            let line_end = curve.points[3];
-
-            // The line ends on the base centre (within the half-pixel inset that
-            // hides the seam) — not short of it and not poking through the tip.
-            let gap = (base_centre - line_end).length();
-            assert!(
-                gap <= 0.75,
-                "{to_side:?}: line end {line_end:?} not on arrow base centre \
-                 {base_centre:?} (gap {gap})"
-            );
-
-            // The line flows straight into the arrow: its incoming direction at
-            // the end runs along the arrow's axis (base centre -> tip), so the
-            // head reads as a continuation of the line rather than crooked.
-            let tip = verts[0];
-            let axis = (tip - base_centre).normalized();
-            let end_dir = (line_end - curve.points[2]).normalized();
-            let dot = axis.dot(end_dir);
-            assert!(
-                dot > 0.99,
-                "{to_side:?}: arrow axis {axis:?} not aligned with curve end \
-                 direction {end_dir:?} (dot {dot})"
-            );
-        }
-    }
-
-    /// Render a real edge (its actual bezier line plus arrowhead) through
-    /// [`edge_ui`] in a live frame, exercising the full paint/interaction path the
-    /// geometry test stops short of. Each case places the target on the facing
-    /// side; the vertical cases (same x-centre) are deliberate — a vertical edge
-    /// has zero horizontal span, which trips the curve-flattening tolerance unless
-    /// it's set explicitly. A clean run with no click means the edge draws without
-    /// panicking and reports no spurious disconnect.
-    #[test]
-    fn edge_ui_renders_line_and_arrow() {
-        // (from_side, to_side, target offset from the source). Bottom/Top share
-        // the source's x-centre, so those edges are exactly vertical.
-        let cases = [
-            (Side::Right, Side::Left, vec2(400.0, 0.0)),
-            (Side::Left, Side::Right, vec2(-400.0, 0.0)),
-            (Side::Bottom, Side::Top, vec2(0.0, 400.0)),
-            (Side::Top, Side::Bottom, vec2(0.0, -400.0)),
-        ];
-
-        for (from_side, to_side, offset) in cases {
-            let edge = Edge::new(
-                "edge1".parse().unwrap(),
-                "a".parse().unwrap(),
-                Some(from_side),
-                None,
-                "b".parse().unwrap(),
-                Some(to_side),
-                None,
-                None,
-                None,
-            );
-
-            let mut rects = HashMap::new();
-            rects.insert(
-                "a".parse().unwrap(),
-                Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(120.0, 80.0)),
-            );
-            rects.insert(
-                "b".parse().unwrap(),
-                Rect::from_min_size(Pos2::new(0.0, 0.0) + offset, vec2(120.0, 80.0)),
-            );
-
-            let mut harness = Harness::new_ui(|ui| {
-                assert!(
-                    edge_ui(ui, &rects, &edge).is_none(),
-                    "edge reported a disconnect without its handle being clicked"
-                );
-            });
-            harness.run();
-        }
     }
 }
