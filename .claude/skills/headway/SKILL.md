@@ -191,6 +191,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `move-board <card> --to <board>` | Move the card off this board onto another |
 | `board [id]` | Switch the current board to `id`, or (no arg) list boards and mark the current one |
 | `rename <title...>` | Rename the current board's display title (slug unchanged) |
+| `terminal <col> [on\|off]` | Mark a column as a "done" column, or clear it with `off` (see Terminal columns) |
 | `login <nsec>` | Store a signing key so later runs just work |
 | `logout` | Forget the stored signing key |
 
@@ -257,9 +258,10 @@ headway parent <card> <epic>    # make an existing card a subissue (or re-parent
 headway parent <card>           # omit the parent to detach
 ```
 
-Progress is **positional, not stored**: a child counts as done when it sits in
-the last column of its board (Done on the default board), or is archived.
-There is no checkbox to tick — moving the child card *is* the progress update.
+Progress is **derived, not stored**: a child counts as done when it sits in a
+**terminal** column of its board (see "Terminal columns" below — In Review and
+Done on the default board), or is archived. There is no checkbox to tick —
+moving the child card *is* the progress update.
 
 How it renders:
 
@@ -309,13 +311,14 @@ headway seq <card> --first --in dave    # make <card> the first board-root task
 headway seq <epic-child> --after <sib> --in <epic>   # order within an epic
 ```
 
-**What "ready" means.** A card is ready when it is *not done* (not sitting in the
-board's last column), *not blocked* (no `block` edge pointing at an unfinished
-card — see Dependencies), and *not a parent with unfinished subissues* (an epic's
-real work is its children, which are in the frontier themselves, so the epic card
-isn't dispatchable). Note a card in **In Review** still counts as ready/workable —
-only the last column (Done) reads as done — so `next` will resurface review-stage
-cards.
+**What "ready" means.** A card is ready when it is *not done* (not sitting in a
+**terminal** column — see "Terminal columns" below), *not blocked* (no `block`
+edge pointing at an unfinished card — see Dependencies), and *not a parent with
+unfinished subissues* (an epic's real work is its children, which are in the
+frontier themselves, so the epic card isn't dispatchable). On the default board
+both **In Review** and **Done** are terminal, so a card in review reads as done
+and `next` will *not* resurface it — matching an integration-test-at-the-end flow
+where review-stage work no longer blocks its dependents.
 
 **Ordering, and the priority caveat.** Within a container, members run in
 `seq`-order where a `seq` has been set, else creation order (the board root falls
@@ -324,6 +327,26 @@ priority is a human-facing label, not an input to the frontier. So a board where
 nobody has run `seq` has no real work-order: `next --ready` is just the board in
 default order, and you should judge the biggest win yourself rather than trust the
 first line. Curate with `seq` to make `next` meaningful.
+
+## Terminal columns: what counts as "done"
+
+Doneness — a card clearing its dependents, dropping out of the `next` frontier,
+and rendering as done (strikethrough, `n/m` rollups) — is decided by which
+**terminal** columns a board marks. A card in *any* terminal column is done.
+
+- On the **default board**, both **In Review** and **Done** are terminal. So a
+  card in review already counts as done: it stops blocking its dependents and
+  `next` won't resurface it. This suits an integration-test-at-the-end flow.
+- A board that marks **no** terminal column falls back to treating its **last**
+  column as terminal — the original behaviour, so older boards are unchanged.
+- Mark or clear the flag with `headway terminal <col> [on|off]`, which
+  republishes the board definition. Boards seeded before this feature carry no
+  marks (last-column fallback) until you opt a column in — e.g. `headway
+  --board work terminal in-review on`.
+
+`show --json` reports each column's `terminal` flag. Terminal is about doneness
+only; it doesn't merge or reorder columns — In Review and Done stay distinct
+lanes you move cards through.
 
 ## Dependencies: `block` / `unblock` (and `relate`)
 
@@ -355,9 +378,10 @@ error: refused: blocking <card> on <blocker> would create a dependency cycle (�
 `error: action produced no events (unknown card or column?)` remains only for
 edits the reducer genuinely couldn't resolve.
 
-A blocker is **cleared** the same positional way a subissue is done — when it
-sits in the last column of its board (Done), or is archived. There's nothing to
-tick: moving the blocker *is* the unblock.
+A blocker is **cleared** the same way a subissue is done — when it sits in a
+**terminal** column of its board (In Review or Done on the default board; see
+"Terminal columns" below), or is archived. There's nothing to tick: moving the
+blocker *is* the unblock.
 
 How it renders:
 
