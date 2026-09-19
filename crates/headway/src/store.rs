@@ -122,6 +122,10 @@ pub enum BoardAction {
     RemoveColumn { col: usize },
     /// Move the column at `from` to index `to`.
     MoveColumn { from: usize, to: usize },
+    /// Set (or clear) the *terminal* flag on the column at `col`. A terminal
+    /// column is a "done" column: cards there clear their dependents and leave
+    /// the ready frontier (see [`crate::event::ColumnDef::terminal`]).
+    SetColumnTerminal { col: usize, terminal: bool },
     /// Rename the board itself: republish its definition with a new display
     /// `title`, preserving the slug, columns, and description.
     RenameBoard { title: String },
@@ -1248,6 +1252,15 @@ pub fn apply(
             }
             let def = cols.remove(from);
             cols.insert(to, def);
+            republish_board(ndb, board_id, view, signer, &cols, publisher);
+        }
+        BoardAction::SetColumnTerminal { col, terminal } => {
+            let mut cols = column_defs(view);
+            let def = cols.get_mut(col)?;
+            if def.terminal == terminal {
+                return None;
+            }
+            def.terminal = terminal;
             republish_board(ndb, board_id, view, signer, &cols, publisher);
         }
         BoardAction::RenameBoard { title } => {

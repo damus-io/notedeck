@@ -193,6 +193,13 @@ enum Command {
     Rename {
         title: String,
     },
+    /// Mark a column terminal (a "done" column) or clear the flag. A card in a
+    /// terminal column clears its dependents and drops out of the `next`
+    /// frontier. Republishes the board definition.
+    Terminal {
+        col: String,
+        terminal: bool,
+    },
     Login {
         nsec: String,
     },
@@ -293,6 +300,7 @@ impl Command {
             Command::Seed { .. }
             | Command::Migrate
             | Command::Rename { .. }
+            | Command::Terminal { .. }
             | Command::Board { .. }
             | Command::Login { .. }
             | Command::Logout => {}
@@ -878,6 +886,10 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             card: resolve_card(view, &card)?,
         },
         Command::Rename { title } => BoardAction::RenameBoard { title },
+        Command::Terminal { col, terminal } => BoardAction::SetColumnTerminal {
+            col: resolve_col(view, &col)?,
+            terminal,
+        },
         Command::Show { .. }
         | Command::Next { .. }
         | Command::Seed { .. }
@@ -2224,6 +2236,18 @@ fn parse_command(
         "rename" => Command::Rename {
             title: joined(rest, 0, name)?,
         },
+        // `terminal <col> [on|off]` — mark a column as a "done" column, or clear
+        // it with `off`. Defaults to `on` when the state is omitted.
+        "terminal" => Command::Terminal {
+            col: arg(rest, 0, name)?,
+            terminal: match rest.get(1).map(String::as_str) {
+                None | Some("on" | "true" | "yes") => true,
+                Some("off" | "false" | "no") => false,
+                Some(other) => {
+                    return Err(format!("terminal state must be on/off, got '{other}'").into());
+                }
+            },
+        },
         "board" => Command::Board {
             id: rest.first().cloned(),
         },
@@ -2320,6 +2344,8 @@ COMMANDS:
     move-board <card> --to <b> Move a card from this board to another board
     rename <title...>          Rename the current board's display title (slug
                                unchanged)
+    terminal <col> [on|off]    Mark a column as \"done\" (clears dependents, drops
+                               out of `next`), or clear it with `off`
     board [id]                 Switch the current board to <id>, or list boards
                                and mark the current one
     login <nsec>               Store a signing key for later runs
