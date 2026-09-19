@@ -3219,14 +3219,16 @@ fn subissue_row_ui(
         // The grip is a separate drag source so the title link's click-to-open
         // stays untouched.
         subissue_drag_handle(ui, theme, sub.id);
-        // The child's status circle, derived from the board so it can never go
-        // stale. Off-board children fall back to a todo ring.
-        let icon = if sub.done || sub.archived {
-            StatusIcon::Done
-        } else {
-            sub.col_idx
-                .map(|i| StatusIcon::for_column(i, ctx.columns.len()))
-                .unwrap_or(StatusIcon::Todo)
+        // The child's status circle shows its *true* column status: a child in a
+        // terminal-but-not-last column (e.g. In Review) reads as in-progress, not
+        // done, even though it still counts toward the rollup and clears its
+        // dependents. An off-board child we can't position falls back to
+        // done-if-finished (covers archived, whose `done` is set), else a todo
+        // ring. Derived from the board so it can never go stale.
+        let icon = match sub.col_idx {
+            Some(i) => StatusIcon::for_column(i, ctx.columns.len()),
+            None if sub.done => StatusIcon::Done,
+            None => StatusIcon::Todo,
         };
         status_icon_ui(ui, theme, icon, 14.0);
         if sub.on_board {
