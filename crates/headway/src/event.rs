@@ -2975,7 +2975,7 @@ pub fn fold_shared_board(
 /// plaintext note forged at the board coordinate is not a rumor, so neither leg
 /// of this check can be spoofed by a non-keyholder. This is the seal-trust that
 /// makes [`Authority::TeamKey`] sound.
-fn team_sealed(note: &Note, team_pubkeys: &[[u8; 32]]) -> bool {
+pub(crate) fn team_sealed(note: &Note, team_pubkeys: &[[u8; 32]]) -> bool {
     note.is_rumor()
         && note
             .rumor_receiver_pubkey()

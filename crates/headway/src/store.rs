@@ -1281,32 +1281,120 @@ pub fn apply(
     None
 }
 
-/// A board to operate on across a cross-board action: its `id` (slug) paired with
-/// its current folded `view`. Bundled so [`link_card`]/[`move_card_between_boards`]
-/// take one argument per board rather than an id/view pair each.
+/// A board to operate on across a cross-board action: its `id` (slug), its
+/// current folded `view`, and the [`SnsChannel`] its edits seal into. Bundled so
+/// [`link_card`]/[`move_card_between_boards`] take one argument per board rather
+/// than three each — and so each board's write is signed with *its own* channel,
+/// which is the bug the bundle exists to make unrepresentable: a cross-board move
+/// writes one event per board, and sealing the target's under the source's key
+/// hands the target board a placement its own fold refuses to trust.
 #[derive(Clone, Copy)]
 pub struct BoardRef<'a> {
     pub id: &'a str,
     pub view: &'a BoardView,
+    /// The channel this board's edits seal into — `None` for a plaintext board.
+    pub channel: Option<&'a SnsChannel>,
+}
+
+/// Why a cross-board [`link_card`]/[`move_card_between_boards`] wrote nothing.
+///
+/// Both are all-or-nothing: a refusal means neither the target placement nor the
+/// source tombstone was written, so the card stays exactly where it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CrossBoardError {
+    /// The target board's read path can't see the card's issue event, so a
+    /// placement there would resolve to nothing and the card would simply vanish
+    /// (`finalize` drops a placement whose issue it never gathered). Carries both
+    /// board slugs for the message.
+    UnreadableOnTarget { source: String, target: String },
+    /// The target board has no column to place the card into.
+    NoTargetColumn { target: String },
+    /// Building or ingesting the placement failed.
+    IngestFailed,
+}
+
+impl std::fmt::Display for CrossBoardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnreadableOnTarget { source, target } => write!(
+                f,
+                "a card's history is sealed to the board it was created on, and \
+                 '{target}' can't read '{source}'s — the card would leave '{source}' \
+                 without ever appearing on '{target}'"
+            ),
+            Self::NoTargetColumn { target } => {
+                write!(f, "'{target}' has no column to place the card into")
+            }
+            Self::IngestFailed => write!(f, "couldn't ingest the placement"),
+        }
+    }
+}
+
+impl std::error::Error for CrossBoardError {}
+
+/// Whether `target`'s own read path can see `card`'s issue event — the
+/// precondition for placing the card there, because [`event::BoardReducer`]'s
+/// finalize drops a placement whose issue it never gathered.
+///
+/// The two read paths gather issues differently, and neither reaches an issue
+/// that belongs to a *differently sealed* board:
+///
+/// - A plaintext board folds author-scoped ([`event::fold_board`]), which gathers
+///   every issue the author wrote whatever board it is anchored to — but a sealed
+///   card is a rumor that exists only on a device holding the source board's key,
+///   so landing one on a plaintext board resolves on this device and nowhere else.
+/// - A sealed board folds by coordinate ([`event::board_scoped_filters`]), which
+///   gathers issues by their `a` tag and trusts only rumors sealed under its own
+///   team key ([`event::team_sealed`]) — so an issue created on another board is
+///   invisible to it twice over.
+///
+/// Channels are per-board by construction (each root derives from the slug), so
+/// in practice this holds only between two plaintext boards, or for a card being
+/// moved back to the sealed board it was created on. Making a card genuinely
+/// cross-channel needs the issue re-sealed into the target channel and the fold
+/// gathering issues by placement rather than by `a` tag — a schema change, not a
+/// write-path fix (headway:headway/series-high-praise).
+fn target_can_read_card(ndb: &Ndb, target: BoardRef, card: NoteId) -> bool {
+    let Ok(txn) = Transaction::new(ndb) else {
+        return false;
+    };
+    let Ok(note) = ndb.get_note_by_id(&txn, card.bytes()) else {
+        return false;
+    };
+    let Some(channel) = target.channel else {
+        return !note.is_rumor();
+    };
+    if !event::team_sealed(&note, &[*channel.keys.team_keypair.pubkey.bytes()]) {
+        return false;
+    }
+    matches!(
+        event::parse(&note),
+        Some(event::HeadwayEvent::Issue(issue))
+            if issue.board_id == target.id && issue.board_author == target.view.author
+    )
 }
 
 /// Place `card` onto `target`, in the column whose id matches `prefer_col` when
-/// the board has one, else the target's first column, at the end. Returns the
-/// placement's note id.
+/// the board has one, else the target's first column, at the end. Signed with
+/// `secret` and sealed into `target`'s own channel. Returns the placement's note
+/// id.
 fn place_card(
     ndb: &Ndb,
     target: BoardRef,
     prefer_col: Option<&str>,
-    signer: &Signer,
+    secret: &[u8; 32],
     card: NoteId,
     publisher: &mut dyn Publisher,
-) -> Option<NoteId> {
+) -> Result<NoteId, CrossBoardError> {
     // Anchor the placement at the target board's *owner* coordinate (see `apply`),
     // which the folded `target.view` carries — not the signing member's own key.
     let addr = board_address(&Pubkey::new(target.view.author), target.id);
     let col = prefer_col
         .and_then(|id| target.view.columns.iter().find(|c| c.id == id))
-        .or_else(|| target.view.columns.first())?;
+        .or_else(|| target.view.columns.first())
+        .ok_or_else(|| CrossBoardError::NoTargetColumn {
+            target: target.id.to_string(),
+        })?;
     let rank = rank_for_insert(
         &col.cards,
         |c| c.id,
@@ -1318,9 +1406,10 @@ fn place_card(
     ingest_signed(
         ndb,
         build_placement(target.id, &addr, &card, &col.id, &rank).created_at(next_after(after)),
-        signer,
+        &Signer::new(secret, target.channel),
         publisher,
     )
+    .ok_or(CrossBoardError::IngestFailed)
 }
 
 /// Link `card` from `source` onto `target`, preserving its column. This is a
@@ -1331,35 +1420,52 @@ fn place_card(
 /// column when that column doesn't exist there. Returns the placement's note id.
 ///
 /// Re-linking simply re-ranks (latest wins).
+///
+/// Refused with [`CrossBoardError::UnreadableOnTarget`] when `target`'s fold
+/// can't see the card's issue (see [`target_can_read_card`]) — writing the
+/// placement anyway would leave `target` holding a placement that resolves to
+/// nothing, which reads as a card that was never linked at all.
 pub fn link_card(
     ndb: &Ndb,
     source: BoardRef,
     target: BoardRef,
-    signer: &Signer,
+    secret: &[u8; 32],
     card: NoteId,
     publisher: &mut dyn Publisher,
-) -> Option<NoteId> {
+) -> Result<NoteId, CrossBoardError> {
+    if !target_can_read_card(ndb, target, card) {
+        return Err(CrossBoardError::UnreadableOnTarget {
+            source: source.id.to_string(),
+            target: target.id.to_string(),
+        });
+    }
     let from_col = find_card_col(source.view, card).map(|(col, _)| col);
-    place_card(ndb, target, from_col, signer, card, publisher)
+    place_card(ndb, target, from_col, secret, card, publisher)
 }
 
 /// Move `card` from the `source` board to the `target` board: link it onto
 /// `target` (preserving its column, see [`link_card`]), then tombstone its
 /// placement on `source`. The issue id and all its overlays are preserved — it's
 /// the same card, just re-homed. Returns the new placement's note id.
+///
+/// Ordered link-then-tombstone, and the link is refused *before* either write,
+/// so a move that can't land on `target` doesn't take the card off `source`
+/// either. That order is load-bearing: the two events go to different boards,
+/// and the tombstone is the destructive half.
 pub fn move_card_between_boards(
     ndb: &Ndb,
     source: BoardRef,
     target: BoardRef,
-    signer: &Signer,
+    secret: &[u8; 32],
     card: NoteId,
     publisher: &mut dyn Publisher,
-) -> Option<NoteId> {
-    let placed = link_card(ndb, source, target, signer, card, publisher)?;
+) -> Result<NoteId, CrossBoardError> {
+    let placed = link_card(ndb, source, target, secret, card, publisher)?;
     // Placement-driven membership: a tombstone on the source removes it from
     // `source` only, leaving the freshly-linked placement on `target`. The
     // tombstone must land on the source *owner's* coordinate (see `apply`), which
-    // `source.view.author` carries — not the signing member's own key.
+    // `source.view.author` carries — not the signing member's own key — and seal
+    // into the *source's* channel, which is the one its readers hold.
     let src_addr = board_address(&Pubkey::new(source.view.author), source.id);
     let c = find_card(source.view, card);
     let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
@@ -1368,10 +1474,10 @@ pub fn move_card_between_boards(
         ndb,
         build_placement(source.id, &src_addr, &card, COL_DELETED, &rank)
             .created_at(next_after(after)),
-        signer,
+        &Signer::new(secret, source.channel),
         publisher,
     );
-    Some(placed)
+    Ok(placed)
 }
 
 /// Republish the board event with a new column list, preserving title/description.
@@ -3144,6 +3250,354 @@ mod tests {
             .id
     }
 
+    /// A board's sealing for the cross-board helpers below: the `team_root`
+    /// [`create_shared_board`] seeds from, plus the channel derived from it that
+    /// signing and folding need. Bundled because a board is seeded from the root
+    /// and then read through the keys, and the two must be the same channel.
+    struct TestChannel {
+        root: [u8; 32],
+        channel: SnsChannel,
+    }
+
+    /// The channel a board named `slug` would derive in production — or, passed a
+    /// slug neither board is called, a channel the boards *share* (which is how
+    /// the same-channel test gets a case production can't currently produce).
+    fn test_channel(slug: &str, secret: &[u8; 32]) -> TestChannel {
+        let root = nostrdb_net::sns::derive_board_root(secret, slug);
+        TestChannel {
+            root,
+            channel: SnsChannel {
+                keys: nostrdb_net::sns::derive_sns_keys(&root).expect("derive sns keys"),
+            },
+        }
+    }
+
+    /// The [`SnsChannel`] behind an optional [`TestChannel`], for the call sites
+    /// that take a channel rather than the seeding root.
+    fn chan(sealing: Option<&TestChannel>) -> Option<&SnsChannel> {
+        sealing.map(|s| &s.channel)
+    }
+
+    /// Seed `board_id` the way production does — [`seed_default_board`] when
+    /// plaintext, [`create_shared_board`] (sealed from note #1, self-shared) when
+    /// it is sealed.
+    fn seed_via(t: &TestNdb, board_id: &str, sealing: Option<&TestChannel>) {
+        let Some(sealing) = sealing else {
+            seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), board_id, &mut NoPublish);
+            return;
+        };
+        assert!(create_shared_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            board_id,
+            board_id,
+            &sealing.root,
+            &mut NoPublish,
+        ));
+    }
+
+    /// Fold `board_id` the way its own readers do — author-scoped when plaintext,
+    /// by coordinate (and seal-trusting) when sealed — until `pred` holds. The
+    /// distinction is the whole point of these tests: a cross-board write that
+    /// only resolves under the *author* fold is a card the board's readers can't
+    /// see.
+    async fn poll_board_via(
+        t: &TestNdb,
+        board_id: &str,
+        sealing: Option<&TestChannel>,
+        pred: impl Fn(&BoardView) -> bool,
+    ) -> BoardView {
+        let addr = board_address(&t.kp.pubkey, board_id);
+        let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
+        loop {
+            {
+                let txn = Transaction::new(&t.ndb).unwrap();
+                let view = match sealing {
+                    None => event::load_board(&t.ndb, &txn, &t.kp.pubkey, board_id),
+                    Some(s) => event::load_shared_board(
+                        &t.ndb,
+                        &txn,
+                        &addr,
+                        std::slice::from_ref(&s.channel.keys.team_keypair.pubkey),
+                    ),
+                };
+                if let Some(view) = view
+                    && pred(&view)
+                {
+                    return view;
+                }
+            }
+            await_ingest(&mut stream).await;
+        }
+    }
+
+    /// Counts the events a write produced. A refusal has to be *all*-or-nothing,
+    /// and ingest is async — re-folding a board right after the attempt races the
+    /// writes it was supposed not to make. The publisher is called synchronously
+    /// as each event is ingested, so counting frames is the race-free way to
+    /// assert nothing was written.
+    #[derive(Default)]
+    struct CountPublish(usize);
+
+    impl Publisher for CountPublish {
+        fn publish(&mut self, _event_frame: &str) {
+            self.0 += 1;
+        }
+    }
+
+    /// What a cross-board move attempt left behind: its result, how many events
+    /// it wrote, and each board as *its own readers* fold it. All of it matters —
+    /// the bug this guards against took the card off the source and never landed
+    /// it on the target, so asserting the refusal alone would miss a half-applied
+    /// move.
+    struct CrossBoardOutcome {
+        result: Result<NoteId, CrossBoardError>,
+        published: usize,
+        source_cards: usize,
+        target_cards: usize,
+    }
+
+    /// Seed `src` and `dst` with the given sealing, put one card in `src`'s first
+    /// column, then try to move it to `dst`.
+    async fn try_cross_board_move(
+        t: &TestNdb,
+        src_channel: Option<&TestChannel>,
+        dst_channel: Option<&TestChannel>,
+    ) -> CrossBoardOutcome {
+        seed_via(t, "src", src_channel);
+        seed_via(t, "dst", dst_channel);
+        let src = poll_board_via(t, "src", src_channel, |v| v.columns.len() == 5).await;
+        poll_board_via(t, "dst", dst_channel, |v| v.columns.len() == 5).await;
+
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &Signer::new(&t.secret(), chan(src_channel)),
+            BoardAction::AddCard {
+                col: 0,
+                title: "Roamer".to_string(),
+                description: String::new(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+
+        let src = poll_board_via(t, "src", src_channel, |v| v.columns[0].cards.len() == 1).await;
+        let dst = poll_board_via(t, "dst", dst_channel, |v| v.columns.len() == 5).await;
+        let card = src.columns[0].cards[0].id;
+        let mut sink = CountPublish::default();
+        let result = move_card_between_boards(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+                channel: chan(src_channel),
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+                channel: chan(dst_channel),
+            },
+            &t.secret(),
+            card,
+            &mut sink,
+        );
+
+        // Re-fold both boards. Read against `published`: with nothing written
+        // there is no ingest in flight, so these are the states the boards were
+        // already in.
+        let src = poll_board_via(t, "src", src_channel, |_| true).await;
+        let dst = poll_board_via(t, "dst", dst_channel, |_| true).await;
+        CrossBoardOutcome {
+            result,
+            published: sink.0,
+            source_cards: src.columns.iter().map(|c| c.cards.len()).sum(),
+            target_cards: dst.columns.iter().map(|c| c.cards.len()).sum(),
+        }
+    }
+
+    /// The bug that ate 21 cards (headway:headway/series-high-praise): boards are
+    /// sealed per-board, so a move across them wrote the target placement under
+    /// the *source* board's key. The target's fold refuses to trust it, the
+    /// source's tombstone is trusted, and the card is gone from both. Refuse the
+    /// whole move instead.
+    #[tokio::test]
+    async fn move_between_differently_sealed_boards_is_refused() {
+        let t = TestNdb::new();
+        let src = test_channel("src", &t.secret());
+        let dst = test_channel("dst", &t.secret());
+        let out = try_cross_board_move(&t, Some(&src), Some(&dst)).await;
+
+        assert_eq!(
+            out.result,
+            Err(CrossBoardError::UnreadableOnTarget {
+                source: "src".to_string(),
+                target: "dst".to_string(),
+            })
+        );
+        // Neither half ran — not the placement, and not the destructive tombstone
+        // — so the card is still sitting on the source board.
+        assert_eq!(out.published, 0);
+        assert_eq!(out.source_cards, 1);
+        assert_eq!(out.target_cards, 0);
+    }
+
+    /// Same channel, still refused — which is the part that isn't about keys. A
+    /// sealed board gathers its cards by the issue's `a` tag
+    /// ([`event::board_scoped_filters`]), so an issue created on another board is
+    /// invisible to it however it was sealed. Pinning this keeps the guard from
+    /// being "weakened" to a key comparison, which would re-open the bug.
+    #[tokio::test]
+    async fn move_between_boards_on_one_channel_is_still_refused() {
+        let t = TestNdb::new();
+        let shared = test_channel("shared", &t.secret());
+        let out = try_cross_board_move(&t, Some(&shared), Some(&shared)).await;
+
+        assert!(matches!(
+            out.result,
+            Err(CrossBoardError::UnreadableOnTarget { .. })
+        ));
+        assert_eq!(out.published, 0);
+        assert_eq!(out.source_cards, 1);
+        assert_eq!(out.target_cards, 0);
+    }
+
+    /// Sealed source, plaintext target: refused too. The card's issue is a rumor
+    /// that only exists on a device holding the source board's key, so it would
+    /// resolve on the writer's own machine and nowhere else — the worst kind of
+    /// broken, because the writer sees it work.
+    #[tokio::test]
+    async fn move_from_a_sealed_board_to_a_plaintext_one_is_refused() {
+        let t = TestNdb::new();
+        let src = test_channel("src", &t.secret());
+        let out = try_cross_board_move(&t, Some(&src), None).await;
+
+        assert!(matches!(
+            out.result,
+            Err(CrossBoardError::UnreadableOnTarget { .. })
+        ));
+        assert_eq!(out.published, 0);
+        assert_eq!(out.source_cards, 1);
+        assert_eq!(out.target_cards, 0);
+    }
+
+    /// Plaintext source, sealed target: refused. The target trusts only rumors
+    /// sealed under its own key, so a plaintext issue is invisible to it.
+    #[tokio::test]
+    async fn move_from_a_plaintext_board_to_a_sealed_one_is_refused() {
+        let t = TestNdb::new();
+        let dst = test_channel("dst", &t.secret());
+        let out = try_cross_board_move(&t, None, Some(&dst)).await;
+
+        assert!(matches!(
+            out.result,
+            Err(CrossBoardError::UnreadableOnTarget { .. })
+        ));
+        assert_eq!(out.published, 0);
+        assert_eq!(out.source_cards, 1);
+        assert_eq!(out.target_cards, 0);
+    }
+
+    /// `link_card` shares the guard, and matters more than it looks: a link is
+    /// the *non*-destructive half, so without the guard it would quietly write a
+    /// placement the target can never resolve — a "linked" card that shows up
+    /// nowhere.
+    #[tokio::test]
+    async fn link_onto_a_differently_sealed_board_is_refused() {
+        let t = TestNdb::new();
+        let src_ch = test_channel("src", &t.secret());
+        let dst_ch = test_channel("dst", &t.secret());
+        seed_via(&t, "src", Some(&src_ch));
+        seed_via(&t, "dst", Some(&dst_ch));
+        let src = poll_board_via(&t, "src", Some(&src_ch), |v| v.columns.len() == 5).await;
+        poll_board_via(&t, "dst", Some(&dst_ch), |v| v.columns.len() == 5).await;
+
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &Signer::new(&t.secret(), Some(&src_ch.channel)),
+            BoardAction::AddCard {
+                col: 0,
+                title: "Stayer".to_string(),
+                description: String::new(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+
+        let src = poll_board_via(&t, "src", Some(&src_ch), |v| v.columns[0].cards.len() == 1).await;
+        let dst = poll_board_via(&t, "dst", Some(&dst_ch), |v| v.columns.len() == 5).await;
+        let card = src.columns[0].cards[0].id;
+        let mut sink = CountPublish::default();
+        let result = link_card(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+                channel: Some(&src_ch.channel),
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+                channel: Some(&dst_ch.channel),
+            },
+            &t.secret(),
+            card,
+            &mut sink,
+        );
+
+        assert!(matches!(
+            result,
+            Err(CrossBoardError::UnreadableOnTarget { .. })
+        ));
+        assert_eq!(sink.0, 0);
+        let dst = poll_board_via(&t, "dst", Some(&dst_ch), |_| true).await;
+        assert_eq!(dst.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 0);
+    }
+
+    /// The guard is "can the target read this card", not "is the target sealed":
+    /// a sealed board can still take a placement for a card *it* owns, which is
+    /// what a re-rank (and, one schema change from now, a move back home) needs.
+    #[tokio::test]
+    async fn a_sealed_board_still_accepts_a_placement_for_its_own_card() {
+        let t = TestNdb::new();
+        let ch = test_channel("src", &t.secret());
+        seed_via(&t, "src", Some(&ch));
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns.len() == 5).await;
+
+        super::apply(
+            &t.ndb,
+            "src",
+            &view,
+            &t.kp.pubkey,
+            &Signer::new(&t.secret(), Some(&ch.channel)),
+            BoardAction::AddCard {
+                col: 0,
+                title: "Homebody".to_string(),
+                description: String::new(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns[0].cards.len() == 1).await;
+        let card = view.columns[0].cards[0].id;
+        let board = BoardRef {
+            id: "src",
+            view: &view,
+            channel: Some(&ch.channel),
+        };
+        assert!(link_card(&t.ndb, board, board, &t.secret(), card, &mut NoPublish).is_ok());
+    }
+
     #[tokio::test]
     async fn link_card_places_on_both_boards() {
         let t = TestNdb::new();
@@ -3156,15 +3610,18 @@ mod tests {
             BoardRef {
                 id: "src",
                 view: &src,
+                channel: None,
             },
             BoardRef {
                 id: "dst",
                 view: &dst,
+                channel: None,
             },
-            &Signer::new(&t.secret(), None),
+            &t.secret(),
             card,
             &mut NoPublish,
-        );
+        )
+        .expect("two plaintext boards, so the target can read the card");
 
         // Same card on both boards, with its labels intact (it's shared, not copied).
         let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1).await;
@@ -3189,15 +3646,18 @@ mod tests {
             BoardRef {
                 id: "src",
                 view: &src,
+                channel: None,
             },
             BoardRef {
                 id: "dst",
                 view: &dst,
+                channel: None,
             },
-            &Signer::new(&t.secret(), None),
+            &t.secret(),
             card,
             &mut NoPublish,
-        );
+        )
+        .expect("two plaintext boards, so the target can read the card");
 
         // Leaves src, lands on dst — same id, same overlays.
         let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1).await;
@@ -3234,15 +3694,18 @@ mod tests {
             BoardRef {
                 id: "src",
                 view: &src,
+                channel: None,
             },
             BoardRef {
                 id: "dst",
                 view: &dst,
+                channel: None,
             },
-            &Signer::new(&t.secret(), None),
+            &t.secret(),
             card,
             &mut NoPublish,
-        );
+        )
+        .expect("two plaintext boards, so the target can read the card");
 
         // Lands in the same-id column (In Progress), not the first column.
         let dst = poll_board(&t, "dst", |v| v.columns[2].cards.len() == 1).await;
@@ -3298,15 +3761,18 @@ mod tests {
             BoardRef {
                 id: "src",
                 view: &src,
+                channel: None,
             },
             BoardRef {
                 id: "dst",
                 view: &dst,
+                channel: None,
             },
-            &Signer::new(&t.secret(), None),
+            &t.secret(),
             card,
             &mut NoPublish,
-        );
+        )
+        .expect("two plaintext boards, so the target can read the card");
 
         // No "in-progress" on dst, so it falls back to the first column (Inbox).
         let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1).await;

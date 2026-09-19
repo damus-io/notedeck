@@ -329,6 +329,23 @@ fn ref_board(sel: &str) -> Option<String> {
     headway::wordid::parse_ref(sel).map(|(board, _)| board.to_lowercase())
 }
 
+/// Turn a refused cross-board `link`/`move-board` into the CLI's error, adding
+/// the part the store can't know: what to do instead.
+///
+/// The refusal is the whole point of the command failing loudly — the bug it
+/// replaces wrote half the move and left the card on neither board
+/// (headway:headway/series-high-praise) — so the message has to explain a "no"
+/// that used to look like a "yes".
+fn cross_board_error(err: store::CrossBoardError) -> String {
+    match err {
+        store::CrossBoardError::UnreadableOnTarget { .. } => format!(
+            "{err}.\nBoards are sealed per-board, so a card can't yet be moved \
+             between two of them. Re-create it on the target board instead."
+        ),
+        other => other.to_string(),
+    }
+}
+
 async fn run() -> Result<()> {
     let cli = match Cli::parse(env::args().skip(1))? {
         Some(cli) => cli,
@@ -587,21 +604,26 @@ async fn run() -> Result<()> {
             let card_id = resolve_card(&source, &card)?;
 
             let mut sink = Collect::default();
-            let channel = roster.channel(&board);
+            // Each board seals with its *own* channel — see `store::BoardRef`.
+            let source_channel = roster.channel(&board);
+            let target_channel = roster.channel(&to_board);
             store::link_card(
                 &ndb,
                 store::BoardRef {
                     id: &board,
                     view: &source,
+                    channel: source_channel.as_ref(),
                 },
                 store::BoardRef {
                     id: &to_board,
                     view: &target,
+                    channel: target_channel.as_ref(),
                 },
-                &store::Signer::new(&secret, channel.as_ref()),
+                &secret,
                 card_id,
                 &mut sink,
-            );
+            )
+            .map_err(cross_board_error)?;
             let n = sink.0.len();
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
@@ -620,21 +642,26 @@ async fn run() -> Result<()> {
             let card_id = resolve_card(&source, &card)?;
 
             let mut sink = Collect::default();
-            let channel = roster.channel(&board);
+            // Each board seals with its *own* channel — see `store::BoardRef`.
+            let source_channel = roster.channel(&board);
+            let target_channel = roster.channel(&to_board);
             store::move_card_between_boards(
                 &ndb,
                 store::BoardRef {
                     id: &board,
                     view: &source,
+                    channel: source_channel.as_ref(),
                 },
                 store::BoardRef {
                     id: &to_board,
                     view: &target,
+                    channel: target_channel.as_ref(),
                 },
-                &store::Signer::new(&secret, channel.as_ref()),
+                &secret,
                 card_id,
                 &mut sink,
-            );
+            )
+            .map_err(cross_board_error)?;
             let n = sink.0.len();
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(

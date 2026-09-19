@@ -279,7 +279,7 @@ pub enum BoardNav {
 }
 
 /// Whether a cross-board card request relocates the card or shares it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum CardBoardOp {
     /// Relocate the card to the target board (remove it from the current one).
     Move,

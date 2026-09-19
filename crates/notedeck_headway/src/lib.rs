@@ -788,10 +788,7 @@ impl Headway {
         let active_team: Option<teams::Team> =
             active_shared_team(&self.teams, self.active()).cloned();
         // The SNS channel to seal edits into when the active board is shared.
-        let channel: Option<store::SnsChannel> = active_team
-            .as_ref()
-            .and_then(|t| t.sns_keys())
-            .map(|keys| store::SnsChannel { keys });
+        let channel: Option<store::SnsChannel> = active_team.as_ref().and_then(team_channel);
 
         // Resolve the active board's view: a shared board folds by coordinate
         // (multi-writer, every member's events), an own board off the per-account
@@ -908,41 +905,50 @@ impl Headway {
                     .board(ctx.ndb, &txn, &author, &mv.to_board)
             })
         {
+            // Each board seals with its own channel: the source tombstone under
+            // the active board's, the target placement under the target's. Sealing
+            // both with the source's — what this did before boards carried
+            // per-board channels — handed the target a placement its own fold
+            // refuses to trust, so the card left one board without arriving at the
+            // other (headway:headway/series-high-praise).
+            let target_channel =
+                board_channel(&self.teams, &event::board_address(&author, &mv.to_board));
             let source = store::BoardRef {
                 id: &self.active().slug,
                 view: &view,
+                channel: channel.as_ref(),
             };
             let target = store::BoardRef {
                 id: &mv.to_board,
                 view: &target_view,
+                channel: target_channel.as_ref(),
             };
             // Ingest locally only; `update`'s poll fans the new events out to the
             // private relays next frame (see `wake`).
-            match mv.op {
-                // Seal with the active (source) board's channel when it's shared,
-                // so a cross-board move off a shared board doesn't leak plaintext.
-                // Mixed-sharing moves (source and target on different channels)
-                // are an edge to refine once boards carry per-board channels.
-                CardBoardOp::Move => {
-                    store::move_card_between_boards(
-                        ctx.ndb,
-                        source,
-                        target,
-                        &store::Signer::new(secret, channel.as_ref()),
-                        mv.card,
-                        &mut store::NoPublish,
-                    );
-                }
-                CardBoardOp::Link => {
-                    store::link_card(
-                        ctx.ndb,
-                        source,
-                        target,
-                        &store::Signer::new(secret, channel.as_ref()),
-                        mv.card,
-                        &mut store::NoPublish,
-                    );
-                }
+            let placed = match mv.op {
+                CardBoardOp::Move => store::move_card_between_boards(
+                    ctx.ndb,
+                    source,
+                    target,
+                    secret,
+                    mv.card,
+                    &mut store::NoPublish,
+                ),
+                CardBoardOp::Link => store::link_card(
+                    ctx.ndb,
+                    source,
+                    target,
+                    secret,
+                    mv.card,
+                    &mut store::NoPublish,
+                ),
+            };
+            // A refusal writes nothing, so the card simply stays where it is. The
+            // app has no way to say so yet — it needs a transient-message surface
+            // it doesn't have — so log it and leave the board unchanged rather
+            // than move a card into a board that can't show it.
+            if let Err(err) = placed {
+                tracing::warn!("headway: cross-board {:?} refused: {err}", mv.op);
             }
             self.wake();
         }
@@ -1443,6 +1449,22 @@ fn active_shared_team<'a>(
 ) -> Option<&'a teams::Team> {
     let coord = active.coordinate();
     teams.iter().find(|t| t.board_addr == coord)
+}
+
+/// The SNS channel a roster entry's edits seal into, if its keys are usable.
+fn team_channel(team: &teams::Team) -> Option<store::SnsChannel> {
+    team.sns_keys().map(|keys| store::SnsChannel { keys })
+}
+
+/// The SNS channel the board at `addr` seals into — `None` for a plaintext board
+/// (one that was never self-shared, so isn't in the roster). Keyed on the full
+/// coordinate, like [`active_shared_team`]: two boards that merely share a slug
+/// are different boards with different keys.
+fn board_channel(teams: &[teams::Team], addr: &str) -> Option<store::SnsChannel> {
+    teams
+        .iter()
+        .find(|t| t.board_addr == addr)
+        .and_then(team_channel)
 }
 
 /// Append joined shared boards to the switcher list, deduped by coordinate: a
