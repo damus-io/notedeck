@@ -4987,6 +4987,7 @@ mod tests {
             columns: vec![ColumnView {
                 id: "backlog".to_string(),
                 name: "Backlog".to_string(),
+                terminal: false,
                 cards,
             }],
             archived: vec![],

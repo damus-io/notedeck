@@ -311,14 +311,17 @@ fn ingest_pns(
     Some(inner_id)
 }
 
-/// The default columns a fresh board is seeded with.
+/// The default columns a fresh board is seeded with. `In Review` and `Done` are
+/// both terminal (see [`ColumnDef::terminal`]): work in review counts as done
+/// for dependency and frontier purposes, matching an integration-test-at-the-end
+/// flow where a card in review no longer blocks its dependents.
 fn default_columns() -> Vec<ColumnDef> {
     vec![
         ColumnDef::new("backlog", "Backlog"),
         ColumnDef::new("todo", "Todo"),
         ColumnDef::new("in-progress", "In Progress"),
-        ColumnDef::new("in-review", "In Review"),
-        ColumnDef::new("done", "Done"),
+        ColumnDef::new("in-review", "In Review").terminal(),
+        ColumnDef::new("done", "Done").terminal(),
     ]
 }
 
@@ -1405,7 +1408,11 @@ fn now_secs() -> u64 {
 fn column_defs(view: &BoardView) -> Vec<ColumnDef> {
     view.columns
         .iter()
-        .map(|c| ColumnDef::new(c.id.clone(), c.name.clone()))
+        .map(|c| ColumnDef {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            terminal: c.terminal,
+        })
         .collect()
 }
 

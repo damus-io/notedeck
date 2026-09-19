@@ -150,7 +150,7 @@ pub fn dependency_graph(view: &BoardView, epic_id: &[u8; 32]) -> DependencyGraph
         // Downstream-ghost edges: this card blocks a card *outside* the subtree.
         // An in-subtree target is skipped — that same edge is read from the
         // target's `blocked_by` above, so it is never doubled.
-        let source_cleared = is_cleared(nodes[i].column);
+        let source_cleared = view.card_is_done(nodes[i].id);
         for edge in &card.blocks {
             if is_primary(&index, primary_count, edge.id) {
                 continue;
@@ -220,15 +220,6 @@ fn column_pos(view: &BoardView, id: NoteId) -> Option<ColumnPos> {
             .any(|c| c.id == id)
             .then_some(ColumnPos { index, count })
     })
-}
-
-/// A card is *cleared* when it sits in its board's last (Done-style) column —
-/// the same positional doneness [`crate::traversal`] and
-/// [`crate::event::EdgeRef::done`] use. `None` (archived/off-board) is treated
-/// as not-cleared here; the only caller is a live subtree card, which always has
-/// a column.
-fn is_cleared(column: Option<ColumnPos>) -> bool {
-    column.is_some_and(|p| p.count > 0 && p.index + 1 == p.count)
 }
 
 #[cfg(test)]
@@ -301,6 +292,7 @@ mod tests {
             .map(|id| ColumnView {
                 id: id.to_string(),
                 name: id.to_string(),
+                terminal: false,
                 cards: vec![],
             })
             .collect();

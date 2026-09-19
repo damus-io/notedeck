@@ -113,13 +113,12 @@ fn member_order(view: &BoardView, container: &Container) -> Vec<NoteId> {
     }
 }
 
-/// A card is done when it sits in its board's last column (the terminal
-/// "Done"-style column). Positional, mirroring [`crate::event::SubissueView::done`]
-/// — there is no stored done flag.
+/// A card is done when it sits in one of its board's *terminal* ("Done"-style)
+/// columns, mirroring [`crate::event::SubissueView::done`] — there is no stored
+/// done flag. A board that marks no terminal column falls back to its last
+/// column (see [`crate::event::column_is_terminal`]).
 fn is_done(view: &BoardView, id: NoteId) -> bool {
-    view.columns
-        .last()
-        .is_some_and(|last| last.cards.iter().any(|c| c.id == id))
+    view.card_is_done(id)
 }
 
 /// Does `card` have at least one subissue still to do? Such a card is a branch
@@ -217,11 +216,13 @@ mod tests {
                 ColumnView {
                     id: "backlog".to_string(),
                     name: "Backlog".to_string(),
+                    terminal: false,
                     cards: backlog,
                 },
                 ColumnView {
                     id: "done".to_string(),
                     name: "Done".to_string(),
+                    terminal: false,
                     cards: done,
                 },
             ],

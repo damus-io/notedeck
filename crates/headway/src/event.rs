@@ -263,6 +263,13 @@ pub const COL_ARCHIVED: &str = "__archived__";
 pub struct ColumnDef {
     pub id: String,
     pub name: String,
+    /// A *terminal* column is a "done" column: a card sitting here counts as
+    /// finished — it clears its dependents, drops out of the ready frontier, and
+    /// renders as done. A board may mark several (e.g. both `In Review` and
+    /// `Done`). When a board marks *none* — every board authored before this flag
+    /// existed — its last column is treated as terminal, preserving the original
+    /// positional behaviour. See [`column_is_terminal`].
+    pub terminal: bool,
 }
 
 impl ColumnDef {
@@ -270,7 +277,48 @@ impl ColumnDef {
         Self {
             id: id.into(),
             name: name.into(),
+            terminal: false,
         }
+    }
+
+    /// Mark this column terminal (a "done" column). Builder sugar for the
+    /// default-board definition and column-editing call sites.
+    pub fn terminal(mut self) -> Self {
+        self.terminal = true;
+        self
+    }
+}
+
+/// Whether the column `col_id` is *terminal* on a board whose columns are given,
+/// in order, as `(id, terminal)` pairs.
+///
+/// A terminal column is one where a card counts as done: it clears its
+/// dependents, leaves the [`crate::traversal`] ready frontier, and renders as
+/// done. Terminal columns are marked explicitly on the board definition
+/// ([`ColumnDef::terminal`]). A board that marks *none* — every board created
+/// before the flag existed — falls back to treating its **last** column as
+/// terminal, which is exactly the original positional `columns.last()` rule and
+/// so needs no migration.
+///
+/// Single pass, no allocation: safe to call from per-frame render paths.
+pub fn column_is_terminal<'a>(
+    columns: impl IntoIterator<Item = (&'a str, bool)>,
+    col_id: &str,
+) -> bool {
+    let mut any_marked = false;
+    let mut target_marked = false;
+    let mut last_is_target = false;
+    for (id, terminal) in columns {
+        if terminal {
+            any_marked = true;
+            target_marked |= id == col_id;
+        }
+        last_is_target = id == col_id;
+    }
+    if any_marked {
+        target_marked
+    } else {
+        last_is_target
     }
 }
 
@@ -363,6 +411,12 @@ pub fn build_board<'a>(
             .tag_str("col")
             .tag_str(&col.id)
             .tag_str(&col.name);
+        // A terminal column carries a trailing "terminal" marker; a plain column
+        // omits it, so old readers ignore the extra element and old boards parse
+        // as all-non-terminal (falling back to last-column doneness).
+        if col.terminal {
+            b = b.tag_str("terminal");
+        }
     }
 
     b
@@ -978,7 +1032,9 @@ fn parse_board(note: &Note) -> Option<BoardEvent> {
             }
             Some("col") => {
                 if let (Some(cid), Some(name)) = (tag.get_str(1), tag.get_str(2)) {
-                    columns.push(ColumnDef::new(cid, name));
+                    let mut def = ColumnDef::new(cid, name);
+                    def.terminal = tag.get_str(3) == Some("terminal");
+                    columns.push(def);
                 }
             }
             _ => {}
@@ -1456,6 +1512,10 @@ impl CardView {
 pub struct ColumnView {
     pub id: String,
     pub name: String,
+    /// Terminal ("done") column — see [`ColumnDef::terminal`] and
+    /// [`column_is_terminal`]. Carried through from the board definition so the
+    /// folded view can decide doneness without the reducer.
+    pub terminal: bool,
     pub cards: Vec<CardView>,
 }
 
@@ -1495,6 +1555,26 @@ impl BoardView {
             .flat_map(|c| c.cards.iter())
             .find(|c| c.id == id)
     }
+
+    /// Whether the column `col_id` is terminal on this board. Thin adapter over
+    /// [`column_is_terminal`] using the board's own column order and flags.
+    pub fn column_is_terminal(&self, col_id: &str) -> bool {
+        column_is_terminal(
+            self.columns.iter().map(|c| (c.id.as_str(), c.terminal)),
+            col_id,
+        )
+    }
+
+    /// Whether card `id` sits in a terminal ("done") column of this board — the
+    /// folded-view analogue of [`SubissueView::done`]. `false` when the card is
+    /// archived or off-board (not in a live column). Shared by
+    /// [`crate::traversal`] and [`crate::graph`] so doneness is decided one way.
+    pub fn card_is_done(&self, id: NoteId) -> bool {
+        self.columns
+            .iter()
+            .find(|col| col.cards.iter().any(|c| c.id == id))
+            .is_some_and(|col| self.column_is_terminal(&col.id))
+    }
 }
 
 /// Render `view` as a stable, machine-readable JSON value: a curated schema for
@@ -1509,6 +1589,7 @@ pub fn board_json(view: &BoardView) -> serde_json::Value {
         "columns": view.columns.iter().map(|c| serde_json::json!({
             "id": c.id,
             "name": c.name,
+            "terminal": c.terminal,
             "cards": c.cards.iter().map(|card| card_json(&view.id, card)).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "archived": view.archived.iter().map(|a| {
@@ -2189,8 +2270,12 @@ impl BoardReducer {
                     let done = self
                         .boards
                         .get(&(key.board_author.to_vec(), key.board_id.clone()))
-                        .and_then(|b| b.columns.last())
-                        .is_some_and(|last| last.id == col);
+                        .is_some_and(|b| {
+                            column_is_terminal(
+                                b.columns.iter().map(|c| (c.id.as_str(), c.terminal)),
+                                col,
+                            )
+                        });
                     live.push(LivePlacement {
                         board_author: &key.board_author,
                         board_id: &key.board_id,
@@ -2556,6 +2641,7 @@ impl BoardReducer {
                     ColumnView {
                         id: def.id.clone(),
                         name: def.name.clone(),
+                        terminal: def.terminal,
                         cards,
                     }
                 })
@@ -4603,6 +4689,101 @@ mod tests {
         assert!(child.subissues.is_empty());
     }
 
+    /// The terminal predicate: an explicitly-marked column wins, and a board with
+    /// no marks falls back to its last column (the pre-flag positional rule).
+    #[test]
+    fn column_is_terminal_marks_and_fallback() {
+        // No column marked → only the last column is terminal.
+        let unmarked = [("todo", false), ("review", false), ("done", false)];
+        assert!(!column_is_terminal(unmarked.iter().copied(), "todo"));
+        assert!(!column_is_terminal(unmarked.iter().copied(), "review"));
+        assert!(column_is_terminal(unmarked.iter().copied(), "done"));
+
+        // Explicit marks → exactly the marked columns, and the last column is no
+        // longer implicitly terminal.
+        let marked = [
+            ("todo", false),
+            ("review", true),
+            ("done", true),
+            ("cancelled", false),
+        ];
+        assert!(!column_is_terminal(marked.iter().copied(), "todo"));
+        assert!(column_is_terminal(marked.iter().copied(), "review"));
+        assert!(column_is_terminal(marked.iter().copied(), "done"));
+        // A non-terminal *last* column (the `cancelled`-append case that broke the
+        // positional rule) stays non-terminal because other columns are marked.
+        assert!(!column_is_terminal(marked.iter().copied(), "cancelled"));
+
+        // Unknown column id is never terminal.
+        assert!(!column_is_terminal(marked.iter().copied(), "missing"));
+        // Empty board: nothing is terminal.
+        assert!(!column_is_terminal(std::iter::empty(), "done"));
+    }
+
+    /// A terminal column that is *not* the last column still makes a card in it
+    /// count as done — its subissue rollup reads done and it clears a blocker,
+    /// even though a later (non-terminal) column exists. The board carries the
+    /// `terminal` flag through build → parse.
+    #[test]
+    fn reduce_terminal_column_clears_before_last() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        // `in-review` is terminal though `done` sits after it.
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("in-review", "In Review").terminal(),
+            ColumnDef::new("done", "Done").terminal(),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        // The board round-trips the terminal flag through the wire.
+        let HeadwayEvent::Board(board) = parse_owned(build_board("b1", "Board", "", &cols), &owner)
+        else {
+            panic!("board");
+        };
+        assert_eq!(
+            board.columns.iter().map(|c| c.terminal).collect::<Vec<_>>(),
+            vec![false, true, true],
+        );
+
+        let a = note_id(&owner, build_issue(&addr, "A", "").created_at(1_000));
+        let b = note_id(&owner, build_issue(&addr, "B", "").created_at(1_001));
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "A", "").created_at(1_000), &owner),
+            parse_owned(build_issue(&addr, "B", "").created_at(1_001), &owner),
+            parse_owned(
+                build_placement("b1", &addr, &a, "todo", "m").created_at(1_100),
+                &owner,
+            ),
+            // B sits in the terminal `in-review` column — not the last column.
+            parse_owned(
+                build_placement("b1", &addr, &b, "in-review", "m").created_at(1_100),
+                &owner,
+            ),
+            // A is blocked by B, and B is A's subissue.
+            parse_owned(build_blockers(&a, &[b]).created_at(1_200), &owner),
+            parse_owned(build_relation(&b, Some(&a)).created_at(1_200), &owner),
+        ];
+
+        let view = &reduce(&events)[0];
+        // B is in a terminal column → the folded view reads it as done.
+        assert!(view.card_is_done(b));
+        assert!(view.column_is_terminal("in-review"));
+        // A's blocker edge is cleared, so A is not blocked.
+        let card_a = view.card(a).unwrap();
+        assert!(card_a.blocked_by[0].done);
+        assert!(!card_a.is_blocked());
+        // The subissue rollup counts B done.
+        assert_eq!(card_a.subissues.len(), 1);
+        assert!(card_a.subissues[0].done);
+    }
+
     /// A blockers set round-trips through build/parse, preserving the blocked card
     /// and every listed blocker; an empty set is a well-formed cleared set.
     #[test]
@@ -5407,6 +5588,7 @@ mod tests {
             columns: vec![ColumnView {
                 id: "todo".into(),
                 name: "Todo".into(),
+                terminal: false,
                 cards: ids.iter().copied().map(view_card).collect(),
             }],
             archived: vec![],
