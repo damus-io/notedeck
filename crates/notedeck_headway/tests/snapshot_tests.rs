@@ -571,6 +571,100 @@ fn snapshot_headway_graph() {
     harness.snapshot("headway_graph");
 }
 
+/// The dependency-graph node variants in one column: a plain in-progress node, a
+/// blocked node (leading ⊘), a done node (receding), an off-board ghost, and a
+/// *collapsed* node that stands in for a whole sub-tree — the last one showing
+/// the right-aligned done/total progress pill that marks it expandable (a click
+/// drills the graph into it). Locks the node chrome the collapse feature added
+/// without needing a nested-epic board fixture.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_graph_nodes() {
+    use notedeck_headway::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
+
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let ctx = egui::Context::default();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+
+    let three = |idx: usize| {
+        Some(headway::event::ColumnPos {
+            index: idx,
+            count: 3,
+        })
+    };
+    let nodes = [
+        GraphNodeView {
+            title: "Plain in-progress node",
+            column: three(1),
+            blocked: false,
+            ghost: false,
+            progress: None,
+        },
+        GraphNodeView {
+            title: "Blocked node",
+            column: three(0),
+            blocked: true,
+            ghost: false,
+            progress: None,
+        },
+        GraphNodeView {
+            title: "Done node recedes",
+            column: three(2),
+            blocked: false,
+            ghost: false,
+            progress: None,
+        },
+        GraphNodeView {
+            title: "Off-board ghost node",
+            column: None,
+            blocked: false,
+            ghost: true,
+            progress: None,
+        },
+        GraphNodeView {
+            title: "Collapsed branch (expandable)",
+            column: three(1),
+            blocked: false,
+            ghost: false,
+            progress: Some(headway::graph::SubtreeProgress { done: 2, total: 5 }),
+        },
+    ];
+
+    let pad = 12.0;
+    let width = GRAPH_NODE_SIZE.x + pad * 2.0;
+    let height = pad + (GRAPH_NODE_SIZE.y + pad) * nodes.len() as f32;
+
+    let mut installed = false;
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(width, height))
+        .renderer(notedeck::software_renderer())
+        .build_ui(move |ui| {
+            if !installed {
+                notedeck.setup(ui.ctx());
+                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                installed = true;
+            }
+            let theme = notedeck::ColorTheme::current(ui.ctx());
+            let origin = ui.min_rect().min;
+            for (i, node) in nodes.iter().enumerate() {
+                let min = egui::pos2(
+                    origin.x + pad,
+                    origin.y + pad + (GRAPH_NODE_SIZE.y + pad) * i as f32,
+                );
+                graph_node_ui(
+                    ui,
+                    &theme,
+                    egui::Rect::from_min_size(min, GRAPH_NODE_SIZE),
+                    node,
+                );
+            }
+        });
+
+    harness.run_ok();
+    harness.snapshot("headway_graph_nodes");
+}
+
 /// A blocked card's detail shows its dependency edges: the demo seed blocks the
 /// sync card on the event-model card (open) and the scaffold card (in Done, so a
 /// *cleared*, struck-through blocker), so its detail carries a "Blocked by" list
