@@ -43,6 +43,16 @@
 //! keeps every relationship a single arrow — see [`GraphEdge`] for the
 //! deduplication contract.
 //!
+//! ## Flat vs collapsed
+//! Two builders share these node/edge types:
+//! - [`dependency_graph`] — the **flat** graph: every card in the subtree is its
+//!   own node. Faithful, but a deep epic renders as a cloud and parent cards
+//!   float unconnected to their own children (containment isn't an edge).
+//! - [`collapsed_dependency_graph`] — one node per **direct** subissue, each
+//!   standing in for its whole subtree with a [`SubtreeProgress`] pill, blocks
+//!   projected onto those representatives. Keeps a deep epic at one granularity;
+//!   the view drills into a node by re-running it with that card as the epic.
+//!
 //! [`EdgeRef`]: crate::event::EdgeRef
 
 use std::collections::{HashMap, HashSet};
@@ -52,9 +62,21 @@ use nostrdb_net::NoteId;
 use crate::event::{BoardView, ColumnPos, Container};
 use crate::traversal::work_order;
 
-/// One card in the graph: its id, live column position, and whether it is a
-/// *ghost* (pulled in only because an edge crosses the epic's subtree, not one
-/// of the epic's own cards).
+/// How much of a node's subissue subtree is done — the "X/Y" a collapsed node
+/// shows as a progress pill. Present only on a node that *has* a subtree; a leaf
+/// card carries `None` (see [`GraphNode::progress`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubtreeProgress {
+    /// Descendants sitting in a terminal ("done") column ([`BoardView::card_is_done`]).
+    pub done: usize,
+    /// Total live descendants in the subtree (the recursive [`work_order`]).
+    pub total: usize,
+}
+
+/// One card in the graph: its id, live column position, whether it is a *ghost*
+/// (pulled in only because an edge crosses the epic's subtree, not one of the
+/// epic's own cards), and — when it stands in for a whole subtree — that
+/// subtree's progress.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphNode {
     /// The card this node stands for.
@@ -69,6 +91,11 @@ pub struct GraphNode {
     /// blocker or blocked card outside the epic's subissue subtree. The view
     /// styles ghosts as context rather than as the epic's cards.
     pub ghost: bool,
+    /// The node's subissue-subtree progress, `Some` iff the card has at least one
+    /// live descendant. In the collapsed graph ([`collapsed_dependency_graph`])
+    /// this marks an *expandable* node — one that stands in for a whole subtree —
+    /// and drives its progress pill; ghosts never carry it.
+    pub progress: Option<SubtreeProgress>,
 }
 
 /// A directed blocking edge: the `from` node blocks the `to` node (arrow points
@@ -125,6 +152,7 @@ pub fn dependency_graph(view: &BoardView, epic_id: &[u8; 32]) -> DependencyGraph
             id: card.id,
             column: column_pos(view, card.id),
             ghost: false,
+            progress: subtree_progress(view, card.id),
         });
     }
     let primary_count = nodes.len();
@@ -163,6 +191,123 @@ pub fn dependency_graph(view: &BoardView, epic_id: &[u8; 32]) -> DependencyGraph
     DependencyGraph { nodes, edges }
 }
 
+/// Build the *collapsed* dependency graph of `epic_id`: one node per **direct**
+/// subissue, each standing in for its whole subtree, rather than the flat
+/// recursive node set [`dependency_graph`] produces. The graph view's default —
+/// it keeps a deep epic at a single granularity and lets the user drill into a
+/// node (re-run this with that card as the epic) to expand a level.
+///
+/// ## Nodes
+/// The epic's direct subissues that are live cards, in the reducer's work-order.
+/// A node whose card has its own descendants carries [`GraphNode::progress`]
+/// (`Some`) — it is *expandable*; a direct child that is itself a leaf carries
+/// `None` and behaves like an ordinary node. The epic card itself is the
+/// container, never a node. Ghost nodes (cards outside the epic's subtree named
+/// by a crossing edge) are added exactly as in the flat graph.
+///
+/// ## Edges
+/// Every blocking edge in the epic's *full* subtree is projected onto these
+/// depth-1 representatives: each endpoint maps to the direct subissue whose
+/// subtree contains it. A block between two cards under the **same** representative
+/// is internal to one collapsed node and dropped; a block across two
+/// representatives becomes one aggregated edge. An aggregated edge is `done` only
+/// when *every* underlying block it stands for is cleared — so the collapsed
+/// arrow stays active while any real dependency between the two groups remains.
+///
+/// An unknown/leaf `epic_id` (no live card, or no subissues) yields an empty
+/// graph, never a panic.
+pub fn collapsed_dependency_graph(view: &BoardView, epic_id: &[u8; 32]) -> DependencyGraph {
+    let mut nodes: Vec<GraphNode> = Vec::new();
+    let mut index: HashMap<[u8; 32], usize> = HashMap::new();
+    // Every card in the epic's subtree -> the direct-subissue node that stands in
+    // for it (its depth-1 ancestor). The projection that collapses the subtree.
+    let mut represent: HashMap<[u8; 32], usize> = HashMap::new();
+
+    // Primary nodes: the epic's *direct* subissues (one level), each a live card.
+    let Some(epic) = view.card(NoteId::new(*epic_id)) else {
+        return DependencyGraph::default();
+    };
+    for sub in &epic.subissues {
+        if view.card(sub.id).is_none() || index.contains_key(sub.id.bytes()) {
+            continue;
+        }
+        let idx = nodes.len();
+        index.insert(*sub.id.bytes(), idx);
+        represent.insert(*sub.id.bytes(), idx);
+        // Every card in this child's subtree maps up to this node (first writer
+        // wins, so a subissue shared by two children stays with the earlier one).
+        for desc in work_order(view, &Container::Card(*sub.id.bytes())) {
+            represent.entry(*desc.id.bytes()).or_insert(idx);
+        }
+        nodes.push(GraphNode {
+            id: sub.id,
+            column: column_pos(view, sub.id),
+            ghost: false,
+            progress: subtree_progress(view, sub.id),
+        });
+    }
+
+    // Edges, aggregated per representative pair. `edge_at` maps a `(from, to)`
+    // representative pair to its slot in `edges`, so repeated underlying blocks
+    // fold into one arrow whose `done` is the AND of theirs.
+    let mut edges: Vec<GraphEdge> = Vec::new();
+    let mut edge_at: HashMap<(usize, usize), usize> = HashMap::new();
+
+    // Walk the epic's whole subtree (blocks live at leaf level) in work-order,
+    // projecting each card's edges onto the representatives.
+    for card in work_order(view, &Container::Card(*epic_id)) {
+        let Some(&to) = represent.get(card.id.bytes()) else {
+            continue;
+        };
+
+        // Upstream + internal blocks: cards that block this one. The blocker
+        // projects to its representative, or becomes a ghost when off-subtree; a
+        // same-representative block is intra-node and dropped by `add_edge`.
+        for edge in &card.blocked_by {
+            let from = represent
+                .get(edge.id.bytes())
+                .copied()
+                .unwrap_or_else(|| ensure_node(&mut nodes, &mut index, view, edge.id));
+            add_edge(&mut edges, &mut edge_at, from, to, edge.done);
+        }
+
+        // Downstream-ghost blocks: this card blocks one *outside* the epic's
+        // subtree (an in-subtree target is read from its own `blocked_by` above).
+        let source_cleared = view.card_is_done(card.id);
+        for edge in &card.blocks {
+            if represent.contains_key(edge.id.bytes()) {
+                continue;
+            }
+            let ghost = ensure_node(&mut nodes, &mut index, view, edge.id);
+            add_edge(&mut edges, &mut edge_at, to, ghost, source_cleared);
+        }
+    }
+
+    DependencyGraph { nodes, edges }
+}
+
+/// Record a collapsed edge `from -> to`, folding a repeat of the same
+/// representative pair into the existing arrow: its `done` becomes the AND of the
+/// two, so an aggregated edge is cleared only when *every* underlying block is.
+/// Self-edges (a block within one collapsed subtree) are dropped.
+fn add_edge(
+    edges: &mut Vec<GraphEdge>,
+    edge_at: &mut HashMap<(usize, usize), usize>,
+    from: usize,
+    to: usize,
+    done: bool,
+) {
+    if from == to {
+        return;
+    }
+    if let Some(&pos) = edge_at.get(&(from, to)) {
+        edges[pos].done &= done;
+    } else {
+        edge_at.insert((from, to), edges.len());
+        edges.push(GraphEdge { from, to, done });
+    }
+}
+
 /// Index of the node for `id`, adding it as a *ghost* if it is not already a
 /// node. Existing nodes (primary or an earlier ghost) keep their index and flag.
 fn ensure_node(
@@ -180,6 +325,9 @@ fn ensure_node(
         id,
         column: column_pos(view, id),
         ghost: true,
+        // Ghosts are context, not the epic's own work: no progress pill, and a
+        // ghost off this board has no subtree to walk here anyway.
+        progress: None,
     });
     idx
 }
@@ -219,6 +367,22 @@ fn column_pos(view: &BoardView, id: NoteId) -> Option<ColumnPos> {
             .iter()
             .any(|c| c.id == id)
             .then_some(ColumnPos { index, count })
+    })
+}
+
+/// The [`SubtreeProgress`] of the card `id`: done/total over its live subissue
+/// subtree ([`work_order`]), or `None` when the card has no live descendants (a
+/// leaf, which carries no progress pill). Doneness is [`BoardView::card_is_done`]
+/// so the whole graph decides doneness the one way.
+fn subtree_progress(view: &BoardView, id: NoteId) -> Option<SubtreeProgress> {
+    let subtree = work_order(view, &Container::Card(*id.bytes()));
+    if subtree.is_empty() {
+        return None;
+    }
+    let done = subtree.iter().filter(|c| view.card_is_done(c.id)).count();
+    Some(SubtreeProgress {
+        done,
+        total: subtree.len(),
     })
 }
 
@@ -427,6 +591,156 @@ mod tests {
     fn unknown_epic_is_empty() {
         let view = board(vec![]);
         let g = dependency_graph(&view, nid(7).bytes());
+        assert!(g.nodes.is_empty() && g.edges.is_empty());
+    }
+
+    /// The collapsed graph nodes only the epic's *direct* subissues (each with
+    /// subtree progress), projects a cross-subtree block onto its representatives,
+    /// drops an intra-subtree block, and keeps cross-subtree ghosts both ways.
+    #[test]
+    fn collapse_projects_edges_and_ghosts() {
+        // E(1) -> P(2){A(4),B(5)}, Q(3){C(6)}.
+        let epic = card(1, None, vec![subv(2), subv(3)], vec![], vec![]);
+        let p = card(2, Some(1), vec![subv(4), subv(5)], vec![], vec![]);
+        let q = card(3, Some(1), vec![subv(6)], vec![], vec![]);
+        // A(under P) is blocked by C(under Q) -> Q->P, and by ghost X(8) -> X->P.
+        let a = card(
+            4,
+            Some(2),
+            vec![],
+            vec![eref(6, false), eref(8, false)],
+            vec![],
+        );
+        // B(under P) is blocked by A(under P): intra-P, dropped.
+        let b = card(5, Some(2), vec![], vec![eref(4, false)], vec![]);
+        // C(under Q) blocks ghost Y(9) -> Q->Y.
+        let c = card(6, Some(3), vec![], vec![], vec![eref(9, false)]);
+        let x = card(8, None, vec![], vec![], vec![eref(4, false)]);
+        let y = card(9, None, vec![], vec![eref(6, false)], vec![]);
+
+        let view = board(vec![
+            (epic, "backlog"),
+            (p, "backlog"),
+            (q, "backlog"),
+            (a, "done"), // A done -> P progress 1/2
+            (b, "backlog"),
+            (c, "backlog"),
+            (x, "backlog"),
+            (y, "backlog"),
+        ]);
+        let g = collapsed_dependency_graph(&view, nid(1).bytes());
+
+        // Only the direct children P, Q are real nodes; ghosts X, Y follow.
+        assert_eq!(g.nodes.len(), 4);
+        assert_eq!(g.nodes[0].id, nid(2));
+        assert_eq!(g.nodes[1].id, nid(3));
+        assert!(!g.nodes[0].ghost && !g.nodes[1].ghost);
+        assert!(g.nodes[2].ghost && g.nodes[3].ghost);
+        // Neither the epic nor a grandchild (A/B/C) becomes a node.
+        for absent in [1u8, 4, 5, 6] {
+            assert!(
+                g.nodes.iter().all(|n| n.id != nid(absent)),
+                "no node {absent}"
+            );
+        }
+
+        // Subtree progress: P has A(done)+B -> 1/2; Q has C -> 0/1; ghosts none.
+        assert_eq!(
+            g.nodes[0].progress,
+            Some(SubtreeProgress { done: 1, total: 2 })
+        );
+        assert_eq!(
+            g.nodes[1].progress,
+            Some(SubtreeProgress { done: 0, total: 1 })
+        );
+        assert_eq!(g.nodes[2].progress, None);
+        assert_eq!(g.nodes[3].progress, None);
+
+        // Projected edges: Q->P, ghost X->P, Q->ghost Y. Intra-P B<-A is gone.
+        let want = [
+            (node_id(&g, 3), node_id(&g, 2)),
+            (node_id(&g, 8), node_id(&g, 2)),
+            (node_id(&g, 3), node_id(&g, 9)),
+        ];
+        let got: HashSet<(usize, usize)> = g.edges.iter().map(|e| (e.from, e.to)).collect();
+        assert_eq!(got, want.into_iter().collect::<HashSet<_>>());
+        assert_eq!(g.edges.len(), 3);
+    }
+
+    /// Several underlying blocks between the same two subtrees fold into one
+    /// arrow whose `done` is the AND of theirs — active while any block remains.
+    #[test]
+    fn collapse_aggregates_edge_done() {
+        // E(1) -> P(2){A(4),B(5)}, Q(3){C(6),D(7)}. C blocks A, D blocks B, so
+        // both underlying blocks project to a single Q->P edge.
+        let epic = card(1, None, vec![subv(2), subv(3)], vec![], vec![]);
+        let p = card(2, Some(1), vec![subv(4), subv(5)], vec![], vec![]);
+        let q = card(3, Some(1), vec![subv(6), subv(7)], vec![], vec![]);
+        // C(6) is done (cleared blocker); D(7) is not.
+        let a = card(4, Some(2), vec![], vec![eref(6, true)], vec![]);
+        let b = card(5, Some(2), vec![], vec![eref(7, false)], vec![]);
+        let c = card(6, Some(3), vec![], vec![], vec![]);
+        let d = card(7, Some(3), vec![], vec![], vec![]);
+
+        let view = board(vec![
+            (epic, "backlog"),
+            (p, "backlog"),
+            (q, "backlog"),
+            (a, "backlog"),
+            (b, "backlog"),
+            (c, "done"),
+            (d, "backlog"),
+        ]);
+        let g = collapsed_dependency_graph(&view, nid(1).bytes());
+
+        // One aggregated Q->P edge; not done because D's block is still active.
+        assert_eq!(g.edges.len(), 1);
+        let edge = g.edges[0];
+        assert_eq!((edge.from, edge.to), (node_id(&g, 3), node_id(&g, 2)));
+        assert!(!edge.done, "aggregated edge active while any block remains");
+    }
+
+    /// A direct child that is itself a leaf collapses to an ordinary node — no
+    /// progress pill — and still participates in edges.
+    #[test]
+    fn collapse_leaf_child_has_no_progress() {
+        // E(1) -> P(2){A(4)}, L(3) leaf. L blocks P's child A -> L->P.
+        let epic = card(1, None, vec![subv(2), subv(3)], vec![], vec![]);
+        let p = card(2, Some(1), vec![subv(4)], vec![], vec![]);
+        let l = card(3, Some(1), vec![], vec![], vec![]);
+        let a = card(4, Some(2), vec![], vec![eref(3, false)], vec![]);
+
+        let view = board(vec![
+            (epic, "backlog"),
+            (p, "backlog"),
+            (l, "backlog"),
+            (a, "backlog"),
+        ]);
+        let g = collapsed_dependency_graph(&view, nid(1).bytes());
+
+        assert_eq!(g.nodes.len(), 2);
+        assert_eq!(
+            g.nodes[node_id(&g, 2)].progress,
+            Some(SubtreeProgress { done: 0, total: 1 })
+        );
+        assert_eq!(
+            g.nodes[node_id(&g, 3)].progress,
+            None,
+            "leaf child: no pill"
+        );
+        // L blocks A (under P) -> a single L->P edge.
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(
+            (g.edges[0].from, g.edges[0].to),
+            (node_id(&g, 3), node_id(&g, 2))
+        );
+    }
+
+    /// An unknown/leaf epic collapses to an empty graph, not a panic.
+    #[test]
+    fn collapse_unknown_epic_is_empty() {
+        let view = board(vec![]);
+        let g = collapsed_dependency_graph(&view, nid(7).bytes());
         assert!(g.nodes.is_empty() && g.edges.is_empty());
     }
 }
