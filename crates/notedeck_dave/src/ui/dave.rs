@@ -1501,6 +1501,7 @@ impl<'a> DaveUi<'a> {
             unknown_ids: ctx.unknown_ids,
             nip05_cache: ctx.nip05_cache,
             style_cache: ctx.style_cache,
+            time_cache: ctx.time_cache,
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,

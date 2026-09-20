@@ -16,6 +16,7 @@ use notedeck::GlobalWallet;
 use notedeck::Images;
 use notedeck::Localization;
 use notedeck::MediaAction;
+use notedeck::RelativeTimeCache;
 use notedeck::{get_current_wallet, MediaJobSender};
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
@@ -237,7 +238,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                render_notetime(ui, self.note_context.i18n, self.note.created_at(), false)
+                render_notetime(
+                    ui,
+                    self.note_context.i18n,
+                    self.note_context.time_cache,
+                    self.note.created_at(),
+                    false,
+                )
             });
             let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
@@ -375,7 +382,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     .abbreviated(20),
                 );
                 if !flags.contains(NoteOptions::FullCreatedDate) {
-                    return render_notetime(ui, note_context.i18n, note.created_at(), true);
+                    return render_notetime(
+                        ui,
+                        note_context.i18n,
+                        note_context.time_cache,
+                        note.created_at(),
+                        true,
+                    );
                 }
                 response
             })
@@ -1280,23 +1293,35 @@ fn actionbar_ui(
 }
 
 #[profiling::function]
+/// The note header's relative timestamp, e.g. `"3d 4h ⋅ "`.
+///
+/// Goes through [`RelativeTimeCache`] rather than
+/// [`notedeck::time_ago_since`]: this runs once per visible note per frame, and
+/// formatting a relative time through Fluent is one of the most expensive things
+/// in the frame. The separator is appended into a right-sized `String` because
+/// `secondary_label` wants an owned one either way, and growing a `format!`
+/// buffer would cost a realloc per note per frame.
 fn render_notetime(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
+    time_cache: &mut RelativeTimeCache,
     created_at: u64,
     before: bool,
 ) -> Response {
+    const SEPARATOR: &str = " ⋅ ";
+
+    let ago = time_cache.time_ago_since(i18n, created_at);
+
+    let mut label = String::with_capacity(ago.len() + SEPARATOR.len());
     if before {
-        secondary_label(
-            ui,
-            format!(" ⋅ {}", notedeck::time_ago_since(i18n, created_at)),
-        )
+        label.push_str(SEPARATOR);
+        label.push_str(ago);
     } else {
-        secondary_label(
-            ui,
-            format!("{} ⋅ ", notedeck::time_ago_since(i18n, created_at)),
-        )
+        label.push_str(ago);
+        label.push_str(SEPARATOR);
     }
+
+    secondary_label(ui, label)
 }
 
 fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {

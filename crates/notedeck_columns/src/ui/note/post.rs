@@ -921,6 +921,7 @@ mod preview {
                 unknown_ids: app.unknown_ids,
                 nip05_cache: app.nip05_cache,
                 style_cache: app.style_cache,
+                time_cache: app.time_cache,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
                 sound: app.sound,

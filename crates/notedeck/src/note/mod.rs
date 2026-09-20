@@ -41,6 +41,11 @@ pub struct NoteContext<'d> {
     /// going through this keeps that an `Arc` bump instead of seven `Style`
     /// clones.
     pub style_cache: &'d mut crate::StyleCache,
+    /// Localized relative timestamps memoised per time bucket — see
+    /// [`RelativeTimeCache`](crate::RelativeTimeCache). The note header renders
+    /// one per visible note per frame, for a string that ticks once a minute at
+    /// most once a note is over a minute old.
+    pub time_cache: &'d mut crate::RelativeTimeCache,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
     pub sound: &'d SoundManager,
     /// Read-only, app-contributed registries for this frame (inline kind

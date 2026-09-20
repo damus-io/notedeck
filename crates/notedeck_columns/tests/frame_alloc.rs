@@ -79,7 +79,8 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// seeded kind-1 notes from two authors, no relay connected, 60 warm-up frames
 /// discarded and 120 frames measured, `dev` profile on x86-64 Linux.
 ///
-/// It was **991** when this test landed. Two changes have taken it down since:
+/// It was **991** when this test landed. Three changes have taken it down
+/// since:
 ///
 /// - **991 -> 885**: `notedeck::StyleCache` stopped the note path deep-cloning
 ///   an `egui::Style` seven times per visible note, which took 66,400 bytes a
@@ -88,6 +89,11 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 ///   whose cached path cloned the normalized FTL key it had just found (42 a
 ///   frame) and built an error to describe an untranslated string (14 a frame).
 ///   The cached path is now two map probes and the returned `String`.
+/// - **829 -> 745**: `notedeck::RelativeTimeCache` memoises the note header's
+///   relative timestamp per time bucket, so "3d 4h" is formatted when it
+///   changes rather than once per visible note per frame. Formatting one ran
+///   two argument-bearing `tr!` calls, which are the kind `Localization` never
+///   caches; that was 8,799 bytes a frame.
 ///
 /// The measurement is bit-exact — across all 120 frames, min, median and max
 /// are the same number — but it is not portable. At the 991 baseline the same
@@ -96,15 +102,15 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// [`AllocBudget::tolerance_allocs`] is sized against, and it is why the
 /// tolerance is a count rather than a percentage.
 ///
-/// The same frame costs 794 allocations in the `release` profile, which is why
+/// The same frame costs 710 allocations in the `release` profile, which is why
 /// [`the_steady_state_frame_stays_within_its_allocation_budget`] only asserts in
-/// `dev`. It also allocates **189,526 bytes** and does **176 reallocations** per
+/// `dev`. It also allocates **180,727 bytes** and does **169 reallocations** per
 /// frame; those are not in the budget because a ratchet on one well-chosen
 /// number is a ratchet people keep, and the allocation count is the number that
 /// moves when somebody adds an allocation. The report prints all of them.
 const HOME_TIMELINE_BUDGET: AllocBudget = AllocBudget {
-    measured_median: 829,
-    measured_peak: 829,
+    measured_median: 745,
+    measured_peak: 745,
 
     // Four: comfortably over the one-allocation spread measured between this
     // box and an ubuntu-22.04 container, and comfortably under the seven a

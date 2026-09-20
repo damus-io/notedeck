@@ -107,6 +107,12 @@ pub struct Localization {
     /// Bundles
     bundles: HashMap<LanguageIdentifier, Bundle>,
 
+    /// Bumped whenever anything that would change a translation's text changes
+    /// — currently the locale. Lets a cache built on top of this one
+    /// (e.g. [`RelativeTimeCache`](crate::RelativeTimeCache)) notice it holds
+    /// strings from the wrong locale without watching `set_locale` itself.
+    cache_generation: u64,
+
     use_isolating: bool,
 }
 
@@ -156,6 +162,7 @@ impl Default for Localization {
             normalized_key_cache: HashMap::new(),
             string_cache: HashMap::new(),
             bundles: HashMap::new(),
+            cache_generation: 0,
         }
     }
 }
@@ -425,6 +432,7 @@ impl Localization {
 
         // Clear caches when locale changes since they are locale-specific
         self.string_cache.clear();
+        self.cache_generation += 1;
         tracing::debug!("String cache cleared due to locale change");
 
         Ok(())
@@ -436,9 +444,22 @@ impl Localization {
         tracing::debug!("Parsed FluentResource cache cleared");
 
         self.string_cache.clear();
+        self.cache_generation += 1;
         tracing::debug!("String result cache cleared");
 
         Ok(())
+    }
+
+    /// A counter that moves whenever translated text this manager already
+    /// handed out could have become wrong — currently, a locale change or a
+    /// bundle reload.
+    ///
+    /// Downstream caches keyed on something other than the locale (the note
+    /// header's [`RelativeTimeCache`](crate::RelativeTimeCache) is keyed on the
+    /// time bucket) compare this against the value they were built at and clear
+    /// when it moves.
+    pub fn cache_generation(&self) -> u64 {
+        self.cache_generation
     }
 
     /// Gets the current locale

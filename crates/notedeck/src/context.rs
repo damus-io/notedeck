@@ -45,6 +45,11 @@ pub struct AppContext<'a> {
     /// UI code that wants a tweaked spacing goes through this instead of
     /// `ui.spacing_mut()`, which deep-clones the whole `Style`.
     pub style_cache: &'a mut crate::StyleCache,
+    /// Localized relative timestamps memoised per time bucket — see
+    /// [`RelativeTimeCache`](crate::RelativeTimeCache). Per-frame callers use
+    /// this instead of [`time_ago_since`](crate::time_ago_since), which
+    /// re-formats through Fluent on every call.
+    pub time_cache: &'a mut crate::RelativeTimeCache,
     pub i18n: &'a mut Localization,
     pub sound: &'a SoundManager,
     /// Read-only, app-contributed registries for this frame (inline kind
@@ -141,6 +146,7 @@ impl<'a> AppContext<'a> {
             unknown_ids: self.unknown_ids,
             nip05_cache: self.nip05_cache,
             style_cache: self.style_cache,
+            time_cache: self.time_cache,
             clipboard: self.clipboard,
             i18n: self.i18n,
             sound: self.sound,

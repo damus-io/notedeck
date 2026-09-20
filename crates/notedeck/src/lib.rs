@@ -152,7 +152,8 @@ pub use style::NotedeckTextStyle;
 pub use style_cache::StyleCache;
 pub use theme::ColorTheme;
 pub use time::{
-    is_future_timestamp, time_ago_between, time_ago_since, time_format, unix_time_secs,
+    is_future_timestamp, relative_time, render_relative_time, time_ago_between, time_ago_since,
+    time_format, unix_time_secs, RelativeTime, RelativeTimeCache, TimePart, TimeUnit,
     MAX_FUTURE_NOTE_SKEW_SECS,
 };
 pub use timecache::TimeCached;
