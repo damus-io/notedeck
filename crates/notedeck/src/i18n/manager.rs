@@ -1,7 +1,6 @@
-use super::{IntlError, IntlKey, IntlKeyBuf};
+use super::{IntlError, IntlKeyBuf};
 use fluent::{FluentArgs, FluentBundle, FluentResource};
 use fluent_langneg::negotiate_languages;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use unic_langid::{langid, LanguageIdentifier};
 
@@ -175,9 +174,35 @@ impl Localization {
         }
     }
 
-    /// Gets a localized string by its ID
-    pub fn get_string(&mut self, id: IntlKey<'_>) -> Result<String, IntlError> {
-        self.get_cached_string(id, None)
+    /// Translates a source `message` into the current locale, normalizing it
+    /// to its FTL key on the way.
+    ///
+    /// `args` are the `tr!` interpolation arguments, and `None` means there are
+    /// none. Returns `None` when the current bundle has no value for the key,
+    /// which is the caller's cue to fall back to the untranslated `message`.
+    ///
+    /// This does the whole lookup in one call rather than handing the caller a
+    /// normalized key to look up itself, because that is what it takes for the
+    /// cached case to allocate nothing: the normalized key lives in a map owned
+    /// by `self`, so a caller that receives it and then calls another
+    /// `&mut self` method has to be given a clone. `tr!` runs 42 times in a
+    /// single Columns timeline frame, and that clone was 42 allocations a frame
+    /// (measured by `notedeck_columns`'s `frame_alloc` test).
+    pub fn translate(
+        &mut self,
+        message: &str,
+        comment: &str,
+        args: Option<&FluentArgs>,
+    ) -> Option<String> {
+        // Strings with arguments are never cached — see `format_uncached` —
+        // so there is nothing to look for.
+        if args.is_none() {
+            if let Some(cached) = self.cached_translation(message) {
+                return Some(cached.to_owned());
+            }
+        }
+
+        self.format_uncached(message, comment, args)
     }
 
     /// Load a fluent bundle given a language identifier. Only looks in the static
@@ -238,18 +263,17 @@ impl Localization {
         Ok(())
     }
 
-    pub fn normalized_ftl_key(&mut self, key: &str, comment: &str) -> IntlKeyBuf {
-        match self.get_ftl_key(key) {
-            Some(intl_key) => intl_key,
-            None => {
-                self.insert_ftl_key(key, comment);
-                self.get_ftl_key(key).unwrap()
-            }
-        }
-    }
-
-    fn get_ftl_key(&self, cache_key: &str) -> Option<IntlKeyBuf> {
-        self.normalized_key_cache.get(cache_key).cloned()
+    /// The already-translated case: two map lookups and no allocation at all.
+    ///
+    /// Deliberately `&self`. Everything it touches is already in the two caches,
+    /// so it can hand back a borrow of the cached translation and leave it to
+    /// the caller to decide whether it needs an owned `String`. Both maps are
+    /// keyed by `String` and probed by `&str`, so nothing is built to probe
+    /// them either.
+    fn cached_translation(&self, message: &str) -> Option<&str> {
+        let key = self.normalized_key_cache.get(message)?;
+        let locale_cache = self.string_cache.get(&self.current_locale)?;
+        locale_cache.get(key.as_str()).map(String::as_str)
     }
 
     fn insert_ftl_key(&mut self, cache_key: &str, comment: &str) {
@@ -272,29 +296,6 @@ impl Localization {
 
         self.normalized_key_cache
             .insert(cache_key.to_owned(), IntlKeyBuf::new(result));
-    }
-
-    fn get_cached_string_no_args<'key>(
-        &'key self,
-        lang: &LanguageIdentifier,
-        id: IntlKey<'key>,
-    ) -> Result<Cow<'key, str>, IntlError> {
-        // Try to get from string cache first
-        if let Some(locale_cache) = self.string_cache.get(lang) {
-            if let Some(cached_string) = locale_cache.get(id.as_str()) {
-                /*
-                tracing::trace!(
-                    "Using cached string result for '{}' in locale: {}",
-                    id,
-                    &lang
-                );
-                */
-
-                return Ok(Cow::Borrowed(cached_string));
-            }
-        }
-
-        Err(IntlError::NotFound(id.to_owned()))
     }
 
     fn ensure_bundle(&mut self) -> Result<(), IntlError> {
@@ -328,61 +329,76 @@ impl Localization {
         self.get_bundle(&self.fallback_locale)
     }
 
-    /// Gets cached string result, or formats it and caches the result
-    pub fn get_cached_string(
+    /// Formats `message` through the current bundle, normalizing and caching
+    /// its key on the way, and caching the result if it has no arguments.
+    ///
+    /// Split out from [`Localization::translate`] so the cached path stays the
+    /// short `&self` [`Localization::cached_translation`]; this half needs
+    /// `&mut self` to fill both caches.
+    ///
+    /// It is not purely cold: a `tr!` whose key is missing from the bundle is
+    /// never cached, so it lands here every frame. That path allocates nothing
+    /// either — the `None` it returns is the fallback signal, and building an
+    /// error to describe it would be an allocation per frame per such string.
+    fn format_uncached(
         &mut self,
-        id: IntlKey<'_>,
+        message: &str,
+        comment: &str,
         args: Option<&FluentArgs>,
-    ) -> Result<String, IntlError> {
-        self.ensure_bundle()?;
-
-        if args.is_none() {
-            if let Ok(result) = self.get_cached_string_no_args(&self.current_locale, id) {
-                return Ok(result.to_string());
-            }
+    ) -> Option<String> {
+        if let Err(err) = self.ensure_bundle() {
+            tracing::error!("no bundle for {}: {err}", &self.current_locale);
+            return None;
         }
 
-        let result = {
+        if !self.normalized_key_cache.contains_key(message) {
+            self.insert_ftl_key(message, comment);
+        }
+
+        let formatted = {
+            let key = self.normalized_key_cache.get(message)?;
             let bundle = self.get_current_bundle();
-
-            let message = bundle
-                .get_message(id.as_str())
-                .ok_or_else(|| IntlError::NotFound(id.to_owned()))?;
-
-            let pattern = message
-                .value()
-                .ok_or_else(|| IntlError::NoValue(id.to_owned()))?;
+            let pattern = bundle.get_message(key.as_str())?.value()?;
 
             let mut errors = Vec::with_capacity(0);
-            let result = bundle.format_pattern(pattern, args, &mut errors);
+            let formatted = bundle.format_pattern(pattern, args, &mut errors);
 
             if !errors.is_empty() {
-                tracing::warn!("Localization errors for {}: {:?}", id, &errors);
+                tracing::warn!("Localization errors for {}: {:?}", key, &errors);
             }
 
-            result.to_string()
+            formatted.into_owned()
         };
 
-        // Only cache simple strings without arguments
-        // This prevents caching issues when the same message ID is used with different arguments
+        // Only strings without arguments are cached: the same message id
+        // formatted with different arguments has different results.
         if args.is_none() {
-            self.cache_string(self.current_locale.clone(), id, result.as_str());
-            tracing::debug!(
-                "Cached string result for '{}' in locale: {}",
-                id,
-                &self.current_locale
-            );
-        } else {
-            tracing::trace!("Not caching string '{}' due to arguments", id);
+            self.cache_translation(message, &formatted);
         }
 
-        Ok(result)
+        Some(formatted)
     }
 
-    pub fn cache_string<'a>(&mut self, locale: LanguageIdentifier, id: IntlKey<'a>, result: &str) {
-        tracing::debug!("Cached string result for '{}' in locale: {}", id, &locale);
-        let locale_cache = self.string_cache.entry(locale).or_default();
-        locale_cache.insert(id.to_owned().to_string(), result.to_owned());
+    /// Records `formatted` as the current locale's translation of `message`.
+    ///
+    /// Keyed by the normalized FTL key rather than by `message`, so that
+    /// [`Localization::cached_translation`] finds it through the same two
+    /// lookups it would do anyway.
+    fn cache_translation(&mut self, message: &str, formatted: &str) {
+        // Owned because it is about to be a map key, not to end the borrow of
+        // `self` — though it does that too.
+        let Some(key) = self.normalized_key_cache.get(message) else {
+            return;
+        };
+        let key = key.as_str().to_owned();
+        let locale = self.current_locale.clone();
+
+        tracing::debug!("Cached string result for '{key}' in locale: {locale}");
+
+        self.string_cache
+            .entry(locale)
+            .or_default()
+            .insert(key, formatted.to_owned());
     }
 
     /// Sets the current locale
@@ -498,197 +514,6 @@ pub struct CacheStats {
     pub cached_locales: Vec<LanguageIdentifier>,
 }
 
-#[cfg(test)]
-mod tests {
-
-    //
-    // TODO(jb55): write tests that work, i broke all these during the refacto
-    //
-
-    /*
-    use super::*;
-    #[test]
-    fn test_locale_management() {
-        let i18n = Localization::default();
-
-        // Test default locale
-        let current = i18n.get_current_locale();
-        assert_eq!(current.to_string(), "en-US");
-
-        // Test available locales
-        let available = i18n.get_available_locales();
-        assert_eq!(available.len(), 2);
-        assert_eq!(available[0].to_string(), "en-US");
-        assert_eq!(available[1].to_string(), "en-XA");
-    }
-
-    #[test]
-    fn test_cache_clearing() {
-        let mut i18n = Localization::default();
-
-        // Load and cache the FTL content
-        let result1 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
-        assert!(result1.is_ok());
-
-        // Clear the cache
-        let clear_result = i18n.clear_cache();
-        assert!(clear_result.is_ok());
-
-        // Should still work after clearing cache (will reload)
-        let result2 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap(), "Test Value");
-    }
-
-    #[test]
-    fn test_context_caching() {
-        let mut i18n = Localization::default();
-
-        // Debug: check what the normalized key should be
-        let normalized_key = i18n.normalized_ftl_key("test_key", "comment");
-        println!("Normalized key: '{}'", normalized_key);
-
-        // First call should load and cache the FTL content
-        let result1 = i18n.get_string(normalized_key.borrow());
-        println!("First result: {:?}", result1);
-        assert!(result1.is_ok());
-        assert_eq!(result1.unwrap(), "Test Value");
-
-        // Second call should use cached FTL content
-        let result2 = i18n.get_string(normalized_key.borrow());
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap(), "Test Value");
-
-        // Test cache clearing through context
-        let clear_result = i18n.clear_cache();
-        assert!(clear_result.is_ok());
-
-        // Should still work after clearing cache
-        let result3 = i18n.get_string(normalized_key.borrow());
-        assert!(result3.is_ok());
-        assert_eq!(result3.unwrap(), "Test Value");
-    }
-
-
-    #[test]
-    fn test_ftl_caching() {
-        let mut i18n = Localization::default();
-
-        // First call should load and cache the FTL content
-        let result1 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
-        assert!(result1.is_ok());
-        assert_eq!(result1.as_ref().unwrap(), "Test Value");
-
-        // Second call should use cached FTL content
-        let result2 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap(), "Test Value");
-
-        // Test another key from the same FTL content
-        let result3 = i18n.get_string(IntlKeyBuf::new("another_key").borrow());
-        assert!(result3.is_ok());
-        assert_eq!(result3.unwrap(), "Another Value");
-    }
-    #[test]
-    fn test_bundle_caching() {
-        let mut i18n = Localization::default();
-
-        // First call should create bundle and cache the resource
-        let result1 = i18n.get_string(IntlKeyBuf::new("test_key").borrow());
-        assert!(result1.is_ok());
-        assert_eq!(result1.unwrap(), "Test Value");
-
-        // Second call should use cached resource but create new bundle
-        let result2 = i18n.get_string(IntlKeyBuf::new("another_key").borrow());
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap(), "Another Value");
-
-        // Check cache stats
-        let stats = i18n.get_cache_stats().unwrap();
-        assert_eq!(stats.resource_cache_size, 1);
-        assert_eq!(stats.string_cache_size, 2); // Both strings should be cached
-    }
-
-    #[test]
-    fn test_string_caching() {
-        let mut i18n = Localization::default();
-        let key = i18n.normalized_ftl_key("test_key", "comment");
-
-        // First call should format and cache the string
-        let result1 = i18n.get_string(key.borrow());
-        assert!(result1.is_ok());
-        assert_eq!(result1.unwrap(), "Test Value");
-
-        // Second call should use cached string
-        let result2 = i18n.get_string(key.borrow());
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap(), "Test Value");
-
-        // Check cache stats
-        let stats = i18n.get_cache_stats().unwrap();
-        assert_eq!(stats.string_cache_size, 1);
-    }
-    #[test]
-    fn test_string_caching_with_arguments() {
-        let mut manager = Localization::default();
-
-        // First call with arguments should not be cached
-        let mut args = fluent::FluentArgs::new();
-        args.set("name", "Alice");
-        let key = IntlKeyBuf::new("welcome_message");
-        let result1 = manager
-            .get_cached_string(key.borrow(), Some(&args))
-            .unwrap();
-        assert!(result1.contains("Alice"));
-
-        // Check that it's not in the string cache
-        let stats1 = manager.get_cache_stats().unwrap();
-        assert_eq!(stats1.string_cache_size, 0);
-
-        // Second call with different arguments should work correctly
-        let mut args2 = fluent::FluentArgs::new();
-        args2.set("name", "Bob");
-        let result2 = manager.get_cached_string(key.borrow(), Some(&args2));
-        assert!(result2.is_ok());
-        let result2_str = result2.unwrap();
-        assert!(result2_str.contains("Bob"));
-
-        // Check that it's still not in the string cache
-        let stats2 = manager.get_cache_stats().unwrap();
-        assert_eq!(stats2.string_cache_size, 0);
-
-        // Clear cache to start fresh
-        manager.clear_cache().unwrap();
-
-        let result3 = manager.get_string(key.borrow());
-        assert!(result3.is_ok());
-        assert_eq!(result3.unwrap(), "Hello World");
-
-        // Check that simple string is cached
-        let stats3 = manager.get_cache_stats().unwrap();
-        assert_eq!(stats3.string_cache_size, 1);
-    }
-
-    #[test]
-    fn test_cache_clearing_on_locale_change() {
-        let mut i18n = Localization::default();
-
-        // Check that caches are populated
-        let stats1 = i18n.get_cache_stats().unwrap();
-        assert!(stats1.resource_cache_size > 0);
-        assert!(stats1.string_cache_size > 0);
-
-        // Switch to en-XA
-        let en_xa: LanguageIdentifier = langid!("en-XA");
-        i18n.set_locale(en_xa).unwrap();
-
-        // Check that string cache is cleared (resource cache remains for both locales)
-        let stats2 = i18n.get_cache_stats().unwrap();
-        assert_eq!(stats2.string_cache_size, 0);
-    }
-    */
-}
-
 /// Replace each invalid character with exactly one underscore
 /// This matches the behavior of the Python extraction script
 pub fn fixup_key(s: &str) -> String {
@@ -707,4 +532,95 @@ fn simple_hash(s: &str) -> String {
     let digest = md5::compute(s.as_bytes());
     // Take the first 2 bytes and convert to 4 hex characters
     format!("{:02x}{:02x}", digest[0], digest[1])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A message that really is in `assets/translations/en-US/main.ftl`,
+    /// together with the comment its key was generated from. The pair has to
+    /// match a live `tr!` call site, because the key is a function of both.
+    const KNOWN: (&str, &str) = ("Reply", "Column title for reply composition");
+
+    #[test]
+    fn translates_a_known_message() {
+        let mut i18n = Localization::no_bidi();
+        assert_eq!(
+            i18n.translate(KNOWN.0, KNOWN.1, None).as_deref(),
+            Some("Reply")
+        );
+    }
+
+    #[test]
+    fn the_second_lookup_of_a_message_is_a_cache_hit() {
+        let mut i18n = Localization::no_bidi();
+
+        assert_eq!(i18n.cached_translation(KNOWN.0), None);
+
+        let first = i18n.translate(KNOWN.0, KNOWN.1, None);
+        assert_eq!(first.as_deref(), Some("Reply"));
+
+        // The point of the split: after the first lookup the answer is reachable
+        // without touching a bundle, formatting a pattern or allocating.
+        assert_eq!(i18n.cached_translation(KNOWN.0), Some("Reply"));
+        assert_eq!(i18n.translate(KNOWN.0, KNOWN.1, None), first);
+    }
+
+    #[test]
+    fn an_untranslated_message_is_none_rather_than_an_error() {
+        let mut i18n = Localization::no_bidi();
+
+        // Nothing generated an FTL key for this, so the bundle has no value for
+        // it. `tr!` turns the `None` into the source message.
+        assert_eq!(
+            i18n.translate("no ftl entry exists for this", "nor for this comment", None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_untranslated_message_is_not_cached() {
+        let mut i18n = Localization::no_bidi();
+
+        i18n.translate("no ftl entry exists for this", "nor for this comment", None);
+
+        // It lands in `format_uncached` again on every later lookup, which is
+        // why that path is written to allocate nothing.
+        assert_eq!(i18n.get_cache_stats().unwrap().string_cache_size, 0);
+    }
+
+    #[test]
+    fn strings_with_arguments_are_never_cached() {
+        let mut i18n = Localization::no_bidi();
+        let mut args = FluentArgs::new();
+        args.set("count", 2);
+
+        i18n.translate(KNOWN.0, KNOWN.1, Some(&args));
+
+        assert_eq!(i18n.get_cache_stats().unwrap().string_cache_size, 0);
+    }
+
+    #[test]
+    fn changing_locale_drops_the_cached_translations() {
+        let mut i18n = Localization::no_bidi();
+
+        i18n.translate(KNOWN.0, KNOWN.1, None);
+        assert!(i18n.cached_translation(KNOWN.0).is_some());
+
+        i18n.set_locale(EN_XA).unwrap();
+
+        // The normalized key survives — it does not depend on the locale — but
+        // the translation must not.
+        assert_eq!(i18n.cached_translation(KNOWN.0), None);
+    }
+
+    #[test]
+    fn tr_falls_back_to_the_source_message() {
+        let mut i18n = Localization::no_bidi();
+        assert_eq!(
+            crate::tr!(i18n, "no ftl entry exists for this", "nor for this comment"),
+            "no ftl entry exists for this"
+        );
+    }
 }

@@ -9,7 +9,7 @@ mod key;
 pub mod manager;
 
 pub use error::IntlError;
-pub use key::{IntlKey, IntlKeyBuf};
+pub use key::IntlKeyBuf;
 
 pub use manager::CacheStats;
 pub use manager::Localization;
@@ -33,10 +33,9 @@ pub use unic_langid::LanguageIdentifier;
 macro_rules! tr {
     ($i18n:expr, $message:expr, $comment:expr) => {
         {
-            let key = $i18n.normalized_ftl_key($message, $comment);
-            match $i18n.get_string(key.borrow()) {
-                Ok(r) => r,
-                Err(_err) => {
+            match $i18n.translate($message, $comment, None) {
+                Some(r) => r,
+                None => {
                     $message.to_string()
                 }
             }
@@ -46,14 +45,13 @@ macro_rules! tr {
     // Case with named parameters: message, comment, param=value, ...
     ($i18n:expr, $message:expr, $comment:expr, $($param:ident = $value:expr),*) => {
         {
-            let key = $i18n.normalized_ftl_key($message, $comment);
             let mut args = $crate::i18n::FluentArgs::new();
             $(
                 args.set(stringify!($param), $value);
             )*
-            match $i18n.get_cached_string(key.borrow(), Some(&args)) {
-                Ok(r) => r,
-                Err(_) => {
+            match $i18n.translate($message, $comment, Some(&args)) {
+                Some(r) => r,
+                None => {
                     // Fallback: replace placeholders with values
                     let mut result = $message.to_string();
                     $(
@@ -78,13 +76,12 @@ macro_rules! tr {
 macro_rules! tr_plural {
     // With named parameters
     ($i18n:expr, $one:expr, $other:expr, $comment:expr, $count:expr, $($param:ident = $value:expr),*) => {{
-        let norm_key = $i18n.normalized_ftl_key($other, $comment);
         let mut args = $crate::i18n::FluentArgs::new();
         args.set("count", $count);
         $(args.set(stringify!($param), $value);)*
-        match $i18n.get_cached_string(norm_key.borrow(), Some(&args)) {
-            Ok(s) => s,
-            Err(_) => {
+        match $i18n.translate($other, $comment, Some(&args)) {
+            Some(s) => s,
+            None => {
                 // Fallback: use simple pluralization
                 if $count == 1 {
                     let mut result = $one.to_string();
