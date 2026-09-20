@@ -1,9 +1,10 @@
 use egui::{Color32, RichText, Widget};
 use nostrdb::ProfileRecord;
-use notedeck::{fonts::NamedFontFamily, tr, Localization};
+use notedeck::{fonts::NamedFontFamily, tr, Localization, StyleCache};
 
 pub struct Username<'a> {
     i18n: &'a mut Localization,
+    style_cache: &'a mut StyleCache,
     profile: Option<&'a ProfileRecord<'a>>,
     pk: &'a [u8; 32],
     pk_colored: bool,
@@ -23,6 +24,7 @@ impl<'a> Username<'a> {
 
     pub fn new(
         i18n: &'a mut Localization,
+        style_cache: &'a mut StyleCache,
         profile: Option<&'a ProfileRecord>,
         pk: &'a [u8; 32],
     ) -> Self {
@@ -30,6 +32,7 @@ impl<'a> Username<'a> {
         let abbrev: usize = 1000;
         Username {
             i18n,
+            style_cache,
             profile,
             pk,
             pk_colored,
@@ -41,7 +44,7 @@ impl<'a> Username<'a> {
 impl Widget for Username<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
+            self.style_cache.item_spacing_x(ui, 0.0);
 
             let color = if self.pk_colored {
                 Some(pk_color(self.pk))

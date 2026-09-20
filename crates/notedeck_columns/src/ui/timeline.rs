@@ -160,6 +160,7 @@ fn timeline_ui(
     timeline.selected_view = tabs_ui(
         ui,
         note_context.i18n,
+        note_context.style_cache,
         timeline.selected_view,
         &timeline.views,
     )
@@ -308,10 +309,13 @@ fn goto_top_button(center: Pos2) -> impl egui::Widget {
 pub fn tabs_ui(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
+    style_cache: &mut notedeck::StyleCache,
     selected: usize,
     views: &[TimelineTab],
 ) -> egui::InnerResponse<usize> {
-    ui.spacing_mut().item_spacing.y = 0.0;
+    // Through the cache: this mutates the caller's `Ui`, so every note drawn
+    // after it inherits the result. See the comment in `render_damus_desktop`.
+    style_cache.item_spacing_y(ui, 0.0);
 
     let tab_res = egui_tabs::Tabs::new(views.len() as i32)
         .selected(selected as i32)
@@ -323,7 +327,7 @@ pub fn tabs_ui(
         .height(32.0)
         .layout(Layout::centered_and_justified(Direction::TopDown))
         .show(ui, |ui, state| {
-            ui.spacing_mut().item_spacing.y = 0.0;
+            style_cache.item_spacing_y(ui, 0.0);
 
             let ind = state.index();
 
@@ -431,8 +435,9 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             .borrow_mut()
             .ui_custom_layout(ui, len, |ui, index| {
                 // tracing::info!("rendering index: {index}");
-                ui.spacing_mut().item_spacing.y = 0.0;
-                ui.spacing_mut().item_spacing.x = 4.0;
+                self.note_context
+                    .style_cache
+                    .item_spacing(ui, egui::vec2(4.0, 0.0));
 
                 let Some(entry) = self.tab.units.get(index) else {
                     return 0;

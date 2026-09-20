@@ -245,6 +245,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 ui.add(
                     Username::new(
                         self.note_context.i18n,
+                        self.note_context.style_cache,
                         profile.as_ref().ok(),
                         self.note.pubkey(),
                     )
@@ -274,11 +275,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
     ) -> PfpResponse {
-        if !self.options().contains(NoteOptions::Wide) {
-            ui.spacing_mut().item_spacing.x = 16.0;
+        let item_spacing_x = if self.options().contains(NoteOptions::Wide) {
+            4.0
         } else {
-            ui.spacing_mut().item_spacing.x = 4.0;
-        }
+            16.0
+        };
+        self.note_context
+            .style_cache
+            .item_spacing_x(ui, item_spacing_x);
 
         let pfp_size = self.options().pfp_size();
 
@@ -359,10 +363,16 @@ impl<'a, 'd> NoteView<'a, 'd> {
     ) {
         let horiz_resp = ui
             .horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                let item_spacing_x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                note_context.style_cache.item_spacing_x(ui, item_spacing_x);
                 let response = ui.add(
-                    Username::new(note_context.i18n, profile.as_ref().ok(), note.pubkey())
-                        .abbreviated(20),
+                    Username::new(
+                        note_context.i18n,
+                        note_context.style_cache,
+                        profile.as_ref().ok(),
+                        note.pubkey(),
+                    )
+                    .abbreviated(20),
                 );
                 if !flags.contains(NoteOptions::FullCreatedDate) {
                     return render_notetime(ui, note_context.i18n, note.created_at(), true);
@@ -385,7 +395,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         if note.is_rumor() {
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                let item_spacing_x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                note_context.style_cache.item_spacing_x(ui, item_spacing_x);
 
                 // A green lock + green text, mirroring the private-reply badge on
                 // damus iOS: the treatment says at a glance that the note is private
@@ -515,6 +526,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 note_key,
                                 self.note_context.i18n,
                                 self.note_context.sound,
+                                self.note_context.style_cache,
                             )
                         })
                         .inner
@@ -560,7 +572,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     );
 
                     ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 1.0;
+                        self.note_context.style_cache.item_spacing_x(ui, 1.0);
 
                         let note_reply = self
                             .note_context
@@ -611,6 +623,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                     note_key,
                                     self.note_context.i18n,
                                     self.note_context.sound,
+                                    self.note_context.style_cache,
                                 )
                             })
                             .inner
@@ -1179,11 +1192,12 @@ fn actionbar_ui(
     note_key: NoteKey,
     i18n: &mut Localization,
     sound: &notedeck::SoundManager,
+    style_cache: &mut notedeck::StyleCache,
 ) -> Option<NoteAction> {
     let mut action = None;
     let spacing = notedeck::tokens::SPACING_XL;
 
-    ui.spacing_mut().item_spacing.x = 2.0;
+    style_cache.item_spacing_x(ui, 2.0);
     ui.set_min_height(26.0);
 
     let reply_resp =

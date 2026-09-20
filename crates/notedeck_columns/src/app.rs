@@ -943,7 +943,12 @@ fn render_damus_desktop(
         Size::remainder()
     };
 
-    ui.spacing_mut().item_spacing.x = 0.0;
+    // Through the cache rather than `ui.spacing_mut()`: this is the `Ui` the
+    // whole column tree inherits from, and mutating it would hand every note
+    // below a freshly cloned `Style` every frame — which is exactly what the
+    // per-note sites underneath are caching against. See
+    // [`notedeck::StyleCache`].
+    app_ctx.style_cache.item_spacing_x(ui, 0.0);
 
     if need_scroll {
         egui::ScrollArea::horizontal()

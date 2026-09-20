@@ -99,6 +99,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             let tabs_resp = tabs_ui(
                 ui,
                 self.note_context.i18n,
+                self.note_context.style_cache,
                 profile_timeline.selected_view,
                 &profile_timeline.views,
             );

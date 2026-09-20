@@ -79,22 +79,27 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// seeded kind-1 notes from two authors, no relay connected, 60 warm-up frames
 /// discarded and 120 frames measured, `dev` profile on x86-64 Linux.
 ///
-/// The measurement is bit-exact — across six runs, and across all 120 frames of
-/// each, min, median and max were the same number — but it is not portable. The
-/// same code in an `ubuntu:22.04` container, the image CI runs on, measures
-/// **990**: bit-exact there too, one allocation apart from here. That gap is
-/// what [`AllocBudget::tolerance_allocs`] is sized against, and it is why the
+/// It was **991** when this test landed. It is 885 because
+/// `notedeck::StyleCache` stopped the note path deep-cloning an `egui::Style`
+/// seven times per visible note; that is the whole of the 106, and it took
+/// 66,400 bytes a frame with it.
+///
+/// The measurement is bit-exact — across all 120 frames, min, median and max
+/// are the same number — but it is not portable. At the 991 baseline the same
+/// code in an `ubuntu:22.04` container, the image CI runs on, measured **990**:
+/// bit-exact there too, one allocation apart. That gap is what
+/// [`AllocBudget::tolerance_allocs`] is sized against, and it is why the
 /// tolerance is a count rather than a percentage.
 ///
-/// The same frame costs 956 allocations in the `release` profile, which is why
+/// The same frame costs 850 allocations in the `release` profile, which is why
 /// [`the_steady_state_frame_stays_within_its_allocation_budget`] only asserts in
-/// `dev`. It also allocates **256,852 bytes** and does **176 reallocations** per
+/// `dev`. It also allocates **190,452 bytes** and does **176 reallocations** per
 /// frame; those are not in the budget because a ratchet on one well-chosen
 /// number is a ratchet people keep, and the allocation count is the number that
 /// moves when somebody adds an allocation. The report prints all of them.
 const HOME_TIMELINE_BUDGET: AllocBudget = AllocBudget {
-    measured_median: 991,
-    measured_peak: 991,
+    measured_median: 885,
+    measured_peak: 885,
 
     // Four: comfortably over the one-allocation spread measured between this
     // box and an ubuntu-22.04 container, and comfortably under the seven a

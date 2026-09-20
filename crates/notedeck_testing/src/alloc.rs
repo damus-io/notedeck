@@ -495,18 +495,19 @@ pub struct AllocBudget {
     /// the wrong unit here, and finding that out is what the tolerance is sized
     /// from:
     ///
-    /// - **What drifts innocently is a couple of allocations.** The same frame
-    ///   measures 991 on one x86-64 Linux box and 990 on an ubuntu-22.04
-    ///   container, bit-exact on each. Different environment, same code, one
-    ///   allocation apart.
+    /// - **What drifts innocently is a couple of allocations.** Measured when
+    ///   this landed: the same frame came to 991 on one x86-64 Linux box and
+    ///   990 in an ubuntu-22.04 container, bit-exact on each. Different
+    ///   environment, same code, one allocation apart.
     /// - **What a regression costs is at least the number of items on screen.**
     ///   An allocation added to a per-note function is multiplied by every note
     ///   drawn — a `format!` in `actionbar_ui` costs seven allocations a frame
     ///   with seven notes visible, and more on a taller window.
     ///
     /// So there is a gap between the two, and an absolute tolerance sits in it.
-    /// A percentage does not: 2% of 991 is 19 allocations, which swallows that
-    /// `format!` whole, and it would grow as the frame gets more expensive —
+    /// A percentage does not: 2% of a thousand-allocation frame is 20
+    /// allocations, which swallows that `format!` whole, and it would grow as
+    /// the frame gets more expensive —
     /// exactly backwards, since a dearer frame is one that needs *more*
     /// scrutiny, not more slack.
     ///
