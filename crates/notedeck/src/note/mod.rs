@@ -36,6 +36,11 @@ pub struct NoteContext<'d> {
     pub jobs: &'d MediaJobSender,
     pub unknown_ids: &'d mut UnknownIds,
     pub nip05_cache: &'d mut Nip05Cache,
+    /// Prebuilt `egui::Style` variants — see [`StyleCache`](crate::StyleCache).
+    /// The note path tweaks `item_spacing` in seven places per visible note;
+    /// going through this keeps that an `Arc` bump instead of seven `Style`
+    /// clones.
+    pub style_cache: &'d mut crate::StyleCache,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
     pub sound: &'d SoundManager,
     /// Read-only, app-contributed registries for this frame (inline kind

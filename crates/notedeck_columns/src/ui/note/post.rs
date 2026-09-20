@@ -920,6 +920,7 @@ mod preview {
                 jobs: app.media_jobs.sender(),
                 unknown_ids: app.unknown_ids,
                 nip05_cache: app.nip05_cache,
+                style_cache: app.style_cache,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
                 sound: app.sound,

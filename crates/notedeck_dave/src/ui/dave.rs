@@ -1500,6 +1500,7 @@ impl<'a> DaveUi<'a> {
             jobs: ctx.media_jobs.sender(),
             unknown_ids: ctx.unknown_ids,
             nip05_cache: ctx.nip05_cache,
+            style_cache: ctx.style_cache,
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
