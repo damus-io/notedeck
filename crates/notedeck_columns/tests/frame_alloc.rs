@@ -79,7 +79,7 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// seeded kind-1 notes from two authors, no relay connected, 60 warm-up frames
 /// discarded and 120 frames measured, `dev` profile on x86-64 Linux.
 ///
-/// It was **991** when this test landed. Five changes have taken it down
+/// It was **991** when this test landed. Six changes have taken it down
 /// since:
 ///
 /// - **991 -> 885**: `notedeck::StyleCache` stopped the note path deep-cloning
@@ -105,6 +105,10 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 ///   stack buffer, so an empty poll costs nothing. This one landed in the
 ///   nostrdb-rs fork rather than here (`e264a030bf85`), so it arrived as a rev
 ///   bump.
+/// - **726 -> 718**: `Accounts::mute` returned `Box<Arc<Muted>>`, so a mute
+///   lookup heap-allocated eight bytes to carry a pointer it already had. It
+///   returns `&Arc<Muted>` now. The note context button did it once per visible
+///   note and `TimelineTabView::show` once more.
 ///
 /// The measurement is bit-exact — across all 120 frames, min, median and max
 /// are the same number — but it is not portable. At the 991 baseline the same
@@ -113,15 +117,15 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// [`AllocBudget::tolerance_allocs`] is sized against, and it is why the
 /// tolerance is a count rather than a percentage.
 ///
-/// The same frame costs 691 allocations in the `release` profile, which is why
+/// The same frame costs 683 allocations in the `release` profile, which is why
 /// [`the_steady_state_frame_stays_within_its_allocation_budget`] only asserts in
-/// `dev`. It also allocates **179,847 bytes** and does **169 reallocations** per
+/// `dev`. It also allocates **179,783 bytes** and does **169 reallocations** per
 /// frame; those are not in the budget because a ratchet on one well-chosen
 /// number is a ratchet people keep, and the allocation count is the number that
 /// moves when somebody adds an allocation. The report prints all of them.
 const HOME_TIMELINE_BUDGET: AllocBudget = AllocBudget {
-    measured_median: 726,
-    measured_peak: 726,
+    measured_median: 718,
+    measured_peak: 718,
 
     // Four: comfortably over the one-allocation spread measured between this
     // box and an ubuntu-22.04 container, and comfortably under the seven a

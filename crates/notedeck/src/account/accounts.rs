@@ -324,9 +324,15 @@ impl Accounts {
         Box::new(move |note: &Note, thread: &[u8; 32]| muted.is_muted(note, thread))
     }
 
-    pub fn mute(&self) -> Box<Arc<crate::Muted>> {
-        let account_data = self.get_selected_account_data();
-        Box::new(Arc::clone(&account_data.muted.muted))
+    /// Borrow the selected account's mute list.
+    ///
+    /// This is called once per visible note in the render loop, so it hands
+    /// back a reference rather than an owned handle; callers that need to
+    /// outlive the borrow (because they also take `accounts` mutably) can
+    /// `Arc::clone` it themselves, which costs a refcount bump and no
+    /// allocation.
+    pub fn mute(&self) -> &Arc<crate::Muted> {
+        &self.get_selected_account_data().muted.muted
     }
 
     pub fn update_max_hashtags_per_note(&mut self, max_hashtags: usize) {
