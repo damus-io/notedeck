@@ -4,6 +4,7 @@
 //! management, UI helpers, and fixture builders that any Notedeck app crate
 //! can use in its integration tests.
 
+pub mod alloc;
 pub mod cluster;
 pub mod device;
 pub mod fixtures;

@@ -49,6 +49,21 @@ jobs:
         env:
           CI: true
 
+      # The per-frame allocation ratchet. Its own step rather than part of the
+      # E2E run above, because it is the one test in the suite whose failure
+      # means "somebody made a frame more expensive" rather than "something is
+      # broken", and that is worth reading off the job list without opening it.
+      #
+      # `--nocapture` so the measured distribution is in the log on a pass too;
+      # a ratchet whose number only appears when it breaks is a number nobody
+      # has looked at. On macOS and Windows the test measures and reports
+      # without asserting, since the budget is an x86-64 Linux figure — see
+      # `off_the_reference_build` in that file.
+      - name: Run notedeck_columns Frame Allocation Budget
+        run: cargo test -p notedeck_columns --test frame_alloc -- --test-threads=1 --nocapture
+        env:
+          CI: true
+
       - name: Run notedeck_messages Unit Tests
         run: cargo test -p notedeck_messages --lib
         env:
