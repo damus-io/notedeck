@@ -804,7 +804,7 @@ fn graph_view_ui(
     // Build the model and lay it out. `GRAPH_NODE_SIZE` overrides the layout's
     // default box height so the reserved rect matches the drawn node exactly (the
     // node renderer's landing note): a mismatch would leave gaps or overlaps.
-    let graph = headway::graph::dependency_graph(view, epic.bytes());
+    let graph = headway::graph::collapsed_dependency_graph(view, epic.bytes());
     let edges: Vec<(usize, usize)> = graph.edges.iter().map(|e| (e.from, e.to)).collect();
     let cfg = notedeck_ui::graph::layout::LayoutConfig {
         node_size: GRAPH_NODE_SIZE,
@@ -817,9 +817,14 @@ fn graph_view_ui(
     let active_edge = theme.border_strong;
     let done_edge = theme.border_default.gamma_multiply(0.5);
 
-    // A node clicked this frame; opens that card's detail after the scene closes
-    // (we can't touch `state` while the closure borrows the graph and rects).
+    // A leaf node clicked this frame; opens that card's detail after the scene
+    // closes (we can't touch `state` while the closure borrows the graph and rects).
     let mut open: Option<NoteId> = None;
+
+    // An expandable node (one standing in for a subtree) clicked this frame;
+    // drills the graph into that card — re-runs the collapsed model with it as the
+    // epic and pushes a graph entry, so a global-back climbs back out a level.
+    let mut drill: Option<NoteId> = None;
 
     // The blocking-edge edit this frame's interactions produced — a drag between
     // two nodes (draw) or a click on an edge's delete handle (remove) — applied
@@ -908,7 +913,16 @@ fn graph_view_ui(
                     // *blocked* endpoint is a live card on this board — that card's
                     // blocker set is what an `Unblock` republishes, so a downstream
                     // ghost (blocked card off this board) can't be edited from here.
+                    // And only when the arrow is a *direct* block between these two
+                    // cards: a collapsed edge can instead summarise blocks between the
+                    // two nodes' subtrees, which an `Unblock` here wouldn't touch —
+                    // drill in to edit those.
                     if !graph.nodes[edge.to].ghost
+                        && graph_edge_is_direct(
+                            view,
+                            graph.nodes[edge.from].id,
+                            graph.nodes[edge.to].id,
+                        )
                         && graph_edge_delete_ui(ui, theme, (edge.from, edge.to), &drawn)
                     {
                         edit = Some(BoardAction::Unblock {
@@ -932,10 +946,16 @@ fn graph_view_ui(
                         ghost: node.ghost,
                     };
                     let resp = graph_node_ui(ui, theme, rects[i], &node_view);
-                    // Clicking a node opens that card. Ghost context nodes aren't the
-                    // epic's own work (and may be off this board), so they stay inert.
+                    // Clicking a node acts on that card: an expandable node (one
+                    // standing in for a subtree) drills the graph in a level, a leaf
+                    // opens its detail. Ghost context nodes aren't the epic's own work
+                    // (and may be off this board), so they stay inert.
                     if resp.clicked() && !node.ghost {
-                        open = Some(node.id);
+                        if node.progress.is_some() {
+                            drill = Some(node.id);
+                        } else {
+                            open = Some(node.id);
+                        }
                     }
                 }
 
@@ -1042,6 +1062,14 @@ fn graph_view_ui(
         state.graph_epic = None;
         state.graph_scene_rect = None;
         state.graph_connecting = None;
+    }
+
+    // Drill into an expandable node: re-open the graph on that card (reframing the
+    // scene). `graph_epic` moving to a new card reads as a graph→graph step, which
+    // this frame's nav reconcile pushes as a new entry, so a global-back climbs
+    // back out to the parent graph.
+    if let Some(child) = drill {
+        state.open_graph(child);
     }
 
     // Open a clicked node's card: leave the graph and select the card so this
@@ -1166,6 +1194,14 @@ fn graph_node_at(
 fn graph_can_connect(view: &BoardView, blocker: NoteId, blocked: NoteId) -> bool {
     find_card(view, blocked).is_some_and(|(_, c)| !c.blocked_by.iter().any(|e| e.id == blocker))
         && !crate::store::would_block_cycle(view, blocked, blocker)
+}
+
+/// Whether `blocker` *directly* blocks `blocked` — i.e. `blocked`'s own blocker
+/// set names `blocker`. The collapsed graph can draw an arrow between two nodes
+/// that only summarises blocks between their subtrees; such an aggregated edge is
+/// not a direct card-level block and so can't be removed with a single `Unblock`.
+fn graph_edge_is_direct(view: &BoardView, blocker: NoteId, blocked: NoteId) -> bool {
+    find_card(view, blocked).is_some_and(|(_, c)| c.blocked_by.iter().any(|e| e.id == blocker))
 }
 
 /// Draw a node's connection handle: a small dot on a side that starts a blocking
