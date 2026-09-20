@@ -48,6 +48,25 @@
 //! clones, and it is what takes the steady-state frame from 991 allocations to
 //! 885.
 //!
+//! # The other thing in here: egui's named styles
+//!
+//! egui spells a style that is not one of its built-ins with an `Arc<str>` —
+//! `TextStyle::Name("NoteBody".into())`, `FontFamily::Name("medium".into())`.
+//! Notedeck's [`NotedeckTextStyle`] and [`NamedFontFamily`] are enums of
+//! `&'static str`s, so every `.text_style()` in a widget built one of those
+//! `Arc`s from a literal and dropped it at the end of the frame: 14
+//! allocations a frame on a seven-note timeline, two per note.
+//!
+//! An `Arc<str>` built once and cloned is a refcount bump, so
+//! [`StyleCache::text_style`] and [`StyleCache::font_family`] hand out clones
+//! of a set built in [`StyleCache::new`]. They are not a cache — there is
+//! nothing to invalidate, the strings are literals — and they are here rather
+//! than in a `OnceLock` of their own because a global is not allowed (CLAUDE.md
+//! rule 6) and this is the struct that is already on the note path. The cold
+//! callers of `NotedeckTextStyle::text_style`, which cannot all reach a
+//! `StyleCache` without threading one through half the workspace, still build
+//! their own; that is fine, they run once per view rather than once per note.
+//!
 //! # Lifetime
 //!
 //! One instance lives on the [`Notedeck`](crate::Notedeck) host and is reached
@@ -55,8 +74,10 @@
 //! [`NoteContext::style_cache`](crate::NoteContext::style_cache). It is state
 //! passed in by reference rather than a global, per CLAUDE.md.
 
-use egui::{Style, Ui, Vec2};
+use crate::{NamedFontFamily, NotedeckTextStyle};
+use egui::{FontFamily, Style, TextStyle, Ui, Vec2};
 use std::sync::Arc;
+use strum::IntoEnumIterator;
 
 /// How many derived styles to keep before starting over.
 ///
@@ -82,12 +103,39 @@ struct Variant {
     derived: Arc<Style>,
 }
 
+/// Build one `T` per variant of `E`, indexed by the variant's discriminant.
+///
+/// Filled by index rather than collected in iteration order, so the lookups in
+/// [`StyleCache::text_style`] and [`StyleCache::font_family`] are right by
+/// construction and a variant carrying an out-of-range discriminant would panic
+/// here, at startup, rather than return the wrong style.
+fn intern<E, T>(index: impl Fn(E) -> usize, build: impl Fn(E) -> T) -> Box<[T]>
+where
+    E: IntoEnumIterator + Copy,
+{
+    let mut out: Vec<Option<T>> = (0..E::iter().count()).map(|_| None).collect();
+    for variant in E::iter() {
+        out[index(variant)] = Some(build(variant));
+    }
+    out.into_iter()
+        .map(|built| built.expect("every discriminant is its own index"))
+        .collect()
+}
+
 /// A small set of [`egui::Style`] variants, built once and reused.
 ///
 /// See the [module docs](self) for what this is for and why it is keyed the way
 /// it is.
 pub struct StyleCache {
     variants: Vec<Variant>,
+
+    /// One [`egui::TextStyle`] per [`NotedeckTextStyle`], indexed by the
+    /// variant's discriminant.
+    text_styles: Box<[TextStyle]>,
+
+    /// One [`egui::FontFamily`] per [`NamedFontFamily`], indexed by the
+    /// variant's discriminant.
+    font_families: Box<[FontFamily]>,
 }
 
 impl Default for StyleCache {
@@ -101,7 +149,32 @@ impl StyleCache {
         Self {
             // Reserved up front so a cold miss does not also pay for growth.
             variants: Vec::with_capacity(MAX_VARIANTS),
+            text_styles: intern(
+                |style: NotedeckTextStyle| style as usize,
+                |style| style.text_style(),
+            ),
+            font_families: intern(
+                |family: NamedFontFamily| family as usize,
+                |family| FontFamily::Name(family.as_str().into()),
+            ),
         }
+    }
+
+    /// The `egui::TextStyle` for `style`, without building its name again.
+    ///
+    /// Same value as [`NotedeckTextStyle::text_style`], but the named styles
+    /// (`Heading2`, `NoteBody`, ...) are an `Arc` bump rather than an
+    /// `Arc<str>` allocation. Per-frame code wants this one; see the [module
+    /// docs](self).
+    pub fn text_style(&self, style: NotedeckTextStyle) -> TextStyle {
+        self.text_styles[style as usize].clone()
+    }
+
+    /// The `egui::FontFamily` for `family`, without building its name again.
+    ///
+    /// The font-family counterpart of [`text_style`](Self::text_style).
+    pub fn font_family(&self, family: NamedFontFamily) -> FontFamily {
+        self.font_families[family as usize].clone()
     }
 
     /// Give `ui` the style it already has, with `item_spacing` replaced.
@@ -312,6 +385,56 @@ mod tests {
         assert_eq!(cache.len(), 1, "rebased, not copied");
         assert!(Arc::ptr_eq(&derived[0], &derived[1]));
         assert!(Arc::ptr_eq(&derived[1], &derived[2]));
+    }
+
+    /// The point of the interning: the same `Arc<str>` comes back, so a call
+    /// per note per frame is a refcount bump rather than an allocation.
+    #[test]
+    fn a_named_text_style_hands_back_the_same_arc() {
+        let cache = StyleCache::new();
+
+        let (TextStyle::Name(first), TextStyle::Name(second)) = (
+            cache.text_style(NotedeckTextStyle::NoteBody),
+            cache.text_style(NotedeckTextStyle::NoteBody),
+        ) else {
+            panic!("NoteBody is one of egui's named styles");
+        };
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn a_named_font_family_hands_back_the_same_arc() {
+        let cache = StyleCache::new();
+
+        let (FontFamily::Name(first), FontFamily::Name(second)) = (
+            cache.font_family(NamedFontFamily::Medium),
+            cache.font_family(NamedFontFamily::Medium),
+        ) else {
+            panic!("every NamedFontFamily is one of egui's named families");
+        };
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    /// The interned set has to agree with the enums it was built from, for
+    /// every variant — the lookup is by discriminant, so a variant landing on
+    /// the wrong index would silently render in the wrong style.
+    #[test]
+    fn every_variant_interns_to_what_the_enum_says() {
+        let cache = StyleCache::new();
+
+        for style in NotedeckTextStyle::iter() {
+            assert_eq!(cache.text_style(style), style.text_style(), "{style:?}");
+        }
+
+        for family in NamedFontFamily::iter() {
+            assert_eq!(
+                cache.font_family(family),
+                FontFamily::Name(family.as_str().into()),
+                "{family:?}"
+            );
+        }
     }
 
     #[test]

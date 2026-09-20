@@ -4,7 +4,16 @@ use egui::FontDefinitions;
 use egui::FontTweak;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use strum_macros::EnumIter;
 
+/// The font families notedeck registers with egui beyond egui's own
+/// `Proportional`/`Monospace`.
+///
+/// egui names those with a `FontFamily::Name(Arc<str>)`, so building one from
+/// [`as_str`](Self::as_str) allocates. Per-frame code should ask
+/// [`StyleCache::font_family`](crate::StyleCache::font_family) for a prebuilt
+/// one instead of building its own; see that method for why.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, EnumIter)]
 pub enum NamedFontFamily {
     Medium,
     Bold,
@@ -12,16 +21,12 @@ pub enum NamedFontFamily {
 }
 
 impl NamedFontFamily {
-    pub fn as_str(&mut self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Bold => "bold",
             Self::Medium => "medium",
             Self::Emoji => "emoji",
         }
-    }
-
-    pub fn as_family(&mut self) -> egui::FontFamily {
-        egui::FontFamily::Name(self.as_str().into())
     }
 }
 

@@ -55,9 +55,15 @@ impl Widget for Username<'_> {
             if let Some(profile) = self.profile {
                 if let Some(prof) = profile.record().profile() {
                     if prof.display_name().is_some() && prof.display_name().unwrap() != "" {
-                        ui_abbreviate_name(ui, prof.display_name().unwrap(), self.abbrev, color);
+                        ui_abbreviate_name(
+                            ui,
+                            self.style_cache,
+                            prof.display_name().unwrap(),
+                            self.abbrev,
+                            color,
+                        );
                     } else if let Some(name) = prof.name() {
-                        ui_abbreviate_name(ui, name, self.abbrev, color);
+                        ui_abbreviate_name(ui, self.style_cache, name, self.abbrev, color);
                     }
                 }
             } else {
@@ -66,7 +72,7 @@ impl Widget for Username<'_> {
                     "nostrich",
                     "Default username when profile is not available"
                 ))
-                .family(NamedFontFamily::Medium.as_family());
+                .family(self.style_cache.font_family(NamedFontFamily::Medium));
                 if let Some(col) = color {
                     txt = txt.color(col)
                 }
@@ -77,8 +83,8 @@ impl Widget for Username<'_> {
     }
 }
 
-fn colored_name(name: &str, color: Option<Color32>) -> RichText {
-    let mut txt = RichText::new(name).family(NamedFontFamily::Medium.as_family());
+fn colored_name(style_cache: &StyleCache, name: &str, color: Option<Color32>) -> RichText {
+    let mut txt = RichText::new(name).family(style_cache.font_family(NamedFontFamily::Medium));
 
     if let Some(color) = color {
         txt = txt.color(color);
@@ -87,7 +93,13 @@ fn colored_name(name: &str, color: Option<Color32>) -> RichText {
     txt
 }
 
-fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<Color32>) {
+fn ui_abbreviate_name(
+    ui: &mut egui::Ui,
+    style_cache: &StyleCache,
+    name: &str,
+    len: usize,
+    color: Option<Color32>,
+) {
     let should_abbrev = name.len() > len;
     let name = if should_abbrev {
         let closest = notedeck::abbrev::floor_char_boundary(name, len);
@@ -96,10 +108,10 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<C
         name
     };
 
-    ui.label(colored_name(name, color));
+    ui.label(colored_name(style_cache, name, color));
 
     if should_abbrev {
-        ui.label(colored_name("..", color));
+        ui.label(colored_name(style_cache, "..", color));
     }
 }
 
