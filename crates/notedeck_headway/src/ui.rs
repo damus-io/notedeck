@@ -927,6 +927,7 @@ fn graph_view_ui(
                     let node_view = GraphNodeView {
                         title: card.map(|c| c.title.as_str()).unwrap_or(""),
                         column: node.column,
+                        progress: node.progress,
                         blocked: card.is_some_and(|c| c.is_blocked()),
                         ghost: node.ghost,
                     };
@@ -1908,19 +1909,32 @@ fn subissue_progress_pill(
     subissues: &[event::SubissueView],
 ) {
     let done = subissues.iter().filter(|s| s.done).count();
+    progress_pill(ui, theme, done, subissues.len())
+        .on_hover_text(format!("{done} of {} subissues done", subissues.len()));
+}
+
+/// A small rounded `done/total` pill — the shared visual behind the card
+/// footer's [`subissue_progress_pill`] and a collapsed graph node's subtree
+/// progress. Returns the frame response so the caller can attach its own hover
+/// text (the two read "subissues" vs "sub-issues in this branch").
+fn progress_pill(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    done: usize,
+    total: usize,
+) -> egui::Response {
     egui::Frame::new()
         .fill(theme.surface_secondary)
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(format!("{done}/{}", subissues.len()))
+                egui::RichText::new(format!("{done}/{total}"))
                     .small()
                     .color(theme.text_muted),
             );
         })
         .response
-        .on_hover_text(format!("{done} of {} subissues done", subissues.len()));
 }
 
 /// A deterministic color for a label, derived from its text.
@@ -4699,6 +4713,11 @@ pub struct GraphNodeView<'a> {
     /// cross-subtree edge, not one of the epic's own cards. Drawn as recessed
     /// context (muted surface, dimmed content, no hover affordance).
     pub ghost: bool,
+    /// The card's subtree progress ([`headway::graph::GraphNode::progress`]),
+    /// `Some` when this node stands in for a whole subtree in the collapsed
+    /// graph. Drawn as a right-aligned `done/total` pill and marks the node as
+    /// *expandable* (a click drills in rather than opening the card).
+    pub progress: Option<headway::graph::SubtreeProgress>,
 }
 
 /// Draw a card as a graph node inside `rect` and return its (clickable) response.
@@ -4790,10 +4809,29 @@ pub fn graph_node_ui(
             .label(egui::RichText::new("⊘").small().color(theme.text_muted))
             .on_hover_text("Blocked by unfinished work");
     }
-    content.add(
-        egui::Label::new(egui::RichText::new(node.title).color(theme.text_primary))
-            .wrap_mode(egui::TextWrapMode::Truncate),
-    );
+    // The title fills the row. A collapsed node — one standing in for a whole
+    // subtree — also shows a right-aligned done/total pill and reads as
+    // expandable; a plain node (leaf or ghost) keeps the title spanning the row.
+    match node.progress {
+        Some(p) => {
+            content.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                progress_pill(ui, theme, p.done, p.total)
+                    .on_hover_text(format!("{} of {} sub-issues done", p.done, p.total));
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(node.title).color(theme.text_primary))
+                            .wrap_mode(egui::TextWrapMode::Truncate),
+                    );
+                });
+            });
+        }
+        None => {
+            content.add(
+                egui::Label::new(egui::RichText::new(node.title).color(theme.text_primary))
+                    .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+        }
+    }
 
     response
 }
@@ -4908,24 +4946,35 @@ mod tests {
                 column: three(1),
                 blocked: false,
                 ghost: false,
+                progress: None,
             },
             GraphNodeView {
                 title: "blocked node",
                 column: three(0),
                 blocked: true,
                 ghost: false,
+                progress: None,
             },
             GraphNodeView {
                 title: "done node recedes",
                 column: three(2),
                 blocked: false,
                 ghost: false,
+                progress: None,
             },
             GraphNodeView {
                 title: "off-board ghost node",
                 column: None,
                 blocked: false,
                 ghost: true,
+                progress: None,
+            },
+            GraphNodeView {
+                title: "collapsed parent shows progress pill",
+                column: three(1),
+                blocked: false,
+                ghost: false,
+                progress: Some(headway::graph::SubtreeProgress { done: 2, total: 5 }),
             },
         ];
 
