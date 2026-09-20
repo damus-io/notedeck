@@ -2655,17 +2655,30 @@ struct DetailEdge {
     /// The referenced card is cleared (done/archived), so this edge no longer
     /// holds work back — rendered struck through and dimmed.
     done: bool,
+    /// The referenced card's live [`ColumnPos`] on this board, driving its *true*
+    /// status circle (a blocker in In Review reads as in-progress even though the
+    /// edge is cleared). `None` when it isn't on a live column here — archived,
+    /// or a cross-board edge.
+    column: Option<ColumnPos>,
     /// Whether the other card is on this board, i.e. clickable to open.
     on_board: bool,
 }
 
 /// Resolve one dependency [`EdgeRef`] into a [`DetailEdge`], marking whether the
-/// referenced card is placed on this board (so its row can open it).
+/// referenced card is placed on this board (so its row can open it) and its live
+/// column position (for the true-status circle).
 fn detail_edge(view: &BoardView, edge: &event::EdgeRef) -> DetailEdge {
+    let count = view.columns.len();
+    let column = view
+        .columns
+        .iter()
+        .position(|c| c.cards.iter().any(|card| card.id == edge.id))
+        .map(|index| ColumnPos { index, count });
     DetailEdge {
         id: edge.id,
         title: edge.title.clone(),
         done: edge.done,
+        column,
         on_board: find_card(view, edge.id).is_some(),
     }
 }
@@ -3419,11 +3432,14 @@ fn detail_edge_row_ui(
         .read_response(row_id)
         .is_some_and(|r| r.contains_pointer());
 
-    // A cleared edge no longer blocks: a done disc; otherwise a plain ring.
-    let icon = if edge.done {
-        StatusIcon::Done
-    } else {
-        StatusIcon::Todo
+    // The icon shows the blocker's *true* column status — a blocker in In Review
+    // reads as in-progress, not done, even though the edge is cleared (the
+    // strikethrough below carries the cleared signal). Off-board/archived blockers
+    // we can't position fall back to done-if-cleared, else a plain ring.
+    let icon = match edge.column {
+        Some(pos) => StatusIcon::for_column(pos.index, pos.count),
+        None if edge.done => StatusIcon::Done,
+        None => StatusIcon::Todo,
     };
     // A cleared blocker reads as struck-through and muted, so an open one is the
     // eye's anchor (the CLI's `[x]`/`[ ]` distinction).
