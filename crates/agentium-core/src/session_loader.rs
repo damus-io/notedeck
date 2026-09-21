@@ -420,6 +420,42 @@ pub struct SessionState {
     pub project_root: Option<String>,
 }
 
+/// Total ordering for a session list: newest state revision first, ties broken
+/// by `claude_session_id`.
+///
+/// [`SessionState::created_at`] is the winning kind-31988 revision's timestamp —
+/// "when this session last published state" — at whole-second resolution, so a
+/// batch of sessions that last updated within the same second all collide on it.
+/// `claude_session_id` is the final tiebreak, making this a **total order**:
+/// without a deterministic last key the tie falls through to the order
+/// [`query_replaceable_filtered`] returns, which drains a `HashMap` whose
+/// `RandomState` is re-seeded per map instance — so the bag order is randomized
+/// *per run*, and two listings of the same frozen db disagree.
+///
+/// `claude_session_id` is the event's `d` tag: unique per session and intrinsic
+/// to the event rather than a stateful counter, so it orders identically on
+/// every machine. That is the same reasoning — and the same role — as the note
+/// id in [`EventOrder`], which `SessionState` cannot use because it keeps
+/// neither the note id nor its `NoteKey` (and a `NoteKey` is nostrdb's ingestion
+/// ordinal, which differs machine-to-machine anyway).
+///
+/// This is the single source of truth for session-list ordering: the loader
+/// applies it so every caller inherits it, and a caller that merges two loads
+/// re-applies it to the merged list.
+pub fn session_order(a: &SessionState, b: &SessionState) -> std::cmp::Ordering {
+    b.created_at
+        .cmp(&a.created_at)
+        .then_with(|| a.claude_session_id.cmp(&b.claude_session_id))
+}
+
+/// Sort a session list into [`session_order`].
+///
+/// Unstable sorting is deliberate and safe here: the key is total, so there are
+/// no equal elements whose relative order could be disturbed.
+pub fn sort_sessions(sessions: &mut [SessionState]) {
+    sessions.sort_unstable_by(session_order);
+}
+
 impl SessionState {
     /// Build a SessionState from a kind-31988 note's tags.
     ///
@@ -619,11 +655,15 @@ fn ambiguous_session(sel: &str, hits: &[&SessionState]) -> String {
 ///
 /// Uses `query_replaceable_filtered` to deduplicate by d-tag, keeping
 /// only the most recent non-deleted revision of each session state.
+///
+/// Returned in [`session_order`] — newest first, ties broken by session id.
 pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
     load_session_states_with_author(ndb, txn, None, SessionScope::Live)
 }
 
 /// Load session state events signed by the selected Dave account.
+///
+/// Returned in [`session_order`] — newest first, ties broken by session id.
 pub fn load_session_states_for_author(
     ndb: &Ndb,
     txn: &Transaction,
@@ -640,6 +680,10 @@ pub fn load_session_states_for_author(
 /// [`resolve_session_including_deleted`]). Deliberately kept separate — and out of
 /// the default list — so the live list stays clean; a caller wanting both merges
 /// the two loads.
+///
+/// Returned in [`session_order`] — newest first, ties broken by session id. A
+/// caller that merges this with the live load re-sorts, since concatenating two
+/// ordered lists is not itself ordered.
 pub fn load_deleted_session_states_for_author(
     ndb: &Ndb,
     txn: &Transaction,
@@ -699,6 +743,11 @@ fn load_session_states_with_author(
         states.push(state);
     }
 
+    // `query_replaceable_filtered` returns its note keys in `HashMap` drain
+    // order, which is randomized per run. Impose the total order here, at the
+    // single choke point every entry point funnels through, so no caller can
+    // observe the bag.
+    sort_sessions(&mut states);
     states
 }
 
@@ -924,8 +973,20 @@ fn load_recent_paths_by_host_with_author(
         entries.push((hostname, cwd, note.created_at()));
     }
 
-    // Sort by created_at descending (most recent first)
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+    // Most recent first, with `(hostname, cwd)` as a total-order tiebreak. The
+    // timestamp is whole-second, so a same-second batch would otherwise keep
+    // `query_replaceable_filtered`'s `HashMap` drain order, which is randomized
+    // per run. Here that is worse than cosmetic: the loop below dedupes cwds and
+    // caps each host at MAX_RECENT_PER_HOST, so a tie straddling the cap changes
+    // *which* paths survive, not just their order — the recent-directory picker
+    // would offer a different set on each launch. Same reasoning as
+    // [`session_order`]; this triple has no session id, and `(hostname, cwd)` is
+    // what the dedupe keys on anyway.
+    entries.sort_unstable_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
 
     // Group by hostname, dedup cwds, cap per host
     let mut result: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
@@ -1756,6 +1817,157 @@ mod tests {
         assert!(
             user_replies(&load_events("perm-deny-plain", &placeholder).await).is_empty(),
             "the canned deny placeholder must not render as a message",
+        );
+    }
+
+    /// Hand-build a signed kind-31988 session-state event with an explicit
+    /// `created_at`, so a test can put several sessions in the same second.
+    fn build_31988_event_json(
+        sk: &[u8; 32],
+        session_id: &str,
+        hostname: &str,
+        cwd: &str,
+        created_at: u64,
+    ) -> String {
+        crate::session_events::build_session_state_event(
+            session_id, "t", None, cwd, "idle", None, hostname, "/home/u", "claude", "default",
+            None, None, None, None, created_at, sk,
+        )
+        .unwrap()
+        .to_event_json()
+    }
+
+    /// The session list is a total order, so a same-second batch cannot fall
+    /// back to the loader's bag order.
+    ///
+    /// `query_replaceable_filtered` drains a `HashMap`, whose `RandomState` is
+    /// re-seeded per map instance — so the order it hands back is randomized per
+    /// run, and anything downstream that ties on the whole-second `created_at`
+    /// shuffles between invocations. Four of these six sessions share one
+    /// second; asserting the *exact* expected sequence (newest first, then
+    /// session id ascending) pins the tiebreak, which a "load it twice and
+    /// compare" probe would only catch probabilistically.
+    #[tokio::test]
+    async fn same_second_sessions_order_by_session_id() {
+        let sk = test_secret_key();
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        // Deliberately ingested out of order, and not in id order within the
+        // tied second, so neither ingestion order nor insertion order can pass
+        // the assertion by accident.
+        let events = vec![
+            build_31988_event_json(&sk, "sess-c", "h1", "/tmp", 2000),
+            build_31988_event_json(&sk, "sess-f", "h2", "/tmp", 1000),
+            build_31988_event_json(&sk, "sess-a", "h1", "/tmp", 2000),
+            build_31988_event_json(&sk, "sess-e", "h2", "/tmp", 3000),
+            build_31988_event_json(&sk, "sess-d", "h1", "/tmp", 2000),
+            build_31988_event_json(&sk, "sess-b", "h2", "/tmp", 2000),
+        ];
+        let filter = Filter::new()
+            .kinds([crate::session_events::AI_SESSION_STATE_KIND as u64])
+            .build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let ids: Vec<String> = load_session_states(&ndb, &txn)
+            .into_iter()
+            .map(|s| s.claude_session_id)
+            .collect();
+
+        assert_eq!(
+            ids,
+            vec![
+                // created_at 3000
+                "sess-e", // created_at 2000, id-ascending
+                "sess-a", "sess-b", "sess-c", "sess-d", // created_at 1000
+                "sess-f",
+            ],
+            "newest first, with the session id breaking the same-second tie",
+        );
+    }
+
+    /// The tiebreak has to survive a *merged* list too: concatenating two
+    /// ordered loads is not itself ordered, which is why `agentium list --all`
+    /// re-sorts rather than trusting the loads it glues together.
+    #[test]
+    fn sort_sessions_orders_a_merged_list() {
+        let mk = |id: &str, created_at: u64| SessionState {
+            claude_session_id: id.to_string(),
+            title: String::new(),
+            custom_title: None,
+            cwd: String::new(),
+            status: String::new(),
+            indicator: None,
+            hostname: String::new(),
+            home_dir: String::new(),
+            backend: None,
+            permission_mode: None,
+            created_at,
+            cli_session_id: None,
+            spawn_id: None,
+            project: None,
+            project_root: None,
+        };
+
+        // Two individually-ordered lists, as the live and deleted loads arrive.
+        let mut merged = vec![mk("live-b", 20), mk("live-c", 10)];
+        merged.extend([mk("del-a", 20), mk("del-d", 10)]);
+        sort_sessions(&mut merged);
+
+        let ids: Vec<&str> = merged
+            .iter()
+            .map(|s| s.claude_session_id.as_str())
+            .collect();
+        // The two lists interleave: within each second the id decides, so a
+        // deleted row can sort above a live one. That is exactly why the merge
+        // has to be re-sorted rather than concatenated.
+        assert_eq!(ids, vec!["del-a", "live-b", "del-d", "live-c"]);
+    }
+
+    /// A same-second tie at the per-host cap must not change *which* recent
+    /// paths survive.
+    ///
+    /// `load_recent_paths_by_host` dedupes cwds and keeps only the newest
+    /// MAX_RECENT_PER_HOST (10) per host. Ordering on the whole-second
+    /// `created_at` alone left same-second rows in `query_replaceable_filtered`'s
+    /// randomized bag order, so a tie straddling that cap silently swapped
+    /// entries in and out of the directory picker between launches. Twelve
+    /// sessions share one second here, so the cap cuts straight through the tie.
+    #[tokio::test]
+    async fn same_second_recent_paths_survive_the_cap_deterministically() {
+        let sk = test_secret_key();
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        // Ingested in reverse so neither ingestion nor insertion order can pass
+        // the assertion by accident.
+        let mut events = Vec::new();
+        for i in (0..12).rev() {
+            events.push(build_31988_event_json(
+                &sk,
+                &format!("cap-{i:02}"),
+                "h1",
+                &format!("/proj/{i:02}"),
+                5000,
+            ));
+        }
+        let filter = Filter::new()
+            .kinds([crate::session_events::AI_SESSION_STATE_KIND as u64])
+            .build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let paths = load_recent_paths_by_host_with_author(&ndb, &txn, None);
+
+        let kept: Vec<String> = paths["h1"]
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            kept,
+            (0..10).map(|i| format!("/proj/{i:02}")).collect::<Vec<_>>(),
+            "the cwd tiebreak decides which ten paths clear the cap",
         );
     }
 }
