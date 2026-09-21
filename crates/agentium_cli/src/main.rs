@@ -229,6 +229,33 @@ enum Command {
     Logout,
 }
 
+impl Command {
+    /// Whether the command has to reach the relay, i.e. whether `--no-sync` is a
+    /// contradiction for it.
+    ///
+    /// The read commands fold their answer out of the engine's nostrdb cache,
+    /// which `open_ndb` alone makes readable (it registers the device key, so
+    /// already-cached kind-1080 envelopes are decrypted regardless of any
+    /// connection) — so they can legitimately run offline against whatever the
+    /// last sync left behind. Everything else either publishes an event or
+    /// streams live ones, and would silently do nothing without a connection.
+    /// `login`/`logout` never get here (they return before the engine exists).
+    fn needs_relay(&self) -> bool {
+        match self {
+            Command::List | Command::Show { .. } | Command::Grep { .. } => false,
+            // A follow is a live stream, so it needs the connection even though
+            // its initial tail is a cache read.
+            Command::Log { view, .. } => view.follow,
+            Command::Resume { .. }
+            | Command::Send { .. }
+            | Command::Spawn { .. }
+            | Command::Interrupt { .. }
+            | Command::Login { .. }
+            | Command::Logout => true,
+        }
+    }
+}
+
 async fn run() -> Result<()> {
     let cli = match Cli::parse(env::args().skip(1))? {
         Some(cli) => cli,
@@ -275,16 +302,25 @@ async fn run() -> Result<()> {
     // relay just leaves us reading whatever the cache already holds. A `--author`
     // pointing at someone else still can't decrypt *their* private sessions —
     // only they hold that key.
-    engine.connect(&relay)?;
+    //
+    // `--no-sync` skips both the connect and the settle: the cache is already
+    // readable without them, and the reconcile is what a read actually spends
+    // its time on (seconds, against a fraction of a second of folding), so an
+    // offline read is the fast path for repeated queries over a corpus that
+    // hasn't moved. Parsing already rejected it for the commands that publish or
+    // stream (see `Command::needs_relay`).
+    if cli.sync {
+        engine.connect(&relay)?;
 
-    // Let the initial reconcile finish before we read. `wait_for_sync` resolves
-    // deterministically once the PNS history backfill has settled — i.e. every
-    // reconciled session-state event is queryable — so a single read afterward
-    // sees the whole synced batch, not a race with events still streaming in.
-    // Bounded by SYNC_MAX so a reachable-but-silent relay can't stall the read;
-    // an empty or unreachable relay settles (or times out) fast and we fall
-    // through to whatever the cache already holds.
-    let _ = tokio::time::timeout(SYNC_MAX, engine.wait_for_sync()).await;
+        // Let the initial reconcile finish before we read. `wait_for_sync`
+        // resolves deterministically once the PNS history backfill has settled —
+        // i.e. every reconciled session-state event is queryable — so a single
+        // read afterward sees the whole synced batch, not a race with events
+        // still streaming in. Bounded by SYNC_MAX so a reachable-but-silent relay
+        // can't stall the read; an empty or unreachable relay settles (or times
+        // out) fast and we fall through to whatever the cache already holds.
+        let _ = tokio::time::timeout(SYNC_MAX, engine.wait_for_sync()).await;
+    }
 
     // `--author` overrides whose sessions we read; it defaults to the signer.
     let read_pk = cli.author.unwrap_or(self_pk);
@@ -1128,7 +1164,8 @@ fn cmd_log(
 /// `list --json`, run `agentium log <session> | grep` per row — re-opens the
 /// cache and re-reconciles the relay once per session, and that reconcile is
 /// seconds of wall clock against a fraction of a second of actual folding. Here
-/// the corpus is synced once and every session is read from the same transaction, so the cost is flat in the number
+/// the corpus is synced once (or not at all, under `--no-sync`) and every
+/// session is read from the same transaction, so the cost is flat in the number
 /// of sessions.
 ///
 /// Session selection is [`load_sessions`] — the same `--host`/`--cwd`/`--status`/
@@ -2484,6 +2521,12 @@ struct Cli {
     backend: Option<String>,
     /// Which sessions `list` shows (`--deleted`/`--all`); [`ListScope::Live`] by default.
     list_scope: ListScope,
+    /// Whether to reconcile with the relay before reading (`--no-sync` clears
+    /// it). Off, the read folds whatever the cache already holds — which is the
+    /// whole of a corpus that hasn't moved since the last run, and skips the
+    /// seconds a reconcile costs. Parsing rejects it for commands that publish
+    /// or stream (see [`Command::needs_relay`]).
+    sync: bool,
     command: Command,
 }
 
@@ -2508,6 +2551,7 @@ impl Cli {
         let mut backend = None;
         let mut deleted = false;
         let mut all = false;
+        let mut no_sync = false;
         // `grep`'s case flag. Folded into the compiled pattern below rather than
         // carried separately, so nothing downstream has to remember it.
         let mut ignore_case = false;
@@ -2555,6 +2599,7 @@ impl Cli {
                 "--backend" => backend = Some(value("--backend")?),
                 "--deleted" => deleted = true,
                 "--all" => all = true,
+                "--no-sync" => no_sync = true,
                 "-i" | "--ignore-case" => ignore_case = true,
                 // Accumulate roles across repeated `--role` flags and
                 // comma-separated lists, so `--role user,assistant` and
@@ -2652,6 +2697,17 @@ impl Cli {
             parse_command(name, rest, view, ignore_case)?
         };
 
+        // `--no-sync` is a read-only shortcut; a command that publishes or
+        // streams can't honor it. Rejected here, before any engine or relay work
+        // spins up, for the same reason `check_follow` is.
+        if no_sync && command.needs_relay() {
+            return Err(
+                "--no-sync only applies to cache reads (list/show/log/grep); a command that \
+                 publishes — or `log --follow`, which streams — needs the relay"
+                    .into(),
+            );
+        }
+
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured.
         // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
@@ -2668,6 +2724,7 @@ impl Cli {
         };
 
         let list_scope = ListScope::from_flags(all, deleted);
+        let sync = !no_sync;
 
         Ok(Some(Cli {
             secret,
@@ -2680,6 +2737,7 @@ impl Cli {
             cwd,
             backend,
             list_scope,
+            sync,
             command,
         }))
     }
@@ -2845,6 +2903,9 @@ OPTIONS:
     --db <path>       nostrdb cache dir (remembered like --relay)
                       [default: <data-dir>/agentium-cli]
     --json            Machine-readable output
+    --no-sync         Skip the relay reconcile and read the local cache as it
+                      stands — the fast path for repeated reads (list/show/log/
+                      grep). Rejected for commands that publish or stream.
 
   list filters (case-insensitive):
     --host <h>        Only sessions whose host contains <h>
@@ -3143,6 +3204,58 @@ mod tests {
             }
             _ => panic!("expected Grep"),
         }
+    }
+
+    #[test]
+    fn no_sync_is_accepted_for_reads_and_refused_for_the_rest() {
+        // Reads fold out of the cache, so they can run without a reconcile.
+        for cmd in [
+            vec!["--nsec", TEST_NSEC, "--no-sync", "list"],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "show", "agentium:a-b-c"],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "log", "agentium:a-b-c"],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "grep", "x"],
+        ] {
+            let cli = parse_cli(&cmd).expect("parses").expect("a command");
+            assert!(!cli.sync, "--no-sync clears the reconcile for {cmd:?}");
+        }
+        // Publishing and streaming commands would silently do nothing offline.
+        for cmd in [
+            vec![
+                "--nsec",
+                TEST_NSEC,
+                "--no-sync",
+                "send",
+                "agentium:a-b-c",
+                "hi",
+            ],
+            vec![
+                "--nsec",
+                TEST_NSEC,
+                "--no-sync",
+                "interrupt",
+                "agentium:a-b-c",
+            ],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "resume", "agentium:a-b-c"],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "spawn"],
+            vec![
+                "--nsec",
+                TEST_NSEC,
+                "--no-sync",
+                "-f",
+                "log",
+                "agentium:a-b-c",
+            ],
+        ] {
+            assert!(
+                parse_cli(&cmd).is_err(),
+                "--no-sync must be refused for {cmd:?}"
+            );
+        }
+        // Without the flag, every command still reconciles.
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "list"])
+            .expect("parses")
+            .expect("a command");
+        assert!(cli.sync);
     }
 
     #[test]

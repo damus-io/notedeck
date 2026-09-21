@@ -134,6 +134,21 @@ agentium show "Fix relay reconnect"   # unique title substring
 Selectors resolve across live **and** soft-deleted sessions, so a durable
 `agentium:` ref still reads after its session was closed.
 
+## Reading without a relay round-trip
+
+`--no-sync` skips the relay reconcile and reads the local cache as it stands.
+The reconcile is what a read actually spends its time on, so this is the fast
+path when you're querying a corpus that hasn't moved — e.g. several `grep`s in a
+row, or a `log` you already synced a moment ago:
+
+```bash
+agentium grep -i wgpu --no-sync        # no relay round-trip at all
+```
+
+It applies to the read commands (`list`, `show`, `log`, `grep`) and is refused
+for anything that publishes or streams (`send`, `spawn`, `resume`, `interrupt`,
+`log --follow`), which can't work offline.
+
 ## `show` — session detail
 
 `show` prints one session's detail: its kind-31988 state, the run-configs on its
