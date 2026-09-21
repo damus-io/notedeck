@@ -172,7 +172,7 @@ agentium log                           # this session's transcript
 agentium log maple-river-canyon        # another session's transcript
 agentium log X --role user,assistant   # only the human turns + Dave's replies
 agentium log X -n 20                    # just the last 20 messages
-agentium log X --no-tools              # fold away tool_call/tool_result noise
+agentium log X --tools                 # include tool_call/tool_result (folded by default)
 agentium log X --json                  # structured, role-tagged message objects
 agentium log X --jsonl                 # raw reconstructed claude-code JSONL
 agentium log X --follow                # print the tail, then stream new messages
@@ -185,7 +185,7 @@ Flags:
 |----------------------------|----------------------------------------------------------------|
 | `--role <r[,r…]>`          | keep only these roles (comma-separated and/or repeatable); one of `user`, `assistant`, `tool_call`, `tool_result`, `permission_request`, `subagent`, `system`, `error`, `compaction`, `todo` |
 | `--last <n>`, `-n <n>`     | only the last `n` messages (after other filters); with `--follow`, sizes the initial tail |
-| `--tools` / `--no-tools`   | show (default) or fold `tool_call`/`tool_result` messages       |
+| `--tools` / `--no-tools`   | show or fold (default) `tool_call`/`tool_result` messages. A transcript is mostly tool noise, so `log` reads as the human conversation until `--tools` asks for the rest |
 | `--json`                   | one role-tagged JSON object per message (a lossy display view). With `--follow`, streamed newline-delimited (one object per new message) |
 | `--jsonl`                  | raw reconstructed claude-code JSONL from the kind-1989 archive (the lossless source, in original `seq` order — a different axis than the display stream) |
 | `--follow`, `-f`           | after the tail, keep streaming each new message as it lands (and status changes, e.g. `-> needs_input`) until Ctrl-C. Conflicts with `--pager`/`--jsonl` (a live stream can't be paged or reconstructed from the point-in-time archive) |
@@ -208,7 +208,7 @@ instead of one transcript.
 agentium grep "resize hook"                       # every live session
 agentium grep -i terminal --cwd Shipwright --all  # case-insensitive, one tree, incl. deleted
 agentium grep '\bTODO\b' --role assistant         # a regex, over Dave's replies only
-agentium grep -i panic --no-tools                 # skip tool call/result noise
+agentium grep -i panic --tools                    # search tool call/result text too
 agentium grep -i wgpu --json                      # matches grouped under each session
 ```
 
@@ -218,8 +218,12 @@ An unparseable pattern fails immediately, before any relay work.
 Which sessions are searched: the same filters `list` takes — `--cwd`, `--host`,
 `--status`, `--backend`, and `--deleted`/`--all` for tombstoned sessions.
 Which *messages* are searched: the same filters `log` takes — `--role`,
-`--no-tools`, `--last`. So `--role assistant` searches only Dave's replies, and
-`--cwd foo --all` searches every session (live or closed) in that tree.
+`--tools`, `--last`. So `--role assistant` searches only Dave's replies, and
+`--cwd foo --all` searches every session (live or closed) in that tree. Tool
+traffic is folded by default here too, which matters more than in `log`: a
+`tool_result`'s searched text is its one-line render summary, never its full
+output, so tool hits are mostly the command line that happened to mention the
+word. Pass `--tools` when you do want those.
 
 Matching is per line, like `grep`, over the same rendered body `log` prints, and
 `--json` emits one object per matching session: the session's `list --json`

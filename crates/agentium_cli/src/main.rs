@@ -1178,7 +1178,11 @@ fn cmd_log(
 /// Session selection is [`load_sessions`] — the same `--host`/`--cwd`/`--status`/
 /// `--backend` filters and `--deleted`/`--all` scope `list` uses. Message
 /// selection is the same [`MessageView`] `log` uses, so `--role assistant`
-/// or `--no-tools` narrows *what is searched*, not just what is shown. The
+/// or `--tools` changes *what is searched*, not just what is shown — and since
+/// tool messages are folded by default, a plain `grep` searches the human
+/// conversation. That default matters more here than in `log`: a tool_result's
+/// searched text is its one-line render summary, never its full output, so tool
+/// hits are mostly the command line that happened to mention the word. The
 /// searched text is [`message_body`] — exactly the body `log` renders — matched
 /// per line, like `grep`.
 fn cmd_grep(
@@ -1842,7 +1846,10 @@ struct MessageView {
     /// `--last N` (`-n N`): after role/tool filtering, keep only the trailing `N`.
     last: Option<usize>,
     /// `--tools`/`--no-tools`: when `false`, drop `tool_call`/`tool_result`
-    /// messages so the human turns read cleanly. Defaults to `true` (show).
+    /// messages so the human turns read cleanly. Defaults to `false` (fold) —
+    /// a transcript is mostly tool noise, and the conversation is what you open
+    /// `log` for; `--tools` opts the tool traffic back in. `--no-tools` remains
+    /// as the (now redundant) explicit form.
     show_tools: bool,
     /// `--jsonl`: emit reconstructed claude-code JSONL instead of the rendered
     /// transcript. Mutually exclusive in effect with the filters above.
@@ -2002,7 +2009,8 @@ fn message_role(m: &Message) -> &'static str {
     }
 }
 
-/// Whether a message is tool-call/result noise that `--no-tools` folds away.
+/// Whether a message is tool-call/result noise that the default view folds
+/// away (and `--tools` keeps).
 fn is_tool_message(m: &Message) -> bool {
     matches!(m, Message::ToolCalls(_) | Message::ToolResponse(_))
 }
@@ -2578,12 +2586,13 @@ impl Cli {
         // `grep`'s case mode. Folded into the compiled pattern below rather than
         // carried separately, so nothing downstream has to remember it.
         let mut case = CaseMode::Smart;
-        // `log` transcript flags. `show_tools` defaults on; `--no-tools`
-        // folds tool noise and `--tools` re-asserts the default. Color/pager
-        // default to `Auto` (tty detection), like `git log`.
+        // `log` transcript flags. `show_tools` defaults off, so the rendered
+        // transcript is the human conversation; `--tools` opts tool traffic back
+        // in and `--no-tools` re-asserts the default. Color/pager default to
+        // `Auto` (tty detection), like `git log`.
         let mut roles: Vec<String> = Vec::new();
         let mut last = None;
-        let mut show_tools = true;
+        let mut show_tools = false;
         let mut jsonl = false;
         let mut color = ColorWhen::Auto;
         let mut pager = PagerMode::Auto;
@@ -2936,7 +2945,9 @@ COMMANDS:
     log [session]     Print one session's full conversation, one entry per
                       message, in order (millisecond wall-clock, not seq). Takes
                       any selector `list` accepts; defaults to $AGENTIUM_SESSION.
-                      Filter/shape with --role/--last/--tools/--no-tools; --json
+                      Tool call/result noise is folded away by default; pass
+                      --tools to include it. Filter/shape with --role/--last;
+                      --json
                       emits structured message objects, --jsonl the reconstructed
                       claude-code JSONL from the source archive. --follow/-f keeps
                       streaming new messages (and status changes) until Ctrl-C.
@@ -2946,8 +2957,9 @@ COMMANDS:
                       ref. <pattern> is a regex; -i folds case. One sync and one
                       cache read covers every session, so it is flat in session
                       count where a per-session `log | grep` loop is not. The
-                      log filters --role/--no-tools/--last narrow what is
-                      searched; --json groups matches under each session.
+                      log filters --role/--tools/--last narrow what is
+                      searched (tool noise is folded away by default); --json
+                      groups matches under each session.
     resume <session>  Reopen a closed (even soft-deleted) session on its host so
                       a new message drives its backend again. Takes any selector
                       `list` accepts (d-tag, cli-session id, or agentium: ref);
@@ -3022,8 +3034,8 @@ OPTIONS:
                       repeatable (user|assistant|tool_call|tool_result|
                       permission_request|subagent|system|error|compaction|todo)
     -n, --last <n>    Only the last <n> messages (after other filters)
-    --tools           Show tool_call/tool_result messages (default)
-    --no-tools        Fold away tool_call/tool_result noise
+    --tools           Also show tool_call/tool_result messages
+    --no-tools        Fold away tool_call/tool_result noise (default)
     --jsonl           Emit reconstructed claude-code JSONL (source archive)
     --color <when>    auto (default) | always | never. `always` keeps color
                       when piping into your own pager (e.g. `less -SR`).
@@ -3274,7 +3286,7 @@ mod tests {
         let view = MessageView {
             roles: vec!["assistant".into()],
             last: Some(5),
-            show_tools: false,
+            show_tools: true,
             jsonl: true,
             ..view_all()
         };
@@ -3290,7 +3302,7 @@ mod tests {
                 assert_eq!(session.as_deref(), Some("agentium:a-b-c"));
                 assert_eq!(view.roles, vec!["assistant".to_string()]);
                 assert_eq!(view.last, Some(5));
-                assert!(!view.show_tools);
+                assert!(view.show_tools);
                 assert!(view.jsonl);
             }
             _ => panic!("expected Log"),
@@ -3353,20 +3365,54 @@ mod tests {
 
     #[test]
     fn grep_carries_the_message_view() {
-        // `--role`/`--no-tools`/`--last` shape *what is searched*, so the same
-        // view `log` builds rides the grep command.
+        // `--role`/`--tools`/`--last` shape *what is searched*, so the same view
+        // `log` builds rides the grep command. Both axes carry a non-default
+        // value, so carriage is what's actually being asserted.
         let view = MessageView {
             roles: vec!["assistant".into()],
-            show_tools: false,
+            show_tools: true,
             ..view_all()
         };
         match parse_command("grep", &["x".to_string()], view, CaseMode::Smart).unwrap() {
             Command::Grep { view, .. } => {
                 assert_eq!(view.roles, vec!["assistant".to_string()]);
-                assert!(!view.show_tools);
+                assert!(view.show_tools);
             }
             _ => panic!("expected Grep"),
         }
+    }
+
+    /// The parsed `MessageView` behind a `log`/`grep` argv — the flag defaults
+    /// as a real invocation sees them, not as a test literal builds them.
+    fn parsed_view(argv: &[&str]) -> MessageView {
+        match parse_cli(argv).expect("parses").expect("a command").command {
+            Command::Log { view, .. } | Command::Grep { view, .. } => view,
+            _ => panic!("expected Log or Grep"),
+        }
+    }
+
+    #[test]
+    fn show_tools_defaults_off_and_tools_opts_back_in() {
+        // A bare `log`/`grep` reads as the human conversation.
+        assert!(!parsed_view(&["--nsec", TEST_NSEC, "log", "agentium:a-b-c"]).show_tools);
+        assert!(!parsed_view(&["--nsec", TEST_NSEC, "grep", "x"]).show_tools);
+        // `--tools` opts the tool traffic back in; `--no-tools` says the default
+        // out loud; last flag wins either way.
+        assert!(parsed_view(&["--nsec", TEST_NSEC, "--tools", "log", "agentium:a-b-c"]).show_tools);
+        assert!(
+            !parsed_view(&["--nsec", TEST_NSEC, "--no-tools", "log", "agentium:a-b-c"]).show_tools
+        );
+        assert!(
+            !parsed_view(&[
+                "--nsec",
+                TEST_NSEC,
+                "--tools",
+                "--no-tools",
+                "log",
+                "agentium:a-b-c"
+            ])
+            .show_tools
+        );
     }
 
     #[test]
@@ -3650,8 +3696,10 @@ mod tests {
         }))
     }
 
-    /// The default (show-everything) view: no role filter, no tail, tools shown,
-    /// auto color/pager.
+    /// A show-everything view: no role filter, no tail, tools shown, auto
+    /// color/pager. Note this is deliberately *not* the parsed default (which
+    /// folds tools — see [`show_tools_defaults_off_and_tools_opts_back_in`]);
+    /// it's the widest view, so a test can narrow one axis at a time.
     fn view_all() -> MessageView {
         MessageView {
             roles: vec![],
@@ -3729,7 +3777,7 @@ mod tests {
             tool_result("Bash", "exit 0"),
             Message::Assistant(AssistantMessage::from_text("done".into())),
         ];
-        // Default keeps the tool_result; --no-tools drops it.
+        // The show-everything view keeps the tool_result; folding drops it.
         assert_eq!(view_all().select(&msgs).len(), 3);
         let folded = MessageView {
             show_tools: false,
@@ -3925,7 +3973,7 @@ mod tests {
     fn keep_matches_role_and_tool_filters() {
         let user = Message::User("hi".into());
         let tool = tool_result("Bash", "ok");
-        // Empty role filter keeps everything; tools shown by default.
+        // Empty role filter keeps everything; view_all shows tools.
         assert!(view_all().keep(&user));
         assert!(view_all().keep(&tool));
         // --no-tools drops tool messages but keeps others.

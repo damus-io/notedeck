@@ -252,6 +252,53 @@ async fn log_role_and_last_filters() {
     );
 }
 
+/// Seed a session whose conversation mixes human turns with tool traffic, for
+/// the `--tools` default below.
+async fn seed_tool_conversation(dir: &TempDir) -> String {
+    let db_path = dir.path().to_str().expect("path").to_string();
+    let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
+    let filter = nostrdb::Filter::new()
+        .kinds([KIND_SESSION_STATE as u64, KIND_CONVERSATION as u64])
+        .build();
+    let sub = ndb
+        .subscribe(std::slice::from_ref(&filter))
+        .expect("subscribe");
+    seed_state(&ndb, "sess-tools", "Tool session");
+    seed_message(&ndb, "sess-tools", "user", "run the thing", 1, 1000);
+    seed_message(&ndb, "sess-tools", "tool_result", "ran the thing", 2, 2000);
+    seed_message(&ndb, "sess-tools", "assistant", "it ran", 3, 3000);
+    ndb.wait_for_all_notes(sub, 4)
+        .await
+        .expect("ingest seeded events");
+    db_path
+}
+
+#[tokio::test]
+async fn log_folds_tool_traffic_unless_tools_is_passed() {
+    let dir = TempDir::new().expect("tmp dir");
+    let db_path = seed_tool_conversation(&dir).await;
+
+    // A bare `log` is the human conversation: the tool_result is folded away.
+    let plain = run_log(&db_path, &dir, &["sess-tools"]);
+    assert!(plain.contains("run the thing") && plain.contains("it ran"));
+    assert!(
+        !plain.contains("ran the thing"),
+        "tool traffic is folded by default:\n{plain}"
+    );
+
+    // `--tools` opts it back in; `--no-tools` is the default said out loud.
+    let with_tools = run_log(&db_path, &dir, &["sess-tools", "--tools"]);
+    assert!(
+        with_tools.contains("ran the thing"),
+        "--tools shows tool traffic:\n{with_tools}"
+    );
+    let without = run_log(&db_path, &dir, &["sess-tools", "--no-tools"]);
+    assert!(
+        !without.contains("ran the thing"),
+        "--no-tools still folds tool traffic:\n{without}"
+    );
+}
+
 #[tokio::test]
 async fn log_color_flag_overrides_tty_detection() {
     let dir = TempDir::new().expect("tmp dir");
@@ -469,20 +516,27 @@ async fn log_jsonl_reconstructs_source_archive_in_seq_order() {
             .subscribe(std::slice::from_ref(&filter))
             .expect("subscribe");
         seed_state(&ndb, "sess-src", "Archived session");
-        // Seeded out of seq order; the reconstructor sorts back to 1,2.
+        // Seeded out of seq order; the reconstructor sorts back to 1,2,3.
         seed_source_line(&ndb, "sess-src", 2, r#"{"type":"assistant","n":2}"#);
         seed_source_line(&ndb, "sess-src", 1, r#"{"type":"user","n":1}"#);
-        ndb.wait_for_all_notes(sub, 3)
+        seed_source_line(&ndb, "sess-src", 3, r#"{"type":"tool_result","n":3}"#);
+        ndb.wait_for_all_notes(sub, 4)
             .await
             .expect("ingest seeded events");
     }
 
     let stdout = run_log(&db_path, &dir, &["sess-src", "--jsonl"]);
-    // Raw source lines, emitted verbatim in original (seq) order.
+    // Raw source lines, emitted verbatim in original (seq) order. The tool line
+    // is here without `--tools`: `--jsonl` reconstructs the source archive, so
+    // the display view's tool folding must never reach it.
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(
         lines,
-        vec![r#"{"type":"user","n":1}"#, r#"{"type":"assistant","n":2}"#],
+        vec![
+            r#"{"type":"user","n":1}"#,
+            r#"{"type":"assistant","n":2}"#,
+            r#"{"type":"tool_result","n":3}"#,
+        ],
         "jsonl must replay raw source lines in seq order:\n{stdout}"
     );
 }

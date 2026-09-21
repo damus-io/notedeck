@@ -182,8 +182,9 @@ async fn grep_spans_every_session_in_one_run() {
     let db_path = seed_sessions(&dir).await;
 
     // One invocation, every session: the pattern hits the assistant line in one
-    // session and the tool_result in another, and never the session that
-    // doesn't mention it.
+    // session and the user line in another, and never the session that doesn't
+    // mention it. (`sess-proj` also has a matching tool_result, but tool traffic
+    // is folded unless `--tools` asks for it.)
     let out = run_grep(&db_path, &dir, &["terminal"]);
     assert!(
         out.contains("Ship of Harkinian") && out.contains("Other project"),
@@ -256,12 +257,27 @@ async fn grep_honors_the_session_and_message_filters() {
         "--role narrows: {out}"
     );
 
-    // `--no-tools` folds the tool_result away, leaving that session's only hit
-    // the user line.
+    // Tool traffic is folded by default, so `sess-proj`'s only hit is its user
+    // line — `--tools` is what widens the search to the tool_result.
+    let out = run_grep(&db_path, &dir, &["-i", "terminal"]);
+    assert!(
+        !out.contains("terminal: ok"),
+        "tool results are folded by default: {out}"
+    );
+    assert!(
+        out.contains("mind the TERMINAL width"),
+        "the session still matches on its user line: {out}"
+    );
+    let out = run_grep(&db_path, &dir, &["--tools", "-i", "terminal"]);
+    assert!(
+        out.contains("terminal: ok"),
+        "--tools searches tool results too: {out}"
+    );
+    // `--no-tools` is the same view spelled out loud.
     let out = run_grep(&db_path, &dir, &["--no-tools", "-i", "terminal"]);
     assert!(
         !out.contains("terminal: ok"),
-        "--no-tools folds tool results: {out}"
+        "--no-tools still folds tool results: {out}"
     );
 
     // A pattern nothing matches says so rather than printing nothing.
