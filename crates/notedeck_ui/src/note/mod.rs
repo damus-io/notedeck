@@ -16,6 +16,7 @@ use notedeck::GlobalWallet;
 use notedeck::Images;
 use notedeck::Localization;
 use notedeck::MediaAction;
+use notedeck::RelativeTimeCache;
 use notedeck::{get_current_wallet, MediaJobSender};
 pub use options::NoteOptions;
 pub use reply_description::reply_desc;
@@ -237,7 +238,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let (_id, rect) = ui.allocate_space(egui::vec2(50.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
             ui.put(rect, |ui: &mut egui::Ui| {
-                render_notetime(ui, self.note_context.i18n, self.note.created_at(), false)
+                render_notetime(
+                    ui,
+                    self.note_context.i18n,
+                    self.note_context.time_cache,
+                    self.note.created_at(),
+                    false,
+                )
             });
             let (_id, rect) = ui.allocate_space(egui::vec2(150.0, 20.0));
             ui.allocate_rect(rect, Sense::hover());
@@ -245,6 +252,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 ui.add(
                     Username::new(
                         self.note_context.i18n,
+                        self.note_context.style_cache,
                         profile.as_ref().ok(),
                         self.note.pubkey(),
                     )
@@ -274,11 +282,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
         profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
         ui: &mut egui::Ui,
     ) -> PfpResponse {
-        if !self.options().contains(NoteOptions::Wide) {
-            ui.spacing_mut().item_spacing.x = 16.0;
+        let item_spacing_x = if self.options().contains(NoteOptions::Wide) {
+            4.0
         } else {
-            ui.spacing_mut().item_spacing.x = 4.0;
-        }
+            16.0
+        };
+        self.note_context
+            .style_cache
+            .item_spacing_x(ui, item_spacing_x);
 
         let pfp_size = self.options().pfp_size();
 
@@ -359,13 +370,25 @@ impl<'a, 'd> NoteView<'a, 'd> {
     ) {
         let horiz_resp = ui
             .horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                let item_spacing_x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                note_context.style_cache.item_spacing_x(ui, item_spacing_x);
                 let response = ui.add(
-                    Username::new(note_context.i18n, profile.as_ref().ok(), note.pubkey())
-                        .abbreviated(20),
+                    Username::new(
+                        note_context.i18n,
+                        note_context.style_cache,
+                        profile.as_ref().ok(),
+                        note.pubkey(),
+                    )
+                    .abbreviated(20),
                 );
                 if !flags.contains(NoteOptions::FullCreatedDate) {
-                    return render_notetime(ui, note_context.i18n, note.created_at(), true);
+                    return render_notetime(
+                        ui,
+                        note_context.i18n,
+                        note_context.time_cache,
+                        note.created_at(),
+                        true,
+                    );
                 }
                 response
             })
@@ -385,7 +408,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
         if note.is_rumor() {
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                let item_spacing_x = if is_narrow(ui.ctx()) { 1.0 } else { 2.0 };
+                note_context.style_cache.item_spacing_x(ui, item_spacing_x);
 
                 // A green lock + green text, mirroring the private-reply badge on
                 // damus iOS: the treatment says at a glance that the note is private
@@ -515,6 +539,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 note_key,
                                 self.note_context.i18n,
                                 self.note_context.sound,
+                                self.note_context.style_cache,
                             )
                         })
                         .inner
@@ -560,7 +585,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     );
 
                     ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 1.0;
+                        self.note_context.style_cache.item_spacing_x(ui, 1.0);
 
                         let note_reply = self
                             .note_context
@@ -611,6 +636,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                     note_key,
                                     self.note_context.i18n,
                                     self.note_context.sound,
+                                    self.note_context.style_cache,
                                 )
                             })
                             .inner
@@ -1179,11 +1205,12 @@ fn actionbar_ui(
     note_key: NoteKey,
     i18n: &mut Localization,
     sound: &notedeck::SoundManager,
+    style_cache: &mut notedeck::StyleCache,
 ) -> Option<NoteAction> {
     let mut action = None;
     let spacing = notedeck::tokens::SPACING_XL;
 
-    ui.spacing_mut().item_spacing.x = 2.0;
+    style_cache.item_spacing_x(ui, 2.0);
     ui.set_min_height(26.0);
 
     let reply_resp =
@@ -1266,23 +1293,35 @@ fn actionbar_ui(
 }
 
 #[profiling::function]
+/// The note header's relative timestamp, e.g. `"3d 4h ⋅ "`.
+///
+/// Goes through [`RelativeTimeCache`] rather than
+/// [`notedeck::time_ago_since`]: this runs once per visible note per frame, and
+/// formatting a relative time through Fluent is one of the most expensive things
+/// in the frame. The separator is appended into a right-sized `String` because
+/// `secondary_label` wants an owned one either way, and growing a `format!`
+/// buffer would cost a realloc per note per frame.
 fn render_notetime(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
+    time_cache: &mut RelativeTimeCache,
     created_at: u64,
     before: bool,
 ) -> Response {
+    const SEPARATOR: &str = " ⋅ ";
+
+    let ago = time_cache.time_ago_since(i18n, created_at);
+
+    let mut label = String::with_capacity(ago.len() + SEPARATOR.len());
     if before {
-        secondary_label(
-            ui,
-            format!(" ⋅ {}", notedeck::time_ago_since(i18n, created_at)),
-        )
+        label.push_str(SEPARATOR);
+        label.push_str(ago);
     } else {
-        secondary_label(
-            ui,
-            format!("{} ⋅ ", notedeck::time_ago_since(i18n, created_at)),
-        )
+        label.push_str(ago);
+        label.push_str(SEPARATOR);
     }
+
+    secondary_label(ui, label)
 }
 
 fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -> egui::Response {

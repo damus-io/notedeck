@@ -206,6 +206,19 @@ done-comment described under Work Tracking above.
 17. **Frame-aware animations** — for animations (GIFs, video), track `repaint_at` timestamps and only request repaints when necessary; avoid spinning every frame.
 18. **No allocation in ui functions** — this is an immediate-mode UI: every `*_ui` function runs each frame, so don't build `Vec`s, clone collections, or otherwise allocate inside them. Iterate lazily (probe with `.next().is_some()` and re-create the iterator instead of collecting), borrow with `Cow`/`&str` where the common case doesn't need an owned value, and hoist any allocation that's truly needed out of the per-frame path (e.g. into state that's reseeded only when the underlying data changes).
 
+    This rule is measured, not just asserted. `crates/notedeck_columns/tests/frame_alloc.rs`
+    drives a populated Columns timeline and counts what one steady-state frame allocates
+    on the UI thread, against a budget that was measured rather than chosen. Adding an
+    allocation to a per-frame path fails it. The measurement is bit-exact, so the budget
+    has no tolerance: if it moves, re-measure and write the new number down.
+
+    Notedeck cannot assert *zero* — egui rebuilds its shape list every pass by design — so
+    the check is a ratchet rather than an absolute. `crates/notedeck_testing/src/alloc.rs`
+    holds the allocator and the reasoning, including what the per-thread counters
+    deliberately cannot see. To find out where a frame's allocations go:
+
+        cargo test -p notedeck_columns --test frame_alloc -- --ignored --nocapture
+
 
 
 Use this guide as a launchpad when extending Notedeck with new agents or protocol features. It highlights where to attach new functionality without duplicating existing infrastructure.

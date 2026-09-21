@@ -1,9 +1,10 @@
 use egui::{Color32, RichText, Widget};
 use nostrdb::ProfileRecord;
-use notedeck::{fonts::NamedFontFamily, tr, Localization};
+use notedeck::{fonts::NamedFontFamily, tr, Localization, StyleCache};
 
 pub struct Username<'a> {
     i18n: &'a mut Localization,
+    style_cache: &'a mut StyleCache,
     profile: Option<&'a ProfileRecord<'a>>,
     pk: &'a [u8; 32],
     pk_colored: bool,
@@ -23,6 +24,7 @@ impl<'a> Username<'a> {
 
     pub fn new(
         i18n: &'a mut Localization,
+        style_cache: &'a mut StyleCache,
         profile: Option<&'a ProfileRecord>,
         pk: &'a [u8; 32],
     ) -> Self {
@@ -30,6 +32,7 @@ impl<'a> Username<'a> {
         let abbrev: usize = 1000;
         Username {
             i18n,
+            style_cache,
             profile,
             pk,
             pk_colored,
@@ -41,7 +44,7 @@ impl<'a> Username<'a> {
 impl Widget for Username<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
+            self.style_cache.item_spacing_x(ui, 0.0);
 
             let color = if self.pk_colored {
                 Some(pk_color(self.pk))
@@ -52,9 +55,15 @@ impl Widget for Username<'_> {
             if let Some(profile) = self.profile {
                 if let Some(prof) = profile.record().profile() {
                     if prof.display_name().is_some() && prof.display_name().unwrap() != "" {
-                        ui_abbreviate_name(ui, prof.display_name().unwrap(), self.abbrev, color);
+                        ui_abbreviate_name(
+                            ui,
+                            self.style_cache,
+                            prof.display_name().unwrap(),
+                            self.abbrev,
+                            color,
+                        );
                     } else if let Some(name) = prof.name() {
-                        ui_abbreviate_name(ui, name, self.abbrev, color);
+                        ui_abbreviate_name(ui, self.style_cache, name, self.abbrev, color);
                     }
                 }
             } else {
@@ -63,7 +72,7 @@ impl Widget for Username<'_> {
                     "nostrich",
                     "Default username when profile is not available"
                 ))
-                .family(NamedFontFamily::Medium.as_family());
+                .family(self.style_cache.font_family(NamedFontFamily::Medium));
                 if let Some(col) = color {
                     txt = txt.color(col)
                 }
@@ -74,8 +83,8 @@ impl Widget for Username<'_> {
     }
 }
 
-fn colored_name(name: &str, color: Option<Color32>) -> RichText {
-    let mut txt = RichText::new(name).family(NamedFontFamily::Medium.as_family());
+fn colored_name(style_cache: &StyleCache, name: &str, color: Option<Color32>) -> RichText {
+    let mut txt = RichText::new(name).family(style_cache.font_family(NamedFontFamily::Medium));
 
     if let Some(color) = color {
         txt = txt.color(color);
@@ -84,7 +93,13 @@ fn colored_name(name: &str, color: Option<Color32>) -> RichText {
     txt
 }
 
-fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<Color32>) {
+fn ui_abbreviate_name(
+    ui: &mut egui::Ui,
+    style_cache: &StyleCache,
+    name: &str,
+    len: usize,
+    color: Option<Color32>,
+) {
     let should_abbrev = name.len() > len;
     let name = if should_abbrev {
         let closest = notedeck::abbrev::floor_char_boundary(name, len);
@@ -93,10 +108,10 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<C
         name
     };
 
-    ui.label(colored_name(name, color));
+    ui.label(colored_name(style_cache, name, color));
 
     if should_abbrev {
-        ui.label(colored_name("..", color));
+        ui.label(colored_name(style_cache, "..", color));
     }
 }
 

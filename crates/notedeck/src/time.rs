@@ -1,5 +1,6 @@
 use crate::{tr, Localization};
 use chrono::DateTime;
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Time duration constants in seconds
@@ -26,12 +27,51 @@ pub fn is_future_timestamp(timestamp: u64, now: u64) -> bool {
     timestamp > now + MAX_FUTURE_NOTE_SKEW_SECS
 }
 
-/// Calculate relative time between two timestamps, with two units only
-/// when the scale is large enough (e.g., "1y 6m", "5d 4h"),
-/// but not for hours/minutes/seconds. Takes `now` explicitly (unlike
-/// [`time_ago_since`], which reads the wall clock) so callers can drive it off a
-/// captured timestamp and test it deterministically.
-pub fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> String {
+/// One component of a relative time, e.g. the `4h` of `"3d 4h"`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TimePart {
+    pub unit: TimeUnit,
+    pub count: u64,
+}
+
+/// The unit a [`TimePart`] is counted in.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TimeUnit {
+    Year,
+    Month,
+    Week,
+    Day,
+    Hour,
+    Minute,
+    Second,
+}
+
+/// What a relative time renders as, before it is turned into text.
+///
+/// This is everything [`render_relative_time`] reads, and nothing else — which
+/// is what makes it usable as a cache key. See [`RelativeTimeCache`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RelativeTime {
+    /// The leading component, or `None` for a gap of under three seconds,
+    /// which renders as "now".
+    pub first: Option<TimePart>,
+
+    /// The trailing component, e.g. the `4h` of `"3d 4h"`. Only ever present
+    /// alongside a `first`, and only at day scale and coarser.
+    pub second: Option<TimePart>,
+
+    /// The timestamp is in the future; renders with a leading `+`.
+    pub future: bool,
+}
+
+/// Bucket the gap between `timestamp` and `now` into what it will be rendered
+/// as, with two units only when the scale is large enough (e.g. "1y 6m",
+/// "5d 4h"), but not for hours/minutes/seconds.
+///
+/// Pure arithmetic: no locale, no allocation. [`render_relative_time`] turns
+/// the result into text.
+pub fn relative_time(timestamp: u64, now: u64) -> RelativeTime {
+    let future = timestamp > now;
     let duration = if now >= timestamp {
         now.saturating_sub(timestamp)
     } else {
@@ -40,12 +80,11 @@ pub fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> St
 
     // Special-case: "now" for < 3 seconds
     if duration <= 2 {
-        let s = tr!(
-            i18n,
-            "now",
-            "Relative time for very recent events (less than 3 seconds)"
-        );
-        return if timestamp > now { format!("+{s}") } else { s };
+        return RelativeTime {
+            first: None,
+            second: None,
+            future,
+        };
     }
 
     // Break into buckets
@@ -67,41 +106,84 @@ pub fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> St
     let mins = rem_h / ONE_MINUTE_IN_SECONDS;
     let secs = rem_h % ONE_MINUTE_IN_SECONDS;
 
-    let mut parts: Vec<String> = Vec::with_capacity(2);
+    let part = |unit, count| TimePart { unit, count };
+    let opt_part = |unit, count| (count > 0).then(|| part(unit, count));
 
-    let mut push_part = |count: u64, key: &str, desc: &str| {
-        if count > 0 && parts.len() < 2 {
-            parts.push(tr!(i18n, key, desc, count = count));
-        }
+    let (first, second) = if years > 0 {
+        (
+            part(TimeUnit::Year, years),
+            opt_part(TimeUnit::Month, months),
+        )
+    } else if months > 0 {
+        (
+            part(TimeUnit::Month, months),
+            opt_part(TimeUnit::Week, weeks),
+        )
+    } else if weeks > 0 {
+        (part(TimeUnit::Week, weeks), opt_part(TimeUnit::Day, days))
+    } else if days > 0 {
+        (part(TimeUnit::Day, days), opt_part(TimeUnit::Hour, hours))
+    } else if hours > 0 {
+        (part(TimeUnit::Hour, hours), None)
+    } else if mins > 0 {
+        (part(TimeUnit::Minute, mins), None)
+    } else {
+        (part(TimeUnit::Second, secs.max(1)), None)
     };
 
-    if years > 0 {
-        push_part(years, "{count}y", "Relative time in years");
-        push_part(months, "{count}mo", "Relative time in months");
-    } else if months > 0 {
-        push_part(months, "{count}mo", "Relative time in months");
-        push_part(weeks, "{count}w", "Relative time in weeks");
-    } else if weeks > 0 {
-        push_part(weeks, "{count}w", "Relative time in weeks");
-        push_part(days, "{count}d", "Relative time in days");
-    } else if days > 0 {
-        push_part(days, "{count}d", "Relative time in days");
-        push_part(hours, "{count}h", "Relative time in hours");
-    } else if hours > 0 {
-        push_part(hours, "{count}h", "Relative time in hours");
-    } else if mins > 0 {
-        push_part(mins, "{count}m", "Relative time in minutes");
-    } else {
-        push_part(secs.max(1), "{count}s", "Relative time in seconds");
+    RelativeTime {
+        first: Some(first),
+        second,
+        future,
     }
+}
 
-    let time_str = parts.join(" ");
-
-    if timestamp > now {
-        format!("+{time_str}")
-    } else {
-        time_str
+/// Localize one component, e.g. `"4h"`.
+fn render_part(i18n: &mut Localization, part: TimePart) -> String {
+    let count = part.count;
+    match part.unit {
+        TimeUnit::Year => tr!(i18n, "{count}y", "Relative time in years", count = count),
+        TimeUnit::Month => tr!(i18n, "{count}mo", "Relative time in months", count = count),
+        TimeUnit::Week => tr!(i18n, "{count}w", "Relative time in weeks", count = count),
+        TimeUnit::Day => tr!(i18n, "{count}d", "Relative time in days", count = count),
+        TimeUnit::Hour => tr!(i18n, "{count}h", "Relative time in hours", count = count),
+        TimeUnit::Minute => tr!(i18n, "{count}m", "Relative time in minutes", count = count),
+        TimeUnit::Second => tr!(i18n, "{count}s", "Relative time in seconds", count = count),
     }
+}
+
+/// Localize a bucketed relative time, e.g. `"3d 4h"` or `"+2m"`.
+pub fn render_relative_time(i18n: &mut Localization, relative: RelativeTime) -> String {
+    let Some(first) = relative.first else {
+        let s = tr!(
+            i18n,
+            "now",
+            "Relative time for very recent events (less than 3 seconds)"
+        );
+        return if relative.future { format!("+{s}") } else { s };
+    };
+
+    let first = render_part(i18n, first);
+    let second = relative.second.map(|part| render_part(i18n, part));
+
+    match (relative.future, second) {
+        (false, None) => first,
+        (true, None) => format!("+{first}"),
+        (false, Some(second)) => format!("{first} {second}"),
+        (true, Some(second)) => format!("+{first} {second}"),
+    }
+}
+
+/// Calculate relative time between two timestamps, with two units only
+/// when the scale is large enough (e.g., "1y 6m", "5d 4h"),
+/// but not for hours/minutes/seconds. Takes `now` explicitly (unlike
+/// [`time_ago_since`], which reads the wall clock) so callers can drive it off a
+/// captured timestamp and test it deterministically.
+///
+/// Allocates. Per-frame callers should go through [`RelativeTimeCache`]
+/// instead.
+pub fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> String {
+    render_relative_time(i18n, relative_time(timestamp, now))
 }
 
 pub fn time_format(_i18n: &mut Localization, timestamp: u64) -> String {
@@ -112,275 +194,237 @@ pub fn time_format(_i18n: &mut Localization, timestamp: u64) -> String {
         .to_string()
 }
 
+/// Allocates. Per-frame callers should go through
+/// [`RelativeTimeCache::time_ago_since`] instead.
 pub fn time_ago_since(i18n: &mut Localization, timestamp: u64) -> String {
     let now = unix_time_secs();
 
     time_ago_between(i18n, timestamp, now)
 }
 
+/// How many rendered relative times to keep before starting over.
+///
+/// A timeline needs one entry per distinct bucket on screen, which is a handful.
+/// The cap is here because the keys drift as notes age — a session left open for
+/// a day accumulates one entry per minute it spent showing a note that was
+/// minutes old. It clears rather than evicting one entry, because a rebuild is a
+/// few `tr!` calls and a correct LRU is not worth the code.
+const MAX_RENDERED_TIMES: usize = 64;
+
+/// Memoises localized relative timestamps, so the note header's "3d 4h" is
+/// formatted when it changes rather than sixty times a second.
+///
+/// # Why this exists
+///
+/// `NoteView` renders a relative timestamp per visible note, every frame.
+/// Formatting one runs two `tr!` calls with arguments, and an argument-bearing
+/// `tr!` is the most expensive kind: `FluentArgs` cannot be cached (see
+/// [`Localization::translate`](crate::Localization::translate)) so every call
+/// builds one, formats through the bundle, and allocates the result. Measured by
+/// `crates/notedeck_columns/tests/frame_alloc.rs`, that was **42 allocations and
+/// ~8.4 KB per frame** on a seven-note timeline — the second largest byte figure
+/// in the frame — for a string whose resolution is the unit it is displayed in:
+/// it ticks once a second only while a note is seconds old, once a minute for
+/// the first hour, and once an hour from a day old onwards.
+///
+/// # The key
+///
+/// Entries are keyed on [`RelativeTime`], the bucketed form, not on the
+/// timestamp and not on a coarse clock. That is deliberate: the rendered text is
+/// a pure function of the bucket, so an entry cannot go stale as the clock moves
+/// — when the bucket changes, so does the key. It also means notes that are the
+/// same age share one entry.
+///
+/// The one thing the key does not cover is the locale, so the cache clears when
+/// [`Localization::cache_generation`](crate::Localization::cache_generation)
+/// moves.
+///
+/// # Lifetime
+///
+/// One instance lives on the [`Notedeck`](crate::Notedeck) host and is reached
+/// through [`AppContext::time_cache`](crate::AppContext::time_cache) and
+/// [`NoteContext::time_cache`](crate::NoteContext::time_cache). It is state
+/// passed in by reference rather than a global, per CLAUDE.md.
+#[derive(Default)]
+pub struct RelativeTimeCache {
+    rendered: HashMap<RelativeTime, String>,
+
+    /// The `Localization` cache generation `rendered` was built against;
+    /// anything else means the locale changed under us.
+    generation: u64,
+}
+
+impl RelativeTimeCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Localized relative time between `timestamp` and `now`, formatted on the
+    /// first frame its bucket is seen and borrowed on every frame after.
+    pub fn time_ago_between(&mut self, i18n: &mut Localization, timestamp: u64, now: u64) -> &str {
+        let key = relative_time(timestamp, now);
+
+        if self.generation != i18n.cache_generation() {
+            self.rendered.clear();
+            self.generation = i18n.cache_generation();
+        }
+
+        if self.rendered.len() >= MAX_RENDERED_TIMES && !self.rendered.contains_key(&key) {
+            self.rendered.clear();
+        }
+
+        self.rendered
+            .entry(key)
+            .or_insert_with(|| render_relative_time(i18n, key))
+    }
+
+    /// [`time_ago_between`](Self::time_ago_between) against the wall clock.
+    pub fn time_ago_since(&mut self, i18n: &mut Localization, timestamp: u64) -> &str {
+        let now = unix_time_secs();
+
+        self.time_ago_between(i18n, timestamp, now)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn get_current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs()
+    const NOW: u64 = 1_700_000_000;
+
+    fn i18n() -> Localization {
+        Localization::no_bidi()
+    }
+
+    fn ago(i18n: &mut Localization, secs_ago: u64) -> String {
+        time_ago_between(i18n, NOW - secs_ago, NOW)
     }
 
     #[test]
-    fn test_now_condition() {
-        let now = get_current_timestamp();
-        let mut intl = Localization::no_bidi();
+    fn renders_one_unit_below_a_day_and_two_above() {
+        let i18n = &mut i18n();
 
-        // Test 0 seconds ago
-        let result = time_ago_between(&mut intl, now, now);
+        assert_eq!(ago(i18n, 0), "now");
+        assert_eq!(ago(i18n, 2), "now");
+        assert_eq!(ago(i18n, 3), "3s");
+        assert_eq!(ago(i18n, 59), "59s");
+        assert_eq!(ago(i18n, ONE_MINUTE_IN_SECONDS), "1m");
+        assert_eq!(ago(i18n, 90 * ONE_MINUTE_IN_SECONDS), "1h");
         assert_eq!(
-            result, "now",
-            "Expected 'now' for 0 seconds, got: {}",
-            result
+            ago(i18n, 3 * ONE_DAY_IN_SECONDS + 4 * ONE_HOUR_IN_SECONDS),
+            "3d 4h"
         );
-
-        // Test 1 second ago
-        let result = time_ago_between(&mut intl, now - 1, now);
+        assert_eq!(ago(i18n, 3 * ONE_DAY_IN_SECONDS), "3d");
         assert_eq!(
-            result, "now",
-            "Expected 'now' for 1 second, got: {}",
-            result
-        );
-
-        // Test 2 seconds ago
-        let result = time_ago_between(&mut intl, now - 2, now);
-        assert_eq!(
-            result, "now",
-            "Expected 'now' for 2 seconds, got: {}",
-            result
+            ago(i18n, ONE_YEAR_IN_SECONDS + 6 * ONE_MONTH_IN_SECONDS),
+            "1y 6mo"
         );
     }
 
     #[test]
-    fn test_seconds_condition() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
+    fn a_future_timestamp_is_prefixed() {
+        let i18n = &mut i18n();
 
-        // Test 3 seconds ago
-        let result = time_ago_between(&mut i18n, now - 3, now);
-        assert_eq!(result, "3s", "Expected '3s' for 3 seconds, got: {}", result);
-
-        // Test 30 seconds ago
-        let result = time_ago_between(&mut i18n, now - 30, now);
+        assert_eq!(time_ago_between(i18n, NOW + 1, NOW), "+now");
         assert_eq!(
-            result, "30s",
-            "Expected '30s' for 30 seconds, got: {}",
-            result
+            time_ago_between(i18n, NOW + 5 * ONE_MINUTE_IN_SECONDS, NOW),
+            "+5m"
         );
-
-        // Test 59 seconds ago (max for seconds)
-        let result = time_ago_between(&mut i18n, now - 59, now);
         assert_eq!(
-            result, "59s",
-            "Expected '59s' for 59 seconds, got: {}",
-            result
+            time_ago_between(
+                i18n,
+                NOW + 3 * ONE_DAY_IN_SECONDS + 4 * ONE_HOUR_IN_SECONDS,
+                NOW
+            ),
+            "+3d 4h"
+        );
+    }
+
+    /// The cache key is the bucket, so it must agree with the uncached path for
+    /// every gap, and must not hand back a stale string when the bucket moves.
+    #[test]
+    fn the_cache_agrees_with_the_uncached_path_as_the_clock_moves() {
+        let i18n = &mut i18n();
+        let cache = &mut RelativeTimeCache::new();
+
+        // Walk a gap that crosses every branch, including the boundaries where
+        // the rendered unit changes.
+        let gaps = (0..200).chain((0..400).map(|n| n * 997)).chain([
+            ONE_MINUTE_IN_SECONDS - 1,
+            ONE_MINUTE_IN_SECONDS,
+            ONE_HOUR_IN_SECONDS - 1,
+            ONE_HOUR_IN_SECONDS,
+            ONE_DAY_IN_SECONDS - 1,
+            ONE_DAY_IN_SECONDS,
+            ONE_WEEK_IN_SECONDS - 1,
+            ONE_WEEK_IN_SECONDS,
+            ONE_MONTH_IN_SECONDS - 1,
+            ONE_MONTH_IN_SECONDS,
+            ONE_YEAR_IN_SECONDS - 1,
+            ONE_YEAR_IN_SECONDS,
+            40 * ONE_YEAR_IN_SECONDS,
+        ]);
+
+        for gap in gaps {
+            let timestamp = NOW - gap;
+            let expected = time_ago_between(i18n, timestamp, NOW);
+            assert_eq!(
+                cache.time_ago_between(i18n, timestamp, NOW),
+                expected,
+                "gap of {gap}s"
+            );
+
+            // And the same gap in the other direction.
+            let expected = time_ago_between(i18n, NOW + gap, NOW);
+            assert_eq!(
+                cache.time_ago_between(i18n, NOW + gap, NOW),
+                expected,
+                "gap of {gap}s into the future"
+            );
+        }
+    }
+
+    /// The relative-time messages have no FTL entries today, so both locales
+    /// render them through `tr!`'s fallback and a round-trip through
+    /// `set_locale` cannot be observed from the outside. Check the mechanism
+    /// instead: a locale change must drop what was rendered against the old one.
+    #[test]
+    fn the_cache_notices_a_locale_change() {
+        use unic_langid::langid;
+
+        let i18n = &mut i18n();
+        let cache = &mut RelativeTimeCache::new();
+
+        cache.time_ago_between(i18n, NOW - ONE_HOUR_IN_SECONDS, NOW);
+        cache.time_ago_between(i18n, NOW - ONE_MINUTE_IN_SECONDS, NOW);
+        assert_eq!(cache.rendered.len(), 2);
+
+        i18n.set_locale(langid!("en-XA")).unwrap();
+        cache.time_ago_between(i18n, NOW - ONE_HOUR_IN_SECONDS, NOW);
+
+        assert_eq!(
+            cache.generation,
+            i18n.cache_generation(),
+            "cache did not rebase onto the new locale"
+        );
+        assert_eq!(
+            cache.rendered.len(),
+            1,
+            "cache kept the old locale's text across set_locale"
         );
     }
 
     #[test]
-    fn test_minutes_condition() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
+    fn the_cache_does_not_grow_without_bound() {
+        let i18n = &mut i18n();
+        let cache = &mut RelativeTimeCache::new();
 
-        // Test 1 minute ago
-        let result = time_ago_between(&mut i18n, now - ONE_MINUTE_IN_SECONDS, now);
-        assert_eq!(result, "1m", "Expected '1m' for 1 minute, got: {}", result);
+        // Every second under a minute is its own bucket, so this is more
+        // distinct keys than the cap allows.
+        for gap in 3..(3 * MAX_RENDERED_TIMES as u64) {
+            cache.time_ago_between(i18n, NOW - gap, NOW);
+        }
 
-        // Test 30 minutes ago
-        let result = time_ago_between(&mut i18n, now - 30 * ONE_MINUTE_IN_SECONDS, now);
-        assert_eq!(
-            result, "30m",
-            "Expected '30m' for 30 minutes, got: {}",
-            result
-        );
-
-        // Test 59 minutes ago (max for minutes)
-        let result = time_ago_between(&mut i18n, now - 59 * ONE_MINUTE_IN_SECONDS, now);
-        assert_eq!(
-            result, "59m",
-            "Expected '59m' for 59 minutes, got: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_hours_condition() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
-
-        // Test 1 hour ago
-        let result = time_ago_between(&mut i18n, now - ONE_HOUR_IN_SECONDS, now);
-        assert_eq!(result, "1h", "Expected '1h' for 1 hour, got: {}", result);
-
-        // Test 12 hours ago
-        let result = time_ago_between(&mut i18n, now - 12 * ONE_HOUR_IN_SECONDS, now);
-        assert_eq!(
-            result, "12h",
-            "Expected '12h' for 12 hours, got: {}",
-            result
-        );
-
-        // Test 23 hours ago (max for hours)
-        let result = time_ago_between(&mut i18n, now - 23 * ONE_HOUR_IN_SECONDS, now);
-        assert_eq!(
-            result, "23h",
-            "Expected '23h' for 23 hours, got: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_days_condition() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
-
-        // Test 1 day ago
-        let result = time_ago_between(&mut i18n, now - ONE_DAY_IN_SECONDS, now);
-        assert_eq!(result, "1d", "Expected '1d' for 1 day, got: {}", result);
-
-        // Test 3 days ago
-        let result = time_ago_between(&mut i18n, now - 3 * ONE_DAY_IN_SECONDS, now);
-        assert_eq!(result, "3d", "Expected '3d' for 3 days, got: {}", result);
-
-        // Test 6 days ago (max for days, before weeks)
-        let result = time_ago_between(&mut i18n, now - 6 * ONE_DAY_IN_SECONDS, now);
-        assert_eq!(result, "6d", "Expected '6d' for 6 days, got: {}", result);
-    }
-
-    #[test]
-    fn test_weeks_condition() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
-
-        // Test 1 week ago
-        let result = time_ago_between(&mut i18n, now - ONE_WEEK_IN_SECONDS, now);
-        assert_eq!(result, "1w", "Expected '1w' for 1 week, got: {}", result);
-
-        // Test 4 weeks ago
-        let result = time_ago_between(&mut i18n, now - 4 * ONE_WEEK_IN_SECONDS, now);
-        assert_eq!(result, "4w", "Expected '4w' for 4 weeks, got: {}", result);
-    }
-
-    #[test]
-    fn test_months_condition() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
-
-        // Test 1 month ago
-        let result = time_ago_between(&mut i18n, now - ONE_MONTH_IN_SECONDS, now);
-        assert_eq!(result, "1mo", "Expected '1mo' for 1 month, got: {}", result);
-
-        // Test 11 months ago (max for months, before years)
-        let result = time_ago_between(&mut i18n, now - 11 * ONE_MONTH_IN_SECONDS, now);
-        assert_eq!(
-            result, "11mo",
-            "Expected '11mo' for 11 months, got: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_years_condition() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
-
-        // Test 1 year ago
-        let result = time_ago_between(&mut i18n, now - ONE_YEAR_IN_SECONDS, now);
-        assert_eq!(result, "1y", "Expected '1y' for 1 year, got: {}", result);
-
-        // Test 5 years ago
-        let result = time_ago_between(&mut i18n, now - 5 * ONE_YEAR_IN_SECONDS, now);
-        assert_eq!(result, "5y", "Expected '5y' for 5 years, got: {}", result);
-
-        // Test 10 years ago (reduced from 100 to avoid overflow)
-        let result = time_ago_between(&mut i18n, now - 10 * ONE_YEAR_IN_SECONDS, now);
-        assert_eq!(
-            result, "10y",
-            "Expected '10y' for 10 years, got: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_future_timestamps() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
-
-        // Test 1 minute in the future
-        let result = time_ago_between(&mut i18n, now + ONE_MINUTE_IN_SECONDS, now);
-        assert_eq!(
-            result, "+1m",
-            "Expected '+1m' for 1 minute in future, got: {}",
-            result
-        );
-
-        // Test 1 hour in the future
-        let result = time_ago_between(&mut i18n, now + ONE_HOUR_IN_SECONDS, now);
-        assert_eq!(
-            result, "+1h",
-            "Expected '+1h' for 1 hour in future, got: {}",
-            result
-        );
-
-        // Test 1 day in the future
-        let result = time_ago_between(&mut i18n, now + ONE_DAY_IN_SECONDS, now);
-        assert_eq!(
-            result, "+1d",
-            "Expected '+1d' for 1 day in future, got: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_boundary_conditions() {
-        let now = get_current_timestamp();
-        let mut i18n = Localization::no_bidi();
-
-        // Test boundary between seconds and minutes
-        let result = time_ago_between(&mut i18n, now - 60, now);
-        assert_eq!(
-            result, "1m",
-            "Expected '1m' for exactly 60 seconds, got: {}",
-            result
-        );
-
-        // Test boundary between minutes and hours
-        let result = time_ago_between(&mut i18n, now - 3600, now);
-        assert_eq!(
-            result, "1h",
-            "Expected '1h' for exactly 3600 seconds, got: {}",
-            result
-        );
-
-        // Test boundary between hours and days
-        let result = time_ago_between(&mut i18n, now - 86400, now);
-        assert_eq!(
-            result, "1d",
-            "Expected '1d' for exactly 86400 seconds, got: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_future_skew_helper() {
-        let now = 1_000_000u64;
-        assert!(!is_future_timestamp(now, now));
-        assert!(!is_future_timestamp(
-            now + MAX_FUTURE_NOTE_SKEW_SECS - 1,
-            now
-        ));
-        assert!(is_future_timestamp(
-            now + MAX_FUTURE_NOTE_SKEW_SECS + 1,
-            now
-        ));
+        assert!(cache.rendered.len() <= MAX_RENDERED_TIMES);
     }
 }

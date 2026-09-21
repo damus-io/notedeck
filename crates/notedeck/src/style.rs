@@ -19,6 +19,11 @@ pub enum NotedeckTextStyle {
 }
 
 impl NotedeckTextStyle {
+    /// The `egui::TextStyle` this maps onto.
+    ///
+    /// The named ones allocate an `Arc<str>` per call, so per-frame code should
+    /// ask [`StyleCache::text_style`](crate::StyleCache::text_style) for a
+    /// prebuilt one instead; see that method for why.
     pub fn text_style(&self) -> TextStyle {
         match self {
             Self::Heading => TextStyle::Heading,

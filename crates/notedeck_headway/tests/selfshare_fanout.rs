@@ -42,28 +42,47 @@ async fn created_board_self_share_reaches_the_private_relay() {
     // sealing the definition (kind-1081) and self-sharing the root (kind-1059).
     let mut device = build_headway_device(&relay_url, &account);
 
-    // Step until the self-share reaches the relay, or fail after the convergence
-    // budget. The self-share is captured locally at creation and fanned out on a
-    // following frame once the private relay set resolves.
-    let deadline = Instant::now() + CONVERGE_TIMEOUT;
-    loop {
-        device.run_ok();
-        if relay.relay.count_captured_events_containing(GIFTWRAP) >= 1 {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "auto-seeded board never fanned its kind-1059 self-share to the private relay \
-             (captured locally at creation but no outbound leg published it)"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // The self-share is captured locally at creation and fanned out on a following
+    // frame once the private relay set resolves.
+    step_until_captured(
+        &mut device,
+        &relay,
+        GIFTWRAP,
+        "auto-seeded board never fanned its kind-1059 self-share to the private relay \
+         (captured locally at creation but no outbound leg published it)",
+    );
 
     // Sanity: the sealed board definition rode its (separate, host-owned) leg to the
     // relay too, so the self-share assertion isn't passing in a world where the
     // device simply published everything or nothing.
-    assert!(
-        relay.relay.count_captured_events_containing(SNS_ENVELOPE) >= 1,
-        "the board-definition envelope never reached the relay, so the sync path was dead"
+    //
+    // It gets its own budget rather than being asserted the instant the 1059 lands.
+    // The two legs are independent publishes, so which arrives first is a race, and
+    // asserting one the moment the other wins makes the test fail for a reason it is
+    // not about. What it is about is that both legs carry.
+    step_until_captured(
+        &mut device,
+        &relay,
+        SNS_ENVELOPE,
+        "the board-definition envelope never reached the relay, so the sync path was dead",
     );
+}
+
+/// Step `device` until the relay has captured an EVENT frame containing `needle`,
+/// or panic with `message` after [`CONVERGE_TIMEOUT`].
+fn step_until_captured(
+    device: &mut notedeck_testing::device::DeviceHarness,
+    relay: &notedeck_testing::negentropy_relay::MemoryNegentropyRelay,
+    needle: &str,
+    message: &str,
+) {
+    let deadline = Instant::now() + CONVERGE_TIMEOUT;
+    loop {
+        device.run_ok();
+        if relay.relay.count_captured_events_containing(needle) >= 1 {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{message}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

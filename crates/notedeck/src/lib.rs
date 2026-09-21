@@ -52,6 +52,7 @@ mod setup;
 pub mod sound;
 pub mod storage;
 mod style;
+mod style_cache;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod theme;
@@ -148,9 +149,11 @@ pub(crate) use scoped_subs::{ScopedSubCommand, ScopedSubFact, ScopedSubRuntime};
 pub use scoped_subs::{ScopedSubLiveReadiness, ScopedSubReadiness, ScopedSubRelayEoseStatus};
 pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
+pub use style_cache::StyleCache;
 pub use theme::ColorTheme;
 pub use time::{
-    is_future_timestamp, time_ago_between, time_ago_since, time_format, unix_time_secs,
+    is_future_timestamp, relative_time, render_relative_time, time_ago_between, time_ago_since,
+    time_format, unix_time_secs, RelativeTime, RelativeTimeCache, TimePart, TimeUnit,
     MAX_FUTURE_NOTE_SKEW_SECS,
 };
 pub use timecache::TimeCached;

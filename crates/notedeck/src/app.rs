@@ -281,6 +281,14 @@ pub struct Notedeck {
     job_pool: JobPool,
     media_jobs: MediaJobs,
     nip05_cache: Nip05Cache,
+    /// Prebuilt `egui::Style` variants shared by every app, so per-note spacing
+    /// tweaks are an `Arc` bump rather than a deep `Style` clone. See
+    /// [`StyleCache`](crate::StyleCache).
+    style_cache: crate::StyleCache,
+    /// Localized relative timestamps ("3d 4h") memoised per time bucket, so the
+    /// note header formats one when it changes rather than every frame. See
+    /// [`RelativeTimeCache`](crate::RelativeTimeCache).
+    time_cache: crate::RelativeTimeCache,
     i18n: Localization,
     sound: crate::SoundManager,
     /// Account-wide private-note (PNS kind-1080) sync over the account's private
@@ -919,6 +927,8 @@ impl Notedeck {
             job_pool,
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
+            style_cache: crate::StyleCache::new(),
+            time_cache: crate::RelativeTimeCache::new(),
             i18n,
             sound,
             host_private_sync,
@@ -989,6 +999,8 @@ impl Notedeck {
                 job_pool: &mut self.job_pool,
                 media_jobs: &mut self.media_jobs,
                 nip05_cache: &mut self.nip05_cache,
+                style_cache: &mut self.style_cache,
+                time_cache: &mut self.time_cache,
                 i18n: &mut self.i18n,
                 sound: &self.sound,
                 registries: &self.registries,

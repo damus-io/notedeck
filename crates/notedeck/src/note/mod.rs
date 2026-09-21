@@ -36,6 +36,16 @@ pub struct NoteContext<'d> {
     pub jobs: &'d MediaJobSender,
     pub unknown_ids: &'d mut UnknownIds,
     pub nip05_cache: &'d mut Nip05Cache,
+    /// Prebuilt `egui::Style` variants — see [`StyleCache`](crate::StyleCache).
+    /// The note path tweaks `item_spacing` in seven places per visible note;
+    /// going through this keeps that an `Arc` bump instead of seven `Style`
+    /// clones.
+    pub style_cache: &'d mut crate::StyleCache,
+    /// Localized relative timestamps memoised per time bucket — see
+    /// [`RelativeTimeCache`](crate::RelativeTimeCache). The note header renders
+    /// one per visible note per frame, for a string that ticks once a minute at
+    /// most once a note is over a minute old.
+    pub time_cache: &'d mut crate::RelativeTimeCache,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
     pub sound: &'d SoundManager,
     /// Read-only, app-contributed registries for this frame (inline kind

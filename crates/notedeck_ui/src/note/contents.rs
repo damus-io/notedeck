@@ -177,7 +177,14 @@ fn render_undecorated_note_contents<'a>(
     let mut supported_medias: Vec<RenderableMedia> = vec![];
 
     let response = ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 1.0;
+        note_context.style_cache.item_spacing_x(ui, 1.0);
+
+        // Hoisted out of the block loop: every clone below is a refcount bump,
+        // where `NotedeckTextStyle::text_style` would build the name's
+        // `Arc<str>` from a literal again for each block of each note.
+        let note_body = note_context
+            .style_cache
+            .text_style(NotedeckTextStyle::NoteBody);
 
         let blocks = if let Ok(blocks) = note_context.ndb.get_blocks_by_key(txn, note_key) {
             blocks
@@ -274,7 +281,7 @@ fn render_undecorated_note_contents<'a>(
                         ui.colored_label(
                             link_color,
                             RichText::new(format!("@{}", &block.as_str()[..16]))
-                                .text_style(NotedeckTextStyle::NoteBody.text_style()),
+                                .text_style(note_body.clone()),
                         );
                     }
                 },
@@ -288,7 +295,7 @@ fn render_undecorated_note_contents<'a>(
                         .colored_label(
                             link_color,
                             RichText::new(format!("#{}", block.as_str()))
-                                .text_style(NotedeckTextStyle::NoteBody.text_style()),
+                                .text_style(note_body.clone()),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
@@ -321,7 +328,7 @@ fn render_undecorated_note_contents<'a>(
                         ui.add(Hyperlink::from_label_and_url(
                             RichText::new(block.as_str())
                                 .color(link_color)
-                                .text_style(NotedeckTextStyle::NoteBody.text_style()),
+                                .text_style(note_body.clone()),
                             block.as_str(),
                         ));
                     }
@@ -354,15 +361,13 @@ fn render_undecorated_note_contents<'a>(
                     if options.contains(NoteOptions::ScrambleText) {
                         ui.add(
                             Label::new(
-                                RichText::new(rot13(block_str))
-                                    .text_style(NotedeckTextStyle::NoteBody.text_style()),
+                                RichText::new(rot13(block_str)).text_style(note_body.clone()),
                             )
                             .wrap()
                             .selectable(selectable),
                         );
                     } else {
-                        let mut richtext = RichText::new(block_str)
-                            .text_style(NotedeckTextStyle::NoteBody.text_style());
+                        let mut richtext = RichText::new(block_str).text_style(note_body.clone());
 
                         if options.contains(NoteOptions::NotificationPreview) {
                             richtext = richtext.color(egui::Color32::from_rgb(0x87, 0x87, 0x8D));
