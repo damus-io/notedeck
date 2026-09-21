@@ -288,6 +288,9 @@ impl Engine {
 
     /// List the remote sessions known to this identity, newest revision of each
     /// kind-31988 state event (deleted and legacy-format events excluded).
+    ///
+    /// Ordered by [`crate::session_loader::session_order`]: most recently
+    /// updated first, ties broken by session id.
     pub fn list_sessions(&self) -> Vec<SessionState> {
         let Ok(txn) = Transaction::new(&self.ndb) else {
             return Vec::new();
