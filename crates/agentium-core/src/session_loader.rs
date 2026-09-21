@@ -121,8 +121,16 @@ fn load_session_messages_with_author(
     };
     let filter = filter.tags([session_id], 'd').build();
 
-    let results = match ndb.query(txn, &[filter], 10000) {
-        Ok(r) => r,
+    // `fold` rather than `query`: the visitor hands over the `Note` the scan has
+    // already resolved, so there is no second `get_note_by_key` round-trip per
+    // note — and no `filter_map(..).ok()` quietly dropping a message whose
+    // re-lookup failed. A visitor query also carries no result capacity, so a
+    // session no longer has to fit inside a fixed cap to load completely.
+    let mut notes = match ndb.fold(txn, &[filter], Vec::new(), |mut notes, note| {
+        notes.push(note);
+        notes
+    }) {
+        Ok(notes) => notes,
         Err(_) => {
             return LoadedSession {
                 messages: vec![],
@@ -135,12 +143,6 @@ fn load_session_messages_with_author(
             };
         }
     };
-
-    // Collect notes with their created_at for sorting
-    let mut notes: Vec<_> = results
-        .iter()
-        .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
-        .collect();
 
     // Sort by wall-clock time at millisecond resolution — see [`EventOrder`]
     // for why time, not `seq`, is the authoritative axis.
