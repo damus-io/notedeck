@@ -13,6 +13,7 @@ nostrdb_net = { workspace = true }
 enostr = { workspace = true }
 nostrdb = { workspace = true }
 hex = { workspace = true }
+regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal"] }

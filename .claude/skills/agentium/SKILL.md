@@ -182,6 +182,46 @@ scripting (parsing output), prefer `--json`/`--jsonl`; piping to a non-terminal
 already disables the pager and color automatically. `--follow` is `tail -f` for a
 session's transcript — the streaming *mode* of `log`, not a separate command.
 
+## `grep` — search message text across sessions
+
+`grep <pattern>` searches every session the `list` filters select and prints each
+matching line under its session's `agentium:` ref. This is the command for
+"which session was it where I…" — the one that answers across the whole corpus
+instead of one transcript.
+
+```bash
+agentium grep "resize hook"                       # every live session
+agentium grep -i terminal --cwd Shipwright --all  # case-insensitive, one tree, incl. deleted
+agentium grep '\bTODO\b' --role assistant         # a regex, over Dave's replies only
+agentium grep -i panic --no-tools                 # skip tool call/result noise
+agentium grep -i wgpu --json                      # matches grouped under each session
+```
+
+The pattern is a **regex** (Rust `regex` syntax); `-i`/`--ignore-case` folds case.
+An unparseable pattern fails immediately, before any relay work.
+
+Which sessions are searched: the same filters `list` takes — `--cwd`, `--host`,
+`--status`, `--backend`, and `--deleted`/`--all` for tombstoned sessions.
+Which *messages* are searched: the same filters `log` takes — `--role`,
+`--no-tools`, `--last`. So `--role assistant` searches only Dave's replies, and
+`--cwd foo --all` searches every session (live or closed) in that tree.
+
+Matching is per line, like `grep`, over the same rendered body `log` prints, and
+`--json` emits one object per matching session: the session's `list --json`
+fields (so `agentium_uri` feeds straight back into `log`/`send`) plus a `matches`
+array of `{role, text}`.
+
+**Prefer this over a shell loop.** The obvious hand-rolled equivalent —
+
+```bash
+for s in $(agentium list --json | jq -r '.[].agentium_uri'); do agentium log "$s" | grep -i term; done
+```
+
+— re-opens the cache and re-reconciles the relay once per session, so it costs
+seconds *per session*. `grep` syncs once and reads every session from one
+transaction. Measured on an 879-session corpus: 3m40s for the loop, 36s for
+`agentium grep --all` (and under a second over the live sessions alone).
+
 ## `resume` — reopen a closed session
 
 `resume <session>` reopens a closed (even soft-deleted) session on its host so a

@@ -200,6 +200,7 @@ dependencies = [
  "hex",
  "nostrdb",
  "nostrdb_net",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
