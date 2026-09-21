@@ -2227,7 +2227,7 @@ fn load_sessions(
     scope: ListScope,
 ) -> Vec<SessionState> {
     use agentium_core::session_loader::{
-        load_deleted_session_states_for_author, load_session_states_for_author,
+        load_deleted_session_states_for_author, load_session_states_for_author, sort_sessions,
     };
 
     let mut sessions = match scope {
@@ -2244,11 +2244,21 @@ fn load_sessions(
         }
     };
     sessions.retain(|s| filters.matches(s));
+    // `ListScope::All` glues two individually-ordered loads together, and a
+    // concatenation of ordered lists is not itself ordered. Re-apply the loader's
+    // total order so every scope hands back the same contract.
+    sort_sessions(&mut sessions);
     sessions
 }
 
 /// `agentium list` — enumerate this identity's sessions, newest first, grouped
 /// by host.
+///
+/// Ordering comes from [`agentium_core::session_loader::session_order`] — most
+/// recently updated first, ties broken by session id — which [`load_sessions`]
+/// applies. The text form then regroups it with [`group_by_host`]: hosts ordered
+/// by their newest session, newest-first within a host. `--json` is the flat
+/// newest-first list, ungrouped.
 ///
 /// Takes the filtered session set from [`load_sessions`] (shared with
 /// [`cmd_grep`]) and renders one row per session: a colored status glyph + label, the title, the working directory,
@@ -2411,6 +2421,12 @@ fn paint(enabled: bool, sgr: &str, s: &str) -> String {
 /// Group sessions by host, ordering hosts by their most recent activity and
 /// sessions within a host newest-first — mirroring how the desktop groups the
 /// scene by host then cwd.
+///
+/// Both sorts below key on `created_at` alone, at whole-second resolution, and
+/// `sort_by_key` is stable — so a same-second tie falls through to the input
+/// order. That is deterministic only because the input arrives in
+/// [`agentium_core::session_loader::session_order`], whose session-id tiebreak
+/// this function inherits rather than repeats.
 fn group_by_host(sessions: Vec<SessionState>) -> Vec<(String, Vec<SessionState>)> {
     let mut groups: Vec<(String, Vec<SessionState>)> = Vec::new();
     for s in sessions {
@@ -2987,6 +3003,7 @@ mod tests {
     use super::*;
     use agentium_core::config::RunConfig;
     use agentium_core::messages::UsageInfo;
+    use agentium_core::session_loader::sort_sessions;
 
     /// A SessionState with sensible defaults, overriding the fields the tests
     /// care about. (End-to-end coverage over a real relay lives in a separate
@@ -3087,6 +3104,32 @@ mod tests {
         // within mac, newest-first.
         let mac: Vec<_> = groups[1].1.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(mac, vec!["new", "old"]);
+    }
+
+    /// A same-second batch must not shuffle between runs.
+    ///
+    /// `group_by_host` stable-sorts on whole-second `created_at`, so equal-aged
+    /// rows keep their input order. Before `session_order` existed that input was
+    /// `query_replaceable_filtered`'s `HashMap` drain — randomized per run, which
+    /// is what made `agentium list` reorder itself over a frozen db. The existing
+    /// recency test uses distinct timestamps and so cannot see the tie.
+    #[test]
+    fn group_by_host_ties_break_by_session_id() {
+        // All one second apart from nothing: every row ties.
+        let mut sessions = vec![
+            session("mac", "c", "idle", 100),
+            session("mac", "a", "idle", 100),
+            session("mac", "b", "idle", 100),
+        ];
+        sort_sessions(&mut sessions);
+        let groups = group_by_host(sessions);
+
+        let titles: Vec<_> = groups[0].1.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec!["a", "b", "c"],
+            "the session-id tiebreak has to survive grouping",
+        );
     }
 
     #[test]
