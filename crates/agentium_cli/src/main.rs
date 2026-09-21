@@ -1165,8 +1165,15 @@ fn cmd_log(
 /// cache and re-reconciles the relay once per session, and that reconcile is
 /// seconds of wall clock against a fraction of a second of actual folding. Here
 /// the corpus is synced once (or not at all, under `--no-sync`) and every
-/// session is read from the same transaction, so the cost is flat in the number
-/// of sessions.
+/// session is read from the same transaction.
+///
+/// The per-session read is linear in that session's own size, not in the corpus:
+/// see [`session_conversation_filter`], which keeps the author out of the ndb
+/// filter so the `d`-tag index is actually used. Before that, each session's load
+/// rescanned every kind-1988 note in the cache and `--all` took 38.5s over 879
+/// sessions.
+///
+/// [`session_conversation_filter`]: agentium_core::session_loader
 ///
 /// Session selection is [`load_sessions`] — the same `--host`/`--cwd`/`--status`/
 /// `--backend` filters and `--deleted`/`--all` scope `list` uses. Message

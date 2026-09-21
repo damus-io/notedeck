@@ -107,27 +107,55 @@ pub fn load_session_messages_for_author(
     load_session_messages_with_author(ndb, txn, session_id, Some(author))
 }
 
+/// The ndb filter selecting one session's kind-1988 conversation notes.
+///
+/// Deliberately **not** author-scoped, even though every caller has an author in
+/// hand. nostrdb's planner (`ndb_filter_plan`) tests `kinds && authors` *before*
+/// `tags`, so adding `.authors([..])` here selects `NDB_PLAN_AUTHOR_KINDS`, which
+/// walks the author's entire `(pubkey, kind-1988)` subindex backwards and
+/// filter-matches every note it passes, stopping only once the result buffer
+/// fills. That makes loading one session cost O(whole corpus) instead of
+/// O(session): `agentium grep --all` spent 38.5s re-walking 92k notes once per
+/// each of 879 sessions, and a 27-message session cost the same ~45ms as a
+/// 102-message one. Omitting the author falls through to `NDB_PLAN_TAGS`, which
+/// seeks the `note_tags` index straight to `('d', session_id, until)` and stops
+/// the moment the tag value stops matching, touching only this session's notes.
+///
+/// `kinds` is still enforced per note by the plan's `ndb_filter_matches_with`,
+/// so kind-31988 state events sharing the `d` tag stay excluded as before. The
+/// author is re-applied in Rust by [`load_session_messages_with_author`].
+///
+/// `base` is a builder the caller may have already seeded — tests hand in one
+/// carrying a custom filter element so they can count the notes the query plan
+/// feeds the matcher, and thereby pin the plan without asserting on timing.
+fn session_conversation_filter(base: nostrdb::FilterBuilder, session_id: &str) -> Filter {
+    base.kinds([AI_CONVERSATION_KIND as u64])
+        .tags([session_id], 'd')
+        .build()
+}
+
 fn load_session_messages_with_author(
     ndb: &Ndb,
     txn: &Transaction,
     session_id: &str,
     author: Option<&nostrdb_net::Pubkey>,
 ) -> LoadedSession {
-    let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]);
-    let filter = if let Some(author) = author {
-        filter.authors([author.bytes()])
-    } else {
-        filter
-    };
-    let filter = filter.tags([session_id], 'd').build();
+    let filter = session_conversation_filter(Filter::new(), session_id);
 
     // `fold` rather than `query`: the visitor hands over the `Note` the scan has
     // already resolved, so there is no second `get_note_by_key` round-trip per
     // note — and no `filter_map(..).ok()` quietly dropping a message whose
     // re-lookup failed. A visitor query also carries no result capacity, so a
     // session no longer has to fit inside a fixed cap to load completely.
+    //
+    // The author is matched here rather than in the filter — see
+    // [`session_conversation_filter`] for why. It costs one 32-byte compare per
+    // note the `d` index already narrowed us to.
     let mut notes = match ndb.fold(txn, &[filter], Vec::new(), |mut notes, note| {
-        notes.push(note);
+        let ours = author.is_none_or(|author| note.pubkey() == author.bytes());
+        if ours {
+            notes.push(note);
+        }
         notes
     }) {
         Ok(notes) => notes,
@@ -145,7 +173,10 @@ fn load_session_messages_with_author(
     };
 
     // Sort by wall-clock time at millisecond resolution — see [`EventOrder`]
-    // for why time, not `seq`, is the authoritative axis.
+    // for why time, not `seq`, is the authoritative axis. The query plan no
+    // longer decides what order the notes arrive in, which is safe precisely
+    // because [`EventOrder`] is a *total* order (it tiebreaks on the note id),
+    // leaving this stable sort no ties to resolve.
     notes.sort_by_key(|note| EventOrder::from_note(note));
 
     let note_ids: HashSet<[u8; 32]> = notes.iter().map(|n| *n.id()).collect();
@@ -913,6 +944,8 @@ fn load_recent_paths_by_host_with_author(
 mod tests {
     use super::*;
     use nostrdb::{Config, IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn test_config() -> Config {
@@ -972,6 +1005,126 @@ mod tests {
                 .expect("ingest failed");
             let _ = ndb.wait_for_notes(sub_id, 1).await.unwrap();
         }
+    }
+
+    /// A session query must touch only its own session's notes.
+    ///
+    /// `ndb_filter_plan` tests `kinds && authors` before `tags`, so an
+    /// author-scoped conversation filter selects `NDB_PLAN_AUTHOR_KINDS` and
+    /// rescans the author's whole kind-1988 subindex once per session — the
+    /// `agentium grep --all` 38.5s regression (headway:dave/intact-hotel-achieve).
+    ///
+    /// `ndb_filter_matches_with` walks the filter's elements in the order they
+    /// were added and bails on the first that fails, so a custom element added
+    /// *first* runs for every note the plan feeds the matcher, before the `d`
+    /// tag check can reject it. Counting its calls therefore counts exactly what
+    /// the plan scanned — the whole corpus under the author plan, one session
+    /// under the tags plan — which pins the plan with no timing assertion.
+    #[tokio::test]
+    async fn session_query_scans_only_its_own_session() {
+        let sk = test_secret_key();
+        let sessions = 20;
+        let per_session = 5;
+
+        let mut events = Vec::new();
+        for s in 0..sessions {
+            let session_id = format!("plan-probe-{s:02}");
+            for n in 0..per_session {
+                events.push(build_1988_event_json(
+                    &sk,
+                    &session_id,
+                    "user",
+                    "hello",
+                    1_000 + n as u64,
+                    n,
+                    &[],
+                ));
+            }
+        }
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let seed = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &seed, &events).await;
+
+        // `FilterBuilder::custom` leaks its boxed closure, so the probe has to
+        // be `'static` — a shared counter rather than a borrow.
+        let visited = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::clone(&visited);
+        let filter = session_conversation_filter(
+            Filter::new().custom(move |_| {
+                probe.fetch_add(1, Ordering::Relaxed);
+                true
+            }),
+            "plan-probe-07",
+        );
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let found = ndb.fold(&txn, &[filter], 0usize, |n, _| n + 1).unwrap();
+        assert_eq!(
+            found, per_session as usize,
+            "wrong session's notes returned"
+        );
+
+        let scanned = visited.load(Ordering::Relaxed);
+        assert!(
+            scanned <= per_session as usize * 2,
+            "query plan scanned {scanned} notes to load a {per_session}-note \
+             session out of {}: the filter is author-scoped again and nostrdb \
+             fell back to NDB_PLAN_AUTHOR_KINDS",
+            sessions * per_session,
+        );
+    }
+
+    /// Dropping the author from the query filter must not widen what a session
+    /// load returns. A second identity's note carrying the same `d` tag is now
+    /// rejected in Rust rather than by the query plan, and must still not appear
+    /// in the author-scoped load — while the unscoped load still sees it.
+    #[tokio::test]
+    async fn foreign_author_note_with_same_d_tag_is_excluded() {
+        let ours = test_secret_key();
+        let mut theirs = [0u8; 32];
+        theirs[0] = 2;
+        let session_id = "shared-d-tag-test";
+
+        let events = [
+            build_1988_event_json(&ours, session_id, "user", "ours", 1_000, 0, &[]),
+            build_1988_event_json(&theirs, session_id, "user", "theirs", 1_001, 1, &[]),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let our_pubkey = nostrdb_net::Pubkey::new(
+            *nostrdb::NoteBuilder::new()
+                .kind(AI_CONVERSATION_KIND)
+                .content("")
+                .options(nostrdb::NoteBuildOptions::default())
+                .sign(&ours)
+                .build()
+                .unwrap()
+                .pubkey(),
+        );
+
+        let txn = Transaction::new(&ndb).unwrap();
+
+        let scoped = load_session_messages_for_author(&ndb, &txn, &our_pubkey, session_id);
+        assert_eq!(
+            scoped.messages.len(),
+            1,
+            "foreign author's note leaked into an author-scoped load: {:?}",
+            scoped.messages
+        );
+
+        let unscoped = load_session_messages(&ndb, &txn, session_id);
+        assert_eq!(
+            unscoped.messages.len(),
+            2,
+            "unscoped load should still see both authors: {:?}",
+            unscoped.messages
+        );
     }
 
     /// Within a single wall-clock second, `seq` breaks the tie so a pending
