@@ -973,8 +973,20 @@ fn load_recent_paths_by_host_with_author(
         entries.push((hostname, cwd, note.created_at()));
     }
 
-    // Sort by created_at descending (most recent first)
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+    // Most recent first, with `(hostname, cwd)` as a total-order tiebreak. The
+    // timestamp is whole-second, so a same-second batch would otherwise keep
+    // `query_replaceable_filtered`'s `HashMap` drain order, which is randomized
+    // per run. Here that is worse than cosmetic: the loop below dedupes cwds and
+    // caps each host at MAX_RECENT_PER_HOST, so a tie straddling the cap changes
+    // *which* paths survive, not just their order — the recent-directory picker
+    // would offer a different set on each launch. Same reasoning as
+    // [`session_order`]; this triple has no session id, and `(hostname, cwd)` is
+    // what the dedupe keys on anyway.
+    entries.sort_unstable_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
 
     // Group by hostname, dedup cwds, cap per host
     let mut result: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
@@ -1814,10 +1826,11 @@ mod tests {
         sk: &[u8; 32],
         session_id: &str,
         hostname: &str,
+        cwd: &str,
         created_at: u64,
     ) -> String {
         crate::session_events::build_session_state_event(
-            session_id, "t", None, "/tmp", "idle", None, hostname, "/home/u", "claude", "default",
+            session_id, "t", None, cwd, "idle", None, hostname, "/home/u", "claude", "default",
             None, None, None, None, created_at, sk,
         )
         .unwrap()
@@ -1844,12 +1857,12 @@ mod tests {
         // tied second, so neither ingestion order nor insertion order can pass
         // the assertion by accident.
         let events = vec![
-            build_31988_event_json(&sk, "sess-c", "h1", 2000),
-            build_31988_event_json(&sk, "sess-f", "h2", 1000),
-            build_31988_event_json(&sk, "sess-a", "h1", 2000),
-            build_31988_event_json(&sk, "sess-e", "h2", 3000),
-            build_31988_event_json(&sk, "sess-d", "h1", 2000),
-            build_31988_event_json(&sk, "sess-b", "h2", 2000),
+            build_31988_event_json(&sk, "sess-c", "h1", "/tmp", 2000),
+            build_31988_event_json(&sk, "sess-f", "h2", "/tmp", 1000),
+            build_31988_event_json(&sk, "sess-a", "h1", "/tmp", 2000),
+            build_31988_event_json(&sk, "sess-e", "h2", "/tmp", 3000),
+            build_31988_event_json(&sk, "sess-d", "h1", "/tmp", 2000),
+            build_31988_event_json(&sk, "sess-b", "h2", "/tmp", 2000),
         ];
         let filter = Filter::new()
             .kinds([crate::session_events::AI_SESSION_STATE_KIND as u64])
@@ -1910,5 +1923,51 @@ mod tests {
         // deleted row can sort above a live one. That is exactly why the merge
         // has to be re-sorted rather than concatenated.
         assert_eq!(ids, vec!["del-a", "live-b", "del-d", "live-c"]);
+    }
+
+    /// A same-second tie at the per-host cap must not change *which* recent
+    /// paths survive.
+    ///
+    /// `load_recent_paths_by_host` dedupes cwds and keeps only the newest
+    /// MAX_RECENT_PER_HOST (10) per host. Ordering on the whole-second
+    /// `created_at` alone left same-second rows in `query_replaceable_filtered`'s
+    /// randomized bag order, so a tie straddling that cap silently swapped
+    /// entries in and out of the directory picker between launches. Twelve
+    /// sessions share one second here, so the cap cuts straight through the tie.
+    #[tokio::test]
+    async fn same_second_recent_paths_survive_the_cap_deterministically() {
+        let sk = test_secret_key();
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        // Ingested in reverse so neither ingestion nor insertion order can pass
+        // the assertion by accident.
+        let mut events = Vec::new();
+        for i in (0..12).rev() {
+            events.push(build_31988_event_json(
+                &sk,
+                &format!("cap-{i:02}"),
+                "h1",
+                &format!("/proj/{i:02}"),
+                5000,
+            ));
+        }
+        let filter = Filter::new()
+            .kinds([crate::session_events::AI_SESSION_STATE_KIND as u64])
+            .build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let paths = load_recent_paths_by_host_with_author(&ndb, &txn, None);
+
+        let kept: Vec<String> = paths["h1"]
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            kept,
+            (0..10).map(|i| format!("/proj/{i:02}")).collect::<Vec<_>>(),
+            "the cwd tiebreak decides which ten paths clear the cap",
+        );
     }
 }
