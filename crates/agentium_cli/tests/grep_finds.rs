@@ -181,9 +181,9 @@ async fn grep_spans_every_session_in_one_run() {
     let dir = TempDir::new().expect("tempdir");
     let db_path = seed_sessions(&dir).await;
 
-    // One invocation, every session: the case-sensitive pattern hits the
-    // assistant line in one session and the tool_result in another, and never
-    // the session that doesn't mention it.
+    // One invocation, every session: the pattern hits the assistant line in one
+    // session and the tool_result in another, and never the session that
+    // doesn't mention it.
     let out = run_grep(&db_path, &dir, &["terminal"]);
     assert!(
         out.contains("Ship of Harkinian") && out.contains("Other project"),
@@ -204,15 +204,32 @@ async fn grep_spans_every_session_in_one_run() {
         !out.contains("second line, no match"),
         "non-matching lines are dropped: {out}"
     );
-    // Case-sensitive by default — the upper-case mention stays out.
-    assert!(
-        !out.contains("mind the TERMINAL width"),
-        "-i not passed: {out}"
-    );
-    // ...and `-i` brings it in.
-    let out = run_grep(&db_path, &dir, &["-i", "terminal"]);
+    // Smart-case: an all-lowercase pattern carries no case demand, so the
+    // upper-case mention comes along without `-i`.
     assert!(
         out.contains("mind the TERMINAL width"),
+        "a lowercase pattern folds case: {out}"
+    );
+    // `-s` restores grep(1)'s own default and drops it again...
+    let out = run_grep(&db_path, &dir, &["-s", "terminal"]);
+    assert!(
+        !out.contains("mind the TERMINAL width"),
+        "-s pins the case: {out}"
+    );
+    assert!(
+        out.contains("the terminal resize hook is missing"),
+        "-s still matches the exact spelling: {out}"
+    );
+    // ...as does spelling the case into the pattern, which is the same ask.
+    let out = run_grep(&db_path, &dir, &["Terminal"]);
+    assert!(
+        !out.contains("the terminal resize hook is missing"),
+        "an uppercase pattern matches exactly: {out}"
+    );
+    // And `-i` overrides that spelling.
+    let out = run_grep(&db_path, &dir, &["-i", "Terminal"]);
+    assert!(
+        out.contains("the terminal resize hook is missing"),
         "-i folds case: {out}"
     );
 }

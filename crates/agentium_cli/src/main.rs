@@ -2575,9 +2575,9 @@ impl Cli {
         let mut deleted = false;
         let mut all = false;
         let mut no_sync = false;
-        // `grep`'s case flag. Folded into the compiled pattern below rather than
+        // `grep`'s case mode. Folded into the compiled pattern below rather than
         // carried separately, so nothing downstream has to remember it.
-        let mut ignore_case = false;
+        let mut case = CaseMode::Smart;
         // `log` transcript flags. `show_tools` defaults on; `--no-tools`
         // folds tool noise and `--tools` re-asserts the default. Color/pager
         // default to `Auto` (tty detection), like `git log`.
@@ -2623,7 +2623,8 @@ impl Cli {
                 "--deleted" => deleted = true,
                 "--all" => all = true,
                 "--no-sync" => no_sync = true,
-                "-i" | "--ignore-case" => ignore_case = true,
+                "-i" | "--ignore-case" => case = CaseMode::Insensitive,
+                "-s" | "--case-sensitive" => case = CaseMode::Sensitive,
                 // Accumulate roles across repeated `--role` flags and
                 // comma-separated lists, so `--role user,assistant` and
                 // `--role user --role assistant` both select multiple roles.
@@ -2717,7 +2718,7 @@ impl Cli {
                 wait_timeout,
             }
         } else {
-            parse_command(name, rest, view, ignore_case)?
+            parse_command(name, rest, view, case)?
         };
 
         // `--no-sync` is a read-only shortcut; a command that publishes or
@@ -2770,7 +2771,7 @@ fn parse_command(
     name: &str,
     rest: &[String],
     view: MessageView,
-    ignore_case: bool,
+    case: CaseMode,
 ) -> Result<Command> {
     Ok(match name {
         "list" => Command::List,
@@ -2782,7 +2783,7 @@ fn parse_command(
             view,
         },
         "grep" => Command::Grep {
-            pattern: compile_pattern(&arg(rest, 0, name)?, ignore_case)?,
+            pattern: compile_pattern(&arg(rest, 0, name)?, case)?,
             view,
         },
         "resume" => Command::Resume {
@@ -2803,15 +2804,83 @@ fn parse_command(
     })
 }
 
-/// Compile `grep`'s pattern, folding `-i` in as the regex's own case-insensitive
-/// flag rather than lowercasing haystack and needle (which would break the
-/// highlight offsets, and any pattern that cares about case classes).
+/// How `grep` decides case sensitivity.
+///
+/// The default is [`Smart`](CaseMode::Smart) rather than grep(1)'s
+/// case-sensitive, because the transcripts being searched are prose: the needles
+/// worth typing are overwhelmingly names — `Hyrule`, `NoteView`, `RelayPool` —
+/// written capitalized in the text and lowercase in the shell. A literal reading
+/// of grep(1) answers "no matches" to a search whose subject fills seven
+/// sessions, which is the one answer a search tool must never give wrongly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CaseMode {
+    /// The default: insensitive unless the pattern itself carries case.
+    Smart,
+    /// `-i`/`--ignore-case` — always insensitive.
+    Insensitive,
+    /// `-s`/`--case-sensitive` — always sensitive, grep(1)'s own default, for
+    /// when the distinction is the point (`Ndb` the type vs `ndb` the CLI).
+    Sensitive,
+}
+
+impl CaseMode {
+    /// Whether `pattern` should be compiled case-insensitively under this mode.
+    fn insensitive_for(self, pattern: &str) -> bool {
+        match self {
+            CaseMode::Smart => !pattern_carries_case(pattern),
+            CaseMode::Insensitive => true,
+            CaseMode::Sensitive => false,
+        }
+    }
+}
+
+/// Whether the user spelled case into `pattern` — smart-case's entire signal.
+///
+/// Only uppercase in the *matched text* counts. An escape carries its uppercase
+/// in the syntax instead: `\W` and `\S` are negated classes, and a Unicode class
+/// names its property (`\p{Lu}`, `\P{Greek}`) rather than the characters it
+/// matches. Reading those as "the user asked for case" would silently make
+/// `\w+ error` sensitive, so the scan skips an escaped character, and the braced
+/// or single-letter body after `\p`/`\P`.
+fn pattern_carries_case(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            if c.is_uppercase() {
+                return true;
+            }
+            continue;
+        }
+        match chars.next() {
+            // `\p{Lu}` (braced) or `\pL` (single-letter shorthand).
+            Some('p') | Some('P') => {
+                if chars.as_str().starts_with('{') {
+                    for c in chars.by_ref() {
+                        if c == '}' {
+                            break;
+                        }
+                    }
+                } else {
+                    chars.next();
+                }
+            }
+            // Any other escape: the one skipped character is all of it.
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Compile `grep`'s pattern, folding the case decision in as the regex's own
+/// case-insensitive flag rather than lowercasing haystack and needle (which
+/// would break the highlight offsets, and any pattern that cares about case
+/// classes).
 ///
 /// Compiled during parsing so an unparseable pattern fails immediately, with the
 /// regex crate's own diagnostic, instead of after seconds of relay reconcile.
-fn compile_pattern(pattern: &str, ignore_case: bool) -> Result<Regex> {
+fn compile_pattern(pattern: &str, case: CaseMode) -> Result<Regex> {
     regex::RegexBuilder::new(pattern)
-        .case_insensitive(ignore_case)
+        .case_insensitive(case.insensitive_for(pattern))
         .build()
         .map_err(|e| format!("invalid search pattern '{pattern}': {e}").into())
 }
@@ -2941,7 +3010,12 @@ OPTIONS:
 
   grep options (also uses the list filters above to pick sessions, and the log
   options below to pick which messages are searched):
-    -i, --ignore-case Case-insensitive match
+                      Case is smart by default: an all-lowercase pattern matches
+                      case-insensitively, one carrying an uppercase letter
+                      matches exactly.
+    -i, --ignore-case Force a case-insensitive match
+    -s, --case-sensitive
+                      Force a case-sensitive match
 
   log options:
     --role <r[,r…]>   Only messages with these roles, comma-separated and/or
@@ -3182,7 +3256,14 @@ mod tests {
         // An explicit positional is used verbatim (the $AGENTIUM_SESSION
         // fallback only applies when none is given — exercised end-to-end, not
         // here, to avoid mutating process env in a shared test binary).
-        match parse_command("show", &["agentium:a-b-c".to_string()], view_all(), false).unwrap() {
+        match parse_command(
+            "show",
+            &["agentium:a-b-c".to_string()],
+            view_all(),
+            CaseMode::Smart,
+        )
+        .unwrap()
+        {
             Command::Show { session } => assert_eq!(session.as_deref(), Some("agentium:a-b-c")),
             _ => panic!("expected Show"),
         }
@@ -3197,7 +3278,14 @@ mod tests {
             jsonl: true,
             ..view_all()
         };
-        match parse_command("log", &["agentium:a-b-c".to_string()], view, false).unwrap() {
+        match parse_command(
+            "log",
+            &["agentium:a-b-c".to_string()],
+            view,
+            CaseMode::Smart,
+        )
+        .unwrap()
+        {
             Command::Log { session, view } => {
                 assert_eq!(session.as_deref(), Some("agentium:a-b-c"));
                 assert_eq!(view.roles, vec!["assistant".to_string()]);
@@ -3209,33 +3297,58 @@ mod tests {
         }
     }
 
-    #[test]
-    fn grep_compiles_its_pattern_with_the_case_flag() {
-        // The pattern is a regex, compiled at parse time so a bad one never
-        // reaches the relay; `-i` is folded into the compiled regex rather than
-        // carried alongside it.
-        let rest = ["Term.*ux".to_string()];
-        match parse_command("grep", &rest, view_all(), false).unwrap() {
-            Command::Grep { pattern, .. } => {
-                assert!(pattern.is_match("Terminal ux"));
-                assert!(
-                    !pattern.is_match("terminal ux"),
-                    "case-sensitive by default"
-                );
-            }
-            _ => panic!("expected Grep"),
-        }
-        match parse_command("grep", &rest, view_all(), true).unwrap() {
-            Command::Grep { pattern, .. } => assert!(pattern.is_match("terminal ux")),
+    /// The compiled regex behind `grep <pattern>` under `case`.
+    fn grep_pattern(pattern: &str, case: CaseMode) -> Regex {
+        let rest = [pattern.to_string()];
+        match parse_command("grep", &rest, view_all(), case).unwrap() {
+            Command::Grep { pattern, .. } => pattern,
             _ => panic!("expected Grep"),
         }
     }
 
     #[test]
+    fn grep_is_smart_case_by_default() {
+        // An all-lowercase pattern reads as "I don't care": the `hyrule` that
+        // sent jb55 looking, against the `Hyrule` the transcripts actually
+        // spell.
+        let loose = grep_pattern("hyrule", CaseMode::Smart);
+        assert!(loose.is_match("Hyrule Field"));
+        assert!(loose.is_match("hyrule"));
+
+        // Spelling the case *is* the ask, so it's honoured exactly.
+        let exact = grep_pattern("Term.*ux", CaseMode::Smart);
+        assert!(exact.is_match("Terminal ux"));
+        assert!(!exact.is_match("terminal ux"));
+    }
+
+    #[test]
+    fn grep_case_flags_override_the_smart_default() {
+        // `-i` loosens a pattern smart-case would have pinned...
+        assert!(grep_pattern("Term.*ux", CaseMode::Insensitive).is_match("terminal ux"));
+        // ...and `-s` pins one it would have loosened.
+        assert!(!grep_pattern("hyrule", CaseMode::Sensitive).is_match("Hyrule"));
+    }
+
+    #[test]
+    fn smart_case_ignores_uppercase_inside_escapes() {
+        // `\W`, `\S` and `\p{Lu}` carry their uppercase in the syntax, not in
+        // the text they match, so none of them should pin the search.
+        for pattern in ["\\Werror", "\\S+ error", "\\p{Lu}error", "\\pLerror"] {
+            assert!(
+                !pattern_carries_case(pattern),
+                "{pattern} should stay case-insensitive under smart-case"
+            );
+        }
+        // A literal uppercase still counts, even next to an escape.
+        assert!(pattern_carries_case("\\w+Error"));
+        assert!(pattern_carries_case("\\p{Lu}Error"));
+    }
+
+    #[test]
     fn grep_rejects_a_missing_or_unparseable_pattern() {
-        assert!(parse_command("grep", &[], view_all(), false).is_err());
+        assert!(parse_command("grep", &[], view_all(), CaseMode::Smart).is_err());
         let bad = ["[unclosed".to_string()];
-        assert!(parse_command("grep", &bad, view_all(), false).is_err());
+        assert!(parse_command("grep", &bad, view_all(), CaseMode::Smart).is_err());
     }
 
     #[test]
@@ -3247,7 +3360,7 @@ mod tests {
             show_tools: false,
             ..view_all()
         };
-        match parse_command("grep", &["x".to_string()], view, false).unwrap() {
+        match parse_command("grep", &["x".to_string()], view, CaseMode::Smart).unwrap() {
             Command::Grep { view, .. } => {
                 assert_eq!(view.roles, vec!["assistant".to_string()]);
                 assert!(!view.show_tools);
@@ -3331,7 +3444,12 @@ mod tests {
             sgr: "32",
             text: "the terminal needs a resize hook".to_string(),
         };
-        let line = grep_match_line(&m, &compile_pattern("terminal", false).unwrap(), 18, false);
+        let line = grep_match_line(
+            &m,
+            &compile_pattern("terminal", CaseMode::Sensitive).unwrap(),
+            18,
+            false,
+        );
         assert!(
             line.starts_with("  assistant "),
             "indented, padded role: {line:?}"
@@ -3342,7 +3460,7 @@ mod tests {
 
     #[test]
     fn highlight_paints_only_real_matches() {
-        let re = compile_pattern("cat", false).unwrap();
+        let re = compile_pattern("cat", CaseMode::Sensitive).unwrap();
         // Color off is byte-for-byte the source line.
         assert_eq!(highlight(&re, "a cat and a cat", false), "a cat and a cat");
         // Color on wraps every occurrence, leaving the rest intact.
@@ -3352,7 +3470,7 @@ mod tests {
         assert!(painted.ends_with("\x1b[0m"));
         // A pattern that can match the empty string paints nothing spurious: the
         // zero-width matches are skipped, so the line survives unchanged.
-        let star = compile_pattern("x*", false).unwrap();
+        let star = compile_pattern("x*", CaseMode::Sensitive).unwrap();
         assert_eq!(highlight(&star, "abc", true), "abc");
     }
 
@@ -3361,7 +3479,7 @@ mod tests {
         // `send <sel> hey there` → the first positional is the selector, the rest
         // join into the message with single spaces (no quoting needed).
         let rest = ["agentium:a-b-c", "hey", "there"].map(String::from);
-        match parse_command("send", &rest, view_all(), false).unwrap() {
+        match parse_command("send", &rest, view_all(), CaseMode::Smart).unwrap() {
             Command::Send { session, text } => {
                 assert_eq!(session, "agentium:a-b-c");
                 assert_eq!(text, "hey there");
@@ -3374,25 +3492,25 @@ mod tests {
     fn send_missing_session_and_empty_text_are_errors() {
         // No positionals at all → the missing-selector error (session is required;
         // there is no $AGENTIUM_SESSION default for `send`).
-        assert!(parse_command("send", &[], view_all(), false).is_err());
+        assert!(parse_command("send", &[], view_all(), CaseMode::Smart).is_err());
         // A selector but no message words → the empty-message error.
         let one = ["agentium:a-b-c"].map(String::from);
-        assert!(parse_command("send", &one, view_all(), false).is_err());
+        assert!(parse_command("send", &one, view_all(), CaseMode::Smart).is_err());
         // A selector plus a whitespace-only quoted arg is also rejected.
         let blank = ["agentium:a-b-c", "   "].map(String::from);
-        assert!(parse_command("send", &blank, view_all(), false).is_err());
+        assert!(parse_command("send", &blank, view_all(), CaseMode::Smart).is_err());
     }
 
     #[test]
     fn interrupt_requires_session() {
         // `interrupt <sel>` carries just the selector; trailing words are ignored.
         let rest = ["agentium:a-b-c", "extra"].map(String::from);
-        match parse_command("interrupt", &rest, view_all(), false).unwrap() {
+        match parse_command("interrupt", &rest, view_all(), CaseMode::Smart).unwrap() {
             Command::Interrupt { session } => assert_eq!(session, "agentium:a-b-c"),
             _ => panic!("expected Interrupt"),
         }
         // No selector → the missing-argument error (no $AGENTIUM_SESSION default).
-        assert!(parse_command("interrupt", &[], view_all(), false).is_err());
+        assert!(parse_command("interrupt", &[], view_all(), CaseMode::Smart).is_err());
     }
 
     #[test]
