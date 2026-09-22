@@ -7,6 +7,8 @@
 //! other consumer). This file is just the board's command surface: parsing,
 //! resolving card/column arguments against the folded board, and rendering.
 
+mod help;
+
 use std::env;
 use std::process::ExitCode;
 
@@ -348,9 +350,13 @@ fn cross_board_error(err: store::CrossBoardError) -> String {
 
 async fn run() -> Result<()> {
     let cli = match Cli::parse(env::args().skip(1))? {
-        Some(cli) => cli,
-        None => {
+        Invocation::Run(cli) => *cli,
+        Invocation::Usage => {
             print_usage();
+            return Ok(());
+        }
+        Invocation::CommandHelp(cmd) => {
+            help::print_command(cmd);
             return Ok(());
         }
     };
@@ -1926,10 +1932,19 @@ struct Cli {
     command: Command,
 }
 
+/// What a command line asks for: a run, or one of the two help pages.
+enum Invocation {
+    Run(Box<Cli>),
+    /// `headway` with no command, or `headway --help`: the grouped overview.
+    Usage,
+    /// `headway <cmd> --help` or `headway help <cmd>`: one command's own page.
+    CommandHelp(&'static help::Command),
+}
+
 impl Cli {
-    /// Parse args (without the program name). Returns `Ok(None)` when usage
-    /// should be printed (no command, `-h`/`--help`).
-    fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
+    /// Parse args (without the program name), deciding between a run and a help
+    /// page (see [`Invocation`]).
+    fn parse(args: impl Iterator<Item = String>) -> Result<Invocation> {
         // Precedence: `--nsec` (set below) overrides the `HEADWAY_NSEC` env var,
         // which overrides the key stored by `login`.
         let mut nsec = env::var("HEADWAY_NSEC")
@@ -1969,6 +1984,9 @@ impl Cli {
         let mut ready = false;
         let mut count: Option<usize> = None;
         let mut positionals: Vec<String> = Vec::new();
+        // `-h`/`--help` is answered after the loop, once the positionals say
+        // *which* help — the overview, or one command's page.
+        let mut want_help = false;
 
         let mut args = args;
         while let Some(arg) = args.next() {
@@ -1978,7 +1996,7 @@ impl Cli {
                     as Result<String>
             };
             match arg.as_str() {
-                "-h" | "--help" => return Ok(None),
+                "-h" | "--help" => want_help = true,
                 "--nsec" => nsec = Some(value("--nsec")?),
                 "--relay" => relay = value("--relay")?,
                 "--db" => db = Some(value("--db")?),
@@ -2025,9 +2043,27 @@ impl Cli {
             }
         }
 
+        // `headway help [cmd]` is the same two pages spelled as a command, so
+        // fold it into the `--help` path rather than giving it its own dispatch.
+        let mut positionals = positionals.as_slice();
+        if let Some(first) = positionals.first()
+            && first == "help"
+        {
+            want_help = true;
+            positionals = &positionals[1..];
+        }
         let Some((name, rest)) = positionals.split_first() else {
-            return Ok(None);
+            return Ok(Invocation::Usage);
         };
+        // The help table is the CLI's list of commands: an unknown name is
+        // rejected here, so `parse_command` never sees one and a command added
+        // without a help entry can't ship undocumented.
+        let Some(spec) = help::lookup(name) else {
+            return Err(format!("unknown command '{name}' (try `headway --help`)").into());
+        };
+        if want_help {
+            return Ok(Invocation::CommandHelp(spec));
+        }
         // Fold `--desc`/`--desc-file` into one description: they name the same
         // thing (the new card's cover note), so passing both is a contradiction. A
         // file value of `-` means stdin, which lets a heredoc pipe a long markdown
@@ -2097,7 +2133,7 @@ impl Cli {
             (_, None) => None,
         };
 
-        Ok(Some(Cli {
+        Ok(Invocation::Run(Box::new(Cli {
             secret,
             author,
             relay,
@@ -2110,7 +2146,7 @@ impl Cli {
             dry_run,
             new_channel,
             command,
-        }))
+        })))
     }
 }
 
@@ -2282,7 +2318,10 @@ fn parse_command(
             nsec: arg(rest, 0, name)?,
         },
         "logout" => Command::Logout,
-        other => return Err(format!("unknown command '{other}' (try `headway --help`)").into()),
+        // Unreachable in practice: `Cli::parse` rejects a name the help table
+        // doesn't list, so reaching here means a documented command was never
+        // given a parser (see `every_documented_command_parses`).
+        other => return Err(format!("command '{other}' has no parser").into()),
     })
 }
 
@@ -2317,105 +2356,9 @@ fn read_desc_source(path: &str) -> Result<String> {
     Ok(text.trim_end().to_string())
 }
 
+/// Print the grouped command list — `headway --help`, or a bare `headway`.
 fn print_usage() {
-    eprintln!(
-        "\
-headway — interact with a Headway board over a running notedeck's relay
-
-USAGE:
-    headway [OPTIONS] <COMMAND>
-
-COMMANDS:
-    show [cards...]            Print the board, or the given cards in full
-                               detail (--archived to list archived, --all for
-                               every board, --json for machine output)
-    seed [--title <t>]         Create the target board (born sealed team-of-one
-                               SNS) if none exists; title defaults to the slug
-    migrate                    Migrate this board to SNS: seal it under a fresh
-                               per-board key so it can be shared, re-sealing
-                               existing notes in place (no data loss)
-    add <title...>             Add a card (--col <c> column, -l <labels> to tag,
-                               --parent <card> to create it as a subissue,
-                               --desc <text>/--desc-file <path> for a description)
-    move <card> --col <c>      Move a card to a column (--row to position)
-    title <card> <title...>    Edit a card's title
-    desc <card> <text...>      Edit a card's description
-    label <card> [labels...]   Set a card's labels (comma-separated allowed;
-                               empty clears)
-    priority <card> <level>    Set priority (none/low/medium/high/urgent)
-    due <card> <date>          Set a due date (YYYY-MM-DD, or none to clear)
-    estimate <card> <n>        Set an estimate (a number, or none to clear)
-    seq <card> <pos> [--in <c>] Position a card in a container's work-order:
-                               <pos> = --first | --last | --after <card> |
-                               --before <card>; --in is a card ref (its
-                               subissues) or the board slug (board root)
-    next [--in <c>]            Print what to work on next: the ready frontier of
-                               a container's work-order, each a headway:board/word-id
-                               ref. --ready prints the whole set, -n <k> caps it. Needs
-                               --board or an --in <headway:board/word-id> ref (never the
-                               persisted current board).
-    parent <card> [parent]     Make a card a subissue of [parent] (omit to
-                               detach)
-    block <card> --on <b>      Mark <card> as blocked by <b> (a dependency edge,
-                               may cross boards; cycles are refused)
-    unblock <card> --on <b>    Remove the <card>-blocked-by-<b> edge
-    relate <card> --to <o>     Relate <card> to <o> (undirected \"see also\"; shows
-                               on both, may cross boards, no ordering meaning)
-    unrelate <card> --to <o>   Remove the <card>-relates-<o> edge (either endpoint)
-    comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
-                               another comment)
-    delete <card>              Remove a card (reversible tombstone)
-    archive <card>             Archive a card off the board
-    restore <card>             Restore an archived card
-    link <card> --to <board>   Also place a card on another board (keep both)
-    move-board <card> --to <b> Move a card from this board to another board
-    rename <title...>          Rename the current board's display title (slug
-                               unchanged)
-    terminal <col> [on|off]    Mark a column as \"done\" (clears dependents, drops
-                               out of `next`), or clear it with `off`
-    board [id]                 Switch the current board to <id>, or list boards
-                               and mark the current one
-    login <nsec>               Store a signing key for later runs
-    logout                     Forget the stored signing key
-
-    <card> is a card id or a unique short prefix (see `show`). A full
-    <board>#<word-id> ref routes the command to that board automatically.
-    <c> is a column id or name (case-insensitive).
-
-OPTIONS:
-    --nsec <nsec>     Signing key for this run. Normally unnecessary — run
-                      `headway login` once and it's reused. ($HEADWAY_NSEC,
-                      if set, takes precedence over the stored key.)
-    --author <pk>     Board author to read (defaults to the signer)
-    --relay <url>     Relay URL (or $HEADWAY_RELAY) [default: {DEFAULT_RELAY}]
-    --board <id>      Board for this run (or $HEADWAY_BOARD). Normally
-                      unnecessary — a <board>#<word-id> card ref routes itself,
-                      and `headway board <id>` sets it persistently.
-                      [default: {board}]
-    --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
-    -l, --label <l>   Label(s) for `add`/`label` (repeatable; comma-separated
-                      allowed)
-    --col <c>         Column for `add`/`move` (id or name)
-    --to <board>      Target board for `link`/`move-board`; or the partner card
-                      for `relate`/`unrelate`
-    --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
-    --parent <card>   Parent card for `add` (created as its subissue)
-    --desc <text>     Initial description for `add` (mutually exclusive with
-                      --desc-file)
-    --desc-file <p>   Like --desc, but read the description from file <p> (or
-                      stdin when <p> is `-`) — pass a long/multi-line markdown
-                      description with no shell-escaping (heredoc)
-    --on <card>       Blocker card for `block`/`unblock`
-    --in <c>          Container for `seq`/`next` (card ref or board slug)
-    --ready           Print the whole ready set for `next` (not just the first)
-    -n, --count <k>   Cap how many cards `next` prints
-    --json            Machine-readable output (show, next)
-    --archived        List archived cards in full (show)
-    --all             Show every board in the cache, not just the current (show)
-    -h, --help        Print this help",
-        DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
-        board = store::BOARD_ID,
-    );
+    help::print_usage(nostrdb_net::relay::sync::DEFAULT_RELAY, store::BOARD_ID);
 }
 
 #[cfg(test)]
@@ -2423,9 +2366,82 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Cli {
-        Cli::parse(args.iter().map(|s| s.to_string()))
-            .expect("parse ok")
-            .expect("a command")
+        match Cli::parse(args.iter().map(|s| s.to_string())).expect("parse ok") {
+            Invocation::Run(cli) => *cli,
+            _ => panic!("expected a command, got help"),
+        }
+    }
+
+    /// The help page a command line asks for, or `None` when it asks to run.
+    fn help_of(args: &[&str]) -> Option<Option<&'static str>> {
+        match Cli::parse(args.iter().map(|s| s.to_string())).expect("parse ok") {
+            Invocation::Run(_) => None,
+            Invocation::Usage => Some(None),
+            Invocation::CommandHelp(cmd) => Some(Some(cmd.name)),
+        }
+    }
+
+    /// `--help` picks the overview or one command's page depending on whether a
+    /// command was named, in either spelling and either order — and `--help`
+    /// wins over the command's own argument checking, so `headway move --help`
+    /// prints the page rather than erroring about the missing `--col`.
+    #[test]
+    fn help_resolves_to_a_page() {
+        assert_eq!(help_of(&[]), Some(None));
+        assert_eq!(help_of(&["--help"]), Some(None));
+        assert_eq!(help_of(&["help"]), Some(None));
+        assert_eq!(help_of(&["move", "--help"]), Some(Some("move")));
+        assert_eq!(help_of(&["-h", "move"]), Some(Some("move")));
+        assert_eq!(help_of(&["help", "move"]), Some(Some("move")));
+        assert_eq!(help_of(&["help", "move-board"]), Some(Some("move-board")));
+        // Without it, the same line runs (and here fails on its own missing flag).
+        assert!(help_of(&["show"]).is_none());
+    }
+
+    /// An unrecognised command is rejected by name, whether or not help was
+    /// asked for — `headway frobnicate --help` has no page to print.
+    #[test]
+    fn unknown_commands_are_rejected() {
+        for args in [&["frobnicate"][..], &["frobnicate", "--help"][..]] {
+            let err = parse_err(args);
+            assert!(err.contains("unknown command 'frobnicate'"), "{err}");
+        }
+    }
+
+    /// Every command the help documents is one the parser builds, so a help
+    /// entry can't drift off a command that was renamed or removed. The
+    /// converse — a command with no help entry — can't happen: `Cli::parse`
+    /// resolves the name through the help table before dispatching.
+    #[test]
+    fn every_documented_command_parses() {
+        for cmd in help::COMMANDS {
+            let rest = ["a".to_string(), "b".to_string()];
+            let res = parse_command(
+                cmd.name,
+                &rest,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                SeqFlags::default(),
+                false,
+                None,
+            );
+            // A command that wants a flag we didn't pass errors about *that*;
+            // only the fallback arm means the name has no parser at all.
+            if let Err(e) = res {
+                assert!(
+                    !e.to_string().contains("has no parser"),
+                    "`{}` is documented but has no parser",
+                    cmd.name
+                );
+            }
+        }
     }
 
     /// A `headway:<board>/<word-id>` selector (or the scheme-less shorthand)

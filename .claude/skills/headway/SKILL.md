@@ -25,6 +25,10 @@ cargo run -q -p headway_cli -- <command>
 
 In examples below, `headway` means whichever form you're using.
 
+`headway --help` lists the commands grouped by what they act on, plus the flags
+every run takes. Each command then has its own page — `headway <command> --help`
+(or `headway help <command>`) — with just that command's flags and examples.
+
 ## Logging in
 
 Everything operates on your own board once you're logged in — `show` to read,
@@ -238,7 +242,8 @@ boards), `--db <path>` (cache dir),
 `--author <pk>` (read someone else's board), `-h`/`--help`. `--on <card>` names
 the blocker for `block`/`unblock`; `--to` is the target board for
 `link`/`move-board` and the partner card for `relate`/`unrelate`; `--in <c>` is
-the container for `seq`/`next`.
+the container for `seq`/`next`. `headway <command> --help` lists a command's own
+flags without the rest.
 
 When commenting a finished card's commit hash, a Dave agentic session should also
 quote its own `agentium:` session ref (from `$AGENTIUM_SESSION`) beside the hash —
