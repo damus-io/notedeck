@@ -96,6 +96,8 @@ pub struct ThreadCompactParams {
 pub struct TurnStartParams {
     pub thread_id: String,
     pub input: Vec<TurnInput>,
+    /// Route escalations to Codex's native reviewer in Auto mode, or the user.
+    pub approvals_reviewer: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

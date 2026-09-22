@@ -205,6 +205,9 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
     let mut current_turn_id: Option<String> = None;
     let mut sent_session_info = false;
     let mut turn_count: u32 = 0;
+    // Turn overrides also apply to resumed threads. Mode changes during a turn
+    // are retained for the next turn; they do not resolve a pending approval.
+    let mut permission_mode = PermissionMode::Default;
 
     while let Some(cmd) = command_rx.recv().await {
         match cmd {
@@ -255,8 +258,15 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 turn_count += 1;
                 request_counter += 1;
                 let turn_req_id = request_counter;
-                if let Err(err) =
-                    send_turn_start(&mut writer, turn_req_id, &thread_id, inputs, model).await
+                if let Err(err) = send_turn_start(
+                    &mut writer,
+                    turn_req_id,
+                    &thread_id,
+                    inputs,
+                    model,
+                    permission_mode,
+                )
+                .await
                 {
                     tracing::error!("Session {} turn/start failed: {}", session_id, err);
                     let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
@@ -338,7 +348,8 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                         // Restore the pending approval — still waiting
                                         pending_approval = Some(approval);
                                     }
-                                    SessionCommand::SetPermissionMode { waker: mode_waker, .. } => {
+                                    SessionCommand::SetPermissionMode { mode, waker: mode_waker } => {
+                                        permission_mode = mode;
                                         mode_waker.wake();
                                         pending_approval = Some(approval);
                                     }
@@ -398,10 +409,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                         }
                                     }
                                     SessionCommand::SetPermissionMode { mode, waker: mode_waker } => {
-                                        tracing::debug!(
-                                            "Session {} ignoring permission mode {:?} (not supported by Codex)",
-                                            session_id, mode
-                                        );
+                                        permission_mode = mode;
                                         mode_waker.wake();
                                     }
                                     SessionCommand::Compact { response_tx: compact_tx, .. } => {
@@ -484,11 +492,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 waker.wake();
             }
             SessionCommand::SetPermissionMode { mode, waker } => {
-                tracing::debug!(
-                    "Session {} ignoring permission mode {:?} (not supported by Codex)",
-                    session_id,
-                    mode
-                );
+                permission_mode = mode;
                 waker.wake();
             }
             SessionCommand::Compact { response_tx, waker } => {
@@ -1793,13 +1797,15 @@ fn prepare_image_inputs(
     Ok((inputs, temp_files))
 }
 
-/// Send `turn/start`.
+/// Send `turn/start`, explicitly selecting the reviewer so leaving Auto also
+/// clears the reviewer inherited from the previous turn or a resumed thread.
 async fn send_turn_start<W: AsyncWrite + Unpin>(
     writer: &mut tokio::io::BufWriter<W>,
     req_id: u64,
     thread_id: &str,
     inputs: Vec<TurnInput>,
     model: Option<&str>,
+    permission_mode: PermissionMode,
 ) -> Result<(), String> {
     let req = RpcRequest {
         id: Some(req_id),
@@ -1807,6 +1813,11 @@ async fn send_turn_start<W: AsyncWrite + Unpin>(
         params: TurnStartParams {
             thread_id: thread_id.to_string(),
             input: inputs,
+            approvals_reviewer: if permission_mode == PermissionMode::Auto {
+                "auto_review"
+            } else {
+                "user"
+            },
             model: model.map(|s| s.to_string()),
             effort: None,
         },
@@ -1960,7 +1971,7 @@ impl AiBackend for CodexBackend {
         agentium_session_id: Option<String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
-        _permission_mode: PermissionMode,
+        permission_mode: PermissionMode,
         waker: Waker,
     ) -> (
         Option<mpsc::Receiver<DaveApiResponse>>,
@@ -2005,6 +2016,21 @@ impl AiBackend for CodexBackend {
         };
 
         let handle = tokio::spawn(async move {
+            // Queue the mode before the query, including the first query of a
+            // new or resumed actor. The actor applies it on turn/start.
+            if let Err(err) = command_tx
+                .send(SessionCommand::SetPermissionMode {
+                    mode: permission_mode,
+                    waker: waker.clone(),
+                })
+                .await
+            {
+                tracing::error!(
+                    "Failed to send permission mode to codex session actor: {}",
+                    err
+                );
+                return;
+            }
             if let Err(err) = command_tx
                 .send(SessionCommand::Query {
                     prompt,
@@ -3832,6 +3858,127 @@ mod tests {
     }
 
     // -- Integration tests --
+
+    /// A resumed thread receives the selected reviewer on its first new turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_integration_auto_reviewer_after_resume() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut mock, command_tx, handle) =
+                setup_integration_test_with_resume("resumed-thread");
+            mock.handle_init().await;
+            let req = mock.read_message().await;
+            assert_eq!(req.method.as_deref(), Some("thread/resume"));
+            mock.send_line(&json!({"id": req.id.unwrap(), "result": {}}))
+                .await;
+            command_tx
+                .send(SessionCommand::SetPermissionMode {
+                    mode: PermissionMode::Auto,
+                    waker: Waker::noop(),
+                })
+                .await
+                .unwrap();
+            let _response_rx = send_query(&command_tx, "continue").await;
+            let req = mock.read_message().await;
+            let params = req.params.unwrap();
+            assert_eq!(params["threadId"], "resumed-thread");
+            assert_eq!(params["approvalsReviewer"], "auto_review");
+            mock.send_line(&json!({
+                "id": req.id.unwrap(), "result": {"turn": {"id": "turn"}}
+            }))
+            .await;
+            mock.send_turn_completed("completed").await;
+            drop(command_tx);
+            handle.await.unwrap();
+        })
+        .await
+        .expect("resumed reviewer test timed out");
+    }
+
+    /// Auto selects native review, and mode changes clear it on the next turn.
+    /// Exercise changes both while idle and while a human approval is pending.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_integration_auto_reviewer_mode_changes() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (mut mock, command_tx, handle) = setup_integration_test();
+            mock.handle_init().await;
+            mock.handle_thread_start().await;
+
+            for (mode, reviewer) in [
+                (PermissionMode::Auto, "auto_review"),
+                (PermissionMode::Default, "user"),
+            ] {
+                command_tx
+                    .send(SessionCommand::SetPermissionMode {
+                        mode,
+                        waker: Waker::noop(),
+                    })
+                    .await
+                    .unwrap();
+                let response_rx = send_query(&command_tx, "hello").await;
+                let req = mock.read_message().await;
+                assert_eq!(req.method.as_deref(), Some("turn/start"));
+                assert_eq!(req.params.unwrap()["approvalsReviewer"], reviewer);
+                mock.send_line(&json!({
+                    "id": req.id.unwrap(), "result": {"turn": {"id": "turn"}}
+                }))
+                .await;
+                mock.send_turn_completed("completed").await;
+                // Wait for the actor to return to idle before the next query.
+                while response_rx.recv_timeout(Duration::from_secs(5)).is_ok() {}
+            }
+
+            let response_rx = send_query(&command_tx, "edit a file").await;
+            mock.handle_turn_start().await;
+            mock.send_approval_request(
+                99,
+                "item/commandExecution/requestApproval",
+                json!({"command": "touch /tmp/reviewer-test"}),
+            )
+            .await;
+            let request = loop {
+                match response_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    DaveApiResponse::PermissionRequest(request) => break request,
+                    _ => continue,
+                }
+            };
+            let (mode_tx, mode_rx) = mpsc::channel();
+            command_tx
+                .send(SessionCommand::SetPermissionMode {
+                    mode: PermissionMode::Auto,
+                    waker: Waker::new(move || {
+                        let _ = mode_tx.send(());
+                    }),
+                })
+                .await
+                .unwrap();
+            // Wait until the actor has handled the switch in its approval-wait
+            // state. The next wire response must still be our explicit denial.
+            mode_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            request
+                .response_tx
+                .send(PermissionResponse::Deny {
+                    reason: "declined".to_string(),
+                })
+                .unwrap();
+            let reply = mock.read_message().await;
+            assert_eq!(reply.result.unwrap()["decision"], "decline");
+            mock.send_turn_completed("completed").await;
+            while response_rx.recv_timeout(Duration::from_secs(5)).is_ok() {}
+
+            let _response_rx = send_query(&command_tx, "try again").await;
+            let req = mock.read_message().await;
+            assert_eq!(req.params.unwrap()["approvalsReviewer"], "auto_review");
+            mock.send_line(&json!({
+                "id": req.id.unwrap(), "result": {"turn": {"id": "turn"}}
+            }))
+            .await;
+            mock.send_turn_completed("completed").await;
+            drop(command_tx);
+            handle.await.unwrap();
+        })
+        .await
+        .expect("reviewer mode test timed out");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_streaming_tokens() {
