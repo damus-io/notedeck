@@ -471,10 +471,9 @@ struct OpenTarget {
     /// of the original subject and can lag a later rename, which is fine for a
     /// back/forward label. `None` when the event carries no name.
     ///
-    /// Only the cross-app deep-link path needs it (it mints its route token from
-    /// the note itself); the in-app board grid goes through [`card_title`] against
-    /// the view it is already drawing.
-    #[allow(dead_code)]
+    /// Only the cross-app deep-link path ([`open_note_route`](App::open_note_route))
+    /// needs it (it mints its route token from the note itself); the in-app board
+    /// grid goes through [`card_title`] against the view it is already drawing.
     title: Option<String>,
 }
 
@@ -766,6 +765,45 @@ impl App for Headway {
             .downcast_ref::<HeadwayRoute>()
             .and_then(|r| r.title())
             .map(str::to_owned)
+    }
+
+    /// Mint the route for a board or card opened from *another* app (an inline
+    /// widget in a Dave message, a notebook node, a timeline note), so the chrome
+    /// can land the whole open as a single global-history entry.
+    ///
+    /// The board switch happens here, eagerly: `active` is app state the token
+    /// doesn't carry, and [`render_nav`](Self::render_nav) resolves a `Card` token
+    /// against whichever board is active. A board note yields
+    /// [`HeadwayRoute::Board`] — switching to it was the whole job. A card note
+    /// yields its [`Card`](HeadwayRoute::Card) route, titled straight off the issue
+    /// event so it needs no folded view, and also leaves an [`open`](Self::open)
+    /// pending: that retry only corrects `active` (a cross-board-moved card whose
+    /// placement hasn't folded yet) and selects the card the token already names.
+    ///
+    /// Why that costs exactly one history entry: `render_nav` seeds the pre-render
+    /// [`NavPos`] from the token as `Card(card)`, and
+    /// [`process_pending_open`](Self::process_pending_open)'s `open_card(card)`
+    /// selects that *same* card, so the post-render diff is `Card(card) →
+    /// Card(card)` and [`reconcile_nav`] enqueues nothing. The chrome's push is the
+    /// only one. (A card that hasn't folded in yet keeps its selection rather than
+    /// backing out — see `board_ui` — so the entry isn't popped either.)
+    ///
+    /// `None` when the note isn't a headway entity we can route to; the chrome then
+    /// falls back to a plain app switch.
+    fn open_note_route(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        note_id: NoteId,
+    ) -> Option<Rc<dyn std::any::Any>> {
+        let author = *ctx.accounts.selected_account_pubkey();
+        let target = self.activate_open_target(ctx, &author, note_id)?;
+        let Some(card) = target.card else {
+            return Some(Rc::new(HeadwayRoute::Board));
+        };
+        // Keep the retry pending; it corrects `active`, not the route token, so it
+        // costs no extra history entry (see above).
+        self.open(note_id);
+        Some(Rc::new(HeadwayRoute::card(card, target.title)))
     }
 }
 

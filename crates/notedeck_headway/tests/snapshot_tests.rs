@@ -1735,6 +1735,36 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
     );
 }
 
+/// One chrome frame of the global nav loop: draw the stack top through
+/// `render_nav` (its token), pump the harness, then drain the app's queued nav
+/// requests into the stack the way `Chrome::apply_nav_requests` does —
+/// `PushToActive`/`Back` are the only kinds Headway raises. A self-push inherits
+/// the active (top) app's slot. Shared by the `chrome_nav_loop_*` tests.
+fn chrome_frame(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    stack: &mut notedeck::NavStack<notedeck::ChromeNavEntry>,
+) {
+    use notedeck::NavRequest;
+
+    harness.state_mut().nav_token = Some(stack.top().token.clone());
+    harness.run_ok();
+
+    let state = harness.state_mut();
+    let app_ctx = state.notedeck.app_context();
+    let active = stack.top().app;
+    for request in app_ctx.navigator.take() {
+        match request {
+            NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
+            // A back step from the chevron is instant here (go_to_route), so the
+            // app never raises one; handle it for completeness.
+            NavRequest::Back => {
+                stack.go_back();
+            }
+            _ => panic!("unexpected nav request kind from Headway"),
+        }
+    }
+}
+
 /// Full chrome round-trip (behavioural, no lavapipe): replicate the chrome's global
 /// nav loop — render the stack's top entry via `render_nav`, then drain the app's
 /// `Navigator` requests into a real `NavStack<ChromeNavEntry>` exactly like
@@ -1744,7 +1774,7 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
 /// the chrome stack and back actually pops it.
 #[test]
 fn chrome_nav_loop_card_open_then_back_returns_to_board() {
-    use notedeck::{AppId, ChromeNavEntry, NavRequest, NavStack};
+    use notedeck::{AppId, ChromeNavEntry, NavStack};
     use notedeck_headway::HeadwayRoute;
     use std::rc::Rc;
 
@@ -1754,33 +1784,6 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
     // (board root) entry is that. AppId is arbitrary here (single app under test).
     let mut stack: NavStack<ChromeNavEntry> =
         NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
-
-    // One chrome frame: draw the stack top through `render_nav` (its token), pump
-    // the harness, then drain the app's queued nav requests into the stack the way
-    // `Chrome::apply_nav_requests` does — `PushToActive`/`Back` are the only kinds
-    // Headway raises. A self-push inherits the active (top) app's slot.
-    fn chrome_frame(
-        harness: &mut Harness<'static, HeadwayTestState>,
-        stack: &mut NavStack<ChromeNavEntry>,
-    ) {
-        harness.state_mut().nav_token = Some(stack.top().token.clone());
-        harness.run_ok();
-
-        let state = harness.state_mut();
-        let app_ctx = state.notedeck.app_context();
-        let active = stack.top().app;
-        for request in app_ctx.navigator.take() {
-            match request {
-                NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
-                // A back step from the chevron is instant here (go_to_route), so the
-                // app never raises one; handle it for completeness.
-                NavRequest::Back => {
-                    stack.go_back();
-                }
-                _ => panic!("unexpected nav request kind from Headway"),
-            }
-        }
-    }
 
     // The board root shows the grid; no card entry yet.
     chrome_frame(&mut harness, &mut stack);
@@ -1889,7 +1892,7 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
 /// graph joins the chrome global-nav stack as its own entry.
 #[test]
 fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
-    use notedeck::{AppId, ChromeNavEntry, NavRequest, NavStack};
+    use notedeck::{AppId, ChromeNavEntry, NavStack};
     use notedeck_headway::HeadwayRoute;
     use std::rc::Rc;
 
@@ -1897,30 +1900,6 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
 
     let mut stack: NavStack<ChromeNavEntry> =
         NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
-
-    // One chrome frame: draw the stack top via `render_nav`, pump the harness, then
-    // drain the app's queued nav requests into the stack exactly as
-    // `Chrome::apply_nav_requests` does. Mirrors the card-loop test's helper.
-    fn chrome_frame(
-        harness: &mut Harness<'static, HeadwayTestState>,
-        stack: &mut NavStack<ChromeNavEntry>,
-    ) {
-        harness.state_mut().nav_token = Some(stack.top().token.clone());
-        harness.run_ok();
-
-        let state = harness.state_mut();
-        let app_ctx = state.notedeck.app_context();
-        let active = stack.top().app;
-        for request in app_ctx.navigator.take() {
-            match request {
-                NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
-                NavRequest::Back => {
-                    stack.go_back();
-                }
-                _ => panic!("unexpected nav request kind from Headway"),
-            }
-        }
-    }
 
     // Open the epic's card — it carries sub-issues, so its detail offers the graph.
     const EPIC: &str = "Define nostr event model for boards";
@@ -1993,6 +1972,207 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     );
 }
 
+/// Title of the one card [`seed_roadmap_board`] puts on its board. It exists on no
+/// other board, so seeing it rendered proves the `roadmap` board is the active one.
+const ROADMAP_CARD: &str = "roadmap-only card";
+
+/// Seed a second own board, `roadmap`, carrying a single [`ROADMAP_CARD`], and wait
+/// for that card to fold in, returning its id. The demo board stays active: this
+/// only writes events, so the tests that use it get a board the app is *not* on.
+fn seed_roadmap_board(harness: &mut Harness<'static, HeadwayTestState>) -> NoteId {
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let secret = state.account.secret_key.secret_bytes();
+    let app_ctx = &mut state.notedeck.app_context();
+    let ndb: &Ndb = app_ctx.ndb;
+    store::seed_board(
+        ndb,
+        &author,
+        &secret,
+        "roadmap",
+        "Roadmap",
+        &mut store::NoPublish,
+    );
+    let view = wait_own_board(ndb, &author, "roadmap");
+    store::apply(
+        ndb,
+        "roadmap",
+        &view,
+        &author,
+        &store::Signer::plain(&secret),
+        store::BoardAction::AddCard {
+            col: 0,
+            title: ROADMAP_CARD.to_string(),
+            description: String::new(),
+            labels: vec![],
+            parent: None,
+        },
+        &mut store::NoPublish,
+    );
+
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let card = {
+            let txn = Transaction::new(ndb).expect("txn");
+            event::load_board(ndb, &txn, &author, "roadmap").and_then(|view| {
+                view.columns
+                    .iter()
+                    .flat_map(|c| c.cards.iter())
+                    .find(|c| c.title == ROADMAP_CARD)
+                    .map(|c| c.id)
+            })
+        };
+        if let Some(card) = card {
+            return card;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{ROADMAP_CARD:?} never folded onto the roadmap board"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// The note id of `author`'s own board definition (kind 30619) for `slug` — what
+/// an inline board reference in another app carries, so what a cross-app open of
+/// the board itself is handed.
+fn own_board_note_id(ndb: &Ndb, author: &Pubkey, slug: &str) -> NoteId {
+    let txn = Transaction::new(ndb).expect("txn");
+    let filter = Filter::new()
+        .kinds([event::KIND_BOARD as u64])
+        .authors([author.bytes()])
+        .build();
+    ndb.query(&txn, &[filter], 64)
+        .expect("query boards")
+        .into_iter()
+        .find(|r| matches!(event::parse(&r.note), Some(event::HeadwayEvent::Board(b)) if b.id == slug))
+        .map(|r| NoteId::new(*r.note.id()))
+        .unwrap_or_else(|| panic!("no board note for {slug:?}"))
+}
+
+/// The headline cross-app deep-link invariant (behavioural, no lavapipe): opening a
+/// Headway card from *another* app lands exactly **one** global-history entry, so a
+/// single back returns to the app the click came from.
+///
+/// Stands in for the chrome's `AppAction::Note` path: the stack starts on a foreign
+/// app's entry (`AppId(1)`, playing Dave), `open_note_route` mints the route, and the
+/// token is pushed tagged with Headway's own slot (`AppId(0)`) — the one push the
+/// chrome makes. The card lives on a board that is *not* active, so its detail can
+/// only render once the open has switched boards, and its title can only come off
+/// the issue event: the route is minted before that board's view has folded.
+///
+/// Before the hook existed the chrome pushed an untyped app-switch entry and the
+/// app's own post-render diff pushed the card on top of it — two entries, and the
+/// first back landed on the Headway board rather than the source app.
+#[test]
+fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
+    use notedeck::{AppId, ChromeNavEntry, NavStack};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let card = seed_roadmap_board(&mut harness);
+
+    // The foreign root: the app the inline reference was clicked in.
+    const SOURCE: AppId = AppId(1);
+    const HEADWAY: AppId = AppId(0);
+    let mut stack: NavStack<ChromeNavEntry> =
+        NavStack::new(vec![ChromeNavEntry::new(SOURCE, Rc::new(()))]);
+
+    let token = {
+        let state = harness.state_mut();
+        let mut app_ctx = state.notedeck.app_context();
+        state
+            .headway
+            .open_note_route(&mut app_ctx, card)
+            .expect("a card note mints a route")
+    };
+    stack.route_to(ChromeNavEntry::new(HEADWAY, token));
+
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 2, "a cross-app open is one history entry");
+    let top = stack.top();
+    assert_eq!(top.app, HEADWAY, "the entry is filed under Headway's slot");
+    let route = top
+        .token
+        .downcast_ref::<HeadwayRoute>()
+        .expect("the entry carries a Headway route");
+    assert_eq!(route.selected_card(), Some(card), "the route is the card");
+    assert_eq!(
+        route.title(),
+        Some(ROADMAP_CARD),
+        "the title comes off the issue event, no folded view needed"
+    );
+
+    // The detail comes up once the roadmap board is active and folded. The card is
+    // on no other board, so this also proves the open switched boards.
+    wait_for_label(&mut harness, "← Back");
+
+    // Keep driving the loop: the pending-open retry and the fold landing must not
+    // push a second entry (reconcile sees Card→same Card) or pop this one (the
+    // not-yet-folded selection is held, not dropped).
+    for _ in 0..5 {
+        chrome_frame(&mut harness, &mut stack);
+    }
+    assert_eq!(
+        stack.len(),
+        2,
+        "no spurious push or pop once the card has opened"
+    );
+    assert!(harness.query_by_label("← Back").is_some());
+
+    // One back returns to the source app.
+    stack.go_to_route(0);
+    assert_eq!(stack.len(), 1);
+    assert_eq!(
+        stack.top().app,
+        SOURCE,
+        "one back returns to the app the click came from"
+    );
+}
+
+/// A cross-app open of a *board* reference mints the board-root route and makes
+/// that board the active one — the switch is the whole job, so no card is selected
+/// (behavioural, no lavapipe).
+#[test]
+fn open_note_route_for_a_board_note_returns_the_board_route() {
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_roadmap_board(&mut harness);
+    assert!(
+        harness.query_by_label(ROADMAP_CARD).is_none(),
+        "the demo board is active to start with"
+    );
+
+    let token = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let mut app_ctx = state.notedeck.app_context();
+        let board = own_board_note_id(app_ctx.ndb, &author, "roadmap");
+        state
+            .headway
+            .open_note_route(&mut app_ctx, board)
+            .expect("a board note mints a route")
+    };
+    let route = token
+        .downcast_ref::<HeadwayRoute>()
+        .expect("the token is a Headway route");
+    assert!(
+        matches!(route, HeadwayRoute::Board),
+        "a board note routes to the board root"
+    );
+    assert_eq!(route.selected_card(), None, "no card is selected");
+
+    // Draw the minted route: it's the roadmap board's grid, not the demo board's.
+    harness.state_mut().nav_token = Some(token);
+    wait_for_label(&mut harness, ROADMAP_CARD);
+    assert!(
+        harness.query_by_label("← Back").is_none(),
+        "the board root shows the grid, not a detail"
+    );
+}
+
 /// Deliverable 3 (behavioural, no lavapipe): the selected board survives a restart
 /// keyed by COORDINATE. Switch to a second own board through the real switcher,
 /// drop + rebuild `Headway` against the same ndb + account (a cold boot), and it
@@ -2002,40 +2182,10 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
 fn restart_reopens_saved_board_coordinate() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     let account = test_keypair();
-    const ROADMAP_CARD: &str = "roadmap-only card";
 
     // Seed a distinct second own board carrying a card only it has, so which board
     // is active after the restart is unambiguous from what renders.
-    {
-        let state = harness.state_mut();
-        let app_ctx = &mut state.notedeck.app_context();
-        let ndb: &Ndb = app_ctx.ndb;
-        let secret = account.secret_key.secret_bytes();
-        store::seed_board(
-            ndb,
-            &account.pubkey,
-            &secret,
-            "roadmap",
-            "Roadmap",
-            &mut store::NoPublish,
-        );
-        let view = wait_own_board(ndb, &account.pubkey, "roadmap");
-        store::apply(
-            ndb,
-            "roadmap",
-            &view,
-            &account.pubkey,
-            &store::Signer::plain(&secret),
-            store::BoardAction::AddCard {
-                col: 0,
-                title: ROADMAP_CARD.to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
-            &mut store::NoPublish,
-        );
-    }
+    seed_roadmap_board(&mut harness);
 
     // Switch to the roadmap board through the real switcher menu.
     harness.get_by_label(SWITCHER_LABEL).simulate_click();
