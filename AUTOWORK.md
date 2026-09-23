@@ -7,7 +7,7 @@ Root cause and the full design are on the container card and in the plan file.
     container: headway:notedeck/obey-margin-scale
     check:     cargo test -p notedeck -p notedeck_chrome --lib && cargo test -p notedeck_headway --lib
                (sum of the `test result: ok. N passed` lines; ~40s cold, stable)
-    stop:      all five subissues are in a terminal column, or the frontier is empty
+    stop:      all five subissues are in In Review or Done, or the frontier is empty
     cap:       10
     plan:      /home/jb55/.claude/plans/human-nav-seems-kinda-dynamic-fiddle.md
 
@@ -64,3 +64,27 @@ Commits 2 and 3 are genuinely independent of 1; the `seq` order is the review or
 | # | date | card | before | after | what happened |
 |---|------|------|--------|-------|---------------|
 | 0 | 09-23 | *(initiation)* | 419 | 419 | investigated, seeded the five cards, wrote this ledger |
+| 1 | 09-23 | `enable-floor-decrease` | 419 | 419 | added the defaulted `App::open_note_route` hook + the `NotedeckApp` fan-out; `802f471a860f` |
+
+## `headway next` cannot advance this container on its own — read this first
+
+Discovered in iteration 1. **No column on the `notedeck` board is marked
+`terminal`** — not even Done (`headway show --board notedeck --json` reports
+`"terminal": false` for all five). Two consequences, both of which will strand a
+session that trusts `next` blindly:
+
+1. A card moved to In Review (which CLAUDE.md requires, and which is where every
+   card in this container will sit until jb55 verifies it) **keeps appearing in
+   `headway next`**. Don't re-do it.
+2. Blocker edges never clear, so `wife-lion-address` (4) and `duck-echo-chronic`
+   (5) will **never** surface in `next`, however many blockers are finished.
+   Verified: `enable-floor-decrease` is In Review and still reads `[ ]` under
+   `wife-lion-address`'s *blocked by*.
+
+So use the **Work order** list above as the real queue: take the lowest-numbered
+card that is still in Backlog/Todo/In Progress, and treat a blocker sitting in In
+Review or Done as satisfied. Use `next` only to confirm nothing was re-ordered.
+
+Fixing this properly means `headway terminal in-review on` (or `done on`) on the
+`notedeck` board, which changes `next` for **every** card jb55 has there — a
+board-wide config call that is his, not a session's. Left alone deliberately.
