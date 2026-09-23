@@ -546,23 +546,13 @@ impl Chrome {
         }
     }
 
+    /// The Headway app's slot — its [`AppId`], which Headway itself never
+    /// learns — or `None` when it isn't in the roster.
     #[cfg(feature = "headway")]
-    fn get_headway_app(&mut self) -> Option<&mut notedeck_headway::Headway> {
-        for app in &mut self.apps {
-            if let NotedeckApp::Headway(headway) = app {
-                return Some(headway);
-            }
-        }
-        None
-    }
-
-    #[cfg(feature = "headway")]
-    fn switch_to_headway(&mut self) {
-        for i in 0..self.apps.len() {
-            if let NotedeckApp::Headway(_) = self.apps[i] {
-                self.set_active(i as i32);
-            }
-        }
+    fn headway_slot(&self) -> Option<usize> {
+        self.apps
+            .iter()
+            .position(|app| matches!(app, NotedeckApp::Headway(_)))
     }
 
     #[cfg(feature = "notebook")]
@@ -646,6 +636,51 @@ impl Chrome {
         }
         self.active = app;
         self.set_opened(app as usize);
+    }
+
+    /// Land a cross-app open as ONE global-history entry: push `token` tagged
+    /// with the target app's `slot`, then re-derive `active` from the new top.
+    ///
+    /// This deliberately bypasses [`set_active`](Chrome::set_active). That
+    /// records the switch as its own untyped `()` app-switch entry, which the
+    /// target renders as its root; the app then routes to the opened note on
+    /// top of it, so a cross-app open would land TWO entries and take two back
+    /// presses to return. Here the routed entry IS the switch.
+    ///
+    /// Split out from [`open_note_in_app`](Chrome::open_note_in_app) so the
+    /// one-entry invariant is testable without an [`AppContext`].
+    #[cfg(any(feature = "headway", test))]
+    fn push_app_route(&mut self, slot: usize, token: Rc<dyn std::any::Any>) {
+        if let Some(nav) = self.global_nav.as_mut() {
+            nav.route_to(ChromeNavEntry::new(AppId(slot), token));
+        }
+        self.active = slot as i32;
+        self.set_opened(slot);
+    }
+
+    /// Ask the app in `slot` for the route that opening `note_id` should land
+    /// on (see [`notedeck::App::open_note_route`]) and push it as one entry via
+    /// [`push_app_route`](Chrome::push_app_route).
+    ///
+    /// Returns `false` — pushing nothing — when the slot is empty or the app
+    /// has no route for the note, so the caller can fall back to a plain
+    /// [`set_active`](Chrome::set_active).
+    #[cfg(feature = "headway")]
+    fn open_note_in_app(
+        &mut self,
+        ctx: &mut AppContext,
+        slot: usize,
+        note_id: nostrdb_net::NoteId,
+    ) -> bool {
+        let Some(token) = self
+            .apps
+            .get_mut(slot)
+            .and_then(|app| app.open_note_route(ctx, note_id))
+        else {
+            return false;
+        };
+        self.push_app_route(slot, token);
+        true
     }
 
     /// Re-derive `active` (and its `opened` bit) from the global history's top
@@ -1955,6 +1990,23 @@ fn is_headway_note(ctx: &mut AppContext, note_id: nostrdb_net::NoteId) -> bool {
         .unwrap_or(false)
 }
 
+/// Open an inline headway board/issue click in the Headway app as ONE global
+/// history entry, so a single back press returns to the source app.
+///
+/// Headway mints the route itself (switching its active board eagerly); if it
+/// can't — e.g. the note hasn't resolved to a board yet — fall back to a plain
+/// app switch so the user still lands in Headway, on its board root.
+#[cfg(feature = "headway")]
+fn open_headway_note(chrome: &mut Chrome, ctx: &mut AppContext, note_id: nostrdb_net::NoteId) {
+    let Some(slot) = chrome.headway_slot() else {
+        return;
+    };
+    if chrome.open_note_in_app(ctx, slot, note_id) {
+        return;
+    }
+    chrome.set_active(slot as i32);
+}
+
 /// Whether `note_id` refers to an agentium session-state event, so a click on its
 /// inline widget routes to the Dave app instead of the timeline.
 #[cfg(feature = "dave")]
@@ -2036,10 +2088,7 @@ fn chrome_handle_app_action(
             #[cfg(feature = "headway")]
             if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
                 if is_headway_note(ctx, *note_id) {
-                    chrome.switch_to_headway();
-                    if let Some(headway) = chrome.get_headway_app() {
-                        headway.open(*note_id);
-                    }
+                    open_headway_note(chrome, ctx, *note_id);
                     return;
                 }
             }
@@ -3168,6 +3217,43 @@ mod global_nav_tests {
         );
         assert_eq!(nav.top().token.downcast_ref::<u32>(), Some(&9));
         assert_eq!(chrome.active, 2);
+    }
+
+    #[test]
+    fn note_route_push_adds_exactly_one_entry() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1); // the source app, e.g. Dave: [app0, app1]
+
+        // A cross-app open lands the target's routed entry directly — the matched
+        // pair to `drained_active_push_is_tagged_with_the_active_app`, which is the
+        // switch-then-self-push shape that took two back presses.
+        chrome.push_app_route(2, Rc::new(7u32));
+
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert_eq!(nav.len(), 3, "[app0, app1, app2-route]: one entry, not two");
+        assert_eq!(
+            nav.top().app,
+            AppId(2),
+            "tagged with the target, not the source"
+        );
+        assert_eq!(nav.top().token.downcast_ref::<u32>(), Some(&7));
+        assert_eq!(chrome.active, 2);
+        assert!(chrome.is_opened(2), "the opened app is marked opened");
+
+        // ONE back returns to the source app.
+        chrome.global_go_back();
+        chrome
+            .global_nav
+            .as_mut()
+            .unwrap()
+            .reconcile(NavAction::Returned(ReturnType::Click));
+        chrome.sync_active_from_nav();
+
+        assert_eq!(chrome.global_nav.as_ref().unwrap().top().app, AppId(1));
+        assert_eq!(
+            chrome.active, 1,
+            "one back press crossed back to the source"
+        );
     }
 
     #[test]
