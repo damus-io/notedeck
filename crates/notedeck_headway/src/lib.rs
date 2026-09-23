@@ -9,6 +9,7 @@ use notedeck::{App, AppContext, AppResponse, ColorTheme, PrivateRelaySync, fan_o
 
 pub use headway::{event, store, teams};
 
+mod cursor;
 mod nav;
 mod tools;
 mod ui;
@@ -343,6 +344,13 @@ impl Headway {
         self.pending_open = Some(note);
         // Wake so the switch is processed even if nothing else is repainting.
         self.wake();
+    }
+
+    /// The card holding the board grid's keyboard cursor, if any (see
+    /// [`BoardUiState::cursor`]). Lets integration tests assert where keyboard
+    /// navigation left the cursor without reading pixels.
+    pub fn cursor(&self) -> Option<NoteId> {
+        self.state.cursor()
     }
 
     /// Resolve a headway note into its [`OpenTarget`] and make that target's board

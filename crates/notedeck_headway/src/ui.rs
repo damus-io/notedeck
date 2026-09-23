@@ -12,7 +12,7 @@ use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{
     PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS,
-    STROKE_MEDIUM, STROKE_THIN,
+    STROKE_MEDIUM, STROKE_THICK, STROKE_THIN,
 };
 
 use crate::BoardSummary;
@@ -71,6 +71,22 @@ pub struct BoardUiState {
     focus_edit: bool,
     /// The card whose detail view is open, if any.
     selected: Option<NoteId>,
+    /// The board grid's keyboard cursor: the card wearing the accent ring.
+    /// Deliberately separate from [`selected`](Self::selected) (the open
+    /// detail), and never reseeded from the nav route, so backing out of a
+    /// card's detail leaves the cursor where you were. Its grid position is
+    /// re-derived from the folded view each time it's needed (see
+    /// [`crate::cursor`]), so reorders and remote edits can't strand it.
+    cursor: Option<NoteId>,
+    /// Set when the cursor moves by keyboard and its card should be scrolled
+    /// into view. Consumed into [`scroll_this_frame`](Self::scroll_this_frame)
+    /// once per grid render.
+    scroll_to_cursor: bool,
+    /// This render's latched [`scroll_to_cursor`](Self::scroll_to_cursor). Taken
+    /// once per grid pass, so a cursor card that isn't drawn this frame (filtered
+    /// out, or the board swapped under it) drops the request instead of leaving
+    /// it stuck to fire on some later, unrelated frame.
+    scroll_this_frame: bool,
     /// Which card the detail edit buffers below were seeded from. When this
     /// differs from `selected`, the buffers are refreshed from the board.
     detail_for: Option<NoteId>,
@@ -233,6 +249,21 @@ impl BoardUiState {
     pub fn set_selected(&mut self, selected: Option<NoteId>) {
         self.selected = selected;
     }
+
+    /// The card holding the board grid's keyboard cursor, if any.
+    pub fn cursor(&self) -> Option<NoteId> {
+        self.cursor
+    }
+
+    /// Put the keyboard cursor on `id` and scroll its card into view on the next
+    /// grid render.
+    // Called by the board keymap (headway:headway/oil-nasty-icon), which lands
+    // after this.
+    #[allow(dead_code)]
+    pub(crate) fn set_cursor(&mut self, id: NoteId) {
+        self.cursor = Some(id);
+        self.scroll_to_cursor = true;
+    }
 }
 
 /// A card's on-screen placement last frame: its screen rect and which column it
@@ -354,7 +385,7 @@ struct SubissueDropGap {
 /// [`filter_ref_jump`].) All matching is case-insensitive substring; an empty
 /// filter matches everything.
 #[derive(Default)]
-struct CardFilter {
+pub(crate) struct CardFilter {
     /// Free-text terms (lowercased); each must appear somewhere in the card.
     text: Vec<String>,
     /// `label:` terms (lowercased); each must match one of the card's labels.
@@ -364,7 +395,7 @@ struct CardFilter {
 impl CardFilter {
     /// Parse `query` into a filter for the board whose slug is `board` (needed
     /// to recognise pasted references to this board's own cards).
-    fn parse(query: &str, board: &str) -> Self {
+    pub(crate) fn parse(query: &str, board: &str) -> Self {
         let mut filter = CardFilter::default();
         for term in query.split_whitespace() {
             // Accept `label:` and `l:` as the label-scoping prefix.
@@ -435,24 +466,24 @@ impl CardFilter {
 /// the header summary — asks one question ([`shows`](Self::shows)) rather than
 /// re-deriving the combination, and the "filtered" affordance keys off a single
 /// [`is_active`](Self::is_active).
-struct ViewFilter<'a> {
+pub(crate) struct ViewFilter<'a> {
     /// The parsed text/label filter from the header field.
-    filter: &'a CardFilter,
+    pub(crate) filter: &'a CardFilter,
     /// Whether sub-issue cards are hidden from the grid.
-    hide_subissues: bool,
+    pub(crate) hide_subissues: bool,
 }
 
 impl ViewFilter<'_> {
     /// Whether the board is currently narrowing what it shows — a text/label
     /// filter, or a view option hiding some cards. Drives the header's
     /// "Filtered" affordance and the switch to a matched/total count.
-    fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.filter.is_active() || self.hide_subissues
     }
 
     /// Whether `card` should be drawn on the board grid: not hidden by a view
     /// option, and either the filter is inactive or the card matches it.
-    fn shows(&self, card: &CardView) -> bool {
+    pub(crate) fn shows(&self, card: &CardView) -> bool {
         if self.hide_subissues && card.parent.is_some() {
             return false;
         }
@@ -646,6 +677,10 @@ pub fn board_ui(
     // The card a click landed on this frame; opens the detail view next frame.
     let mut clicked: Option<NoteId> = None;
 
+    // Latch this pass's scroll-to-cursor request, so it fires on at most one
+    // grid render whether or not the cursor card is drawn.
+    state.scroll_this_frame = std::mem::take(&mut state.scroll_to_cursor);
+
     // Kick off (and retire) slide animations for any card that changed columns
     // since last frame. This reads last frame's placements, so afterwards we can
     // clear them (keeping the map's capacity) and let the card renderers refill
@@ -773,6 +808,9 @@ pub fn board_ui(
 
     if let Some(card_id) = clicked {
         state.selected = Some(card_id);
+        // The clicked card also takes the cursor (no scroll: it's already on
+        // screen), so coming back from its detail shows where you were.
+        state.cursor = Some(card_id);
     }
 
     // Archived-cards sheet floats above the board.
@@ -1614,6 +1652,11 @@ fn cards_drop_zone(
                             col: egui::Id::new(&column.id),
                         },
                     );
+                    // No ring while in flight, but a cursor card still scrolls its
+                    // landing slot into view.
+                    if state.scroll_this_frame && state.cursor == Some(card.id) {
+                        ui.scroll_to_rect(dest, None);
+                    }
                     let t = ui.ctx().animate_value_with_time(
                         move_progress_id(&card.id),
                         1.0,
@@ -1679,16 +1722,33 @@ fn cards_drop_zone(
                     card_blocker_menu(ui, view, card, action);
                 });
 
-                // Hover affordance: cards are clickable, so highlight the border and
-                // switch to a pointing-hand cursor when the pointer is over one.
-                if response.hovered() {
+                // Border: the keyboard cursor's accent ring outranks the hover
+                // highlight. Cards are clickable either way, so hovering one
+                // still switches to a pointing-hand cursor.
+                let is_cursor = state.cursor == Some(card.id);
+                if is_cursor {
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        egui::CornerRadius::same(RADIUS_MD as u8),
+                        egui::Stroke::new(STROKE_THICK, theme.accent),
+                        egui::StrokeKind::Inside,
+                    );
+                } else if response.hovered() {
                     ui.painter().rect_stroke(
                         response.rect,
                         egui::CornerRadius::same(RADIUS_MD as u8),
                         egui::Stroke::new(STROKE_MEDIUM, theme.border_strong),
                         egui::StrokeKind::Inside,
                     );
+                }
+                if response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                // Minimal scroll (not centred) so stepping through a column
+                // doesn't jitter it on every press. Reaches both the column's
+                // vertical and the board's horizontal scroll area.
+                if is_cursor && state.scroll_this_frame {
+                    response.scroll_to_me(None);
                 }
 
                 // While something hovers this card, draw an insertion line and record
@@ -5035,10 +5095,12 @@ pub fn board_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &BoardView) 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn card(title: &str, description: &str, labels: &[&str]) -> CardView {
+    /// A bare card with a zero id and the given text, for tests that only care
+    /// about its searchable fields. Shared with [`crate::cursor`]'s tests.
+    pub(crate) fn card(title: &str, description: &str, labels: &[&str]) -> CardView {
         CardView {
             id: NoteId::new([0u8; 32]),
             author: [0u8; 32],

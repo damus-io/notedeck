@@ -1641,6 +1641,31 @@ fn render_nav_seeds_board_and_card_from_the_route_token() {
     wait_for_label(&mut harness, "7 cards · 5 columns");
 }
 
+/// Behavioural (no lavapipe): clicking a card also puts the board's keyboard
+/// cursor on it, and the cursor survives the detail closing, so backing out
+/// lands with the ring on the card you came from. The cursor is deliberately
+/// separate from the open detail, which closing clears.
+#[test]
+fn clicking_a_card_leaves_the_cursor_on_it_after_back() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    assert_eq!(harness.state().headway.cursor(), None, "no cursor at boot");
+
+    const CARD: &str = "Define nostr event model for boards";
+    let card = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        demo_card_id(app_ctx.ndb, &author, CARD)
+    };
+
+    harness.get_by_label(CARD).simulate_click();
+    wait_for_label(&mut harness, "← Back");
+    harness.get_by_label("← Back").click();
+    wait_for_absent(&mut harness, "← Back");
+
+    assert_eq!(harness.state().headway.cursor(), Some(card));
+}
+
 /// Regression (behavioural, no lavapipe): a `Card` route whose card isn't on the
 /// board *yet* must not back out of its own history entry.
 ///
