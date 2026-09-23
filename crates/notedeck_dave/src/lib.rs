@@ -565,6 +565,9 @@ pub struct Dave {
     home_session: Option<SessionId>,
     /// Progress through a leader-key chord, carried across frames.
     chord: ui::keybindings::ChordState,
+    /// `settings.leader_key` resolved to an egui key, refreshed whenever the
+    /// settings change so the per-frame keybinding pass never parses it.
+    leader: ui::keybindings::Leader,
     /// A kind-31988 session-state note to focus, raised when its inline
     /// `agentium:` chip is clicked in another app (a note, a Dave chat). Resolved
     /// to a session and switched to on the next [`update`](Self::update), then
@@ -1061,6 +1064,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let settings = DaveSettings::from_model_config(&config);
             (config, settings)
         };
+        let leader = ui::keybindings::Leader::resolve(&settings.leader_key);
 
         // Determine AI mode from backend type
         let ai_mode = model_config.ai_mode();
@@ -1162,6 +1166,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
             chord: ui::keybindings::ChordState::default(),
+            leader,
             pending_open: None,
             directory_picker,
             session_picker: SessionPicker::new(),
@@ -1207,6 +1212,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
+        self.leader = ui::keybindings::Leader::resolve(&settings.leader_key);
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
@@ -1714,7 +1720,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let overlay = std::mem::take(&mut self.active_overlay);
         match overlay {
             DaveOverlay::Settings => {
-                match ui::settings_overlay_ui(&mut self.settings_panel, &self.settings, ui) {
+                match ui::settings_overlay_ui(
+                    &mut self.settings_panel,
+                    &self.settings,
+                    app_ctx.i18n,
+                    ui,
+                ) {
                     OverlayResult::ApplySettings(new_settings) => {
                         self.apply_settings(new_settings.clone());
                         return DaveResponse::new(DaveAction::UpdateSettings(new_settings));
@@ -3999,6 +4010,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Check and dispatch keybindings. Called from render() so that
     /// key consumption only happens when Dave is the active app.
     fn process_keybindings(&mut self, egui_ctx: &egui::Context) {
+        // While the settings panel records a new leader, it owns the keyboard.
+        if self.settings_panel.is_capturing_leader() {
+            return;
+        }
+
         let has_pending_permission = self.first_pending_permission().is_some();
         let has_pending_question = self.has_pending_question();
         let in_tentative_state = self
@@ -4015,6 +4031,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         if let Some(key_action) = check_keybindings(
             egui_ctx,
             &mut self.chord,
+            self.leader,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,

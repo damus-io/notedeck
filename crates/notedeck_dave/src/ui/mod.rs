@@ -171,9 +171,10 @@ pub enum OverlayResult {
 pub fn settings_overlay_ui(
     settings_panel: &mut DaveSettingsPanel,
     settings: &DaveSettings,
+    i18n: &mut notedeck::Localization,
     ui: &mut egui::Ui,
 ) -> OverlayResult {
-    if let Some(action) = settings_panel.overlay_ui(ui, settings) {
+    if let Some(action) = settings_panel.overlay_ui(ui, settings, i18n) {
         match action {
             SettingsPanelAction::Save(new_settings) => {
                 return OverlayResult::ApplySettings(new_settings);

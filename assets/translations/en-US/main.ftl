@@ -124,6 +124,9 @@ Chats_dc22 = Chats
 # Label for clear cache button, Storage settings section
 Clear_cache_dccb = Clear cache
 
+# Hint under the leader key button explaining how to rebind it
+Click__then_press_a_key_29e7 = Click, then press a key.
+
 # Hover text for editable zap amount
 Click_to_edit_0414 = Click to edit
 
@@ -304,6 +307,9 @@ Enter_your_key_0fca = Enter your key
 # Instructions for entering Nostr credentials
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = Enter your public key (npub), nostr address (e.g. {$address}), or private key (nsec). You must enter your private key to be able to post, reply, etc.
 
+# Hint under the leader key button while it waits for a key
+Esc_cancels_80f8 = Esc cancels.
+
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = Extreme
 
@@ -327,6 +333,9 @@ Hashtags_f8e0 = Hashtags
 
 # Button to go to the Headway app
 Headway_b5c8 = Headway
+
+# Shown when a leader key was pressed without Ctrl or Alt
+Hold_Ctrl_or_Alt_with_the_key__Esc_cancels_64ee = Hold Ctrl or Alt with the key. Esc cancels.
 
 # Title for Home column
 Home_8c19 = Home
@@ -396,6 +405,9 @@ Language_e264 = Language:
 
 # Title for last note per user column
 Last_Note_per_User_17ad = Last Note per User
+
+# Settings label for the key that starts a Dave keyboard chord
+Leader_key_4ce8 = Leader key:
 
 # Label for Theme Light, Appearance settings section
 Light_7475 = Light
@@ -570,6 +582,9 @@ Please_select_an_icon_655b = Please select an icon.
 
 # Button label to post a note
 Post_now_8a49 = Post now
+
+# Leader key button while it waits for the new binding
+Press_a_key_094b = Press a key…
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.

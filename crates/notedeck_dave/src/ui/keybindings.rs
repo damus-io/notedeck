@@ -1,5 +1,5 @@
-use crate::config::AiMode;
-use egui::Key;
+use crate::config::{AiMode, LeaderKey};
+use egui::{Key, Modifiers};
 
 /// Keybinding actions that can be triggered globally
 #[derive(Debug, Clone, PartialEq)]
@@ -74,10 +74,41 @@ pub enum KeyAction {
     BlockCursorClear,
 }
 
-/// The key that opens a chord: Ctrl+;. Free in both this file and
-/// `notedeck_chrome/src/chrome.rs`.
-const LEADER_MODIFIERS: egui::Modifiers = egui::Modifiers::CTRL;
-const LEADER_KEY: Key = Key::Semicolon;
+/// The key that opens a chord, resolved from the persisted [`LeaderKey`].
+///
+/// Built once when settings load or change, so the per-frame match never
+/// parses a key name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Leader {
+    modifiers: Modifiers,
+    key: Key,
+}
+
+impl Leader {
+    /// Ctrl+;, the same binding as [`LeaderKey::default`].
+    pub const DEFAULT: Leader = Leader {
+        modifiers: Modifiers::CTRL,
+        key: Key::Semicolon,
+    };
+
+    /// Resolve a persisted leader. A key name egui does not know (a
+    /// hand-edited or newer settings file) falls back to [`Self::DEFAULT`].
+    pub fn resolve(leader: &LeaderKey) -> Self {
+        let Some(key) = leader.resolve() else {
+            tracing::warn!("unknown leader key {:?}, using Ctrl+;", leader.key);
+            return Self::DEFAULT;
+        };
+        Leader {
+            modifiers: leader.modifiers(),
+            key,
+        }
+    }
+
+    /// Whether this frame pressed the leader.
+    fn pressed(self, input: &egui::InputState) -> bool {
+        input.modifiers.matches_exact(self.modifiers) && input.key_pressed(self.key)
+    }
+}
 
 /// Seconds a chord waits for its next key before it lapses. Re-armed by every
 /// key the chord accepts, so a run of `j`s never times out mid-stride.
@@ -256,10 +287,11 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
 /// In Chat mode, agentic-specific keybindings (scene view, plan mode, focus queue) are disabled.
 ///
 /// `chord` carries a leader chord across frames: while one is pending it owns
-/// the keyboard (see [`ChordState`]).
+/// the keyboard (see [`ChordState`]). `leader` is the key that opens one.
 pub fn check_keybindings(
     ctx: &egui::Context,
     chord: &mut ChordState,
+    leader: Leader,
     has_pending_permission: bool,
     has_pending_question: bool,
     in_tentative_state: bool,
@@ -289,7 +321,7 @@ pub fn check_keybindings(
     let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
 
     // The leader opens a chord; the keys that follow land next frame.
-    if ctx.input(|i| i.modifiers.matches_exact(LEADER_MODIFIERS) && i.key_pressed(LEADER_KEY)) {
+    if ctx.input(|i| leader.pressed(i)) {
         chord.open(ctx, ctx.input(|i| i.time));
         return None;
     }
@@ -493,14 +525,25 @@ mod tests {
     /// through every frame the way `Dave` does, and return the last action
     /// `check_keybindings` detected along the way.
     fn detect_sequence(presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
+        detect_sequence_with(Leader::DEFAULT, presses)
+    }
+
+    /// [`detect_sequence`] with `leader` bound in place of the default.
+    fn detect_sequence_with(leader: Leader, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
         // Accumulate: `press_key_modifiers` runs the key-down frame internally
         // and then a key-up frame, so we must not clobber the detection with the
         // later (keys-released) frame's `None`.
         let mut harness = Harness::new_ui_state(
             |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
-                if let Some(a) =
-                    check_keybindings(ui.ctx(), chord, false, false, false, AiMode::Agentic)
-                {
+                if let Some(a) = check_keybindings(
+                    ui.ctx(),
+                    chord,
+                    leader,
+                    false,
+                    false,
+                    false,
+                    AiMode::Agentic,
+                ) {
                     *action = Some(a);
                 }
             },
@@ -513,7 +556,7 @@ mod tests {
         harness.state().1.clone()
     }
 
-    const LEADER: (Modifiers, Key) = (LEADER_MODIFIERS, LEADER_KEY);
+    const LEADER: (Modifiers, Key) = (Leader::DEFAULT.modifiers, Leader::DEFAULT.key);
     const NONE: Modifiers = Modifiers::NONE;
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const CTRL_SHIFT: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
@@ -575,11 +618,18 @@ mod tests {
 
     #[test]
     fn a_chord_lapses_after_its_timeout() {
+        let leader = Leader::DEFAULT;
         let mut harness = Harness::new_ui_state(
             |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
-                if let Some(a) =
-                    check_keybindings(ui.ctx(), chord, false, false, false, AiMode::Agentic)
-                {
+                if let Some(a) = check_keybindings(
+                    ui.ctx(),
+                    chord,
+                    leader,
+                    false,
+                    false,
+                    false,
+                    AiMode::Agentic,
+                ) {
                     *action = Some(a);
                 }
             },
@@ -611,7 +661,15 @@ mod tests {
         // A real text field: egui drops focus from an id no widget claims.
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
-                check_keybindings(ui.ctx(), chord, false, false, false, AiMode::Agentic);
+                check_keybindings(
+                    ui.ctx(),
+                    chord,
+                    Leader::DEFAULT,
+                    false,
+                    false,
+                    false,
+                    AiMode::Agentic,
+                );
                 ui.add(egui::TextEdit::singleline(text).id(input_id));
             },
             (ChordState::default(), String::new()),
@@ -652,7 +710,15 @@ mod tests {
         let input_id = egui::Id::new("chat_input");
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
-                check_keybindings(ui.ctx(), chord, false, false, false, AiMode::Agentic);
+                check_keybindings(
+                    ui.ctx(),
+                    chord,
+                    Leader::DEFAULT,
+                    false,
+                    false,
+                    false,
+                    AiMode::Agentic,
+                );
                 ui.add(egui::TextEdit::singleline(text).id(input_id));
             },
             (ChordState::default(), String::new()),
@@ -663,6 +729,45 @@ mod tests {
         harness.press_key_modifiers(LEADER.0, LEADER.1);
         harness.press_key_modifiers(NONE, Key::Escape);
         assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id));
+    }
+
+    #[test]
+    fn the_default_leader_is_the_persisted_default() {
+        assert_eq!(Leader::resolve(&LeaderKey::default()), Leader::DEFAULT);
+    }
+
+    #[test]
+    fn a_rebound_leader_opens_the_chord_and_the_old_one_does_not() {
+        let alt_x = Leader::resolve(&LeaderKey::from_press(Modifiers::ALT, Key::X));
+        assert_eq!(
+            detect_sequence_with(alt_x, &[(Modifiers::ALT, Key::X), (NONE, Key::J)]),
+            Some(KeyAction::BlockCursorDown),
+        );
+        assert_eq!(detect_sequence_with(alt_x, &[LEADER, (NONE, Key::J)]), None);
+    }
+
+    #[test]
+    fn a_leader_key_round_trips_through_its_name() {
+        let leader = LeaderKey::from_press(Modifiers::CTRL | Modifiers::SHIFT, Key::OpenBracket);
+        let json = serde_json::to_string(&leader).unwrap();
+        let back: LeaderKey = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.to_string(), "Ctrl+Shift+[");
+        assert_eq!(
+            Leader::resolve(&back),
+            Leader {
+                modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+                key: Key::OpenBracket,
+            }
+        );
+    }
+
+    #[test]
+    fn an_unknown_leader_name_falls_back_to_the_default() {
+        let bogus = LeaderKey {
+            key: "NotAKey".to_owned(),
+            ..LeaderKey::default()
+        };
+        assert_eq!(Leader::resolve(&bogus), Leader::DEFAULT);
     }
 
     #[test]

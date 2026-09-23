@@ -2847,6 +2847,7 @@ mod tests {
                 if let Some(a) = crate::ui::keybindings::check_keybindings(
                     ui.ctx(),
                     &mut crate::ui::keybindings::ChordState::default(),
+                    crate::ui::keybindings::Leader::DEFAULT,
                     false,
                     false,
                     false,
