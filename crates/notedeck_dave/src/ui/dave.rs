@@ -1,4 +1,5 @@
 use super::badge::{BadgeVariant, StatusBadge};
+use super::block_nav::BlockNav;
 use super::diff;
 use super::git_status_ui;
 use super::markdown_ui;
@@ -60,6 +61,9 @@ pub struct DaveUi<'a> {
     flags: DaveUiFlags,
     input: &'a mut String,
     focus_requested: &'a mut bool,
+    /// Registry of this chat's collapsible blocks, refilled as they render, so a
+    /// keybinding can address them next frame.
+    nav: &'a mut BlockNav,
     /// Session ID for per-session scroll state
     session_id: SessionId,
     /// State for tentative permission response (waiting for message)
@@ -226,6 +230,7 @@ impl<'a> DaveUi<'a> {
         chat: &'a [Message],
         input: &'a mut String,
         focus_requested: &'a mut bool,
+        nav: &'a mut BlockNav,
         ai_mode: AiMode,
     ) -> Self {
         let flags = if trial {
@@ -239,6 +244,7 @@ impl<'a> DaveUi<'a> {
             chat,
             input,
             focus_requested,
+            nav,
             permission_message_state: PermissionMessageState::None,
             question_answers: None,
             question_index: None,
@@ -548,6 +554,9 @@ impl<'a> DaveUi<'a> {
         let mut response = DaveResponse::default();
         let is_agentic = self.ai_mode == AiMode::Agentic;
 
+        // Collapsible blocks re-register themselves below, in visual order.
+        self.nav.begin_frame();
+
         // Where queued (not-yet-dispatched) user messages start. Lives in
         // session.rs so it is testable without a render pass.
         let queued_from = crate::session::queued_from(
@@ -577,7 +586,7 @@ impl<'a> DaveUi<'a> {
                     }
                 }
                 Message::ToolResponse(msg) => {
-                    Self::tool_response_ui(msg, is_agentic, ui);
+                    Self::tool_response_ui(msg, is_agentic, self.nav, ui);
                 }
                 Message::System(_msg) => {
                     // system prompt is not rendered. Maybe we could
@@ -607,7 +616,7 @@ impl<'a> DaveUi<'a> {
                 Message::Subagent(info) => {
                     // Subagents only in Agentic mode
                     if is_agentic {
-                        Self::subagent_ui(info, ui);
+                        Self::subagent_ui(info, self.nav, ui);
                     }
                 }
                 Message::TodoUpdate(_) => {
@@ -650,10 +659,15 @@ impl<'a> DaveUi<'a> {
         response
     }
 
-    fn tool_response_ui(tool_response: &ToolResponse, is_agentic: bool, ui: &mut egui::Ui) {
+    fn tool_response_ui(
+        tool_response: &ToolResponse,
+        is_agentic: bool,
+        nav: &mut BlockNav,
+        ui: &mut egui::Ui,
+    ) {
         match tool_response.responses() {
             ToolResponses::ExecutedTool(result) if is_agentic => {
-                Self::executed_tool_ui(result, ui);
+                Self::executed_tool_ui(result, nav, ui);
             }
             _ => {
                 //ui.label(format!("tool_response: {:?}", tool_response));
@@ -748,6 +762,7 @@ impl<'a> DaveUi<'a> {
                     egui::Color32::from_rgb(100, 180, 100),
                     inner_margin,
                     corner_radius,
+                    self.nav,
                     ui,
                 );
             }
@@ -759,6 +774,7 @@ impl<'a> DaveUi<'a> {
                     egui::Color32::from_rgb(200, 100, 100),
                     inner_margin,
                     corner_radius,
+                    self.nav,
                     ui,
                 );
             }
@@ -1314,12 +1330,12 @@ impl<'a> DaveUi<'a> {
         });
     }
 
-    fn executed_tool_ui(result: &ExecutedTool, ui: &mut egui::Ui) {
+    fn executed_tool_ui(result: &ExecutedTool, nav: &mut BlockNav, ui: &mut egui::Ui) {
         if let Some(file_update) = &result.file_update {
             // File edit with diff — show collapsible header with inline diff
             let expand_id = ui.id().with("exec_diff").with(&result.summary);
             let is_small = file_update.diff_lines().len() < 10;
-            let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(is_small));
+            let expanded = nav.register(expand_id, is_small, ui);
 
             let header_resp = Self::exec_tool_header_ui(
                 &result.tool_name,
@@ -1342,7 +1358,7 @@ impl<'a> DaveUi<'a> {
             // auto-accepted permission rows: the user never approved it up front,
             // so what ran should stay on-screen. A user toggle still collapses it.
             let expand_id = ui.id().with("exec_output").with(&result.summary);
-            let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(true));
+            let expanded = nav.register(expand_id, true, ui);
 
             let header_resp = Self::exec_tool_header_ui(
                 &result.tool_name,
@@ -1394,11 +1410,13 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render a single subagent's status with expandable tool results
-    fn subagent_ui(info: &SubagentInfo, ui: &mut egui::Ui) {
+    fn subagent_ui(info: &SubagentInfo, nav: &mut BlockNav, ui: &mut egui::Ui) {
         let tool_count = info.tool_results.len();
         let has_tools = tool_count > 0;
         // Compute expand ID from outer ui, before horizontal changes the id scope
         let expand_id = ui.id().with("subagent_expand").with(&info.task_id);
+        // Only a subagent with tools is collapsible, so only that one registers.
+        let mut expanded = has_tools && nav.register(expand_id, false, ui);
 
         ui.horizontal(|ui| {
             // Status badge with color based on status
@@ -1436,7 +1454,6 @@ impl<'a> DaveUi<'a> {
 
             // Tool count indicator (clickable to expand)
             if has_tools {
-                let expanded = ui.data(|d| d.get_temp::<bool>(expand_id).unwrap_or(false));
                 let arrow = if expanded { "▾" } else { "▸" };
                 let label = format!("{} ({} tools)", arrow, tool_count);
                 if ui
@@ -1450,21 +1467,20 @@ impl<'a> DaveUi<'a> {
                     )
                     .clicked()
                 {
-                    ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
+                    expanded = !expanded;
+                    ui.data_mut(|d| d.insert_temp(expand_id, expanded));
                 }
             }
         });
 
-        // Expanded tool results
-        if has_tools {
-            let expanded = ui.data(|d| d.get_temp::<bool>(expand_id).unwrap_or(false));
-            if expanded {
-                ui.indent(("subagent_tools", &info.task_id), |ui| {
-                    for result in &info.tool_results {
-                        Self::executed_tool_ui(result, ui);
-                    }
-                });
-            }
+        // Expanded tool results. Their blocks register after this one, so a
+        // subagent's nested rows sit in visual order behind it.
+        if has_tools && expanded {
+            ui.indent(("subagent_tools", &info.task_id), |ui| {
+                for result in &info.tool_results {
+                    Self::executed_tool_ui(result, nav, ui);
+                }
+            });
         }
     }
 
@@ -2061,6 +2077,7 @@ fn responded_permission_ui(
     label_color: egui::Color32,
     inner_margin: f32,
     corner_radius: f32,
+    nav: &mut BlockNav,
     ui: &mut egui::Ui,
 ) {
     // The row is only expandable if there's an operation to reveal. Edit/Write
@@ -2079,8 +2096,7 @@ fn responded_permission_ui(
                 // user can review what they never approved up front; manually
                 // approved rows start collapsed. A user toggle overrides either.
                 let expand_id = ui.id().with(("responded_perm", request.id));
-                let mut expanded = expandable
-                    && ui.data(|d| d.get_temp(expand_id).unwrap_or(request.auto_accepted));
+                let mut expanded = expandable && nav.register(expand_id, request.auto_accepted, ui);
 
                 let header = responded_permission_header_ui(
                     request,
@@ -2565,7 +2581,7 @@ fn session_header_ui(
 
 #[cfg(test)]
 mod tests {
-    use super::{toggle_badges_ui, DaveAction, DaveUi};
+    use super::{toggle_badges_ui, BlockNav, DaveAction, DaveUi};
     use crate::config::AiMode;
     use crate::messages::{
         PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
@@ -2694,6 +2710,7 @@ mod tests {
         request: PermissionRequest,
         input: String,
         focus_requested: bool,
+        block_nav: BlockNav,
         question_answers: HashMap<Uuid, Vec<QuestionAnswer>>,
         question_index: HashMap<Uuid, usize>,
         action: Option<DaveAction>,
@@ -2705,6 +2722,7 @@ mod tests {
                 request,
                 input: String::new(),
                 focus_requested: false,
+                block_nav: BlockNav::default(),
                 question_answers: HashMap::new(),
                 question_index: HashMap::new(),
                 action: None,
@@ -2734,6 +2752,7 @@ mod tests {
                     &[],
                     &mut state.input,
                     &mut state.focus_requested,
+                    &mut state.block_nav,
                     AiMode::Agentic,
                 );
                 if let Some(action) = dave_ui.permission_request_ui(&state.request, None, ui) {
@@ -2783,6 +2802,7 @@ mod tests {
                     &[],
                     &mut state.input,
                     &mut state.focus_requested,
+                    &mut state.block_nav,
                     AiMode::Agentic,
                 );
                 if let Some(action) = dave_ui.permission_request_ui(&state.request, None, ui) {
@@ -2831,6 +2851,7 @@ mod tests {
                     &[],
                     &mut state.input,
                     &mut state.focus_requested,
+                    &mut state.block_nav,
                     AiMode::Agentic,
                 )
                 .question_answers(&mut state.question_answers)
@@ -2878,6 +2899,7 @@ mod tests {
                     &[],
                     &mut state.input,
                     &mut state.focus_requested,
+                    &mut state.block_nav,
                     AiMode::Agentic,
                 );
                 if let Some(action) = dave_ui.permission_request_ui(&state.request, None, ui) {
@@ -3027,9 +3049,17 @@ mod tests {
             .build_ui(move |ui| {
                 let mut input = String::new();
                 let mut focus = false;
+                let mut nav = BlockNav::default();
                 for request in &requests {
-                    let mut dave_ui =
-                        DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
+                    let mut dave_ui = DaveUi::new(
+                        false,
+                        1,
+                        &[],
+                        &mut input,
+                        &mut focus,
+                        &mut nav,
+                        AiMode::Agentic,
+                    );
                     dave_ui.permission_request_ui(request, None, ui);
                     ui.add_space(8.0);
                 }
@@ -3074,9 +3104,17 @@ mod tests {
             .build_ui(move |ui| {
                 let mut input = String::new();
                 let mut focus = false;
+                let mut nav = BlockNav::default();
                 for request in &requests {
-                    let mut dave_ui =
-                        DaveUi::new(false, 1, &[], &mut input, &mut focus, AiMode::Agentic);
+                    let mut dave_ui = DaveUi::new(
+                        false,
+                        1,
+                        &[],
+                        &mut input,
+                        &mut focus,
+                        &mut nav,
+                        AiMode::Agentic,
+                    );
                     dave_ui.permission_request_ui(request, None, ui);
                     ui.add_space(8.0);
                 }
@@ -3166,8 +3204,9 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
             .build_ui(move |ui| {
+                let mut nav = BlockNav::default();
                 for result in &results {
-                    DaveUi::executed_tool_ui(result, ui);
+                    DaveUi::executed_tool_ui(result, &mut nav, ui);
                 }
             });
         harness.run();
@@ -3254,8 +3293,9 @@ mod tests {
             .with_size(egui::Vec2::new(420.0, 120.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
+                let mut nav = BlockNav::default();
                 for result in &results {
-                    DaveUi::executed_tool_ui(result, ui);
+                    DaveUi::executed_tool_ui(result, &mut nav, ui);
                     ui.add_space(4.0);
                 }
             });
@@ -3277,8 +3317,9 @@ mod tests {
             .with_size(egui::Vec2::new(420.0, 120.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
+                let mut nav = BlockNav::default();
                 for result in &results {
-                    DaveUi::executed_tool_ui(result, ui);
+                    DaveUi::executed_tool_ui(result, &mut nav, ui);
                     ui.add_space(4.0);
                 }
             });
@@ -3309,8 +3350,9 @@ mod tests {
                 // summary against this same `ui`'s id, so the key matches.
                 let expand_id = ui.id().with("exec_output").with("`ls -la crates`");
                 ui.data_mut(|d| d.insert_temp(expand_id, true));
+                let mut nav = BlockNav::default();
                 for result in &results {
-                    DaveUi::executed_tool_ui(result, ui);
+                    DaveUi::executed_tool_ui(result, &mut nav, ui);
                     ui.add_space(4.0);
                 }
             });
@@ -3362,8 +3404,9 @@ mod tests {
             .with_size(egui::Vec2::new(460.0, 120.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
+                let mut nav = BlockNav::default();
                 for result in &results {
-                    DaveUi::executed_tool_ui(result, ui);
+                    DaveUi::executed_tool_ui(result, &mut nav, ui);
                     ui.add_space(4.0);
                 }
             });
@@ -3397,8 +3440,9 @@ mod tests {
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 ui.vertical(|ui| {
+                    let mut nav = BlockNav::default();
                     for result in &results {
-                        DaveUi::executed_tool_ui(result, ui);
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
                         ui.add_space(4.0);
                     }
                 });
@@ -3438,8 +3482,9 @@ mod tests {
                         ui.vertical(|ui| {
                             let expand_id = ui.id().with("exec_output").with(summary);
                             ui.data_mut(|d| d.insert_temp(expand_id, true));
+                            let mut nav = BlockNav::default();
                             for result in &results {
-                                DaveUi::executed_tool_ui(result, ui);
+                                DaveUi::executed_tool_ui(result, &mut nav, ui);
                                 ui.add_space(4.0);
                             }
                         });
@@ -3478,8 +3523,9 @@ mod tests {
                     // to exercise the header-truncation path this test guards.
                     let expand_id = ui.id().with("exec_output").with(summary);
                     ui.data_mut(|d| d.insert_temp(expand_id, false));
+                    let mut nav = BlockNav::default();
                     for result in &results {
-                        DaveUi::executed_tool_ui(result, ui);
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
                         ui.add_space(4.0);
                     }
                 });

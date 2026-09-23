@@ -1,5 +1,6 @@
 mod ask_question;
 pub mod badge;
+pub mod block_nav;
 mod dave;
 pub mod diff;
 pub mod directory_picker;
@@ -23,6 +24,7 @@ mod top_buttons;
 pub mod worktree_creator;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
+pub use block_nav::BlockNav;
 pub use dave::{DaveAction, DaveResponse, DaveUi, InputboxLayout, InputboxResult, RunAction};
 pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
 pub use host_picker::HostPickerAction;
@@ -84,6 +86,7 @@ fn build_dave_ui<'a>(
         &session.chat,
         &mut session.input,
         &mut session.focus_requested,
+        &mut session.block_nav,
         session.ai_mode,
     )
     .is_working(is_working)

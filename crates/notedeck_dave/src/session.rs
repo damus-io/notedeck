@@ -12,6 +12,7 @@ use crate::messages::{
     CompactionInfo, ExecutedTool, QuestionAnswer, RunningTool, SessionInfo, SubagentStatus,
 };
 use crate::session_events::ThreadingState;
+use crate::ui::BlockNav;
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;
 use uuid::Uuid;
@@ -550,6 +551,9 @@ pub struct ChatSession {
     pub state_dirty: bool,
     /// Whether this session's input should be focused on the next frame
     pub focus_requested: bool,
+    /// Registry of this chat's collapsible blocks, rebuilt every frame, plus the
+    /// keyboard cursor over them. Per-session so each chat keeps its own cursor.
+    pub block_nav: BlockNav,
     /// AI interaction mode for this session (Chat vs Agentic)
     pub ai_mode: AiMode,
     /// Agentic-mode specific data (None in Chat mode)
@@ -621,6 +625,7 @@ impl ChatSession {
             cached_status: AgentStatus::Idle,
             state_dirty: true,
             focus_requested: false,
+            block_nav: BlockNav::default(),
             ai_mode,
             agentic,
             source: SessionSource::Local,
@@ -691,6 +696,7 @@ impl ChatSession {
             cached_status: AgentStatus::Pending,
             state_dirty: false, // placeholder should not publish state events
             focus_requested: false,
+            block_nav: BlockNav::default(),
             ai_mode: AiMode::Agentic,
             agentic: None, // no agentic data — placeholder only
             source: SessionSource::Remote,
