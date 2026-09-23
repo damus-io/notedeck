@@ -636,7 +636,10 @@ pub struct ExecutedTool {
     pub output: Option<String>,
     /// Which subagent (Task tool_use_id) produced this result, if any
     pub parent_task_id: Option<String>,
-    /// Pre-computed file update for diff rendering (not serialized)
+    /// Pre-computed file update for diff rendering. Skipped by serde here; it
+    /// reaches remote observers and reloads encoded into the note `content`
+    /// via [`ToolResultContent`](crate::session_loader::ToolResultContent),
+    /// like [`output`](Self::output).
     #[serde(skip)]
     pub file_update: Option<crate::file_update::FileUpdate>,
     /// The originating `tool_use` id. Used only to correlate this result with

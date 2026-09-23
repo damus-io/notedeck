@@ -4,6 +4,7 @@
 //! orders them by their monotonic `seq` tag, and converts them into
 //! `Message` variants for populating the chat UI.
 
+use crate::file_update::{FileUpdate, FileUpdateWire};
 use crate::messages::{AssistantMessage, ExecutedTool, Message, PermissionRequest};
 use crate::session::PermissionTracker;
 use crate::session_events::{
@@ -264,19 +265,28 @@ pub struct ToolResultContent {
     /// worth showing (already captured by `summary`, or a diff-bearing edit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// The file edit this tool made, so a reloaded or remote session can
+    /// render its diff. An edit the CLI auto-approved (auto / accept-edits
+    /// mode) has no `permission_request` note to rebuild it from, so without
+    /// this it would show as a bare summary. `None` for non-edit tools, for
+    /// edits too large for the wire budget, and for notes older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_update: Option<FileUpdateWire>,
 }
 
 impl ToolResultContent {
     /// Serialize a tool result into a note's `content` field.
     ///
-    /// `output` must already be size-bounded for the wire by the caller.
-    /// Truncation is otherwise a display concern (the host keeps the full output
-    /// and the UI truncates it), but the note is PNS-wrapped and published, so
-    /// the live-event path caps it to stay under relay limits before encoding.
-    pub fn encode(summary: &str, output: Option<&str>) -> String {
+    /// `output` and `file_update` must already be size-bounded for the wire by
+    /// the caller. Truncation is otherwise a display concern (the host keeps the
+    /// full output and the UI truncates it), but the note is PNS-wrapped and
+    /// published, so the live-event path caps it to stay under relay limits
+    /// before encoding.
+    pub fn encode(summary: &str, output: Option<&str>, file_update: Option<&FileUpdate>) -> String {
         serde_json::to_string(&Self {
             summary: summary.to_string(),
             output: output.map(str::to_string),
+            file_update: file_update.map(FileUpdate::to_wire),
         })
         // A `String` and an `Option<String>` always serialize; never panic the
         // render loop over it — the bare summary is a lossless-enough fallback.
@@ -290,6 +300,7 @@ impl ToolResultContent {
         serde_json::from_str::<Self>(content).unwrap_or_else(|_| Self {
             summary: content.to_string(),
             output: None,
+            file_update: None,
         })
     }
 }
@@ -336,7 +347,7 @@ pub fn render_conversation_note(
                     summary,
                     output: decoded.output,
                     parent_task_id: None,
-                    file_update: None,
+                    file_update: decoded.file_update.map(FileUpdate::from),
                     tool_use_id: None,
                 },
             )))
@@ -1004,6 +1015,7 @@ fn load_recent_paths_by_host_with_author(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::file_update::FileUpdateType;
     use nostrdb::{Config, IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -1584,13 +1596,13 @@ mod tests {
     /// output the live host held instead of just the summary.
     #[test]
     fn tool_result_content_round_trips_output() {
-        let encoded = ToolResultContent::encode("exit 0", Some("hello\nworld\n"));
+        let encoded = ToolResultContent::encode("exit 0", Some("hello\nworld\n"), None);
         let decoded = ToolResultContent::decode(&encoded);
         assert_eq!(decoded.summary, "exit 0");
         assert_eq!(decoded.output.as_deref(), Some("hello\nworld\n"));
 
         // No output: encodes without an `output` key, decodes back to None.
-        let encoded = ToolResultContent::encode("3 matches", None);
+        let encoded = ToolResultContent::encode("3 matches", None, None);
         assert!(!encoded.contains("output"), "output key omitted: {encoded}");
         assert_eq!(ToolResultContent::decode(&encoded).output, None);
     }
@@ -1605,6 +1617,46 @@ mod tests {
         assert_eq!(decoded.output, None);
     }
 
+    /// An edit's file update round-trips through the note content, so a
+    /// reloaded or remote session can render the diff of an edit the CLI
+    /// auto-approved (no `permission_request` note carries it). The cached
+    /// diff lines are recomputed on decode rather than sent.
+    #[test]
+    fn tool_result_content_round_trips_file_update() {
+        let updates = [
+            FileUpdate::new(
+                "src/lib.rs".to_string(),
+                FileUpdateType::Edit {
+                    old_string: "let x = 1;\n".to_string(),
+                    new_string: "let x = 2;\n".to_string(),
+                },
+            ),
+            FileUpdate::new(
+                "src/new.rs".to_string(),
+                FileUpdateType::Write {
+                    content: "fn main() {}\n".to_string(),
+                },
+            ),
+        ];
+        for update in &updates {
+            let encoded = ToolResultContent::encode("lib.rs", None, Some(update));
+            let decoded = ToolResultContent::decode(&encoded);
+            assert_eq!(decoded.summary, "lib.rs");
+            let wire = decoded.file_update.expect("file update survives the wire");
+            assert_eq!(wire, update.to_wire());
+            let rebuilt = FileUpdate::from(wire);
+            assert_eq!(rebuilt.diff_lines().len(), update.diff_lines().len());
+        }
+
+        // No file update: the key is omitted, and a pre-field JSON note (just
+        // summary + output) decodes with no file update.
+        let encoded = ToolResultContent::encode("exit 0", Some("ok"), None);
+        assert!(!encoded.contains("file_update"), "key omitted: {encoded}");
+        let legacy = ToolResultContent::decode(r#"{"summary":"exit 0","output":"ok"}"#);
+        assert_eq!(legacy.output.as_deref(), Some("ok"));
+        assert_eq!(legacy.file_update, None);
+    }
+
     /// Loading a `tool_result` note whose content encodes both summary and
     /// output surfaces the output on the reconstructed [`ExecutedTool`] — the
     /// remote-observer path that previously lost all tool output.
@@ -1612,7 +1664,7 @@ mod tests {
     async fn loads_tool_result_output_from_note() {
         let sk = test_secret_key();
         let session_id = "tool-output-test";
-        let content = ToolResultContent::encode("exit 0", Some("build succeeded\n"));
+        let content = ToolResultContent::encode("exit 0", Some("build succeeded\n"), None);
         let events = [
             build_1988_event_json(&sk, session_id, "user", "run the build", 1_000, 0, &[]),
             build_1988_event_json(
@@ -1649,6 +1701,61 @@ mod tests {
             Some("build succeeded\n"),
             "raw output must survive the note round-trip for remote observers",
         );
+    }
+
+    /// Loading a `tool_result` note that carries an edit rebuilds the
+    /// [`ExecutedTool`]'s file update, so a reloaded or remote session shows the
+    /// diff of an auto-approved edit instead of only its summary.
+    #[tokio::test]
+    async fn loads_tool_result_file_update_from_note() {
+        let sk = test_secret_key();
+        let session_id = "tool-edit-test";
+        let update = FileUpdate::new(
+            "src/lib.rs".to_string(),
+            FileUpdateType::Edit {
+                old_string: "let x = 1;\n".to_string(),
+                new_string: "let x = 2;\n".to_string(),
+            },
+        );
+        let content = ToolResultContent::encode("lib.rs", None, Some(&update));
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "bump x", 1_000, 0, &[]),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "tool_result",
+                &content,
+                1_001,
+                1,
+                &[("tool-name", "Edit")],
+            ),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        let tool = loaded
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                Message::ToolResponse(r) => match r.responses() {
+                    crate::tools::ToolResponses::ExecutedTool(t) => Some(t),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("tool_result note should load as an ExecutedTool");
+        let file_update = tool
+            .file_update
+            .as_ref()
+            .expect("edit must survive the note round-trip for its diff to render");
+        assert_eq!(file_update.file_path, "src/lib.rs");
+        assert!(!file_update.diff_lines().is_empty());
     }
 
     /// A legacy/plaintext `tool_result` note stored its content as
