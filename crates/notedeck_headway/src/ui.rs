@@ -4756,6 +4756,39 @@ pub fn card_chip_ui(
 /// icon, the ⊘/title gaps, and the box's own margins fit inside the height.
 pub const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(220.0, 56.0);
 
+/// How far a *done* graph node's surface fades toward the pane behind it:
+/// `0.0` leaves it a normal card, `1.0` dissolves it into the background.
+///
+/// Picked off a rendered busy graph rather than by taste. In the dark theme it
+/// takes the box from `0x44` to `0x25` against a `0x1F` pane — past the ghost
+/// surface (`0x2C`), so finished work sits *behind* out-of-subtree context
+/// rather than level with it, and the unfinished nodes are the only bright
+/// boxes left on a crowded graph.
+const GRAPH_DONE_FILL_FADE: f32 = 0.85;
+
+/// How far a *done* node's border fades — deliberately much less than
+/// [`GRAPH_DONE_FILL_FADE`].
+///
+/// The two cues can't fade at the same rate because they don't carry the same
+/// weight in both themes: the light theme's elevated surface *is* the pane
+/// colour (both white), so there the border is the only thing holding the box
+/// together. Faded as hard as the fill, a done node would stop being a box at
+/// all in light mode. At this strength it lands about where a ghost's border
+/// already sits in the light theme — the established "still a card, just
+/// quiet" weight.
+const GRAPH_DONE_BORDER_FADE: f32 = 0.45;
+
+/// The content opacity of a *done* node — status circle, ⊘, title, progress
+/// pill. Lower than [`GRAPH_GHOST_OPACITY`] because the box underneath has
+/// faded too, so the content has to come down with it or the node reads as a
+/// bright label floating on a washed-out card.
+const GRAPH_DONE_OPACITY: f32 = 0.35;
+
+/// The content opacity of a *ghost* (out-of-subtree context) node. Its box
+/// keeps a card's full weight on a recessed surface, so the content only needs
+/// to step back, not disappear.
+const GRAPH_GHOST_OPACITY: f32 = 0.55;
+
 /// The display state of one dependency-graph node — everything
 /// [`graph_node_ui`] needs to paint a card as a positioned node, resolved by the
 /// caller from the graph model and board.
@@ -4780,7 +4813,10 @@ pub struct GraphNodeView<'a> {
     /// The card's subtree progress ([`headway::graph::GraphNode::progress`]),
     /// `Some` when this node stands in for a whole subtree in the collapsed
     /// graph. Drawn as a right-aligned `done/total` pill and marks the node as
-    /// *expandable* (a click drills in rather than opening the card).
+    /// *expandable* (a click drills in rather than opening the card). A full
+    /// `done/done` also counts as finished work and fades the node, even when
+    /// the standing-in card's own column hasn't reached Done — there is nothing
+    /// left under it to do.
     pub progress: Option<headway::graph::SubtreeProgress>,
 }
 
@@ -4793,9 +4829,16 @@ pub struct GraphNodeView<'a> {
 /// recessed style for nodes that should stay out of the eye's way — *ghost*
 /// context nodes and *done* cards, so the unfinished critical path is what pops.
 ///
+/// A done node recedes as a whole box, fill and border included
+/// ([`GRAPH_DONE_FILL_FADE`]), not just its content: on a busy graph most of the
+/// nodes are finished, and a full-weight rectangle competes with the unfinished
+/// work whatever is written inside it.
+///
 /// The returned [`egui::Response`] senses clicks for every node so a view can
 /// open the card; only non-ghost nodes get the hover border and pointing-hand
-/// cursor, since ghosts are context rather than the epic's own work.
+/// cursor, since ghosts are context rather than the epic's own work. The fade is
+/// purely paint: a done node keeps its hover border, its click, its drill-in and
+/// its connect handles, all of which gate on `ghost` alone.
 pub fn graph_node_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -4813,22 +4856,37 @@ pub fn graph_node_ui(
         Some(pos) => StatusIcon::for_column(pos.index, pos.count),
         None => StatusIcon::Backlog,
     };
-    let done = matches!(icon, StatusIcon::Done);
+    // Finished work: the card sits in a terminal column, or it stands in for a
+    // subtree with nothing left in it. The second case only exists on a
+    // collapsed node, and it's the one that clutters a busy graph most — a
+    // branch that's wholly done still reserves a full-weight box.
+    let subtree_done = node
+        .progress
+        .is_some_and(|p| p.total > 0 && p.done == p.total);
+    let done = matches!(icon, StatusIcon::Done) || subtree_done;
 
-    // Ghost (out-of-subtree context) and cleared/done cards recede so the
-    // unfinished critical path stays the focus: ghosts get a muted surface and
-    // softer border, and both dim their content below.
-    let recede = node.ghost || done;
-    let fill = if node.ghost {
-        theme.surface_secondary
+    // Ghost and done both step out of the eye's way, but they mean different
+    // things, so they recede along different axes and compose rather than
+    // override each other. A *ghost* is context from outside the subtree: it
+    // swaps the card's material for the recessed secondary surface, at full
+    // weight. A *done* node is the epic's own work, finished: it keeps its
+    // material and instead fades it toward the pane behind it. A done ghost
+    // therefore fades from the secondary surface, landing dimmer than either.
+    let (mut fill, mut border) = if node.ghost {
+        (
+            theme.surface_secondary,
+            theme.border_default.gamma_multiply(0.6),
+        )
     } else {
-        theme.surface_elevated
+        (theme.surface_elevated, theme.border_default)
     };
-    let border = if node.ghost {
-        theme.border_default.gamma_multiply(0.6)
-    } else {
-        theme.border_default
-    };
+    if done {
+        fill = fill.lerp_to_gamma(theme.surface_primary, GRAPH_DONE_FILL_FADE);
+        border = border.lerp_to_gamma(theme.surface_primary, GRAPH_DONE_BORDER_FADE);
+    }
+    // The fade is painted, not applied as widget opacity, so the box stays
+    // opaque: edges are drawn *under* the nodes, and a translucent done node
+    // would let an arrowhead show through its own box.
     ui.painter().rect(
         rect,
         egui::CornerRadius::same(RADIUS_MD as u8),
@@ -4855,8 +4913,13 @@ pub fn graph_node_ui(
             .max_rect(rect.shrink(SPACING_SM))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    if recede {
-        content.set_opacity(0.55);
+    // The content dims with the box under it, and on the same compose rule: a
+    // done ghost takes the lower *done* opacity, matching a fill that has
+    // already faded past the plain ghost surface.
+    if done {
+        content.set_opacity(GRAPH_DONE_OPACITY);
+    } else if node.ghost {
+        content.set_opacity(GRAPH_GHOST_OPACITY);
     }
     content.spacing_mut().item_spacing.x = SPACING_XS;
     let row_height = content.text_style_height(&egui::TextStyle::Body);

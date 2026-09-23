@@ -572,11 +572,18 @@ fn snapshot_headway_graph() {
 }
 
 /// The dependency-graph node variants in one column: a plain in-progress node, a
-/// blocked node (leading ⊘), a done node (receding), an off-board ghost, and a
-/// *collapsed* node that stands in for a whole sub-tree — the last one showing
-/// the right-aligned done/total progress pill that marks it expandable (a click
-/// drills the graph into it). Locks the node chrome the collapse feature added
-/// without needing a nested-epic board fixture.
+/// blocked node (leading ⊘), a done node, an off-board ghost, a *collapsed* node
+/// that stands in for a whole sub-tree — showing the right-aligned done/total
+/// progress pill that marks it expandable (a click drills the graph into it) —
+/// and a collapsed node whose sub-tree is *fully* done. Locks the node chrome
+/// the collapse feature added without needing a nested-epic board fixture.
+///
+/// It also pins the finished-work fade, which is the whole reason three of these
+/// six are here: a done node and a cleared branch sink their box (fill, border
+/// and content) toward the pane, a ghost keeps a card's weight on the recessed
+/// secondary surface, and the two unfinished nodes are the only bright boxes
+/// left. The cleared branch fades on its progress alone — its own column is the
+/// middle one, same as the expandable node above it.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_graph_nodes() {
@@ -628,6 +635,13 @@ fn snapshot_headway_graph_nodes() {
             blocked: false,
             ghost: false,
             progress: Some(headway::graph::SubtreeProgress { done: 2, total: 5 }),
+        },
+        GraphNodeView {
+            title: "Cleared branch recedes",
+            column: three(1),
+            blocked: false,
+            ghost: false,
+            progress: Some(headway::graph::SubtreeProgress { done: 4, total: 4 }),
         },
     ];
 
