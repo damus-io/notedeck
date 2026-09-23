@@ -266,7 +266,13 @@ The view is assembled from three pieces:
   edges directly: dragging from a node's side handle onto another node emits
   `BoardAction::Block` (cycle-/duplicate-filtered by `graph_can_connect`, which
   mirrors `store::would_block_cycle`), and an edge's hovered midpoint ✕ emits
-  `BoardAction::Unblock`.
+  `BoardAction::Unblock`. A node click navigates — an expandable node drills into
+  its subtree, a leaf opens its card detail; ghost nodes stay inert. The top bar's
+  "↗ Open card" link opens the detail of the epic the graph is *of*, the one card
+  no node can reach: the epic has no live node in its own graph, at most an inert
+  ghost. That makes an expandable card's detail two gestures — drill into it, then
+  open the card the top bar now names. Global Back returns from detail to the
+  graph, pan/zoom intact.
 
 The edge/arrow geometry and the layout live in `notedeck_ui::graph` (not headway)
 because both this view and notebook's canvas draw directed edges between boxes;

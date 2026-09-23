@@ -817,8 +817,9 @@ fn graph_view_ui(
     let active_edge = theme.border_strong;
     let done_edge = theme.border_default.gamma_multiply(0.5);
 
-    // A leaf node clicked this frame; opens that card's detail after the scene
-    // closes (we can't touch `state` while the closure borrows the graph and rects).
+    // A leaf node or the topbar's card link clicked this frame; opens that card's
+    // detail after the scene closes (we can't touch `state` while the closure
+    // borrows the graph and rects).
     let mut open: Option<NoteId> = None;
 
     // An expandable node (one standing in for a subtree) clicked this frame;
@@ -840,7 +841,7 @@ fn graph_view_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            graph_topbar_ui(ui, theme, view, epic, &mut close);
+            graph_topbar_ui(ui, theme, view, epic, &mut close, &mut open);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
@@ -1089,13 +1090,17 @@ fn graph_view_ui(
 }
 
 /// The graph view's top bar: a back affordance and the epic's title as a
-/// breadcrumb, matching the detail pane's chrome. `close` is raised on back / ✕.
+/// breadcrumb, matching the detail pane's chrome. `close` is raised on back / ✕,
+/// and `open` by its "open card" link — the epic has no live node in its own
+/// graph (at most an inert ghost, when an edge drags it in), so nothing on the
+/// canvas can reach its detail.
 fn graph_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
     epic: NoteId,
     close: &mut bool,
+    open: &mut Option<NoteId>,
 ) {
     ui.horizontal(|ui| {
         let back = egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
@@ -1105,9 +1110,12 @@ fn graph_topbar_ui(
             *close = true;
         }
         ui.label(egui::RichText::new("›").color(theme.text_muted));
-        let title = card_title(view, epic);
+        // Borrowed, not cloned: this runs every frame.
+        let title = find_card(view, epic)
+            .map(|(_, c)| c.title.as_str())
+            .filter(|t| !t.is_empty());
         ui.label(
-            egui::RichText::new(title.as_deref().unwrap_or("Dependency graph"))
+            egui::RichText::new(title.unwrap_or("Dependency graph"))
                 .strong()
                 .color(theme.text_primary),
         );
@@ -1116,6 +1124,26 @@ fn graph_topbar_ui(
                 .small()
                 .color(theme.text_muted),
         );
+        // A labelled, accent-coloured link rather than a clickable breadcrumb: the
+        // title is this view's heading and reads as one, so a route hidden inside
+        // it is a route nobody finds. It's the accent counterpart of the "View
+        // dependency graph" action on the card detail that leads here. A titleless
+        // epic (archived, or a card off this board) has no detail pane to open, so
+        // it gets no link.
+        if title.is_some() {
+            let link = egui::Link::new(
+                egui::RichText::new("↗ Open card")
+                    .small()
+                    .color(theme.accent),
+            );
+            if ui
+                .add(link)
+                .on_hover_text("Open this epic's card detail")
+                .clicked()
+            {
+                *open = Some(epic);
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
                 .fill(egui::Color32::TRANSPARENT)
@@ -5216,6 +5244,40 @@ mod tests {
             state.selected(),
             Some(a_id),
             "clicking node A selects its card"
+        );
+        assert_eq!(state.graph_epic(), None, "opening a card leaves graph mode");
+    }
+
+    /// The topbar's link opens the epic's own detail: the graph draws the epic's
+    /// sub-issues, not the epic, so the top bar is its only route in.
+    #[test]
+    fn graph_topbar_link_opens_the_epic() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        use std::cell::RefCell;
+
+        let epic = graph_card(1, None, &[2], &[]);
+        let a = graph_card(2, Some(1), &[], &[]);
+        let view = graph_board(vec![epic, a]);
+        let epic_id = NoteId::new([1u8; 32]);
+
+        let state = RefCell::new(BoardUiState::default());
+        state.borrow_mut().open_graph(epic_id);
+
+        let mut harness = Harness::new_ui(|ui| {
+            let theme = ColorTheme::current(ui.ctx());
+            graph_view_ui(ui, &theme, &view, &mut state.borrow_mut());
+        });
+        harness.run();
+        // The link sits in the topbar above the scene, after the breadcrumb.
+        harness.get_by_label("↗ Open card").click();
+        harness.run();
+
+        let state = state.borrow();
+        assert_eq!(
+            state.selected(),
+            Some(epic_id),
+            "the topbar link selects the epic's card"
         );
         assert_eq!(state.graph_epic(), None, "opening a card leaves graph mode");
     }
