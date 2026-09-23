@@ -133,6 +133,12 @@ Click_to_edit_0414 = Click to edit
 # Button to go to the ClnDash app
 ClnDash_2988 = ClnDash
 
+# Dave which-key tooltip: collapse every block in the chat
+Collapse_all_blocks_79ec = Collapse all blocks
+
+# Dave which-key tooltip: collapse the focused block
+Collapse_block_87e0 = Collapse block
+
 # Button to go to the Columns app
 Columns_7215 = Columns
 
@@ -331,8 +337,17 @@ Hashtag_filter_disabled_a136 = Hashtag filter disabled
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
 
+# Dave which-key tooltip: expand every block in the chat
+Expand_all_blocks_55aa = Expand all blocks
+
+# Dave which-key tooltip: expand the focused block
+Expand_block_c8b3 = Expand block
+
 # Button to go to the Headway app
 Headway_b5c8 = Headway
+
+# Dave which-key tooltip: move the block cursor to the first block
+First_block_457f = First block
 
 # Shown when a leader key was pressed without Ctrl or Alt
 Hold_Ctrl_or_Alt_with_the_key__Esc_cancels_64ee = Hold Ctrl or Alt with the key. Esc cancels.
@@ -421,11 +436,17 @@ Like_this_note_dfb5 = Like this note
 # Login page title
 Login_9eef = Login
 
+# Dave which-key tooltip: move the block cursor to the last block
+Last_block_8ffe = Last block
+
 # Login button text
 Login_now___let_s_do_this_5630 = Login now — let's do this!
 
 # Label for max hashtags per note, others settings section
 Max_hashtags_per_note_90e5 = Max hashtags per note:
+
+# Dave which-key tooltip: drop the block cursor and end the chord
+Leave_block_navigation_9a63 = Leave block navigation
 
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = Max websocket connections:
@@ -501,6 +522,9 @@ No_profiles_found_3130 = No profiles found
 
 # Empty relay section placeholder
 None_8249 = None
+
+# Dave which-key tooltip: move the block cursor down
+Next_block_5ed0 = Next block
 
 # NIP-05 identity field label
 Nostr_address__NIP-05_identity_74a2 = Nostr address (NIP-05 identity)
@@ -609,6 +633,9 @@ Pruned_4894 = Pruned!
 
 # Status label while database pruning is running
 Pruning_1578 = Pruning...
+
+# Dave which-key tooltip: move the block cursor up
+Previous_block_18f7 = Previous block
 
 # label describing public key
 PUBLIC_ACCOUNT_ID_4394 = PUBLIC ACCOUNT ID
@@ -855,6 +882,9 @@ Use_outbox_relays_9e4d = Use outbox relays:
 
 # Checkbox label for using wallet only for current account
 Use_this_wallet_for_the_current_account_only_61dc = Use this wallet for the current account only
+
+# Dave which-key tooltip: expand or collapse the focused block
+Toggle_block_650e = Toggle block
 
 # Username and domain identification message
 username___at___domain___will_be_used_for_identification_a4fd = "{$username}" at "{$domain}" will be used for identification

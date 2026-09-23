@@ -133,6 +133,12 @@ Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 # Button to go to the ClnDash app
 ClnDash_2988 = {"["}ÇlñDàsh{"]"}
 
+# Dave which-key tooltip: collapse every block in the chat
+Collapse_all_blocks_79ec = {"["}Çóllàpsé àll blóçks{"]"}
+
+# Dave which-key tooltip: collapse the focused block
+Collapse_block_87e0 = {"["}Çóllàpsé blóçk{"]"}
+
 # Button to go to the Columns app
 Columns_7215 = {"["}Çólúmñs{"]"}
 
@@ -331,8 +337,17 @@ Hashtag_filter_disabled_a136 = {"["}Hàshtàg fíltér dísàbléd{"]"}
 # Title for hashtags column
 Hashtags_f8e0 = {"["}Hàshtàgs{"]"}
 
+# Dave which-key tooltip: expand every block in the chat
+Expand_all_blocks_55aa = {"["}Éxpàñd àll blóçks{"]"}
+
+# Dave which-key tooltip: expand the focused block
+Expand_block_c8b3 = {"["}Éxpàñd blóçk{"]"}
+
 # Button to go to the Headway app
 Headway_b5c8 = {"["}Héàdwày{"]"}
+
+# Dave which-key tooltip: move the block cursor to the first block
+First_block_457f = {"["}Fírst blóçk{"]"}
 
 # Shown when a leader key was pressed without Ctrl or Alt
 Hold_Ctrl_or_Alt_with_the_key__Esc_cancels_64ee = {"["}Hóld Çtrl ór Àlt wíth thé kéy. Ésç çàñçéls.{"]"}
@@ -421,11 +436,17 @@ Like_this_note_dfb5 = {"["}Líké thís ñóté{"]"}
 # Login page title
 Login_9eef = {"["}Lógíñ{"]"}
 
+# Dave which-key tooltip: move the block cursor to the last block
+Last_block_8ffe = {"["}Làst blóçk{"]"}
+
 # Login button text
 Login_now___let_s_do_this_5630 = {"["}Lógíñ ñów — lét's dó thís!{"]"}
 
 # Label for max hashtags per note, others settings section
 Max_hashtags_per_note_90e5 = {"["}Màx hàshtàgs pér ñóté:{"]"}
+
+# Dave which-key tooltip: drop the block cursor and end the chord
+Leave_block_navigation_9a63 = {"["}Léàvé blóçk ñàvígàtíóñ{"]"}
 
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = {"["}Màx wébsóçkét çóññéçtíóñs:{"]"}
@@ -501,6 +522,9 @@ No_profiles_found_3130 = {"["}Ñó prófílés fóúñd{"]"}
 
 # Empty relay section placeholder
 None_8249 = {"["}Ñóñé{"]"}
+
+# Dave which-key tooltip: move the block cursor down
+Next_block_5ed0 = {"["}Ñéxt blóçk{"]"}
 
 # NIP-05 identity field label
 Nostr_address__NIP-05_identity_74a2 = {"["}Ñóstr àddréss (ÑÍP-05 ídéñtíty){"]"}
@@ -609,6 +633,9 @@ Pruned_4894 = {"["}Prúñéd!{"]"}
 
 # Status label while database pruning is running
 Pruning_1578 = {"["}Prúñíñg...{"]"}
+
+# Dave which-key tooltip: move the block cursor up
+Previous_block_18f7 = {"["}Prévíóús blóçk{"]"}
 
 # label describing public key
 PUBLIC_ACCOUNT_ID_4394 = {"["}PÚBLÍÇ ÀÇÇÓÚÑT ÍD{"]"}
@@ -855,6 +882,9 @@ Use_outbox_relays_9e4d = {"["}Úsé óútbóx rélàys:{"]"}
 
 # Checkbox label for using wallet only for current account
 Use_this_wallet_for_the_current_account_only_61dc = {"["}Úsé thís wàllét fór thé çúrréñt àççóúñt óñly{"]"}
+
+# Dave which-key tooltip: expand or collapse the focused block
+Toggle_block_650e = {"["}Tógglé blóçk{"]"}
 
 # Username and domain identification message
 username___at___domain___will_be_used_for_identification_a4fd = {"["}"{$username}" àt "{$domain}" wíll bé úséd fór ídéñtífíçàtíóñ{"]"}

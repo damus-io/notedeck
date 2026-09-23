@@ -1,6 +1,7 @@
 mod ask_question;
 pub mod badge;
 pub mod block_nav;
+mod chord_hints;
 mod dave;
 pub mod diff;
 pub mod directory_picker;
@@ -60,6 +61,7 @@ fn build_dave_ui<'a>(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    chord: Option<keybindings::Pending>,
     run_configs: &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
 ) -> DaveUi<'a> {
@@ -95,6 +97,7 @@ fn build_dave_ui<'a>(
     .has_pending_permission(has_pending_permission)
     .permission_mode(permission_mode)
     .auto_steal_focus(auto_steal_focus)
+    .chord(chord)
     .is_remote(is_remote)
     .dispatch_state(session.dispatch_state)
     .turn_has_content(turn_has_content)
@@ -486,6 +489,7 @@ pub fn scene_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    chord: Option<keybindings::Pending>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     app_ctx: &mut notedeck::AppContext,
@@ -547,6 +551,7 @@ pub fn scene_ui(
                                     model_config,
                                     is_interrupt_pending,
                                     auto_steal_focus,
+                                    chord,
                                     run_configs,
                                     running_sessions,
                                 )
@@ -605,6 +610,7 @@ pub fn desktop_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    chord: Option<keybindings::Pending>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     app_ctx: &mut notedeck::AppContext,
@@ -702,6 +708,7 @@ pub fn desktop_ui(
                     model_config,
                     is_interrupt_pending,
                     auto_steal_focus,
+                    chord,
                     run_configs,
                     running_sessions,
                 )
@@ -724,6 +731,7 @@ pub fn narrow_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    chord: Option<keybindings::Pending>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     show_session_list: bool,
@@ -748,6 +756,7 @@ pub fn narrow_ui(
             model_config,
             is_interrupt_pending,
             auto_steal_focus,
+            chord,
             run_configs,
             running_sessions,
         )

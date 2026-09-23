@@ -1,7 +1,9 @@
 use super::badge::{BadgeVariant, StatusBadge};
 use super::block_nav::BlockNav;
+use super::chord_hints;
 use super::diff;
 use super::git_status_ui;
+use super::keybindings::Pending;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::run_ui;
@@ -104,6 +106,8 @@ pub struct DaveUi<'a> {
     running_config_ids: Option<&'a std::collections::HashSet<String>>,
     /// Pending image attachments staged for the next send
     pending_images: Option<&'a mut Vec<ImageAttachment>>,
+    /// How far into a leader chord the keyboard is, for the which-key strip.
+    chord: Option<Pending>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -263,7 +267,14 @@ impl<'a> DaveUi<'a> {
             run_configs: &[],
             running_config_ids: None,
             pending_images: None,
+            chord: None,
         }
+    }
+
+    /// Show the which-key strip for a pending leader chord.
+    pub fn chord(mut self, pending: Option<Pending>) -> Self {
+        self.chord = pending;
+        self
     }
 
     pub fn pending_images(mut self, images: &'a mut Vec<ImageAttachment>) -> Self {
@@ -480,6 +491,24 @@ impl<'a> DaveUi<'a> {
                         .corner_radius(notedeck::tokens::RADIUS_LG)
                         .show(ui, |ui| self.inputbox(app_ctx, ui))
                         .inner;
+
+                    // Which-key strip: what the pending chord accepts next,
+                    // just above the input the chord took focus from.
+                    if let Some(pending) = self.chord {
+                        let w = ui.available_width();
+                        ui.allocate_ui(egui::vec2(w, chord_hints::STRIP_HEIGHT), |ui| {
+                            egui::Frame::new()
+                                .outer_margin(egui::Margin {
+                                    left: margin,
+                                    right: margin,
+                                    top: 4,
+                                    bottom: 0,
+                                })
+                                .show(ui, |ui| {
+                                    chord_hints::chord_hints_ui(ui, app_ctx.i18n, pending)
+                                });
+                        });
+                    }
 
                     {
                         let has_git = self.git_status.is_some();

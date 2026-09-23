@@ -133,15 +133,80 @@ pub struct ChordState {
     restore_focus: Option<egui::Id>,
 }
 
-/// How far into a chord we are.
+/// How far into a chord we are. Read by the which-key strip through
+/// [`ChordState::pending`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Pending {
+pub enum Pending {
     /// The leader fired; waiting for a command or a prefix.
     Leader,
     /// `<leader> z`: waiting for `a` / `o` / `c` / `R` / `M`.
     LeaderZ,
     /// `<leader> g`: waiting for the second `g`.
     LeaderG,
+}
+
+/// One continuation a pending chord accepts, as the which-key strip shows it.
+pub struct ChordHint {
+    /// The keys to type from here, as printed on the keycap (`"za"`, `"G"`).
+    pub keys: &'static str,
+    /// What typing them does.
+    pub action: KeyAction,
+}
+
+/// Shorthand for the hint tables below.
+const fn hint(keys: &'static str, action: KeyAction) -> ChordHint {
+    ChordHint { keys, action }
+}
+
+/// What `<leader>` accepts.
+const LEADER_HINTS: &[&[ChordHint]] = &[
+    &[
+        hint("j", KeyAction::BlockCursorDown),
+        hint("k", KeyAction::BlockCursorUp),
+        hint("gg", KeyAction::BlockCursorFirst),
+        hint("G", KeyAction::BlockCursorLast),
+    ],
+    &[
+        hint("za", KeyAction::BlockToggle),
+        hint("o", KeyAction::BlockToggle),
+        hint("zo", KeyAction::BlockOpen),
+        hint("zc", KeyAction::BlockClose),
+    ],
+    &[
+        hint("zR", KeyAction::BlockExpandAll),
+        hint("zM", KeyAction::BlockCollapseAll),
+    ],
+    &[hint("q", KeyAction::BlockCursorClear)],
+];
+
+/// What `<leader> z` accepts.
+const LEADER_Z_HINTS: &[&[ChordHint]] = &[
+    &[
+        hint("a", KeyAction::BlockToggle),
+        hint("o", KeyAction::BlockOpen),
+        hint("c", KeyAction::BlockClose),
+    ],
+    &[
+        hint("R", KeyAction::BlockExpandAll),
+        hint("M", KeyAction::BlockCollapseAll),
+    ],
+];
+
+/// What `<leader> g` accepts.
+const LEADER_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::BlockCursorFirst)]];
+
+impl Pending {
+    /// Everything this state accepts, in groups the strip spaces apart.
+    ///
+    /// Mirrors the match in `check_chord`; `every_hint_does_what_it_says`
+    /// keeps the two from drifting.
+    pub fn hints(self) -> &'static [&'static [ChordHint]] {
+        match self {
+            Pending::Leader => LEADER_HINTS,
+            Pending::LeaderZ => LEADER_Z_HINTS,
+            Pending::LeaderG => LEADER_G_HINTS,
+        }
+    }
 }
 
 /// What the chord machine made of this frame's input.
@@ -154,6 +219,11 @@ enum ChordStep {
 }
 
 impl ChordState {
+    /// How far into a chord we are, or `None` when no chord is pending.
+    pub fn pending(&self) -> Option<Pending> {
+        self.pending
+    }
+
     /// Open a chord: set the focused widget aside so bare keys reach us.
     fn open(&mut self, ctx: &egui::Context, now: f64) {
         self.restore_focus = ctx.memory_mut(|m| {
@@ -556,6 +626,43 @@ mod tests {
         harness.state().1.clone()
     }
 
+    /// Press each `(modifiers, key)` in turn and return how far into a chord
+    /// that leaves us: what the which-key strip is handed next frame.
+    fn pending_after(presses: &[(Modifiers, Key)]) -> Option<Pending> {
+        let mut harness = Harness::new_ui_state(
+            |ui, chord: &mut ChordState| {
+                check_keybindings(
+                    ui.ctx(),
+                    chord,
+                    Leader::DEFAULT,
+                    false,
+                    false,
+                    false,
+                    AiMode::Agentic,
+                );
+            },
+            ChordState::default(),
+        );
+        harness.run();
+        for (modifiers, key) in presses {
+            harness.press_key_modifiers(*modifiers, *key);
+        }
+        harness.state().pending()
+    }
+
+    /// The presses that type a hint's keycap: lowercase is bare, uppercase is
+    /// shifted.
+    fn hint_presses(keys: &str) -> Vec<(Modifiers, Key)> {
+        keys.chars()
+            .map(|c| {
+                let key = Key::from_name(&c.to_ascii_uppercase().to_string())
+                    .unwrap_or_else(|| panic!("no egui key for {c:?}"));
+                let modifiers = if c.is_ascii_uppercase() { SHIFT } else { NONE };
+                (modifiers, key)
+            })
+            .collect()
+    }
+
     const LEADER: (Modifiers, Key) = (Leader::DEFAULT.modifiers, Leader::DEFAULT.key);
     const NONE: Modifiers = Modifiers::NONE;
     const SHIFT: Modifiers = Modifiers::SHIFT;
@@ -591,6 +698,50 @@ mod tests {
             detect_sequence(&[LEADER, (NONE, Key::J), (NONE, Key::K)]),
             Some(KeyAction::BlockCursorUp),
         );
+    }
+
+    #[test]
+    fn pending_tracks_the_chord() {
+        assert_eq!(pending_after(&[]), None);
+        assert_eq!(pending_after(&[LEADER]), Some(Pending::Leader));
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::Z)]),
+            Some(Pending::LeaderZ)
+        );
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::G)]),
+            Some(Pending::LeaderG)
+        );
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::Z), (NONE, Key::A)]),
+            Some(Pending::Leader),
+            "a finished command drops back to the leader, so the strip stays up"
+        );
+        assert_eq!(pending_after(&[LEADER, (NONE, Key::Q)]), None);
+        assert_eq!(pending_after(&[LEADER, (NONE, Key::X)]), None);
+    }
+
+    /// The which-key strip must never advertise a key the chord would reject,
+    /// or promise the wrong action.
+    #[test]
+    fn every_hint_does_what_it_says() {
+        let prefixes: [(Pending, &[(Modifiers, Key)]); 3] = [
+            (Pending::Leader, &[LEADER]),
+            (Pending::LeaderZ, &[LEADER, (NONE, Key::Z)]),
+            (Pending::LeaderG, &[LEADER, (NONE, Key::G)]),
+        ];
+        for (pending, prefix) in prefixes {
+            for hint in pending.hints().iter().flat_map(|group| group.iter()) {
+                let mut presses = prefix.to_vec();
+                presses.extend(hint_presses(hint.keys));
+                assert_eq!(
+                    detect_sequence(&presses),
+                    Some(hint.action.clone()),
+                    "{pending:?} hint {:?}",
+                    hint.keys
+                );
+            }
+        }
     }
 
     #[test]
