@@ -99,6 +99,10 @@ pub struct BoardUiState {
     /// (`Memory::any_popup_open`), so this latch is how the keymap knows to
     /// leave keys (Esc, Enter, `a`) to an open menu.
     grid_menu_open: bool,
+    /// Whether the which-key strip of board keys is pinned open (toggled with
+    /// `?`). It also shows, narrowed, while a `g` chord is pending regardless;
+    /// see [`crate::keys::key_hints`].
+    show_key_hints: bool,
     /// Which card the detail edit buffers below were seeded from. When this
     /// differs from `selected`, the buffers are refreshed from the board.
     detail_for: Option<NoteId>,
@@ -297,6 +301,21 @@ impl BoardUiState {
     /// the grid's drop-down menus was open last frame.
     pub(crate) fn take_grid_menu_open(&mut self) -> bool {
         std::mem::take(&mut self.grid_menu_open)
+    }
+
+    /// Whether the which-key strip is pinned open by `?`.
+    pub(crate) fn key_hints_shown(&self) -> bool {
+        self.show_key_hints
+    }
+
+    /// Show the which-key strip if it's hidden, hide it if it's showing.
+    pub(crate) fn toggle_key_hints(&mut self) {
+        self.show_key_hints = !self.show_key_hints;
+    }
+
+    /// Hide the which-key strip (Esc).
+    pub(crate) fn hide_key_hints(&mut self) {
+        self.show_key_hints = false;
     }
 }
 
@@ -724,7 +743,7 @@ pub fn board_ui(
         hide_subissues: state.hide_subissues,
     };
 
-    // Board keys (j/k/h/l, gg/G, Enter, a, /, Esc; H/J/K/L move the cursor
+    // Board keys (j/k/h/l, gg/G, Enter, a, /, ?, Esc; H/J/K/L move the cursor
     // card, returned as the action a drop would raise). Only the grid reaches here —
     // the graph and the detail pane returned above and handle their own keys —
     // and it runs before any grid widget lays out, so a key it handles is
@@ -830,6 +849,20 @@ pub fn board_ui(
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
+
+            // The which-key strip (`?`, or a pending `g`). Reserved from the
+            // bottom before the columns lay out, since their scroll area takes
+            // every point of height left; the columns size off what remains.
+            if let Some(hints) = keys::key_hints(state) {
+                egui::TopBottomPanel::bottom("headway-key-hints")
+                    .resizable(false)
+                    .show_separator_line(false)
+                    .frame(egui::Frame::new().inner_margin(egui::Margin {
+                        top: SPACING_MD as i8,
+                        ..Default::default()
+                    }))
+                    .show_inside(ui, |ui| keys::key_hints_ui(ui, theme, hints));
+            }
 
             egui::ScrollArea::horizontal()
                 .auto_shrink([false, false])

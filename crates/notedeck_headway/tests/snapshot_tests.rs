@@ -1882,6 +1882,38 @@ fn snapshot_headway_board_cursor() {
     harness.snapshot("headway_board_cursor");
 }
 
+/// `?` pins the which-key strip of board keys under the columns and a second
+/// `?` puts it away; a pending `g` shows just its continuation meanwhile.
+#[test]
+fn question_mark_toggles_the_key_hint_strip() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    assert!(harness.query_by_label("move card").is_none());
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "move card");
+
+    press_board_keys(&mut harness, &[egui::Key::G]);
+    wait_for_label(&mut harness, "first card");
+    assert!(harness.query_by_label("move card").is_none());
+    press_board_keys(&mut harness, &[egui::Key::G]);
+    wait_for_label(&mut harness, "move card");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_absent(&mut harness, "move card");
+}
+
+/// Snapshot: the board with the which-key strip pinned open under the columns,
+/// the cursor on Backlog's first card.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_board_key_hints() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    press_board_keys(&mut harness, &[egui::Key::J]);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    harness.run_steps(3);
+    harness.snapshot("headway_board_key_hints");
+}
+
 /// Regression (behavioural, no lavapipe): a `Card` route whose card isn't on the
 /// board *yet* must not back out of its own history entry.
 ///

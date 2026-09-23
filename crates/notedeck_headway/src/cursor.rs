@@ -249,6 +249,26 @@ pub(crate) mod tests {
         })
     }
 
+    /// Three columns of three: `a` holds 1,2,3; `b` 4,5,6; `c` 7,8,9. Card 5
+    /// sits in the middle, so every motion from it goes somewhere. Shared with
+    /// [`crate::keys`]'s tests.
+    pub(crate) fn square_grid() -> BoardView {
+        board(vec![
+            column(
+                "a",
+                vec![card_n(1, "one"), card_n(2, "two"), card_n(3, "three")],
+            ),
+            column(
+                "b",
+                vec![card_n(4, "four"), card_n(5, "five"), card_n(6, "six")],
+            ),
+            column(
+                "c",
+                vec![card_n(7, "seven"), card_n(8, "eight"), card_n(9, "nine")],
+            ),
+        ])
+    }
+
     /// Three columns: `a` holds 1,2,3; `b` holds 4; `c` holds 5,6. Shared with
     /// [`crate::keys`]'s tests.
     pub(crate) fn grid() -> BoardView {
