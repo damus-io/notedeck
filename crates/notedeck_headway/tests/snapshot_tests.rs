@@ -1749,6 +1749,73 @@ fn j_and_k_walk_the_first_column() {
     assert_eq!(opened, first, "j j k lands back on the first");
 }
 
+/// The name of the column `card` sits in on the demo board, folded fresh off
+/// the db (so it reflects ingested moves, not the rendered frame).
+fn demo_card_column(ndb: &Ndb, author: &Pubkey, card: NoteId) -> String {
+    let txn = Transaction::new(ndb).expect("txn");
+    let reducer = headway::event::fold_board(ndb, &txn, author).expect("demo board folded");
+    let boards = reducer.finalize();
+    let view = headway::event::find_board(&boards, author, store::BOARD_ID).expect("demo board");
+    view.columns
+        .iter()
+        .find(|c| c.cards.iter().any(|c| c.id == card))
+        .unwrap_or_else(|| panic!("card {card:?} is on no column"))
+        .name
+        .clone()
+}
+
+/// Pump frames until `card` has been ingested into the column named `column`,
+/// or panic after a deadline. Card moves land on the async writer thread.
+fn wait_for_card_column(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    card: NoteId,
+    column: &str,
+) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let now_in = demo_card_column(state.notedeck.app_context().ndb, &author, card);
+        if now_in == column {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the card to reach {column:?}; it's in {now_in:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Behavioural (no lavapipe): Shift+L moves the cursor card into the next
+/// column and Shift+H brings it back. The cursor follows the card by id, so the
+/// second key acts on it in its new column.
+#[test]
+fn shift_l_and_shift_h_move_the_cursor_card_across_columns() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let card = harness_card_id(&mut harness, "Define nostr event model for boards");
+
+    press_board_keys(&mut harness, &[egui::Key::J]);
+    assert_eq!(harness.state().headway.cursor(), Some(card));
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
+    wait_for_card_column(&mut harness, card, "Todo");
+    assert_eq!(
+        harness.state().headway.cursor(),
+        Some(card),
+        "cursor follows"
+    );
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::H);
+    wait_for_card_column(&mut harness, card, "Backlog");
+    assert_eq!(
+        harness.state().headway.cursor(),
+        Some(card),
+        "cursor follows"
+    );
+}
+
 /// Behavioural (no lavapipe): `/` focuses the filter field without typing the
 /// slash into it.
 #[test]

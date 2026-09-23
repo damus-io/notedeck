@@ -1,7 +1,8 @@
 //! The board grid's vim-style **bare-key keymap**: `j`/`k`/`h`/`l` walk the
 //! card cursor, `gg`/`G` jump to the ends of its column, `Enter`/`o` open the
 //! cursor card, `a` opens the add-card composer, `/` focuses the filter and
-//! `Esc` drops the cursor.
+//! `Esc` drops the cursor. Shifted, `H`/`L` move the cursor card to the
+//! neighbouring column and `J`/`K` reorder it within its own.
 //!
 //! The chord mechanics (reading the press, timing out a pending `g`, swallowing
 //! handled keys) are [`notedeck_ui::chord`]'s; the grid math is
@@ -11,7 +12,7 @@
 use egui::{Key, Modifiers};
 use notedeck_ui::chord::{self, KeyPress};
 
-use crate::cursor::{self, CursorMove};
+use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{BoardUiState, ViewFilter, filter_field_id};
@@ -24,8 +25,8 @@ pub(crate) enum BoardPending {
 }
 
 /// Read this frame's bare key press and apply it to the grid. Runs before the
-/// grid lays out. Returns a board edit for the app to apply (card moves,
-/// headway:headway/fold-fetch-stone); navigation mutates `state` directly.
+/// grid lays out. Returns a board edit for the app to apply (a keyboard card
+/// move); navigation mutates `state` directly.
 ///
 /// Keys are left alone — and any pending chord dropped — while something else
 /// owns the keyboard: a focused text field, an open menu or popup, an inline
@@ -68,6 +69,7 @@ pub(crate) fn board_keys(
         return None;
     }
 
+    let mut action = None;
     match (press.key, press.modifiers.shift) {
         (Key::J, false) => move_cursor(view, filter, state, CursorMove::Down),
         (Key::K, false) => move_cursor(view, filter, state, CursorMove::Up),
@@ -81,6 +83,10 @@ pub(crate) fn board_keys(
         (Key::Enter, _) | (Key::O, false) => open_cursor_card(view, filter, state),
         (Key::A, false) => add_card_at_cursor(view, filter, state),
         (Key::Slash, false) => ctx.memory_mut(|m| m.request_focus(filter_field_id())),
+        (Key::H, true) => action = move_card(view, filter, state, CardMove::Across(Side::Left)),
+        (Key::L, true) => action = move_card(view, filter, state, CardMove::Across(Side::Right)),
+        (Key::J, true) => action = move_card(view, filter, state, CardMove::Within(Vertical::Down)),
+        (Key::K, true) => action = move_card(view, filter, state, CardMove::Within(Vertical::Up)),
         _ => return None,
     }
 
@@ -88,7 +94,7 @@ pub(crate) fn board_keys(
     // and would otherwise type the slash. (`a`'s composer only grabs focus after
     // its first layout, so it happens to be safe, but shouldn't depend on it.)
     chord::swallow_key_events(ctx);
-    None
+    action
 }
 
 /// Whether something other than the grid owns the keyboard this frame.
@@ -116,6 +122,46 @@ fn move_cursor(view: &BoardView, filter: &ViewFilter, state: &mut BoardUiState, 
     if let Some(id) = cursor::step(view, filter, state.cursor(), mv) {
         state.set_cursor(id);
     }
+}
+
+/// A keyboard card move: Shift+H/L across columns, Shift+J/K within one.
+#[derive(Clone, Copy, Debug)]
+enum CardMove {
+    /// To the neighbouring column ([`cursor::move_across`]).
+    Across(Side),
+    /// Past the neighbouring visible card ([`cursor::move_within`]).
+    Within(Vertical),
+}
+
+/// A [`BoardAction::MoveCard`] taking the cursor card where `mv` drops it, or
+/// `None` without a visible cursor card or at an edge.
+///
+/// The cursor keeps following the card by id, so once the async ingest folds
+/// the move in, its ring (and the scroll this requests) land on the card's new
+/// slot. The move isn't flagged in `suppress_anim` the way a drop is: nothing
+/// carried the card there, so the slide shows where it went.
+///
+/// A second press before that fold lands recomputes from the stale view and
+/// re-emits the same target. That's harmless — the repeat move ranks the card
+/// into the same neighbourhood — so there's no pending-move tracking.
+fn move_card(
+    view: &BoardView,
+    filter: &ViewFilter,
+    state: &mut BoardUiState,
+    mv: CardMove,
+) -> Option<BoardAction> {
+    let card = state.cursor()?;
+    let (to_col, to_row) = match mv {
+        CardMove::Across(side) => cursor::move_across(view, filter, card, side),
+        CardMove::Within(dir) => cursor::move_within(view, filter, card, dir),
+    }?;
+    // Re-request the scroll, so the card stays in view as it lands.
+    state.set_cursor(card);
+    Some(BoardAction::MoveCard {
+        card,
+        to_col,
+        to_row,
+    })
 }
 
 /// Open the cursor card's detail, if the cursor is on a visible card. The app's
@@ -164,6 +210,7 @@ mod tests {
     use crate::cursor::tests::{grid, id};
     use crate::ui::CardFilter;
     use egui_kittest::Harness;
+    use nostrdb_net::NoteId;
 
     /// What a keymap test frame reads and leaves behind.
     struct KeysHarness {
@@ -178,6 +225,9 @@ mod tests {
         /// Whether any frame still had an Esc press in its input once the
         /// keymap had run.
         esc_left: bool,
+        /// The `(card, to_col, to_row)` of the last `MoveCard` the keymap
+        /// returned, if any.
+        moved: Option<(NoteId, usize, usize)>,
     }
 
     /// A harness that runs [`board_keys`] over [`grid`] each frame, unfiltered.
@@ -189,7 +239,14 @@ mod tests {
                     filter: &parsed,
                     hide_subissues: false,
                 };
-                board_keys(ui.ctx(), &h.view, &filter, &mut h.state);
+                if let Some(BoardAction::MoveCard {
+                    card,
+                    to_col,
+                    to_row,
+                }) = board_keys(ui.ctx(), &h.view, &filter, &mut h.state)
+                {
+                    h.moved = Some((card, to_col, to_row));
+                }
                 h.esc_left |= ui.input(|i| i.key_pressed(Key::Escape));
                 if let Some(field) = h.field {
                     ui.add(egui::TextEdit::singleline(&mut h.text).id(field));
@@ -201,6 +258,7 @@ mod tests {
                 field,
                 text: String::new(),
                 esc_left: false,
+                moved: None,
             },
         );
         harness.run();
@@ -326,5 +384,37 @@ mod tests {
         let mut harness = keys_harness(None);
         press(&mut harness, Key::Escape);
         assert!(harness.state().esc_left, "Esc left in input");
+    }
+
+    #[test]
+    fn shift_hjkl_move_the_cursor_card() {
+        let mut harness = keys_harness(None);
+        press_with(&mut harness, Modifiers::SHIFT, Key::L);
+        assert_eq!(harness.state().moved, None, "no cursor, no move");
+
+        harness.state_mut().state.set_cursor(id(2));
+        // Row 1 of `a` into `b`, which holds one card: its end.
+        press_with(&mut harness, Modifiers::SHIFT, Key::L);
+        assert_eq!(harness.state().moved, Some((id(2), 1, 1)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::J);
+        assert_eq!(harness.state().moved, Some((id(2), 0, 3)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::K);
+        assert_eq!(harness.state().moved, Some((id(2), 0, 0)));
+
+        // The grid view isn't refolded here, so the cursor card is still in
+        // `a`, the leftmost column: Shift+H is a no-op.
+        harness.state_mut().moved = None;
+        press_with(&mut harness, Modifiers::SHIFT, Key::H);
+        assert_eq!(harness.state().moved, None);
+        assert_eq!(harness.state().state.cursor(), Some(id(2)), "cursor kept");
+    }
+
+    #[test]
+    fn bare_l_still_just_moves_the_cursor() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().state.set_cursor(id(2));
+        press(&mut harness, Key::L);
+        assert_eq!(harness.state().moved, None);
+        assert_eq!(harness.state().state.cursor(), Some(id(4)));
     }
 }

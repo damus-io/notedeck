@@ -46,6 +46,24 @@ pub(crate) enum CursorMove {
     Last,
 }
 
+/// Which neighbouring column a keyboard card move (Shift+H/L) heads for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Side {
+    /// The column to the left (Shift+H).
+    Left,
+    /// The column to the right (Shift+L).
+    Right,
+}
+
+/// Which way a keyboard reorder (Shift+J/K) shifts a card within its column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Vertical {
+    /// Past the next visible card (Shift+J).
+    Down,
+    /// Past the previous visible card (Shift+K).
+    Up,
+}
+
 /// The visible cards of a column, lazily, paired with their true row in
 /// `column.cards`.
 pub(crate) fn visible<'a>(
@@ -113,6 +131,57 @@ pub(crate) fn step(
     };
     // Every `None` above is a clamp: the edge of a column or of the board.
     Some(landed.unwrap_or(id))
+}
+
+/// Where Shift+H/L would drop `card`: `(to_col, to_row)` for
+/// `BoardAction::MoveCard`, or `None` when the card isn't visible or its column
+/// is already the outermost on that side.
+///
+/// Unlike the cursor's `h`/`l`, this never skips empty columns: moving a card
+/// into an empty column is the common case. The card keeps its visual height,
+/// landing just before the target's visible card at the same visible index —
+/// so `to_row` is that card's *true* row (filtered-out cards are counted), or
+/// the end of the column when the target shows fewer cards.
+pub(crate) fn move_across(
+    view: &BoardView,
+    filter: &ViewFilter,
+    card: NoteId,
+    dir: Side,
+) -> Option<(usize, usize)> {
+    let pos = locate(view, filter, card)?;
+    let to_col = match dir {
+        Side::Left => pos.col.checked_sub(1)?,
+        Side::Right => pos.col + 1,
+    };
+    let target = view.columns.get(to_col)?;
+    let to_row = visible(target, filter)
+        .nth(pos.vis)
+        .map_or(target.cards.len(), |(row, _)| row);
+    Some((to_col, to_row))
+}
+
+/// Where Shift+J/K would drop `card` within its own column: `(to_col, to_row)`
+/// for `BoardAction::MoveCard`, or `None` when the card isn't visible or is
+/// already at that end of the column.
+///
+/// The card hops its adjacent *visible* neighbour, not merely the next true
+/// row (which may be a filtered-out card, making the move look like a no-op).
+/// `to_row` indexes the column *including* the moving card, the way
+/// `rank_for_insert` reads it: down lands just past the neighbour
+/// (`row + 1`), up lands on the neighbour's row, i.e. just before it.
+pub(crate) fn move_within(
+    view: &BoardView,
+    filter: &ViewFilter,
+    card: NoteId,
+    dir: Vertical,
+) -> Option<(usize, usize)> {
+    let pos = locate(view, filter, card)?;
+    let column = &view.columns[pos.col];
+    let to_row = match dir {
+        Vertical::Down => visible(column, filter).nth(pos.vis + 1)?.0 + 1,
+        Vertical::Up => visible(column, filter).nth(pos.vis.checked_sub(1)?)?.0,
+    };
+    Some((pos.col, to_row))
 }
 
 /// The `vis`-th visible card of `column`, if it has that many.
@@ -287,6 +356,101 @@ pub(crate) mod tests {
             assert_eq!(step(&view, f, Some(id(2)), CursorMove::First), Some(id(1)));
             assert_eq!(step(&view, f, Some(id(5)), CursorMove::Last), Some(id(6)));
             assert_eq!(step(&view, f, Some(id(6)), CursorMove::First), Some(id(5)));
+        });
+    }
+
+    #[test]
+    fn across_into_an_empty_column_lands_at_row_zero() {
+        let view = board(vec![
+            column("a", vec![card_n(1, "one"), card_n(2, "two")]),
+            column("b", vec![]),
+        ]);
+        with_filter("", |f| {
+            assert_eq!(move_across(&view, f, id(2), Side::Right), Some((1, 0)));
+        });
+    }
+
+    #[test]
+    fn across_from_a_deep_row_into_a_shorter_column_appends() {
+        let view = board(vec![
+            column(
+                "a",
+                vec![
+                    card_n(1, "one"),
+                    card_n(2, "two"),
+                    card_n(3, "three"),
+                    card_n(4, "four"),
+                ],
+            ),
+            column("b", vec![card_n(5, "five"), card_n(6, "six")]),
+        ]);
+        with_filter("", |f| {
+            // Row 3 of `a`, but `b` only has two cards: land at its end.
+            assert_eq!(move_across(&view, f, id(4), Side::Right), Some((1, 2)));
+            // Row 1 keeps its height: just before `b`'s second card.
+            assert_eq!(move_across(&view, f, id(2), Side::Right), Some((1, 1)));
+        });
+    }
+
+    #[test]
+    fn across_counts_hidden_cards_in_the_target_row() {
+        let view = board(vec![
+            column("a", vec![card_n(1, "keep"), card_n(2, "keep")]),
+            column(
+                "b",
+                vec![
+                    card_n(3, "drop"),
+                    card_n(4, "keep"),
+                    card_n(5, "drop"),
+                    card_n(6, "keep"),
+                ],
+            ),
+        ]);
+        with_filter("keep", |f| {
+            // Visible row 0 lands before `b`'s first visible card, 4, whose
+            // true row is 1.
+            assert_eq!(move_across(&view, f, id(1), Side::Right), Some((1, 1)));
+            // Visible row 1 lands before 6, true row 3.
+            assert_eq!(move_across(&view, f, id(2), Side::Right), Some((1, 3)));
+            // Back left from 6 (visible row 1): `a` shows two cards, so before
+            // its second.
+            assert_eq!(move_across(&view, f, id(6), Side::Left), Some((0, 1)));
+        });
+    }
+
+    #[test]
+    fn across_is_a_no_op_at_both_edges() {
+        let view = grid();
+        with_filter("", |f| {
+            assert_eq!(move_across(&view, f, id(1), Side::Left), None);
+            assert_eq!(move_across(&view, f, id(5), Side::Right), None);
+            // And a card that isn't on the board goes nowhere.
+            assert_eq!(move_across(&view, f, id(9), Side::Right), None);
+        });
+    }
+
+    #[test]
+    fn within_down_hops_the_next_visible_card_past_a_hidden_one() {
+        let view = board(vec![column(
+            "a",
+            vec![card_n(1, "keep"), card_n(2, "drop"), card_n(3, "keep")],
+        )]);
+        with_filter("keep", |f| {
+            // Past 3 (true row 2), not merely past the hidden 2.
+            assert_eq!(move_within(&view, f, id(1), Vertical::Down), Some((0, 3)));
+            // And back up lands on 1's row, just before it.
+            assert_eq!(move_within(&view, f, id(3), Vertical::Up), Some((0, 0)));
+            // 3 is the last visible card.
+            assert_eq!(move_within(&view, f, id(3), Vertical::Down), None);
+        });
+    }
+
+    #[test]
+    fn within_up_at_the_top_is_a_no_op() {
+        let view = grid();
+        with_filter("", |f| {
+            assert_eq!(move_within(&view, f, id(1), Vertical::Up), None);
+            assert_eq!(move_within(&view, f, id(2), Vertical::Up), Some((0, 0)));
         });
     }
 }

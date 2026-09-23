@@ -724,7 +724,8 @@ pub fn board_ui(
         hide_subissues: state.hide_subissues,
     };
 
-    // Board keys (j/k/h/l, gg/G, Enter, a, /, Esc). Only the grid reaches here —
+    // Board keys (j/k/h/l, gg/G, Enter, a, /, Esc; H/J/K/L move the cursor
+    // card, returned as the action a drop would raise). Only the grid reaches here —
     // the graph and the detail pane returned above and handle their own keys —
     // and it runs before any grid widget lays out, so a key it handles is
     // swallowed before a field that `a` or `/` focuses could type it. The keys
