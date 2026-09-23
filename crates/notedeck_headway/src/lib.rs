@@ -345,22 +345,26 @@ impl Headway {
         self.wake();
     }
 
-    /// Act on a pending [`open`](Self::open): resolve which board the entity lives
-    /// on and switch there, then — for a card — open its detail once that board's
-    /// view has folded in. A board just needs the switch. Runs early each render.
+    /// Resolve a headway note into its [`OpenTarget`] and make that target's board
+    /// the active one. The shared half of opening an entity from outside the board
+    /// grid, so the retry path below and a chrome deep link agree on *which* board
+    /// a note lands you on — and on persisting that switch.
     ///
-    /// Switching boards is one frame ahead of the fold, so a cross-board card jump
-    /// lands on the board first and pops the detail on the following frame once the
-    /// view catches up; `open`'s repaint burst keeps us ticking until it does.
-    fn process_pending_open(&mut self, ctx: &mut AppContext, author: &Pubkey) {
-        let Some(note_id) = self.pending_open else {
-            return;
-        };
-        let Some(target) = resolve_open_target(ctx.ndb, note_id) else {
-            // Not a headway entity we can route to (unresolved / unexpected kind).
-            self.pending_open = None;
-            return;
-        };
+    /// `None` when `note_id` isn't a headway entity we can route to (unresolved, or
+    /// an unexpected kind). The returned target's [`board`](OpenTarget::board) is
+    /// the board now active, which for a card is where it is actually *placed*
+    /// rather than the origin coordinate its `a` tag records.
+    ///
+    /// Only the switch happens here; a card's detail needs the new board's view to
+    /// have folded in, which is a later frame's job (see
+    /// [`process_pending_open`](Self::process_pending_open)).
+    fn activate_open_target(
+        &mut self,
+        ctx: &mut AppContext,
+        author: &Pubkey,
+        note_id: NoteId,
+    ) -> Option<OpenTarget> {
+        let mut target = resolve_open_target(ctx.ndb, note_id)?;
 
         // A card lives on whichever board it's *placed* on, which a cross-board
         // move makes differ from the origin board its `a` tag records (what
@@ -368,25 +372,26 @@ impl Headway {
         // detail can open; fall back to the origin board when it isn't folded.
         // `locate_card_in_boards` is author-scoped, so a card found there is on one
         // of our own boards (owner = author); otherwise keep the target coordinate.
-        let board = match &target.card {
-            Some(card) => Transaction::new(ctx.ndb)
-                .ok()
-                .and_then(|txn| {
-                    self.board_cache
-                        .borrow_mut()
-                        .with_boards(ctx.ndb, &txn, author, |boards| {
-                            event::locate_card_in_boards(boards, author, card.bytes())
-                        })
-                        .flatten()
-                        .map(|located| event::BoardCoord::new(*author.bytes(), located.board_id))
-                })
-                .unwrap_or(target.board),
-            None => target.board,
-        };
+        if let Some(card) = target.card {
+            let placed = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                self.board_cache
+                    .borrow_mut()
+                    .with_boards(ctx.ndb, &txn, author, |boards| {
+                        event::locate_card_in_boards(boards, author, card.bytes())
+                    })
+                    .flatten()
+                    .map(|located| event::BoardCoord::new(*author.bytes(), located.board_id))
+            });
+            if let Some(placed) = placed {
+                target.board = placed;
+            }
+        }
 
-        // Switch to the owning board first; the fold lands on a later frame.
-        if self.active.as_ref() != Some(&board) {
-            self.active = Some(board);
+        // Switch to the owning board. Guarded on an actual change so a caller that
+        // retries every frame until the fold lands doesn't republish the board
+        // preference on each one.
+        if self.active.as_ref() != Some(&target.board) {
+            self.active = Some(target.board.clone());
             // Persist the switch as a PNS note when we can sign; a watch-only
             // account has no secret to encrypt with, so its selection just isn't
             // remembered (it never was persistable).
@@ -404,8 +409,27 @@ impl Headway {
                 );
             }
             self.wake();
-            return;
         }
+
+        Some(target)
+    }
+
+    /// Act on a pending [`open`](Self::open): resolve which board the entity lives
+    /// on and switch there, then — for a card — open its detail once that board's
+    /// view has folded in. A board just needs the switch. Runs early each render.
+    ///
+    /// The switch can land a frame ahead of the fold, so a cross-board card jump
+    /// lands on the board first and pops the detail on a following frame once the
+    /// view catches up; `open`'s repaint burst keeps us ticking until it does.
+    fn process_pending_open(&mut self, ctx: &mut AppContext, author: &Pubkey) {
+        let Some(note_id) = self.pending_open else {
+            return;
+        };
+        let Some(target) = self.activate_open_target(ctx, author, note_id) else {
+            // Not a headway entity we can route to (unresolved / unexpected kind).
+            self.pending_open = None;
+            return;
+        };
 
         let Some(card) = target.card else {
             // A board: switching to it was the whole job.
@@ -439,13 +463,27 @@ struct OpenTarget {
     /// The card whose detail to open once the board has folded in, or `None` when
     /// the target is a board itself.
     card: Option<NoteId>,
+    /// The target's name, taken straight off the resolved event — a card's
+    /// `subject` or a board's `title` — so a history entry can be labelled
+    /// *before* the board folds. [`card_title`] can't: it reads an already-folded
+    /// `BoardView`, and a board we only just switched to has none yet. Like every
+    /// other [`HeadwayRoute`](nav::HeadwayRoute) title it is therefore a snapshot
+    /// of the original subject and can lag a later rename, which is fine for a
+    /// back/forward label. `None` when the event carries no name.
+    ///
+    /// Only the cross-app deep-link path needs it (it mints its route token from
+    /// the note itself); the in-app board grid goes through [`card_title`] against
+    /// the view it is already drawing.
+    #[allow(dead_code)]
+    title: Option<String>,
 }
 
-/// Resolve a headway board/issue note into the [`OpenTarget`] for
-/// [`Headway::open`]. An issue opens its board *and* its own detail; a board just
-/// opens itself. `None` for anything that isn't one of those. The board's owner
-/// comes straight off the parsed event (an issue's `a`-tag coordinate, a board's
-/// author), so the switch targets the exact coordinate — not a bare slug.
+/// Resolve a headway board/issue note into the [`OpenTarget`]
+/// [`activate_open_target`](Headway::activate_open_target) acts on. An issue opens
+/// its board *and* its own detail; a board just opens itself. `None` for anything
+/// that isn't one of those. The board's owner comes straight off the parsed event
+/// (an issue's `a`-tag coordinate, a board's author), so the switch targets the
+/// exact coordinate — not a bare slug; the title likewise, so it needs no fold.
 fn resolve_open_target(ndb: &Ndb, note_id: NoteId) -> Option<OpenTarget> {
     let txn = Transaction::new(ndb).ok()?;
     let note = ndb.get_note_by_id(&txn, note_id.bytes()).ok()?;
@@ -453,10 +491,12 @@ fn resolve_open_target(ndb: &Ndb, note_id: NoteId) -> Option<OpenTarget> {
         event::HeadwayEvent::Issue(issue) => Some(OpenTarget {
             board: event::BoardCoord::new(issue.board_author, issue.board_id),
             card: Some(NoteId::new(issue.id)),
+            title: (!issue.subject.is_empty()).then_some(issue.subject),
         }),
         event::HeadwayEvent::Board(board) => Some(OpenTarget {
-            board: event::BoardCoord::new(board.author, board.id),
+            title: (!board.title.is_empty()).then_some(board.title),
             card: None,
+            board: event::BoardCoord::new(board.author, board.id),
         }),
         _ => None,
     }
