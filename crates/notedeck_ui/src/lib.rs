@@ -10,6 +10,7 @@ pub mod graph;
 pub mod header;
 pub mod icons;
 pub mod images;
+pub mod keybind_hint;
 pub mod markdown;
 pub mod media;
 pub mod mention;
@@ -27,6 +28,7 @@ pub use contacts_list::{
 pub use debug::debug_slider;
 pub use focus::{autofocus, request_autofocus};
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
+pub use keybind_hint::{keybind_hint, paint_keybind_hint, KeybindHint};
 pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};
