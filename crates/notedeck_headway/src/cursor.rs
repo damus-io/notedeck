@@ -31,9 +31,6 @@ pub(crate) struct CursorPos {
 
 /// A cursor movement over the board grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// The bindings that issue these land with the board keymap
-// (headway:headway/oil-nasty-icon); until then only the tests step the cursor.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum CursorMove {
     /// Next visible card in the column, clamping at the bottom.
     Down,
@@ -84,7 +81,6 @@ pub(crate) fn locate(view: &BoardView, filter: &ViewFilter, cursor: NoteId) -> O
 ///   visible row, clamped to the target's length; at the outermost column the
 ///   cursor stays put.
 /// - `First`/`Last` stay within the cursor's column.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn step(
     view: &BoardView,
     filter: &ViewFilter,
@@ -134,7 +130,7 @@ fn clamped_visible(column: &ColumnView, filter: &ViewFilter, vis: usize) -> Opti
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ui::CardFilter;
     use crate::ui::tests::card;
@@ -148,7 +144,9 @@ mod tests {
         }
     }
 
-    fn id(n: u8) -> NoteId {
+    /// The distinct card id `n` (all 32 bytes set to it). Shared with
+    /// [`crate::keys`]'s tests.
+    pub(crate) fn id(n: u8) -> NoteId {
         NoteId::new([n; 32])
     }
 
@@ -182,8 +180,9 @@ mod tests {
         })
     }
 
-    /// Three columns: `a` holds 1,2,3; `b` holds 4; `c` holds 5,6.
-    fn grid() -> BoardView {
+    /// Three columns: `a` holds 1,2,3; `b` holds 4; `c` holds 5,6. Shared with
+    /// [`crate::keys`]'s tests.
+    pub(crate) fn grid() -> BoardView {
         board(vec![
             column(
                 "a",

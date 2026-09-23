@@ -10,6 +10,7 @@ use notedeck::{App, AppContext, AppResponse, ColorTheme, PrivateRelaySync, fan_o
 pub use headway::{event, store, teams};
 
 mod cursor;
+mod keys;
 mod nav;
 mod tools;
 mod ui;

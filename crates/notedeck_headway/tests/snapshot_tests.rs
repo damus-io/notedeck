@@ -1666,6 +1666,155 @@ fn clicking_a_card_leaves_the_cursor_on_it_after_back() {
     assert_eq!(harness.state().headway.cursor(), Some(card));
 }
 
+/// Press each of `keys` bare on the board, settling after each, the way
+/// someone types them.
+fn press_board_keys(harness: &mut Harness<'static, HeadwayTestState>, keys: &[egui::Key]) {
+    for &key in keys {
+        harness.press_key(key);
+        harness.run_ok();
+    }
+}
+
+/// Type `key` the way a real keyboard delivers it: the key press together with
+/// the character it types. The board keymap has to swallow the character when it
+/// acts on the key, or a field it focuses would receive it.
+fn type_key(harness: &mut Harness<'static, HeadwayTestState>, key: egui::Key, text: &str) {
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text(text.to_owned()));
+    harness.press_key(key);
+    harness.run_ok();
+}
+
+/// Drive `keys` then Enter from a freshly booted board, wait for the detail to
+/// open, and return the one card the app pushed a global-nav entry for.
+fn open_card_by_keys(keys: &[egui::Key]) -> (Harness<'static, HeadwayTestState>, NoteId) {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    press_board_keys(&mut harness, keys);
+    press_board_keys(&mut harness, &[egui::Key::Enter]);
+    wait_for_label(&mut harness, "← Back");
+
+    // As in `opening_a_card_pushes_a_global_nav_entry`: nothing drains the
+    // Navigator here, so this is every request since boot.
+    let requests = harness.state_mut().notedeck.app_context().navigator.take();
+    let pushed: Vec<NoteId> = requests
+        .iter()
+        .filter_map(|req| match req {
+            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            _ => None,
+        })
+        .filter_map(HeadwayRoute::selected_card)
+        .collect();
+    assert_eq!(
+        pushed.len(),
+        1,
+        "opening a card by key pushes exactly one global-nav entry"
+    );
+    (harness, pushed[0])
+}
+
+/// The id of the demo card titled `title`, from the harness's own store.
+fn harness_card_id(harness: &mut Harness<'static, HeadwayTestState>, title: &str) -> NoteId {
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    demo_card_id(state.notedeck.app_context().ndb, &author, title)
+}
+
+/// Behavioural (no lavapipe): `j` puts the cursor on the first card of the first
+/// column and Enter opens it, through the same single global-nav push a click
+/// makes.
+#[test]
+fn j_then_enter_opens_the_first_card() {
+    let (mut harness, opened) = open_card_by_keys(&[egui::Key::J]);
+    let first = harness_card_id(&mut harness, "Define nostr event model for boards");
+    assert_eq!(opened, first);
+}
+
+/// Behavioural (no lavapipe): `j j` walks down Backlog to its second card, and
+/// `k` walks back up.
+#[test]
+fn j_and_k_walk_the_first_column() {
+    use egui::Key::{J, K};
+
+    let (mut harness, opened) = open_card_by_keys(&[J, J]);
+    let second = harness_card_id(&mut harness, "Sync cards across relays");
+    assert_eq!(opened, second, "j j lands on the second card");
+
+    let (mut harness, opened) = open_card_by_keys(&[J, J, K]);
+    let first = harness_card_id(&mut harness, "Define nostr event model for boards");
+    assert_eq!(opened, first, "j j k lands back on the first");
+}
+
+/// Behavioural (no lavapipe): `/` focuses the filter field without typing the
+/// slash into it.
+#[test]
+fn slash_focuses_an_empty_filter() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    type_key(&mut harness, egui::Key::Slash, "/");
+    harness.run_ok();
+
+    let field = focused_text_input(&harness);
+    assert_eq!(field.value().as_deref(), Some(""), "the / was not typed");
+}
+
+/// Behavioural (no lavapipe): `a` opens the add-card composer, focused and
+/// empty — the `a` itself isn't typed into it.
+#[test]
+fn a_opens_an_empty_add_card_composer() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    type_key(&mut harness, egui::Key::A, "a");
+    harness.run_ok();
+
+    // The card composer is multiline, so it's the one MultilineTextInput.
+    let composer = harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .find(|n| n.is_focused())
+        .expect("a focused add-card composer");
+    assert_eq!(composer.value().as_deref(), Some(""), "the a was not typed");
+}
+
+/// Behavioural (no lavapipe): keys typed into the filter field stay text — `j`
+/// types a j rather than moving the cursor, and Enter doesn't open a card.
+#[test]
+fn typing_in_the_filter_never_navigates() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .simulate_click();
+    harness.run_ok();
+
+    type_key(&mut harness, egui::Key::J, "j");
+    assert_eq!(
+        focused_text_input(&harness).value().as_deref(),
+        Some("j"),
+        "j typed into the filter"
+    );
+    assert_eq!(harness.state().headway.cursor(), None, "j didn't move");
+
+    press_board_keys(&mut harness, &[egui::Key::Enter]);
+    for _ in 0..3 {
+        harness.run_ok();
+    }
+    assert!(
+        harness.query_by_label("← Back").is_none(),
+        "Enter in the filter doesn't open a card"
+    );
+}
+
+/// Snapshot: the board after `j l`, the cursor ring on Todo's first card.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_board_cursor() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    press_board_keys(&mut harness, &[egui::Key::J, egui::Key::L]);
+    harness.run_steps(3);
+    harness.snapshot("headway_board_cursor");
+}
+
 /// Regression (behavioural, no lavapipe): a `Card` route whose card isn't on the
 /// board *yet* must not back out of its own history entry.
 ///

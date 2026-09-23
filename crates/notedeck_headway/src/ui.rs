@@ -14,12 +14,14 @@ use notedeck::tokens::{
     PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS,
     STROKE_MEDIUM, STROKE_THICK, STROKE_THIN,
 };
+use notedeck_ui::chord::ChordState;
 
 use crate::BoardSummary;
 use crate::event::{
     self, ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnPos, ColumnView,
     CommentView, Priority,
 };
+use crate::keys::{self, BoardPending};
 use crate::store::{self, BoardAction};
 
 /// Width of a single kanban column.
@@ -87,6 +89,16 @@ pub struct BoardUiState {
     /// out, or the board swapped under it) drops the request instead of leaving
     /// it stuck to fire on some later, unrelated frame.
     scroll_this_frame: bool,
+    /// How far into a board-key chord (`gg`) the grid is. Ticked and advanced
+    /// by [`crate::keys::board_keys`].
+    pub(crate) chord: ChordState<BoardPending>,
+    /// Set by the grid's own drop-down menus (board switcher, View, column ⋯)
+    /// on each frame they're open, and taken by the next frame's
+    /// [`crate::keys::board_keys`]. egui 0.31's `menu_button` keeps its open
+    /// state in a private per-bar slot, not the popup memory
+    /// (`Memory::any_popup_open`), so this latch is how the keymap knows to
+    /// leave keys (Esc, Enter, `a`) to an open menu.
+    grid_menu_open: bool,
     /// Which card the detail edit buffers below were seeded from. When this
     /// differs from `selected`, the buffers are refreshed from the board.
     detail_for: Option<NoteId>,
@@ -257,12 +269,34 @@ impl BoardUiState {
 
     /// Put the keyboard cursor on `id` and scroll its card into view on the next
     /// grid render.
-    // Called by the board keymap (headway:headway/oil-nasty-icon), which lands
-    // after this.
-    #[allow(dead_code)]
     pub(crate) fn set_cursor(&mut self, id: NoteId) {
         self.cursor = Some(id);
         self.scroll_to_cursor = true;
+    }
+
+    /// Take the keyboard cursor off the board.
+    pub(crate) fn clear_cursor(&mut self) {
+        self.cursor = None;
+    }
+
+    /// Open the "add card" composer at the foot of column `col`, empty and
+    /// focused. Shared by the column's "+ Add card" button and the `a` key.
+    pub(crate) fn open_add_card(&mut self, col: usize) {
+        self.edit = InlineEdit::AddCard(col);
+        self.edit_text.clear();
+        self.focus_edit = true;
+    }
+
+    /// Whether a board-level overlay owns the keyboard: an inline editor (card
+    /// composer, column rename, new column/board) or the archived sheet.
+    pub(crate) fn keys_blocked(&self) -> bool {
+        self.edit != InlineEdit::None || self.showing_archived
+    }
+
+    /// Take the [`grid_menu_open`](Self::grid_menu_open) latch: whether one of
+    /// the grid's drop-down menus was open last frame.
+    pub(crate) fn take_grid_menu_open(&mut self) -> bool {
+        std::mem::take(&mut self.grid_menu_open)
     }
 }
 
@@ -531,6 +565,12 @@ fn cross_board_ref<'a>(
     })
 }
 
+/// The header filter field's pinned id, shared by the field itself and the `/`
+/// key that focuses it (see [`crate::keys`]).
+pub(crate) fn filter_field_id() -> egui::Id {
+    egui::Id::new("headway-filter-field")
+}
+
 /// React to a full cross-board reference pasted into the filter field: a
 /// `headway:otherboard/maple-river-canyon` term addresses a card on another
 /// board, so the intuitive read is "take me there" — raise a switch to that board and
@@ -673,7 +713,24 @@ pub fn board_ui(
         state.detail_for = None;
     }
 
-    let mut action: Option<BoardAction> = None;
+    // Parsed once per frame from the persisted query; reflects the prior
+    // frame's keystroke, which is imperceptible in an immediate-mode UI.
+    // Bundled with the view options into the single grid-visibility predicate
+    // the keymap, the header and the columns share. Owned, so it doesn't hold
+    // `state` borrowed.
+    let filter = CardFilter::parse(&state.filter, &view.id);
+    let view_filter = ViewFilter {
+        filter: &filter,
+        hide_subissues: state.hide_subissues,
+    };
+
+    // Board keys (j/k/h/l, gg/G, Enter, a, /, Esc). Only the grid reaches here —
+    // the graph and the detail pane returned above and handle their own keys —
+    // and it runs before any grid widget lays out, so a key it handles is
+    // swallowed before a field that `a` or `/` focuses could type it. The keys
+    // stand down during a drag, but should a key action and a drop below ever
+    // land in one frame, the drop overwrites it.
+    let mut action: Option<BoardAction> = keys::board_keys(ui.ctx(), view, &view_filter, state);
     // The card a click landed on this frame; opens the detail view next frame.
     let mut clicked: Option<NoteId> = None;
 
@@ -691,16 +748,6 @@ pub fn board_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            // Parsed once per frame from the persisted query; reflects the prior
-            // frame's keystroke, which is imperceptible in an immediate-mode UI.
-            // Bundled with the view options into the single grid-visibility
-            // predicate the header and columns share.
-            let filter = CardFilter::parse(&state.filter, &view.id);
-            let view_filter = ViewFilter {
-                filter: &filter,
-                hide_subissues: state.hide_subissues,
-            };
-
             // Board switcher: the active board's title as a dropdown listing the
             // account's other boards, plus a "+ New board" composer.
             board_switcher(ui, theme, view, boards, state);
@@ -767,7 +814,7 @@ pub fn board_ui(
                     // first character inserts that button and shifts egui's
                     // auto-generated id for the field, so it loses focus.
                     let field = egui::TextEdit::singleline(&mut state.filter)
-                        .id(egui::Id::new("headway-filter-field"))
+                        .id(filter_field_id())
                         .desired_width(220.0)
                         .hint_text("Filter… e.g. label:bug perf");
                     // A pasted reference to a card on another board switches
@@ -2204,13 +2251,15 @@ fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiS
     } else {
         egui::RichText::new("☰ View").color(theme.text_secondary)
     };
-    ui.menu_button(label, |ui| {
+    let menu = ui.menu_button(label, |ui| {
         ui.checkbox(&mut state.hide_subissues, "Hide sub-issues")
             .on_hover_text(
                 "Hide cards that are a sub-issue of another card. They still \
                  appear as checklist rows inside their parent.",
             );
     });
+    // Open this frame: hold the board keys off it (see `grid_menu_open`).
+    state.grid_menu_open |= menu.inner.is_some();
 }
 
 /// The board switcher in the header: the active board's title as a dropdown that
@@ -2259,7 +2308,7 @@ fn board_switcher(
         .size(18.0)
         .strong()
         .color(theme.text_primary);
-    ui.menu_button(label, |ui| {
+    let menu = ui.menu_button(label, |ui| {
         for board in boards {
             // Match the active board by coordinate (owner + slug), so a joined
             // board that shares a slug with the open one isn't marked current.
@@ -2285,6 +2334,8 @@ fn board_switcher(
             ui.close_menu();
         }
     });
+    // Open this frame: hold the board keys off it (see `grid_menu_open`).
+    state.grid_menu_open |= menu.inner.is_some();
 }
 
 /// The inline "add a card" affordance for a column.
@@ -2323,6 +2374,9 @@ fn add_card_ui(
         let refocusing = state.focus_edit;
         if refocusing {
             edit_response.request_focus();
+            // The `a` key can open it at the foot of a long or off-screen
+            // column; bring it into view (a no-op when it already is).
+            edit_response.scroll_to_me(None);
             state.focus_edit = false;
         }
 
@@ -2372,9 +2426,7 @@ fn add_card_ui(
                 .frame(false),
         );
         if add.clicked() {
-            state.edit = InlineEdit::AddCard(col_idx);
-            state.edit_text.clear();
-            state.focus_edit = true;
+            state.open_add_card(col_idx);
         }
     }
 }
@@ -2418,7 +2470,7 @@ fn column_menu(
     action: &mut Option<BoardAction>,
 ) {
     let n = view.columns.len();
-    ui.menu_button("⋯", |ui| {
+    let menu = ui.menu_button("⋯", |ui| {
         // Board-level: copy a pasteable `nostr:naddr…` reference to this board.
         if ui.button("Copy Id").clicked() {
             if let Some(uri) = board_nostr_uri(&view.author, &view.id) {
@@ -2462,6 +2514,8 @@ fn column_menu(
             ui.close_menu();
         }
     });
+    // Open this frame: hold the board keys off it (see `grid_menu_open`).
+    state.grid_menu_open |= menu.inner.is_some();
 }
 
 /// The "add a column" affordance at the right end of the board: a ghost column
