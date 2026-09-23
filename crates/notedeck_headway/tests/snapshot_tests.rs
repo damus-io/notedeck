@@ -1641,6 +1641,100 @@ fn render_nav_seeds_board_and_card_from_the_route_token() {
     wait_for_label(&mut harness, "7 cards · 5 columns");
 }
 
+/// Regression (behavioural, no lavapipe): a `Card` route whose card isn't on the
+/// board *yet* must not back out of its own history entry.
+///
+/// `board_ui` used to drop any selection `find_card` missed, so the post-render
+/// nav diff read Card→Board and emitted a `Back` that pops a real global-history
+/// entry. On a cross-app deep link — where the chrome pushes the routed entry
+/// before Headway has necessarily folded that card in — the card would open and
+/// immediately snap back to the board. The selection is now held until the detail
+/// has actually rendered it once (`detail_for`), which is what separates a card
+/// that *went away* from one that hasn't arrived.
+#[test]
+fn a_card_that_has_not_folded_in_keeps_its_route_entry() {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+
+    // Nothing drains the Navigator in this chrome-less harness, so clear out
+    // whatever boot and the board's first frames enqueued; what we read back
+    // below is then only what the unresolved route produced.
+    harness.state_mut().notedeck.app_context().navigator.take();
+
+    // A card id on no board here — the shape a deep link takes while its card is
+    // still in flight (or, today, a remote card that lands late).
+    let absent = NoteId::new([0xab; 32]);
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::card(absent, None)));
+
+    // The diff runs once per render pass; a single frame reproduces the bug, and
+    // the rest prove the entry isn't backed out of on some later frame either.
+    for _ in 0..5 {
+        harness.run_ok();
+    }
+
+    let backs = harness
+        .state_mut()
+        .notedeck
+        .app_context()
+        .navigator
+        .take()
+        .iter()
+        .filter(|req| matches!(req, NavRequest::Back))
+        .count();
+    assert_eq!(
+        backs, 0,
+        "a route whose card hasn't folded in must keep its own history entry"
+    );
+}
+
+/// The over-suppression guard for the test above: holding an unresolved selection
+/// must not swallow the *real* dismissal. With a card's detail genuinely open,
+/// deleting it still steps the global history back to the board — `resolve_detail_outcome`
+/// clears the selection itself in the same frame, so the Card→Board diff still fires.
+#[test]
+fn deleting_the_open_card_still_backs_out_to_the_board() {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+
+    const CARD: &str = "Define nostr event model for boards";
+    let card = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        demo_card_id(app_ctx.ndb, &author, CARD)
+    };
+
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::card(
+        card,
+        Some(CARD.into()),
+    )));
+    wait_for_label(&mut harness, "← Back");
+    // Drop the push the open itself enqueued, so the only requests left are the
+    // delete's.
+    harness.state_mut().notedeck.app_context().navigator.take();
+
+    harness.get_by_label("Delete card").click();
+    harness.run_ok();
+
+    let backs = harness
+        .state_mut()
+        .notedeck
+        .app_context()
+        .navigator
+        .take()
+        .iter()
+        .filter(|req| matches!(req, NavRequest::Back))
+        .count();
+    assert_eq!(
+        backs, 1,
+        "deleting the open card backs the global history out to the board"
+    );
+}
+
 /// Full chrome round-trip (behavioural, no lavapipe): replicate the chrome's global
 /// nav loop — render the stack's top entry via `render_nav`, then drain the app's
 /// `Navigator` requests into a real `NavStack<ChromeNavEntry>` exactly like

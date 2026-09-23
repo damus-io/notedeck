@@ -607,6 +607,9 @@ pub fn board_ui(
         if find_card(view, epic).is_some() {
             return graph_view_ui(ui, theme, view, state);
         }
+        // Dropped unconditionally, unlike the card selection below: a graph is only
+        // ever entered from an epic already on this board, never minted by a deep
+        // link, so there is no not-yet-folded-in case to wait for.
         state.graph_epic = None;
         state.graph_scene_rect = None;
         state.graph_connecting = None;
@@ -624,7 +627,18 @@ pub fn board_ui(
         card_detail_pane_ui(ui, theme, app_ctx, view, state, &mut action);
         return action;
     }
-    if state.selected.take().is_some() {
+    // Only drop a selection whose card has actually *left* the board. `detail_for`
+    // is set the first time the detail pane renders a card and cleared when it
+    // closes, so `detail_for == selected` means we have already seen this card
+    // here — it went away. A selection the detail has never rendered is instead a
+    // card that hasn't folded in *yet*: a fresh cross-app deep link, or a remote
+    // card still in flight. Clearing that one would make the app's post-render nav
+    // diff read Card→Board and emit a `Back` that pops a real global-history entry
+    // (see `reconcile_nav`), snapping a just-opened deep link back to the board.
+    // Holding it costs nothing — the grid draws underneath, and the detail opens
+    // the frame the card lands.
+    if state.detail_for.is_some() && state.detail_for == state.selected {
+        state.selected = None;
         state.detail_for = None;
     }
 
