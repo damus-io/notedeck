@@ -515,7 +515,10 @@ impl<'a> DaveUi<'a> {
 
                     let chat_response = egui::ScrollArea::vertical()
                         .id_salt(("dave_chat_scroll", self.session_id))
-                        .stick_to_bottom(true)
+                        // Browsing the transcript with the block cursor must not
+                        // be yanked back to the tail every frame; without a
+                        // cursor, a live chat still follows its own output.
+                        .stick_to_bottom(self.nav.cursor().is_none())
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
                             self.chat_frame(ui.ctx())
@@ -1156,15 +1159,15 @@ impl<'a> DaveUi<'a> {
     /// the layout past the viewport. The full command is revealed in the
     /// expanded body (`tool_command_output_ui`).
     ///
-    /// Pass `disclosure = Some((id, expanded))` for a collapsible row: the row
-    /// leads with a ▶/▼ chevron and the *whole line* (full available width, not
-    /// just the chevron) becomes a click target with a pointer cursor and a
-    /// subtle hover highlight — the returned response is that line-level click.
-    /// Pass `None` for a plain, non-interactive one-liner.
+    /// Pass `disclosure = Some(..)` for a collapsible row: the row leads with a
+    /// ▶/▼ chevron and the *whole line* (full available width, not just the
+    /// chevron) becomes a click target with a pointer cursor and a subtle hover
+    /// highlight — the returned response is that line-level click. Pass `None`
+    /// for a plain, non-interactive one-liner.
     fn exec_tool_header_ui(
         tool_name: &str,
         summary: &str,
-        disclosure: Option<(egui::Id, bool)>,
+        disclosure: Option<Disclosure>,
         ui: &mut egui::Ui,
     ) -> egui::Response {
         // Reserve a paint slot *behind* the row content so a hover highlight can
@@ -1173,8 +1176,8 @@ impl<'a> DaveUi<'a> {
         let full_width = ui.available_width();
 
         let content = ui.horizontal(|ui| {
-            if let Some((_, expanded)) = disclosure {
-                let arrow = if expanded { "▼" } else { "▶" };
+            if let Some(disclosure) = disclosure {
+                let arrow = if disclosure.expanded { "▼" } else { "▶" };
                 ui.add(egui::Label::new(
                     egui::RichText::new(arrow)
                         .size(10.0)
@@ -1200,7 +1203,7 @@ impl<'a> DaveUi<'a> {
             }
         });
 
-        let Some((click_id, _)) = disclosure else {
+        let Some(disclosure) = disclosure else {
             return content.response;
         };
 
@@ -1215,17 +1218,20 @@ impl<'a> DaveUi<'a> {
             content.response.rect.min,
             egui::vec2(full_width, content.response.rect.height()),
         );
-        let resp = ui.interact(row_rect, click_id, egui::Sense::click());
+        let resp = ui.interact(row_rect, disclosure.click_id, egui::Sense::click());
 
-        if resp.hovered() {
-            ui.painter().set(
-                bg_idx,
-                egui::Shape::rect_filled(
-                    row_rect.expand2(egui::vec2(notedeck::tokens::SPACING_XS, 1.0)),
-                    notedeck::tokens::RADIUS_SM,
-                    ui.visuals().widgets.hovered.weak_bg_fill,
-                ),
-            );
+        // The block cursor outranks hover: a keyboard-focused row stays lit
+        // while the pointer wanders across it.
+        let highlight = if disclosure.is_cursor {
+            Some(block_cursor_fill(ui))
+        } else if resp.hovered() {
+            Some(ui.visuals().widgets.hovered.weak_bg_fill)
+        } else {
+            None
+        };
+
+        if let Some(fill) = highlight {
+            paint_row_highlight(bg_idx, row_rect, fill, ui);
         }
 
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1335,20 +1341,28 @@ impl<'a> DaveUi<'a> {
             // File edit with diff — show collapsible header with inline diff
             let expand_id = ui.id().with("exec_diff").with(&result.summary);
             let is_small = file_update.diff_lines().len() < 10;
-            let expanded = nav.register(expand_id, is_small, ui);
+            let block = nav.register(expand_id, is_small, ui);
 
             let header_resp = Self::exec_tool_header_ui(
                 &result.tool_name,
                 &result.summary,
-                Some((expand_id.with("header_click"), expanded)),
+                Some(Disclosure {
+                    click_id: expand_id.with("header_click"),
+                    expanded: block.expanded,
+                    is_cursor: block.is_cursor,
+                }),
                 ui,
             );
 
-            if header_resp.clicked() {
-                ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
+            if block.scroll_into_view {
+                header_resp.scroll_to_me(Some(egui::Align::Center));
             }
 
-            if expanded {
+            if header_resp.clicked() {
+                ui.data_mut(|d| d.insert_temp(expand_id, !block.expanded));
+            }
+
+            if block.expanded {
                 diff::file_path_header(file_update, ui);
                 diff::file_update_ui(file_update, false, ui);
             }
@@ -1358,20 +1372,28 @@ impl<'a> DaveUi<'a> {
             // auto-accepted permission rows: the user never approved it up front,
             // so what ran should stay on-screen. A user toggle still collapses it.
             let expand_id = ui.id().with("exec_output").with(&result.summary);
-            let expanded = nav.register(expand_id, true, ui);
+            let block = nav.register(expand_id, true, ui);
 
             let header_resp = Self::exec_tool_header_ui(
                 &result.tool_name,
                 &result.summary,
-                Some((expand_id.with("header_click"), expanded)),
+                Some(Disclosure {
+                    click_id: expand_id.with("header_click"),
+                    expanded: block.expanded,
+                    is_cursor: block.is_cursor,
+                }),
                 ui,
             );
 
-            if header_resp.clicked() {
-                ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
+            if block.scroll_into_view {
+                header_resp.scroll_to_me(Some(egui::Align::Center));
             }
 
-            if expanded {
+            if header_resp.clicked() {
+                ui.data_mut(|d| d.insert_temp(expand_id, !block.expanded));
+            }
+
+            if block.expanded {
                 // Bash's summary *is* the command that ran, so echo it in full
                 // above its output (stripping the one surrounding backtick pair
                 // `format_bash_summary` adds). Other output-bearing tools —
@@ -1416,9 +1438,16 @@ impl<'a> DaveUi<'a> {
         // Compute expand ID from outer ui, before horizontal changes the id scope
         let expand_id = ui.id().with("subagent_expand").with(&info.task_id);
         // Only a subagent with tools is collapsible, so only that one registers.
-        let mut expanded = has_tools && nav.register(expand_id, false, ui);
+        let block = has_tools.then(|| nav.register(expand_id, false, ui));
+        let mut expanded = block.is_some_and(|block| block.expanded);
 
-        ui.horizontal(|ui| {
+        // Reserve a paint slot *behind* the row so the block cursor can be
+        // filled in underneath it once the row's rect is known. This row does
+        // not go through `exec_tool_header_ui`, which does the same for hover.
+        let bg_idx = ui.painter().add(egui::Shape::Noop);
+        let full_width = ui.available_width();
+
+        let row = ui.horizontal(|ui| {
             // Status badge with color based on status
             let variant = match info.status {
                 SubagentStatus::Running => BadgeVariant::Warning,
@@ -1472,6 +1501,19 @@ impl<'a> DaveUi<'a> {
                 }
             }
         });
+
+        if let Some(block) = block {
+            let row_rect = egui::Rect::from_min_size(
+                row.response.rect.min,
+                egui::vec2(full_width, row.response.rect.height()),
+            );
+            if block.is_cursor {
+                paint_row_highlight(bg_idx, row_rect, block_cursor_fill(ui), ui);
+            }
+            if block.scroll_into_view {
+                row.response.scroll_to_me(Some(egui::Align::Center));
+            }
+        }
 
         // Expanded tool results. Their blocks register after this one, so a
         // subagent's nested rows sit in visual order behind it.
@@ -2067,6 +2109,43 @@ fn permission_operation_detail(tool_input: &serde_json::Value) -> Option<&str> {
     None
 }
 
+/// The collapsible state of a tool-result header row: the id its line-level
+/// click senses under, whether its body is showing, and whether the keyboard
+/// block cursor is on it.
+#[derive(Clone, Copy)]
+struct Disclosure {
+    click_id: egui::Id,
+    expanded: bool,
+    is_cursor: bool,
+}
+
+/// The wash the keyboard block cursor lays behind its row. The selection
+/// colour at full strength swallows these rows — their text is deliberately
+/// drawn at 40-60% alpha — so it goes on as a tint: unmistakable as the cursor,
+/// still readable as a row.
+fn block_cursor_fill(ui: &egui::Ui) -> egui::Color32 {
+    ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+}
+
+/// Fill a paint slot reserved *behind* a row, in the rounded, slightly
+/// outdented shape every collapsible row highlights with — hover on a tool
+/// header, and the block cursor on any of the three row shapes.
+fn paint_row_highlight(
+    bg_idx: egui::layers::ShapeIdx,
+    row: egui::Rect,
+    fill: egui::Color32,
+    ui: &egui::Ui,
+) {
+    ui.painter().set(
+        bg_idx,
+        egui::Shape::rect_filled(
+            row.expand2(egui::vec2(notedeck::tokens::SPACING_XS, 1.0)),
+            notedeck::tokens::RADIUS_SM,
+            fill,
+        ),
+    );
+}
+
 /// Render a responded (Allowed/Denied) permission request as a collapsible
 /// row: a status header with a disclosure chevron that expands to reveal what
 /// was actually allowed/denied (the edit diff, or the bash command / argument),
@@ -2096,7 +2175,14 @@ fn responded_permission_ui(
                 // user can review what they never approved up front; manually
                 // approved rows start collapsed. A user toggle overrides either.
                 let expand_id = ui.id().with(("responded_perm", request.id));
-                let mut expanded = expandable && nav.register(expand_id, request.auto_accepted, ui);
+                let block = expandable.then(|| nav.register(expand_id, request.auto_accepted, ui));
+                let mut expanded = block.is_some_and(|block| block.expanded);
+
+                // Same reserved slot as the tool-result rows, for the same
+                // reason: the block cursor paints behind the header once its
+                // rect is known.
+                let bg_idx = ui.painter().add(egui::Shape::Noop);
+                let full_width = ui.available_width();
 
                 let header = responded_permission_header_ui(
                     request,
@@ -2106,6 +2192,19 @@ fn responded_permission_ui(
                     expandable,
                     ui,
                 );
+
+                if let Some(block) = block {
+                    let row_rect = egui::Rect::from_min_size(
+                        header.rect.min,
+                        egui::vec2(full_width, header.rect.height()),
+                    );
+                    if block.is_cursor {
+                        paint_row_highlight(bg_idx, row_rect, block_cursor_fill(ui), ui);
+                    }
+                    if block.scroll_into_view {
+                        header.scroll_to_me(Some(egui::Align::Center));
+                    }
+                }
 
                 // Clicking anywhere on the header toggles the disclosure.
                 if expandable && header.clicked() {
@@ -3359,6 +3458,145 @@ mod tests {
 
         harness.run();
         harness.snapshot("executed_tool_results_expanded");
+    }
+
+    /// A cursor move pulls the cursor's block into view: with a transcript
+    /// taller than its viewport, putting the cursor on the *last* block scrolls
+    /// the area down to it. This is the only scroll plumbing in the chat — the
+    /// live `ScrollArea` otherwise just sticks to the bottom.
+    #[test]
+    fn a_cursor_move_scrolls_its_block_into_view() {
+        // Enough default-expanded Bash rows to overflow the viewport several
+        // times over. Distinct summaries so each keys its own block.
+        let results: Vec<_> = (0..20)
+            .map(|i| crate::messages::ExecutedTool {
+                tool_name: "Bash".to_string(),
+                summary: format!("`echo {i}`"),
+                output: Some(format!("{i}")),
+                parent_task_id: None,
+                file_update: None,
+                tool_use_id: None,
+            })
+            .collect();
+
+        // The nav outlives the render closure so the test can move the cursor
+        // between frames, exactly as a keybinding will.
+        let nav = std::rc::Rc::new(std::cell::RefCell::new(BlockNav::default()));
+        let offset = std::rc::Rc::new(std::cell::Cell::new(0.0));
+
+        let render_nav = nav.clone();
+        let render_offset = offset.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(420.0, 120.0))
+            .build_ui(move |ui| {
+                let mut nav = render_nav.borrow_mut();
+                nav.begin_frame();
+                let out = egui::ScrollArea::vertical().show(ui, |ui| {
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
+                    }
+                });
+                render_offset.set(out.state.offset.y);
+            });
+
+        harness.run();
+        assert_eq!(offset.get(), 0.0, "starts at the top of the transcript");
+
+        nav.borrow_mut().last();
+        harness.run();
+        assert!(
+            offset.get() > 0.0,
+            "the cursor's block scrolled into view (offset {})",
+            offset.get()
+        );
+    }
+
+    /// Visualize the keyboard **block cursor** on each of the three collapsible
+    /// row shapes at once — a tool-result header, a subagent's tool list and a
+    /// responded permission — since no two of them paint a background the same
+    /// way. The cursor washes the row in a tint of `selection.bg_fill`, through
+    /// the same reserved paint slot the tool header's hover highlight uses, and
+    /// outranks that hover.
+    ///
+    /// Each section drives its own `BlockNav` with the cursor seeded at 0, which
+    /// is what lets one image show all three lit; a real chat has one nav, and
+    /// so one lit row. Render with
+    /// `scripts/snapshot-test snapshot_block_cursor_rows`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_block_cursor_rows() {
+        let results = executed_tool_fixtures();
+        let subagent = crate::messages::SubagentInfo {
+            task_id: "task-1".to_string(),
+            description: "audit the login flow".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: crate::messages::SubagentStatus::Completed,
+            output: String::new(),
+            max_output_size: 1000,
+            tool_results: vec![crate::messages::ExecutedTool {
+                tool_name: "Read".to_string(),
+                summary: "lib.rs (128 lines)".to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+                tool_use_id: None,
+            }],
+            background: false,
+        };
+        let request = PermissionRequest::new(
+            Uuid::new_v4(),
+            "Bash".to_string(),
+            json!({ "command": "cargo test --all -- --nocapture" }),
+            None,
+            Some(PermissionResponseType::Allowed),
+            None,
+        );
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 200.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                // Fill the harness so the full-width row highlights sit on the
+                // panel rather than running off it.
+                ui.set_width(ui.available_width());
+
+                // Collapse the Bash row so the cursor lands on a one-line row,
+                // which is what a keyboard walk through a transcript mostly
+                // sees. Same `exec_output` + summary key `executed_tool_ui` uses.
+                let expand_id = ui.id().with("exec_output").with("`ls -la crates`");
+                ui.data_mut(|d| d.insert_temp(expand_id, false));
+
+                let mut nav = BlockNav::default();
+                nav.seed_cursor(0);
+                for result in &results {
+                    DaveUi::executed_tool_ui(result, &mut nav, ui);
+                    ui.add_space(4.0);
+                }
+
+                ui.add_space(8.0);
+                let mut nav = BlockNav::default();
+                nav.seed_cursor(0);
+                DaveUi::subagent_ui(&subagent, &mut nav, ui);
+
+                ui.add_space(8.0);
+                let mut nav = BlockNav::default();
+                nav.seed_cursor(0);
+                let mut input = String::new();
+                let mut focus = false;
+                let mut dave_ui = DaveUi::new(
+                    false,
+                    1,
+                    &[],
+                    &mut input,
+                    &mut focus,
+                    &mut nav,
+                    AiMode::Agentic,
+                );
+                dave_ui.permission_request_ui(&request, None, ui);
+            });
+
+        harness.run();
+        harness.snapshot("block_cursor_rows");
     }
 
     /// Visualize the call-summary rows for the newer SDK subagent/skill/messaging

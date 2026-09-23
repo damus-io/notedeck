@@ -21,6 +21,21 @@ struct BlockRef {
     default_open: bool,
 }
 
+/// What a collapsible row learns about itself the moment it registers: how to
+/// draw, whether the keyboard cursor is on it, and whether this frame should
+/// bring it into view.
+#[derive(Clone, Copy)]
+pub struct RegisteredBlock {
+    /// The expanded state this block should render with.
+    pub expanded: bool,
+    /// Whether the block cursor sits here, so the row paints the selection
+    /// highlight behind itself.
+    pub is_cursor: bool,
+    /// Whether the row should scroll itself into view. Only ever set on the
+    /// cursor block, and only for the first frame after a cursor move.
+    pub scroll_into_view: bool,
+}
+
 /// The collapsible blocks of one chat, as of the last frame that rendered it,
 /// plus the cursor a keybinding moves through them.
 ///
@@ -34,6 +49,10 @@ pub struct BlockNav {
     cursor: Option<usize>,
     /// Set by a cursor move, consumed by the next render to scroll the cursor in.
     scroll_to_cursor: bool,
+    /// That pending scroll, latched for the length of one render pass by
+    /// [`begin_frame`](BlockNav::begin_frame): a row cannot know it is the
+    /// cursor until it registers, so the flag has to outlive the take.
+    scroll_this_frame: bool,
     /// Set by expand-all / collapse-all; the fallback for blocks with nothing
     /// stored yet, so a global expand also reaches blocks that render later
     /// (streaming in, or revealed by expanding a subagent).
@@ -48,33 +67,37 @@ impl BlockNav {
         // vanish (a subagent collapses) and strand the cursor past the end.
         self.clamp_cursor();
         self.blocks.clear();
+        self.scroll_this_frame = std::mem::take(&mut self.scroll_to_cursor);
     }
 
-    /// Record a collapsible block at its position in the transcript and return
-    /// the expanded state it should render with.
+    /// Record a collapsible block at its position in the transcript and hand
+    /// back everything the row needs to draw itself: its expanded state, and
+    /// whether it is the cursor (and so highlights, and maybe scrolls in).
     ///
     /// A manual click writes `insert_temp` and so outranks
     /// [`global_default`](Self::global_default), which in turn outranks the
     /// site's own `default_open`.
-    pub fn register(&mut self, id: egui::Id, default_open: bool, ui: &egui::Ui) -> bool {
+    pub fn register(&mut self, id: egui::Id, default_open: bool, ui: &egui::Ui) -> RegisteredBlock {
+        let idx = self.blocks.len();
         self.blocks.push(BlockRef { id, default_open });
-        self.resolve(ui.data(|d| d.get_temp(id)), default_open)
+        let is_cursor = self.is_cursor(idx);
+        RegisteredBlock {
+            expanded: self.resolve(ui.data(|d| d.get_temp(id)), default_open),
+            is_cursor,
+            scroll_into_view: is_cursor && self.scroll_this_frame,
+        }
     }
 
-    /// Whether `idx` (an index into this frame's registration order) is the
-    /// cursor, for the render pass to highlight.
-    pub fn is_cursor(&self, idx: usize) -> bool {
+    /// Whether `idx`, a position in this frame's registration order, is the
+    /// cursor. Registration hands this back directly, so nothing outside needs
+    /// to carry an index around.
+    fn is_cursor(&self, idx: usize) -> bool {
         self.cursor == Some(idx)
     }
 
     /// The cursor's position in registration order, if any.
     pub fn cursor(&self) -> Option<usize> {
         self.cursor
-    }
-
-    /// Take the pending "scroll the cursor into view" request, clearing it.
-    pub fn take_scroll_request(&mut self) -> bool {
-        std::mem::take(&mut self.scroll_to_cursor)
     }
 
     /// Move the cursor one block down, stopping at the last. With no cursor yet
@@ -186,6 +209,13 @@ impl BlockNav {
         self.scroll_to_cursor = true;
     }
 
+    /// Place the cursor directly, for render tests that have no keybinding to
+    /// move it with.
+    #[cfg(test)]
+    pub(crate) fn seed_cursor(&mut self, idx: usize) {
+        self.set_cursor(idx);
+    }
+
     fn clamp_cursor(&mut self) {
         match self.last_index() {
             None => self.cursor = None,
@@ -245,14 +275,21 @@ mod tests {
     }
 
     #[test]
-    fn cursor_moves_request_a_scroll_once() {
+    fn a_cursor_move_scrolls_for_one_frame() {
         let mut nav = BlockNav::default();
         seed(&mut nav, 2);
 
-        assert!(!nav.take_scroll_request(), "no move, no scroll");
+        nav.begin_frame();
+        assert!(!nav.scroll_this_frame, "no move, no scroll");
+
+        seed(&mut nav, 2);
         nav.down();
-        assert!(nav.take_scroll_request());
-        assert!(!nav.take_scroll_request(), "the request is consumed");
+        nav.begin_frame();
+        assert!(nav.scroll_this_frame, "the move is latched for this pass");
+
+        seed(&mut nav, 2);
+        nav.begin_frame();
+        assert!(!nav.scroll_this_frame, "and not for the frame after it");
     }
 
     #[test]
