@@ -1,5 +1,6 @@
 pub mod anim;
 pub mod app_images;
+pub mod chord;
 pub mod colors;
 pub mod constants;
 pub mod contacts_list;
