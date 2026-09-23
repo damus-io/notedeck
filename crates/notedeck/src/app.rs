@@ -189,6 +189,44 @@ pub trait App {
         let _ = (ctx, token);
     }
 
+    /// Mint the global-history route for a note *this* app owns that was clicked
+    /// from *another* app (an inline reference widget in a timeline, a notebook
+    /// node, a Dave message). The chrome resolves the note's kind to its owning
+    /// app, switches to it, and calls this; the returned token is the route the
+    /// app wants that open to land on.
+    ///
+    /// Returning `Some(token)` makes the chrome push exactly **one**
+    /// [`ChromeNavEntry`](crate::ChromeNavEntry), tagged with this app's
+    /// [`AppId`](crate::AppId) — which the app itself never learns, and doesn't
+    /// need to. That is the whole reason this is a hook rather than a
+    /// [`Navigator::push_active_route`](crate::Navigator::push_active_route)
+    /// call from inside the app's own open path: `push_active_route` tags with
+    /// `AppId(self.active)` captured when the chrome drains the request
+    /// (`chrome.rs`, `apply_nav_requests`), and during a cross-app open that is
+    /// still the *source* app. The entry would land in the wrong slot and
+    /// [`render_nav`](Self::render_nav) would hand the wrong app a token to
+    /// downcast.
+    ///
+    /// Same [`token`](Self::render_nav) contract as `render_nav`/`nav_title`/
+    /// `cleanup_nav`: it is the app's own route type, erased, and only this app
+    /// ever downcasts it.
+    ///
+    /// The app must **not** also enqueue a push for the same open — one open,
+    /// one history entry, which is the point of the hook. It may mutate the app
+    /// state the route depends on but doesn't itself carry (e.g. which board is
+    /// active) before returning the token.
+    ///
+    /// The default returns `None`, which means "no route": the chrome falls back
+    /// to a plain app switch, exactly as before this hook existed.
+    fn open_note_route(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        note_id: nostrdb_net::NoteId,
+    ) -> Option<Rc<dyn Any>> {
+        let _ = (ctx, note_id);
+        None
+    }
+
     /// Notification badge state for this app's chrome tab. Defaults to none.
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> TabNotifications {
         TabNotifications::default()

@@ -235,6 +235,45 @@ impl notedeck::App for NotedeckApp {
         }
     }
 
+    /// Fan a cross-app note open out to the app that owns the note's kind, so it
+    /// can mint the route that open should land on (see
+    /// [`notedeck::App::open_note_route`]). Apps with no cross-app deep link
+    /// inherit the trait default (`None` — a plain app switch).
+    fn open_note_route(
+        &mut self,
+        ctx: &mut AppContext,
+        note_id: nostrdb_net::NoteId,
+    ) -> Option<Rc<dyn Any>> {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => dave.open_note_route(ctx, note_id),
+            NotedeckApp::Columns(columns) => columns.open_note_route(ctx, note_id),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.open_note_route(ctx, note_id),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.open_note_route(ctx, note_id),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.open_note_route(ctx, note_id),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.open_note_route(ctx, note_id),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.open_note_route(ctx, note_id),
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.open_note_route(ctx, note_id),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.open_note_route(ctx, note_id),
+
+            NotedeckApp::Other(_name, other) => other.open_note_route(ctx, note_id),
+        }
+    }
+
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
         match self {
             #[cfg(feature = "dave")]
