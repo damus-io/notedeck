@@ -1957,7 +1957,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
-            self.chord.pending(),
+            self.chord.view(),
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -2001,7 +2001,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
-            self.chord.pending(),
+            self.chord.view(),
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -2095,7 +2095,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
-            self.chord.pending(),
+            self.chord.view(),
             &self.run_configs,
             &self.running_session_ids,
             self.show_session_list,
@@ -4031,10 +4031,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .get_active()
             .map(|s| s.ai_mode)
             .unwrap_or(self.ai_mode);
+        // The chord's `h` needs the session list on screen: the desktop layout,
+        // with no overlay covering it.
+        let sessions_shown = !is_narrow(egui_ctx)
+            && !self.show_scene
+            && matches!(self.active_overlay, DaveOverlay::None);
         if let Some(key_action) = check_keybindings(
             egui_ctx,
             &mut self.chord,
             self.leader,
+            sessions_shown,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
@@ -4042,6 +4048,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ) {
             self.handle_key_action(key_action, egui_ctx);
         }
+        ui::settle_chord_focus(&mut self.chord, &mut self.session_manager);
     }
 
     /// Handle a keybinding action

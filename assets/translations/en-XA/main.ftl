@@ -100,6 +100,9 @@ Ask_b7f4 = {"["}Àsk{"]"}
 # Placeholder text for Dave AI input field
 Ask_dave_anything_33d1 = {"["}Àsk dàvé àñythíñg...{"]"}
 
+# Dave which-key tooltip: point the chord's motions back at the chat
+Back_to_the_chat_ea20 = {"["}Bàçk tó thé çhàt{"]"}
+
 # Profile banner URL field label
 Banner_52ef = {"["}Bàññér{"]"}
 
@@ -133,6 +136,9 @@ Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 # Button to go to the ClnDash app
 ClnDash_2988 = {"["}ÇlñDàsh{"]"}
 
+# Dave which-key tooltip: start a new agent in the active session's directory
+Clone_agent_3757 = {"["}Çlóñé àgéñt{"]"}
+
 # Dave which-key tooltip: collapse every block in the chat
 Collapse_all_blocks_79ec = {"["}Çóllàpsé àll blóçks{"]"}
 
@@ -141,6 +147,9 @@ Collapse_block_87e0 = {"["}Çóllàpsé blóçk{"]"}
 
 # Button to go to the Columns app
 Columns_7215 = {"["}Çólúmñs{"]"}
+
+# Dave which-key tooltip: open an external editor to write the message
+Compose_in_external_editor_5bf2 = {"["}Çómpósé íñ éxtérñàl édítór{"]"}
 
 # Column title for note composition
 Compose_Note_c094 = {"["}Çómpósé Ñóté{"]"}
@@ -235,6 +244,9 @@ Custom_a69e = {"["}Çústóm{"]"}
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = {"["}Çústómízé Zàp Àmóúñt{"]"}
 
+# Dave which-key tooltip: cycle the active session's permission mode
+Cycle_permission_mode_4d95 = {"["}Çyçlé pérmíssíóñ módé{"]"}
+
 # Damus android beta version label
 Damus_Android_BETA_e76b = {"["}Dàmús Àñdróíd BÉTÀ{"]"}
 
@@ -273,6 +285,9 @@ Default_Deck_fcca = {"["}Défàúlt Déçk{"]"}
 
 # Button label to delete a deck
 Delete_Deck_bb29 = {"["}Délété Déçk{"]"}
+
+# Dave which-key tooltip: delete the active session
+Delete_session_2527 = {"["}Délété séssíóñ{"]"}
 
 # Tooltip for deleting a column
 Delete_this_column_8d5a = {"["}Délété thís çólúmñ{"]"}
@@ -318,6 +333,9 @@ Esc_cancels_80f8 = {"["}Ésç çàñçéls.{"]"}
 
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = {"["}Éxtrémé{"]"}
+
+# Dave which-key tooltip: switch to the first session in the list
+First_session_fea9 = {"["}Fírst séssíóñ{"]"}
 
 # Column title for followers
 Followed_by_e8c2 = {"["}Fóllówéd by{"]"}
@@ -421,6 +439,9 @@ Language_e264 = {"["}Làñgúàgé:{"]"}
 # Title for last note per user column
 Last_Note_per_User_17ad = {"["}Làst Ñóté pér Úsér{"]"}
 
+# Dave which-key tooltip: switch to the last session in the list
+Last_session_cdfc = {"["}Làst séssíóñ{"]"}
+
 # Settings label for the key that starts a Dave keyboard chord
 Leader_key_4ce8 = {"["}Léàdér kéy:{"]"}
 
@@ -499,11 +520,20 @@ name__zapped_your_note_45d1 = {"["}{$name} zàppéd yóúr ñóté{"]"}
 # Button to go to a WASM app
 name_as_str_c366 = {"["}ñàmé.às_str(){"]"}
 
+# Dave which-key tooltip: start a new agent session
+New_agent_c761 = {"["}Ñéw àgéñt{"]"}
+
 # Title shown when composing a new conversation
 New_Chat_afb4 = {"["}Ñéw Çhàt{"]"}
 
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = {"["}Ñéw tó Ñóstr?{"]"}
+
+# Dave which-key tooltip: jump to the next session waiting for attention
+Next_in_focus_queue_f2e9 = {"["}Ñéxt íñ fóçús qúéúé{"]"}
+
+# Dave which-key tooltip: switch to the next session in the list
+Next_session_0a8f = {"["}Ñéxt séssíóñ{"]"}
 
 # Shown when user has no contacts to display
 No_contacts_yet_cd10 = {"["}Ñó çóñtàçts yét{"]"}
@@ -613,6 +643,12 @@ Press_a_key_094b = {"["}Préss à kéy…{"]"}
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = {"["}Préss thé búttóñ bélów tó çópy yóúr móst réçéñt lógs tó yóúr systém's çlípbóàrd. Théñ pàsté ít íñtó yóúr émàíl.{"]"}
 
+# Dave which-key tooltip: jump to the previous session waiting for attention
+Previous_in_focus_queue_9b0e = {"["}Prévíóús íñ fóçús qúéúé{"]"}
+
+# Dave which-key tooltip: switch to the previous session in the list
+Previous_session_2425 = {"["}Prévíóús séssíóñ{"]"}
+
 # Section header for private sync relays
 Private_sync_560b = {"["}Prívàté syñç{"]"}
 
@@ -660,6 +696,9 @@ Relays_9d89 = {"["}Rélàys{"]"}
 
 # Label for relay transport settings section
 Relays_ab62 = {"["}Rélàys{"]"}
+
+# Dave which-key tooltip: rename the active session
+Rename_session_cb48 = {"["}Réñàmé séssíóñ{"]"}
 
 # Column title for reply composition
 Reply_3bf1 = {"["}Réply{"]"}
@@ -766,6 +805,9 @@ Select_All_a319 = {"["}Séléçt Àll{"]"}
 # Button label to send a zap
 Send_1ea4 = {"["}Séñd{"]"}
 
+# Dave which-key tooltip: point the chord's motions at the session list
+Session_list_32f0 = {"["}Séssíóñ líst{"]"}
+
 # Button to go to the settings view
 Settings_4d83 = {"["}Séttíñgs{"]"}
 
@@ -861,6 +903,9 @@ thread_ad1f = {"["}thréàd{"]"}
 
 # Label shown between chat messages for the current day
 Today_bd04 = {"["}Tódày{"]"}
+
+# Dave which-key tooltip: switch between the scene view and the list view
+Toggle_scene_view_867b = {"["}Tógglé sçéñé víéw{"]"}
 
 # Placeholder text for the message composer in chats
 Type_a_message_2a19 = {"["}Typé à méssàgé{"]"}

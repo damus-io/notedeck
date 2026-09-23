@@ -78,6 +78,9 @@ pub struct SessionListUi<'a> {
     focus_queue: &'a FocusQueue,
     collapse_state: &'a CollapseState,
     ctrl_held: bool,
+    /// A leader chord is walking the list: wash the active row like the
+    /// chat's block cursor, so it's clear where `j` / `k` are.
+    chord_cursor: bool,
 }
 
 impl<'a> SessionListUi<'a> {
@@ -92,7 +95,15 @@ impl<'a> SessionListUi<'a> {
             focus_queue,
             collapse_state,
             ctrl_held,
+            chord_cursor: false,
         }
+    }
+
+    /// Mark the active row as the cursor of a leader chord in the sessions
+    /// pane.
+    pub fn chord_cursor(mut self, chord_cursor: bool) -> Self {
+        self.chord_cursor = chord_cursor;
+        self
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<SessionListAction> {
@@ -405,7 +416,7 @@ impl<'a> SessionListUi<'a> {
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        paint_row_background(ui, rect, is_active, &response);
+        paint_row_background(ui, rect, is_active, self.chord_cursor, &response);
 
         // Status color indicator (left edge vertical bar), faded toward a
         // desaturated version of itself as the session goes stale (no activity).
@@ -533,7 +544,7 @@ impl<'a> SessionListUi<'a> {
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        paint_row_background(ui, rect, is_active, &response);
+        paint_row_background(ui, rect, is_active, self.chord_cursor, &response);
 
         let text_start_x = 8.0;
         let hints: &[(&str, &str)] = &[("⇧R", "Rename")];
@@ -700,10 +711,13 @@ pub(crate) fn truncate_host_and_path(
     }
 }
 
+/// Fill a session row's background: the active row, a hovered row, and on top
+/// of the active row the chord cursor's wash while a chord walks the list.
 fn paint_row_background(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     is_active: bool,
+    chord_cursor: bool,
     response: &egui::Response,
 ) {
     let fill = if is_active {
@@ -714,6 +728,10 @@ fn paint_row_background(
         Color32::TRANSPARENT
     };
     ui.painter().rect_filled(rect, 8.0, fill);
+    if is_active && chord_cursor {
+        ui.painter()
+            .rect_filled(rect, 8.0, super::dave::block_cursor_fill(ui));
+    }
 }
 
 /// Render the right side of a session row: shortcut number, ctrl+shift hints, and focus dot.

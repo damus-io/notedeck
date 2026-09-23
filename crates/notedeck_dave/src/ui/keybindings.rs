@@ -72,6 +72,50 @@ pub enum KeyAction {
     BlockCollapseAll,
     /// Drop the block cursor, so the transcript follows new output again (<leader> q)
     BlockCursorClear,
+    /// Point the chord at the session list (<leader> h)
+    FocusSessionsPane,
+    /// Point the chord back at the chat (<leader> l, or Enter from the session list)
+    FocusChatPane,
+    /// Switch to the next session without focusing its input (<leader> h j)
+    SessionPaneNext,
+    /// Switch to the previous session without focusing its input (<leader> h k)
+    SessionPanePrev,
+    /// Switch to the first session in the list (<leader> h gg)
+    SessionPaneFirst,
+    /// Switch to the last session in the list (<leader> h G)
+    SessionPaneLast,
+}
+
+impl KeyAction {
+    /// Actions that only mean something for agentic sessions. The Ctrl ladder
+    /// gates their bindings on `is_agentic`, and the chord follows suit.
+    fn agentic_only(&self) -> bool {
+        matches!(
+            self,
+            KeyAction::CloneAgent
+                | KeyAction::ToggleView
+                | KeyAction::CyclePermissionMode
+                | KeyAction::FocusQueueNext
+                | KeyAction::FocusQueuePrev
+        )
+    }
+
+    /// Actions that can leave a different session active. A chord that ran one
+    /// can't hand focus back to the id it saved: that was the old session's
+    /// input, which no longer renders.
+    fn changes_session(&self) -> bool {
+        matches!(
+            self,
+            KeyAction::SessionPaneNext
+                | KeyAction::SessionPanePrev
+                | KeyAction::SessionPaneFirst
+                | KeyAction::SessionPaneLast
+                | KeyAction::CloneAgent
+                | KeyAction::DeleteActiveSession
+                | KeyAction::FocusQueueNext
+                | KeyAction::FocusQueuePrev
+        )
+    }
 }
 
 /// The key that opens a chord, resolved from the persisted [`LeaderKey`].
@@ -123,18 +167,37 @@ const CHORD_TIMEOUT: f64 = 2.0;
 ///
 /// A chord stays open after a command so motions repeat — `<leader> j j j za` —
 /// and ends on Esc, `q`, a key it does not know, or [`CHORD_TIMEOUT`] of quiet.
+///
+/// `h` / `l` point the chord at the session list or the chat ([`Pane`]), and
+/// the motions follow: `j` / `k` walk blocks in the chat and sessions in the
+/// list.
 #[derive(Default)]
 pub struct ChordState {
     pending: Option<Pending>,
+    /// Which pane the motions move through. Back to [`Pane::Chat`] on every
+    /// leader.
+    pane: Pane,
     /// `ctx.input(|i| i.time)` past which the chord lapses.
     expires_at: f64,
     /// Whatever held keyboard focus when the leader fired, handed back when the
     /// chord ends.
     restore_focus: Option<egui::Id>,
+    /// Whether the session list is on screen, as of the last frame. `h` is a
+    /// no-op without it.
+    sessions_shown: bool,
+    /// Whether the active session is agentic, as of the last frame.
+    agentic: bool,
+    /// When the chord ends, focus the active session's input instead of
+    /// `restore_focus`: the chord switched sessions, or an action asked for
+    /// the input while the chord held the keyboard.
+    focus_input_on_end: bool,
+    /// The chord ended with `focus_input_on_end` set; taken by
+    /// [`Self::take_input_focus`].
+    input_focus_due: bool,
 }
 
 /// How far into a chord we are. Read by the which-key strip through
-/// [`ChordState::pending`].
+/// [`ChordState::view`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pending {
     /// The leader fired; waiting for a command or a prefix.
@@ -143,6 +206,34 @@ pub enum Pending {
     LeaderZ,
     /// `<leader> g`: waiting for the second `g`.
     LeaderG,
+    /// `<leader> d`: waiting for the second `d`.
+    LeaderD,
+    /// `<leader> ]`: waiting for `q`.
+    LeaderCloseBracket,
+    /// `<leader> [`: waiting for `q`.
+    LeaderOpenBracket,
+}
+
+/// Which part of Dave a chord's motions move through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pane {
+    /// The session list: `j` / `k` switch sessions.
+    Sessions,
+    /// The chat transcript: `j` / `k` walk its collapsible blocks.
+    #[default]
+    Chat,
+}
+
+/// A pending chord as the UI sees it: the which-key strip reads its hints, and
+/// the session list marks its row while the chord is in [`Pane::Sessions`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChordView {
+    pub pending: Pending,
+    pub pane: Pane,
+    /// `h` can reach the session list.
+    pub sessions_shown: bool,
+    /// The agentic-only keys (`c`, `v`, `m`, `]q`, `[q`) apply.
+    pub agentic: bool,
 }
 
 /// One continuation a pending chord accepts, as the which-key strip shows it.
@@ -158,14 +249,46 @@ const fn hint(keys: &'static str, action: KeyAction) -> ChordHint {
     ChordHint { keys, action }
 }
 
-/// What `<leader>` accepts.
-const LEADER_HINTS: &[&[ChordHint]] = &[
-    &[
-        hint("j", KeyAction::BlockCursorDown),
-        hint("k", KeyAction::BlockCursorUp),
-        hint("gg", KeyAction::BlockCursorFirst),
-        hint("G", KeyAction::BlockCursorLast),
-    ],
+/// Chat-pane motions: walk the transcript's collapsible blocks.
+const BLOCK_MOTIONS: &[ChordHint] = &[
+    hint("j", KeyAction::BlockCursorDown),
+    hint("k", KeyAction::BlockCursorUp),
+    hint("gg", KeyAction::BlockCursorFirst),
+    hint("G", KeyAction::BlockCursorLast),
+];
+
+/// Sessions-pane motions: walk the session list.
+const SESSION_MOTIONS: &[ChordHint] = &[
+    hint("j", KeyAction::SessionPaneNext),
+    hint("k", KeyAction::SessionPanePrev),
+    hint("gg", KeyAction::SessionPaneFirst),
+    hint("G", KeyAction::SessionPaneLast),
+];
+
+/// Session keys, from either pane: the chord's names for Ctrl bindings.
+const SESSION_LIFECYCLE: &[ChordHint] = &[
+    hint("n", KeyAction::NewAgent),
+    hint("c", KeyAction::CloneAgent),
+    hint("r", KeyAction::RenameAgent),
+    hint("dd", KeyAction::DeleteActiveSession),
+];
+
+/// View keys, from either pane.
+const SESSION_VIEW: &[ChordHint] = &[
+    hint("v", KeyAction::ToggleView),
+    hint("m", KeyAction::CyclePermissionMode),
+    hint("e", KeyAction::OpenExternalEditor),
+];
+
+/// Focus-queue keys, from either pane (vim's quickfix `]q` / `[q`).
+const FOCUS_QUEUE: &[ChordHint] = &[
+    hint("]q", KeyAction::FocusQueueNext),
+    hint("[q", KeyAction::FocusQueuePrev),
+];
+
+/// What `<leader>` accepts in the chat pane.
+const CHAT_LEADER_HINTS: &[&[ChordHint]] = &[
+    BLOCK_MOTIONS,
     &[
         hint("za", KeyAction::BlockToggle),
         hint("o", KeyAction::BlockToggle),
@@ -176,8 +299,25 @@ const LEADER_HINTS: &[&[ChordHint]] = &[
         hint("zR", KeyAction::BlockExpandAll),
         hint("zM", KeyAction::BlockCollapseAll),
     ],
+    &[hint("h", KeyAction::FocusSessionsPane)],
     &[hint("q", KeyAction::BlockCursorClear)],
 ];
+
+/// The keycap for Enter.
+const ENTER: &str = "\u{21b5}";
+
+/// What `<leader>` accepts in the sessions pane.
+const SESSIONS_LEADER_HINTS: &[&[ChordHint]] = &[
+    SESSION_MOTIONS,
+    &[
+        hint("l", KeyAction::FocusChatPane),
+        hint(ENTER, KeyAction::FocusChatPane),
+    ],
+];
+
+/// What `<leader>` accepts in either pane besides the pane's own keys: the
+/// strip gives them a row of their own.
+const SESSION_KEYS: &[&[ChordHint]] = &[SESSION_LIFECYCLE, SESSION_VIEW, FOCUS_QUEUE];
 
 /// What `<leader> z` accepts.
 const LEADER_Z_HINTS: &[&[ChordHint]] = &[
@@ -192,19 +332,59 @@ const LEADER_Z_HINTS: &[&[ChordHint]] = &[
     ],
 ];
 
-/// What `<leader> g` accepts.
-const LEADER_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::BlockCursorFirst)]];
+/// What `<leader> g` accepts in the chat pane.
+const CHAT_LEADER_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::BlockCursorFirst)]];
 
-impl Pending {
-    /// Everything this state accepts, in groups the strip spaces apart.
+/// What `<leader> g` accepts in the sessions pane.
+const SESSIONS_LEADER_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::SessionPaneFirst)]];
+
+/// What `<leader> d` accepts.
+const LEADER_D_HINTS: &[&[ChordHint]] = &[&[hint("d", KeyAction::DeleteActiveSession)]];
+
+/// What `<leader> ]` accepts.
+const LEADER_CLOSE_BRACKET_HINTS: &[&[ChordHint]] = &[&[hint("q", KeyAction::FocusQueueNext)]];
+
+/// What `<leader> [` accepts.
+const LEADER_OPEN_BRACKET_HINTS: &[&[ChordHint]] = &[&[hint("q", KeyAction::FocusQueuePrev)]];
+
+impl ChordView {
+    /// The pane's keys this state could accept, in groups the strip spaces
+    /// apart; [`Self::session_keys`] has the rest. Filter through
+    /// [`Self::offers`]: a group may hold keys that do nothing this frame.
     ///
     /// Mirrors the match in `check_chord`; `every_hint_does_what_it_says`
     /// keeps the two from drifting.
     pub fn hints(self) -> &'static [&'static [ChordHint]] {
-        match self {
-            Pending::Leader => LEADER_HINTS,
-            Pending::LeaderZ => LEADER_Z_HINTS,
-            Pending::LeaderG => LEADER_G_HINTS,
+        match (self.pane, self.pending) {
+            (Pane::Chat, Pending::Leader) => CHAT_LEADER_HINTS,
+            (Pane::Sessions, Pending::Leader) => SESSIONS_LEADER_HINTS,
+            (_, Pending::LeaderZ) => LEADER_Z_HINTS,
+            (Pane::Chat, Pending::LeaderG) => CHAT_LEADER_G_HINTS,
+            (Pane::Sessions, Pending::LeaderG) => SESSIONS_LEADER_G_HINTS,
+            (_, Pending::LeaderD) => LEADER_D_HINTS,
+            (_, Pending::LeaderCloseBracket) => LEADER_CLOSE_BRACKET_HINTS,
+            (_, Pending::LeaderOpenBracket) => LEADER_OPEN_BRACKET_HINTS,
+        }
+    }
+
+    /// The session keys this state accepts, from either pane: empty past the
+    /// leader.
+    pub fn session_keys(self) -> &'static [&'static [ChordHint]] {
+        match self.pending {
+            Pending::Leader => SESSION_KEYS,
+            _ => &[],
+        }
+    }
+
+    /// Whether `action` does anything this frame: `h` needs the session list
+    /// on screen, and the agentic-only keys need an agentic session. A key
+    /// that doesn't is swallowed without ending the chord, and the strip
+    /// leaves it out.
+    pub fn offers(self, action: &KeyAction) -> bool {
+        match action {
+            KeyAction::FocusSessionsPane => self.sessions_shown,
+            action if action.agentic_only() => self.agentic,
+            _ => true,
         }
     }
 }
@@ -219,9 +399,41 @@ enum ChordStep {
 }
 
 impl ChordState {
-    /// How far into a chord we are, or `None` when no chord is pending.
-    pub fn pending(&self) -> Option<Pending> {
-        self.pending
+    /// The pending chord as the UI sees it, or `None` when no chord is pending.
+    pub fn view(&self) -> Option<ChordView> {
+        self.pending.map(|pending| self.view_at(pending))
+    }
+
+    /// This chord's view, at `pending`.
+    fn view_at(&self, pending: Pending) -> ChordView {
+        ChordView {
+            pending,
+            pane: self.pane,
+            sessions_shown: self.sessions_shown,
+            agentic: self.agentic,
+        }
+    }
+
+    /// Whether a chord that just ended wants the active session's input
+    /// focused. Reading it clears it, so it is acted on once.
+    pub fn take_input_focus(&mut self) -> bool {
+        std::mem::take(&mut self.input_focus_due)
+    }
+
+    /// Hold an action's request to focus the input until the chord ends.
+    /// Taking focus mid-chord would put the input back under the bare keys.
+    pub fn defer_input_focus(&mut self) {
+        self.focus_input_on_end = true;
+    }
+
+    /// Record what this frame offers the chord. With the session list off
+    /// screen (a narrow layout, the scene view) it falls back to the chat.
+    fn observe(&mut self, sessions_shown: bool, agentic: bool) {
+        self.sessions_shown = sessions_shown;
+        self.agentic = agentic;
+        if !sessions_shown {
+            self.pane = Pane::Chat;
+        }
     }
 
     /// Open a chord: set the focused widget aside so bare keys reach us.
@@ -233,6 +445,8 @@ impl ChordState {
             }
             focused
         });
+        self.pane = Pane::Chat;
+        self.focus_input_on_end = false;
         self.advance(Pending::Leader, now);
     }
 
@@ -242,13 +456,36 @@ impl ChordState {
         self.expires_at = now + CHORD_TIMEOUT;
     }
 
-    /// End the chord and give focus back to whatever held it before.
+    /// End the chord and give focus back to whatever held it before, or to
+    /// the active session's input if the chord moved between sessions.
     fn end(&mut self, ctx: &egui::Context) {
         self.pending = None;
-        if let Some(id) = self.restore_focus.take() {
+        let restore = self.restore_focus.take();
+        if std::mem::take(&mut self.focus_input_on_end) {
+            self.input_focus_due = true;
+        } else if let Some(id) = restore {
             ctx.memory_mut(|m| m.request_focus(id));
         }
     }
+
+    /// End the chord and leave focus alone: the action opens something that
+    /// takes typing (a rename field, the new-agent picker) and claims focus
+    /// itself.
+    fn release(&mut self) {
+        self.pending = None;
+        self.restore_focus = None;
+        self.focus_input_on_end = false;
+    }
+}
+
+/// Where a chord goes after a key.
+enum Then {
+    /// Stay open, waiting in this state.
+    Continue(Pending),
+    /// End, handing focus back.
+    End,
+    /// End without touching focus (see [`ChordState::release`]).
+    Release,
 }
 
 /// A key press, as the chord machine reads it.
@@ -316,37 +553,105 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
             .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)))
     });
 
-    let (next, action) = match (pending, press.key, press.shift) {
-        (Pending::Leader, Key::J, false) => {
-            (Some(Pending::Leader), Some(KeyAction::BlockCursorDown))
+    use KeyAction as A;
+    use Then::{Continue, End, Release};
+    let (then, action) = match (chord.pane, pending, press.key, press.shift) {
+        // Motions: the same keys walk blocks in the chat, sessions in the list.
+        (Pane::Chat, Pending::Leader, Key::J, false) => {
+            (Continue(Pending::Leader), Some(A::BlockCursorDown))
         }
-        (Pending::Leader, Key::K, false) => (Some(Pending::Leader), Some(KeyAction::BlockCursorUp)),
-        (Pending::Leader, Key::G, true) => {
-            (Some(Pending::Leader), Some(KeyAction::BlockCursorLast))
+        (Pane::Chat, Pending::Leader, Key::K, false) => {
+            (Continue(Pending::Leader), Some(A::BlockCursorUp))
         }
-        (Pending::Leader, Key::G, false) => (Some(Pending::LeaderG), None),
-        (Pending::Leader, Key::Z, false) => (Some(Pending::LeaderZ), None),
-        (Pending::Leader, Key::O, false) => (Some(Pending::Leader), Some(KeyAction::BlockToggle)),
-        (Pending::Leader, Key::Q, false) => (None, Some(KeyAction::BlockCursorClear)),
-        (Pending::LeaderG, Key::G, false) => {
-            (Some(Pending::Leader), Some(KeyAction::BlockCursorFirst))
+        (Pane::Chat, Pending::Leader, Key::G, true) => {
+            (Continue(Pending::Leader), Some(A::BlockCursorLast))
         }
-        (Pending::LeaderZ, Key::A, false) => (Some(Pending::Leader), Some(KeyAction::BlockToggle)),
-        (Pending::LeaderZ, Key::O, false) => (Some(Pending::Leader), Some(KeyAction::BlockOpen)),
-        (Pending::LeaderZ, Key::C, false) => (Some(Pending::Leader), Some(KeyAction::BlockClose)),
-        (Pending::LeaderZ, Key::R, true) => {
-            (Some(Pending::Leader), Some(KeyAction::BlockExpandAll))
+        (Pane::Chat, Pending::LeaderG, Key::G, false) => {
+            (Continue(Pending::Leader), Some(A::BlockCursorFirst))
         }
-        (Pending::LeaderZ, Key::M, true) => {
-            (Some(Pending::Leader), Some(KeyAction::BlockCollapseAll))
+        (Pane::Sessions, Pending::Leader, Key::J, false) => {
+            (Continue(Pending::Leader), Some(A::SessionPaneNext))
         }
+        (Pane::Sessions, Pending::Leader, Key::K, false) => {
+            (Continue(Pending::Leader), Some(A::SessionPanePrev))
+        }
+        (Pane::Sessions, Pending::Leader, Key::G, true) => {
+            (Continue(Pending::Leader), Some(A::SessionPaneLast))
+        }
+        (Pane::Sessions, Pending::LeaderG, Key::G, false) => {
+            (Continue(Pending::Leader), Some(A::SessionPaneFirst))
+        }
+        (_, Pending::Leader, Key::G, false) => (Continue(Pending::LeaderG), None),
+
+        // Panes. Enter from the list goes back to the chat and hands it the
+        // keyboard: you've picked the session you wanted.
+        (_, Pending::Leader, Key::H, false) => {
+            (Continue(Pending::Leader), Some(A::FocusSessionsPane))
+        }
+        (_, Pending::Leader, Key::L, false) => (Continue(Pending::Leader), Some(A::FocusChatPane)),
+        (Pane::Sessions, Pending::Leader, Key::Enter, false) => (End, Some(A::FocusChatPane)),
+
+        // Folds, in the chat only.
+        (Pane::Chat, Pending::Leader, Key::Z, false) => (Continue(Pending::LeaderZ), None),
+        (Pane::Chat, Pending::Leader, Key::O, false) => {
+            (Continue(Pending::Leader), Some(A::BlockToggle))
+        }
+        (Pane::Chat, Pending::Leader, Key::Q, false) => (End, Some(A::BlockCursorClear)),
+        (_, Pending::LeaderZ, Key::A, false) => (Continue(Pending::Leader), Some(A::BlockToggle)),
+        (_, Pending::LeaderZ, Key::O, false) => (Continue(Pending::Leader), Some(A::BlockOpen)),
+        (_, Pending::LeaderZ, Key::C, false) => (Continue(Pending::Leader), Some(A::BlockClose)),
+        (_, Pending::LeaderZ, Key::R, true) => (Continue(Pending::Leader), Some(A::BlockExpandAll)),
+        (_, Pending::LeaderZ, Key::M, true) => {
+            (Continue(Pending::Leader), Some(A::BlockCollapseAll))
+        }
+
+        // Session keys, from either pane. New-agent and rename open something
+        // you type into, so they end the chord; so does the external editor.
+        (_, Pending::Leader, Key::N, false) => (Release, Some(A::NewAgent)),
+        (_, Pending::Leader, Key::C, false) => (Continue(Pending::Leader), Some(A::CloneAgent)),
+        (_, Pending::Leader, Key::R, false) => (Release, Some(A::RenameAgent)),
+        (_, Pending::Leader, Key::D, false) => (Continue(Pending::LeaderD), None),
+        (_, Pending::LeaderD, Key::D, false) => {
+            (Continue(Pending::Leader), Some(A::DeleteActiveSession))
+        }
+        (_, Pending::Leader, Key::V, false) => (Continue(Pending::Leader), Some(A::ToggleView)),
+        (_, Pending::Leader, Key::M, false) => {
+            (Continue(Pending::Leader), Some(A::CyclePermissionMode))
+        }
+        (_, Pending::Leader, Key::E, false) => (End, Some(A::OpenExternalEditor)),
+        (_, Pending::Leader, Key::CloseBracket, false) => {
+            (Continue(Pending::LeaderCloseBracket), None)
+        }
+        (_, Pending::Leader, Key::OpenBracket, false) => {
+            (Continue(Pending::LeaderOpenBracket), None)
+        }
+        (_, Pending::LeaderCloseBracket, Key::Q, false) => {
+            (Continue(Pending::Leader), Some(A::FocusQueueNext))
+        }
+        (_, Pending::LeaderOpenBracket, Key::Q, false) => {
+            (Continue(Pending::Leader), Some(A::FocusQueuePrev))
+        }
+
         // Anything else cancels the chord; the stray key is dropped.
-        _ => (None, None),
+        _ => (End, None),
     };
 
-    match next {
-        Some(next) => chord.advance(next, now),
-        None => chord.end(ctx),
+    // A key that does nothing here (`h` with no session list, `v` in a chat
+    // session) is swallowed and the chord carries on.
+    let view = chord.view_at(pending);
+    let action = action.filter(|action| view.offers(action));
+
+    match &action {
+        Some(A::FocusSessionsPane) => chord.pane = Pane::Sessions,
+        Some(A::FocusChatPane) => chord.pane = Pane::Chat,
+        Some(action) if action.changes_session() => chord.focus_input_on_end = true,
+        _ => {}
+    }
+
+    match then {
+        Continue(next) => chord.advance(next, now),
+        End => chord.end(ctx),
+        Release => chord.release(),
     }
     ChordStep::Consumed(action)
 }
@@ -357,17 +662,21 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
 /// In Chat mode, agentic-specific keybindings (scene view, plan mode, focus queue) are disabled.
 ///
 /// `chord` carries a leader chord across frames: while one is pending it owns
-/// the keyboard (see [`ChordState`]). `leader` is the key that opens one.
+/// the keyboard (see [`ChordState`]). `leader` is the key that opens one, and
+/// `sessions_shown` says whether the session list is on screen for its `h`.
+#[allow(clippy::too_many_arguments)]
 pub fn check_keybindings(
     ctx: &egui::Context,
     chord: &mut ChordState,
     leader: Leader,
+    sessions_shown: bool,
     has_pending_permission: bool,
     has_pending_question: bool,
     in_tentative_state: bool,
     ai_mode: AiMode,
 ) -> Option<KeyAction> {
     let is_agentic = ai_mode == AiMode::Agentic;
+    chord.observe(sessions_shown, is_agentic);
 
     // A pending chord reads bare keys, and its Esc outranks every other Esc.
     if let ChordStep::Consumed(action) = check_chord(ctx, chord) {
@@ -598,22 +907,43 @@ mod tests {
         detect_sequence_with(Leader::DEFAULT, presses)
     }
 
+    /// `check_keybindings` as these tests drive it: agentic, with no pending
+    /// prompts.
+    fn check(
+        ctx: &egui::Context,
+        chord: &mut ChordState,
+        leader: Leader,
+        sessions_shown: bool,
+    ) -> Option<KeyAction> {
+        check_keybindings(
+            ctx,
+            chord,
+            leader,
+            sessions_shown,
+            false,
+            false,
+            false,
+            AiMode::Agentic,
+        )
+    }
+
     /// [`detect_sequence`] with `leader` bound in place of the default.
     fn detect_sequence_with(leader: Leader, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
+        detect_sequence_in(leader, true, presses)
+    }
+
+    /// [`detect_sequence`] with the session list on screen or not.
+    fn detect_sequence_in(
+        leader: Leader,
+        sessions_shown: bool,
+        presses: &[(Modifiers, Key)],
+    ) -> Option<KeyAction> {
         // Accumulate: `press_key_modifiers` runs the key-down frame internally
         // and then a key-up frame, so we must not clobber the detection with the
         // later (keys-released) frame's `None`.
         let mut harness = Harness::new_ui_state(
             |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
-                if let Some(a) = check_keybindings(
-                    ui.ctx(),
-                    chord,
-                    leader,
-                    false,
-                    false,
-                    false,
-                    AiMode::Agentic,
-                ) {
+                if let Some(a) = check(ui.ctx(), chord, leader, sessions_shown) {
                     *action = Some(a);
                 }
             },
@@ -631,15 +961,7 @@ mod tests {
     fn pending_after(presses: &[(Modifiers, Key)]) -> Option<Pending> {
         let mut harness = Harness::new_ui_state(
             |ui, chord: &mut ChordState| {
-                check_keybindings(
-                    ui.ctx(),
-                    chord,
-                    Leader::DEFAULT,
-                    false,
-                    false,
-                    false,
-                    AiMode::Agentic,
-                );
+                check(ui.ctx(), chord, Leader::DEFAULT, true);
             },
             ChordState::default(),
         );
@@ -647,12 +969,15 @@ mod tests {
         for (modifiers, key) in presses {
             harness.press_key_modifiers(*modifiers, *key);
         }
-        harness.state().pending()
+        harness.state().view().map(|view| view.pending)
     }
 
     /// The presses that type a hint's keycap: lowercase is bare, uppercase is
-    /// shifted.
+    /// shifted, and the Enter keycap is Enter.
     fn hint_presses(keys: &str) -> Vec<(Modifiers, Key)> {
+        if keys == ENTER {
+            return vec![(NONE, Key::Enter)];
+        }
         keys.chars()
             .map(|c| {
                 let key = Key::from_name(&c.to_ascii_uppercase().to_string())
@@ -725,23 +1050,137 @@ mod tests {
     /// or promise the wrong action.
     #[test]
     fn every_hint_does_what_it_says() {
-        let prefixes: [(Pending, &[(Modifiers, Key)]); 3] = [
-            (Pending::Leader, &[LEADER]),
-            (Pending::LeaderZ, &[LEADER, (NONE, Key::Z)]),
-            (Pending::LeaderG, &[LEADER, (NONE, Key::G)]),
+        const H: (Modifiers, Key) = (NONE, Key::H);
+        type Presses = &'static [(Modifiers, Key)];
+        let prefixes: [(Pane, Pending, Presses); 11] = [
+            (Pane::Chat, Pending::Leader, &[LEADER]),
+            (Pane::Chat, Pending::LeaderZ, &[LEADER, (NONE, Key::Z)]),
+            (Pane::Chat, Pending::LeaderG, &[LEADER, (NONE, Key::G)]),
+            (Pane::Chat, Pending::LeaderD, &[LEADER, (NONE, Key::D)]),
+            (
+                Pane::Chat,
+                Pending::LeaderCloseBracket,
+                &[LEADER, (NONE, Key::CloseBracket)],
+            ),
+            (
+                Pane::Chat,
+                Pending::LeaderOpenBracket,
+                &[LEADER, (NONE, Key::OpenBracket)],
+            ),
+            (Pane::Sessions, Pending::Leader, &[LEADER, H]),
+            (
+                Pane::Sessions,
+                Pending::LeaderG,
+                &[LEADER, H, (NONE, Key::G)],
+            ),
+            (
+                Pane::Sessions,
+                Pending::LeaderD,
+                &[LEADER, H, (NONE, Key::D)],
+            ),
+            (
+                Pane::Sessions,
+                Pending::LeaderCloseBracket,
+                &[LEADER, H, (NONE, Key::CloseBracket)],
+            ),
+            (
+                Pane::Sessions,
+                Pending::LeaderOpenBracket,
+                &[LEADER, H, (NONE, Key::OpenBracket)],
+            ),
         ];
-        for (pending, prefix) in prefixes {
-            for hint in pending.hints().iter().flat_map(|group| group.iter()) {
+        for (pane, pending, prefix) in prefixes {
+            let view = ChordView {
+                pending,
+                pane,
+                sessions_shown: true,
+                agentic: true,
+            };
+            assert_eq!(pending_after(prefix), Some(pending), "{pane:?} {prefix:?}");
+            let groups = view.hints().iter().chain(view.session_keys());
+            for hint in groups.flat_map(|group| group.iter()) {
                 let mut presses = prefix.to_vec();
                 presses.extend(hint_presses(hint.keys));
                 assert_eq!(
                     detect_sequence(&presses),
                     Some(hint.action.clone()),
-                    "{pending:?} hint {:?}",
+                    "{pane:?} {pending:?} hint {:?}",
                     hint.keys
                 );
             }
         }
+    }
+
+    #[test]
+    fn leader_h_j_switches_sessions_instead_of_moving_the_cursor() {
+        assert_eq!(
+            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::J)]),
+            Some(KeyAction::SessionPaneNext),
+        );
+        assert_eq!(
+            detect_sequence(&[LEADER, (NONE, Key::H), (SHIFT, Key::G)]),
+            Some(KeyAction::SessionPaneLast),
+        );
+    }
+
+    #[test]
+    fn leader_h_l_j_is_back_in_the_chat() {
+        assert_eq!(
+            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::L), (NONE, Key::J)]),
+            Some(KeyAction::BlockCursorDown),
+        );
+    }
+
+    #[test]
+    fn every_leader_starts_in_the_chat() {
+        assert_eq!(
+            detect_sequence(&[
+                LEADER,
+                (NONE, Key::H),
+                (NONE, Key::Escape),
+                LEADER,
+                (NONE, Key::J)
+            ]),
+            Some(KeyAction::BlockCursorDown),
+        );
+        assert_eq!(
+            detect_sequence(&[LEADER, (NONE, Key::H), LEADER, (NONE, Key::J)]),
+            Some(KeyAction::BlockCursorDown),
+            "the leader mid-chord starts a fresh one",
+        );
+    }
+
+    #[test]
+    fn enter_from_the_session_list_ends_the_chord() {
+        assert_eq!(
+            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::Enter)]),
+            Some(KeyAction::FocusChatPane),
+        );
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::H), (NONE, Key::Enter)]),
+            None
+        );
+    }
+
+    #[test]
+    fn h_without_a_session_list_does_nothing() {
+        let presses = [LEADER, (NONE, Key::H), (NONE, Key::J)];
+        assert_eq!(
+            detect_sequence_in(Leader::DEFAULT, false, &presses),
+            Some(KeyAction::BlockCursorDown),
+            "h is swallowed, the chord stays open and in the chat",
+        );
+    }
+
+    #[test]
+    fn rename_and_new_agent_end_the_chord() {
+        assert_eq!(pending_after(&[LEADER, (NONE, Key::R)]), None);
+        assert_eq!(pending_after(&[LEADER, (NONE, Key::N)]), None);
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::D), (NONE, Key::D)]),
+            Some(Pending::Leader),
+            "dd keeps the chord, so you can walk on to the next session",
+        );
     }
 
     #[test]
@@ -772,15 +1211,7 @@ mod tests {
         let leader = Leader::DEFAULT;
         let mut harness = Harness::new_ui_state(
             |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
-                if let Some(a) = check_keybindings(
-                    ui.ctx(),
-                    chord,
-                    leader,
-                    false,
-                    false,
-                    false,
-                    AiMode::Agentic,
-                ) {
+                if let Some(a) = check(ui.ctx(), chord, leader, true) {
                     *action = Some(a);
                 }
             },
@@ -812,15 +1243,7 @@ mod tests {
         // A real text field: egui drops focus from an id no widget claims.
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
-                check_keybindings(
-                    ui.ctx(),
-                    chord,
-                    Leader::DEFAULT,
-                    false,
-                    false,
-                    false,
-                    AiMode::Agentic,
-                );
+                check(ui.ctx(), chord, Leader::DEFAULT, true);
                 ui.add(egui::TextEdit::singleline(text).id(input_id));
             },
             (ChordState::default(), String::new()),
@@ -861,15 +1284,7 @@ mod tests {
         let input_id = egui::Id::new("chat_input");
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
-                check_keybindings(
-                    ui.ctx(),
-                    chord,
-                    Leader::DEFAULT,
-                    false,
-                    false,
-                    false,
-                    AiMode::Agentic,
-                );
+                check(ui.ctx(), chord, Leader::DEFAULT, true);
                 ui.add(egui::TextEdit::singleline(text).id(input_id));
             },
             (ChordState::default(), String::new()),

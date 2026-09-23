@@ -100,6 +100,9 @@ Ask_b7f4 = Ask
 # Placeholder text for Dave AI input field
 Ask_dave_anything_33d1 = Ask dave anything...
 
+# Dave which-key tooltip: point the chord's motions back at the chat
+Back_to_the_chat_ea20 = Back to the chat
+
 # Profile banner URL field label
 Banner_52ef = Banner
 
@@ -133,6 +136,9 @@ Click_to_edit_0414 = Click to edit
 # Button to go to the ClnDash app
 ClnDash_2988 = ClnDash
 
+# Dave which-key tooltip: start a new agent in the active session's directory
+Clone_agent_3757 = Clone agent
+
 # Dave which-key tooltip: collapse every block in the chat
 Collapse_all_blocks_79ec = Collapse all blocks
 
@@ -141,6 +147,9 @@ Collapse_block_87e0 = Collapse block
 
 # Button to go to the Columns app
 Columns_7215 = Columns
+
+# Dave which-key tooltip: open an external editor to write the message
+Compose_in_external_editor_5bf2 = Compose in external editor
 
 # Column title for note composition
 Compose_Note_c094 = Compose Note
@@ -235,6 +244,9 @@ Custom_a69e = Custom
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = Customize Zap Amount
 
+# Dave which-key tooltip: cycle the active session's permission mode
+Cycle_permission_mode_4d95 = Cycle permission mode
+
 # Damus android beta version label
 Damus_Android_BETA_e76b = Damus Android BETA
 
@@ -273,6 +285,9 @@ Default_Deck_fcca = Default Deck
 
 # Button label to delete a deck
 Delete_Deck_bb29 = Delete Deck
+
+# Dave which-key tooltip: delete the active session
+Delete_session_2527 = Delete session
 
 # Tooltip for deleting a column
 Delete_this_column_8d5a = Delete this column
@@ -318,6 +333,9 @@ Esc_cancels_80f8 = Esc cancels.
 
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = Extreme
+
+# Dave which-key tooltip: switch to the first session in the list
+First_session_fea9 = First session
 
 # Column title for followers
 Followed_by_e8c2 = Followed by
@@ -421,6 +439,9 @@ Language_e264 = Language:
 # Title for last note per user column
 Last_Note_per_User_17ad = Last Note per User
 
+# Dave which-key tooltip: switch to the last session in the list
+Last_session_cdfc = Last session
+
 # Settings label for the key that starts a Dave keyboard chord
 Leader_key_4ce8 = Leader key:
 
@@ -499,11 +520,20 @@ name__zapped_your_note_45d1 = {$name} zapped your note
 # Button to go to a WASM app
 name_as_str_c366 = name.as_str()
 
+# Dave which-key tooltip: start a new agent session
+New_agent_c761 = New agent
+
 # Title shown when composing a new conversation
 New_Chat_afb4 = New Chat
 
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = New to Nostr?
+
+# Dave which-key tooltip: jump to the next session waiting for attention
+Next_in_focus_queue_f2e9 = Next in focus queue
+
+# Dave which-key tooltip: switch to the next session in the list
+Next_session_0a8f = Next session
 
 # Shown when user has no contacts to display
 No_contacts_yet_cd10 = No contacts yet
@@ -613,6 +643,12 @@ Press_a_key_094b = Press a key…
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.
 
+# Dave which-key tooltip: jump to the previous session waiting for attention
+Previous_in_focus_queue_9b0e = Previous in focus queue
+
+# Dave which-key tooltip: switch to the previous session in the list
+Previous_session_2425 = Previous session
+
 # Section header for private sync relays
 Private_sync_560b = Private sync
 
@@ -660,6 +696,9 @@ Relays_9d89 = Relays
 
 # Label for relay transport settings section
 Relays_ab62 = Relays
+
+# Dave which-key tooltip: rename the active session
+Rename_session_cb48 = Rename session
 
 # Column title for reply composition
 Reply_3bf1 = Reply
@@ -766,6 +805,9 @@ Select_All_a319 = Select All
 # Button label to send a zap
 Send_1ea4 = Send
 
+# Dave which-key tooltip: point the chord's motions at the session list
+Session_list_32f0 = Session list
+
 # Button to go to the settings view
 Settings_4d83 = Settings
 
@@ -861,6 +903,9 @@ thread_ad1f = thread
 
 # Label shown between chat messages for the current day
 Today_bd04 = Today
+
+# Dave which-key tooltip: switch between the scene view and the list view
+Toggle_scene_view_867b = Toggle scene view
 
 # Placeholder text for the message composer in chats
 Type_a_message_2a19 = Type a message
