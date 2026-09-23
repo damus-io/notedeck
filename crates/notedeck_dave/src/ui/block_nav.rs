@@ -139,6 +139,12 @@ impl BlockNav {
         }
     }
 
+    /// Drop the cursor, so the transcript sticks to the bottom again.
+    pub fn clear_cursor(&mut self) {
+        self.cursor = None;
+        self.scroll_to_cursor = false;
+    }
+
     /// Flip the focused block's expanded state.
     pub fn toggle_cursor(&mut self, ctx: &egui::Context) {
         let Some(block) = self.cursor_block() else {
@@ -263,6 +269,18 @@ mod tests {
         assert_eq!(nav.cursor(), Some(2));
         nav.first();
         assert_eq!(nav.cursor(), Some(0));
+    }
+
+    #[test]
+    fn clearing_the_cursor_drops_its_pending_scroll() {
+        let mut nav = BlockNav::default();
+        seed(&mut nav, 2);
+
+        nav.down();
+        nav.clear_cursor();
+        assert_eq!(nav.cursor(), None);
+        nav.begin_frame();
+        assert!(!nav.scroll_this_frame, "no cursor left to scroll to");
     }
 
     #[test]

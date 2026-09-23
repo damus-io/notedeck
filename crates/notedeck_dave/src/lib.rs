@@ -563,6 +563,8 @@ pub struct Dave {
     auto_steal: focus_queue::AutoStealState,
     /// The session ID to return to after processing all NeedsInput items
     home_session: Option<SessionId>,
+    /// Progress through a leader-key chord, carried across frames.
+    chord: ui::keybindings::ChordState,
     /// A kind-31988 session-state note to focus, raised when its inline
     /// `agentium:` chip is clicked in another app (a note, a Dave chat). Resolved
     /// to a session and switched to on the next [`update`](Self::update), then
@@ -1159,6 +1161,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             collapse_serializer,
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
+            chord: ui::keybindings::ChordState::default(),
             pending_open: None,
             directory_picker,
             session_picker: SessionPicker::new(),
@@ -4011,6 +4014,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .unwrap_or(self.ai_mode);
         if let Some(key_action) = check_keybindings(
             egui_ctx,
+            &mut self.chord,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,

@@ -775,6 +775,20 @@ pub enum KeyActionResult {
     PublishModeCommand(update::ModeCommandPublish),
 }
 
+/// Run a block-cursor action against the active chat's [`BlockNav`].
+///
+/// Deliberately leaves `focus_requested` alone, unlike most key actions:
+/// pulling focus back into the input would end a leader chord mid-stride.
+fn with_block_nav(
+    session_manager: &mut SessionManager,
+    f: impl FnOnce(&mut BlockNav),
+) -> KeyActionResult {
+    if let Some(session) = session_manager.get_active_mut() {
+        f(&mut session.block_nav);
+    }
+    KeyActionResult::None
+}
+
 /// Handle a keybinding action.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_key_action(
@@ -902,6 +916,16 @@ pub fn handle_key_action(
             }
         }
         KeyAction::ClearAgent => KeyActionResult::ClearAgent,
+        KeyAction::BlockCursorDown => with_block_nav(session_manager, BlockNav::down),
+        KeyAction::BlockCursorUp => with_block_nav(session_manager, BlockNav::up),
+        KeyAction::BlockCursorFirst => with_block_nav(session_manager, BlockNav::first),
+        KeyAction::BlockCursorLast => with_block_nav(session_manager, BlockNav::last),
+        KeyAction::BlockCursorClear => with_block_nav(session_manager, BlockNav::clear_cursor),
+        KeyAction::BlockToggle => with_block_nav(session_manager, |nav| nav.toggle_cursor(ctx)),
+        KeyAction::BlockOpen => with_block_nav(session_manager, |nav| nav.open_cursor(ctx)),
+        KeyAction::BlockClose => with_block_nav(session_manager, |nav| nav.close_cursor(ctx)),
+        KeyAction::BlockExpandAll => with_block_nav(session_manager, |nav| nav.expand_all(ctx)),
+        KeyAction::BlockCollapseAll => with_block_nav(session_manager, |nav| nav.collapse_all(ctx)),
         KeyAction::RenameAgent => {
             if let Some(id) = session_manager.active_id() {
                 if let Some(session) = session_manager.get(id) {

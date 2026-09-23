@@ -2846,6 +2846,7 @@ mod tests {
                 // key-up frame, whose `None` would otherwise clobber the hit.
                 if let Some(a) = crate::ui::keybindings::check_keybindings(
                     ui.ctx(),
+                    &mut crate::ui::keybindings::ChordState::default(),
                     false,
                     false,
                     false,
