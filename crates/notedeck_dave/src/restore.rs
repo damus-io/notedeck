@@ -940,9 +940,10 @@ fn hydrate_session_from_state(
 mod tests {
     use super::*;
     use crate::config::AiMode;
+    use crate::pns_runtime::PnsLocalState;
     use crate::session_events::{build_live_event, ThreadingState};
     use crate::tests::{test_config, test_dave, test_secret_key};
-    use crate::{PnsLocalState, SessionManager};
+    use crate::SessionManager;
     use nostrdb::{IngestMetadata, Ndb};
     use notedeck::DataPath;
     use std::collections::HashSet;
