@@ -1,7 +1,8 @@
 //! The board grid's vim-style **bare-key keymap**: `j`/`k`/`h`/`l` walk the
 //! card cursor, `gg`/`G` jump to the ends of its column, `Enter`/`o` open the
-//! cursor card, `a` opens the add-card composer, `/` focuses the filter, `?`
-//! toggles the which-key strip and `Esc` drops the cursor. Shifted, `H`/`L`
+//! cursor card, `a` archives it, `n` opens the add-card composer, `/` focuses
+//! the filter, `?` toggles the which-key strip and `Esc` drops the cursor.
+//! Shifted, `H`/`L`
 //! move the cursor card to the neighbouring column and `J`/`K` reorder it
 //! within its own.
 //!
@@ -69,8 +70,12 @@ pub(crate) const BOARD_HINTS: &[KeyHint] = &[
         label: "reorder",
     },
     KeyHint {
+        keys: &["n"],
+        label: "new",
+    },
+    KeyHint {
         keys: &["a"],
-        label: "add",
+        label: "archive",
     },
     KeyHint {
         keys: &["/"],
@@ -128,7 +133,7 @@ pub(crate) fn key_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, hints: &'stati
 
 /// Read this frame's bare key press and apply it to the grid. Runs before the
 /// grid lays out. Returns a board edit for the app to apply (a keyboard card
-/// move); navigation mutates `state` directly.
+/// move or archive); navigation mutates `state` directly.
 ///
 /// Keys are left alone — and any pending chord dropped — while something else
 /// owns the keyboard: a focused text field, an open menu or popup, an inline
@@ -183,7 +188,8 @@ pub(crate) fn board_keys(
         }
         (Key::G, true) => move_cursor(view, filter, state, CursorMove::Last),
         (Key::Enter, _) | (Key::O, false) => open_cursor_card(view, filter, state),
-        (Key::A, false) => add_card_at_cursor(view, filter, state),
+        (Key::N, false) => add_card_at_cursor(view, filter, state),
+        (Key::A, false) => action = archive_cursor_card(view, filter, state),
         (Key::Slash, false) => ctx.memory_mut(|m| m.request_focus(filter_field_id())),
         // `?` is Shift+/: a logical `Questionmark` from most layouts, or the
         // physical slash with Shift from the rest.
@@ -196,7 +202,7 @@ pub(crate) fn board_keys(
     }
 
     // Load-bearing for `/`: the filter field lays out focused later this frame
-    // and would otherwise type the slash. (`a`'s composer only grabs focus after
+    // and would otherwise type the slash. (`n`'s composer only grabs focus after
     // its first layout, so it happens to be safe, but shouldn't depend on it.)
     chord::swallow_key_events(ctx);
     action
@@ -282,6 +288,33 @@ fn open_cursor_card(view: &BoardView, filter: &ViewFilter, state: &mut BoardUiSt
     state.open_card(id);
 }
 
+/// A [`BoardAction::ArchiveCard`] for the cursor card, or `None` without a
+/// visible cursor card. Archiving is recoverable from the archived sheet, so it
+/// takes no confirmation.
+///
+/// The cursor steps off the card first — to the next card down, else the one
+/// above, else nowhere — so repeated `a` presses triage a column top to bottom
+/// instead of landing back on the first card once the archive folds in.
+fn archive_cursor_card(
+    view: &BoardView,
+    filter: &ViewFilter,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let card = state
+        .cursor()
+        .filter(|&c| cursor::locate(view, filter, c).is_some())?;
+    // `step` clamps at a column's end by returning the card itself.
+    let neighbour = [CursorMove::Down, CursorMove::Up]
+        .into_iter()
+        .filter_map(|mv| cursor::step(view, filter, Some(card), mv))
+        .find(|&id| id != card);
+    match neighbour {
+        Some(id) => state.set_cursor(id),
+        None => state.clear_cursor(),
+    }
+    Some(BoardAction::ArchiveCard { card })
+}
+
 /// Open the add-card composer in the cursor's column, or the first column when
 /// there's no (visible) cursor.
 fn add_card_at_cursor(view: &BoardView, filter: &ViewFilter, state: &mut BoardUiState) {
@@ -335,6 +368,8 @@ mod tests {
         /// The `(card, to_col, to_row)` of the last `MoveCard` the keymap
         /// returned, if any.
         moved: Option<(NoteId, usize, usize)>,
+        /// The card of the last `ArchiveCard` the keymap returned, if any.
+        archived: Option<NoteId>,
     }
 
     /// A harness that runs [`board_keys`] over [`grid`] each frame, unfiltered.
@@ -346,13 +381,14 @@ mod tests {
                     filter: &parsed,
                     hide_subissues: false,
                 };
-                if let Some(BoardAction::MoveCard {
-                    card,
-                    to_col,
-                    to_row,
-                }) = board_keys(ui.ctx(), &h.view, &filter, &mut h.state)
-                {
-                    h.moved = Some((card, to_col, to_row));
+                match board_keys(ui.ctx(), &h.view, &filter, &mut h.state) {
+                    Some(BoardAction::MoveCard {
+                        card,
+                        to_col,
+                        to_row,
+                    }) => h.moved = Some((card, to_col, to_row)),
+                    Some(BoardAction::ArchiveCard { card }) => h.archived = Some(card),
+                    _ => {}
                 }
                 h.esc_left |= ui.input(|i| i.key_pressed(Key::Escape));
                 if let Some(field) = h.field {
@@ -369,6 +405,7 @@ mod tests {
                 text: String::new(),
                 esc_left: false,
                 moved: None,
+                archived: None,
             },
         );
         harness.run();
@@ -525,10 +562,11 @@ mod tests {
     struct Effects {
         cursor: Option<NoteId>,
         selected: Option<NoteId>,
-        /// An inline editor (the `a` composer) is open.
+        /// An inline editor (the `n` composer) is open.
         editing: bool,
         focused: Option<egui::Id>,
         moved: Option<(NoteId, usize, usize)>,
+        archived: Option<NoteId>,
     }
 
     fn effects(harness: &Harness<'static, KeysHarness>) -> Effects {
@@ -539,6 +577,7 @@ mod tests {
             editing: h.state.keys_blocked(),
             focused: harness.ctx.memory(|m| m.focused()),
             moved: h.moved,
+            archived: h.archived,
         }
     }
 
@@ -635,6 +674,40 @@ mod tests {
         press(&mut harness, Key::G);
         assert!(harness.query_by_label("first card").is_none());
         assert!(harness.query_by_label("up/down").is_some());
+    }
+
+    #[test]
+    fn a_archives_the_cursor_card_and_steps_off_it() {
+        let mut harness = keys_harness(None);
+        press(&mut harness, Key::A);
+        assert_eq!(harness.state().archived, None, "no cursor, no archive");
+
+        // Mid-column: the cursor moves down to the next card.
+        harness.state_mut().state.set_cursor(id(1));
+        press(&mut harness, Key::A);
+        assert_eq!(harness.state().archived, Some(id(1)));
+        assert_eq!(harness.state().state.cursor(), Some(id(2)));
+
+        // Column end: it moves up instead.
+        harness.state_mut().state.set_cursor(id(3));
+        press(&mut harness, Key::A);
+        assert_eq!(harness.state().archived, Some(id(3)));
+        assert_eq!(harness.state().state.cursor(), Some(id(2)));
+
+        // A column's only card: the cursor is dropped.
+        harness.state_mut().state.set_cursor(id(4));
+        press(&mut harness, Key::A);
+        assert_eq!(harness.state().archived, Some(id(4)));
+        assert_eq!(harness.state().state.cursor(), None);
+    }
+
+    #[test]
+    fn n_opens_the_composer_without_archiving() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().state.set_cursor(id(2));
+        press(&mut harness, Key::N);
+        assert!(harness.state().state.keys_blocked(), "composer open");
+        assert_eq!(harness.state().archived, None);
     }
 
     #[test]

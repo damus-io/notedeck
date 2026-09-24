@@ -284,7 +284,7 @@ impl BoardUiState {
     }
 
     /// Open the "add card" composer at the foot of column `col`, empty and
-    /// focused. Shared by the column's "+ Add card" button and the `a` key.
+    /// focused. Shared by the column's "+ Add card" button and the `n` key.
     pub(crate) fn open_add_card(&mut self, col: usize) {
         self.edit = InlineEdit::AddCard(col);
         self.edit_text.clear();

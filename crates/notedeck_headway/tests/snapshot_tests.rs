@@ -1828,12 +1828,12 @@ fn slash_focuses_an_empty_filter() {
     assert_eq!(field.value().as_deref(), Some(""), "the / was not typed");
 }
 
-/// Behavioural (no lavapipe): `a` opens the add-card composer, focused and
-/// empty — the `a` itself isn't typed into it.
+/// Behavioural (no lavapipe): `n` opens the add-card composer, focused and
+/// empty — the `n` itself isn't typed into it.
 #[test]
-fn a_opens_an_empty_add_card_composer() {
+fn n_opens_an_empty_add_card_composer() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    type_key(&mut harness, egui::Key::A, "a");
+    type_key(&mut harness, egui::Key::N, "n");
     harness.run_ok();
 
     // The card composer is multiline, so it's the one MultilineTextInput.
@@ -1841,7 +1841,7 @@ fn a_opens_an_empty_add_card_composer() {
         .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
         .find(|n| n.is_focused())
         .expect("a focused add-card composer");
-    assert_eq!(composer.value().as_deref(), Some(""), "the a was not typed");
+    assert_eq!(composer.value().as_deref(), Some(""), "the n was not typed");
 }
 
 /// Behavioural (no lavapipe): keys typed into the filter field stay text — `j`
