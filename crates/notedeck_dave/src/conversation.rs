@@ -4,9 +4,9 @@
 //! they carry.
 
 use crate::backend::BackendType;
+use crate::publish::{ingest_live_event, pns_ingest};
 use crate::{
-    ingest_live_event, messages, pns_ingest, session, session_events, session_loader, Dave,
-    Message, PermissionResponse, SessionId,
+    messages, session, session_events, session_loader, Dave, Message, PermissionResponse, SessionId,
 };
 use nostrdb::{NoteKey, Transaction};
 use std::collections::HashMap;
