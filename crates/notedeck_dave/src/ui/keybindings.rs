@@ -154,10 +154,6 @@ impl Leader {
     }
 }
 
-/// Seconds a chord waits for its next key before it lapses. Re-armed by every
-/// key the chord accepts, so a run of `j`s never times out mid-stride.
-const CHORD_TIMEOUT: f64 = 2.0;
-
 /// Progress through a multi-key chord opened by the leader key.
 ///
 /// Owned by [`Dave`](crate::Dave) and passed `&mut` into [`check_keybindings`]
@@ -165,8 +161,10 @@ const CHORD_TIMEOUT: f64 = 2.0;
 /// the bare keys that follow (`j`, `z`, `g`, …) are read as commands rather than
 /// typed; when the chord ends, focus goes back to whatever held it.
 ///
-/// A chord stays open after a command so motions repeat — `<leader> j j j za` —
-/// and ends on Esc, `q`, a key it does not know, or [`CHORD_TIMEOUT`] of quiet.
+/// A chord is a latch: it stays open after a command so motions repeat —
+/// `<leader> j j j za` — and ends only on Esc, `q`, a key it does not know, or
+/// a modified key. It never times out, so pausing to read a block does not drop
+/// you back into the input mid-stride; the which-key strip shows it is open.
 ///
 /// `h` / `l` point the chord at the session list or the chat ([`Pane`]), and
 /// the motions follow: `j` / `k` walk blocks in the chat and sessions in the
@@ -177,8 +175,6 @@ pub struct ChordState {
     /// Which pane the motions move through. Back to [`Pane::Chat`] on every
     /// leader.
     pane: Pane,
-    /// `ctx.input(|i| i.time)` past which the chord lapses.
-    expires_at: f64,
     /// Whatever held keyboard focus when the leader fired, handed back when the
     /// chord ends.
     restore_focus: Option<egui::Id>,
@@ -437,7 +433,7 @@ impl ChordState {
     }
 
     /// Open a chord: set the focused widget aside so bare keys reach us.
-    fn open(&mut self, ctx: &egui::Context, now: f64) {
+    fn open(&mut self, ctx: &egui::Context) {
         self.restore_focus = ctx.memory_mut(|m| {
             let focused = m.focused();
             if let Some(id) = focused {
@@ -447,13 +443,7 @@ impl ChordState {
         });
         self.pane = Pane::Chat;
         self.focus_input_on_end = false;
-        self.advance(Pending::Leader, now);
-    }
-
-    /// Move to `next` and re-arm the timeout.
-    fn advance(&mut self, next: Pending, now: f64) {
-        self.pending = Some(next);
-        self.expires_at = now + CHORD_TIMEOUT;
+        self.pending = Some(Pending::Leader);
     }
 
     /// End the chord and give focus back to whatever held it before, or to
@@ -521,12 +511,6 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
         return ChordStep::FallThrough;
     };
 
-    let now = ctx.input(|i| i.time);
-    if now >= chord.expires_at {
-        chord.end(ctx);
-        return ChordStep::FallThrough;
-    }
-
     // Esc cancels the chord and nothing else: it must not also interrupt.
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
         chord.end(ctx);
@@ -534,8 +518,6 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
     }
 
     let Some(press) = ctx.input(first_key_press) else {
-        // Nothing typed yet: wake up in time to let the chord lapse.
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(chord.expires_at - now));
         return ChordStep::Consumed(None);
     };
 
@@ -649,7 +631,7 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
     }
 
     match then {
-        Continue(next) => chord.advance(next, now),
+        Continue(next) => chord.pending = Some(next),
         End => chord.end(ctx),
         Release => chord.release(),
     }
@@ -701,7 +683,7 @@ pub fn check_keybindings(
 
     // The leader opens a chord; the keys that follow land next frame.
     if ctx.input(|i| leader.pressed(i)) {
-        chord.open(ctx, ctx.input(|i| i.time));
+        chord.open(ctx);
         return None;
     }
 
@@ -1207,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chord_lapses_after_its_timeout() {
+    fn a_chord_stays_open_while_idle() {
         let leader = Leader::DEFAULT;
         let mut harness = Harness::new_ui_state(
             |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
@@ -1219,12 +1201,17 @@ mod tests {
         );
         harness.run();
         harness.press_key_modifiers(LEADER.0, LEADER.1);
-        // Each step is a quarter second of simulated time.
-        for _ in 0..(CHORD_TIMEOUT * 4.0) as usize + 1 {
+        // Each step is a quarter second of simulated time: a long pause to
+        // read a block.
+        for _ in 0..40 {
             harness.step();
         }
         harness.press_key_modifiers(NONE, Key::J);
-        assert_eq!(harness.state().1, None, "j after the timeout is just a j");
+        assert_eq!(
+            harness.state().1,
+            Some(KeyAction::BlockCursorDown),
+            "j after a pause still moves the cursor",
+        );
     }
 
     #[test]
