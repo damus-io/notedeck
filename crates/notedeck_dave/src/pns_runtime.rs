@@ -5,12 +5,12 @@
 use crate::conversation::subscribe_conversation_events;
 use crate::focus_queue::FocusQueue;
 use crate::restore::PendingMessageLoad;
+use crate::run_configs::kill_process_tree;
 use crate::session_commands::{PendingResumeCommand, PendingSpawnCommand, SpawnIdempotencyRecord};
 use crate::update::PermissionPublish;
 use crate::{
-    focus_queue, kill_process_tree, session_events, session_loader, update, AgentScene, AiMode,
-    Dave, DaveOverlay, DirectoryPicker, PendingWorktreeRemoval, SessionId, SessionManager,
-    SessionPicker,
+    focus_queue, session_events, session_loader, update, AgentScene, AiMode, Dave, DaveOverlay,
+    DirectoryPicker, PendingWorktreeRemoval, SessionId, SessionManager, SessionPicker,
 };
 use notedeck::AppContext;
 use std::collections::{HashMap, HashSet};
