@@ -600,6 +600,17 @@ pub fn handle_question_response(
 // Agent Navigation
 // =============================================================================
 
+/// Whether switching sessions pulls keyboard focus into the new session's
+/// input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputFocus {
+    /// Focus the input (see [`request_input_focus`]).
+    Request,
+    /// Leave focus alone: a leader chord is walking the session list and
+    /// still holds the keyboard.
+    Leave,
+}
+
 /// Switch to a session and optionally focus it in the scene.
 ///
 /// Handles the common pattern of: switch_to → scene.select → scene.focus_on → focus_requested.
@@ -610,6 +621,17 @@ pub fn switch_and_focus_session(
     show_scene: bool,
     id: SessionId,
 ) {
+    switch_session(session_manager, scene, show_scene, id, InputFocus::Request);
+}
+
+/// [`switch_and_focus_session`], with the input's focus up to `focus`.
+pub fn switch_session(
+    session_manager: &mut SessionManager,
+    scene: &mut AgentScene,
+    show_scene: bool,
+    id: SessionId,
+    focus: InputFocus,
+) {
     session_manager.switch_to(id);
     if show_scene {
         scene.select(id);
@@ -619,6 +641,15 @@ pub fn switch_and_focus_session(
             }
         }
     }
+    if focus == InputFocus::Request {
+        request_input_focus(session_manager, id);
+    }
+}
+
+/// Ask for `id`'s chat input to take keyboard focus when it next renders,
+/// unless a permission prompt is waiting: its bare 1/2/3 keys only work while
+/// no text field has focus.
+pub fn request_input_focus(session_manager: &mut SessionManager, id: SessionId) {
     if let Some(session) = session_manager.get_mut(id) {
         if !session.has_pending_permissions() {
             session.focus_requested = true;
@@ -633,10 +664,11 @@ pub fn switch_to_agent_by_index(
     scene: &mut AgentScene,
     show_scene: bool,
     index: usize,
+    focus: InputFocus,
 ) {
     let ids = session_manager.visual_order(collapse);
     if let Some(&id) = ids.get(index) {
-        switch_and_focus_session(session_manager, scene, show_scene, id);
+        switch_session(session_manager, scene, show_scene, id, focus);
     }
 }
 
@@ -646,6 +678,7 @@ fn cycle_agent(
     collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
+    focus: InputFocus,
     index_fn: impl FnOnce(usize, usize) -> usize,
 ) {
     let ids = session_manager.visual_order(collapse);
@@ -658,7 +691,7 @@ fn cycle_agent(
         .unwrap_or(0);
     let next_idx = index_fn(current_idx, ids.len());
     if let Some(&id) = ids.get(next_idx) {
-        switch_and_focus_session(session_manager, scene, show_scene, id);
+        switch_session(session_manager, scene, show_scene, id, focus);
     }
 }
 
@@ -668,10 +701,16 @@ pub fn cycle_next_agent(
     collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
+    focus: InputFocus,
 ) {
-    cycle_agent(session_manager, collapse, scene, show_scene, |idx, len| {
-        (idx + 1) % len
-    });
+    cycle_agent(
+        session_manager,
+        collapse,
+        scene,
+        show_scene,
+        focus,
+        |idx, len| (idx + 1) % len,
+    );
 }
 
 /// Cycle to the previous agent.
@@ -680,14 +719,40 @@ pub fn cycle_prev_agent(
     collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
+    focus: InputFocus,
 ) {
-    cycle_agent(session_manager, collapse, scene, show_scene, |idx, len| {
-        if idx == 0 {
-            len - 1
-        } else {
-            idx - 1
-        }
-    });
+    cycle_agent(
+        session_manager,
+        collapse,
+        scene,
+        show_scene,
+        focus,
+        |idx, len| {
+            if idx == 0 {
+                len - 1
+            } else {
+                idx - 1
+            }
+        },
+    );
+}
+
+/// Switch to the last agent in the visual display order.
+pub fn switch_to_last_agent(
+    session_manager: &mut SessionManager,
+    collapse: &crate::collapse_state::CollapseState,
+    scene: &mut AgentScene,
+    show_scene: bool,
+    focus: InputFocus,
+) {
+    cycle_agent(
+        session_manager,
+        collapse,
+        scene,
+        show_scene,
+        focus,
+        |_, len| len - 1,
+    );
 }
 
 // =============================================================================
@@ -2848,6 +2913,7 @@ mod tests {
                     ui.ctx(),
                     &mut crate::ui::keybindings::ChordState::default(),
                     crate::ui::keybindings::Leader::DEFAULT,
+                    true,
                     false,
                     false,
                     false,

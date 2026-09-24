@@ -892,6 +892,22 @@ fn session_state_snapshot(
 /// and PNS overhead, times the ~1.33x base64 expansion, lands under 64KB.
 const MAX_TOOL_OUTPUT_WIRE_BYTES: usize = 40_000;
 
+/// The file update to publish on a tool_result note, or `None` when it would
+/// push the note over the wire budget.
+///
+/// Shares [`MAX_TOOL_OUTPUT_WIRE_BYTES`] with the (already capped) output so
+/// the two together stay under relay limits. An oversized edit is dropped
+/// whole rather than truncated: a clipped old/new string would render a
+/// diff that never happened. Reloaded/remote sessions then show the summary
+/// only, as before.
+fn wire_file_update(
+    file_update: Option<&file_update::FileUpdate>,
+    output_len: usize,
+) -> Option<&file_update::FileUpdate> {
+    let budget = MAX_TOOL_OUTPUT_WIRE_BYTES.saturating_sub(output_len);
+    file_update.filter(|update| update.payload_len() <= budget)
+}
+
 /// Build and ingest a live kind-1988 event into ndb (via PNS wrapping).
 ///
 /// Extracts cwd and session ID from the session's agentic data,
@@ -1541,16 +1557,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         // summary (headway:dave/sting-february-sausage). The
                         // output is capped to a wire budget here (the host keeps
                         // the full copy in memory; the UI truncates for display)
-                        // so the PNS-wrapped event stays under relay limits. The
-                        // tool name travels in the `tool-name` tag below.
+                        // so the PNS-wrapped event stays under relay limits. An
+                        // edit's diff rides along too (budget permitting): an
+                        // edit the CLI auto-approved has no permission_request
+                        // note to rebuild it from. The tool name travels in the
+                        // `tool-name` tag below.
                         let capped_output = result
                             .output
                             .as_deref()
                             .map(|o| backend::truncate_output(o, MAX_TOOL_OUTPUT_WIRE_BYTES));
+                        let file_update = wire_file_update(
+                            result.file_update.as_ref(),
+                            capped_output.as_deref().map_or(0, str::len),
+                        );
                         Some((
                             session_loader::ToolResultContent::encode(
                                 &result.summary,
                                 capped_output.as_deref(),
+                                file_update,
                             ),
                             "tool_result",
                             Some(result.tool_name.as_str()),
@@ -1957,7 +1981,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
-            self.chord.pending(),
+            self.chord.view(),
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -2001,7 +2025,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
-            self.chord.pending(),
+            self.chord.view(),
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -2095,7 +2119,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
-            self.chord.pending(),
+            self.chord.view(),
             &self.run_configs,
             &self.running_session_ids,
             self.show_session_list,
@@ -4031,10 +4055,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .get_active()
             .map(|s| s.ai_mode)
             .unwrap_or(self.ai_mode);
+        // The chord's `h` needs the session list on screen: the desktop layout,
+        // with no overlay covering it.
+        let sessions_shown = !is_narrow(egui_ctx)
+            && !self.show_scene
+            && matches!(self.active_overlay, DaveOverlay::None);
         if let Some(key_action) = check_keybindings(
             egui_ctx,
             &mut self.chord,
             self.leader,
+            sessions_shown,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
@@ -4042,6 +4072,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ) {
             self.handle_key_action(key_action, egui_ctx);
         }
+        ui::settle_chord_focus(&mut self.chord, &mut self.session_manager);
     }
 
     /// Handle a keybinding action
@@ -6166,6 +6197,33 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    /// An edit's diff is published with its tool_result only while it fits the
+    /// wire budget left after the output. Past that it is dropped whole, never
+    /// truncated into a diff that didn't happen.
+    #[test]
+    fn wire_file_update_drops_oversized_edits() {
+        let edit = |len: usize| {
+            file_update::FileUpdate::new(
+                "a.rs".to_string(),
+                file_update::FileUpdateType::Write {
+                    content: "x".repeat(len),
+                },
+            )
+        };
+        let small = edit(100);
+        assert!(wire_file_update(Some(&small), 0).is_some());
+        assert!(wire_file_update(None, 0).is_none());
+
+        let huge = edit(MAX_TOOL_OUTPUT_WIRE_BYTES);
+        assert!(
+            wire_file_update(Some(&huge), 0).is_none(),
+            "an edit past the budget is dropped"
+        );
+
+        // The output's share of the budget counts against the edit.
+        assert!(wire_file_update(Some(&small), MAX_TOOL_OUTPUT_WIRE_BYTES - 50).is_none());
+    }
 
     #[test]
     fn new_session_routes_by_capability_and_hosts() {

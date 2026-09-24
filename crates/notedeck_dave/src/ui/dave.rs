@@ -3,7 +3,7 @@ use super::block_nav::BlockNav;
 use super::chord_hints;
 use super::diff;
 use super::git_status_ui;
-use super::keybindings::Pending;
+use super::keybindings::ChordView;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::run_ui;
@@ -107,7 +107,7 @@ pub struct DaveUi<'a> {
     /// Pending image attachments staged for the next send
     pending_images: Option<&'a mut Vec<ImageAttachment>>,
     /// How far into a leader chord the keyboard is, for the which-key strip.
-    chord: Option<Pending>,
+    chord: Option<ChordView>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -272,8 +272,8 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Show the which-key strip for a pending leader chord.
-    pub fn chord(mut self, pending: Option<Pending>) -> Self {
-        self.chord = pending;
+    pub fn chord(mut self, chord: Option<ChordView>) -> Self {
+        self.chord = chord;
         self
     }
 
@@ -494,9 +494,10 @@ impl<'a> DaveUi<'a> {
 
                     // Which-key strip: what the pending chord accepts next,
                     // just above the input the chord took focus from.
-                    if let Some(pending) = self.chord {
+                    if let Some(chord) = self.chord {
                         let w = ui.available_width();
-                        ui.allocate_ui(egui::vec2(w, chord_hints::STRIP_HEIGHT), |ui| {
+                        let h = chord_hints::strip_height(ui, chord);
+                        ui.allocate_ui(egui::vec2(w, h), |ui| {
                             egui::Frame::new()
                                 .outer_margin(egui::Margin {
                                     left: margin,
@@ -505,7 +506,7 @@ impl<'a> DaveUi<'a> {
                                     bottom: 0,
                                 })
                                 .show(ui, |ui| {
-                                    chord_hints::chord_hints_ui(ui, app_ctx.i18n, pending)
+                                    chord_hints::chord_hints_ui(ui, app_ctx.i18n, chord)
                                 });
                         });
                     }
@@ -1367,10 +1368,12 @@ impl<'a> DaveUi<'a> {
 
     fn executed_tool_ui(result: &ExecutedTool, nav: &mut BlockNav, ui: &mut egui::Ui) {
         if let Some(file_update) = &result.file_update {
-            // File edit with diff — show collapsible header with inline diff
+            // File edit with diff — expanded by default regardless of size. In
+            // auto / accept-edits mode the CLI approves the edit itself, so no
+            // permission row ever showed this diff: this row is the only place
+            // the user sees what changed. A user toggle still collapses it.
             let expand_id = ui.id().with("exec_diff").with(&result.summary);
-            let is_small = file_update.diff_lines().len() < 10;
-            let block = nav.register(expand_id, is_small, ui);
+            let block = nav.register(expand_id, true, ui);
 
             let header_resp = Self::exec_tool_header_ui(
                 &result.tool_name,
@@ -2151,8 +2154,9 @@ struct Disclosure {
 /// The wash the keyboard block cursor lays behind its row. The selection
 /// colour at full strength swallows these rows — their text is deliberately
 /// drawn at 40-60% alpha — so it goes on as a tint: unmistakable as the cursor,
-/// still readable as a row.
-fn block_cursor_fill(ui: &egui::Ui) -> egui::Color32 {
+/// still readable as a row. The session list washes its row the same way while
+/// a chord walks it.
+pub(crate) fn block_cursor_fill(ui: &egui::Ui) -> egui::Color32 {
     ui.visuals().selection.bg_fill.gamma_multiply(0.35)
 }
 
@@ -3311,6 +3315,48 @@ mod tests {
                 tool_use_id: None,
             },
         ]
+    }
+
+    /// An executed edit (auto mode: the CLI approved it, so no permission row
+    /// ever showed the diff) starts EXPANDED even when the diff is large — the
+    /// file header and diff render without a click.
+    #[test]
+    fn executed_large_edit_starts_expanded() {
+        let old_string: String = (0..20).map(|i| format!("old line {i}\n")).collect();
+        let new_string: String = (0..20).map(|i| format!("new line {i}\n")).collect();
+        let file_update = crate::file_update::FileUpdate::from_tool_call(
+            "Edit",
+            &json!({
+                "file_path": "crates/notedeck_dave/src/lib.rs",
+                "old_string": old_string,
+                "new_string": new_string,
+            }),
+        )
+        .expect("edit file update");
+        assert!(
+            file_update.diff_lines().len() >= 10,
+            "fixture must exceed the old small-diff threshold"
+        );
+        let results = vec![crate::messages::ExecutedTool {
+            tool_name: "Edit".to_string(),
+            summary: "lib.rs".to_string(),
+            output: None,
+            parent_task_id: None,
+            file_update: Some(file_update),
+            tool_use_id: None,
+        }];
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(420.0, 800.0))
+            .build_ui(move |ui| {
+                let mut nav = BlockNav::default();
+                for result in &results {
+                    DaveUi::executed_tool_ui(result, &mut nav, ui);
+                }
+            });
+        harness.run();
+
+        // The file header only renders when the diff body is expanded.
+        harness.get_by_label("crates/notedeck_dave/src/lib.rs");
     }
 
     /// Clicking anywhere on a collapsible tool-result summary line — not just

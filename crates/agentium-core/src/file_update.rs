@@ -11,7 +11,10 @@ pub struct FileUpdate {
     diff_lines: Vec<DiffLine>,
 }
 
-#[derive(Debug, Clone)]
+/// Serializable (as an internally tagged `{"type": "edit", ...}` object) so a
+/// [`FileUpdateWire`] can carry it on a `tool_result` note.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum FileUpdateType {
     /// Edit: replace old_string with new_string
     Edit {
@@ -62,6 +65,24 @@ pub struct ExpandedDiffContext {
     pub has_more_below: bool,
 }
 
+/// Wire form of a [`FileUpdate`]: the path and the update, without the cached
+/// diff lines, which are recomputed on decode (see `From<FileUpdateWire>`).
+///
+/// Carried on a `tool_result` note's content so a reloaded or remote session
+/// can render the diff of an edit that no permission request ever showed
+/// (an edit auto-approved by the CLI in auto / accept-edits mode).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileUpdateWire {
+    pub file_path: String,
+    pub update: FileUpdateType,
+}
+
+impl From<FileUpdateWire> for FileUpdate {
+    fn from(wire: FileUpdateWire) -> Self {
+        FileUpdate::new(wire.file_path, wire.update)
+    }
+}
+
 impl FileUpdate {
     /// Create a new FileUpdate, computing the diff eagerly
     pub fn new(file_path: String, update_type: FileUpdateType) -> Self {
@@ -76,6 +97,28 @@ impl FileUpdate {
     /// Get the cached diff lines
     pub fn diff_lines(&self) -> &[DiffLine] {
         &self.diff_lines
+    }
+
+    /// The wire form of this update, for encoding onto a `tool_result` note.
+    pub fn to_wire(&self) -> FileUpdateWire {
+        FileUpdateWire {
+            file_path: self.file_path.clone(),
+            update: self.update_type.clone(),
+        }
+    }
+
+    /// Byte length of the text this update carries (path plus old/new strings,
+    /// written content, or diff), used to decide whether it fits a wire budget.
+    pub fn payload_len(&self) -> usize {
+        let body = match &self.update_type {
+            FileUpdateType::Edit {
+                old_string,
+                new_string,
+            } => old_string.len() + new_string.len(),
+            FileUpdateType::Write { content } => content.len(),
+            FileUpdateType::UnifiedDiff { diff } => diff.len(),
+        };
+        self.file_path.len() + body
     }
 
     /// Try to parse a FileUpdate from a tool name and tool input JSON
