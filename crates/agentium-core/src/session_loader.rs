@@ -279,10 +279,16 @@ fn load_session_messages_with_author(
     let mut messages = Vec::new();
     let mut orders = Vec::new();
     for note in &notes {
-        if let Some(msg) = render_conversation_note(note, &permissions.responded) {
-            messages.push(msg);
-            orders.push(EventOrder::from_note(note));
-        }
+        let Some(msg) = render_conversation_note(note, &permissions.responded) else {
+            continue;
+        };
+        // A later lifecycle note for a subagent already shown updates that row
+        // in place (it keeps the spawn's position and order key).
+        let Some(msg) = fold_subagent(&mut messages, msg) else {
+            continue;
+        };
+        messages.push(msg);
+        orders.push(EventOrder::from_note(note));
     }
 
     LoadedSession {
@@ -438,9 +444,43 @@ pub fn render_conversation_note(
                 crate::messages::CompactionInfo { pre_tokens },
             ))
         }
+        // One lifecycle transition; callers collapse a task's notes into one
+        // row with [`fold_subagent`].
+        Some("subagent") => {
+            crate::session_events::decode_subagent_note(note).map(Message::Subagent)
+        }
         // Skip progress, queue-operation, etc.
         _ => None,
     }
+}
+
+/// Collapse a rendered `role=subagent` message into the row already shown for
+/// the same `task-id`, returning `None` when it was folded in and the message
+/// unchanged (to be appended) otherwise.
+///
+/// A subagent publishes one note per lifecycle transition (spawned, then
+/// completed or failed), but it is one row in the transcript: the row stays
+/// where the spawn put it and takes the newest note's status and output.
+/// Callers feed notes in [`EventOrder`], so the last note folded in is the
+/// latest status. Shared by the loader and the live remote append path so a
+/// rebuild and an append agree.
+pub fn fold_subagent(messages: &mut [Message], msg: Message) -> Option<Message> {
+    let Message::Subagent(update) = msg else {
+        return Some(msg);
+    };
+    let existing = messages.iter_mut().rev().find_map(|m| match m {
+        Message::Subagent(s) if s.task_id == update.task_id => Some(s),
+        _ => None,
+    });
+    let Some(existing) = existing else {
+        return Some(Message::Subagent(update));
+    };
+    existing.status = update.status;
+    existing.output = update.output;
+    existing.description = update.description;
+    existing.subagent_type = update.subagent_type;
+    existing.background = update.background;
+    None
 }
 
 /// The `status` tag value marking a soft-deleted session.
@@ -1918,6 +1958,123 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn subagent_info(
+        task_id: &str,
+        status: crate::messages::SubagentStatus,
+        output: &str,
+    ) -> crate::messages::SubagentInfo {
+        crate::messages::SubagentInfo {
+            task_id: task_id.to_string(),
+            description: "Find the loader".to_string(),
+            subagent_type: "Explore".to_string(),
+            status,
+            output: output.to_string(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: true,
+        }
+    }
+
+    /// A subagent's spawned → completed notes collapse into ONE
+    /// `Message::Subagent` at the spawn's position carrying the final status
+    /// and result, and a failed one carries its error — the builder↔loader
+    /// round trip `agentium log` and remote observers depend on
+    /// (headway:dave/good-note-salute).
+    #[tokio::test]
+    async fn subagent_lifecycle_notes_fold_into_one_row() {
+        use crate::messages::SubagentStatus;
+        use crate::session_events::build_subagent_event;
+
+        let sk = test_secret_key();
+        let session_id = "subagent-fold";
+        let mut threading = crate::session_events::ThreadingState::new();
+        let mut build = |info: &crate::messages::SubagentInfo| {
+            build_subagent_event(info, session_id, &mut threading, &sk)
+                .unwrap()
+                .to_event_json()
+        };
+        let events = [
+            build(&subagent_info("t-ok", SubagentStatus::Running, "")),
+            build(&subagent_info("t-bad", SubagentStatus::Running, "")),
+            build(&subagent_info(
+                "t-ok",
+                SubagentStatus::Completed,
+                "found it",
+            )),
+            build(&subagent_info("t-bad", SubagentStatus::Failed, "boom")),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        assert_eq!(loaded.messages.len(), 2, "four notes, two subagents");
+        assert_eq!(loaded.orders.len(), 2, "orders stay aligned with messages");
+        let rows: Vec<_> = loaded
+            .messages
+            .iter()
+            .map(|m| match m {
+                Message::Subagent(s) => (
+                    s.task_id.as_str(),
+                    s.status,
+                    s.output.as_str(),
+                    s.subagent_type.as_str(),
+                    s.description.as_str(),
+                    s.background,
+                ),
+                other => panic!("expected only subagent rows, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "t-ok",
+                    SubagentStatus::Completed,
+                    "found it",
+                    "Explore",
+                    "Find the loader",
+                    true
+                ),
+                (
+                    "t-bad",
+                    SubagentStatus::Failed,
+                    "boom",
+                    "Explore",
+                    "Find the loader",
+                    true
+                ),
+            ],
+            "rows keep spawn order and take the latest status and output"
+        );
+    }
+
+    /// A still-running subagent publishes no output (streamed output never goes
+    /// on the wire), and a subagent note without a `task-id` renders nothing.
+    #[test]
+    fn running_subagent_note_has_no_output() {
+        use crate::messages::SubagentStatus;
+        use crate::session_events::{build_subagent_event, SubagentContent};
+
+        let sk = test_secret_key();
+        let mut threading = crate::session_events::ThreadingState::new();
+        let evt = build_subagent_event(
+            &subagent_info("t", SubagentStatus::Running, "partial stream"),
+            "s",
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&evt.note_json).unwrap();
+        let content: SubagentContent =
+            serde_json::from_str(v["content"].as_str().unwrap()).unwrap();
+        assert_eq!(content.output, None);
+        assert_eq!(content.description, "Find the loader");
     }
 
     /// `pending_permission_requests` lists only the requests no response has

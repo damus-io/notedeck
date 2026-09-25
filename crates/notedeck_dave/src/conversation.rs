@@ -423,6 +423,9 @@ pub(crate) fn process_conversation_notes<'a>(
                 // remote path instead of waiting for a full rebuild.
                 | Some("permission_response")
                 | Some("compaction_complete")
+                // A later lifecycle note for a subagent already shown folds
+                // into its row on append (see `fold_subagent`).
+                | Some("subagent")
         );
         if displayable {
             let created_at = note.created_at();
@@ -515,10 +518,12 @@ pub(crate) fn process_conversation_notes<'a>(
         let appendable = matches!(agentic.tail_order, Some(tail) if min_new > tail);
         if appendable {
             for &i in &new_display_idxs {
-                if let Some(msg) = session_loader::render_conversation_note(
+                let msg = session_loader::render_conversation_note(
                     &notes[i],
                     &agentic.permissions.responded,
-                ) {
+                )
+                .and_then(|msg| session_loader::fold_subagent(&mut session.chat, msg));
+                if let Some(msg) = msg {
                     session.chat.push(msg);
                 }
             }
@@ -1264,6 +1269,113 @@ mod tests {
             assistant_texts(&session.chat),
             assistant_texts(&rebuilt.messages),
             "the fast-path append must match a from-scratch rebuild"
+        );
+    }
+
+    /// A remote observer sees a subagent as ONE row: its spawn note appends a
+    /// running row, and the in-order completion note folds into that row on
+    /// the fast path (no rebuild, no second row) — matching what a
+    /// from-scratch loader rebuild produces (headway:dave/good-note-salute).
+    #[tokio::test]
+    async fn remote_subagent_completion_folds_into_its_row() {
+        use crate::messages::{SubagentInfo, SubagentStatus};
+
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let mut threading = ThreadingState::new();
+        let session_id_str = "remote-subagent-test";
+
+        let first = build_live_event(
+            "working on it",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let mut info = SubagentInfo {
+            task_id: "toolu_sub".to_string(),
+            description: "Survey the crate".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: false,
+        };
+        let spawned =
+            session_events::build_subagent_event(&info, session_id_str, &mut threading, &sk)
+                .unwrap();
+        info.status = SubagentStatus::Completed;
+        info.output = "three modules".to_string();
+        let completed =
+            session_events::build_subagent_event(&info, session_id_str, &mut threading, &sk)
+                .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        // Seed the tail with the assistant note, then poll each subagent note
+        // in order, the way `poll_remote_conversation_events` would.
+        for (i, evt) in [&first, &spawned, &completed].into_iter().enumerate() {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            if i == 0 {
+                rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+                continue;
+            }
+            let note = ndb.get_note_by_id(&txn, &evt.note_id).unwrap();
+            let result =
+                process_conversation_notes(vec![note], &mut session, 1, true, Some(&sk), &ndb);
+            assert!(
+                !result.rebuild_chat,
+                "an in-order subagent note must append/fold, not rebuild"
+            );
+        }
+
+        let subagents = |chat: &[Message]| -> Vec<(String, SubagentStatus, String)> {
+            chat.iter()
+                .filter_map(|m| match m {
+                    Message::Subagent(s) => Some((s.task_id.clone(), s.status, s.output.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let expected = vec![(
+            "toolu_sub".to_string(),
+            SubagentStatus::Completed,
+            "three modules".to_string(),
+        )];
+        assert_eq!(subagents(&session.chat), expected, "one row, final status");
+        assert_eq!(session.chat.len(), 2, "assistant row + one subagent row");
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let rebuilt =
+            session_loader::load_session_messages_for_author(&ndb, &txn, &author, session_id_str);
+        assert_eq!(
+            subagents(&rebuilt.messages),
+            expected,
+            "the live fold must match a from-scratch rebuild"
         );
     }
 

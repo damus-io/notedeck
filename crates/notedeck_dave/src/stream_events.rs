@@ -111,8 +111,10 @@ impl Dave {
                     DaveApiResponse::CompactionComplete(info) => {
                         Some((info.pre_tokens.to_string(), "compaction_complete", None))
                     }
-                    // PermissionRequest has custom event building (below).
-                    // Token, ToolCalls, SessionInfo, Subagent* don't publish.
+                    // PermissionRequest and the subagent lifecycle
+                    // (spawned/completed/failed) have custom event building
+                    // (below). Token, ToolCalls, SessionInfo and streamed
+                    // SubagentOutput don't publish.
                     _ => None,
                 };
 
@@ -168,16 +170,20 @@ impl Dave {
                         handle_session_info(session, info);
                     }
                     DaveApiResponse::SubagentSpawned(subagent) => {
+                        let task_id = subagent.task_id.clone();
                         handle_subagent_spawned(session, subagent);
+                        publish_subagent(session, &task_id, &secret_key, app_ctx.ndb);
                     }
                     DaveApiResponse::SubagentOutput { task_id, output } => {
                         session.update_subagent_output(&task_id, &output);
                     }
                     DaveApiResponse::SubagentCompleted { task_id, result } => {
                         session.complete_subagent(&task_id, &result);
+                        publish_subagent(session, &task_id, &secret_key, app_ctx.ndb);
                     }
                     DaveApiResponse::SubagentFailed { task_id, error } => {
                         session.fail_subagent(&task_id, &error);
+                        publish_subagent(session, &task_id, &secret_key, app_ctx.ndb);
                     }
                     DaveApiResponse::CompactionStarted => {
                         if let Some(agentic) = &mut session.agentic {
@@ -426,6 +432,42 @@ fn handle_subagent_spawned(session: &mut session::ChatSession, subagent: Subagen
     }
 }
 
+/// Publish a subagent's current lifecycle state (after a spawn, completion or
+/// failure has been applied to its chat row) as a `role=subagent` kind-1988
+/// note, so remote Dave observers and `agentium` readers see subagents.
+///
+/// Locally ingested like the other live roles; the host fans it out. The note
+/// is built from the row itself, so it carries the full description, type and
+/// background flag on every transition. Returns `None` (publishing nothing)
+/// without a signing key, for a chat-only session, or for a task id with no
+/// row — e.g. a completion for a subagent spawned before a restart.
+fn publish_subagent(
+    session: &mut session::ChatSession,
+    task_id: &str,
+    secret_key: &Option<[u8; 32]>,
+    ndb: &nostrdb::Ndb,
+) -> Option<session_events::BuiltEvent> {
+    let sk = secret_key.as_ref()?;
+    let agentic = session.agentic.as_mut()?;
+    let idx = *agentic.subagent_indices.get(task_id)?;
+    let Some(Message::Subagent(info)) = session.chat.get(idx) else {
+        return None;
+    };
+    let session_id = agentic.event_session_id().to_string();
+    match session_events::build_subagent_event(info, &session_id, &mut agentic.live_threading, sk) {
+        Ok(event) => {
+            // Mark as seen so the relay echo isn't reprocessed.
+            agentic.seen_note_ids.insert(event.note_id);
+            pns_ingest(ndb, &event.note_json, sk);
+            Some(event)
+        }
+        Err(e) => {
+            tracing::warn!("failed to build subagent event: {}", e);
+            None
+        }
+    }
+}
+
 /// Handle compaction completion from the AI backend.
 ///
 /// Updates agentic state, advances compact-and-proceed if waiting,
@@ -628,5 +670,85 @@ pub(crate) fn dispatch_compact_for_session(
         if let Some(agentic) = &mut session.agentic {
             agentic.compact_intent = Some(session::CompactIntent::ProceedAfterCompaction);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AiMode;
+    use crate::messages::SubagentStatus;
+    use crate::tests::{test_config, test_secret_key};
+    use nostrdb::Ndb;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Read a tag's value out of a built event's JSON.
+    fn tag<'a>(event: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+        event["tags"]
+            .as_array()?
+            .iter()
+            .find(|t| t[0] == name)
+            .and_then(|t| t[1].as_str())
+    }
+
+    /// The host publishes each subagent lifecycle transition as a
+    /// `role=subagent` kind-1988 note built from the chat row — spawned while
+    /// running, then completed with its result — and marks each note seen so
+    /// its relay echo isn't reprocessed (headway:dave/good-note-salute).
+    #[test]
+    fn subagent_lifecycle_publishes_role_subagent_notes() {
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let sk = Some(test_secret_key());
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.agentic.as_mut().unwrap().event_id = "subagent-publish".to_string();
+
+        handle_subagent_spawned(
+            &mut session,
+            SubagentInfo {
+                task_id: "toolu_1".to_string(),
+                description: "Map the loader".to_string(),
+                subagent_type: "Explore".to_string(),
+                status: SubagentStatus::Running,
+                output: String::new(),
+                max_output_size: 4000,
+                tool_results: Vec::new(),
+                background: true,
+            },
+        );
+        let spawned =
+            publish_subagent(&mut session, "toolu_1", &sk, &ndb).expect("a spawn publishes a note");
+        session.complete_subagent("toolu_1", "found 3 call sites");
+        let completed = publish_subagent(&mut session, "toolu_1", &sk, &ndb)
+            .expect("a completion publishes a note");
+
+        for (event, status) in [(&spawned, "running"), (&completed, "completed")] {
+            let v: serde_json::Value = serde_json::from_str(&event.note_json).unwrap();
+            assert_eq!(v["kind"], session_events::AI_CONVERSATION_KIND);
+            assert_eq!(tag(&v, "role"), Some("subagent"));
+            assert_eq!(tag(&v, "d"), Some("subagent-publish"));
+            assert_eq!(tag(&v, "task-id"), Some("toolu_1"));
+            assert_eq!(tag(&v, "subagent-type"), Some("Explore"));
+            assert_eq!(tag(&v, "background"), Some("true"));
+            assert_eq!(tag(&v, "status"), Some(status));
+        }
+        let v: serde_json::Value = serde_json::from_str(&completed.note_json).unwrap();
+        let content: session_events::SubagentContent =
+            serde_json::from_str(v["content"].as_str().unwrap()).unwrap();
+        assert_eq!(content.output.as_deref(), Some("found 3 call sites"));
+
+        let seen = &session.agentic.as_ref().unwrap().seen_note_ids;
+        assert!(seen.contains(&spawned.note_id) && seen.contains(&completed.note_id));
+
+        assert!(
+            publish_subagent(&mut session, "unknown-task", &sk, &ndb).is_none(),
+            "a task id with no row publishes nothing"
+        );
     }
 }

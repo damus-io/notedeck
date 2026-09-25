@@ -844,6 +844,129 @@ pub fn build_permission_response_event(
     Ok(event)
 }
 
+/// Wire budget for a subagent note's `output` (its result or error text), in
+/// bytes. Shares the tool-result budget so the PNS-wrapped note stays under
+/// relay size limits.
+const MAX_SUBAGENT_OUTPUT_BYTES: usize = 40_000;
+
+/// Wire form of a `role=subagent` note's `content`.
+///
+/// The machine-readable lifecycle (task id, type, status, background) rides in
+/// tags so a reader can filter without parsing; the free text lives here.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SubagentContent {
+    /// What the subagent was asked to do (the Task/Agent `description`).
+    pub description: String,
+    /// The result text when `completed`, the error text when `failed`; absent
+    /// while `running` (streamed output is not published).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// Build a kind-1988 `role=subagent` event for one subagent lifecycle
+/// transition (spawned, completed, or failed).
+///
+/// Each note is self-contained — it repeats the description, type, and
+/// background flag — so a reader that only sees the latest note for a
+/// `task-id` still has the whole row. Readers take the latest status per
+/// `task-id` (see [`session_loader::fold_subagent`](crate::session_loader::fold_subagent)).
+/// The output is capped to [`MAX_SUBAGENT_OUTPUT_BYTES`] here, so callers can
+/// pass the host's full in-memory [`SubagentInfo`](crate::messages::SubagentInfo).
+pub fn build_subagent_event(
+    info: &crate::messages::SubagentInfo,
+    session_id: &str,
+    threading: &mut ThreadingState,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    use crate::messages::SubagentStatus;
+
+    let output = match info.status {
+        SubagentStatus::Running => None,
+        SubagentStatus::Completed | SubagentStatus::Failed => {
+            let end = crate::util::floor_char_boundary(&info.output, MAX_SUBAGENT_OUTPUT_BYTES);
+            Some(info.output[..end].to_string())
+        }
+    };
+    let content = serde_json::to_string(&SubagentContent {
+        description: info.description.clone(),
+        output,
+    })
+    .map_err(|e| EventBuildError::Serialize(e.to_string()))?;
+
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
+
+    // Session identity
+    builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Ordering tags: `ms` sub-second (primary tiebreak), `seq` monotonic index.
+    builder = stamp_ms_tag(builder, Some(now_ms));
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
+
+    // Subagent lifecycle tags
+    builder = builder.start_tag().tag_str("role").tag_str("subagent");
+    builder = builder
+        .start_tag()
+        .tag_str("task-id")
+        .tag_str(&info.task_id);
+    builder = builder
+        .start_tag()
+        .tag_str("subagent-type")
+        .tag_str(&info.subagent_type);
+    builder = builder
+        .start_tag()
+        .tag_str("status")
+        .tag_str(info.status.as_wire());
+    builder = builder
+        .start_tag()
+        .tag_str("background")
+        .tag_str(if info.background { "true" } else { "false" });
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+
+    // Discoverability
+    builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
+
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
+}
+
+/// Decode a `role=subagent` note back into the [`SubagentInfo`](crate::messages::SubagentInfo)
+/// that [`build_subagent_event`] wrote, or `None` when it lacks a `task-id`.
+///
+/// An unknown `status` reads as `Running`, and content that isn't
+/// [`SubagentContent`] JSON is kept whole as the description. Subagent-internal
+/// tool results are not on the wire, so `tool_results` is empty.
+pub fn decode_subagent_note(note: &nostrdb::Note) -> Option<crate::messages::SubagentInfo> {
+    use crate::messages::{SubagentInfo, SubagentStatus};
+
+    let task_id = get_tag_value(note, "task-id")?.to_string();
+    let content = serde_json::from_str::<SubagentContent>(note.content()).unwrap_or_else(|_| {
+        SubagentContent {
+            description: note.content().to_string(),
+            output: None,
+        }
+    });
+    Some(SubagentInfo {
+        task_id,
+        description: content.description,
+        subagent_type: get_tag_value(note, "subagent-type")
+            .unwrap_or("agent")
+            .to_string(),
+        status: get_tag_value(note, "status")
+            .and_then(SubagentStatus::from_wire)
+            .unwrap_or(SubagentStatus::Running),
+        output: content.output.unwrap_or_default(),
+        max_output_size: 4000,
+        tool_results: Vec::new(),
+        background: get_tag_value(note, "background") == Some("true"),
+    })
+}
+
 /// Decode a permission response from its JSON content string.
 ///
 /// Returns the decision as a `PermissionResponseType` and an optional
@@ -2051,6 +2174,25 @@ mod tests {
         // Interrupt command.
         let interrupt = build_interrupt_event(session_id, &mut threading, &sk).unwrap();
         assert_has_seq(&interrupt.note_json);
+
+        // Subagent lifecycle note.
+        let subagent = build_subagent_event(
+            &crate::messages::SubagentInfo {
+                task_id: "t".to_string(),
+                description: "d".to_string(),
+                subagent_type: "Explore".to_string(),
+                status: crate::messages::SubagentStatus::Running,
+                output: String::new(),
+                max_output_size: 4000,
+                tool_results: Vec::new(),
+                background: false,
+            },
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert_has_seq(&subagent.note_json);
 
         // JSONL-derived conversation events (build_events → build_single_event).
         let line = JsonlLine::parse(&format!(

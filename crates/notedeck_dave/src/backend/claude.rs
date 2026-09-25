@@ -78,6 +78,13 @@ fn parse_user_content_blocks(user_msg: &UserMessage) -> Vec<ContentBlock> {
         .unwrap_or_default()
 }
 
+/// Whether a tool spawns a subagent. Claude Code renamed its `Task` tool to
+/// `Agent`; both names still appear depending on the CLI version, and missing
+/// either one silently drops that version's subagents.
+fn is_subagent_tool(name: &str) -> bool {
+    matches!(name, "Task" | "Agent")
+}
+
 /// Whether a tool_use requests background execution (`run_in_background: true`).
 fn is_background_task(input: &serde_json::Value) -> bool {
     input
@@ -107,11 +114,11 @@ fn handle_tool_result(
     };
     let result_value = tool_result_content_to_value(&tool_result.content);
 
-    // A foreground Task tool completion ends the current subagent. A background
+    // A foreground Task/Agent completion ends the current subagent. A background
     // subagent's launch produces an immediate tool result ("Async agent
     // launched successfully") that is NOT completion — it completes later via
     // `task_notification`, so skip it here.
-    if tool_name == "Task" && !is_background_task(&tool_input) {
+    if is_subagent_tool(&tool_name) && !is_background_task(&tool_input) {
         let result_text =
             extract_response_content(&result_value).unwrap_or_else(|| "completed".to_string());
         shared::complete_subagent(
@@ -286,13 +293,13 @@ fn handle_stream_message(
                 if let ContentBlock::ToolUse(ToolUseBlock { id, name, input }) = block {
                     pending_tools.insert(id.clone(), (name.clone(), input.clone()));
 
-                    // Emit SubagentSpawned for foreground Task tool calls. A
+                    // Emit SubagentSpawned for foreground Task/Agent tool calls. A
                     // background subagent (`run_in_background`) is spawned from
                     // its `task_started` system message instead — it outlives
                     // this turn and completes on a wake-up, so it must not join
                     // the foreground `subagent_stack` nor complete on its launch
                     // tool result.
-                    if name == "Task" && !is_background_task(input) {
+                    if is_subagent_tool(name) && !is_background_task(input) {
                         let description = input
                             .get("description")
                             .and_then(|v| v.as_str())
@@ -327,7 +334,7 @@ fn handle_stream_message(
 
                     // Emit an in-flight "running" row for a generic foreground
                     // tool so the user sees which tool is executing before its
-                    // result lands. Task/TodoWrite already surface their own
+                    // result lands. Task/Agent/TodoWrite already surface their own
                     // rows, and a subagent-internal tool (a set
                     // `parent_tool_use_id`, or a non-empty foreground
                     // `subagent_stack`) folds into its subagent instead of chat.
@@ -336,7 +343,7 @@ fn handle_stream_message(
                     // guaranteed a foreground result that resolves it in place.
                     let is_foreground =
                         assistant_msg.parent_tool_use_id.is_none() && subagent_stack.is_empty();
-                    if name != "Task" && name != "TodoWrite" && is_foreground {
+                    if !is_subagent_tool(name) && name != "TodoWrite" && is_foreground {
                         let summary = format_tool_summary(name, input, &serde_json::Value::Null);
                         let _ = response_tx.send(DaveApiResponse::ToolRunning(RunningTool {
                             tool_use_id: id.clone(),
@@ -1737,6 +1744,46 @@ mod tests {
         assert!(
             harness.running_tools().is_empty(),
             "a subagent-internal tool has no top-level running row"
+        );
+    }
+
+    /// Newer Claude Code names its subagent tool `Agent` rather than `Task`.
+    /// Both must spawn and complete a subagent, or that CLI version's subagents
+    /// never reach the transcript or the wire.
+    #[test]
+    fn agent_tool_spawns_and_completes_a_subagent() {
+        let mut harness = StreamHarness::new();
+
+        harness.feed(serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [
+                tool_use("toolu_a", "Agent", serde_json::json!({
+                    "description": "look around", "subagent_type": "Explore"
+                })),
+            ]},
+        }));
+        harness.feed(user_with(vec![tool_result("toolu_a", "all done")]));
+
+        let lifecycle: Vec<String> = harness
+            .rx
+            .try_iter()
+            .filter_map(|r| match r {
+                DaveApiResponse::SubagentSpawned(info) => {
+                    Some(format!("spawned {} {}", info.task_id, info.subagent_type))
+                }
+                DaveApiResponse::SubagentCompleted { task_id, result } => {
+                    Some(format!("completed {task_id} {result}"))
+                }
+                DaveApiResponse::ToolRunning(running) => {
+                    Some(format!("running {}", running.tool_name))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lifecycle,
+            vec!["spawned toolu_a Explore", "completed toolu_a all done"],
+            "an Agent tool_use is a subagent, not a generic running tool"
         );
     }
 

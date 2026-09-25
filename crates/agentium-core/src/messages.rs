@@ -718,6 +718,27 @@ pub enum SubagentStatus {
     Failed,
 }
 
+impl SubagentStatus {
+    /// The `status` tag value a `role=subagent` kind-1988 note carries.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            SubagentStatus::Running => "running",
+            SubagentStatus::Completed => "completed",
+            SubagentStatus::Failed => "failed",
+        }
+    }
+
+    /// Parse a `status` tag value written by [`as_wire`](Self::as_wire).
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "running" => Some(SubagentStatus::Running),
+            "completed" => Some(SubagentStatus::Completed),
+            "failed" => Some(SubagentStatus::Failed),
+            _ => None,
+        }
+    }
+}
+
 /// Information about a subagent spawned by the Task tool
 #[derive(Debug, Clone)]
 pub struct SubagentInfo {
