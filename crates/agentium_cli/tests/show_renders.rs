@@ -2,7 +2,8 @@
 //! and that a bare `show` falls back to `$AGENTIUM_SESSION`.
 //!
 //! Each test seeds a signed kind-31988 state, a short kind-1988 conversation
-//! (including one unanswered `permission_request`) and a kind-31991 run config on
+//! (including one unanswered `permission_request` and two subagents published as
+//! `role=subagent` lifecycle notes) and a kind-31991 run config on
 //! the session's host+cwd into a cache dir, then runs the actual binary against
 //! it. The relay points at a closed port so connect fails fast and the bounded
 //! sync-settle elapses into a cache read — mirroring `list_renders.rs`.
@@ -10,8 +11,9 @@
 use std::process::{Command, Output};
 
 use agentium_core::config::{AI_RUN_CONFIG_KIND, RunConfig};
+use agentium_core::messages::{SubagentInfo, SubagentStatus};
 use agentium_core::session_events::{
-    ThreadingState, build_permission_request_event, build_run_config_event_at,
+    ThreadingState, build_permission_request_event, build_run_config_event_at, build_subagent_event,
 };
 use nostrdb::{Config, Ndb, NoteBuilder};
 use tempfile::TempDir;
@@ -45,6 +47,31 @@ const OTHER: &str = "sess-other";
 fn ingest_json(ndb: &Ndb, note_json: &str) {
     ndb.process_client_event(&format!(r#"["EVENT",{note_json}]"#))
         .expect("ingest");
+}
+
+/// Publish one `role=subagent` lifecycle note on [`SESSION`] through the host's
+/// own builder, so the seed matches what Dave actually writes.
+fn seed_subagent(
+    ndb: &Ndb,
+    threading: &mut ThreadingState,
+    task_id: &str,
+    subagent_type: &str,
+    description: &str,
+    status: SubagentStatus,
+    background: bool,
+) {
+    let info = SubagentInfo {
+        task_id: task_id.into(),
+        description: description.into(),
+        subagent_type: subagent_type.into(),
+        status,
+        output: String::new(),
+        max_output_size: 4000,
+        tool_results: Vec::new(),
+        background,
+    };
+    let ev = build_subagent_event(&info, SESSION, threading, &SECKEY).expect("subagent event");
+    ingest_json(ndb, &ev.note_json);
 }
 
 /// Seed a signed kind-31988 state for `d` with the tags `SessionState::from_note`
@@ -108,7 +135,8 @@ fn seed_message(ndb: &Ndb, role: &str, content: &str, seq: u32, ms: u64) {
 }
 
 /// Open a fresh cache in `dir` holding [`SESSION`] (two chat messages, one
-/// pending `Bash` permission request, one run config on its host+cwd) and a bare
+/// pending `Bash` permission request, two subagents — one spawned-then-completed,
+/// one still running in the background — and one run config on its host+cwd) and a bare
 /// [`OTHER`] session, and wait until all of it is queryable. Returns the db path
 /// and the pending request's perm-id; the db handle is dropped so the subprocess
 /// opens the cache cleanly.
@@ -144,6 +172,37 @@ async fn seed_cache(dir: &TempDir) -> (String, uuid::Uuid) {
     .expect("request event");
     ingest_json(&ndb, &req.note_json);
 
+    // Subagent lifecycle: the shared `threading` bumps `seq`, so the completion
+    // folds after its spawn even when both land in the same millisecond.
+    let explore = "map the show module";
+    seed_subagent(
+        &ndb,
+        &mut threading,
+        "task-1",
+        "Explore",
+        explore,
+        SubagentStatus::Running,
+        false,
+    );
+    seed_subagent(
+        &ndb,
+        &mut threading,
+        "task-1",
+        "Explore",
+        explore,
+        SubagentStatus::Completed,
+        false,
+    );
+    seed_subagent(
+        &ndb,
+        &mut threading,
+        "task-2",
+        "Plan",
+        "draft the rollup",
+        SubagentStatus::Running,
+        true,
+    );
+
     let config = RunConfig {
         id: "cfg-build".into(),
         name: "build".into(),
@@ -153,8 +212,8 @@ async fn seed_cache(dir: &TempDir) -> (String, uuid::Uuid) {
     let rc = build_run_config_event_at(&config, CWD, HOST, Some(1_000), &SECKEY).expect("config");
     ingest_json(&ndb, &rc.note_json);
 
-    // 2 states + 2 messages + 1 request + 1 run config.
-    ndb.wait_for_all_notes(sub, 6)
+    // 2 states + 2 messages + 1 request + 3 subagent notes + 1 run config.
+    ndb.wait_for_all_notes(sub, 9)
         .await
         .expect("ingest seeded notes");
     (db_path, perm_id)
@@ -226,6 +285,10 @@ async fn show_renders_every_section() {
         "pending permissions",
         short,
         "Bash",
+        "subagents",
+        "1 completed, 1 running (1 background), 0 failed",
+        "map the show module",
+        "draft the rollup",
     ] {
         assert!(
             stdout.contains(needle),
@@ -288,8 +351,34 @@ async fn show_json_shape() {
     assert_eq!(pending[0]["perm_id"], perm_id.to_string());
     assert_eq!(pending[0]["tool_name"], "Bash");
     assert_eq!(pending[0]["is_question"], false);
-    // The two chat messages plus the request itself.
-    assert_eq!(conv["message_count"], 3, "{conv}");
+    // The two chat messages, the request itself, and one row per subagent
+    // (task-1's two lifecycle notes fold into one).
+    assert_eq!(conv["message_count"], 5, "{conv}");
+
+    let subagents = &json["subagents"];
+    assert_eq!(subagents["completed"], 1, "{subagents}");
+    assert_eq!(subagents["running"], 1, "{subagents}");
+    assert_eq!(subagents["failed"], 0, "{subagents}");
+    assert_eq!(subagents["background"], 1, "{subagents}");
+    assert_eq!(
+        subagents["items"],
+        serde_json::json!([
+            {
+                "task_id": "task-1",
+                "subagent_type": "Explore",
+                "description": "map the show module",
+                "status": "completed",
+                "background": false,
+            },
+            {
+                "task_id": "task-2",
+                "subagent_type": "Plan",
+                "description": "draft the rollup",
+                "status": "running",
+                "background": true,
+            },
+        ])
+    );
 }
 
 /// A bare `show` — no selector — targets `$AGENTIUM_SESSION`, the `agentium:`

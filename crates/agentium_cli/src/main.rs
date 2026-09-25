@@ -101,8 +101,8 @@ enum Command {
         opts: WatchOpts,
     },
     /// Print git-show-style detail for one resolved session: its kind-31988
-    /// state, the run-configs on its host+cwd, its latest usage, and a
-    /// conversation summary. The selector is optional — it defaults to
+    /// state, the run-configs on its host+cwd, its latest usage, a
+    /// conversation summary, and a subagent rollup. The selector is optional — it defaults to
     /// `$AGENTIUM_SESSION` so a running Dave session can just type
     /// `agentium show`.
     Show {
@@ -807,10 +807,13 @@ COMMANDS:
     show [session]    Show one session's detail: its state, the run-configs on
                       its host+cwd, its latest usage, and a conversation summary
                       (message count + each pending permission request, with
-                      the id approve/deny --request takes). Takes any
-                      selector `list` accepts; defaults to $AGENTIUM_SESSION so a
-                      running Dave session can just run `agentium show`. --json
-                      emits the structured detail object.
+                      the id approve/deny --request takes), and a subagent
+                      rollup (counts by status + one line each; sessions
+                      recorded before subagents were published show none).
+                      Takes any selector `list` accepts; defaults to
+                      $AGENTIUM_SESSION so a running Dave session can just run
+                      `agentium show`. --json emits the structured detail
+                      object.
     log [session]     Print one session's full conversation, one entry per
                       message, in order (millisecond wall-clock, not seq). Takes
                       any selector `list` accepts; defaults to $AGENTIUM_SESSION.

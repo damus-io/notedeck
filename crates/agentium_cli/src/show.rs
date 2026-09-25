@@ -3,6 +3,7 @@
 use std::io::IsTerminal;
 
 use agentium_core::Engine;
+use agentium_core::messages::{Message, SubagentStatus};
 use agentium_core::session_loader::{PendingPermission, SessionState};
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
@@ -20,14 +21,16 @@ use crate::term::{
 /// `agentium:` ref still describes a soft-deleted session), then renders: the
 /// session's `agentium:` URI + status, every kind-31988 state field, the
 /// run-configs registered on its host+cwd, its latest usage snapshot (from the
-/// kind-1989 archive, when present), and a conversation summary (message count
+/// kind-1989 archive, when present), a conversation summary (message count
 /// plus every pending permission request, with the id `approve`/`deny`
-/// `--request` takes). With `as_json`, the same detail is a
-/// single structured object.
+/// `--request` takes), and a subagent rollup. With `as_json`, the same detail
+/// is a single structured object.
 ///
-/// The `subagent` rollup the card envisions is deferred: subagent lifecycle is
-/// tracked live by a stateful stack in `notedeck_dave` (there is no batch
-/// JSONL→subagent parser), so it needs its own card rather than a half-build here.
+/// The subagent rollup folds the published `role=subagent` kind-1988 notes (one
+/// `Message::Subagent` per task, latest status). Sessions recorded before the
+/// host published those notes show no subagents; tool-result notes for the
+/// `Task`/`Agent` tool are deliberately not used as a stand-in, since they can't
+/// say whether a subagent is running, failed, or backgrounded.
 pub(crate) fn cmd_show(
     engine: &Engine,
     author: &Pubkey,
@@ -68,6 +71,7 @@ pub(crate) fn cmd_show(
             run_configs: &run_configs,
             usage: usage.as_ref().map(UsageJson::from),
             conversation: ConversationJson::from(&summary),
+            subagents: SubagentsJson::from(&summary.subagents[..]),
         };
         println!("{}", serde_json::to_string_pretty(&detail)?);
         return Ok(());
@@ -108,14 +112,16 @@ fn matching_run_configs(
 }
 
 /// A folded read of a session's kind-1988 conversation for the detail view: how
-/// many messages it holds, and every still-unanswered permission request. Owned
-/// (not borrowing the loaded session) so it can be rendered and serialized after
-/// the transaction is dropped.
+/// many messages it holds, every still-unanswered permission request, and the
+/// subagents it spawned. Owned (not borrowing the loaded session) so it can be
+/// rendered and serialized after the transaction is dropped.
 struct ConversationSummary {
     message_count: usize,
     /// The unanswered permission requests, oldest first — what `approve`/`deny`
     /// act on.
     pending: Vec<PendingPermission>,
+    /// Every subagent, in spawn order, at its latest status.
+    subagents: Vec<SubagentSummary>,
 }
 
 impl ConversationSummary {
@@ -124,7 +130,67 @@ impl ConversationSummary {
         ConversationSummary {
             message_count: loaded.messages.len(),
             pending: agentium_core::session_loader::pending_permission_requests(loaded),
+            subagents: loaded
+                .messages
+                .iter()
+                .filter_map(|m| match m {
+                    Message::Subagent(info) => Some(SubagentSummary::from(info)),
+                    _ => None,
+                })
+                .collect(),
         }
+    }
+}
+
+/// One subagent row of the rollup: the identity and lifecycle fields of a
+/// folded [`SubagentInfo`], without its (possibly large) output text.
+///
+/// [`SubagentInfo`]: agentium_core::messages::SubagentInfo
+struct SubagentSummary {
+    task_id: String,
+    subagent_type: String,
+    description: String,
+    status: SubagentStatus,
+    background: bool,
+}
+
+impl From<&agentium_core::messages::SubagentInfo> for SubagentSummary {
+    fn from(info: &agentium_core::messages::SubagentInfo) -> Self {
+        SubagentSummary {
+            task_id: info.task_id.clone(),
+            subagent_type: info.subagent_type.clone(),
+            description: info.description.clone(),
+            status: info.status,
+            background: info.background,
+        }
+    }
+}
+
+/// Per-status tallies over a subagent rollup. `background` counts across every
+/// status, so it overlaps the other three rather than adding to them.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
+struct SubagentCounts {
+    running: usize,
+    completed: usize,
+    failed: usize,
+    background: usize,
+}
+
+impl SubagentCounts {
+    /// Tally `subagents` by status (and background flag).
+    fn tally(subagents: &[SubagentSummary]) -> Self {
+        let mut c = SubagentCounts::default();
+        for s in subagents {
+            match s.status {
+                SubagentStatus::Running => c.running += 1,
+                SubagentStatus::Completed => c.completed += 1,
+                SubagentStatus::Failed => c.failed += 1,
+            }
+            if s.background {
+                c.background += 1;
+            }
+        }
+        c
     }
 }
 
@@ -141,6 +207,7 @@ struct SessionDetailJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<UsageJson>,
     conversation: ConversationJson,
+    subagents: SubagentsJson,
 }
 
 /// The `--json` shape of a [`UsageInfo`] snapshot. `UsageInfo` isn't itself
@@ -210,6 +277,45 @@ impl From<&ConversationSummary> for ConversationJson {
     }
 }
 
+/// The `--json` shape of the subagent rollup: the per-status counts flattened
+/// alongside every subagent row. Present (with zero counts and no items) even
+/// when the session spawned none, so consumers needn't special-case absence.
+#[derive(serde::Serialize)]
+struct SubagentsJson {
+    #[serde(flatten)]
+    counts: SubagentCounts,
+    items: Vec<SubagentJson>,
+}
+
+/// The `--json` shape of one [`SubagentSummary`].
+#[derive(serde::Serialize)]
+struct SubagentJson {
+    task_id: String,
+    subagent_type: String,
+    description: String,
+    /// `running` / `completed` / `failed` — the wire tag value.
+    status: &'static str,
+    background: bool,
+}
+
+impl From<&[SubagentSummary]> for SubagentsJson {
+    fn from(subagents: &[SubagentSummary]) -> Self {
+        SubagentsJson {
+            counts: SubagentCounts::tally(subagents),
+            items: subagents
+                .iter()
+                .map(|s| SubagentJson {
+                    task_id: s.task_id.clone(),
+                    subagent_type: s.subagent_type.clone(),
+                    description: s.description.clone(),
+                    status: s.status.as_wire(),
+                    background: s.background,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Width of the label column in the detail view, sized to the longest label
 /// (`cli session`, `run configs`), so values align in a second column.
 const DETAIL_LABEL_W: usize = 11;
@@ -224,7 +330,8 @@ fn field(label: &str, value: &str) -> String {
 ///
 /// A header line (`agentium:` URI + colored status) and the display title, then
 /// the kind-31988 state fields, the host+cwd run-configs, the usage snapshot
-/// (omitted entirely when `None`), and the conversation summary. Returns an
+/// (omitted entirely when `None`), the conversation summary, and the subagent
+/// rollup (omitted entirely when the session spawned none). Returns an
 /// owned `String` (rather than printing) so the layout is unit-testable; ANSI
 /// color is applied only when `color` (stdout is a tty).
 fn render_detail(
@@ -332,7 +439,42 @@ fn render_detail(
         }
     }
 
+    render_subagents(&mut out, &summary.subagents, color);
+
     out
+}
+
+/// Append the subagent rollup to `out`: a tally line (e.g. `3 completed, 1
+/// running (1 background), 0 failed`) then one `type  description  status`
+/// line per subagent, in spawn order. Appends nothing when `subagents` is
+/// empty.
+fn render_subagents(out: &mut String, subagents: &[SubagentSummary], color: bool) {
+    if subagents.is_empty() {
+        return;
+    }
+    let c = SubagentCounts::tally(subagents);
+    let background = if c.background > 0 {
+        format!(" ({} background)", c.background)
+    } else {
+        String::new()
+    };
+
+    out.push('\n');
+    out.push_str(&paint(color, SGR_BOLD, "subagents"));
+    out.push('\n');
+    out.push_str(&format!(
+        "  {} completed, {} running{background}, {} failed\n",
+        c.completed, c.running, c.failed
+    ));
+    for s in subagents {
+        let bg = if s.background { "  (background)" } else { "" };
+        out.push_str(&format!(
+            "  {}  {}  {}{bg}\n",
+            col(&s.subagent_type, 16),
+            col(&s.description, 48),
+            s.status.as_wire(),
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -366,6 +508,7 @@ mod tests {
                 created_ms: 0,
                 is_question: false,
             }],
+            subagents: vec![],
         };
         let out = render_detail(&s, &configs, Some(&u), &summary, 60, false);
 
@@ -398,6 +541,7 @@ mod tests {
         let summary = ConversationSummary {
             message_count: 0,
             pending: vec![],
+            subagents: vec![],
         };
         let out = render_detail(&s, &[], None, &summary, 0, false);
         assert!(
@@ -408,6 +552,87 @@ mod tests {
         assert!(out.contains("  none")); // no configs registered
         assert!(out.contains("0 messages"));
         assert!(!out.contains("pending permissions"));
+        assert!(
+            !out.contains("subagents"),
+            "subagents section hidden when none: {out:?}"
+        );
+    }
+
+    fn subagent(id: &str, ty: &str, status: SubagentStatus, background: bool) -> SubagentSummary {
+        SubagentSummary {
+            task_id: id.into(),
+            subagent_type: ty.into(),
+            description: format!("do {id}"),
+            status,
+            background,
+        }
+    }
+
+    /// The four-subagent session the card's example line describes: three
+    /// completed, one running in the background.
+    fn rollup() -> Vec<SubagentSummary> {
+        vec![
+            subagent("t1", "Explore", SubagentStatus::Completed, false),
+            subagent("t2", "Plan", SubagentStatus::Completed, false),
+            subagent("t3", "Explore", SubagentStatus::Running, true),
+            subagent("t4", "general-purpose", SubagentStatus::Completed, false),
+        ]
+    }
+
+    #[test]
+    fn render_detail_rolls_up_subagents() {
+        let s = session("mac", "t", "working", 0);
+        let summary = ConversationSummary {
+            message_count: 4,
+            pending: vec![],
+            subagents: rollup(),
+        };
+        let out = render_detail(&s, &[], None, &summary, 0, false);
+
+        assert!(out.contains("subagents"), "{out}");
+        assert!(
+            out.contains("3 completed, 1 running (1 background), 0 failed"),
+            "{out}"
+        );
+        // One line per subagent, in spawn order, the background one flagged.
+        let rows: Vec<&str> = out
+            .lines()
+            .skip_while(|l| *l != "subagents")
+            .skip(2)
+            .collect();
+        assert_eq!(rows.len(), 4, "{out}");
+        assert!(rows[0].contains("Explore") && rows[0].contains("do t1"));
+        assert!(rows[0].ends_with("completed"), "{:?}", rows[0]);
+        assert!(rows[2].contains("do t3") && rows[2].ends_with("running  (background)"));
+        assert!(rows[3].contains("general-purpose"));
+    }
+
+    #[test]
+    fn subagents_json_counts_and_items() {
+        let json = serde_json::to_value(SubagentsJson::from(&rollup()[..])).unwrap();
+        assert_eq!(json["running"], 1);
+        assert_eq!(json["completed"], 3);
+        assert_eq!(json["failed"], 0);
+        assert_eq!(json["background"], 1);
+        assert_eq!(json["items"].as_array().unwrap().len(), 4);
+        assert_eq!(
+            json["items"][2],
+            serde_json::json!({
+                "task_id": "t3",
+                "subagent_type": "Explore",
+                "description": "do t3",
+                "status": "running",
+                "background": true,
+            })
+        );
+
+        let empty = serde_json::to_value(SubagentsJson::from(&[][..])).unwrap();
+        assert_eq!(
+            empty,
+            serde_json::json!({
+                "running": 0, "completed": 0, "failed": 0, "background": 0, "items": [],
+            })
+        );
     }
 
     #[test]
@@ -428,6 +653,7 @@ mod tests {
                     is_question: true,
                 },
             ],
+            subagents: vec![],
         };
         let json = serde_json::to_value(ConversationJson::from(&summary)).unwrap();
         assert_eq!(
