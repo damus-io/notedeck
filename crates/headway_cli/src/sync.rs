@@ -11,8 +11,9 @@ use headway::event;
 use headway::store;
 use headway::teams;
 
+use crate::APP;
 use crate::boards::Roster;
-use crate::{APP, Collect};
+use crate::edit::Collect;
 
 /// Upper bound for a windowed reconcile's `created_at` search: `u32::MAX` (unix
 /// second `4294967295` ≈ year 2106) — past any real event time, yet within the
