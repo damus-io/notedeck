@@ -59,6 +59,18 @@ impl ListScope {
             (false, false) => ListScope::Live,
         }
     }
+
+    /// Whether a session with `status` is in this scope — the per-row form of
+    /// the scope, for a reader (`watch`) that holds tombstones itself rather
+    /// than choosing a loader.
+    pub(crate) fn admits(self, status: &str) -> bool {
+        let deleted = status == agentium_core::session_loader::DELETED_STATUS;
+        match self {
+            ListScope::Live => !deleted,
+            ListScope::Deleted => deleted,
+            ListScope::All => true,
+        }
+    }
 }
 
 /// The kind-31988 session-state set `scope` selects, narrowed to the rows
@@ -154,47 +166,96 @@ pub(crate) fn cmd_list(
     // Size the leading `agentium:` column to the longest ref in the list so
     // every URI renders in full — a truncated ref can't be copied into
     // `show`/`send`, which is the whole point of leading with it.
-    let sref_width = sessions
-        .iter()
-        .map(|s| {
-            agentium_core::wordid::session_ref(&s.claude_session_id)
-                .chars()
-                .count()
-        })
-        .max()
-        .unwrap_or(0);
+    let layout = RowLayout {
+        sref_width: RowLayout::sref_width(sessions.iter()),
+        host_width: None,
+        flag_needs_input: false,
+    };
 
     for (host, group) in group_by_host(sessions) {
         println!("{}", paint(color, SGR_BOLD, &host));
         for s in group {
-            println!("{}", session_row(&s, now, color, sref_width));
+            println!("{}", session_row(&s, s.created_at, now, color, &layout));
         }
     }
 
     Ok(())
 }
 
-/// Render one session as a padded, aligned row (indented under its host header).
+/// Column layout shared by `list`'s per-host rows and `watch`'s flat dashboard,
+/// so the two never drift into separate copies of the column set.
+pub(crate) struct RowLayout {
+    /// Width of the leading `agentium:` ref column; the caller sizes it to the
+    /// longest ref shown so the full, copyable URI is never truncated.
+    pub(crate) sref_width: usize,
+    /// Width of a host column after the title, or `None` to omit it (`list`
+    /// already prints the host as a group header).
+    pub(crate) host_width: Option<usize>,
+    /// Mark a `needs_input` row with an amber `»` in the leading gutter, for a
+    /// flat view where the session waiting on the user must stand out.
+    pub(crate) flag_needs_input: bool,
+}
+
+impl RowLayout {
+    /// The leading-ref width that fits every session in `sessions`.
+    pub(crate) fn sref_width<'a>(sessions: impl Iterator<Item = &'a SessionState>) -> usize {
+        sessions
+            .map(|s| {
+                agentium_core::wordid::session_ref(&s.claude_session_id)
+                    .chars()
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Render one session as a padded, aligned row.
 ///
 /// Leads with the session's sayable `agentium:word-word-word` reference — the
 /// selector a human copies into `show`/`send`/etc. — then the status, title,
-/// working dir, backend, permission mode, and last-updated age. `sref_width` is
-/// the column width for that leading reference; the caller sizes it to the
-/// longest ref in the list so the full, copyable URI is never truncated.
-fn session_row(s: &SessionState, now: u64, color: bool, sref_width: usize) -> String {
+/// (optionally) host, working dir, backend, permission mode, and how long ago
+/// `last_active` was. `list` passes the state revision's `created_at` there;
+/// `watch` passes the fold's last activity, which also counts streamed messages.
+pub(crate) fn session_row(
+    s: &SessionState,
+    last_active: u64,
+    now: u64,
+    color: bool,
+    layout: &RowLayout,
+) -> String {
     let (glyph, label, sgr) = status_style(&s.status);
+    let gutter = if layout.flag_needs_input && s.status == "needs_input" {
+        paint(color, SGR_NEEDS_INPUT, "» ")
+    } else {
+        "  ".to_string()
+    };
     let sref = agentium_core::wordid::session_ref(&s.claude_session_id);
-    let sref_col = paint(color, "90", &col(&sref, sref_width));
+    let sref_col = paint(color, "90", &col(&sref, layout.sref_width));
     let status_col = paint(color, sgr, &format!("{glyph} {}", col(&label, 11)));
     let title = col(s.display_title(), 30);
+    let host = match layout.host_width {
+        Some(width) => format!("{}  ", col(host_label(&s.hostname), width)),
+        None => String::new(),
+    };
     let cwd = col(&abbreviate_home(&s.cwd, &s.home_dir), 26);
     let backend = col(s.backend.as_deref().unwrap_or("-"), 8);
     let mode = col(s.permission_mode.as_deref().unwrap_or("-"), 12);
     format!(
-        "  {sref_col}  {status_col}  {title}  {}  {backend}  {mode}  {}",
+        "{gutter}{sref_col}  {status_col}  {title}  {host}{}  {backend}  {mode}  {}",
         paint(color, "90", &cwd),
-        paint(color, "90", &relative_time(now, s.created_at)),
+        paint(color, "90", &relative_time(now, last_active)),
     )
+}
+
+/// How a session's host reads in a header or column: its hostname, or a
+/// placeholder for a state event that never recorded one.
+pub(crate) fn host_label(hostname: &str) -> &str {
+    if hostname.is_empty() {
+        "(unknown host)"
+    } else {
+        hostname
+    }
 }
 
 /// Group sessions by host, ordering hosts by their most recent activity and
@@ -209,11 +270,7 @@ fn session_row(s: &SessionState, now: u64, color: bool, sref_width: usize) -> St
 fn group_by_host(sessions: Vec<SessionState>) -> Vec<(String, Vec<SessionState>)> {
     let mut groups: Vec<(String, Vec<SessionState>)> = Vec::new();
     for s in sessions {
-        let host = if s.hostname.is_empty() {
-            "(unknown host)".to_string()
-        } else {
-            s.hostname.clone()
-        };
+        let host = host_label(&s.hostname).to_string();
         match groups.iter_mut().find(|(h, _)| *h == host) {
             Some((_, v)) => v.push(s),
             None => groups.push((host, vec![s])),
@@ -237,7 +294,8 @@ pub(crate) struct ListFilters {
 }
 
 impl ListFilters {
-    fn matches(&self, s: &SessionState) -> bool {
+    /// Whether `s` passes every filter that was given.
+    pub(crate) fn matches(&self, s: &SessionState) -> bool {
         let contains = |hay: &str, needle: &Option<String>| {
             needle
                 .as_ref()
@@ -298,6 +356,15 @@ pub(crate) mod tests {
         assert_eq!(ListScope::from_flags(true, false), ListScope::All);
         // --all wins over --deleted.
         assert_eq!(ListScope::from_flags(true, true), ListScope::All);
+    }
+
+    #[test]
+    fn list_scope_admits_by_tombstone() {
+        assert!(ListScope::Live.admits("working"));
+        assert!(!ListScope::Live.admits("deleted"));
+        assert!(ListScope::Deleted.admits("deleted"));
+        assert!(!ListScope::Deleted.admits("idle"));
+        assert!(ListScope::All.admits("deleted") && ListScope::All.admits("idle"));
     }
 
     #[test]
@@ -372,7 +439,12 @@ pub(crate) mod tests {
     fn session_row_plain_is_uncolored_and_complete() {
         let s = session("mac", "Hello", "working", 0);
         let sref = agentium_core::wordid::session_ref(&s.claude_session_id);
-        let row = session_row(&s, 60, false, sref.chars().count());
+        let layout = RowLayout {
+            sref_width: sref.chars().count(),
+            host_width: None,
+            flag_needs_input: false,
+        };
+        let row = session_row(&s, s.created_at, 60, false, &layout);
         assert!(!row.contains('\x1b'), "no ANSI when color=false: {row:?}");
         assert!(row.contains("agentium:"), "row leads with the sayable ref");
         assert!(

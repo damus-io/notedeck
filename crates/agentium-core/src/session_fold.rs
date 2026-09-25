@@ -195,6 +195,14 @@ impl SessionReducer {
             .collect()
     }
 
+    /// Every folded session, `deleted` tombstones included, borrowed and in no
+    /// particular order. [`views`](Self::views) is the live projection; this is
+    /// for a reader that scopes tombstones in itself (e.g. `agentium watch
+    /// --deleted`/`--all`) and would otherwise have to re-query ndb for them.
+    pub fn views_including_deleted(&self) -> impl Iterator<Item = &SessionView> {
+        self.latest.values()
+    }
+
     /// The state-event note id of the session whose word-id is `words`,
     /// **including tombstones**. A session's stable identity is its
     /// `claude_session_id`, whose word-id (SHA-256 → BIP-39 — see
@@ -416,6 +424,10 @@ mod tests {
             r.resolve_wordid_including_deleted(&words),
             Some(NoteId::new(*tomb.id()))
         );
+        // The tombstone-inclusive iterator still carries it, as the tombstone.
+        let all: Vec<_> = r.views_including_deleted().collect();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].state.status, DELETED_STATUS);
     }
 
     /// Legacy JSON-content state events are ignored.

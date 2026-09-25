@@ -115,6 +115,26 @@ Note the id distinction: `claude_session_id` is agentium's own stable identity
 (what the word-id hashes), **not** the backend CLI's session id — that's
 `cli_session_id`, a separate value used for resuming the underlying CLI.
 
+## `watch` — live dashboard of every session
+
+`watch` is `list` kept live: one flat row per session (status, title, host, cwd,
+backend, mode, last activity), sessions waiting on the user first
+(needs_input > working > error > pending > idle > done, then most recently
+active), under a count per status. Last activity counts streamed messages, not
+only status changes. It takes the `list` filters and `--deleted`/`--all`.
+
+```bash
+agentium watch                         # redraws in place on a terminal until Ctrl-C
+agentium watch --once                  # one frame, then exit — use this from an agent
+agentium watch --status needs_input    # only the sessions waiting on someone
+agentium watch --once --no-sync        # one frame from the cache, no relay round-trip
+```
+
+On a terminal it takes over the screen; into a pipe it prints each changed
+frame in full, separated by a blank line. Lines clip to `$COLUMNS` (else the
+terminal width); piped frames aren't clipped. **An agent should use `--once`**
+(or `list --json` for machine-readable output) — a bare `watch` never exits.
+
 ## Selecting a session
 
 `show`, `log`, `resume`, `send`, `interrupt`, `approve`/`deny`, and `mode` take
@@ -146,10 +166,10 @@ row, or a `log` you already synced a moment ago:
 agentium grep -i wgpu --no-sync        # no relay round-trip at all
 ```
 
-It applies to the read commands (`list`, `show`, `log`, `grep`, `config
-list`/`show`) and is refused for anything that publishes or streams (`send`,
-`spawn`, `resume`, `interrupt`, `approve`/`deny`, `mode`, `config
-add`/`edit`/`rm`, `log --follow`), which can't work offline.
+It applies to the read commands (`list`, `show`, `log`, `grep`, `watch --once`,
+`config list`/`show`) and is refused for anything that publishes or streams
+(`send`, `spawn`, `resume`, `interrupt`, `approve`/`deny`, `mode`, `config
+add`/`edit`/`rm`, `log --follow`, `watch`), which can't work offline.
 
 ## `show` — session detail
 

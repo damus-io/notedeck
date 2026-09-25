@@ -23,6 +23,7 @@ mod show;
 mod spawn;
 mod term;
 mod transcript;
+mod watch;
 
 use std::env;
 use std::process::ExitCode;
@@ -45,6 +46,7 @@ use send::cmd_send;
 use show::cmd_show;
 use spawn::{SpawnOpts, cmd_spawn};
 use transcript::{ColorWhen, MessageView, PagerMode};
+use watch::{WatchOpts, cmd_watch};
 
 /// The CLI's cache/key directory under the platform data dir (e.g.
 /// `~/.local/share/agentium-cli` on Linux).
@@ -93,6 +95,11 @@ async fn main() -> ExitCode {
 enum Command {
     /// Enumerate this identity's sessions.
     List,
+    /// A live dashboard of every session the `list` filters select, redrawn as
+    /// sessions change — or, with `--once`, a single frame.
+    Watch {
+        opts: WatchOpts,
+    },
     /// Print git-show-style detail for one resolved session: its kind-31988
     /// state, the run-configs on its host+cwd, its latest usage, and a
     /// conversation summary. The selector is optional — it defaults to
@@ -213,6 +220,8 @@ impl Command {
             // A follow is a live stream, so it needs the connection even though
             // its initial tail is a cache read.
             Command::Log { view, .. } => view.follow,
+            // Likewise a live dashboard; a single `--once` frame is a cache read.
+            Command::Watch { opts } => !opts.once,
             Command::Config { action } => action.publishes(),
             Command::Resume { .. }
             | Command::Send { .. }
@@ -304,6 +313,9 @@ async fn run() -> Result<()> {
 
     match cli.command {
         Command::List => cmd_list(&engine, &read_pk, &filters, cli.list_scope, cli.json)?,
+        Command::Watch { opts } => {
+            cmd_watch(&engine, &read_pk, &filters, cli.list_scope, &opts).await?
+        }
         Command::Show { session } => cmd_show(&engine, &read_pk, session.as_deref(), cli.json)?,
         Command::Log { session, view } if view.follow => {
             cmd_follow(&engine, &read_pk, session.as_deref(), &view, cli.json).await?
@@ -477,6 +489,8 @@ impl Cli {
         let mut color = ColorWhen::Auto;
         let mut pager = PagerMode::Auto;
         let mut follow = false;
+        // `watch --once`: one frame, then exit.
+        let mut once = false;
         // `spawn` flags. `--title`/`--prompt` are values; `--wait` is a switch
         // (also implied by `--prompt`, resolved in `cmd_spawn`). `--prompt-file`
         // is the escaping-free alternative to `--prompt`: a path (or `-` for
@@ -546,6 +560,7 @@ impl Cli {
                 "--pager" => pager = PagerMode::Always,
                 "--no-pager" => pager = PagerMode::Never,
                 "--follow" | "-f" => follow = true,
+                "--once" => once = true,
                 "--title" => title = Some(value("--title")?),
                 "--prompt" => prompt = Some(value("--prompt")?),
                 "--prompt-file" => prompt_file = Some(value("--prompt-file")?),
@@ -624,6 +639,13 @@ impl Cli {
                     interrupt,
                 },
             }
+        } else if name == "watch" {
+            Command::Watch {
+                opts: WatchOpts {
+                    once,
+                    color: view.color,
+                },
+            }
         } else if name == "config" {
             Command::Config {
                 action: ConfigAction::parse(rest, config_name, config_command)?,
@@ -650,8 +672,8 @@ impl Cli {
         // spins up, for the same reason `check_follow` is.
         if no_sync && command.needs_relay() {
             return Err(
-                "--no-sync only applies to cache reads (list/show/log/grep); a command that \
-                 publishes — or `log --follow`, which streams — needs the relay"
+                "--no-sync only applies to cache reads (list/show/log/grep/watch --once); a \
+                 command that publishes — or `log --follow`/`watch`, which stream — needs the relay"
                     .into(),
             );
         }
@@ -774,6 +796,14 @@ COMMANDS:
                       host. Filter with --host/--status/--cwd/--backend; --json
                       emits the raw session set. Deleted sessions are hidden
                       unless --deleted/--all is passed.
+    watch             A live dashboard of every session: status, title, host,
+                      cwd, backend, mode and last activity (which counts
+                      streamed messages, not just status changes), sessions
+                      waiting on you first. Redraws in place on a terminal until
+                      Ctrl-C; into a pipe, prints each changed frame. Takes the
+                      list filters and --color; --once prints one frame and
+                      exits. Lines clip to $COLUMNS, else the terminal width;
+                      piped frames are never clipped.
     show [session]    Show one session's detail: its state, the run-configs on
                       its host+cwd, its latest usage, and a conversation summary
                       (message count + each pending permission request, with
@@ -879,7 +909,8 @@ OPTIONS:
     --json            Machine-readable output
     --no-sync         Skip the relay reconcile and read the local cache as it
                       stands — the fast path for repeated reads (list/show/log/
-                      grep). Rejected for commands that publish or stream.
+                      grep/watch --once). Rejected for commands that publish or
+                      stream.
 
   list filters (case-insensitive):
     --host <h>        Only sessions whose host contains <h>
@@ -889,6 +920,7 @@ OPTIONS:
     --backend <b>     Only sessions whose backend contains <b>
     --deleted         Show only soft-deleted (tombstoned) sessions
     --all             Show live and deleted sessions together
+    --once            (watch) Print one frame and exit instead of following
 
   grep options (also uses the list filters above to pick sessions, and the log
   options below to pick which messages are searched):
@@ -1112,6 +1144,7 @@ mod tests {
             vec!["--nsec", TEST_NSEC, "--no-sync", "show", "agentium:a-b-c"],
             vec!["--nsec", TEST_NSEC, "--no-sync", "log", "agentium:a-b-c"],
             vec!["--nsec", TEST_NSEC, "--no-sync", "grep", "x"],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "watch", "--once"],
         ] {
             let cli = parse_cli(&cmd).expect("parses").expect("a command");
             assert!(!cli.sync, "--no-sync clears the reconcile for {cmd:?}");
@@ -1135,6 +1168,7 @@ mod tests {
             ],
             vec!["--nsec", TEST_NSEC, "--no-sync", "resume", "agentium:a-b-c"],
             vec!["--nsec", TEST_NSEC, "--no-sync", "spawn"],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "watch"],
             vec![
                 "--nsec",
                 TEST_NSEC,
@@ -1154,6 +1188,32 @@ mod tests {
             .expect("parses")
             .expect("a command");
         assert!(cli.sync);
+    }
+
+    #[test]
+    fn watch_carries_once_color_and_the_list_scope() {
+        let cli = parse_cli(&[
+            "--nsec", TEST_NSEC, "watch", "--once", "--color", "always", "--all",
+        ])
+        .expect("parses")
+        .expect("a command");
+        assert_eq!(cli.list_scope, ListScope::All);
+        match cli.command {
+            Command::Watch { opts } => {
+                assert!(opts.once);
+                assert_eq!(opts.color, ColorWhen::Always);
+            }
+            _ => panic!("expected watch"),
+        }
+        // Following by default.
+        match parse_cli(&["--nsec", TEST_NSEC, "watch"])
+            .expect("parses")
+            .expect("a command")
+            .command
+        {
+            Command::Watch { opts } => assert!(!opts.once),
+            _ => panic!("expected watch"),
+        }
     }
 
     #[test]

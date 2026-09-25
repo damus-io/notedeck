@@ -198,6 +198,7 @@ dependencies = [
  "bech32",
  "enostr",
  "hex",
+ "libc",
  "nostrdb",
  "nostrdb_net",
  "regex",
