@@ -1001,9 +1001,11 @@ mod tests {
 
     #[test]
     fn show_selector_prefers_explicit_arg() {
-        // An explicit positional is used verbatim (the $AGENTIUM_SESSION
-        // fallback only applies when none is given — exercised end-to-end, not
-        // here, to avoid mutating process env in a shared test binary).
+        // An explicit positional is used verbatim. The $AGENTIUM_SESSION
+        // fallback (only when none is given) is covered by
+        // tests/show_renders.rs::show_defaults_to_agentium_session_env, which
+        // sets the env on a child process — mutating it here would race the
+        // other tests in this shared binary.
         match parse_command(
             "show",
             &["agentium:a-b-c".to_string()],
@@ -1253,6 +1255,87 @@ mod tests {
         }
         // No selector → the missing-argument error (no $AGENTIUM_SESSION default).
         assert!(parse_command("interrupt", &[], view_all(), CaseMode::Smart).is_err());
+    }
+
+    #[test]
+    fn resume_requires_session() {
+        // `resume <sel>` carries the selector verbatim, including a `deleted`
+        // session's durable ref (resolution happens later, against the cache).
+        let rest = ["agentium:a-b-c"].map(String::from);
+        match parse_command("resume", &rest, view_all(), CaseMode::Smart).unwrap() {
+            Command::Resume { session } => assert_eq!(session, "agentium:a-b-c"),
+            _ => panic!("expected Resume"),
+        }
+        // No $AGENTIUM_SESSION default: resuming the session you're typing in
+        // is meaningless, so a bare `resume` is the missing-argument error.
+        assert!(parse_command("resume", &[], view_all(), CaseMode::Smart).is_err());
+    }
+
+    /// The error text of a failed [`parse_cli`].
+    fn parse_err(args: &[&str]) -> String {
+        match parse_cli(args) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("{args:?} should fail to parse"),
+        }
+    }
+
+    #[test]
+    fn unknown_command_and_flag_are_named_in_the_error() {
+        let err = parse_err(&["--nsec", TEST_NSEC, "frobnicate"]);
+        assert!(err.contains("unknown command 'frobnicate'"), "{err}");
+
+        let err = parse_err(&["--nsec", TEST_NSEC, "--frobnicate", "list"]);
+        assert!(err.contains("unknown flag '--frobnicate'"), "{err}");
+
+        // A value flag at the end of argv has nothing to consume.
+        let err = parse_err(&["--nsec", TEST_NSEC, "list", "--host"]);
+        assert!(err.contains("--host needs a value"), "{err}");
+    }
+
+    #[test]
+    fn no_command_or_help_prints_usage() {
+        // `Ok(None)` is the "print usage" signal, not an error.
+        assert!(parse_cli(&[]).expect("parses").is_none());
+        assert!(parse_cli(&["--nsec", TEST_NSEC]).expect("parses").is_none());
+        assert!(parse_cli(&["list", "--help"]).expect("parses").is_none());
+        assert!(parse_cli(&["-h"]).expect("parses").is_none());
+    }
+
+    #[test]
+    fn author_overrides_the_read_identity() {
+        let hex = "ab".repeat(32);
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "--author", &hex, "list"])
+            .expect("parses")
+            .expect("a command");
+        assert_eq!(cli.author, Some(Pubkey::new([0xab; 32])));
+
+        // Unset, the read identity falls back to the signer later (in `run`).
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "list"])
+            .expect("parses")
+            .expect("a command");
+        assert!(cli.author.is_none());
+
+        // An unparseable key is refused up front rather than reading nobody.
+        assert!(parse_cli(&["--nsec", TEST_NSEC, "--author", "nope", "list"]).is_err());
+    }
+
+    #[test]
+    fn deleted_and_all_pick_the_list_scope() {
+        let scope = |flags: &[&str]| {
+            let mut argv = vec!["--nsec", TEST_NSEC];
+            argv.extend_from_slice(flags);
+            argv.push("list");
+            parse_cli(&argv)
+                .expect("parses")
+                .expect("a command")
+                .list_scope
+        };
+        assert_eq!(scope(&[]), ListScope::Live);
+        assert_eq!(scope(&["--deleted"]), ListScope::Deleted);
+        assert_eq!(scope(&["--all"]), ListScope::All);
+        // `--all` is a superset of `--deleted`, so it wins in either order.
+        assert_eq!(scope(&["--deleted", "--all"]), ListScope::All);
+        assert_eq!(scope(&["--all", "--deleted"]), ListScope::All);
     }
 
     #[test]
