@@ -63,7 +63,7 @@ impl ListScope {
 
 /// The kind-31988 session-state set `scope` selects, narrowed to the rows
 /// `filters` keeps — the session-selection half shared by [`cmd_list`] and
-/// [`cmd_grep`](crate::cmd_grep), so "which sessions does `--deleted`/`--cwd`/… mean" is answered
+/// [`cmd_grep`](crate::grep::cmd_grep), so "which sessions does `--deleted`/`--cwd`/… mean" is answered
 /// in exactly one place. Reads through the caller's `txn` (nostrdb allows one
 /// reader per thread, so the caller owns it).
 pub(crate) fn load_sessions(
@@ -108,7 +108,7 @@ pub(crate) fn load_sessions(
 /// newest-first list, ungrouped.
 ///
 /// Takes the filtered session set from [`load_sessions`] (shared with
-/// [`cmd_grep`](crate::cmd_grep)) and renders one row per session: a colored status glyph + label, the title, the working directory,
+/// [`cmd_grep`](crate::grep::cmd_grep)) and renders one row per session: a colored status glyph + label, the title, the working directory,
 /// backend, permission mode, and how long ago it last updated. With `as_json`,
 /// each session is emitted as a [`SessionJson`] (the state plus its `agentium:`
 /// URI). Status colors are written only when stdout is a terminal.
