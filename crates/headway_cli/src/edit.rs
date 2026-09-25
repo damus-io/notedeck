@@ -11,7 +11,7 @@ use headway::wordid;
 
 use nostrdb_net::relay::sync::Result;
 
-use crate::{Command, SeqSpec};
+use crate::args::{Command, SeqSpec};
 
 /// Translate a resolved [`Command`] into a [`BoardAction`], resolving card and
 /// column arguments against `view`.
