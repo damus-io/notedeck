@@ -208,7 +208,7 @@ pub(crate) fn role_style(m: &Message) -> (&'static str, &'static str) {
 }
 
 /// Render a filtered message stream as plain text, one entry per message
-/// separated by a blank line. Returns an owned `String` (like [`render_detail`](crate::render_detail))
+/// separated by a blank line. Returns an owned `String` (like [`render_detail`](crate::show))
 /// so the layout is unit-testable; ANSI color is applied only via [`paint`] when
 /// `color` (stdout is a tty).
 pub(crate) fn render_messages(messages: &[&Message], color: bool) -> String {
