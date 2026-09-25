@@ -10,6 +10,7 @@
 //! directory convention, and `login`/`logout`. This file is the command surface:
 //! argument parsing, config resolution, and dispatch to the per-command modules.
 
+mod config_cmd;
 mod grep;
 mod interrupt;
 mod list;
@@ -33,6 +34,7 @@ use regex::Regex;
 
 use nostrdb_net::relay::sync::Result;
 
+use config_cmd::{ConfigAction, ConfigFilters, cmd_config};
 use grep::{CaseMode, cmd_grep, compile_pattern};
 use interrupt::cmd_interrupt;
 use list::{ListFilters, ListScope, cmd_list};
@@ -183,6 +185,11 @@ enum Command {
         /// [`parse_mode_flag`]: the host reads an unknown string as `default`.
         mode: String,
     },
+    /// List, show, add, edit or remove run configs (kind-31991): the named
+    /// shell commands Dave's run bar launches in a session's host+cwd.
+    Config {
+        action: ConfigAction,
+    },
     Login {
         nsec: String,
     },
@@ -206,6 +213,7 @@ impl Command {
             // A follow is a live stream, so it needs the connection even though
             // its initial tail is a cache read.
             Command::Log { view, .. } => view.follow,
+            Command::Config { action } => action.publishes(),
             Command::Resume { .. }
             | Command::Send { .. }
             | Command::Spawn { .. }
@@ -349,6 +357,13 @@ async fn run() -> Result<()> {
         Command::Mode { session, mode } => {
             cmd_mode(&engine, &read_pk, &session, &mode, cli.json).await?
         }
+        Command::Config { action } => {
+            let filters = ConfigFilters {
+                host: filters.host,
+                cwd: filters.cwd,
+            };
+            cmd_config(&engine, &read_pk, &secret, &action, &filters, cli.json).await?
+        }
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
 
@@ -479,6 +494,9 @@ impl Cli {
         let mut request = None;
         let mut message = None;
         let mut interrupt = false;
+        // `config add`/`edit` fields.
+        let mut config_name = None;
+        let mut config_command = None;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -547,6 +565,8 @@ impl Cli {
                 "--request" => request = Some(value("--request")?),
                 "--message" => message = Some(value("--message")?),
                 "--interrupt" => interrupt = true,
+                "--name" => config_name = Some(value("--name")?),
+                "--command" => config_command = Some(value("--command")?),
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -603,6 +623,10 @@ impl Cli {
                     message,
                     interrupt,
                 },
+            }
+        } else if name == "config" {
+            Command::Config {
+                action: ConfigAction::parse(rest, config_name, config_command)?,
             }
         } else if name == "spawn" {
             Command::Spawn {
@@ -820,6 +844,23 @@ COMMANDS:
                       to Ctrl+M in Dave: default (aka manual) | plan |
                       accept_edits | auto | bypass. --json emits {{ session,
                       event_id, mode }}.
+    config [list]     List run configs — the named shell commands Dave's run
+                      bar launches in a host+cwd — on every host, grouped host →
+                      cwd. --host/--cwd narrow it (substring, like list); --json
+                      emits the flat array.
+    config show <config>
+                      Show one run config. <config> is an id prefix (the 8-char
+                      ids `config list` prints) or an exact name; --host/--cwd
+                      narrow what it resolves against.
+    config add --name <n> --command <cmd>
+                      Register a run config. It lands on --host/--cwd (exact
+                      values here), which default to the current session's
+                      ($AGENTIUM_SESSION). --json emits {{ action, event_id,
+                      config }} on one line, as do edit and rm.
+    config edit <config> [--name <n>] [--command <cmd>]
+                      Rename a run config or change its command; its id stays.
+    config rm <config>
+                      Delete a run config (Dave kills it if it is running).
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 

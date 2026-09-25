@@ -111,48 +111,61 @@ struct SpawnTarget {
     backend: String,
 }
 
-/// Resolve the spawn target, defaulting each omitted flag to the *current*
-/// session's own kind-31988 state (`$AGENTIUM_SESSION`) so a bare `agentium
-/// spawn` starts a sibling in the same worktree on the same host. `--backend`
-/// falls back to `"claude"` when neither a flag nor a current-session backend is
-/// available. Errors when `host`/`cwd` can't be determined (not inside a session
-/// and no flag) — there is nothing to target.
-fn resolve_spawn_target(engine: &Engine, author: &Pubkey, opts: &SpawnOpts) -> Result<SpawnTarget> {
+/// Where the *current* session (`$AGENTIUM_SESSION`) runs, for commands whose
+/// target defaults to "here". Every field is `None` when not running inside a
+/// session, or when the ref no longer resolves.
+#[derive(Default)]
+pub(crate) struct CurrentSession {
+    pub(crate) host: Option<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) backend: Option<String>,
+}
+
+/// Look up the current session's host/cwd/backend from its kind-31988 state,
+/// resolved the way `cmd_show` does with no selector (the `$AGENTIUM_SESSION`
+/// ref, live or deleted). Absent or stale just means every field must come from
+/// a flag, so neither is an error.
+pub(crate) fn current_session(engine: &Engine, author: &Pubkey) -> Result<CurrentSession> {
     use agentium_core::session_loader::{
         load_deleted_session_states_for_author, load_session_states_for_author,
         resolve_session_including_deleted,
     };
 
-    // The current session's state, if we're running inside one — resolved the way
-    // `cmd_show` does with no selector (the `$AGENTIUM_SESSION` ref). Its host/cwd/
-    // backend seed the defaults. Absent (not in a session) just means every field
-    // must come from a flag.
-    let current = std::env::var("AGENTIUM_SESSION")
+    let Some(selector) = std::env::var("AGENTIUM_SESSION")
         .ok()
-        .filter(|s| !s.is_empty());
-    let (self_host, self_cwd, self_backend) = match current {
-        Some(selector) => {
-            let txn = Transaction::new(engine.ndb())?;
-            let live = load_session_states_for_author(engine.ndb(), &txn, author);
-            let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
-            match resolve_session_including_deleted(&live, &deleted, &selector) {
-                Ok(state) => (
-                    Some(state.hostname.clone()),
-                    Some(state.cwd.clone()),
-                    state.backend.clone(),
-                ),
-                // A stale/unknown $AGENTIUM_SESSION isn't fatal — fall back to flags.
-                Err(_) => (None, None, None),
-            }
-        }
-        None => (None, None, None),
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(CurrentSession::default());
     };
+    let txn = Transaction::new(engine.ndb())?;
+    let live = load_session_states_for_author(engine.ndb(), &txn, author);
+    let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
+    Ok(
+        match resolve_session_including_deleted(&live, &deleted, &selector) {
+            Ok(state) => CurrentSession {
+                host: Some(state.hostname.clone()),
+                cwd: Some(state.cwd.clone()),
+                backend: state.backend.clone(),
+            },
+            // A stale/unknown $AGENTIUM_SESSION isn't fatal — fall back to flags.
+            Err(_) => CurrentSession::default(),
+        },
+    )
+}
 
+/// Resolve the spawn target, defaulting each omitted flag to the
+/// [`current_session`]'s own state so a bare `agentium spawn` starts a sibling
+/// in the same worktree on the same host. `--backend` falls back to `"claude"`
+/// when neither a flag nor a current-session backend is available. Errors when
+/// `host`/`cwd` can't be determined (not inside a session and no flag) — there
+/// is nothing to target.
+fn resolve_spawn_target(engine: &Engine, author: &Pubkey, opts: &SpawnOpts) -> Result<SpawnTarget> {
+    let current = current_session(engine, author)?;
     merge_spawn_target(
         opts,
-        self_host.as_deref(),
-        self_cwd.as_deref(),
-        self_backend.as_deref(),
+        current.host.as_deref(),
+        current.cwd.as_deref(),
+        current.backend.as_deref(),
     )
 }
 

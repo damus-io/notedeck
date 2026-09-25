@@ -442,6 +442,8 @@ impl std::fmt::Display for EventBuildError {
     }
 }
 
+impl std::error::Error for EventBuildError {}
+
 /// Build a kind-1989 source-data companion event.
 ///
 /// Contains the raw JSONL line and links to the corresponding 1988 event.
@@ -1241,7 +1243,23 @@ pub fn build_run_config_event(
     hostname: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let mut builder = init_note_builder(AI_RUN_CONFIG_KIND, "", None);
+    build_run_config_event_at(config, cwd, hostname, None, secret_key)
+}
+
+/// [`build_run_config_event`] with an explicit `created_at` (`None` = now).
+///
+/// Replacing a config means publishing a *newer* revision of its d-tag, and
+/// the builders stamp whole seconds: a revision stamped in the same second as
+/// the one it replaces ties, and a tie is resolved by fold order, not intent.
+/// A caller replacing a known revision passes `max(now, prev + 1)` here.
+pub fn build_run_config_event_at(
+    config: &RunConfig,
+    cwd: &str,
+    hostname: &str,
+    created_at: Option<u64>,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let mut builder = init_note_builder(AI_RUN_CONFIG_KIND, "", created_at);
 
     builder = builder.start_tag().tag_str("d").tag_str(&config.id);
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
@@ -1265,7 +1283,19 @@ pub fn build_run_config_delete_event(
     hostname: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let mut builder = init_note_builder(AI_RUN_CONFIG_KIND, "", None);
+    build_run_config_delete_event_at(config_id, cwd, hostname, None, secret_key)
+}
+
+/// [`build_run_config_delete_event`] with an explicit `created_at` (`None` =
+/// now) — see [`build_run_config_event_at`] for why a replacing caller wants it.
+pub fn build_run_config_delete_event_at(
+    config_id: &str,
+    cwd: &str,
+    hostname: &str,
+    created_at: Option<u64>,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let mut builder = init_note_builder(AI_RUN_CONFIG_KIND, "", created_at);
 
     builder = builder.start_tag().tag_str("d").tag_str(config_id);
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);

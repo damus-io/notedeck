@@ -146,9 +146,10 @@ row, or a `log` you already synced a moment ago:
 agentium grep -i wgpu --no-sync        # no relay round-trip at all
 ```
 
-It applies to the read commands (`list`, `show`, `log`, `grep`) and is refused
-for anything that publishes or streams (`send`, `spawn`, `resume`, `interrupt`,
-`approve`/`deny`, `mode`, `log --follow`), which can't work offline.
+It applies to the read commands (`list`, `show`, `log`, `grep`, `config
+list`/`show`) and is refused for anything that publishes or streams (`send`,
+`spawn`, `resume`, `interrupt`, `approve`/`deny`, `mode`, `config
+add`/`edit`/`rm`, `log --follow`), which can't work offline.
 
 ## `show` — session detail
 
@@ -458,9 +459,37 @@ otherwise quietly fall back to `default`).
 agentium mode maple-river-canyon plan
 ```
 
+## `config` — manage run configs
+
+A run config is what Dave's per-session run bar launches: a named shell command
+(`cargo run`, say) registered for one host + working directory, run there with
+`sh -c`. It is **not** a session template — `spawn` doesn't take one.
+
+```bash
+agentium config                      # = config list: every host, grouped host → cwd
+agentium config list --host macbook  # --host/--cwd narrow (substring)
+agentium config show 1a2b3c4d        # by id prefix (the 8-char id list prints) or exact name
+agentium config add --name build --command "cargo build"   # on this session's host+cwd
+agentium config add --name serve --command "npm start" --host macbook --cwd /home/u/app
+agentium config edit build --command "cargo build --release"   # same id, new revision
+agentium config rm build
+```
+
+- `add` places the config on `--host`/`--cwd` (exact values here, not
+  substrings), each defaulting to the current session's (`$AGENTIUM_SESSION`);
+  with neither it errors. `--name`/`--command` are trimmed and must be
+  non-empty.
+- A selector matching more than one config (a name used on two hosts, say)
+  errors with the candidates; narrow with `--host`/`--cwd` or pass more id.
+- Dave shows a config only on its own host, in a session whose cwd is exactly
+  the config's. `rm` of a config that is running there kills its process.
+- `--json`: `list` is a flat array of `{id, name, command, host, cwd,
+  updated_at}`, `show` one such object; `add`/`edit`/`rm` print one line
+  `{action, event_id, config}`.
+
 ## Command surface
 
 Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
-`resume`, `send`, `spawn`, `interrupt`, `approve`/`deny`, `mode` (plus
-`login`/`logout`). Further verbs (watch dashboard, run-config management) are
-planned but **not yet implemented** — don't invoke them until they land.
+`resume`, `send`, `spawn`, `interrupt`, `approve`/`deny`, `mode`, `config`
+(plus `login`/`logout`). A watch dashboard is planned but **not yet
+implemented** — don't invoke it until it lands.

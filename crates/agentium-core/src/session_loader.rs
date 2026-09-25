@@ -811,21 +811,35 @@ fn load_session_states_with_author(
     states
 }
 
-/// Load all run configurations from kind-31991 events in ndb.
+/// One run config together with where it runs: the host and working directory
+/// its kind-31991 event is tagged with. The unit [`load_all_run_configs_from_ndb`]
+/// returns, since across hosts a config's cwd alone doesn't say where it lives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostedRunConfig {
+    /// The `hostname` tag (empty if the event carries none).
+    pub hostname: String,
+    /// The `cwd` tag: the directory the run bar launches the command in.
+    pub cwd: std::path::PathBuf,
+    /// The config itself; `updated_at` is its live revision's `created_at`.
+    pub config: crate::config::RunConfig,
+}
+
+/// Load every live run configuration from kind-31991 events in ndb, on every
+/// host.
 ///
-/// Each event is one config (d-tag = config UUID). Uses `query_replaceable`
-/// to deduplicate by d-tag, keeping only the most recent revision. Tombstoned
-/// events (with a `deleted` tag) are excluded. Only events whose `hostname`
-/// tag matches `local_hostname` are loaded.
+/// Each event is one config (d-tag = config UUID). Uses `query_replaceable` to
+/// deduplicate by d-tag, keeping only the most recent revision, so a config
+/// whose latest revision is a tombstone (a `deleted` tag) is absent rather than
+/// resurrected by an older upsert.
 ///
-/// Returns a map from CWD to sorted config list.
-pub fn load_run_configs_from_ndb(
+/// Sorted by hostname, then cwd, then name, then id, so the order is total
+/// (`query_replaceable` hands back a per-run-randomized bag).
+pub fn load_all_run_configs_from_ndb(
     ndb: &Ndb,
     txn: &Transaction,
     author: &nostrdb_net::Pubkey,
-    local_hostname: &str,
-) -> std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> {
-    use crate::config::{RunConfig, AI_RUN_CONFIG_KIND};
+) -> Vec<HostedRunConfig> {
+    use crate::config::AI_RUN_CONFIG_KIND;
     use crate::session_events::{get_tag_value, parse_run_config_event};
 
     let filter = Filter::new()
@@ -834,23 +848,53 @@ pub fn load_run_configs_from_ndb(
         .build();
     let note_keys = query_replaceable(ndb, txn, &[filter]);
 
-    let mut map: std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> =
-        std::collections::HashMap::new();
+    let mut configs = Vec::new();
     for key in note_keys {
         let Ok(note) = ndb.get_note_by_key(txn, key) else {
             continue;
         };
-        if get_tag_value(&note, "hostname") != Some(local_hostname) {
+        // parse_run_config_event returns None for tombstones
+        let Some((cwd, config)) = parse_run_config_event(&note) else {
+            continue;
+        };
+        configs.push(HostedRunConfig {
+            hostname: get_tag_value(&note, "hostname").unwrap_or("").to_string(),
+            cwd,
+            config,
+        });
+    }
+    configs.sort_by(|a, b| {
+        (&a.hostname, &a.cwd, &a.config.name, &a.config.id).cmp(&(
+            &b.hostname,
+            &b.cwd,
+            &b.config.name,
+            &b.config.id,
+        ))
+    });
+    configs
+}
+
+/// Load the run configurations of one host from kind-31991 events in ndb.
+///
+/// [`load_all_run_configs_from_ndb`] narrowed to configs whose `hostname` tag
+/// is `local_hostname` — the set the desktop's run bar offers, since a config
+/// runs on the machine that registered it.
+///
+/// Returns a map from CWD to its configs, sorted by name.
+pub fn load_run_configs_from_ndb(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &nostrdb_net::Pubkey,
+    local_hostname: &str,
+) -> std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> {
+    let mut map: std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> =
+        std::collections::HashMap::new();
+    // Already sorted by (hostname, cwd, name), so each bucket fills in name order.
+    for hosted in load_all_run_configs_from_ndb(ndb, txn, author) {
+        if hosted.hostname != local_hostname {
             continue;
         }
-        // parse_run_config_event returns None for tombstones
-        if let Some((cwd, config)) = parse_run_config_event(&note) {
-            map.entry(cwd).or_default().push(config);
-        }
-    }
-    // Sort each CWD's configs by name for deterministic UI order
-    for configs in map.values_mut() {
-        RunConfig::sort_by_name(configs);
+        map.entry(hosted.cwd).or_default().push(hosted.config);
     }
     map
 }
@@ -2201,5 +2245,160 @@ mod tests {
             (0..10).map(|i| format!("/proj/{i:02}")).collect::<Vec<_>>(),
             "the cwd tiebreak decides which ten paths clear the cap",
         );
+    }
+
+    /// The pubkey `sk` signs as, for the author-scoped loaders.
+    fn pubkey_of(sk: &[u8; 32]) -> nostrdb_net::Pubkey {
+        nostrdb_net::Pubkey::new(
+            *NoteBuilder::new()
+                .kind(1)
+                .content("")
+                .options(NoteBuildOptions::default())
+                .sign(sk)
+                .build()
+                .unwrap()
+                .pubkey(),
+        )
+    }
+
+    /// A kind-31991 upsert of `config` on `host`:`cwd` at `created_at`, as a
+    /// client `EVENT` message.
+    fn run_config_json(
+        config: &crate::config::RunConfig,
+        host: &str,
+        cwd: &str,
+        created_at: u64,
+    ) -> String {
+        let built = crate::session_events::build_run_config_event_at(
+            config,
+            cwd,
+            host,
+            Some(created_at),
+            &test_secret_key(),
+        )
+        .unwrap();
+        format!("[\"EVENT\", {}]", built.note_json)
+    }
+
+    /// A kind-31991 tombstone for config `id` at `created_at`.
+    fn run_config_tombstone_json(id: &str, host: &str, cwd: &str, created_at: u64) -> String {
+        let built = crate::session_events::build_run_config_delete_event_at(
+            id,
+            cwd,
+            host,
+            Some(created_at),
+            &test_secret_key(),
+        )
+        .unwrap();
+        format!("[\"EVENT\", {}]", built.note_json)
+    }
+
+    fn run_config(id: &str, name: &str, command: &str) -> crate::config::RunConfig {
+        crate::config::RunConfig {
+            id: id.to_string(),
+            name: name.to_string(),
+            command: command.to_string(),
+            updated_at: 0,
+        }
+    }
+
+    /// What the builder writes, the loader reads back: every field, plus the
+    /// host and cwd the event is tagged with, with `updated_at` taken from the
+    /// revision's `created_at`.
+    #[tokio::test]
+    async fn run_config_round_trips_through_ndb() {
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new()
+            .kinds([crate::config::AI_RUN_CONFIG_KIND as u64])
+            .build();
+        let cfg = run_config("cfg-1", "build", "cargo build --release");
+        ingest_all(
+            &ndb,
+            &filter,
+            &[run_config_json(&cfg, "macbook", "/home/u/proj", 4000)],
+        )
+        .await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let all = load_all_run_configs_from_ndb(&ndb, &txn, &pubkey_of(&test_secret_key()));
+        assert_eq!(
+            all,
+            vec![HostedRunConfig {
+                hostname: "macbook".into(),
+                cwd: "/home/u/proj".into(),
+                config: crate::config::RunConfig {
+                    updated_at: 4000,
+                    ..cfg
+                },
+            }]
+        );
+    }
+
+    /// The all-hosts loader keeps only each config's newest revision — an edit
+    /// replaces, a newer tombstone removes (and an older upsert doesn't bring it
+    /// back) — and orders by host, cwd, name. The single-host loader is the same
+    /// set narrowed to one host and bucketed by cwd.
+    #[tokio::test]
+    async fn run_config_loaders_fold_revisions_and_bucket_hosts() {
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new()
+            .kinds([crate::config::AI_RUN_CONFIG_KIND as u64])
+            .build();
+
+        // Ingested newest-first where it matters, so arrival order can't pass
+        // the revision assertions by accident.
+        let events = [
+            // Edited: the 2000 revision wins over the 1000 one.
+            run_config_json(
+                &run_config("edit", "test", "cargo test -q"),
+                "mac",
+                "/p",
+                2000,
+            ),
+            run_config_json(&run_config("edit", "test", "cargo test"), "mac", "/p", 1000),
+            // Deleted: the tombstone is newest, so the config is gone.
+            run_config_tombstone_json("gone", "mac", "/p", 3000),
+            run_config_json(&run_config("gone", "old", "make"), "mac", "/p", 1000),
+            // Same host, other cwd; and another host entirely.
+            run_config_json(&run_config("a-run", "run", "cargo run"), "mac", "/p", 1000),
+            run_config_json(&run_config("q", "serve", "npm start"), "mac", "/q", 1000),
+            run_config_json(&run_config("z", "build", "make"), "linux", "/p", 1000),
+        ];
+        ingest_all(&ndb, &filter, &events).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let author = pubkey_of(&test_secret_key());
+        let all = load_all_run_configs_from_ndb(&ndb, &txn, &author);
+        let rows: Vec<(&str, &str, &str, &str)> = all
+            .iter()
+            .map(|h| {
+                (
+                    h.hostname.as_str(),
+                    h.cwd.to_str().unwrap(),
+                    h.config.name.as_str(),
+                    h.config.command.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("linux", "/p", "build", "make"),
+                ("mac", "/p", "run", "cargo run"),
+                ("mac", "/p", "test", "cargo test -q"),
+                ("mac", "/q", "serve", "npm start"),
+            ]
+        );
+
+        let mac = load_run_configs_from_ndb(&ndb, &txn, &author, "mac");
+        assert_eq!(mac.len(), 2, "two cwds on mac");
+        let p: Vec<&str> = mac[std::path::Path::new("/p")]
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(p, vec!["run", "test"], "one host's cwd bucket, by name");
+        assert!(load_run_configs_from_ndb(&ndb, &txn, &author, "nope").is_empty());
     }
 }
