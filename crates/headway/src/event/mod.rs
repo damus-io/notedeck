@@ -33,347 +33,19 @@ use std::collections::{HashMap, HashSet};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, NoteKey, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 
-/// Headway board: addressable, `d` = board id, holds title/description and the
-/// ordered column list.
-pub const KIND_BOARD: u32 = 30619;
-/// NIP-34 issue == a card.
-pub const KIND_ISSUE: u32 = 1621;
-/// NIP-32 label event. Carries both after-the-fact labels (`#t`) and subject
-/// edits (`#subject`), distinguished by the `L` namespace.
-pub const KIND_LABEL: u32 = 1985;
-/// gitworkshop cover note == an editable card description.
-pub const KIND_COVER_NOTE: u32 = 1624;
-/// Headway card placement: addressable, `d` = `<board-id>:<issue-id>`, records
-/// the card's column and fractional rank.
-pub const KIND_PLACEMENT: u32 = 30620;
-/// NIP-22 generic comment == a comment on a card. gitworkshop/ngit comment on
-/// NIP-34 issues the same way (kind 1111, *not* kind-1 replies).
-pub const KIND_COMMENT: u32 = 1111;
-/// Headway card relation: addressable, `d` = child issue id, `parent` names the
-/// parent issue. Child-side, so each child has exactly one parent slot —
-/// re-parenting republishes the slot and a relation with no `parent` tag
-/// detaches. See `crates/notedeck_headway/docs/subissues-design.md`.
-pub const KIND_RELATION: u32 = 30621;
-/// Headway card sequence: addressable, `d` = `<container>:<issue-id>`, records a
-/// fractional `rank` positioning the card within a [`Container`] (board root or
-/// parent card). The cross-cutting work-order axis — orthogonal to the column
-/// `rank` on [`KIND_PLACEMENT`] — resolved latest-authorised-wins. See the
-/// `birth-plate-alien` card design.
-pub const KIND_SEQUENCE: u32 = 30622;
-/// Headway per-account board-selection preference: addressable (parameterized
-/// replaceable), `d` = [`BOARD_PREF_D`] so there's exactly one per author,
-/// content = the last-selected board slug. Written PNS-wrapped
-/// ([`crate::store::save_board_pref`]) and never synced — it's the local
-/// replacement for the old `headway-boards.json`, read latest-wins by
-/// [`load_board_pref`].
-pub const KIND_BOARD_PREF: u32 = 30623;
+mod kinds;
+mod model;
 
-/// The fixed `d` tag on every [`KIND_BOARD_PREF`] note: one preference slot per
-/// account, superseded latest-wins on each board switch.
-const BOARD_PREF_D: &str = "selected-board";
-
-/// Headway card blockers: addressable, `d` = the blocked issue id, carrying zero
-/// or more `blocked-by` tags each naming a blocker's issue event id. The set is a
-/// snapshot (like labels), so the newest authorised event is the card's complete
-/// blocker set — republishing without a blocker removes it. A directed
-/// dependency edge distinct from the parent/subissue axis ([`KIND_RELATION`]): a
-/// card may have both. The blockers reference event ids, so they may point at
-/// cards on other boards. See `headway:headway/goat-couple-flush`.
-pub const KIND_BLOCKERS: u32 = 30624;
-
-/// Headway card related-to relations: addressable, `d` = one endpoint card's id,
-/// carrying zero or more `related` tags each naming another card's event id. The
-/// set is a snapshot (like [`KIND_BLOCKERS`]), so the newest authorised event is
-/// that endpoint's complete related set — republishing without an id removes it.
-///
-/// The *undirected, semantics-free* sibling of the blocking edges ([`KIND_BLOCKERS`])
-/// and the parent axis ([`KIND_RELATION`]): "A relates to B" is Linear's "Relates"
-/// — purely informational "see also," never a prerequisite (that's blocking), a
-/// decomposition (that's a subissue), or a work-order (that's a sequence). Because
-/// it is symmetric, the edge is stored on *one* endpoint and rendered on both: the
-/// reducer unions each card's own set with every set that names it (see
-/// [`BoardReducer::resolve_card`]). It never feeds the ready set, sequence rank or
-/// any rollup — context only. The related ids reference event ids, so they may
-/// point at cards on other boards. See `headway:headway/obscure-demand-actor`.
-pub const KIND_RELATED: u32 = 30625;
-
-const NS_SUBJECT: &str = "#subject";
-const NS_TAG: &str = "#t";
-
-/// A single-value scalar overlay on a card. Each [`Field`] is carried as a
-/// kind-1985 NIP-32 label in its own `L` namespace with one `l` value, resolved
-/// latest-authorised-wins exactly like the subject overlay ([`build_field`],
-/// [`FieldEdit`]). Publishing an empty (or, for priority, `"none"`) value clears
-/// the field.
-///
-/// This is deliberately only for *single scalar* fields — multi-valued concerns
-/// (labels, a set) and entity references (a parent relation, a board placement)
-/// keep their own mechanisms rather than being forced through here. The plumbing
-/// (builder, parse, reducer overlay, activity row) is generic over the field;
-/// each field's *value type* and rendering stay typed at the edges, landing in a
-/// typed [`CardView`] field (e.g. [`CardView::priority`], [`CardView::due`],
-/// [`CardView::estimate`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Field {
-    Priority,
-    Due,
-    Estimate,
-}
-
-impl Field {
-    /// The NIP-32 `L` namespace that carries this field on a kind-1985 label.
-    fn namespace(self) -> &'static str {
-        match self {
-            Field::Priority => "#priority",
-            Field::Due => "#due",
-            Field::Estimate => "#estimate",
-        }
-    }
-
-    /// The field carried by an `L` namespace, or `None` if it isn't a scalar
-    /// field namespace (e.g. `#subject`/`#t`, which are handled separately).
-    fn from_namespace(ns: &str) -> Option<Field> {
-        match ns {
-            "#priority" => Some(Field::Priority),
-            "#due" => Some(Field::Due),
-            "#estimate" => Some(Field::Estimate),
-            _ => None,
-        }
-    }
-
-    /// A human label for the field, used in the activity timeline and JSON.
-    pub fn label(self) -> &'static str {
-        match self {
-            Field::Priority => "priority",
-            Field::Due => "due",
-            Field::Estimate => "estimate",
-        }
-    }
-}
-
-/// A card's priority. Ordered least-to-most urgent so a "sort by priority"
-/// descends from [`Priority::Urgent`]; [`Priority::None`] (the default, "no
-/// priority") sorts last, matching Linear. Carried as the [`Field::Priority`]
-/// scalar overlay.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Priority {
-    /// No priority set — the default when a card has never been prioritised.
-    #[default]
-    None,
-    Low,
-    Medium,
-    High,
-    Urgent,
-}
-
-impl Priority {
-    /// The stable wire/JSON string for this priority.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Priority::None => "none",
-            Priority::Low => "low",
-            Priority::Medium => "medium",
-            Priority::High => "high",
-            Priority::Urgent => "urgent",
-        }
-    }
-
-    /// Parse a priority from its wire string (case-insensitive). `"med"` is
-    /// accepted as an alias for `"medium"`. Unknown values (and `"none"`) map to
-    /// [`Priority::None`], so a malformed overlay reads as "no priority" rather
-    /// than failing the fold.
-    pub fn parse(s: &str) -> Priority {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "urgent" => Priority::Urgent,
-            "high" => Priority::High,
-            "medium" | "med" => Priority::Medium,
-            "low" => Priority::Low,
-            _ => Priority::None,
-        }
-    }
-}
-
-/// A calendar day — the value type of the [`Field::Due`] due-date overlay. Day
-/// granularity (not an instant): a due date is "the 30th", independent of
-/// timezone. Fields are ordered year→month→day so the derived `Ord` is
-/// chronological, which is exactly the sort the list view wants. Rendered and
-/// parsed as ISO `YYYY-MM-DD`, which also happens to sort lexicographically the
-/// same way, so the wire form sorts correctly too.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Date {
-    pub year: i32,
-    pub month: u8,
-    pub day: u8,
-}
-
-impl Date {
-    /// Parse an ISO `YYYY-MM-DD` date, validating the month and the day against
-    /// that month's length (leap years included). `None` for anything malformed
-    /// or out of range, so a junk overlay reads as "no due date".
-    pub fn parse(s: &str) -> Option<Date> {
-        let (y, rest) = s.trim().split_once('-')?;
-        let (m, d) = rest.split_once('-')?;
-        let year: i32 = y.parse().ok()?;
-        let month: u8 = m.parse().ok()?;
-        let day: u8 = d.parse().ok()?;
-        if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
-            return None;
-        }
-        Some(Date { year, month, day })
-    }
-}
-
-impl std::fmt::Display for Date {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
-    }
-}
-
-/// Days in `month` of `year` (1-indexed month), honouring leap years for
-/// February. Used to validate [`Date::parse`].
-fn days_in_month(year: i32, month: u8) -> u8 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-/// Sentinel placement column id meaning the card has been removed from the
-/// board. A card whose latest *authorised* placement points here is dropped by
-/// the reducer. This is a reversible "tombstone" (re-place the card to restore
-/// it) rather than a NIP-09 deletion, which keeps removal under the same
-/// authority/latest-wins rules as every other placement.
-pub const COL_DELETED: &str = "__deleted__";
-
-/// Sentinel placement column id meaning the card has been *archived*: taken off
-/// the active board but kept (and recoverable) rather than tombstoned. A card
-/// whose latest *authorised* placement points here is collected onto
-/// [`BoardView::archived`] instead of a column. The archive placement also
-/// carries a `from` tag (the column it was archived from) so a restore lands the
-/// card back where it was — see [`build_archive_placement`]. Like `COL_DELETED`
-/// this keeps archival under the same authority/latest-wins rules as any
-/// placement.
-pub const COL_ARCHIVED: &str = "__archived__";
-
-/// A column definition as carried on the board event.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ColumnDef {
-    pub id: String,
-    pub name: String,
-    /// A *terminal* column is a "done" column: a card sitting here counts as
-    /// finished — it clears its dependents, drops out of the ready frontier, and
-    /// renders as done. A board may mark several (e.g. both `In Review` and
-    /// `Done`). When a board marks *none* — every board authored before this flag
-    /// existed — its last column is treated as terminal, preserving the original
-    /// positional behaviour. See [`column_is_terminal`].
-    pub terminal: bool,
-}
-
-impl ColumnDef {
-    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            name: name.into(),
-            terminal: false,
-        }
-    }
-
-    /// Mark this column terminal (a "done" column). Builder sugar for the
-    /// default-board definition and column-editing call sites.
-    pub fn terminal(mut self) -> Self {
-        self.terminal = true;
-        self
-    }
-}
-
-/// Whether the column `col_id` is *terminal* on a board whose columns are given,
-/// in order, as `(id, terminal)` pairs.
-///
-/// A terminal column is one where a card counts as done: it clears its
-/// dependents, leaves the [`crate::traversal`] ready frontier, and renders as
-/// done. Terminal columns are marked explicitly on the board definition
-/// ([`ColumnDef::terminal`]). A board that marks *none* — every board created
-/// before the flag existed — falls back to treating its **last** column as
-/// terminal, which is exactly the original positional `columns.last()` rule and
-/// so needs no migration.
-///
-/// Single pass, no allocation: safe to call from per-frame render paths.
-pub fn column_is_terminal<'a>(
-    columns: impl IntoIterator<Item = (&'a str, bool)>,
-    col_id: &str,
-) -> bool {
-    let mut any_marked = false;
-    let mut target_marked = false;
-    let mut last_is_target = false;
-    for (id, terminal) in columns {
-        if terminal {
-            any_marked = true;
-            target_marked |= id == col_id;
-        }
-        last_is_target = id == col_id;
-    }
-    if any_marked {
-        target_marked
-    } else {
-        last_is_target
-    }
-}
-
-/// The addressable identity of a board: its owner plus its slug — i.e. the nostr
-/// coordinate `30619:<owner-hex>:<slug>`.
-///
-/// A board is `(owner, slug)`, never a bare slug: two owners can each have a board
-/// with the same slug (your "roadmap" and a teammate's shared "roadmap"), so the
-/// selection, switcher, and saved-preference layers key on this coordinate rather
-/// than the slug alone. It is also the `#a`-tag value that anchors a board's cards,
-/// and the key `fold_shared_board` gathers every member's events under.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BoardCoord {
-    /// The board owner's pubkey — the author of its kind-30619 definition. Raw
-    /// bytes (not [`Pubkey`]) to match `BoardView::author` / `IssueEvent::board_author`
-    /// and avoid conversions at the many construction sites.
-    pub owner: [u8; 32],
-    /// The board's slug: the `d`-tag identifier of its definition.
-    pub slug: String,
-}
-
-impl BoardCoord {
-    /// Construct from an owner pubkey and slug.
-    pub fn new(owner: [u8; 32], slug: impl Into<String>) -> Self {
-        Self {
-            owner,
-            slug: slug.into(),
-        }
-    }
-
-    /// Render as the coordinate string `30619:<owner-hex>:<slug>`.
-    pub fn coordinate(&self) -> String {
-        board_address(&Pubkey::new(self.owner), &self.slug)
-    }
-
-    /// Parse a `30619:<owner-hex>:<slug>` coordinate. `None` if the kind prefix
-    /// isn't [`KIND_BOARD`] or the owner segment isn't valid hex.
-    pub fn parse(addr: &str) -> Option<BoardCoord> {
-        let mut parts = addr.splitn(3, ':');
-        let kind = parts.next()?;
-        if kind != KIND_BOARD.to_string() {
-            return None;
-        }
-        let owner_hex = parts.next()?;
-        let slug = parts.next()?;
-        let owner = *Pubkey::from_hex(owner_hex).ok()?.bytes();
-        Some(BoardCoord::new(owner, slug))
-    }
-}
-
-/// The addressable coordinate of a board: `30619:<author-hex>:<board-id>`. Thin
-/// formatting helper; see [`BoardCoord`] for the owner+slug identity type.
-pub fn board_address(author: &Pubkey, board_id: &str) -> String {
-    format!("{KIND_BOARD}:{}:{board_id}", author.hex())
-}
+use kinds::{BOARD_PREF_D, NS_SUBJECT, NS_TAG};
+pub use kinds::{
+    HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
+    KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_SEQUENCE,
+    is_addressable,
+};
+pub use model::{
+    BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, Priority, board_address,
+    column_is_terminal,
+};
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -2700,40 +2372,6 @@ fn newer(a_at: u64, a_who: &[u8; 32], b_at: u64, b_who: &[u8; 32]) -> bool {
 // ndb loading
 // ---------------------------------------------------------------------------
 
-/// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 10] = [
-    KIND_BOARD,
-    KIND_ISSUE,
-    KIND_PLACEMENT,
-    KIND_LABEL,
-    KIND_COVER_NOTE,
-    KIND_COMMENT,
-    KIND_RELATION,
-    KIND_SEQUENCE,
-    KIND_BLOCKERS,
-    KIND_RELATED,
-];
-
-/// Whether `kind` is one of headway's addressable (latest-wins, keyed per
-/// `(kind, d-tag)`) kinds — every 30000-range kind headway publishes (board,
-/// placement, relation, sequence, blockers, related), as opposed to the
-/// immutable regular events (issue, label, cover, comment).
-///
-/// Used by the CLI's relay sync to push only the *winning* revision of each
-/// addressable coordinate rather than every stale one the append-only cache
-/// still holds (see `nostrdb_net::relay::sync::frames_where`). The local cache
-/// keeps every revision; a relay holds only the latest and rejects the rest as
-/// `replaced: have newer event`, so pushing stale revisions never converges and
-/// re-flushes on every run.
-///
-/// Range-based on purpose: NIP-01 defines 30000–39999 as addressable, so any
-/// addressable kind added to [`HEADWAY_KINDS`] later is covered automatically —
-/// a narrower per-kind list is exactly what silently re-broke this each time a
-/// new addressable kind landed.
-pub fn is_addressable(kind: u32) -> bool {
-    (30_000..40_000).contains(&kind)
-}
-
 /// A filter for every headway event authored by `author`.
 ///
 /// Headway is single-author per board for now, so filtering by author captures
@@ -3379,6 +3017,7 @@ fn no_wordid_match_err(view: &BoardView, words: &str) -> String {
 
 /// Smallest rank digit value below `'a'` and above `'z'` used as open bounds.
 const RANK_LOW: u8 = b'a' - 1;
+
 const RANK_HIGH: u8 = b'z' + 1;
 
 /// Produce a rank string that sorts strictly between `left` and `right` (each an
@@ -3428,64 +3067,6 @@ mod tests {
     use super::*;
     use crate::test_config;
     use nostrdb_net::FullKeypair;
-
-    /// The relay-sync dedup keys off [`is_addressable`]: an addressable kind is
-    /// deduped to its winning revision before the push, an immutable one is passed
-    /// through as-is. Getting this wrong is the recurring "CLI re-flushes
-    /// superseded edits every run" bug — a two-kind hardcode silently re-broke it
-    /// each time a new addressable kind (relation, sequence, blockers, related)
-    /// landed. Pin the contract against the real kind roster so a newly-added kind
-    /// can't slip through classified as immutable.
-    #[test]
-    fn is_addressable_covers_every_addressable_headway_kind() {
-        // Every 30000-range kind (parameterized-replaceable, NIP-01) is
-        // addressable; the immutable regular events are not.
-        for kind in HEADWAY_KINDS {
-            assert_eq!(
-                is_addressable(kind),
-                (30_000..40_000).contains(&kind),
-                "kind {kind} is classified against the wrong side of the addressable range"
-            );
-        }
-
-        // Spot-check the two classes explicitly so the intent is legible even if
-        // the roster changes.
-        for addressable in [
-            KIND_BOARD,
-            KIND_PLACEMENT,
-            KIND_RELATION,
-            KIND_SEQUENCE,
-            KIND_BLOCKERS,
-            KIND_RELATED,
-        ] {
-            assert!(is_addressable(addressable), "{addressable} is addressable");
-        }
-        for immutable in [KIND_ISSUE, KIND_LABEL, KIND_COVER_NOTE, KIND_COMMENT] {
-            assert!(!is_addressable(immutable), "{immutable} is immutable");
-        }
-    }
-
-    #[test]
-    fn board_coord_round_trips_and_rejects_other_kinds() {
-        let kp = FullKeypair::generate();
-        let coord = BoardCoord::new(*kp.pubkey.bytes(), "roadmap");
-
-        // coordinate() matches the legacy board_address formatting exactly.
-        assert_eq!(coord.coordinate(), board_address(&kp.pubkey, "roadmap"));
-
-        // Round-trips back to the same owner + slug.
-        let parsed = BoardCoord::parse(&coord.coordinate()).expect("parse own coordinate");
-        assert_eq!(parsed, coord);
-
-        // A slug containing ':' survives (splitn keeps the tail intact).
-        let odd = BoardCoord::new(*kp.pubkey.bytes(), "a:b:c");
-        assert_eq!(BoardCoord::parse(&odd.coordinate()), Some(odd));
-
-        // Non-30619 kinds and malformed owners are rejected.
-        assert!(BoardCoord::parse(&format!("30620:{}:roadmap", kp.pubkey.hex())).is_none());
-        assert!(BoardCoord::parse("30619:not-hex:roadmap").is_none());
-        assert!(BoardCoord::parse("roadmap").is_none());
-    }
 
     /// Sign `builder` with `kp` and parse the result back into a [`HeadwayEvent`].
     fn roundtrip(builder: NoteBuilder, kp: &FullKeypair) -> HeadwayEvent {
@@ -3871,37 +3452,6 @@ mod tests {
         let views = reduce(&events);
         // "bug" is gone; only "ux" remains (not a union of both).
         assert_eq!(views[0].columns[0].cards[0].labels, vec!["ux".to_string()]);
-    }
-
-    #[test]
-    fn priority_parses_and_orders() {
-        assert_eq!(Priority::parse("Urgent"), Priority::Urgent);
-        assert_eq!(Priority::parse(" high "), Priority::High);
-        assert_eq!(Priority::parse("med"), Priority::Medium);
-        assert_eq!(Priority::parse("none"), Priority::None);
-        assert_eq!(Priority::parse("nonsense"), Priority::None);
-        // "no priority" sorts below every real priority (Linear ordering).
-        assert!(Priority::None < Priority::Low);
-        assert!(Priority::Low < Priority::Urgent);
-        assert_eq!(Priority::High.as_str(), "high");
-    }
-
-    #[test]
-    fn date_parses_and_orders() {
-        assert_eq!(
-            Date::parse("2026-07-30"),
-            Some(Date {
-                year: 2026,
-                month: 7,
-                day: 30
-            })
-        );
-        assert_eq!(Date::parse("2024-02-29").map(|d| d.day), Some(29)); // leap
-        assert_eq!(Date::parse("2026-02-29"), None); // not a leap year
-        assert_eq!(Date::parse("2026-13-01"), None); // bad month
-        assert_eq!(Date::parse("nonsense"), None);
-        assert!(Date::parse("2026-01-31") < Date::parse("2026-02-01"));
-        assert_eq!(Date::parse("2026-07-30").unwrap().to_string(), "2026-07-30");
     }
 
     #[test]
@@ -4687,37 +4237,6 @@ mod tests {
         let child = todo.cards.iter().find(|c| c.id == c2).unwrap();
         assert_eq!(child.parent, Some(epic));
         assert!(child.subissues.is_empty());
-    }
-
-    /// The terminal predicate: an explicitly-marked column wins, and a board with
-    /// no marks falls back to its last column (the pre-flag positional rule).
-    #[test]
-    fn column_is_terminal_marks_and_fallback() {
-        // No column marked → only the last column is terminal.
-        let unmarked = [("todo", false), ("review", false), ("done", false)];
-        assert!(!column_is_terminal(unmarked.iter().copied(), "todo"));
-        assert!(!column_is_terminal(unmarked.iter().copied(), "review"));
-        assert!(column_is_terminal(unmarked.iter().copied(), "done"));
-
-        // Explicit marks → exactly the marked columns, and the last column is no
-        // longer implicitly terminal.
-        let marked = [
-            ("todo", false),
-            ("review", true),
-            ("done", true),
-            ("cancelled", false),
-        ];
-        assert!(!column_is_terminal(marked.iter().copied(), "todo"));
-        assert!(column_is_terminal(marked.iter().copied(), "review"));
-        assert!(column_is_terminal(marked.iter().copied(), "done"));
-        // A non-terminal *last* column (the `cancelled`-append case that broke the
-        // positional rule) stays non-terminal because other columns are marked.
-        assert!(!column_is_terminal(marked.iter().copied(), "cancelled"));
-
-        // Unknown column id is never terminal.
-        assert!(!column_is_terminal(marked.iter().copied(), "missing"));
-        // Empty board: nothing is terminal.
-        assert!(!column_is_terminal(std::iter::empty(), "done"));
     }
 
     /// A terminal column that is *not* the last column still makes a card in it
