@@ -19,6 +19,7 @@ pub mod permission_mode;
 pub mod session;
 pub mod session_converter;
 pub mod session_events;
+pub mod session_fold;
 pub mod session_jsonl;
 pub mod session_loader;
 pub mod session_reconstructor;

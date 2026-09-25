@@ -64,7 +64,7 @@ use nostrdb_net::pns::PNS_KIND;
 use nostrdb_net::relay::sync::Session;
 
 use crate::messages::Message;
-use crate::session_events::{AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
+use crate::session_events::AI_CONVERSATION_KIND;
 use crate::session_loader::SessionState;
 
 /// An error from constructing or driving the [`Engine`].
@@ -345,10 +345,38 @@ impl Engine {
     /// session appears or an existing one's status changes. Re-read the list with
     /// [`Engine::list_sessions`] on each wake.
     pub fn watch_sessions(&self) -> Result<SessionWatch, EngineError> {
-        let filter = Filter::new()
-            .kinds([AI_SESSION_STATE_KIND as u64])
-            .authors([self.account.pubkey.bytes()])
-            .build();
+        self.watch_filter(crate::session_fold::session_state_filter(
+            &self.account.pubkey,
+        ))
+    }
+
+    /// Watch *any* session activity for this identity.
+    ///
+    /// Returns a [`SessionWatch`] whose [`SessionWatch::next_keys`] yields each
+    /// batch of newly-landed session-state (kind-31988) and conversation
+    /// (kind-1988) events — the [`session_feed_filter`](crate::session_fold::session_feed_filter).
+    /// Unlike [`Engine::watch_sessions`] it also wakes when a session streams
+    /// messages without republishing its status, so a live dashboard's
+    /// last-activity column stays current. The intended loop seeds a
+    /// [`SessionReducer`](crate::session_fold::SessionReducer) once and folds each
+    /// batch in, rather than re-querying per session:
+    ///
+    /// ```ignore
+    /// let mut watch = engine.watch_activity()?;
+    /// let mut fold = fold_sessions(ndb, &txn, &pubkey)?;
+    /// while let Some(keys) = watch.next_keys().await {
+    ///     reduce_delta(&mut fold, ndb, &Transaction::new(ndb)?, &keys);
+    ///     render(fold.views());
+    /// }
+    /// ```
+    pub fn watch_activity(&self) -> Result<SessionWatch, EngineError> {
+        self.watch_filter(crate::session_fold::session_feed_filter(
+            &self.account.pubkey,
+        ))
+    }
+
+    /// Subscribe to `filter` and wrap the stream in a [`SessionWatch`].
+    fn watch_filter(&self, filter: Filter) -> Result<SessionWatch, EngineError> {
         let sub = self.ndb.subscribe(std::slice::from_ref(&filter))?;
         Ok(SessionWatch {
             stream: SubscriptionStream::new(self.ndb.clone(), sub),
@@ -893,8 +921,9 @@ impl Engine {
 }
 
 /// An event-driven waiter over an ndb subscription — a session's live kind-1988
-/// events ([`Engine::watch_session`]) or the kind-31988 session list
-/// ([`Engine::watch_sessions`]).
+/// events ([`Engine::watch_session`]), the kind-31988 session list
+/// ([`Engine::watch_sessions`]), or all session activity
+/// ([`Engine::watch_activity`]).
 ///
 /// Backed by an ndb subscription stream, so [`SessionWatch::changed`] only wakes
 /// on a real new event (no polling). The subscription is released when the watch
@@ -910,6 +939,16 @@ impl SessionWatch {
     /// torn down).
     pub async fn changed(&mut self) -> bool {
         self.stream.next().await.is_some()
+    }
+
+    /// Wait for the next batch of new events and return their note keys, for a
+    /// caller that folds them incrementally (see [`Engine::watch_activity`]).
+    /// `None` if the subscription ended. A key may not yet be visible to a read
+    /// transaction opened before it committed — fold it with
+    /// [`reduce_delta`](crate::session_fold::reduce_delta), which hands such keys
+    /// back to retry.
+    pub async fn next_keys(&mut self) -> Option<Vec<nostrdb::NoteKey>> {
+        self.stream.next().await
     }
 }
 
@@ -1093,6 +1132,76 @@ mod tests {
             .expect("watch should wake before timeout");
         assert!(woke, "watch should report a change");
         assert_eq!(engine.session_messages(session_id).len(), 1);
+    }
+
+    /// [`Engine::watch_activity`] delivers both a session's state and a later
+    /// streamed message as note keys, and folding them advances the session's
+    /// last activity past its state event — the live-dashboard loop, end to end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watch_activity_feeds_the_session_fold() {
+        use crate::session_events::{build_live_event, build_session_state_event, ThreadingState};
+        use crate::session_fold::{reduce_delta, SessionReducer};
+
+        let eng_dir = TempDir::new().expect("tmp dir");
+        let engine =
+            Engine::open(eng_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine");
+        let mut watch = engine.watch_activity().expect("watch");
+        let mut fold = SessionReducer::default();
+        // Await one batch from the watch and fold it in.
+        async fn fold_next(engine: &Engine, watch: &mut SessionWatch, fold: &mut SessionReducer) {
+            let keys = tokio::time::timeout(Duration::from_secs(5), watch.next_keys())
+                .await
+                .expect("watch should wake before timeout")
+                .expect("subscription open");
+            let txn = Transaction::new(engine.ndb()).expect("txn");
+            assert!(reduce_delta(fold, engine.ndb(), &txn, &keys).is_empty());
+        }
+
+        let session_id = "activity-session";
+        let state = build_session_state_event(
+            session_id,
+            "Streaming",
+            None,
+            "/tmp",
+            "working",
+            None,
+            "host",
+            "/home",
+            "claude",
+            "default",
+            None,
+            None,
+            None,
+            None,
+            1_770_000_000,
+            &TEST_SECKEY,
+        )
+        .expect("state event");
+        pns_seed(engine.ndb(), &state.note_json);
+        fold_next(&engine, &mut watch, &mut fold).await;
+        let views = fold.views();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].last_activity, 1_770_000_000);
+
+        // A message with no status republish still wakes the watch.
+        let mut threading = ThreadingState::new();
+        let msg = build_live_event(
+            "ping",
+            "user",
+            session_id,
+            None,
+            None,
+            None,
+            &mut threading,
+            &TEST_SECKEY,
+        )
+        .expect("live event");
+        pns_seed(engine.ndb(), &msg.note_json);
+        fold_next(&engine, &mut watch, &mut fold).await;
+        assert!(
+            fold.views()[0].last_activity > 1_770_000_000,
+            "the streamed message advances last activity"
+        );
     }
 
     /// [`Engine::watch_sessions`] wakes when a new kind-31988 session state is
