@@ -14,6 +14,7 @@ mod grep;
 mod interrupt;
 mod list;
 mod log;
+mod permission;
 mod publish;
 mod resume;
 mod send;
@@ -36,6 +37,7 @@ use grep::{CaseMode, cmd_grep, compile_pattern};
 use interrupt::cmd_interrupt;
 use list::{ListFilters, ListScope, cmd_list};
 use log::{cmd_follow, cmd_log};
+use permission::{Decision, ResponseOpts, cmd_mode, cmd_respond};
 use resume::cmd_resume;
 use send::cmd_send;
 use show::cmd_show;
@@ -166,6 +168,21 @@ enum Command {
     Interrupt {
         session: String,
     },
+    /// Answer a live session's pending permission request (`approve`/`deny`):
+    /// the newest one, or the one `--request` names by perm-id prefix. The
+    /// selector is required, like `send`'s.
+    Respond {
+        session: String,
+        opts: ResponseOpts,
+    },
+    /// Change a live session's permission mode on its host — the CLI companion
+    /// to Ctrl+M in Dave.
+    Mode {
+        session: String,
+        /// Already normalized to a canonical wire spelling by
+        /// [`parse_mode_flag`]: the host reads an unknown string as `default`.
+        mode: String,
+    },
     Login {
         nsec: String,
     },
@@ -193,6 +210,8 @@ impl Command {
             | Command::Send { .. }
             | Command::Spawn { .. }
             | Command::Interrupt { .. }
+            | Command::Respond { .. }
+            | Command::Mode { .. }
             | Command::Login { .. }
             | Command::Logout => true,
         }
@@ -324,6 +343,12 @@ async fn run() -> Result<()> {
             cmd_spawn(&engine, &read_pk, &opts, cli.json).await?
         }
         Command::Interrupt { session } => cmd_interrupt(&engine, &read_pk, &session).await?,
+        Command::Respond { session, opts } => {
+            cmd_respond(&engine, &read_pk, &session, &opts, cli.json).await?
+        }
+        Command::Mode { session, mode } => {
+            cmd_mode(&engine, &read_pk, &session, &mode, cli.json).await?
+        }
         Command::Login { .. } | Command::Logout => unreachable!("handled above"),
     }
 
@@ -449,6 +474,11 @@ impl Cli {
         let mut allow_duplicate = false;
         let mut wait = false;
         let mut wait_timeout = None;
+        // `approve`/`deny` flags: which pending request, the reply text, and
+        // (deny only) whether to stop the turn too.
+        let mut request = None;
+        let mut message = None;
+        let mut interrupt = false;
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -514,6 +544,9 @@ impl Cli {
                             .map_err(|_| "--wait-timeout needs a non-negative integer (seconds)")?,
                     )
                 }
+                "--request" => request = Some(value("--request")?),
+                "--message" => message = Some(value("--message")?),
+                "--interrupt" => interrupt = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -553,7 +586,25 @@ impl Cli {
         // target (they double as `list` filters), plus its own
         // `--title`/`--prompt`/`--wait`, so it's assembled here where those flags
         // live rather than threading them all through `parse_command`.
-        let command = if name == "spawn" {
+        let command = if name == "approve" || name == "deny" {
+            let decision = if name == "approve" {
+                Decision::Approve
+            } else {
+                Decision::Deny
+            };
+            if interrupt && decision == Decision::Approve {
+                return Err("--interrupt only applies to `deny` (deny and stop the turn)".into());
+            }
+            Command::Respond {
+                session: arg(rest, 0, name)?,
+                opts: ResponseOpts {
+                    decision,
+                    request,
+                    message,
+                    interrupt,
+                },
+            }
+        } else if name == "spawn" {
             Command::Spawn {
                 host: host.clone(),
                 cwd: cwd.clone(),
@@ -645,6 +696,10 @@ fn parse_command(
         "interrupt" => Command::Interrupt {
             session: arg(rest, 0, name)?,
         },
+        "mode" => Command::Mode {
+            session: arg(rest, 0, name)?,
+            mode: parse_mode_flag(&arg(rest, 1, name)?)?,
+        },
         "login" => Command::Login {
             nsec: arg(rest, 0, name)?,
         },
@@ -697,7 +752,8 @@ COMMANDS:
                       unless --deleted/--all is passed.
     show [session]    Show one session's detail: its state, the run-configs on
                       its host+cwd, its latest usage, and a conversation summary
-                      (message count + any pending permission). Takes any
+                      (message count + each pending permission request, with
+                      the id approve/deny --request takes). Takes any
                       selector `list` accepts; defaults to $AGENTIUM_SESSION so a
                       running Dave session can just run `agentium show`. --json
                       emits the structured detail object.
@@ -750,6 +806,20 @@ COMMANDS:
                       Abort a live session's in-flight turn on its host — the CLI
                       companion to pressing Esc in Dave. Takes any selector `list`
                       accepts; a deleted session has nothing running to interrupt.
+    approve <session> / deny <session>
+                      Answer a live session's pending permission request — by
+                      default the newest; --request picks another. `show` lists
+                      what is pending. An AskUserQuestion request can be denied
+                      but not approved (it needs answers; use Dave). --json emits
+                      {{ session, event_id, perm_id, … }} on one line. The host
+                      matches the answer to the request it holds in memory: if it
+                      restarted since, the answer is ignored and the request stays
+                      pending, with no error.
+    mode <session> <mode>
+                      Change a live session's permission mode — the CLI companion
+                      to Ctrl+M in Dave: default (aka manual) | plan |
+                      accept_edits | auto | bypass. --json emits {{ session,
+                      event_id, mode }}.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
@@ -837,6 +907,14 @@ OPTIONS:
     --allow-duplicate Really spawn a second session the duplicate guard would
                       refuse. Also drops the idempotency key, so the host doesn't
                       re-impose the dedupe.
+
+  approve/deny options:
+    --request <id>    The pending request to answer, by perm-id prefix (the
+                      8-digit ids `show` prints). Default: the newest.
+    --message <text>  Reply text sent with the decision — a deny reason, or a
+                      note with an approve — which the agent sees
+    --interrupt       (deny only) Deny and stop the turn, rather than letting
+                      the agent carry on without the tool
 
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
@@ -1074,6 +1152,128 @@ mod tests {
         }
         // No selector → the missing-argument error (no $AGENTIUM_SESSION default).
         assert!(parse_command("interrupt", &[], view_all(), CaseMode::Smart).is_err());
+    }
+
+    #[test]
+    fn approve_and_deny_carry_their_flags() {
+        let cli = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "--request",
+            "aaaa1111",
+            "--message",
+            "go ahead",
+            "approve",
+            "agentium:a-b-c",
+        ])
+        .unwrap()
+        .unwrap();
+        match cli.command {
+            Command::Respond { session, opts } => {
+                assert_eq!(session, "agentium:a-b-c");
+                assert_eq!(opts.decision, Decision::Approve);
+                assert_eq!(opts.request.as_deref(), Some("aaaa1111"));
+                assert_eq!(opts.message.as_deref(), Some("go ahead"));
+                assert!(!opts.interrupt);
+            }
+            _ => panic!("expected Respond"),
+        }
+
+        // A bare deny answers the newest request, with no reason and no stop.
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "deny", "agentium:a-b-c"])
+            .unwrap()
+            .unwrap();
+        match cli.command {
+            Command::Respond { opts, .. } => {
+                assert_eq!(opts.decision, Decision::Deny);
+                assert!(opts.request.is_none() && opts.message.is_none() && !opts.interrupt);
+            }
+            _ => panic!("expected Respond"),
+        }
+
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "--interrupt", "deny", "agentium:a-b-c"])
+            .unwrap()
+            .unwrap();
+        match cli.command {
+            Command::Respond { opts, .. } => assert!(opts.interrupt),
+            _ => panic!("expected Respond"),
+        }
+    }
+
+    #[test]
+    fn approve_rejects_interrupt_and_a_missing_session() {
+        // Stopping the turn is a deny; an approve that also stops it is a
+        // contradiction, so refuse it rather than pick one.
+        assert!(
+            parse_cli(&[
+                "--nsec",
+                TEST_NSEC,
+                "--interrupt",
+                "approve",
+                "agentium:a-b-c"
+            ])
+            .is_err()
+        );
+        // The selector is required (no $AGENTIUM_SESSION default: answering your
+        // own permission request from inside the turn it blocks makes no sense).
+        assert!(parse_cli(&["--nsec", TEST_NSEC, "approve"]).is_err());
+        assert!(parse_cli(&["--nsec", TEST_NSEC, "deny"]).is_err());
+    }
+
+    #[test]
+    fn mode_normalizes_aliases_and_rejects_unknown_modes() {
+        for (typed, canonical) in [
+            ("plan", "plan"),
+            ("manual", "default"),
+            ("acceptEdits", "accept_edits"),
+            ("bypassPermissions", "bypass"),
+            ("auto", "auto"),
+        ] {
+            let cli = parse_cli(&["--nsec", TEST_NSEC, "mode", "agentium:a-b-c", typed])
+                .unwrap()
+                .unwrap();
+            match cli.command {
+                Command::Mode { session, mode } => {
+                    assert_eq!(session, "agentium:a-b-c");
+                    assert_eq!(mode, canonical, "'{typed}' should normalize");
+                }
+                _ => panic!("expected Mode"),
+            }
+        }
+        // The host would read an unknown mode as `default`, so it must fail here.
+        let Err(err) = parse_cli(&["--nsec", TEST_NSEC, "mode", "agentium:a-b-c", "yolo"]) else {
+            panic!("an unknown mode must be rejected");
+        };
+        assert!(err.to_string().contains("yolo"), "{err}");
+        // Both positionals are required.
+        assert!(parse_cli(&["--nsec", TEST_NSEC, "mode", "agentium:a-b-c"]).is_err());
+    }
+
+    #[test]
+    fn permission_commands_need_the_relay() {
+        for cmd in [
+            vec![
+                "--nsec",
+                TEST_NSEC,
+                "--no-sync",
+                "approve",
+                "agentium:a-b-c",
+            ],
+            vec!["--nsec", TEST_NSEC, "--no-sync", "deny", "agentium:a-b-c"],
+            vec![
+                "--nsec",
+                TEST_NSEC,
+                "--no-sync",
+                "mode",
+                "agentium:a-b-c",
+                "plan",
+            ],
+        ] {
+            assert!(
+                parse_cli(&cmd).is_err(),
+                "--no-sync must be refused for {cmd:?}"
+            );
+        }
     }
 
     #[test]

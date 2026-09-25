@@ -16,10 +16,10 @@ hex = { workspace = true }
 regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tempfile = { workspace = true }
 bech32 = { workspace = true }
-uuid = { workspace = true }

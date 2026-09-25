@@ -573,7 +573,9 @@ impl Engine {
     /// Resolves the request's note id from the session's events, then publishes a
     /// kind-1988 permission response linked to it. `cancel_turn` denies *and*
     /// interrupts the current turn. Errors with [`EngineError::UnknownPermission`]
-    /// if no request with `perm_id` is present in the session.
+    /// if no request with `perm_id` is present in the session. Returns the
+    /// published event, like [`send_message`](Engine::send_message), so a caller
+    /// can report its id.
     pub fn respond_permission(
         &self,
         session_id: &str,
@@ -581,7 +583,7 @@ impl Engine {
         allow: bool,
         message: Option<String>,
         cancel_turn: bool,
-    ) -> Result<(), EngineError> {
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
         let built = self.make_permission_response(
             session_id,
             perm_id,
@@ -589,7 +591,8 @@ impl Engine {
             message.as_deref(),
             cancel_turn,
         )?;
-        self.publish_session_event(&built)
+        self.publish_session_event(&built)?;
+        Ok(built)
     }
 
     /// Build a kind-1988 permission response, ingest it locally, and return it
@@ -721,12 +724,21 @@ impl Engine {
         self.publish_session_event(&built)
     }
 
-    /// Request a permission-mode change on a session's host (e.g. `"default"`,
-    /// `"acceptEdits"`, `"plan"`). Publishes a kind-1988 command the host applies
-    /// to its local backend.
-    pub fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<(), EngineError> {
+    /// Request a permission-mode change on a session's host. `mode` is a
+    /// canonical [`PERMISSION_MODES`](crate::permission_mode::PERMISSION_MODES)
+    /// spelling (e.g. `"default"`, `"accept_edits"`, `"plan"`) — the host maps an
+    /// unknown string to `default` rather than rejecting it, so normalize with
+    /// [`parse_permission_mode`](crate::permission_mode::parse_permission_mode)
+    /// first. Publishes a kind-1988 command the host applies to its local
+    /// backend, and returns that event so a caller can report its id.
+    pub fn set_permission_mode(
+        &self,
+        session_id: &str,
+        mode: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
         let built = self.make_set_permission_mode(session_id, mode)?;
-        self.publish_session_event(&built)
+        self.publish_session_event(&built)?;
+        Ok(built)
     }
 
     /// Build a kind-1988 set-permission-mode command, ingest it locally, and

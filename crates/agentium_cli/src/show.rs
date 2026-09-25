@@ -3,12 +3,13 @@
 use std::io::IsTerminal;
 
 use agentium_core::Engine;
-use agentium_core::session_loader::SessionState;
+use agentium_core::session_loader::{PendingPermission, SessionState};
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::list::SessionJson;
+use crate::permission::short_id;
 use crate::term::{
     SGR_BOLD, SGR_NEEDS_INPUT, abbreviate_home, col, now_secs, paint, relative_time, status_style,
 };
@@ -20,7 +21,8 @@ use crate::term::{
 /// session's `agentium:` URI + status, every kind-31988 state field, the
 /// run-configs registered on its host+cwd, its latest usage snapshot (from the
 /// kind-1989 archive, when present), and a conversation summary (message count
-/// plus any pending permission request). With `as_json`, the same detail is a
+/// plus every pending permission request, with the id `approve`/`deny`
+/// `--request` takes). With `as_json`, the same detail is a
 /// single structured object.
 ///
 /// The `subagent` rollup the card envisions is deferred: subagent lifecycle is
@@ -56,10 +58,9 @@ pub(crate) fn cmd_show(
     // read transaction on this thread, which nostrdb refuses (one reader slot per
     // thread), silently yielding an empty conversation.
     let usage = latest_session_usage(engine.ndb(), &txn, &state.claude_session_id);
-    let messages =
-        load_session_messages_for_author(engine.ndb(), &txn, author, &state.claude_session_id)
-            .messages;
-    let summary = ConversationSummary::from_messages(&messages);
+    let loaded =
+        load_session_messages_for_author(engine.ndb(), &txn, author, &state.claude_session_id);
+    let summary = ConversationSummary::from_loaded(&loaded);
 
     if as_json {
         let detail = SessionDetailJson {
@@ -107,31 +108,22 @@ fn matching_run_configs(
 }
 
 /// A folded read of a session's kind-1988 conversation for the detail view: how
-/// many messages it holds, and the tool of any still-unanswered permission
-/// request. Owned (not borrowing the message vec) so it can be rendered and
-/// serialized after the transaction is dropped.
+/// many messages it holds, and every still-unanswered permission request. Owned
+/// (not borrowing the loaded session) so it can be rendered and serialized after
+/// the transaction is dropped.
 struct ConversationSummary {
     message_count: usize,
-    /// The tool named by the latest *unresponded* permission request, if the
-    /// session is waiting on a decision.
-    pending_permission: Option<String>,
+    /// The unanswered permission requests, oldest first — what `approve`/`deny`
+    /// act on.
+    pending: Vec<PendingPermission>,
 }
 
 impl ConversationSummary {
-    /// Fold the reconstructed message list into a summary. A permission request
-    /// is pending when its reconstructed [`response`] is `None`; the newest such
-    /// request is the one a human would act on, so we scan newest-first.
-    ///
-    /// [`response`]: agentium_core::messages::PermissionRequest::response
-    fn from_messages(messages: &[agentium_core::messages::Message]) -> Self {
-        use agentium_core::messages::Message;
-        let pending_permission = messages.iter().rev().find_map(|m| match m {
-            Message::PermissionRequest(p) if p.response.is_none() => Some(p.tool_name.clone()),
-            _ => None,
-        });
+    /// Fold a loaded conversation into a summary.
+    fn from_loaded(loaded: &agentium_core::session_loader::LoadedSession) -> Self {
         ConversationSummary {
-            message_count: messages.len(),
-            pending_permission,
+            message_count: loaded.messages.len(),
+            pending: agentium_core::session_loader::pending_permission_requests(loaded),
         }
     }
 }
@@ -186,15 +178,34 @@ impl From<&agentium_core::messages::UsageInfo> for UsageJson {
 #[derive(serde::Serialize)]
 struct ConversationJson {
     message_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_permission: Option<String>,
+    pending_permissions: Vec<PendingPermissionJson>,
+}
+
+/// The `--json` shape of one [`PendingPermission`]. `perm_id` is the full id,
+/// which `approve`/`deny --request` accept as a (maximal) prefix.
+#[derive(serde::Serialize)]
+struct PendingPermissionJson {
+    perm_id: String,
+    tool_name: String,
+    /// Unix seconds, like every other `created_at` in the CLI's output.
+    created_at: u64,
+    is_question: bool,
 }
 
 impl From<&ConversationSummary> for ConversationJson {
     fn from(s: &ConversationSummary) -> Self {
         ConversationJson {
             message_count: s.message_count,
-            pending_permission: s.pending_permission.clone(),
+            pending_permissions: s
+                .pending
+                .iter()
+                .map(|p| PendingPermissionJson {
+                    perm_id: p.perm_id.to_string(),
+                    tool_name: p.tool_name.clone(),
+                    created_at: p.created_ms / 1000,
+                    is_question: p.is_question,
+                })
+                .collect(),
         }
     }
 }
@@ -303,9 +314,22 @@ fn render_detail(
     out.push_str(&paint(color, SGR_BOLD, "conversation"));
     out.push('\n');
     out.push_str(&format!("  {} messages\n", summary.message_count));
-    if let Some(tool) = &summary.pending_permission {
-        let note = format!("needs input: {tool}");
-        out.push_str(&format!("  {}\n", paint(color, SGR_NEEDS_INPUT, &note)));
+
+    // Pending permissions, each with the short id `approve`/`deny --request`
+    // takes. Omitted entirely when nothing is waiting.
+    if !summary.pending.is_empty() {
+        out.push('\n');
+        out.push_str(&paint(color, SGR_NEEDS_INPUT, "pending permissions"));
+        out.push('\n');
+        for p in &summary.pending {
+            let question = if p.is_question { "  (question)" } else { "" };
+            out.push_str(&format!(
+                "  {}  {}  {}{question}\n",
+                short_id(&p.perm_id),
+                col(&p.tool_name, 16),
+                relative_time(now, p.created_ms / 1000),
+            ));
+        }
     }
 
     out
@@ -336,7 +360,12 @@ mod tests {
         let u = usage(100, 10, 20, 50, 3, Some(0.25));
         let summary = ConversationSummary {
             message_count: 7,
-            pending_permission: Some("Bash".into()),
+            pending: vec![PendingPermission {
+                perm_id: uuid::Uuid::parse_str("aaaa1111-0000-0000-0000-000000000000").unwrap(),
+                tool_name: "Bash".into(),
+                created_ms: 0,
+                is_question: false,
+            }],
         };
         let out = render_detail(&s, &configs, Some(&u), &summary, 60, false);
 
@@ -356,9 +385,11 @@ mod tests {
         assert!(out.contains("130 tokens"));
         assert!(out.contains("$0.2500"));
         assert!(out.contains("3")); // turns
-        // conversation summary + pending permission
+        // conversation summary + the pending request, with the short id
+        // `approve --request` takes
         assert!(out.contains("7 messages"));
-        assert!(out.contains("needs input: Bash"));
+        assert!(out.contains("pending permissions"));
+        assert!(out.contains("aaaa1111  Bash"), "{out}");
     }
 
     #[test]
@@ -366,7 +397,7 @@ mod tests {
         let s = session("mac", "t", "idle", 0);
         let summary = ConversationSummary {
             message_count: 0,
-            pending_permission: None,
+            pending: vec![],
         };
         let out = render_detail(&s, &[], None, &summary, 0, false);
         assert!(
@@ -376,51 +407,48 @@ mod tests {
         assert!(out.contains("run configs"));
         assert!(out.contains("  none")); // no configs registered
         assert!(out.contains("0 messages"));
-        assert!(!out.contains("needs input"));
+        assert!(!out.contains("pending permissions"));
     }
 
     #[test]
-    fn conversation_summary_reports_latest_pending_permission() {
-        use agentium_core::messages::{Message, PermissionRequest, PermissionResponseType};
-        use serde_json::Value;
-        use uuid::Uuid;
-
-        let responded = PermissionRequest::new(
-            Uuid::nil(),
-            "Read".into(),
-            Value::Null,
-            None,
-            Some(PermissionResponseType::Allowed),
-            None,
+    fn pending_permissions_json_lists_every_request() {
+        let summary = ConversationSummary {
+            message_count: 2,
+            pending: vec![
+                PendingPermission {
+                    perm_id: uuid::Uuid::parse_str("aaaa1111-0000-0000-0000-000000000000").unwrap(),
+                    tool_name: "Bash".into(),
+                    created_ms: 5_500,
+                    is_question: false,
+                },
+                PendingPermission {
+                    perm_id: uuid::Uuid::parse_str("bbbb2222-0000-0000-0000-000000000000").unwrap(),
+                    tool_name: "AskUserQuestion".into(),
+                    created_ms: 7_000,
+                    is_question: true,
+                },
+            ],
+        };
+        let json = serde_json::to_value(ConversationJson::from(&summary)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "message_count": 2,
+                "pending_permissions": [
+                    {
+                        "perm_id": "aaaa1111-0000-0000-0000-000000000000",
+                        "tool_name": "Bash",
+                        "created_at": 5,
+                        "is_question": false,
+                    },
+                    {
+                        "perm_id": "bbbb2222-0000-0000-0000-000000000000",
+                        "tool_name": "AskUserQuestion",
+                        "created_at": 7,
+                        "is_question": true,
+                    },
+                ],
+            })
         );
-        let pending =
-            PermissionRequest::new(Uuid::nil(), "Bash".into(), Value::Null, None, None, None);
-        let msgs = vec![
-            Message::User("hi".into()),
-            Message::PermissionRequest(responded),
-            Message::PermissionRequest(pending),
-        ];
-        let summary = ConversationSummary::from_messages(&msgs);
-        assert_eq!(summary.message_count, 3);
-        // The unresponded request wins over the earlier responded one.
-        assert_eq!(summary.pending_permission.as_deref(), Some("Bash"));
-    }
-
-    #[test]
-    fn conversation_summary_no_pending_when_all_responded() {
-        use agentium_core::messages::{Message, PermissionRequest, PermissionResponseType};
-        use serde_json::Value;
-        use uuid::Uuid;
-
-        let responded = PermissionRequest::new(
-            Uuid::nil(),
-            "Read".into(),
-            Value::Null,
-            None,
-            Some(PermissionResponseType::Denied),
-            None,
-        );
-        let summary = ConversationSummary::from_messages(&[Message::PermissionRequest(responded)]);
-        assert!(summary.pending_permission.is_none());
     }
 }

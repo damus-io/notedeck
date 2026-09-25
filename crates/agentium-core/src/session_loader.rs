@@ -67,6 +67,12 @@ impl EventOrder {
             id: *note.id(),
         }
     }
+
+    /// The event's wall-clock time in milliseconds since the Unix epoch — its
+    /// sub-second `ms` tag, or `created_at * 1000` for an event predating it.
+    pub fn millis(&self) -> u64 {
+        self.millis
+    }
 }
 
 /// Result of loading session messages, including threading info for live events.
@@ -88,6 +94,49 @@ pub struct LoadedSession {
     /// Highest [`EventOrder`] among the loaded notes, for seeding the live
     /// poll-merge tail so it knows what's already displayed. `None` when empty.
     pub max_order: Option<EventOrder>,
+}
+
+/// A permission request in a loaded session that no response has answered yet —
+/// what `agentium approve`/`deny` act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPermission {
+    /// The request's `perm-id`, which a response must echo to answer it.
+    pub perm_id: uuid::Uuid,
+    /// The tool asking to run (e.g. `Bash`, `Edit`, `ExitPlanMode`).
+    pub tool_name: String,
+    /// When the request was published, in milliseconds since the Unix epoch.
+    pub created_ms: u64,
+    /// Whether this is an `AskUserQuestion` question set rather than a plain
+    /// allow/deny. Approving one needs the answers payload, so a bare approve
+    /// can't answer it; a deny still can. Keyed off the tool name as well as the
+    /// inferred view, so a payload too malformed to parse as a question set
+    /// still counts as one.
+    pub is_question: bool,
+}
+
+/// The session's still-unanswered permission requests, oldest first, so the
+/// newest — the one a human would act on — is last.
+///
+/// A request is pending when the loader found no `permission_response` carrying
+/// its `perm-id`. This is only what the *notes* say: a host that restarted
+/// since the request no longer holds it in memory, so a response to it is
+/// dropped and the request stays pending here forever.
+pub fn pending_permission_requests(loaded: &LoadedSession) -> Vec<PendingPermission> {
+    loaded
+        .messages
+        .iter()
+        .zip(&loaded.orders)
+        .filter_map(|(msg, order)| match msg {
+            Message::PermissionRequest(req) if req.response.is_none() => Some(PendingPermission {
+                perm_id: req.id,
+                tool_name: req.tool_name.clone(),
+                created_ms: order.millis(),
+                is_question: req.tool_name == "AskUserQuestion"
+                    || req.view.question_set().is_some(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Load conversation messages from ndb for a given session ID.
@@ -1825,6 +1874,82 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// `pending_permission_requests` lists only the requests no response has
+    /// answered, oldest first, carrying each one's wall-clock time and whether
+    /// it is a question set a bare approve can't answer.
+    #[tokio::test]
+    async fn pending_permission_requests_skips_answered_ones() {
+        let sk = test_secret_key();
+        let session_id = "perm-pending";
+        let answered = uuid::Uuid::new_v4().to_string();
+        let bash = uuid::Uuid::new_v4().to_string();
+        let question = uuid::Uuid::new_v4().to_string();
+        let ask = r#"{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which?","header":"Pick","options":[{"label":"A","description":"a"}],"multiSelect":false}]}}"#;
+        let events = [
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "permission_request",
+                r#"{"tool_name":"Read","tool_input":{}}"#,
+                1_000,
+                0,
+                &[("perm-id", &answered)],
+            ),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "permission_response",
+                r#"{"decision":"allow","interrupt":false,"auto":false}"#,
+                1_001,
+                1,
+                &[("perm-id", &answered)],
+            ),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "permission_request",
+                r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+                1_002,
+                2,
+                &[("perm-id", &bash)],
+            ),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "permission_request",
+                ask,
+                1_003,
+                3,
+                &[("perm-id", &question)],
+            ),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+        let txn = Transaction::new(&ndb).unwrap();
+        let pending = pending_permission_requests(&load_session_messages(&ndb, &txn, session_id));
+
+        assert_eq!(
+            pending,
+            vec![
+                PendingPermission {
+                    perm_id: uuid::Uuid::parse_str(&bash).unwrap(),
+                    tool_name: "Bash".into(),
+                    created_ms: 1_002_000,
+                    is_question: false,
+                },
+                PendingPermission {
+                    perm_id: uuid::Uuid::parse_str(&question).unwrap(),
+                    tool_name: "AskUserQuestion".into(),
+                    created_ms: 1_003_000,
+                    is_question: true,
+                },
+            ],
+        );
     }
 
     /// A permission_response carrying an approve reply message reconstructs as an

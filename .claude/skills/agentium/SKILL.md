@@ -117,13 +117,14 @@ Note the id distinction: `claude_session_id` is agentium's own stable identity
 
 ## Selecting a session
 
-`show`, `log`, `resume`, `send`, and `interrupt` take a **session selector** —
+`show`, `log`, `resume`, `send`, `interrupt`, `approve`/`deny`, and `mode` take
+a **session selector** —
 any of: the raw `claude_session_id` (d-tag), the `cli_session_id`, an
 `agentium:<word-id>` ref (with or without the `agentium:` prefix), a unique id
 prefix, or a unique title substring. For `show` and `log` the selector is
 **optional** and defaults to `$AGENTIUM_SESSION`, so an agent running inside a
-session can address itself (`resume`/`send`/`interrupt` always require an
-explicit selector):
+session can address itself (the commands that act on a session always require
+an explicit selector):
 
 ```bash
 agentium show                    # this session (via $AGENTIUM_SESSION)
@@ -147,13 +148,15 @@ agentium grep -i wgpu --no-sync        # no relay round-trip at all
 
 It applies to the read commands (`list`, `show`, `log`, `grep`) and is refused
 for anything that publishes or streams (`send`, `spawn`, `resume`, `interrupt`,
-`log --follow`), which can't work offline.
+`approve`/`deny`, `mode`, `log --follow`), which can't work offline.
 
 ## `show` — session detail
 
 `show` prints one session's detail: its kind-31988 state, the run-configs on its
 host+cwd, its latest token usage, and a conversation summary (message count +
-any pending permission request). `--json` emits the structured detail object.
+every pending permission request, each with the 8-digit id `approve`/`deny
+--request` takes). `--json` emits the structured detail object, with pending
+requests under `conversation.pending_permissions`.
 
 ```bash
 agentium show                          # detail for the current session
@@ -415,9 +418,49 @@ Notes:
   drops back to idle once the host publishes its next state event after the turn
   aborts (watch it with `log --follow`).
 
+## `approve` / `deny` — answer a pending permission request
+
+`approve <session>` / `deny <session>` answer a **live** session's pending
+permission request — the CLI companion to the allow/deny buttons in Dave. By
+default they answer the **newest** pending request; `show` lists every pending
+one with an 8-digit id, and `--request <id-prefix>` picks another.
+
+```bash
+agentium show maple-river-canyon            # "pending permissions" lists ids
+agentium approve maple-river-canyon
+agentium deny maple-river-canyon --request 3f2a9c1e --message "use rg instead"
+agentium deny maple-river-canyon --interrupt   # deny AND stop the turn
+```
+
+Notes:
+
+- `--message <text>` rides with the decision and the agent sees it (a deny
+  reason, or a note with an approve). `--interrupt` is deny-only.
+- An `AskUserQuestion` request can be denied but **not approved** — approving
+  one means sending its answers, which a bare approve can't. Answer it in Dave.
+- Nothing pending (or a `--request` prefix that matches none, or several) is an
+  error, listing what is pending.
+- **No ack.** The host matches the answer against the requests it holds in
+  memory. If it restarted since the request was made, the answer is silently
+  ignored and the request keeps showing as pending.
+- `--json` prints one line: `{session, event_id, perm_id, tool_name, decision,
+  interrupt}`.
+
+## `mode` — change a session's permission mode
+
+`mode <session> <mode>` switches a **live** session's permission mode on its
+host — the CLI companion to Ctrl+M in Dave. Modes: `default` (aka `manual`) |
+`plan` | `accept_edits` | `auto` | `bypass`; aliases like `acceptEdits` are
+normalized before publishing, and an unknown mode is refused (the host would
+otherwise quietly fall back to `default`).
+
+```bash
+agentium mode maple-river-canyon plan
+```
+
 ## Command surface
 
 Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
-`resume`, `send`, `spawn`, `interrupt` (plus `login`/`logout`). Further control
-verbs (watch dashboard, approve/deny, permission-mode, run-config management) are
+`resume`, `send`, `spawn`, `interrupt`, `approve`/`deny`, `mode` (plus
+`login`/`logout`). Further verbs (watch dashboard, run-config management) are
 planned but **not yet implemented** — don't invoke them until they land.
