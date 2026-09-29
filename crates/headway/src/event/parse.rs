@@ -7,9 +7,9 @@ use nostrdb_net::NoteId;
 
 use super::kinds::{
     KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
-    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
+    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
 };
-use super::model::{BoardCoord, ColumnDef, Field};
+use super::model::{BoardCoord, ColumnDef, Field, ReviewFields};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardEvent {
@@ -194,6 +194,19 @@ pub struct CommentEvent {
     pub created_at: u64,
 }
 
+/// A review record (kind 1626) on a card: the structured commit/host/explainer
+/// metadata an agent records when it finishes the card. Append-only like
+/// [`CommentEvent`]. See [`build_review`](super::build_review).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReviewEvent {
+    pub id: [u8; 32],
+    pub author: [u8; 32],
+    /// The card (issue, kind 1621) this record is about — the `e` tag.
+    pub issue_id: [u8; 32],
+    pub fields: ReviewFields,
+    pub created_at: u64,
+}
+
 /// A parsed headway event of any of the recognised kinds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeadwayEvent {
@@ -209,6 +222,7 @@ pub enum HeadwayEvent {
     Sequence(SequenceEvent),
     Blockers(BlockerSet),
     Related(RelatedSet),
+    Review(ReviewEvent),
 }
 
 /// Parse a note into a [`HeadwayEvent`], or `None` if it isn't a recognised /
@@ -225,6 +239,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_SEQUENCE => parse_sequence(note).map(HeadwayEvent::Sequence),
         KIND_BLOCKERS => parse_blockers(note).map(HeadwayEvent::Blockers),
         KIND_RELATED => parse_related(note).map(HeadwayEvent::Related),
+        KIND_REVIEW => parse_review(note).map(HeadwayEvent::Review),
         _ => None,
     }
 }
@@ -434,6 +449,42 @@ fn parse_comment(note: &Note) -> Option<CommentEvent> {
     })
 }
 
+/// Parse a review record (kind 1626). The card is the `e` tag (required); every
+/// other known tag fills its [`ReviewFields`] slot and unknown tags are ignored.
+/// See [`build_review`](super::build_review).
+fn parse_review(note: &Note) -> Option<ReviewEvent> {
+    let mut issue_id = None;
+    let mut fields = ReviewFields::default();
+
+    for tag in note.tags() {
+        let Some(name) = tag.get_str(0) else {
+            continue;
+        };
+        if name == "e" {
+            issue_id = tag.get_id(1).copied();
+            continue;
+        }
+        let Some(slot) = fields.slot_mut(name) else {
+            continue;
+        };
+        // nostrdb packs a 64-hex tag value into a raw 32-byte id, which then
+        // reads back only via `get_id`. A SHA-1 sha is 40-hex and stays a string,
+        // but a SHA-256 repo's 64-hex sha would not — re-hex it so it survives.
+        *slot = tag
+            .get_str(1)
+            .map(str::to_owned)
+            .or_else(|| tag.get_id(1).map(hex::encode));
+    }
+
+    Some(ReviewEvent {
+        id: *note.id(),
+        author: *note.pubkey(),
+        issue_id: issue_id?,
+        fields,
+        created_at: note.created_at(),
+    })
+}
+
 /// Parse a relation (kind 30621). The child is the `e` tag; a missing `parent`
 /// tag is a detach, not a malformed event. See [`build_relation`](super::build_relation).
 fn parse_relation(note: &Note) -> Option<RelationEvent> {
@@ -555,7 +606,8 @@ pub(crate) mod tests {
 
     use crate::event::build::{
         build_blockers, build_board, build_comment, build_cover_note, build_issue, build_labels,
-        build_placement, build_related, build_relation, build_sequence, build_subject_edit,
+        build_placement, build_related, build_relation, build_review, build_sequence,
+        build_subject_edit,
     };
     use crate::event::model::board_address;
 
@@ -679,6 +731,119 @@ pub(crate) mod tests {
         assert_eq!(reply.issue_id, *issue.bytes());
         // …but its parent is the comment it replies to.
         assert_eq!(reply.parent_id, Some(top.id));
+    }
+
+    /// A review record carrying every field, as `headway review` would write it.
+    fn full_review() -> ReviewFields {
+        ReviewFields {
+            commit: Some("5ec55a6aaf57d4b9c1e0f7a2b3c4d5e6f7a8b9c0".into()),
+            title: Some("headway: review-record event kind".into()),
+            branch: Some("headway".into()),
+            host: Some("jex0".into()),
+            path: Some("/home/jb55/dev/notedeck-headway".into()),
+            repo: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            agentium: Some("agentium:actress-mango-possible".into()),
+            explainer: Some("https://claude.ai/artifact/abc".into()),
+            remote: Some("jex0:repos/notedeck".into()),
+        }
+    }
+
+    #[test]
+    fn review_roundtrips_every_field_and_skips_empty_ones() {
+        let kp = FullKeypair::generate();
+        let issue = note_id(&kp, build_issue("30619:x:b1", "s", "b"));
+
+        let HeadwayEvent::Review(r) = roundtrip(build_review(&issue, &full_review()), &kp) else {
+            panic!("review");
+        };
+        assert_eq!(r.issue_id, *issue.bytes());
+        assert_eq!(r.fields, full_review());
+
+        // Absent and empty fields both come back absent: no empty tags on the wire.
+        let sparse = ReviewFields {
+            commit: Some("abc".into()),
+            branch: Some(String::new()),
+            ..Default::default()
+        };
+        let HeadwayEvent::Review(r) = roundtrip(build_review(&issue, &sparse), &kp) else {
+            panic!("review");
+        };
+        assert_eq!(
+            r.fields,
+            ReviewFields {
+                commit: Some("abc".into()),
+                ..Default::default()
+            }
+        );
+    }
+
+    /// The shas survive a real nostrdb ingest, not just an in-memory build:
+    /// nostrdb packs 64-hex tag values into raw ids (the hex-tag trap), which a
+    /// `get_str`-only parse would drop. A SHA-1 sha (40-hex) stays a string; a
+    /// SHA-256 one (64-hex) is packed, and must still read back as hex.
+    #[tokio::test]
+    async fn review_shas_roundtrip_through_ndb() {
+        use nostrdb::{Filter, IngestMetadata, Ndb, SubscriptionStream, Transaction};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &crate::test_config()).unwrap();
+        let kp = FullKeypair::generate();
+        let issue = note_id(&kp, build_issue("30619:x:b1", "s", "b"));
+
+        let sha256 = "ab".repeat(32);
+        let reviews = [
+            full_review(),
+            ReviewFields {
+                commit: Some(sha256.clone()),
+                repo: Some(sha256.clone()),
+                ..Default::default()
+            },
+        ];
+
+        // Subscribe before ingesting so the await can't miss the writer.
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([KIND_REVIEW as u64]).build()])
+            .unwrap();
+        let mut stream = SubscriptionStream::new(ndb.clone(), sub);
+        for review in &reviews {
+            let note = build_review(&issue, review)
+                .sign(&kp.secret_key.secret_bytes())
+                .build()
+                .unwrap();
+            let json = nostrdb_net::ClientMessage::event(&note)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            ndb.process_event_with(&json, IngestMetadata::new().client(true))
+                .unwrap();
+        }
+
+        let mut keys = Vec::new();
+        while keys.len() < reviews.len() {
+            keys.extend(
+                stream
+                    .wait_for_notes(reviews.len() - keys.len(), crate::INGEST_TIMEOUT)
+                    .await
+                    .expect("review records ingested"),
+            );
+        }
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let mut parsed: Vec<ReviewFields> = keys
+            .iter()
+            .map(|k| {
+                let note = ndb.get_note_by_key(&txn, *k).unwrap();
+                let Some(HeadwayEvent::Review(r)) = parse(&note) else {
+                    panic!("review");
+                };
+                assert_eq!(r.issue_id, *issue.bytes());
+                r.fields
+            })
+            .collect();
+        parsed.sort();
+        let mut expected = reviews.to_vec();
+        expected.sort();
+        assert_eq!(parsed, expected);
     }
 
     #[test]

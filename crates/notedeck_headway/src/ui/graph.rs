@@ -915,6 +915,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             comments: vec![],
+            reviews: vec![],
             activity: vec![],
             parent: parent.map(|p| NoteId::new([p; 32])),
             subissues: subissues.iter().map(subv).collect(),

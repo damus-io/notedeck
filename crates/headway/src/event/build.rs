@@ -6,10 +6,10 @@ use nostrdb_net::{NoteId, Pubkey};
 
 use super::kinds::{
     BOARD_PREF_D, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
-    KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_SEQUENCE, NS_SUBJECT,
-    NS_TAG,
+    KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
+    KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
 };
-use super::model::{COL_ARCHIVED, ColumnDef, Field};
+use super::model::{COL_ARCHIVED, ColumnDef, Field, ReviewFields};
 use super::parse::Container;
 
 fn base<'a>(kind: u32, content: &'a str) -> NoteBuilder<'a> {
@@ -274,6 +274,26 @@ pub fn build_cover_note<'a>(issue: &NoteId, author: &Pubkey, body: &'a str) -> N
         .start_tag()
         .tag_str("k")
         .tag_str(&KIND_ISSUE.to_string())
+}
+
+/// Build a review record (kind 1626) on `issue`: an `e` tag naming the card,
+/// then one tag per set, non-empty [`ReviewFields`] field (`commit`, `title`,
+/// `branch`, …). Content is empty. Append-only — each call is a new record, so a
+/// card accumulates one per commit and per host.
+pub fn build_review<'a>(issue: &NoteId, review: &ReviewFields) -> NoteBuilder<'a> {
+    let mut b = base(KIND_REVIEW, "")
+        .start_tag()
+        .tag_str("e")
+        .tag_id(issue.bytes());
+
+    for (name, value) in review.tags() {
+        let Some(value) = value.filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        b = b.start_tag().tag_str(name).tag_str(value);
+    }
+
+    b
 }
 
 /// Build a NIP-22 comment (kind 1111) on `issue` (authored by `issue_author`).

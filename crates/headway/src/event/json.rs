@@ -2,7 +2,9 @@
 
 use nostrdb_net::Pubkey;
 
-use super::view::{ActivityKind, ActivityView, BoardView, CardView, CommentView, EdgeRef};
+use super::view::{
+    ActivityKind, ActivityView, BoardView, CardView, CommentView, EdgeRef, ReviewView,
+};
 
 /// Render `view` as a stable, machine-readable JSON value: a curated schema for
 /// external tooling (e.g. the CLI's `--json`) with hex ids plus the full
@@ -61,6 +63,7 @@ pub fn card_json(board: &str, card: &CardView) -> serde_json::Value {
             "seq": s.seq,
         })).collect::<Vec<_>>(),
         "comments": card.comments.iter().map(|c| comment_json(board, c)).collect::<Vec<_>>(),
+        "reviews": card.reviews.iter().map(review_json).collect::<Vec<_>>(),
         "activity": card.activity.iter().map(|a| activity_json(board, a)).collect::<Vec<_>>(),
     })
 }
@@ -102,6 +105,9 @@ pub fn activity_json(board: &str, activity: &ActivityView) -> serde_json::Value 
             "parent_title": title,
         }),
         ActivityKind::ParentRemoved => serde_json::json!({"type": "parent_removed"}),
+        ActivityKind::Review { commit, host } => {
+            serde_json::json!({"type": "review", "commit": commit, "host": host})
+        }
     };
     v["author"] = serde_json::json!(Pubkey::new(activity.author).hex());
     v["created_at"] = serde_json::json!(activity.created_at);
@@ -118,4 +124,19 @@ pub fn comment_json(board: &str, comment: &CommentView) -> serde_json::Value {
         "body": comment.body,
         "created_at": comment.created_at,
     })
+}
+
+/// Render a single review record as JSON: its id, author and timestamp plus one
+/// key per [`ReviewFields`](super::ReviewFields) tag (`null` when absent), so the
+/// schema is stable whichever fields a record carried. See [`card_json`].
+pub fn review_json(review: &ReviewView) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "id": review.id.hex(),
+        "author": Pubkey::new(review.author).hex(),
+        "created_at": review.created_at,
+    });
+    for (name, value) in review.fields.tags() {
+        v[name] = serde_json::json!(value);
+    }
+    v
 }

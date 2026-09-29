@@ -3,7 +3,7 @@
 
 use nostrdb_net::NoteId;
 
-use super::model::{Date, Field, Priority, column_is_terminal};
+use super::model::{Date, Field, Priority, ReviewFields, column_is_terminal};
 
 /// A comment on a card, resolved off its issue. Comments are append-only (no
 /// latest-wins overlay), so this is simply the parsed event in render form.
@@ -16,6 +16,17 @@ pub struct CommentView {
     pub parent: Option<NoteId>,
     pub body: String,
     pub created_at: u64,
+}
+
+/// A review record on a card, resolved off its issue: who recorded which commit
+/// and where (see [`ReviewFields`]). Append-only like [`CommentView`], so this is
+/// the parsed event in render form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewView {
+    pub id: NoteId,
+    pub author: [u8; 32],
+    pub created_at: u64,
+    pub fields: ReviewFields,
 }
 
 /// One entry of a card's derived activity timeline: who did what, when. Folded
@@ -67,6 +78,12 @@ pub enum ActivityKind {
     },
     /// The card was detached from its parent.
     ParentRemoved,
+    /// A review record was added: `commit` (full sha) recorded on `host`, either
+    /// absent when the record didn't carry it. See [`ReviewView`].
+    Review {
+        commit: Option<String>,
+        host: Option<String>,
+    },
 }
 
 /// A direct subissue of a card, resolved for display on its parent. Doneness is
@@ -139,13 +156,16 @@ pub struct CardView {
     /// is immutable, so this never moves.
     pub created_at: u64,
     /// When the card's content last changed: the newest authorised amendment
-    /// (title, description or label edit) or comment, falling back to
+    /// (title, description or label edit), comment or review record, falling back to
     /// `created_at` if the card was never touched. Placements are board-scoped
     /// and tracked by `placed_at` instead, keeping this board-agnostic — the
     /// same issue shows the same `updated_at` on every board it's placed on.
     pub updated_at: u64,
     /// Comments on the card, oldest first (sorted by `created_at`, then id).
     pub comments: Vec<CommentView>,
+    /// Authorised review records on the card, **newest first** (sorted by
+    /// `created_at` descending, then id) — the first is the latest commit.
+    pub reviews: Vec<ReviewView>,
     /// The card's derived activity timeline (created / moved / renamed / …),
     /// oldest first. See [`ActivityView`]; comments are kept separately above
     /// and interleaved by the renderer.

@@ -1506,6 +1506,19 @@ fn activity_row_ui(
                 }
             }
             ActivityKind::ParentRemoved => muted(ui, "detached from its parent"),
+            ActivityKind::Review { commit, host } => {
+                match commit {
+                    Some(commit) => {
+                        muted(ui, "recorded commit");
+                        strong(ui, commit.get(..7).unwrap_or(commit));
+                    }
+                    None => muted(ui, "recorded a review"),
+                }
+                if let Some(host) = host {
+                    muted(ui, "on");
+                    strong(ui, host);
+                }
+            }
         }
         muted(ui, "·");
         muted(ui, &headway::fmt::rel_time(activity.created_at));

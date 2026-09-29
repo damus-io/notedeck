@@ -275,6 +275,75 @@ impl BoardCoord {
     }
 }
 
+/// The structured review metadata one review record ([`KIND_REVIEW`](super::KIND_REVIEW))
+/// carries: which commit finished a card, and where a reviewer can find it.
+///
+/// Every field is optional and maps 1:1 onto a tag of the same name (see
+/// [`ReviewFields::tags`]); an absent field is an absent tag. It is both the
+/// write input ([`build_review`](super::build_review),
+/// `store::BoardAction::AddReview`) and the read output
+/// ([`ReviewEvent::fields`](super::ReviewEvent::fields),
+/// [`ReviewView::fields`](super::ReviewView::fields)), so the field list lives in
+/// exactly one place.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReviewFields {
+    /// The commit's full sha (40-hex for SHA-1 repos).
+    pub commit: Option<String>,
+    /// The commit subject line.
+    pub title: Option<String>,
+    /// The branch the commit was made on.
+    pub branch: Option<String>,
+    /// The hostname of the machine that recorded the commit.
+    pub host: Option<String>,
+    /// The repo toplevel on `host` (`git rev-parse --show-toplevel`).
+    pub path: Option<String>,
+    /// Repo identity: the root commit sha, the same across every clone and
+    /// worktree, so any host can find its own checkout of the same repo.
+    pub repo: Option<String>,
+    /// The agentic session that did the work, as `agentium:<word-id>`.
+    pub agentium: Option<String>,
+    /// URL of the explainer page published for the work.
+    pub explainer: Option<String>,
+    /// An explicit fetch URL for the commit, overriding the host-derived one.
+    pub remote: Option<String>,
+}
+
+impl ReviewFields {
+    /// Every field paired with its wire tag name, in wire order. The one place
+    /// the tag names are spelled: the builder writes from it, the JSON renders
+    /// from it and [`ReviewFields::slot_mut`] parses into the same names.
+    pub fn tags(&self) -> [(&'static str, Option<&str>); 9] {
+        [
+            ("commit", self.commit.as_deref()),
+            ("title", self.title.as_deref()),
+            ("branch", self.branch.as_deref()),
+            ("host", self.host.as_deref()),
+            ("path", self.path.as_deref()),
+            ("repo", self.repo.as_deref()),
+            ("agentium", self.agentium.as_deref()),
+            ("explainer", self.explainer.as_deref()),
+            ("remote", self.remote.as_deref()),
+        ]
+    }
+
+    /// The field stored under wire tag `name`, or `None` for a tag that isn't a
+    /// review field (e.g. the `e` card reference). Inverse of [`ReviewFields::tags`].
+    pub(super) fn slot_mut(&mut self, name: &str) -> Option<&mut Option<String>> {
+        Some(match name {
+            "commit" => &mut self.commit,
+            "title" => &mut self.title,
+            "branch" => &mut self.branch,
+            "host" => &mut self.host,
+            "path" => &mut self.path,
+            "repo" => &mut self.repo,
+            "agentium" => &mut self.agentium,
+            "explainer" => &mut self.explainer,
+            "remote" => &mut self.remote,
+            _ => return None,
+        })
+    }
+}
+
 /// The addressable coordinate of a board: `30619:<author-hex>:<board-id>`. Thin
 /// formatting helper; see [`BoardCoord`] for the owner+slug identity type.
 pub fn board_address(author: &Pubkey, board_id: &str) -> String {

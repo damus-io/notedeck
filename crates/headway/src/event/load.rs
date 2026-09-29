@@ -8,7 +8,8 @@ use nostrdb_net::{NoteId, Pubkey};
 
 use super::kinds::{
     HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
-    KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_SEQUENCE,
+    KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
+    KIND_SEQUENCE,
 };
 use super::model::BoardCoord;
 use super::parse::{BlockerSet, RelatedSet, parse, parse_blockers, parse_related};
@@ -204,8 +205,8 @@ pub fn board_scoped_filters(board_addr: &str) -> Option<Vec<Filter>> {
 
 /// The card-anchored half of the shared-board read fan-out: a filter for every
 /// member's per-card metadata (subject/label edits, cover notes, relations,
-/// sequences, blocker sets, related-to sets and comments), keyed by the `e` tag
-/// pointing at each card.
+/// sequences, blocker sets, related-to sets and review records), keyed by the
+/// `e` tag pointing at each card.
 ///
 /// These overlays name their card by `e` tag and carry no board reference, so
 /// they can't be reached by the board coordinate — they're gathered by the set
@@ -226,6 +227,7 @@ pub fn card_meta_filter(card_ids: &[[u8; 32]]) -> Filter {
             KIND_COVER_NOTE as u64,
             KIND_BLOCKERS as u64,
             KIND_RELATED as u64,
+            KIND_REVIEW as u64,
         ])
         .events(card_ids.iter())
         .limit(5000)

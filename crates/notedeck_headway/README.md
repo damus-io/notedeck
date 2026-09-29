@@ -42,6 +42,7 @@ adds a thin custom **kanban layer** (board + placement) on top.
 | **1621**  | Card                       | [NIP-34] issue                    | no (immutable)        |
 | **1985**  | Title edit **and** labels  | [NIP-32] label                    | no                    |
 | **1624**  | Description edit           | gitworkshop *cover note*          | no                    |
+| **1626**  | Review record              | **custom** (provisional)          | no (append-only)      |
 | **30619** | Board                      | **custom** (provisional)          | yes — `d` = board id  |
 | **30620** | Card placement             | **custom** (provisional)          | yes — `d` = board:issue |
 
@@ -165,6 +166,33 @@ the set without it.
     ["e", "<issue-id>"],   // the card
     ["p", "<author>"],     // card author
     ["k", "1621"]          // kind being described
+  ]
+}
+```
+
+### Review record — kind `1626` (custom, append-only)
+
+The structured "what finished this card" metadata an agent records when it
+finishes work, read by the review queue (`headway:headway/mom-charge-attack`).
+Every tag but `e` is optional; a card collects one record per commit and host,
+shown newest first (`CardView::reviews`), and gated by the same authority rule
+as the overlays below.
+
+```jsonc
+{
+  "kind": 1626,
+  "content": "",
+  "tags": [
+    ["e", "<issue-id>"],              // the card
+    ["commit", "<40-hex sha>"],
+    ["title", "<commit subject>"],
+    ["branch", "headway"],
+    ["host", "jex0"],                 // machine that recorded it
+    ["path", "/home/me/dev/notedeck"],// repo toplevel on that host
+    ["repo", "<root commit sha>"],    // repo identity across clones
+    ["agentium", "agentium:<word-id>"],
+    ["explainer", "https://…"],
+    ["remote", "jex0:repos/notedeck"] // optional explicit fetch URL
   ]
 }
 ```

@@ -8,11 +8,12 @@ use nostrdb_net::NoteId;
 use super::model::{COL_ARCHIVED, COL_DELETED, Date, Field, Priority, column_is_terminal};
 use super::parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
-    IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, SequenceEvent, SubjectEdit,
+    IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewEvent, SequenceEvent,
+    SubjectEdit,
 };
 use super::view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
-    EdgeRef, SubissueView,
+    EdgeRef, ReviewView, SubissueView,
 };
 
 /// Accumulates headway events into the maps needed to resolve effective board
@@ -45,6 +46,7 @@ enum ActivityRecord {
     Labels(LabelSet),
     Field(FieldEdit),
     Relation(RelationEvent),
+    Review(ReviewEvent),
 }
 
 impl ActivityRecord {
@@ -56,6 +58,7 @@ impl ActivityRecord {
             ActivityRecord::Labels(l) => l.created_at,
             ActivityRecord::Field(f) => f.created_at,
             ActivityRecord::Relation(r) => r.created_at,
+            ActivityRecord::Review(r) => r.created_at,
         }
     }
 }
@@ -105,6 +108,10 @@ pub struct BoardReducer {
     /// latest-wins overlays above) and grouped onto its issue at finalize. Keying
     /// by comment id dedupes the duplicates a relay may hand us.
     comments: HashMap<[u8; 32], CommentEvent>,
+    /// Review records by event id. Append-only like
+    /// [`comments`](Self::comments) — every record is kept and grouped onto its
+    /// issue at finalize, authorised there like the overlays.
+    reviews: HashMap<[u8; 32], ReviewEvent>,
     /// Latest relation per *child* issue — the child's one parent slot.
     /// Latest-authorised-wins like every other overlay; authority needs the
     /// issue maps so it's checked at resolve time, not here.
@@ -228,6 +235,12 @@ impl BoardReducer {
                 // Append-only and immutable: keep the first sighting; later
                 // duplicates of the same id are no-ops.
                 self.comments.entry(c.id).or_insert(c);
+            }
+            HeadwayEvent::Review(r) => {
+                // Append-only and immutable, deduped by id like a comment; also
+                // remembered so the activity timeline gets a "recorded" row.
+                self.remember(r.issue_id, ActivityRecord::Review(r.clone()));
+                self.reviews.entry(r.id).or_insert(r);
             }
             HeadwayEvent::Relation(r) => {
                 self.remember(r.child_id, ActivityRecord::Relation(r.clone()));
@@ -470,6 +483,19 @@ impl BoardReducer {
                         author: r.author,
                         created_at: r.created_at,
                         kind,
+                    });
+                }
+                ActivityRecord::Review(r) => {
+                    if silent || !authorised(&r.author) {
+                        continue;
+                    }
+                    out.push(ActivityView {
+                        author: r.author,
+                        created_at: r.created_at,
+                        kind: ActivityKind::Review {
+                            commit: r.fields.commit.clone(),
+                            host: r.fields.host.clone(),
+                        },
                     });
                 }
             }
@@ -719,15 +745,33 @@ impl BoardReducer {
             .collect();
         comments.sort_by(|a, b| (a.created_at, a.id.bytes()).cmp(&(b.created_at, b.id.bytes())));
 
-        // The newest touch wins: creation, the winning amendments, or the last
-        // comment. Placements deliberately don't count (see the field docs).
+        // Review records on the card, authorised like the overlays (a stranger
+        // can't attach a commit to someone else's card). Newest first, so the
+        // head is the latest commit; the id breaks same-second ties.
+        let mut reviews: Vec<ReviewView> = self
+            .reviews
+            .values()
+            .filter(|r| r.issue_id == issue.id && authorised(&r.author))
+            .map(|r| ReviewView {
+                id: NoteId::new(r.id),
+                author: r.author,
+                created_at: r.created_at,
+                fields: r.fields.clone(),
+            })
+            .collect();
+        reviews.sort_by(|a, b| (b.created_at, b.id.bytes()).cmp(&(a.created_at, a.id.bytes())));
+
+        // The newest touch wins: creation, the winning amendments, the last
+        // comment or the latest review record. Placements deliberately don't
+        // count (see the field docs).
         let updated_at = issue
             .created_at
             .max(subject.map_or(0, |s| s.created_at))
             .max(cover.map_or(0, |c| c.created_at))
             .max(label_set.map_or(0, |l| l.created_at))
             .max(fields_touched)
-            .max(comments.last().map_or(0, |c| c.created_at));
+            .max(comments.last().map_or(0, |c| c.created_at))
+            .max(reviews.first().map_or(0, |r| r.created_at));
 
         // This card as a child: its one relation slot names its parent.
         let parent = self
@@ -867,6 +911,7 @@ impl BoardReducer {
             created_at: issue.created_at,
             updated_at,
             comments,
+            reviews,
             activity: self.card_activity(issue, board_author, board_id),
             parent,
             subissues,
@@ -1029,9 +1074,9 @@ mod tests {
     use crate::event::build::{
         build_archive_placement, build_blockers, build_board, build_comment, build_cover_note,
         build_field, build_issue, build_labels, build_placement, build_related, build_relation,
-        build_sequence, build_subject_edit,
+        build_review, build_sequence, build_subject_edit,
     };
-    use crate::event::model::{ColumnDef, board_address};
+    use crate::event::model::{ColumnDef, ReviewFields, board_address};
     use crate::event::parse::parse;
 
     /// Build a full board (board + two issues + placements) and reduce it,
@@ -1447,6 +1492,110 @@ mod tests {
         // The reply points back at the first comment; top-level ones don't.
         assert_eq!(card.comments[0].parent, None);
         assert_eq!(card.comments[2].parent, Some(c1));
+    }
+
+    /// A review record naming `commit` recorded on `host`.
+    fn review_on(commit: &str, host: &str) -> ReviewFields {
+        ReviewFields {
+            commit: Some(commit.to_string()),
+            host: Some(host.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Two review records on one card from different hosts both fold in —
+    /// append-only, not latest-wins — newest first, bump `updated_at`, and each
+    /// gets an activity row. A duplicate delivery of one is kept once.
+    #[test]
+    fn reduce_attaches_review_records_newest_first() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let issue = || build_issue(&addr, "Card", "").created_at(1_000);
+        let i1 = note_id(&owner, issue());
+        let older = parse_owned(
+            build_review(&i1, &review_on("aaaa", "jex0")).created_at(2_000),
+            &owner,
+        );
+        let newer = parse_owned(
+            build_review(&i1, &review_on("bbbb", "quiver")).created_at(3_000),
+            &owner,
+        );
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(issue(), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            older.clone(),
+            newer,
+            older,
+        ];
+
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+        let hosts: Vec<_> = card
+            .reviews
+            .iter()
+            .map(|r| r.fields.host.as_deref())
+            .collect();
+        assert_eq!(hosts, vec![Some("quiver"), Some("jex0")]);
+        assert_eq!(card.reviews[0].fields.commit.as_deref(), Some("bbbb"));
+        assert_eq!(card.updated_at, 3_000);
+
+        let rows: Vec<&ActivityKind> = card.activity.iter().map(|a| &a.kind).collect();
+        assert_eq!(
+            rows,
+            vec![
+                &ActivityKind::Created,
+                &ActivityKind::Review {
+                    commit: Some("aaaa".into()),
+                    host: Some("jex0".into()),
+                },
+                &ActivityKind::Review {
+                    commit: Some("bbbb".into()),
+                    host: Some("quiver".into()),
+                },
+            ]
+        );
+    }
+
+    /// On a single-writer board a stranger can't attach a commit to someone
+    /// else's card: their record is dropped from both the card and its activity.
+    #[test]
+    fn reduce_ignores_unauthorised_review_records() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let issue = || build_issue(&addr, "Card", "").created_at(1_000);
+        let i1 = note_id(&owner, issue());
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(issue(), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            parse_owned(
+                build_review(&i1, &review_on("cccc", "evil")).created_at(2_000),
+                &stranger,
+            ),
+        ];
+
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+        assert!(card.reviews.is_empty());
+        assert_eq!(card.updated_at, 1_000);
+        assert_eq!(card.activity.len(), 1, "only the Created row");
     }
 
     /// A relay may hand us the same comment twice; the reducer keeps one.

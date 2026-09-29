@@ -74,12 +74,27 @@ pub const KIND_BLOCKERS: u32 = 30624;
 /// point at cards on other boards. See `headway:headway/obscure-demand-actor`.
 pub const KIND_RELATED: u32 = 30625;
 
+/// Headway review record: a **regular** (append-only, like [`KIND_COMMENT`])
+/// event carrying the structured metadata an agent records on a card when it
+/// finishes work — the commit (sha, subject, branch), where it lives (`host`,
+/// repo toplevel `path`, repo identity `repo` = root commit sha, optional explicit
+/// fetch `remote`), the `agentium` session that did it and the `explainer` URL.
+/// `e` = the card's issue id, so the card-anchored fan-out
+/// ([`card_meta_filter`](super::card_meta_filter)) reaches it; content is empty.
+/// Append-only rather than addressable so one card accumulates a record per
+/// commit and per host. See [`ReviewFields`](super::ReviewFields) and the
+/// `headway:headway/mom-charge-attack` review-queue epic.
+///
+/// 1626 sits among the NIP-34 git kinds (1617–1633) without colliding with any
+/// of them (patch 1617, PR 1618/1619, issue 1621, cover 1624, status 1630–1633).
+pub const KIND_REVIEW: u32 = 1626;
+
 pub(super) const NS_SUBJECT: &str = "#subject";
 
 pub(super) const NS_TAG: &str = "#t";
 
 /// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 10] = [
+pub const HEADWAY_KINDS: [u32; 11] = [
     KIND_BOARD,
     KIND_ISSUE,
     KIND_PLACEMENT,
@@ -90,12 +105,13 @@ pub const HEADWAY_KINDS: [u32; 10] = [
     KIND_SEQUENCE,
     KIND_BLOCKERS,
     KIND_RELATED,
+    KIND_REVIEW,
 ];
 
 /// Whether `kind` is one of headway's addressable (latest-wins, keyed per
 /// `(kind, d-tag)`) kinds — every 30000-range kind headway publishes (board,
 /// placement, relation, sequence, blockers, related), as opposed to the
-/// immutable regular events (issue, label, cover, comment).
+/// immutable regular events (issue, label, cover, comment, review).
 ///
 /// Used by the CLI's relay sync to push only the *winning* revision of each
 /// addressable coordinate rather than every stale one the append-only cache
@@ -147,7 +163,13 @@ mod tests {
         ] {
             assert!(is_addressable(addressable), "{addressable} is addressable");
         }
-        for immutable in [KIND_ISSUE, KIND_LABEL, KIND_COVER_NOTE, KIND_COMMENT] {
+        for immutable in [
+            KIND_ISSUE,
+            KIND_LABEL,
+            KIND_COVER_NOTE,
+            KIND_COMMENT,
+            KIND_REVIEW,
+        ] {
             assert!(!is_addressable(immutable), "{immutable} is immutable");
         }
     }

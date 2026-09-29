@@ -507,6 +507,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             comments: vec![],
+            reviews: vec![],
             activity: vec![],
             parent: None,
             subissues: vec![],

@@ -16,9 +16,9 @@ use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
-    board_address, build_archive_placement, build_blockers, build_board, build_comment,
-    build_cover_note, build_field, build_issue, build_labels, build_placement, build_related,
-    build_relation, build_sequence, build_subject_edit, rank_between,
+    ReviewFields, board_address, build_archive_placement, build_blockers, build_board,
+    build_comment, build_cover_note, build_field, build_issue, build_labels, build_placement,
+    build_related, build_relation, build_review, build_sequence, build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -105,6 +105,11 @@ pub enum BoardAction {
         body: String,
         reply_to: Option<NoteId>,
     },
+    /// Record review metadata on `card` — the commit that finished it and where
+    /// to find it (a kind-1626 review record). Append-only: each call adds a
+    /// record, so a card collects one per commit and per host. Unknown card ->
+    /// no-op.
+    AddReview { card: NoteId, review: ReviewFields },
     /// Remove a card from the board (tombstone placement).
     DeleteCard { card: NoteId },
     /// Archive a card: take it off the board but keep it recoverable, recording
@@ -1178,6 +1183,19 @@ pub fn apply(
             ingest_signed(
                 ndb,
                 build_comment(&card, &issue_author, reply, &body).created_at(next_after(latest)),
+                signer,
+                publisher,
+            );
+        }
+        BoardAction::AddReview { card, review } => {
+            let c = find_card_any(view, card)?;
+            // Records sort newest-first by `created_at` (id as tiebreaker), so
+            // two recorded in the same second would order at random. Stamp
+            // strictly past the card's newest record, like `AddComment`.
+            let latest = c.reviews.first().map_or(0, |r| r.created_at);
+            ingest_signed(
+                ndb,
+                build_review(&card, &review).created_at(next_after(latest)),
                 signer,
                 publisher,
             );
@@ -3596,6 +3614,73 @@ mod tests {
             channel: Some(&ch.channel),
         };
         assert!(link_card(&t.ndb, board, board, &t.secret(), card, &mut NoPublish).is_ok());
+    }
+
+    /// Review records written through [`apply`] on a *sealed* board are sealed
+    /// like every other edit and fold back through `fold_shared_board`'s phase-B
+    /// card fan-out — the review kind has to be in `card_meta_filter` or they'd
+    /// never be reached. Two records back to back also stay in causal order:
+    /// `AddReview` stamps past the card's newest record, so the second one is
+    /// the head even inside one wall-clock second.
+    #[tokio::test]
+    async fn add_review_on_a_sealed_board_folds_back_newest_first() {
+        let t = TestNdb::new();
+        let ch = test_channel("src", &t.secret());
+        seed_via(&t, "src", Some(&ch));
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns.len() == 5).await;
+        let secret = t.secret();
+        let signer = Signer::new(&secret, Some(&ch.channel));
+
+        super::apply(
+            &t.ndb,
+            "src",
+            &view,
+            &t.kp.pubkey,
+            &signer,
+            BoardAction::AddCard {
+                col: 0,
+                title: "Reviewed".to_string(),
+                description: String::new(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns[0].cards.len() == 1).await;
+        let card = view.columns[0].cards[0].id;
+
+        for (commit, host) in [("aaaa", "jex0"), ("bbbb", "quiver")] {
+            let view = poll_board_via(&t, "src", Some(&ch), |_| true).await;
+            super::apply(
+                &t.ndb,
+                "src",
+                &view,
+                &t.kp.pubkey,
+                &signer,
+                BoardAction::AddReview {
+                    card,
+                    review: ReviewFields {
+                        commit: Some(commit.to_string()),
+                        host: Some(host.to_string()),
+                        ..Default::default()
+                    },
+                },
+                &mut NoPublish,
+            );
+            poll_board_via(&t, "src", Some(&ch), |v| {
+                v.card(card).is_some_and(|c| {
+                    c.reviews
+                        .iter()
+                        .any(|r| r.fields.host.as_deref() == Some(host))
+                })
+            })
+            .await;
+        }
+
+        let view = poll_board_via(&t, "src", Some(&ch), |_| true).await;
+        let reviews = &view.card(card).unwrap().reviews;
+        let commits: Vec<_> = reviews.iter().map(|r| r.fields.commit.as_deref()).collect();
+        assert_eq!(commits, vec![Some("bbbb"), Some("aaaa")]);
     }
 
     #[tokio::test]

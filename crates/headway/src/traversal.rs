@@ -162,6 +162,7 @@ mod tests {
             created_at,
             updated_at: created_at,
             comments: vec![],
+            reviews: vec![],
             activity: vec![],
             parent: None,
             subissues: vec![],
