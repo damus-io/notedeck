@@ -896,6 +896,21 @@ impl DeclineReason {
     }
 }
 
+/// What [`apply_outcome`] did, beyond the events it ingested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplyOutcome {
+    /// Why an edge or parent edit was deliberately skipped; see [`apply`].
+    pub declined: Option<Declined>,
+    /// The id of the card a [`BoardAction::AddCard`] created. `None` for every
+    /// other action, and for an add that couldn't resolve its column.
+    ///
+    /// A caller wanting the new card's id must take it from here rather than
+    /// re-folding the board: on a sealed board the card is ingested as a
+    /// kind-1081 envelope that nostrdb unwraps into the rumor asynchronously,
+    /// so an immediate re-fold usually doesn't see it yet.
+    pub created: Option<NoteId>,
+}
+
 /// Apply one [`BoardAction`] against the current `view`, ingesting the events it
 /// implies. `view` is the pre-action snapshot, used to compute insertion ranks
 /// and to reconstruct the column list for board-level edits.
@@ -903,8 +918,114 @@ impl DeclineReason {
 /// Returns `Some(`[`Declined`]`)` when an edge or parent edit was deliberately
 /// skipped — already-done or refused — so the caller can say which. Every other
 /// path returns `None`, including the arms that silently drop an action they
-/// can't resolve.
+/// can't resolve. Use [`apply_outcome`] to also learn the id an add created.
 pub fn apply(
+    ndb: &Ndb,
+    board_id: &str,
+    view: &BoardView,
+    author: &Pubkey,
+    signer: &Signer,
+    action: BoardAction,
+    publisher: &mut dyn Publisher,
+) -> Option<Declined> {
+    apply_outcome(ndb, board_id, view, author, signer, action, publisher).declined
+}
+
+/// [`apply`], also reporting the id of a card a [`BoardAction::AddCard`]
+/// created (see [`ApplyOutcome::created`]).
+pub fn apply_outcome(
+    ndb: &Ndb,
+    board_id: &str,
+    view: &BoardView,
+    author: &Pubkey,
+    signer: &Signer,
+    action: BoardAction,
+    publisher: &mut dyn Publisher,
+) -> ApplyOutcome {
+    let BoardAction::AddCard {
+        col,
+        title,
+        description,
+        labels,
+        parent,
+    } = action
+    else {
+        let declined = apply_edit(ndb, board_id, view, author, signer, action, publisher);
+        return ApplyOutcome {
+            declined,
+            created: None,
+        };
+    };
+    let new = NewCard {
+        col,
+        title,
+        description,
+        labels,
+        parent,
+    };
+    ApplyOutcome {
+        declined: None,
+        created: add_card(ndb, board_id, view, author, signer, new, publisher),
+    }
+}
+
+/// The fields of a [`BoardAction::AddCard`], handed to [`add_card`].
+struct NewCard {
+    col: usize,
+    title: String,
+    description: String,
+    labels: Vec<String>,
+    parent: Option<NoteId>,
+}
+
+/// Ingest a new card — its issue, placement and optional description, labels
+/// and parent — returning the issue's id, or `None` when `new.col` isn't a
+/// column of `view` or the issue couldn't be signed.
+fn add_card(
+    ndb: &Ndb,
+    board_id: &str,
+    view: &BoardView,
+    author: &Pubkey,
+    signer: &Signer,
+    new: NewCard,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let addr = board_address(&Pubkey::new(view.author), board_id);
+    let c = view.columns.get(new.col)?;
+    // A brand-new card can't be anyone's ancestor, so parenting it needs
+    // no cycle check — just that the parent actually exists.
+    let parent = new.parent.filter(|p| find_card_any(view, *p).is_some());
+    let id = ingest_signed(ndb, build_issue(&addr, &new.title, ""), signer, publisher)?;
+    let rank = rank_for_insert(&c.cards, |c| c.id, |c| c.rank.as_str(), None, c.cards.len());
+    ingest_signed(
+        ndb,
+        build_placement(board_id, &addr, &id, &c.id, &rank),
+        signer,
+        publisher,
+    );
+    // Fold an optional initial description into the same publish as the
+    // create, reusing the exact cover-note builder `EditDescription`
+    // forwards, so `add --desc` needs no separate `desc` round-trip.
+    if !new.description.is_empty() {
+        ingest_signed(
+            ndb,
+            build_cover_note(&id, author, &new.description),
+            signer,
+            publisher,
+        );
+    }
+    if !new.labels.is_empty() {
+        ingest_signed(ndb, build_labels(&id, &new.labels), signer, publisher);
+    }
+    if let Some(parent) = parent {
+        ingest_signed(ndb, build_relation(&id, Some(&parent)), signer, publisher);
+    }
+    Some(id)
+}
+
+/// Every [`BoardAction`] but [`BoardAction::AddCard`], which [`apply_outcome`]
+/// routes to [`add_card`] so it can report the created id.
+fn apply_edit(
     ndb: &Ndb,
     board_id: &str,
     view: &BoardView,
@@ -945,43 +1066,8 @@ pub fn apply(
                 publisher,
             );
         }
-        BoardAction::AddCard {
-            col,
-            title,
-            description,
-            labels,
-            parent,
-        } => {
-            let c = view.columns.get(col)?;
-            // A brand-new card can't be anyone's ancestor, so parenting it needs
-            // no cycle check — just that the parent actually exists.
-            let parent = parent.filter(|p| find_card_any(view, *p).is_some());
-            let id = ingest_signed(ndb, build_issue(&addr, &title, ""), signer, publisher)?;
-            let rank =
-                rank_for_insert(&c.cards, |c| c.id, |c| c.rank.as_str(), None, c.cards.len());
-            ingest_signed(
-                ndb,
-                build_placement(board_id, &addr, &id, &c.id, &rank),
-                signer,
-                publisher,
-            );
-            // Fold an optional initial description into the same publish as the
-            // create, reusing the exact cover-note builder `EditDescription`
-            // forwards, so `add --desc` needs no separate `desc` round-trip.
-            if !description.is_empty() {
-                ingest_signed(
-                    ndb,
-                    build_cover_note(&id, author, &description),
-                    signer,
-                    publisher,
-                );
-            }
-            if !labels.is_empty() {
-                ingest_signed(ndb, build_labels(&id, &labels), signer, publisher);
-            }
-            if let Some(parent) = parent {
-                ingest_signed(ndb, build_relation(&id, Some(&parent)), signer, publisher);
-            }
+        BoardAction::AddCard { .. } => {
+            unreachable!("apply_outcome routes AddCard to add_card")
         }
         BoardAction::EditTitle { card, title } => {
             ingest_signed(ndb, build_subject_edit(&card, &title), signer, publisher);
@@ -3681,6 +3767,55 @@ mod tests {
         let reviews = &view.card(card).unwrap().reviews;
         let commits: Vec<_> = reviews.iter().map(|r| r.fields.commit.as_deref()).collect();
         assert_eq!(commits, vec![Some("bbbb"), Some("aaaa")]);
+    }
+
+    /// [`apply_outcome`] reports the id an `AddCard` minted, on a *sealed* board
+    /// where the card only reaches the fold once nostrdb has unwrapped its
+    /// envelope — so the caller doesn't have to re-fold (and race the unwrap)
+    /// to learn it. Every other action reports no `created`.
+    #[tokio::test]
+    async fn apply_outcome_reports_the_added_card_on_a_sealed_board() {
+        let t = TestNdb::new();
+        let ch = test_channel("src", &t.secret());
+        seed_via(&t, "src", Some(&ch));
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns.len() == 5).await;
+        let secret = t.secret();
+        let signer = Signer::new(&secret, Some(&ch.channel));
+
+        let outcome = apply_outcome(
+            &t.ndb,
+            "src",
+            &view,
+            &t.kp.pubkey,
+            &signer,
+            BoardAction::AddCard {
+                col: 0,
+                title: "Minted".to_string(),
+                description: String::new(),
+                labels: vec![],
+                parent: None,
+            },
+            &mut NoPublish,
+        );
+        assert_eq!(outcome.declined, None);
+        let created = outcome.created.expect("AddCard reports its id");
+
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns[0].cards.len() == 1).await;
+        assert_eq!(view.columns[0].cards[0].id, created);
+
+        let outcome = apply_outcome(
+            &t.ndb,
+            "src",
+            &view,
+            &t.kp.pubkey,
+            &signer,
+            BoardAction::EditTitle {
+                card: created,
+                title: "Renamed".to_string(),
+            },
+            &mut NoPublish,
+        );
+        assert_eq!(outcome.created, None);
     }
 
     #[tokio::test]

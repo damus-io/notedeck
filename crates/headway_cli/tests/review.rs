@@ -138,25 +138,6 @@ fn one_commit_repo(subject: &str) -> tempfile::TempDir {
     dir
 }
 
-/// Poll `show --json` until the board holds a card, and return its hex id.
-fn card_id_until(bin: &Path, url: &str, db: &str) -> String {
-    for _ in 0..50 {
-        let out = headway(bin, url, db, &["show", "--json"]);
-        if let Ok(board) = serde_json::from_slice::<Value>(&out.stdout)
-            && let Some(id) = board["columns"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .flat_map(|c| c["cards"].as_array().into_iter().flatten())
-                .find_map(|c| c["id"].as_str())
-        {
-            return id.to_string();
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("the added card never showed up");
-}
-
 /// Poll `show <card> --json` until the card carries `n` review records.
 fn reviews_until(bin: &Path, url: &str, db: &str, card: &str, n: usize) -> Vec<Value> {
     for _ in 0..50 {
@@ -199,15 +180,19 @@ fn review_records_git_metadata_on_a_card() {
         "seed: {}",
         String::from_utf8_lossy(&seed.stderr)
     );
-    let add = headway(&bin, &url, db, &["add", "Review me"]);
+    let add = headway(&bin, &url, db, &["add", "Review me", "--json"]);
     assert!(
         add.status.success(),
         "add: {}",
         String::from_utf8_lossy(&add.stderr)
     );
-    // `add` prints the new card's ref only when its immediate re-fold already
-    // sees the sealed card, so poll `show` for its id instead.
-    let card = card_id_until(&bin, &url, db);
+    // `seed` makes a sealed board, where the new card only folds in once its
+    // envelope is unwrapped; `add` still reports its ref straight away.
+    let added: Value = serde_json::from_slice(&add.stdout).expect("add --json");
+    let card = added["ref"]
+        .as_str()
+        .unwrap_or_else(|| panic!("add --json lacks the new card's ref: {added}"))
+        .to_string();
 
     let repo = one_commit_repo("the reviewed commit");
     let sha = git(repo.path(), &["rev-parse", "HEAD"]);

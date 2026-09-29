@@ -447,27 +447,17 @@ async fn run() -> Result<()> {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
             let view = load_board(&ndb, &roster, &author, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
-            // `add` mints a new card whose id we only learn by re-folding the
-            // board and finding the id that wasn't there before; snapshot the
-            // existing ids first so we can pick it out. Other edits act on a card
-            // the caller already named, so there's nothing new to surface.
-            let added = matches!(edit, Command::Add { .. });
             // `review` echoes what it recorded (below), so keep a copy before
             // `build_action` consumes the command.
             let recorded = match &edit {
                 Command::Review { review, .. } => Some(review.clone()),
                 _ => None,
             };
-            let before: std::collections::HashSet<String> = if added {
-                event::all_cards(&view).map(|c| c.id.hex()).collect()
-            } else {
-                std::collections::HashSet::new()
-            };
             let action = build_action(&view, edit)?;
 
             let mut sink = Collect::default();
             let channel = roster.channel(&board);
-            let declined = store::apply(
+            let store::ApplyOutcome { declined, created } = store::apply_outcome(
                 &ndb,
                 &board,
                 &view,
@@ -499,16 +489,10 @@ async fn run() -> Result<()> {
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
 
             // Surface the created card's ref so a scripted follow-up edit doesn't
-            // have to re-`show` to recover it. `apply` ingested locally, so a
-            // re-fold sees the new card — the one id absent from `before`.
-            let new_card = added
-                .then(|| load_board(&ndb, &roster, &author, &board))
-                .flatten()
-                .and_then(|after| {
-                    event::all_cards(&after)
-                        .find(|c| !before.contains(&c.id.hex()))
-                        .map(|c| (c.id.hex(), plain_ref(&after, &c.id)))
-                });
+            // have to re-`show` to recover it. Take the id from `apply_outcome`
+            // rather than re-folding: on a sealed board the new card's envelope
+            // is still being unwrapped, so a re-fold usually misses it.
+            let new_card = created.map(|id| (id.hex(), plain_ref(&view, &id)));
 
             if as_json {
                 let mut obj = serde_json::json!({ "ok": true, "events": n });
