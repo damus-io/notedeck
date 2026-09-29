@@ -165,6 +165,11 @@ pub struct CardView {
     pub comments: Vec<CommentView>,
     /// Authorised review records on the card, **newest first** (sorted by
     /// `created_at` descending, then id) — the first is the latest commit.
+    /// Records with fully identical [`ReviewFields`](super::model::ReviewFields)
+    /// are collapsed to the newest one, whoever wrote them: a retried done step
+    /// re-records the same commit, and two authors only produce identical
+    /// fields by recording the same commit from the same host and path. A
+    /// record that differs in any field (a new explainer, another host) is kept.
     pub reviews: Vec<ReviewView>,
     /// The card's derived activity timeline (created / moved / renamed / …),
     /// oldest first. See [`ActivityView`]; comments are kept separately above

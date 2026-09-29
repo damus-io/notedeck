@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 
 use nostrdb_net::NoteId;
 
-use super::model::{COL_ARCHIVED, COL_DELETED, Date, Field, Priority, column_is_terminal};
+use super::model::{
+    COL_ARCHIVED, COL_DELETED, Date, Field, Priority, ReviewFields, column_is_terminal,
+};
 use super::parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
     IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewEvent, SequenceEvent,
@@ -354,6 +356,9 @@ impl BoardReducer {
         // The last wire value seen per scalar field, so a field row is emitted
         // only on an actual change (an empty entry means "never set").
         let mut field_values: HashMap<Field, String> = HashMap::new();
+        // Review fields already recorded, so a re-recorded commit (identical
+        // fields, see `card_view`) shows only when it was first recorded.
+        let mut seen_reviews: HashSet<&ReviewFields> = HashSet::new();
 
         for rec in sorted {
             // Creation-time records still seed the running state (so the first
@@ -486,7 +491,7 @@ impl BoardReducer {
                     });
                 }
                 ActivityRecord::Review(r) => {
-                    if silent || !authorised(&r.author) {
+                    if !authorised(&r.author) || !seen_reviews.insert(&r.fields) || silent {
                         continue;
                     }
                     out.push(ActivityView {
@@ -748,10 +753,20 @@ impl BoardReducer {
         // Review records on the card, authorised like the overlays (a stranger
         // can't attach a commit to someone else's card). Newest first, so the
         // head is the latest commit; the id breaks same-second ties.
-        let mut reviews: Vec<ReviewView> = self
+        let mut records: Vec<&ReviewEvent> = self
             .reviews
             .values()
             .filter(|r| r.issue_id == issue.id && authorised(&r.author))
+            .collect();
+        records.sort_by_key(|r| std::cmp::Reverse((r.created_at, r.id)));
+        // A retried done step re-records the same commit with the same fields;
+        // records are append-only, so collapse identical fields here and keep
+        // the newest. Any differing field (explainer, host, path) is new
+        // information and survives as its own record.
+        let mut seen_fields: HashSet<&ReviewFields> = HashSet::new();
+        let reviews: Vec<ReviewView> = records
+            .into_iter()
+            .filter(|r| seen_fields.insert(&r.fields))
             .map(|r| ReviewView {
                 id: NoteId::new(r.id),
                 author: r.author,
@@ -759,7 +774,6 @@ impl BoardReducer {
                 fields: r.fields.clone(),
             })
             .collect();
-        reviews.sort_by(|a, b| (b.created_at, b.id.bytes()).cmp(&(a.created_at, a.id.bytes())));
 
         // The newest touch wins: creation, the winning amendments, the last
         // comment or the latest review record. Placements deliberately don't
@@ -1563,6 +1577,139 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// A retried done step re-records identical fields: the card keeps only
+    /// the newest copy, `updated_at` follows it, and the activity timeline
+    /// shows the commit once, when it was first recorded.
+    #[test]
+    fn reduce_collapses_identical_review_records() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let issue = || build_issue(&addr, "Card", "").created_at(1_000);
+        let i1 = note_id(&owner, issue());
+        let a = review_on("aaaa", "jex0");
+        let b = review_on("bbbb", "jex0");
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(issue(), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            parse_owned(build_review(&i1, &a).created_at(2_000), &owner),
+            parse_owned(build_review(&i1, &b).created_at(3_000), &owner),
+            parse_owned(build_review(&i1, &a).created_at(4_000), &owner),
+        ];
+
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+        let kept: Vec<_> = card
+            .reviews
+            .iter()
+            .map(|r| (r.fields.commit.as_deref(), r.created_at))
+            .collect();
+        assert_eq!(kept, vec![(Some("aaaa"), 4_000), (Some("bbbb"), 3_000)]);
+        assert_eq!(card.updated_at, 4_000);
+
+        let rows: Vec<&ActivityKind> = card.activity.iter().map(|a| &a.kind).collect();
+        assert_eq!(
+            rows,
+            vec![
+                &ActivityKind::Created,
+                &ActivityKind::Review {
+                    commit: Some("aaaa".into()),
+                    host: Some("jex0".into()),
+                },
+                &ActivityKind::Review {
+                    commit: Some("bbbb".into()),
+                    host: Some("jex0".into()),
+                },
+            ]
+        );
+        assert_eq!(card.activity[1].created_at, 2_000, "first recording");
+    }
+
+    /// The same commit re-recorded with a new explainer carries new
+    /// information, so both records survive.
+    #[test]
+    fn reduce_keeps_same_commit_with_different_explainer() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let issue = || build_issue(&addr, "Card", "").created_at(1_000);
+        let i1 = note_id(&owner, issue());
+        let plain = review_on("aaaa", "jex0");
+        let explained = ReviewFields {
+            explainer: Some("https://claude.ai/artifact/x".to_string()),
+            ..plain.clone()
+        };
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(issue(), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            parse_owned(build_review(&i1, &plain).created_at(2_000), &owner),
+            parse_owned(build_review(&i1, &explained).created_at(3_000), &owner),
+        ];
+
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+        assert_eq!(card.reviews.len(), 2);
+        assert_eq!(card.reviews[0].fields, explained);
+        assert_eq!(card.reviews[1].fields, plain);
+        let review_rows = card
+            .activity
+            .iter()
+            .filter(|a| matches!(a.kind, ActivityKind::Review { .. }))
+            .count();
+        assert_eq!(review_rows, 2);
+    }
+
+    /// On an owner board a stranger's copy of the owner's record neither
+    /// counts as the newest copy nor hides the owner's own record.
+    #[test]
+    fn reduce_unauthorised_duplicate_review_hides_nothing() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let issue = || build_issue(&addr, "Card", "").created_at(1_000);
+        let i1 = note_id(&owner, issue());
+        let a = review_on("aaaa", "jex0");
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(issue(), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            // The stranger's copy comes first and last, bracketing the owner's.
+            parse_owned(build_review(&i1, &a).created_at(1_500), &stranger),
+            parse_owned(build_review(&i1, &a).created_at(2_000), &owner),
+            parse_owned(build_review(&i1, &a).created_at(3_000), &stranger),
+        ];
+
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+        assert_eq!(card.reviews.len(), 1);
+        assert_eq!(&card.reviews[0].author, owner.pubkey.bytes());
+        assert_eq!(card.reviews[0].created_at, 2_000);
+        assert_eq!(card.updated_at, 2_000);
+        assert_eq!(card.activity.len(), 2, "Created + the owner's Review");
+        assert_eq!(card.activity[1].created_at, 2_000);
     }
 
     /// On a single-writer board a stranger can't attach a commit to someone
