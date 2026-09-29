@@ -18,7 +18,7 @@ mod tools;
 mod ui;
 
 use cache::BoardCache;
-pub use nav::HeadwayRoute;
+pub use nav::{HeadwayRoute, ReviewTarget};
 use nav::{NavReconcile, reconcile_nav};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
 use ui::{BoardNav, CardBoardOp, board_ui, card_title, empty_state};
@@ -746,7 +746,8 @@ impl App for Headway {
     /// route token — [`HeadwayRoute::Card`] ⇒ that card's full-pane detail,
     /// [`Graph`](HeadwayRoute::Graph) ⇒ that epic's dependency graph (with the epic
     /// also seeded as the selected card underneath, so a back off the graph lands
-    /// on its detail), [`Board`](HeadwayRoute::Board) or any unrecognized token (the
+    /// on its detail), [`Review`](HeadwayRoute::Review) ⇒ that card's review pane on
+    /// the record the entry carries, [`Board`](HeadwayRoute::Board) or any unrecognized token (the
     /// `()` a plain app-switch entry carries) ⇒ the board grid — so the nav stack,
     /// not stale view-state, decides which screen shows. A global back/forward/jump
     /// is honored here before the board draws.
@@ -766,8 +767,7 @@ impl App for Headway {
             .set_selected(route.and_then(|r| r.selected_card()));
         self.state
             .set_graph_epic(route.and_then(|r| r.graph_epic()));
-        self.state
-            .set_review_card(route.and_then(|r| r.review_card()));
+        self.state.set_review(route.and_then(|r| r.review_target()));
         self.render_board(ctx, ui)
     }
 
@@ -981,10 +981,11 @@ impl Headway {
                 .push_active_route(HeadwayRoute::graph(epic, card_title(&view, epic))),
             // Opening a card's review pane from its detail pushes a review entry
             // one level deeper, a sibling of the graph's, so a global-back
-            // returns to the card.
-            Some(NavReconcile::PushReview(card)) => ctx
-                .navigator
-                .push_active_route(HeadwayRoute::review(card, card_title(&view, card))),
+            // returns to the card. The entry carries the record the pane opened
+            // on, so back/forward onto it reopens that record.
+            Some(NavReconcile::PushReview(card)) => ctx.navigator.push_active_route(
+                HeadwayRoute::review(card, self.state.review_record(), card_title(&view, card)),
+            ),
             // Leaving a card (close, delete, or a card that vanished) or closing the
             // graph steps one entry back in the global history.
             Some(NavReconcile::Back) => ctx.navigator.back(),

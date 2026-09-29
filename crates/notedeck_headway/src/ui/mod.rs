@@ -22,7 +22,7 @@ use notedeck_ui::chord::ChordState;
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView};
 use crate::keys::{self, BoardPending};
-use crate::nav::NavPos;
+use crate::nav::{NavPos, ReviewTarget};
 use crate::store::BoardAction;
 
 mod archived;
@@ -245,12 +245,20 @@ impl BoardUiState {
         self.review.card()
     }
 
-    /// Seed whether the review pane is open from the chrome global-history route
-    /// this frame renders, the review counterpart to
-    /// [`set_graph_epic`](Self::set_graph_epic). The picked record and the loaded
-    /// diffs are left alone, so back/forward onto a review returns to where it was.
-    pub fn set_review_card(&mut self, card: Option<NoteId>) {
-        self.review.set_card(card);
+    /// The record the open review pane shows, by note id (`None` = newest): what
+    /// a [`Review`](crate::HeadwayRoute::Review) push snapshots.
+    pub fn review_record(&self) -> Option<NoteId> {
+        self.review.record()
+    }
+
+    /// Seed the review pane — which card, and which of its records — from the
+    /// chrome global-history route this frame renders, the review counterpart to
+    /// [`set_graph_epic`](Self::set_graph_epic). The record is applied only when
+    /// the route differs from the last one seeded, so a pick made in the open
+    /// pane holds while back/forward onto another entry reopens that entry's
+    /// record. The loaded diffs are left alone.
+    pub fn set_review(&mut self, target: Option<ReviewTarget>) {
+        self.review.seed(target);
     }
 
     /// Which view depth this state shows (board, a card, a graph or a review),

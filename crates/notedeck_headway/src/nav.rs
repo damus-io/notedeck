@@ -80,6 +80,14 @@ pub enum HeadwayRoute {
         /// each frame, like a [`Card`](Self::Card).
         card: NoteId,
 
+        /// The review record the pane showed when this entry was pushed: its
+        /// note id, resolved against [`CardView::reviews`](headway::event::CardView)
+        /// each frame. `None` means the newest record (or, for a card with none,
+        /// the commit found by its `Headway:` trailer); so does an id the card no
+        /// longer carries. Carried in the route rather than the pane's view state
+        /// so back/forward onto another card's review reopens what it showed.
+        record: Option<NoteId>,
+
         /// The card's title *at the moment the review was opened*, snapshotted
         /// for [`nav_title`](notedeck::App::nav_title) exactly as a card's is.
         title: Option<String>,
@@ -97,9 +105,14 @@ impl HeadwayRoute {
         HeadwayRoute::Graph { epic, title }
     }
 
-    /// Build a [`Review`](Self::Review) route for `card`, snapshotting `title`.
-    pub fn review(card: NoteId, title: Option<String>) -> Self {
-        HeadwayRoute::Review { card, title }
+    /// Build a [`Review`](Self::Review) route for `card` on `record` (`None` =
+    /// newest), snapshotting `title`.
+    pub fn review(card: NoteId, record: Option<NoteId>, title: Option<String>) -> Self {
+        HeadwayRoute::Review {
+            card,
+            record,
+            title,
+        }
     }
 
     /// The card whose detail this route seeds as selected: a [`Card`](Self::Card)'s
@@ -127,8 +140,17 @@ impl HeadwayRoute {
     /// The card whose review pane this route opens, if it is a
     /// [`Review`](Self::Review).
     pub fn review_card(&self) -> Option<NoteId> {
+        self.review_target().map(|t| t.card)
+    }
+
+    /// The card and record this route opens the review pane on, if it is a
+    /// [`Review`](Self::Review).
+    pub fn review_target(&self) -> Option<ReviewTarget> {
         match self {
-            HeadwayRoute::Review { card, .. } => Some(*card),
+            HeadwayRoute::Review { card, record, .. } => Some(ReviewTarget {
+                card: *card,
+                record: *record,
+            }),
             HeadwayRoute::Board | HeadwayRoute::Card { .. } | HeadwayRoute::Graph { .. } => None,
         }
     }
@@ -144,6 +166,16 @@ impl HeadwayRoute {
             HeadwayRoute::Board => None,
         }
     }
+}
+
+/// What a [`Review`](HeadwayRoute::Review) route opens: the card, and which of
+/// its review records (`None` = newest, see the variant's `record`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewTarget {
+    /// The card under review.
+    pub card: NoteId,
+    /// The picked record's note id, or `None` for the newest.
+    pub record: Option<NoteId>,
 }
 
 /// Which of Headway's view depths a frame is showing, derived from the three
@@ -233,6 +265,15 @@ pub(crate) enum NavReconcile {
 /// (graph→another-card) — pushes a walkable entry; stepping shallower (card→board,
 /// or the graph closing back to its own epic) backs out one. Kept a pure function
 /// (no `egui`/`Ndb`) so the mapping is unit-tested on its own.
+///
+/// Picking a different record inside an open review pane is *not* a transition:
+/// [`NavPos::Review`] names only the card, so the pick changes the pane's view
+/// state and enqueues nothing. The entry keeps the record it was pushed with (a
+/// `Review` push snapshots the pane's pick at that moment), so back/forward onto
+/// it reopens that record, not a later pick. The alternative, swapping the top
+/// entry for the new pick, has no primitive: the chrome's `replace` collapses
+/// the whole history, and pushing per pick would bury the trail under record
+/// flips.
 pub(crate) fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcile> {
     // A steady frame (same screen still showing) moves nothing.
     if before == after {
@@ -387,12 +428,35 @@ mod tests {
     #[test]
     fn review_route_seeds_both_review_and_selection() {
         let card = NoteId::new([5u8; 32]);
-        let route = HeadwayRoute::review(card, Some("Reviewed".to_string()));
+        let route = HeadwayRoute::review(card, None, Some("Reviewed".to_string()));
         assert_eq!(route.review_card(), Some(card));
         assert_eq!(route.selected_card(), Some(card));
         assert!(route.graph_epic().is_none());
         assert_eq!(route.title(), Some("Reviewed"));
         assert!(HeadwayRoute::card(card, None).review_card().is_none());
+    }
+
+    /// A `Review` route round-trips the record it was pushed with, so a
+    /// back/forward onto it reopens that record; `None` (the newest) survives
+    /// too, and no other route names a review target.
+    #[test]
+    fn review_route_round_trips_its_record() {
+        let card = NoteId::new([5u8; 32]);
+        let record = NoteId::new([6u8; 32]);
+        let route = HeadwayRoute::review(card, Some(record), None);
+        assert_eq!(
+            route.review_target(),
+            Some(ReviewTarget {
+                card,
+                record: Some(record)
+            })
+        );
+        assert_eq!(
+            HeadwayRoute::review(card, None, None).review_target(),
+            Some(ReviewTarget { card, record: None })
+        );
+        assert!(HeadwayRoute::card(card, None).review_target().is_none());
+        assert!(HeadwayRoute::graph(card, None).review_target().is_none());
     }
 
     /// The board carries no per-entry title, so the chrome falls back to the app

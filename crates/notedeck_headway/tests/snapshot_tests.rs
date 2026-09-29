@@ -1766,10 +1766,157 @@ fn review_diff_opens_the_review_pane_with_the_commit() {
     assert_eq!(reviews.len(), 1, "opening the review pushes one entry");
     assert_eq!(reviews[0].review_card(), Some(card));
     assert_eq!(reviews[0].selected_card(), Some(card));
+    // "Review diff" opens on the newest record, which the route names as `None`.
+    assert_eq!(reviews[0].review_target().map(|t| t.record), Some(None));
 
     // Escape closes the pane back to the card's detail.
     harness.press_key(egui::Key::Escape);
     wait_for_label(&mut harness, "⧉ Review diff");
+}
+
+/// Commit `file` (containing `body`) in the fixture repo `dir` with subject
+/// `subject`, returning the new commit's sha.
+fn fixture_commit(dir: &std::path::Path, file: &str, body: &str, subject: &str) -> String {
+    let path = dir.join(file);
+    std::fs::create_dir_all(path.parent().expect("file has a parent")).unwrap();
+    std::fs::write(path, body).unwrap();
+    fixture_git(dir, &["add", "."]);
+    fixture_git(
+        dir,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            subject,
+        ],
+    );
+    fixture_git(dir, &["rev-parse", "HEAD"])
+}
+
+/// Behavioural (no lavapipe): a `Review` route carries which record the pane
+/// shows. With two records on a card, an entry naming the one that isn't the
+/// head opens the pane on it (its subject in the record summary, its commit's
+/// file in the diff), and an entry naming no record opens the head — so
+/// back/forward onto a review reproduces what it showed rather than reusing the
+/// pane's last pick.
+///
+/// Both records land in the same second, so which is the head (newest first,
+/// the id breaking the tie) is read back off the fold rather than assumed.
+#[test]
+fn review_route_opens_the_record_it_names() {
+    use notedeck_headway::HeadwayRoute;
+
+    const CARD: &str = "Define nostr event model for boards";
+    // (file, subject) per fixture commit.
+    const COMMITS: [(&str, &str); 2] = [
+        ("src/first.rs", "first: one reviewed commit"),
+        ("src/second.rs", "second: another reviewed commit"),
+    ];
+
+    let repo = tempfile::tempdir().expect("repo dir");
+    let dir = repo.path();
+    fixture_git(dir, &["init", "-q", "-b", "review-branch"]);
+    let shas: Vec<String> = COMMITS
+        .iter()
+        .map(|(file, subject)| fixture_commit(dir, file, "fn reviewed() {}\n", subject))
+        .collect();
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let (card, author) = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let secret = state.account.secret_key.secret_bytes();
+        let app_ctx = &mut state.notedeck.app_context();
+        let card = demo_card_id(app_ctx.ndb, &author, CARD);
+
+        for (sha, (_, subject)) in shas.iter().zip(COMMITS) {
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let reducer = headway::event::fold_board(app_ctx.ndb, &txn, &author).expect("folded");
+            let boards = reducer.finalize();
+            let view =
+                headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+            store::apply(
+                app_ctx.ndb,
+                store::BOARD_ID,
+                view,
+                &author,
+                &store::Signer::new(&secret, None),
+                store::BoardAction::AddReview {
+                    card,
+                    review: event::ReviewFields {
+                        commit: Some(sha.clone()),
+                        title: Some(subject.to_string()),
+                        branch: Some("review-branch".to_string()),
+                        host: headway::git::host_name(),
+                        path: Some(dir.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
+                },
+                &mut store::NoPublish,
+            );
+        }
+        (card, author)
+    };
+
+    // Both records fold in: each is a row in the card detail's Review section.
+    harness.get_by_label(CARD).simulate_click();
+    for sha in &shas {
+        wait_for_label(&mut harness, &sha[..12]);
+    }
+    // The head's commit, and the other record's id and commit.
+    let (head, (other, other_commit)) = {
+        let state = harness.state_mut();
+        let app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+            .expect("folded")
+            .finalize();
+        let view =
+            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+        let reviews = &view.card(card).expect("card").reviews;
+        assert_eq!(reviews.len(), 2, "both records folded");
+        let commit_of = |i: usize| {
+            let sha = reviews[i].fields.commit.as_deref();
+            shas.iter()
+                .position(|s| Some(s.as_str()) == sha)
+                .expect("a fixture commit")
+        };
+        (commit_of(0), (reviews[1].id, commit_of(1)))
+    };
+    let (head_file, head_subject) = COMMITS[head];
+    let (other_file, other_subject) = COMMITS[other_commit];
+
+    // An entry naming the non-head record opens the pane on it.
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::review(
+        card,
+        Some(other),
+        Some(CARD.to_string()),
+    )));
+    wait_for_any_label(&mut harness, other_file);
+    wait_for_label(&mut harness, other_subject);
+    assert!(
+        harness.query_by_label(head_subject).is_none(),
+        "only the named record is summarised"
+    );
+
+    // Landing on the card's detail and then an entry naming no record opens
+    // the head, not the record the pane last showed.
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::card(card, None)));
+    wait_for_label(&mut harness, "⧉ Review diff");
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::review(
+        card,
+        None,
+        Some(CARD.to_string()),
+    )));
+    wait_for_any_label(&mut harness, head_file);
+    wait_for_label(&mut harness, head_subject);
+    assert!(harness.query_by_label(other_subject).is_none());
 }
 
 /// Behavioural (no lavapipe): clicking a card also puts the board's keyboard

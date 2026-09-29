@@ -2,9 +2,9 @@
 //! full-pane like the dependency graph — and the Review section of the card
 //! detail that opens it.
 //!
-//! The pane is "render the review for card X": which card is open lives in
-//! [`ReviewUi`], seeded from the [`Review`](crate::HeadwayRoute::Review) nav
-//! route, and everything slow (resolving the commit, fetching it from the host
+//! The pane is "render the review for card X": which card and record are open
+//! live in [`ReviewUi`], seeded from the [`Review`](crate::HeadwayRoute::Review)
+//! nav route, and everything slow (resolving the commit, fetching it from the host
 //! that recorded it, `git show`) runs on a [`ReviewLoader`] worker so the frame
 //! only ever draws what has already arrived.
 
@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use super::BoardUiState;
 use super::widgets::{count_badge, detail_heading};
+use crate::nav::ReviewTarget;
 use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
@@ -26,9 +27,14 @@ pub(crate) struct ReviewUi {
     /// The card whose review pane is open. Seeded from the nav route like
     /// [`graph_epic`](BoardUiState::graph_epic), so the nav stack decides.
     card: Option<NoteId>,
-    /// Which of the card's records is shown: an index into
-    /// [`CardView::reviews`], newest first. Clamped when the card has fewer.
-    record: usize,
+    /// Which of the card's records is shown, by note id; `None` is the newest.
+    /// Resolved against [`CardView::reviews`] each frame, falling back to the
+    /// newest when the card no longer carries it.
+    record: Option<NoteId>,
+    /// The route target [`seed`](Self::seed) last applied. The record is only
+    /// re-seeded when the route changes, so a pick made in the pane isn't
+    /// overwritten by the entry's own route on the next frame.
+    seeded: Option<ReviewTarget>,
     /// The card [`card_ref`](Self::card_ref) was formatted for.
     ref_for: Option<NoteId>,
     /// The open card's `headway:<board>/<word-id>`, formatted once per card
@@ -47,15 +53,34 @@ impl ReviewUi {
         self.card
     }
 
+    /// The picked record's note id, `None` for the newest: what a
+    /// [`Review`](crate::HeadwayRoute::Review) push snapshots.
+    pub(crate) fn record(&self) -> Option<NoteId> {
+        self.record
+    }
+
     /// Seed the open review from the nav route (see
-    /// [`BoardUiState::set_review_card`]).
-    pub(crate) fn set_card(&mut self, card: Option<NoteId>) {
+    /// [`BoardUiState::set_review`]). The card is seeded every frame, like the
+    /// graph's epic; the record only when the route's target differs from the
+    /// last one seeded, i.e. on landing on another entry.
+    pub(crate) fn seed(&mut self, target: Option<ReviewTarget>) {
+        if target != self.seeded {
+            self.seeded = target;
+            if let Some(target) = target {
+                self.record = target.record;
+            }
+        }
+        self.set_card(target.map(|t| t.card));
+    }
+
+    /// Point the pane at `card`, flagging a re-open when it moves to a card.
+    fn set_card(&mut self, card: Option<NoteId>) {
         self.reopened |= card.is_some() && card != self.card;
         self.card = card;
     }
 
-    /// Open `card`'s review on its `record`-th record (newest first).
-    pub(crate) fn open(&mut self, card: NoteId, record: usize) {
+    /// Open `card`'s review on `record` (`None` = newest).
+    pub(crate) fn open(&mut self, card: NoteId, record: Option<NoteId>) {
         self.set_card(Some(card));
         self.record = record;
     }
@@ -92,8 +117,11 @@ pub(super) fn review_pane_ui(
     review
         .loader
         .note_records(card.id, RecordSet::of(&card.reviews));
-    review.record = review.record.min(card.reviews.len().saturating_sub(1));
-    let record = card.reviews.get(review.record);
+    let shown = review
+        .record
+        .and_then(|id| card.reviews.iter().position(|r| r.id == id))
+        .unwrap_or(0);
+    let record = card.reviews.get(shown);
 
     let source = match record {
         Some(r) => ReviewSource::Record {
@@ -127,7 +155,9 @@ pub(super) fn review_pane_ui(
             ui.add_space(SPACING_SM);
 
             if card.reviews.len() > 1 {
-                record_picker_ui(ui, &card.reviews, &mut review.record);
+                if let Some(picked) = record_picker_ui(ui, &card.reviews, shown) {
+                    review.record = Some(picked);
+                }
                 ui.add_space(SPACING_XS);
             }
             if let Some(r) = record {
@@ -210,21 +240,24 @@ fn review_topbar_ui(
     });
 }
 
-/// One selectable chip per record, newest first, labelled by short sha.
-fn record_picker_ui(ui: &mut egui::Ui, reviews: &[ReviewView], picked: &mut usize) {
+/// One selectable chip per record, newest first, labelled by short sha, with
+/// the `shown`-th selected. Returns the note id of a chip clicked this frame.
+fn record_picker_ui(ui: &mut egui::Ui, reviews: &[ReviewView], shown: usize) -> Option<NoteId> {
+    let mut picked = None;
     ui.horizontal_wrapped(|ui| {
         for (i, r) in reviews.iter().enumerate() {
             let sha = r.fields.commit.as_deref().map_or("(no commit)", short_sha);
-            let chip = ui.selectable_label(*picked == i, egui::RichText::new(sha).monospace());
+            let chip = ui.selectable_label(shown == i, egui::RichText::new(sha).monospace());
             let chip = match r.fields.title.as_deref() {
                 Some(title) => chip.on_hover_text(title),
                 None => chip,
             };
             if chip.clicked() {
-                *picked = i;
+                picked = Some(r.id);
             }
         }
     });
+    picked
 }
 
 /// A record's one-line summary: short sha and subject, then where it was
@@ -396,8 +429,10 @@ pub(super) fn review_section_ui(
     });
     ui.add_space(SPACING_XS);
 
-    let mut open = None;
-    for (i, r) in reviews.iter().enumerate() {
+    // `Some(record)` once a row or the button was clicked; the inner `None`
+    // (the button) opens on the newest record.
+    let mut open: Option<Option<NoteId>> = None;
+    for r in reviews {
         ui.horizontal_wrapped(|ui| {
             let fields = &r.fields;
             let sha = fields.commit.as_deref().map_or("(no commit)", short_sha);
@@ -409,12 +444,12 @@ pub(super) fn review_section_ui(
                 .on_hover_text("Review this commit's diff")
                 .clicked()
             {
-                open = Some(i);
+                open = Some(Some(r.id));
             }
             let subject = egui::Button::new(egui::RichText::new(title).color(theme.text_primary))
                 .frame(false);
             if ui.add(subject).clicked() {
-                open = Some(i);
+                open = Some(Some(r.id));
             }
             record_location_ui(ui, theme, fields);
             if let Some(session) = fields.agentium.as_deref() {
@@ -440,7 +475,7 @@ pub(super) fn review_section_ui(
         .fill(egui::Color32::TRANSPARENT)
         .frame(false);
     if ui.add(button).clicked() {
-        open = Some(0);
+        open = Some(None);
     }
     if let Some(record) = open {
         state.review.open(card_id, record);
@@ -463,9 +498,42 @@ mod tests {
         assert!(!review.reopened);
         review.set_card(None);
         assert!(!review.reopened);
-        review.open(a, 0);
+        review.open(a, None);
         assert!(std::mem::take(&mut review.reopened));
         review.set_card(Some(b));
         assert!(review.reopened);
+    }
+
+    /// The route seeds the record when it changes, and only then: a pick made
+    /// in the pane survives the same route re-seeding every frame, while
+    /// landing on another entry restores the record that entry carries.
+    #[test]
+    fn seed_applies_the_route_record_only_when_the_route_changes() {
+        let (a, b) = (NoteId::new([1; 32]), NoteId::new([2; 32]));
+        let (r1, r2) = (NoteId::new([3; 32]), NoteId::new([4; 32]));
+        let on = |card, record| Some(ReviewTarget { card, record });
+        let mut review = ReviewUi::default();
+
+        review.seed(on(a, Some(r1)));
+        assert_eq!((review.card(), review.record()), (Some(a), Some(r1)));
+
+        // A pick in the pane, then the same route re-seeding: the pick stays.
+        review.record = Some(r2);
+        review.seed(on(a, Some(r1)));
+        assert_eq!(review.record(), Some(r2));
+
+        // Another card's entry, then back onto the first: each gets its own.
+        review.seed(on(b, None));
+        assert_eq!((review.card(), review.record()), (Some(b), None));
+        review.seed(on(a, Some(r1)));
+        assert_eq!((review.card(), review.record()), (Some(a), Some(r1)));
+
+        // Leaving the review closes the pane; a detail-opened pick then lands
+        // as its own pushed route unchanged.
+        review.seed(None);
+        assert_eq!(review.card(), None);
+        review.open(b, Some(r2));
+        review.seed(on(b, Some(r2)));
+        assert_eq!((review.card(), review.record()), (Some(b), Some(r2)));
     }
 }
