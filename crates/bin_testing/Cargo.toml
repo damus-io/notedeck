@@ -1,0 +1,10 @@
+[package]
+name = "bin_testing"
+edition = "2021"
+version.workspace = true
+description = "Find this worktree's own build of a CLI binary for e2e tests when git worktrees share one target/ dir"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = { workspace = true }

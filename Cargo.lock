@@ -196,6 +196,7 @@ version = "0.11.0-beta.1"
 dependencies = [
  "agentium-core",
  "bech32",
+ "bin_testing",
  "enostr",
  "hex",
  "libc",
@@ -972,6 +973,13 @@ name = "bech32"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
+
+[[package]]
+name = "bin_testing"
+version = "0.11.0-beta.1"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "bincode"
@@ -3648,6 +3656,7 @@ name = "headway_cli"
 version = "0.11.0-beta.1"
 dependencies = [
  "bech32",
+ "bin_testing",
  "enostr",
  "futures-util",
  "headway",

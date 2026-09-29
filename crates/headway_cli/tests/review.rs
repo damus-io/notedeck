@@ -27,55 +27,15 @@ fn nsec() -> String {
     bech32::encode::<bech32::Bech32>(hrp, &SECRET).expect("encode nsec")
 }
 
-/// The `headway` binary this worktree built.
-///
-/// `env!("CARGO_BIN_EXE_headway")` is the top-level `target/debug/headway`,
-/// which every git worktree sharing `target/` hardlinks its own build onto, so
-/// under `cargo test --workspace` a sibling's older binary (one without
-/// `review`) can own it. Prefer the newest `deps/headway-<hash>` whose dep-info
-/// names this worktree's `deps` dir and which knows `review`; fall back to the
-/// uplifted binary when it is current (a single CI checkout has no siblings).
-/// Same approach as `agentium_cli`'s `spawn_lands::agentium_bin`.
+/// The `headway` binary this worktree built, rather than whatever sibling
+/// worktree last hardlinked its build (maybe one without `review`) onto the
+/// shared `target/debug/headway`. See [`bin_testing::worktree_bin`].
 fn headway_bin() -> PathBuf {
-    let uplifted = Path::new(env!("CARGO_BIN_EXE_headway"));
-    let deps = uplifted.parent().expect("target dir").join("deps");
-    let ours = |path: &Path| {
-        let Some(stem) = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .and_then(|n| n.strip_suffix(std::env::consts::EXE_SUFFIX))
-        else {
-            return false;
-        };
-        stem.starts_with("headway-")
-            && !stem.contains('.')
-            && path.is_file()
-            && std::fs::read_to_string(path.with_extension("d")).is_ok_and(|d| {
-                // Built through this worktree, and from the CLI crate's sources: the
-                // `headway` library's own test harness shares the stem.
-                let first = d.lines().next().unwrap_or("");
-                first.starts_with(&*deps.to_string_lossy()) && first.contains("headway_cli")
-            })
-    };
-    let newest = std::fs::read_dir(&deps)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| ours(p) && knows_review(p))
-        .max_by_key(|p| {
-            std::fs::metadata(p)
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::UNIX_EPOCH)
-        });
-    if let Some(path) = newest {
-        return path;
-    }
-    assert!(
-        knows_review(uplifted),
-        "no current `headway` binary — run `cargo build -p headway_cli` first"
-    );
-    uplifted.to_path_buf()
+    bin_testing::worktree_bin(
+        Path::new(env!("CARGO_BIN_EXE_headway")),
+        "headway_cli",
+        knows_review,
+    )
 }
 
 /// A current build lists `review` in its no-arg usage (printed to stderr).

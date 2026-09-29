@@ -21,4 +21,5 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 tempfile = { workspace = true }
+bin_testing = { workspace = true }
 bech32 = { workspace = true }

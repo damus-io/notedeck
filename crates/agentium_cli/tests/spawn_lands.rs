@@ -34,108 +34,16 @@ fn test_config() -> Config {
     }
 }
 
-/// Resolve a path to *this* worktree's freshly-built `agentium` binary, robust to
-/// the shared-target uplift hazard that otherwise makes these tests fail under
-/// `cargo test --workspace` while passing under `cargo test -p agentium_cli`.
-///
-/// `env!("CARGO_BIN_EXE_agentium")` names the top-level `target/debug/agentium` —
-/// a *single* path that every git worktree sharing this `target/` dir hardlinks
-/// its own `agentium` onto. Under `cargo test --workspace` cargo compiles this
-/// crate's bin but records its uplift as already-done and won't re-link it, so a
-/// sibling worktree's older `agentium` (e.g. one predating `--wait`) can own that
-/// path — and, because sibling builds run concurrently, it can be re-clobbered at
-/// any instant *during* the test. `-p agentium_cli` re-roots the package and forces
-/// the uplift, which is exactly why isolation passes.
-///
-/// Rather than trust that shared path, we go to the per-fingerprint artifact cargo
-/// actually built for this invocation: `target/debug/deps/agentium-<hash>`. That
-/// name is unique to a (source + feature) fingerprint, so no sibling overwrites it
-/// with *different* code (a matching hash means matching source). We pick the
-/// newest such artifact that (a) cargo built through *this* worktree's target path
-/// — its `agentium-<hash>.d` dep-info records that absolute path — and (b) is a
-/// current build that understands `--wait`, so the test exercises this worktree's
-/// code, not a sibling's.
+/// *This* worktree's freshly-built `agentium`, rather than whatever sibling
+/// worktree last hardlinked its build onto the shared `target/debug/agentium`
+/// (which is how these tests fail under `cargo test --workspace` while passing
+/// under `-p agentium_cli`). See [`bin_testing::worktree_bin`].
 fn agentium_bin() -> PathBuf {
-    let uplifted = Path::new(env!("CARGO_BIN_EXE_agentium"));
-    let deps = uplifted
-        .parent()
-        .expect("CARGO_BIN_EXE_agentium has a target/debug parent")
-        .join("deps");
-
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in std::fs::read_dir(&deps)
-        .expect("read target/debug/deps")
-        .flatten()
-    {
-        let path = entry.path();
-        if !is_agentium_exe(&path) || !built_in_this_worktree(&path, &deps) {
-            continue;
-        }
-        if !is_current_build(&path) {
-            continue;
-        }
-        let mtime = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        if newest.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            newest = Some((mtime, path));
-        }
-    }
-
-    if let Some((_, path)) = newest {
-        return path;
-    }
-
-    // Nothing in `deps` was identifiable as ours. That is a miss by the
-    // *heuristic*, not proof the binary is wrong: the scan reads cargo's dep-info
-    // to tell our artifacts from a sibling worktree's, and its file naming is not
-    // contractual (on Windows CI it identifies nothing at all). The hazard it
-    // guards against — several worktrees sharing one `target/` — needs sibling
-    // worktrees to exist, which on a CI runner's single fresh checkout they do
-    // not. So fall back to the uplifted binary, still gated on the check that
-    // actually matters: that it is a current build and so this worktree's code.
-    if is_current_build(uplifted) {
-        return uplifted.to_path_buf();
-    }
-
-    panic!(
-        "no `agentium` under {} and no current uplifted binary at {} — \
-         run `cargo build -p agentium_cli --bin agentium` first",
-        deps.display(),
-        uplifted.display()
+    bin_testing::worktree_bin(
+        Path::new(env!("CARGO_BIN_EXE_agentium")),
+        "agentium_cli",
+        is_current_build,
     )
-}
-
-/// A `deps/agentium-<hash>` runnable executable — the sibling of the
-/// `.d`/`.rmeta`/`.o` files cargo drops next to it under the same stem.
-///
-/// The binary is extensionless on unix but carries [`std::env::consts::EXE_SUFFIX`]
-/// on Windows, so strip that first and reject a dot only in what remains: matching
-/// on the raw name would throw `agentium-<hash>.exe` out with the build artifacts
-/// and leave the search with no candidate at all.
-fn is_agentium_exe(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    let Some(stem) = name.strip_suffix(std::env::consts::EXE_SUFFIX) else {
-        return false;
-    };
-    stem.starts_with("agentium-") && !stem.contains('.') && path.is_file()
-}
-
-/// Cargo's dep-info (`agentium-<hash>.d`) names its target by absolute path through
-/// the *building* worktree's `target` symlink, so ours begin with this worktree's
-/// own `deps` dir. (A hash shared with a sibling means byte-identical source, so a
-/// miss here is never wrong — just deferred to an owned twin or the fallback.)
-fn built_in_this_worktree(bin: &Path, deps: &Path) -> bool {
-    let Ok(depinfo) = std::fs::read_to_string(bin.with_extension("d")) else {
-        return false;
-    };
-    depinfo
-        .lines()
-        .next()
-        .is_some_and(|first| first.starts_with(&*deps.to_string_lossy()))
 }
 
 /// A current build lists both the `spawn` command and its `--wait` flag in its
