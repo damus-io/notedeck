@@ -9,17 +9,22 @@
 //! result draws without waiting for input — the same shape as Dave's
 //! `git_status`.
 //!
-//! Results are cached per [`ReviewSource`] for the life of the app, parsed into a
-//! [`GitPatch`] once on the worker, so stepping between a card's records (or
-//! backing out and in again) never re-runs git. A failed load stays cached too,
-//! until the pane asks to [`retry`](ReviewLoader::retry) it.
+//! Results are cached per [`ReviewSource`], parsed into a [`GitPatch`] once on
+//! the worker, so stepping between a card's records (or backing out and in
+//! again) doesn't re-run git. A cached load goes stale by [`stale_in`]: a failed
+//! one after [`FAILED_BACKOFF`] (a refused ssh is often back a moment later), a
+//! trailer search whenever the pane is re-opened (a rebase moves the commit it
+//! finds, and nothing on the card changes to say so), and every settled load of
+//! a card once that card's review records change. A record's own load is
+//! otherwise kept: the record pins its sha. The pane can still ask to
+//! [`retry`](ReviewLoader::retry) a load by hand.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use headway::event::ReviewFields;
+use headway::event::{ReviewFields, ReviewView};
 use headway::git::{self, CommitPatch, Found, GitError, ResolveCtx, Resolved};
 use nostrdb_net::NoteId;
 use notedeck::{Localization, Waker};
@@ -31,14 +36,26 @@ const MAX_PATCH_BYTES: usize = 4 << 20;
 /// How long one `git fetch` from another host may take (as `headway diff`).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long a failed load is shown before the pane starts it again on its own.
+const FAILED_BACKOFF: Duration = Duration::from_secs(30);
+
 /// What a load resolves: one review record, or — for a card with none — the
 /// card's `Headway:` trailer. The cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ReviewSource {
-    /// The review record with this note id.
-    Record(NoteId),
+    /// The review record `record`, on card `card`.
+    Record { card: NoteId, record: NoteId },
     /// The newest commit carrying this card's `Headway:` trailer.
     Trailer(NoteId),
+}
+
+impl ReviewSource {
+    /// The card this load belongs to.
+    fn card(self) -> NoteId {
+        match self {
+            Self::Record { card, .. } | Self::Trailer(card) => card,
+        }
+    }
 }
 
 /// Everything a load needs, owned so it can move onto the worker thread.
@@ -63,6 +80,81 @@ pub(crate) enum ReviewLoad {
     Ready(Box<LoadedReview>),
     /// git failed; the pane shows the command and git's stderr verbatim.
     Failed(GitError),
+}
+
+impl ReviewLoad {
+    /// Which of the three states this is, for [`stale_in`].
+    fn kind(&self) -> LoadKind {
+        match self {
+            Self::Pending { .. } => LoadKind::Pending,
+            Self::Ready(_) => LoadKind::Ready,
+            Self::Failed(_) => LoadKind::Failed,
+        }
+    }
+}
+
+/// A [`ReviewLoad`]'s state without its payload, so the staleness decision is
+/// a pure function tests can drive without a worker or a patch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadKind {
+    Pending,
+    Ready,
+    Failed,
+}
+
+/// A cached load and when it settled (when it started, while pending).
+struct CachedLoad {
+    load: ReviewLoad,
+    at: Instant,
+}
+
+/// Enough of a card's review records to notice they changed, without keeping
+/// them: records are append-only and sorted newest first, so a new one changes
+/// the count and the head, and a collapse of duplicates changes the count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecordSet {
+    len: usize,
+    newest: Option<NoteId>,
+}
+
+impl RecordSet {
+    /// The fingerprint of `reviews` (a card's records, newest first).
+    pub(crate) fn of(reviews: &[ReviewView]) -> Self {
+        Self {
+            len: reviews.len(),
+            newest: reviews.first().map(|r| r.id),
+        }
+    }
+}
+
+/// How long until `source`'s cached load, of `kind` and settled at `at`, goes
+/// stale: `Some(ZERO)` if it already is, `Some(d)` if it will be in `d` (so the
+/// pane can schedule the frame that restarts it), `None` if time alone never
+/// makes it stale. `reopened` is whether the pane was just opened onto it.
+///
+/// - Pending never is — restarting it would run a second fetch alongside the
+///   first.
+/// - Failed is after [`FAILED_BACKOFF`], so a flaky ssh recovers on its own.
+/// - Ready from a trailer search is on re-open: nothing on the card changes
+///   when the commit it found is rebased, so the only cue is the reviewer
+///   coming back. Not on a timer, which would yank a diff away mid-read.
+/// - Ready from a record never is: the record names its sha, and a new
+///   record is caught by [`ReviewLoader::note_records`] instead.
+fn stale_in(
+    kind: LoadKind,
+    source: ReviewSource,
+    at: Instant,
+    now: Instant,
+    reopened: bool,
+) -> Option<Duration> {
+    match (kind, source) {
+        (LoadKind::Pending, _) => None,
+        (LoadKind::Failed, _) => {
+            Some(FAILED_BACKOFF.saturating_sub(now.saturating_duration_since(at)))
+        }
+        (LoadKind::Ready, ReviewSource::Trailer(_)) => reopened.then_some(Duration::ZERO),
+        (LoadKind::Ready, ReviewSource::Record { .. }) => None,
+    }
 }
 
 /// A commit the worker found and read, with the view state its diff scrolls in.
@@ -92,7 +184,9 @@ struct Fetched {
 pub(crate) struct ReviewLoader {
     /// This host's name, looked up on first use.
     local_host: Option<String>,
-    loads: HashMap<ReviewSource, ReviewLoad>,
+    loads: HashMap<ReviewSource, CachedLoad>,
+    /// Each card's records as last seen, to drop its loads when they change.
+    records: HashMap<NoteId, RecordSet>,
     tx: Sender<(ReviewSource, Result<Fetched, GitError>)>,
     rx: Receiver<(ReviewSource, Result<Fetched, GitError>)>,
 }
@@ -103,6 +197,7 @@ impl Default for ReviewLoader {
         Self {
             local_host: None,
             loads: HashMap::new(),
+            records: HashMap::new(),
             tx,
             rx,
         }
@@ -130,7 +225,11 @@ impl ReviewLoader {
         }
         let local_host = self.local_host().to_string();
         let note = pending_note(job.record.as_ref(), &local_host);
-        self.loads.insert(source, ReviewLoad::Pending { note });
+        let pending = CachedLoad {
+            load: ReviewLoad::Pending { note },
+            at: Instant::now(),
+        };
+        self.loads.insert(source, pending);
 
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -145,9 +244,47 @@ impl ReviewLoader {
     /// Drop `source`'s result so the next frame starts it again. A no-op while
     /// it's still pending, so a double-click can't run two fetches at once.
     pub(crate) fn retry(&mut self, source: ReviewSource) {
-        if !matches!(self.loads.get(&source), Some(ReviewLoad::Pending { .. })) {
+        if !matches!(self.loads.get(&source), Some(c) if c.load.kind() == LoadKind::Pending) {
             self.loads.remove(&source);
         }
+    }
+
+    /// Drop `source`'s load if it has gone stale by [`stale_in`], so the frame
+    /// that follows starts it again. Returns how long until it will be stale,
+    /// for the pane to schedule a repaint at, or `None` when only an event
+    /// (a re-open, a new record) could make it so. A map lookup; allocates
+    /// nothing.
+    pub(crate) fn expire(
+        &mut self,
+        source: ReviewSource,
+        now: Instant,
+        reopened: bool,
+    ) -> Option<Duration> {
+        let cached = self.loads.get(&source)?;
+        let left = stale_in(cached.load.kind(), source, cached.at, now, reopened)?;
+        if left.is_zero() {
+            self.loads.remove(&source);
+            return None;
+        }
+        Some(left)
+    }
+
+    /// Record `card`'s review records as `seen` this frame. When they differ
+    /// from the last time the card was seen, every settled load of the card is
+    /// dropped: the picker's indices now point at other records, and a card
+    /// that gained its first record has no use for its trailer search. Pending
+    /// loads are kept (no double fetch); their results land as usual. The first
+    /// sight of a card only remembers it.
+    pub(crate) fn note_records(&mut self, card: NoteId, seen: RecordSet) {
+        let Some(last) = self.records.insert(card, seen) else {
+            return;
+        };
+        if last == seen {
+            return;
+        }
+        self.loads.retain(|source, cached| {
+            source.card() != card || cached.load.kind() == LoadKind::Pending
+        });
     }
 
     /// Take every result the workers have sent since the last frame. Each
@@ -159,13 +296,19 @@ impl ReviewLoader {
                 Ok(fetched) => ReviewLoad::Ready(Box::new(loaded(fetched, i18n))),
                 Err(e) => ReviewLoad::Failed(e),
             };
-            self.loads.insert(source, load);
+            self.loads.insert(
+                source,
+                CachedLoad {
+                    load,
+                    at: Instant::now(),
+                },
+            );
         }
     }
 
     /// `source`'s load, if it has been started.
     pub(crate) fn get_mut(&mut self, source: ReviewSource) -> Option<&mut ReviewLoad> {
-        self.loads.get_mut(&source)
+        self.loads.get_mut(&source).map(|c| &mut c.load)
     }
 }
 
@@ -264,6 +407,124 @@ mod tests {
             "resolving 136ceb9d3bfa…"
         );
         assert!(pending_note(None, "jex0").contains("Headway trailer"));
+    }
+
+    fn id(b: u8) -> NoteId {
+        NoteId::new([b; 32])
+    }
+
+    /// A failed load waits out its backoff (and says how long is left so the
+    /// pane can wake for it), then goes stale; a pending one never does, even
+    /// long past the backoff or on re-open, so no second fetch can start.
+    #[test]
+    fn failed_load_goes_stale_after_backoff_pending_never() {
+        let at = Instant::now();
+        let src = ReviewSource::Trailer(id(1));
+        let failed = |after| stale_in(LoadKind::Failed, src, at, at + after, false);
+        assert_eq!(failed(Duration::ZERO), Some(FAILED_BACKOFF));
+        assert_eq!(
+            failed(Duration::from_secs(10)),
+            Some(FAILED_BACKOFF - Duration::from_secs(10))
+        );
+        assert_eq!(failed(FAILED_BACKOFF), Some(Duration::ZERO));
+        assert_eq!(failed(FAILED_BACKOFF * 5), Some(Duration::ZERO));
+
+        let later = at + FAILED_BACKOFF * 5;
+        assert_eq!(stale_in(LoadKind::Pending, src, at, later, true), None);
+    }
+
+    /// A trailer search is re-run when the pane re-opens and kept otherwise,
+    /// however old; a record's load is kept either way (its sha is pinned).
+    #[test]
+    fn trailer_load_goes_stale_on_reopen_record_load_never() {
+        let at = Instant::now();
+        let later = at + Duration::from_secs(3600);
+        let trailer = ReviewSource::Trailer(id(1));
+        let record = ReviewSource::Record {
+            card: id(1),
+            record: id(2),
+        };
+        assert_eq!(stale_in(LoadKind::Ready, trailer, at, later, false), None);
+        assert_eq!(
+            stale_in(LoadKind::Ready, trailer, at, at, true),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(stale_in(LoadKind::Ready, record, at, later, false), None);
+        assert_eq!(stale_in(LoadKind::Ready, record, at, later, true), None);
+    }
+
+    /// A failed load, backdated past its backoff, is dropped by `expire`; one
+    /// still inside it stays and reports the time left.
+    #[test]
+    fn expire_drops_only_stale_loads() {
+        let mut loader = ReviewLoader::default();
+        let src = ReviewSource::Trailer(id(1));
+        let now = Instant::now();
+        loader.loads.insert(src, failed_at(now));
+        assert_eq!(
+            loader.expire(src, now + Duration::from_secs(1), false),
+            Some(FAILED_BACKOFF - Duration::from_secs(1))
+        );
+        assert!(loader.contains(src));
+        assert_eq!(loader.expire(src, now + FAILED_BACKOFF, false), None);
+        assert!(!loader.contains(src));
+    }
+
+    /// When a card's records change, its settled loads go and its pending one
+    /// stays; another card's loads are untouched, and the first sight of a
+    /// card (or an unchanged one) drops nothing.
+    #[test]
+    fn note_records_drops_the_cards_settled_loads_on_change() {
+        let mut loader = ReviewLoader::default();
+        let now = Instant::now();
+        let (card, other) = (id(1), id(9));
+        let old = ReviewSource::Record {
+            card,
+            record: id(2),
+        };
+        let trailer = ReviewSource::Trailer(card);
+        let pending = ReviewSource::Record {
+            card,
+            record: id(3),
+        };
+        let theirs = ReviewSource::Trailer(other);
+        for src in [old, trailer, theirs] {
+            loader.loads.insert(src, failed_at(now));
+        }
+        let note = "resolving…".to_string();
+        let load = ReviewLoad::Pending { note };
+        loader.loads.insert(pending, CachedLoad { load, at: now });
+
+        let one = RecordSet {
+            len: 1,
+            newest: Some(id(2)),
+        };
+        loader.note_records(card, one);
+        loader.note_records(card, one);
+        assert_eq!(loader.loads.len(), 4, "first sight and no change keep all");
+
+        loader.note_records(
+            card,
+            RecordSet {
+                len: 2,
+                newest: Some(id(3)),
+            },
+        );
+        assert!(!loader.contains(old));
+        assert!(!loader.contains(trailer));
+        assert!(loader.contains(pending));
+        assert!(loader.contains(theirs));
+    }
+
+    fn failed_at(at: Instant) -> CachedLoad {
+        let err = GitError {
+            command: "fetch".to_string(),
+            stderr: "ssh: connect to host jex0: Connection refused".to_string(),
+        };
+        CachedLoad {
+            load: ReviewLoad::Failed(err),
+            at,
+        }
     }
 
     /// Short shas are cut to 12, shorter strings pass through.

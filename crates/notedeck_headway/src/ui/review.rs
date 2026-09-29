@@ -13,10 +13,11 @@ use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
+use std::time::Instant;
 
 use super::BoardUiState;
 use super::widgets::{count_badge, detail_heading};
-use crate::review::{ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
+use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
 /// its records is picked, and the loader its commits come through.
@@ -33,7 +34,10 @@ pub(crate) struct ReviewUi {
     /// The open card's `headway:<board>/<word-id>`, formatted once per card
     /// rather than every frame.
     card_ref: String,
-    /// The loads, cached per record for the life of the app.
+    /// The pane was opened (or moved to another card) since it last drew, so
+    /// its trailer search is re-run (see [`ReviewLoader::expire`]).
+    reopened: bool,
+    /// The loads, cached per record until they go stale.
     loader: ReviewLoader,
 }
 
@@ -46,12 +50,13 @@ impl ReviewUi {
     /// Seed the open review from the nav route (see
     /// [`BoardUiState::set_review_card`]).
     pub(crate) fn set_card(&mut self, card: Option<NoteId>) {
+        self.reopened |= card.is_some() && card != self.card;
         self.card = card;
     }
 
     /// Open `card`'s review on its `record`-th record (newest first).
     pub(crate) fn open(&mut self, card: NoteId, record: usize) {
-        self.card = Some(card);
+        self.set_card(Some(card));
         self.record = record;
     }
 
@@ -84,13 +89,25 @@ pub(super) fn review_pane_ui(
         review.ref_for = Some(card.id);
         review.card_ref = headway::wordid::card_ref(&view.id, card.id.bytes());
     }
+    review
+        .loader
+        .note_records(card.id, RecordSet::of(&card.reviews));
     review.record = review.record.min(card.reviews.len().saturating_sub(1));
     let record = card.reviews.get(review.record);
 
     let source = match record {
-        Some(r) => ReviewSource::Record(r.id),
+        Some(r) => ReviewSource::Record {
+            card: card.id,
+            record: r.id,
+        },
         None => ReviewSource::Trailer(card.id),
     };
+    let reopened = std::mem::take(&mut review.reopened);
+    if let Some(left) = review.loader.expire(source, Instant::now(), reopened) {
+        // A failed load restarts on its own once its backoff is up, so draw
+        // the frame that does it even if nothing else moves.
+        ui.ctx().request_repaint_after(left);
+    }
     start_load(
         app_ctx,
         view,
@@ -427,5 +444,28 @@ pub(super) fn review_section_ui(
     }
     if let Some(record) = open {
         state.review.open(card_id, record);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opening the pane, or moving it to another card, flags a re-open once;
+    /// the route re-seeding the same card every frame, or closing it, doesn't.
+    #[test]
+    fn set_card_flags_a_reopen_only_on_a_change_to_a_card() {
+        let (a, b) = (NoteId::new([1; 32]), NoteId::new([2; 32]));
+        let mut review = ReviewUi::default();
+        review.set_card(Some(a));
+        assert!(std::mem::take(&mut review.reopened));
+        review.set_card(Some(a));
+        assert!(!review.reopened);
+        review.set_card(None);
+        assert!(!review.reopened);
+        review.open(a, 0);
+        assert!(std::mem::take(&mut review.reopened));
+        review.set_card(Some(b));
+        assert!(review.reopened);
     }
 }
