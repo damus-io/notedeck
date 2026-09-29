@@ -20,19 +20,23 @@ command reference; the board flows
   (`.claude/skills/agentium/SKILL.md`) for the fallback when that's unset.
 - **Task breakdown**: Use one card per unit of work; `desc`/`label` for detail.
 - **When done with the work**: Always commit your changes (see Committing
-  below), then comment on the card with the commit hash **and its title** so the
-  reference survives a rebase (which changes the hash but not the title) and
-  future iterations can see what's already been done: `headway comment <card>
-  "committed <hash> (\"<title>\"): ..."`. Grab the hash-and-title form with
-  `git --no-pager show -s --pretty=fixes <commit>` (it prints `Fixes: <hash>
-  ("<title>")`; reuse the `<hash> ("<title>")` part). If you are a Dave agentic
-  session, also include your own `agentium:` session ref beside the hash (e.g.
-  `committed <hash> ("<title>") (agentium:<word-id>): ...`) so a
-  reviewer or future iteration can jump straight to the session transcript. Find
-  your ref with `echo "$AGENTIUM_SESSION"` — see the `agentium` skill
-  (`.claude/skills/agentium/SKILL.md`) for the fallback when that's unset.
-  This comment is read in the context of code review and follow-up work, so use
-  it to note anything specific that should be tested or interesting things worth
+  below), then record the commit on the card with `headway review <card>`, run
+  from the checkout (add `--explainer <url>` when there is an explainer page).
+  It captures the commit, branch, host, repo path and your `agentium:` ref from
+  git and `$AGENTIUM_SESSION`, so headway can later show the diff; see `headway
+  review --help`. Then comment on the card with the commit hash **and its
+  title** so the reference survives a rebase (which changes the hash but not the
+  title) and future iterations can see what's already been done: `headway
+  comment <card> "committed <hash> (\"<title>\"): ..."`. Grab the hash-and-title
+  form with `git --no-pager show -s --pretty=fixes <commit>` (it prints `Fixes:
+  <hash> ("<title>")`; reuse the `<hash> ("<title>")` part). If you are a Dave
+  agentic session, also include your own `agentium:` session ref beside the hash
+  (e.g. `committed <hash> ("<title>") (agentium:<word-id>): ...`) so a reviewer
+  or future iteration can jump straight to the session transcript. Find your ref
+  with `echo "$AGENTIUM_SESSION"` — see the `agentium` skill
+  (`.claude/skills/agentium/SKILL.md`) for the fallback when that's unset. This
+  comment is read in the context of code review and follow-up work, so use it to
+  note anything specific that should be tested or interesting things worth
   flagging beyond the commit message that would help someone reviewing the
   implementation. Then move the card to In Review so the change can be tested:
   `headway move <card> --col in-review`. Don't leave finished work uncommitted

@@ -188,6 +188,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `seq <card> <pos> [--in <c>]` | Position a card in a container's work-order (see Work order) |
 | `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
+| `review <card> [--explainer <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION` |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |
@@ -244,6 +245,11 @@ the blocker for `block`/`unblock`; `--to` is the target board for
 `link`/`move-board` and the partner card for `relate`/`unrelate`; `--in <c>` is
 the container for `seq`/`next`. `headway <command> --help` lists a command's own
 flags without the rest.
+
+When a card's work is committed, record it with `headway review <card>` from the
+checkout (plus `--explainer <url>` when there is one) before the done comment. The
+record is the machine-readable twin of that comment: headway reads it to show the
+commit's diff. `show <card>` lists a card's records under **review**.
 
 When commenting a finished card's commit hash, a Dave agentic session should also
 quote its own `agentium:` session ref (from `$AGENTIUM_SESSION`) beside the hash —
