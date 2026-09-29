@@ -106,6 +106,9 @@ Back_to_the_chat_ea20 = Back to the chat
 # Profile banner URL field label
 Banner_52ef = Banner
 
+# Diff placeholder for a changed binary file
+Binary_file_not_shown_aa41 = Binary file not shown
+
 # Broadcast the note to all connected relays
 Broadcast_fe43 = Broadcast
 
@@ -334,6 +337,9 @@ Esc_cancels_80f8 = Esc cancels.
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = Extreme
 
+# Diff placeholder for a file moved with identical content
+File_renamed_without_changes_dd4e = File renamed without changes
+
 # Dave which-key tooltip: switch to the first session in the list
 First_session_fea9 = First session
 
@@ -537,6 +543,9 @@ Next_session_0a8f = Next session
 
 # Shown when user has no contacts to display
 No_contacts_yet_cd10 = No contacts yet
+
+# Diff placeholder for a file whose only change is its mode
+No_content_changes_65b9 = No content changes
 
 # Empty state text when the user has no conversations
 No_conversations_yet_52c0 = No conversations yet
@@ -998,6 +1007,14 @@ Got__count__results_for___query_85fb =
     { $count ->
         [one] Got {$count} result for '{$query}'
        *[other] Got {$count} results for '{$query}'
+    }
+
+
+# Summary line above a commit's diff: how many files it touches
+count__files_changed_23c6 =
+    { $count ->
+        [one] {$count} file changed
+       *[other] {$count} files changed
     }
 
 

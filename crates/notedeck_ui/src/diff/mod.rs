@@ -6,6 +6,15 @@
 //! where the lines came from: callers describe each line as a borrowed
 //! [`DiffRow`], numbering them with [`DiffNumbering`] when the numbers are
 //! sequential from one start line.
+//!
+//! On top of it, [`GitPatch`] parses a multi-file git patch and
+//! [`git_patch_ui`] draws one, virtualized, with collapsible files.
+
+mod patch;
+mod patch_view;
+
+pub use patch::{FilePatch, FileStatus, GitPatch, Hunk, LineKind, PatchLine, Span};
+pub use patch_view::{git_patch_ui, GitPatchState, PatchScroll};
 
 use crate::markdown::{tokenize_code, SandCodeTheme};
 use egui::text::LayoutJob;

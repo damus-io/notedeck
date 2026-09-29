@@ -1,0 +1,19 @@
+diff --git a/a.txt b/b.txt
+similarity index 100%
+rename from a.txt
+rename to b.txt
+diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"
+index 587be6b4c3f9..975fbec8256d 100644
+--- "a/caf\303\251.txt"
++++ "b/caf\303\251.txt"
+@@ -1 +1 @@
+-x
++y
+diff --git a/q.sql b/q.sql
+index dd477bed2c9a..d4dc651bd42f 100644
+--- a/q.sql
++++ b/q.sql
+@@ -1,2 +1,2 @@
+--- header
+ select 1;
++++ plus
