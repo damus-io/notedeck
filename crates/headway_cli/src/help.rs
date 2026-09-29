@@ -244,6 +244,43 @@ three spellings are equivalent.",
         ],
     },
     Command {
+        name: "review",
+        group: Group::Cards,
+        summary: "Record a commit for review on a card (host, path, session, explainer)",
+        usage: &["review <card> [--commit <rev>] [--explainer <url>] [--agentium <ref>]"],
+        details: "\
+Appends a review record to the card: the commit's full sha and subject,
+the branch, this host's name, the repo toplevel and the repo identity
+(its root commit), all read from git in --repo-dir. The agentium ref
+comes from --agentium, else $AGENTIUM_SESSION when it is one. A card
+can hold several records, one per commit and host. Refuses outside a
+git repo or when the rev doesn't resolve; a dirty tree is fine, since
+the commit is what's recorded. Prints the recorded fields.",
+        options: &[
+            ("--commit <rev>", "The commit to record [default: HEAD]"),
+            (
+                "--explainer <url>",
+                "URL of the explainer page for the work",
+            ),
+            (
+                "--agentium <ref>",
+                "The session behind the work, as agentium:<word-id> [default: $AGENTIUM_SESSION]",
+            ),
+            (
+                "--remote <url>",
+                "An explicit fetch URL for the commit, overriding the host-derived one",
+            ),
+            (
+                "--repo-dir <dir>",
+                "Where to run git [default: the current directory]",
+            ),
+        ],
+        examples: &[
+            "headway review headway:headway/report-raven-expand --explainer https://claude.ai/artifact/...",
+            "headway review headway:headway/report-raven-expand --commit abc123 --repo-dir ~/src/notedeck",
+        ],
+    },
+    Command {
         name: "delete",
         group: Group::Cards,
         summary: "Remove a card (a reversible tombstone)",

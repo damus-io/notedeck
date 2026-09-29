@@ -4,7 +4,9 @@
 use nostrdb_net::NoteId;
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView, CommentView, Container, Priority, resolve_card};
+use headway::event::{
+    self, BoardView, CardView, CommentView, Container, Priority, ReviewView, resolve_card,
+};
 use headway::store::{self, DeclineReason};
 use headway::{traversal, wordid};
 
@@ -273,6 +275,13 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
     print_edges(view, "blocks", &card.blocks);
     print_related(view, &card.related);
 
+    if !card.reviews.is_empty() {
+        println!("\nreview ({})", card.reviews.len());
+        for r in &card.reviews {
+            print_review(r);
+        }
+    }
+
     if !card.comments.is_empty() {
         println!("\ncomments ({})", card.comments.len());
         for c in &card.comments {
@@ -304,6 +313,41 @@ fn print_comment(c: &CommentView) {
         } else {
             println!("        {line}");
         }
+    }
+}
+
+/// Print one review record in the card-detail view, newest first as
+/// [`CardView::reviews`] holds them: the short sha and subject, then where the
+/// commit lives (`host:path (branch)`), the session and the explainer, each on
+/// its own line and only when recorded.
+fn print_review(r: &ReviewView) {
+    let f = &r.fields;
+    let sha = f
+        .commit
+        .as_deref()
+        .map_or("-------", |c| c.get(..7).unwrap_or(c));
+    println!(
+        "    {sha}  {}  {}",
+        f.title.as_deref().unwrap_or(""),
+        nostrdb_net::relay::sync::dim(&headway::fmt::rel_time(r.created_at)),
+    );
+    let place = match (f.host.as_deref(), f.path.as_deref()) {
+        (Some(host), Some(path)) => Some(format!("{host}:{path}")),
+        (Some(one), None) | (None, Some(one)) => Some(one.to_string()),
+        (None, None) => None,
+    };
+    if let Some(place) = place {
+        let branch = f
+            .branch
+            .as_deref()
+            .map_or(String::new(), |b| format!(" ({b})"));
+        println!("        {place}{branch}");
+    }
+    for line in [f.agentium.as_deref(), f.explainer.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        println!("        {line}");
     }
 }
 

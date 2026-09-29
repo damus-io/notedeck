@@ -138,6 +138,10 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
                 reply_to,
             }
         }
+        Command::Review { card, review } => BoardAction::AddReview {
+            card: resolve_card(view, &card)?,
+            review,
+        },
         Command::Delete { card } => BoardAction::DeleteCard {
             card: resolve_card(view, &card)?,
         },

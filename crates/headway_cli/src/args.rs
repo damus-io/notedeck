@@ -6,10 +6,12 @@ use std::env;
 
 use nostrdb_net::Pubkey;
 
+use headway::event::ReviewFields;
 use headway::store;
 
 use nostrdb_net::relay::sync::Result;
 
+use crate::review::{self, ReviewFlags};
 use crate::{APP, help};
 
 /// A parsed command. Card arguments are still raw strings here; they're resolved
@@ -124,6 +126,13 @@ pub(crate) enum Command {
         body: String,
         /// A comment on the same card to thread this reply under.
         reply_to: Option<String>,
+    },
+    /// Record a review record on a card: a commit plus where it lives (host,
+    /// path, repo) and the session and explainer behind it. The fields are
+    /// already gathered from git and the environment (see [`review::gather`]).
+    Review {
+        card: String,
+        review: ReviewFields,
     },
     Delete {
         card: String,
@@ -255,6 +264,7 @@ impl Command {
             | Command::Due { card, .. }
             | Command::Estimate { card, .. }
             | Command::Comment { card, .. }
+            | Command::Review { card, .. }
             | Command::Delete { card }
             | Command::Archive { card }
             | Command::Restore { card }
@@ -368,6 +378,7 @@ impl Cli {
         // `next` flags.
         let mut ready = false;
         let mut count: Option<usize> = None;
+        let mut review = ReviewFlags::default();
         let mut positionals: Vec<String> = Vec::new();
         // `-h`/`--help` is answered after the loop, once the positionals say
         // *which* help — the overview, or one command's page.
@@ -401,6 +412,11 @@ impl Cli {
                 "--last" => seq.last = true,
                 "--in" => seq.container = Some(value("--in")?),
                 "--ready" => ready = true,
+                "--commit" => review.commit = Some(value("--commit")?),
+                "--explainer" => review.explainer = Some(value("--explainer")?),
+                "--agentium" => review.agentium = Some(value("--agentium")?),
+                "--remote" => review.remote = Some(value("--remote")?),
+                "--repo-dir" => review.repo_dir = Some(value("--repo-dir")?),
                 "-n" | "--count" => {
                     count = Some(value("-n")?.parse().map_err(|_| "-n must be a number")?)
                 }
@@ -476,6 +492,7 @@ impl Cli {
             seq,
             ready,
             count,
+            review,
         )?;
 
         // A card selector like `headway:commerce/purse-metal-toilet` already names
@@ -566,6 +583,7 @@ fn parse_command(
     seq: SeqFlags,
     ready: bool,
     count: Option<usize>,
+    review: ReviewFlags,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
     Ok(match name {
@@ -669,6 +687,12 @@ fn parse_command(
             card: card()?,
             body: joined(rest, 1, name)?,
             reply_to,
+        },
+        // Gathered here, before any relay work, so a bad rev or a directory
+        // outside a repo fails fast (see `review::gather`).
+        "review" => Command::Review {
+            card: card()?,
+            review: review::gather(review)?,
         },
         "delete" => Command::Delete { card: card()? },
         "archive" => Command::Archive { card: card()? },
@@ -811,6 +835,7 @@ mod tests {
                 SeqFlags::default(),
                 false,
                 None,
+                ReviewFlags::default(),
             );
             // A command that wants a flag we didn't pass errors about *that*;
             // only the fallback arm means the name has no parser at all.

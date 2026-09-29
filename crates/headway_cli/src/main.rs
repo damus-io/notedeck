@@ -15,6 +15,7 @@ mod boards;
 mod edit;
 mod help;
 mod output;
+mod review;
 mod sync;
 
 use std::env;
@@ -437,6 +438,12 @@ async fn run() -> Result<()> {
             // existing ids first so we can pick it out. Other edits act on a card
             // the caller already named, so there's nothing new to surface.
             let added = matches!(edit, Command::Add { .. });
+            // `review` echoes what it recorded (below), so keep a copy before
+            // `build_action` consumes the command.
+            let recorded = match &edit {
+                Command::Review { review, .. } => Some(review.clone()),
+                _ => None,
+            };
             let before: std::collections::HashSet<String> = if added {
                 event::all_cards(&view).map(|c| c.id.hex()).collect()
             } else {
@@ -505,6 +512,9 @@ async fn run() -> Result<()> {
                     "ok ({n} events){ref_suffix}{}",
                     nostrdb_net::relay::sync::offline_note(&relay)
                 );
+                if let Some(review) = &recorded {
+                    review::print_recorded(review);
+                }
             }
         }
     }

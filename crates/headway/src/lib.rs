@@ -12,11 +12,14 @@
 //!   the graph view's layout and rendering. No egui.
 //! - [`store`] — sign + ingest into a local nostrdb, board seeding, and
 //!   [`store::apply`], which turns a [`store::BoardAction`] into events.
+//! - [`git`] — thin `git` shell-outs (commit, toplevel, repo identity) for
+//!   review records.
 //! - [`teams`] — the joined-shared-board roster: which SNS channels this account
 //!   holds keys for, so both front ends fold and seal the same shared boards.
 
 pub mod event;
 pub mod fmt;
+pub mod git;
 pub mod graph;
 pub mod store;
 /// Backstop for the tests' nostrdb-ingest waits (see

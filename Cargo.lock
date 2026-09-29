@@ -3649,6 +3649,7 @@ dependencies = [
  "bech32",
  "enostr",
  "futures-util",
+ "gethostname",
  "headway",
  "hex",
  "nostrdb",
