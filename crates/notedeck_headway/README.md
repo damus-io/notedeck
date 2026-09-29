@@ -176,7 +176,8 @@ The structured "what finished this card" metadata an agent records when it
 finishes work, read by the review queue (`headway:headway/mom-charge-attack`).
 Every tag but `e` is optional; a card collects one record per commit and host,
 shown newest first (`CardView::reviews`), and gated by the same authority rule
-as the overlays below.
+as the overlays below. How the queue resolves and fetches the commit, its keys,
+and what to do when a fetch fails: [docs/review-queue.md](docs/review-queue.md).
 
 ```jsonc
 {

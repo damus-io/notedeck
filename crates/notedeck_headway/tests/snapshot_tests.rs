@@ -2085,6 +2085,347 @@ fn review_queue_with_nothing_in_review_does_not_open() {
     assert_eq!(queue_pushes_and_last_back(&mut harness).0, 0);
 }
 
+/// Where the review-queue snapshot's fixture repo lives. A fixed path, not a
+/// tempdir, because the pane prints it ("found locally in …") and a random
+/// path would change the pixels every run. Spelled `/tmp` rather than
+/// `temp_dir()` for the same reason: nix shells point `TMPDIR` elsewhere.
+/// Windows has no `/tmp`, and snapshots only render on Linux, so its
+/// behavioural run takes the temp dir.
+fn review_fixture_dir() -> String {
+    if cfg!(unix) {
+        "/tmp/headway-review-fixture/notedeck".to_string()
+    } else {
+        std::env::temp_dir()
+            .join("headway-review-fixture")
+            .join("notedeck")
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// The host the queue's records say they were made on: not this one, so the
+/// pane has to find the commit in a checkout of the same repo, as it would a
+/// commit made on another machine. Fixed, since the pane prints it.
+const REVIEW_HOST: &str = "jex0";
+
+/// The review queue fixture: where its repo is and the commit each In Review
+/// card records.
+struct ReviewFixture {
+    /// The repo, at [`review_fixture_dir`].
+    dir: String,
+    /// Modifies `src/queue.rs` and adds `src/keys.rs` — the snapshot's diff.
+    queue: String,
+    /// Touches `src/keys.rs` again, for the queue's second card.
+    verdicts: String,
+    /// The root commit: the repo identity the records carry.
+    root: String,
+}
+
+/// Commit everything in `dir` as `subject`, dated `at` (unix seconds) for
+/// author and committer, by a fixed author, and return the sha. Pinning all of
+/// it makes the sha, and the byline the pane prints, the same on every machine.
+///
+/// The offset is deliberately not UTC: newer gits print a UTC strict-ISO date
+/// as `Z` and older ones as `+00:00`, which would move the byline's pixels
+/// with the git version.
+fn dated_commit(dir: &std::path::Path, subject: &str, at: u64) -> String {
+    let date = format!("@{at} -0700");
+    fixture_git(dir, &["add", "."]);
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=Headway Tester",
+            "-c",
+            "user.email=tester@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            subject,
+        ])
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git commit: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fixture_git(dir, &["rev-parse", "HEAD"])
+}
+
+/// Build the review fixture's three commits in a fresh repo at `dir`.
+fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
+    let write = |file: &str, body: &str| {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().expect("file has a parent")).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    fixture_git(dir, &["init", "-q", "-b", "headway"]);
+
+    write(
+        "src/queue.rs",
+        "/// The cards a review walks, in column order.\n\
+         pub struct ReviewQueue {\n    \
+             cards: Vec<NoteId>,\n    \
+             index: usize,\n\
+         }\n",
+    );
+    let root = dated_commit(dir, "headway: review queue skeleton", SEED_AT - 7200);
+
+    write(
+        "src/queue.rs",
+        "/// The cards a review walks, in column order.\n\
+         pub struct ReviewQueue {\n    \
+             cards: Vec<NoteId>,\n    \
+             index: usize,\n\
+         }\n\
+         \n\
+         impl ReviewQueue {\n    \
+             /// The card on show, if the queue has any.\n    \
+             pub fn current(&self) -> Option<NoteId> {\n        \
+                 self.cards.get(self.index).copied()\n    \
+             }\n\
+         \n    \
+             /// Step one card forward, stopping at the last.\n    \
+             pub fn next(&mut self) {\n        \
+                 self.index = (self.index + 1).min(self.cards.len().saturating_sub(1));\n    \
+             }\n\
+         }\n",
+    );
+    write(
+        "src/keys.rs",
+        "/// What a key does in the review queue.\n\
+         pub enum QueueKey {\n    \
+             Next,\n    \
+             Prev,\n    \
+             Leave,\n\
+         }\n\
+         \n\
+         /// Map a bare key to its queue action.\n\
+         pub fn queue_key(key: char) -> Option<QueueKey> {\n    \
+             match key {\n        \
+                 'n' | ']' => Some(QueueKey::Next),\n        \
+                 'p' | '[' => Some(QueueKey::Prev),\n        \
+                 'q' => Some(QueueKey::Leave),\n        \
+                 _ => None,\n    \
+             }\n\
+         }\n",
+    );
+    let queue = dated_commit(
+        dir,
+        "headway: review queue over In Review cards (R, n/p)",
+        SEED_AT - 3600,
+    );
+
+    write(
+        "src/keys.rs",
+        "/// What a key does in the review queue.\n\
+         pub enum QueueKey {\n    \
+             Next,\n    \
+             Prev,\n    \
+             Done,\n    \
+             SendBack,\n    \
+             Leave,\n\
+         }\n",
+    );
+    let verdicts = dated_commit(
+        dir,
+        "headway: D and X verdicts in the review queue",
+        SEED_AT,
+    );
+
+    ReviewFixture {
+        dir: dir.to_string_lossy().into_owned(),
+        queue,
+        verdicts,
+        root,
+    }
+}
+
+/// The review fixture repo at [`review_fixture_dir`], built if it isn't there.
+///
+/// Every commit is fully pinned, so any build produces the same shas. That
+/// lets concurrent runs (sibling worktrees share `/tmp`) settle on one repo
+/// without a lock: each builds its own copy in a tempdir and renames it into
+/// place, and a run that loses the rename keeps the winner's identical repo.
+/// A repo left there by an older version of this fixture has a different head
+/// and is replaced.
+fn review_fixture() -> ReviewFixture {
+    let dir = review_fixture_dir();
+    let fixed = std::path::Path::new(&dir);
+    let parent = fixed.parent().expect("fixture has a parent");
+    std::fs::create_dir_all(parent).unwrap();
+    let build = tempfile::tempdir_in(parent).expect("build dir");
+    let built = build.path().join("notedeck");
+    std::fs::create_dir(&built).unwrap();
+    let fixture = ReviewFixture {
+        dir: dir.clone(),
+        ..build_review_fixture(&built)
+    };
+
+    let head = |dir: &std::path::Path| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    if head(fixed).as_deref() == Some(fixture.verdicts.as_str()) {
+        return fixture;
+    }
+    if fixed.exists() {
+        std::fs::remove_dir_all(fixed).expect("remove a stale review fixture");
+    }
+    if std::fs::rename(&built, fixed).is_err() {
+        // Another run renamed its copy in first; it's the same repo.
+        assert_eq!(
+            head(fixed).as_deref(),
+            Some(fixture.verdicts.as_str()),
+            "a concurrent run left a different review fixture at {dir}"
+        );
+    }
+    fixture
+}
+
+/// The review queue's two cards, in queue order.
+const QUEUE_CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+
+/// The explainer the first queue card's record links.
+const QUEUE_EXPLAINER: &str = "https://claude.ai/artifact/review-queue-explainer";
+
+/// The agentic session the first queue card's record names.
+const QUEUE_SESSION: &str = "agentium:power-baby-metal";
+
+/// Seed the review queue snapshot's board: [`QUEUE_CARDS`] moved into In
+/// Review, each with a record from [`REVIEW_HOST`] naming a fixture commit
+/// (the first with an explainer and an agentium session, as an `autowork`
+/// done step records), plus a record on the Done card saying this host has a
+/// checkout of the repo at [`review_fixture_dir`] — which is how the pane finds
+/// the other host's commits here without a fetch.
+fn seed_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
+    let local = headway::git::host_name().expect("this host has a name");
+    let done = harness_card_id(harness, "Scaffold the Headway app crate");
+    apply_demo_action(
+        harness,
+        store::BoardAction::AddReview {
+            card: done,
+            review: event::ReviewFields {
+                commit: Some(fixture.root.clone()),
+                title: Some("headway: review queue skeleton".to_string()),
+                branch: Some("headway".to_string()),
+                host: Some(local),
+                path: Some(fixture.dir.clone()),
+                repo: Some(fixture.root.clone()),
+                ..Default::default()
+            },
+        },
+    );
+
+    let records = [
+        (
+            &fixture.queue,
+            "headway: review queue over In Review cards (R, n/p)",
+            Some(QUEUE_SESSION),
+            Some(QUEUE_EXPLAINER),
+        ),
+        (
+            &fixture.verdicts,
+            "headway: D and X verdicts in the review queue",
+            None,
+            None,
+        ),
+    ];
+    for (title, (sha, subject, session, explainer)) in QUEUE_CARDS.iter().zip(records) {
+        let card = harness_card_id(harness, title);
+        move_to_in_review(harness, card);
+        apply_demo_action(
+            harness,
+            store::BoardAction::AddReview {
+                card,
+                review: event::ReviewFields {
+                    commit: Some(sha.clone()),
+                    title: Some(subject.to_string()),
+                    branch: Some("headway".to_string()),
+                    host: Some(REVIEW_HOST.to_string()),
+                    path: Some("/home/jb55/dev/notedeck".to_string()),
+                    repo: Some(fixture.root.clone()),
+                    agentium: session.map(str::to_string),
+                    explainer: explainer.map(str::to_string),
+                    ..Default::default()
+                },
+            },
+        );
+    }
+}
+
+/// Open the review queue on the seeded board and wait for its first card's
+/// diff: both files, found in the local checkout rather than fetched.
+fn open_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(harness, "1 / 2");
+    wait_for_label(harness, QUEUE_CARDS[0]);
+    wait_for_any_label(harness, "src/queue.rs");
+    wait_for_any_label(harness, "src/keys.rs");
+    wait_for_label(harness, &format!("found locally in {}", fixture.dir));
+}
+
+/// Behavioural twin of [`snapshot_headway_review_queue`] (no lavapipe): the
+/// same fixture, checked for what the snapshot shows. The queue opens on the
+/// first In Review card with its record's commit diff (a modified and an added
+/// file), found in this host's checkout though the record came from another
+/// host; the top bar carries the record's explainer link and session; the bar
+/// peeks at the next card; and `?` pins the queue's key strip.
+#[test]
+fn review_queue_shows_the_recorded_commit_diff() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness, &fixture);
+
+    wait_for_label(&mut harness, "Explainer ↗");
+    wait_for_label(&mut harness, QUEUE_SESSION);
+    wait_for_label(&mut harness, REVIEW_HOST);
+    wait_for_label(&mut harness, "Next:");
+    wait_for_label(&mut harness, QUEUE_CARDS[1]);
+    wait_for_label(
+        &mut harness,
+        "Headway Tester <tester@example.com> · 2023-11-14T14:13:20-07:00",
+    );
+    assert!(harness.query_by_label("send back").is_none());
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "send back");
+    wait_for_label(&mut harness, "next/prev file");
+}
+
+/// Snapshot: the review queue open on the first of two In Review cards — the
+/// queue bar with its position and the next card, the record's explainer link
+/// and agentium session, where the commit was found, and its two-file diff.
+/// Then the same with `?` pinning the queue's key strip.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_queue() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness, &fixture);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_queue");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "send back");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_queue_key_hints");
+}
+
 /// Behavioural (no lavapipe): clicking a card also puts the board's keyboard
 /// cursor on it, and the cursor survives the detail closing, so backing out
 /// lands with the ring on the card you came from. The cursor is deliberately
