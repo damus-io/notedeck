@@ -48,10 +48,10 @@ use graph::graph_view_ui;
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
 use review::{
-    EMPTY_QUEUE_NOTICE, ReviewQueue, ReviewUi, in_review_cards, review_pane_ui, review_queue_ui,
+    NOTICE_SECS, ReviewQueue, ReviewUi, in_review_cards, review_pane_ui, review_queue_ui,
 };
 
-pub(crate) use review::QueueStep;
+pub(crate) use review::{QueueNotice, QueuePending, QueueStep, reason_field_id};
 
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
@@ -86,6 +86,8 @@ pub struct BoardUiState {
     /// How far into a board-key chord (`gg`) the grid is. Ticked and advanced
     /// by [`crate::keys::board_keys`].
     pub(crate) chord: ChordState<BoardPending>,
+    /// The review queue's own `gg` chord, ticked by [`crate::keys::queue_keys`].
+    pub(crate) queue_chord: ChordState<QueuePending>,
     /// Set by the grid's own drop-down menus (board switcher, View, column ⋯)
     /// on each frame they're open, and taken by the next frame's
     /// [`crate::keys::board_keys`]. egui 0.31's `menu_button` keeps its open
@@ -193,9 +195,14 @@ pub struct BoardUiState {
     /// The review queue (`R`): its snapshot of the In Review column and which
     /// card the review pane shows. While it's open the pane shows its card.
     queue: ReviewQueue,
-    /// When (egui time) an `R` found the In Review column empty, so the header
-    /// says so for [`EMPTY_QUEUE_NOTICE`] seconds instead of opening nothing.
-    empty_queue_at: Option<f64>,
+    /// A short-lived message and when (egui time) it went up: an `R` that
+    /// found nothing in review, a verdict that finished the queue, a queue key
+    /// with nothing to act on. Drawn in the header, or the queue's bar while
+    /// it's open, for [`NOTICE_SECS`] seconds.
+    notice: Option<(QueueNotice, f64)>,
+    /// A board edit left for the next frame, because a frame applies one: the
+    /// move behind an `X` verdict's comment.
+    follow_up: Option<BoardAction>,
 }
 
 impl BoardUiState {
@@ -304,10 +311,10 @@ impl BoardUiState {
     /// for a few seconds instead (`now` is egui time).
     pub(crate) fn open_review_queue(&mut self, view: &BoardView, now: f64) {
         if self.queue.start(in_review_cards(view)) {
-            self.empty_queue_at = None;
+            self.notice = None;
             self.review.seed(self.queue.target());
         } else {
-            self.empty_queue_at = Some(now);
+            self.set_notice(QueueNotice::NothingInReview, now);
         }
     }
 
@@ -318,24 +325,21 @@ impl BoardUiState {
     }
 
     /// Leave the review queue for the board grid, with the grid's cursor on the
-    /// card the queue last showed.
+    /// card the queue last showed. A notice about the queue's card (no
+    /// explainer) goes with it.
     pub(crate) fn close_queue(&mut self) {
         if let Some(card) = self.queue.close() {
             self.set_cursor(card);
         }
         self.review.close();
+        self.queue_chord.clear();
+        self.notice = None;
     }
 
     /// Whether the review queue is showing.
     #[cfg(test)]
     pub(crate) fn queue_open(&self) -> bool {
         self.queue.is_open()
-    }
-
-    /// Whether the header is saying an `R` found nothing in review.
-    #[cfg(test)]
-    pub(crate) fn empty_queue_notice(&self) -> bool {
-        self.empty_queue_at.is_some()
     }
 
     /// The card whose detail is currently open, if any.
@@ -500,8 +504,39 @@ fn seed_edit_mode(text: &str) -> EditMode {
 }
 
 /// Render the board (header, columns, the add-column affordance and the floating
-/// card detail sheet) and return the edit the user made this frame, if any.
+/// card detail sheet) and return the edit the user made this frame, if any —
+/// or, on a frame that made none, one an earlier frame left
+/// ([`BoardUiState::take_follow_up`]).
 pub fn board_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    view: &BoardView,
+    boards: &[BoardSummary],
+    sync: SyncStatus,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    // The review queue's keys run before anything lays out, so one that
+    // leaves the queue (`q`, a verdict on its last card, Enter onto the card)
+    // has the grid or the detail draw this same frame rather than a blank one.
+    let verdict = if state.queue.is_open() {
+        keys::queue_keys(ui.ctx(), view, state)
+    } else {
+        None
+    };
+    if verdict.is_some() {
+        // The next card, and an `X`'s follow-up move, want a frame.
+        ui.ctx().request_repaint();
+    }
+    let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
+    // A verdict swallowed the frame's keys, so the pane's edit could only be a
+    // drop landing in the same frame; the verdict wins, as a key does over a
+    // drop in the grid.
+    verdict.or(action).or_else(|| state.take_follow_up())
+}
+
+/// [`board_ui`]'s body: whichever pane the state names, and its edit.
+fn board_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
@@ -526,15 +561,11 @@ pub fn board_ui(
         state.graph_connecting = None;
     }
 
-    // The review queue draws the review pane over its current card. Its keys
-    // run first, so a `q` that closes it falls through to the grid this same
-    // frame rather than leaving one blank.
-    if state.queue.is_open() {
-        keys::queue_keys(ui.ctx(), state);
-        if let Some(card) = state.queue.current() {
-            review_queue_ui(ui, theme, app_ctx, view, card, state);
-            return None;
-        }
+    // The review queue draws the review pane over its current card (its keys
+    // ran in `board_ui`).
+    if let Some(card) = state.queue.current() {
+        review_queue_ui(ui, theme, app_ctx, view, card, state);
+        return None;
     }
 
     // A card's review pane takes over the pane the same way, entered from (and
@@ -646,7 +677,7 @@ pub fn board_ui(
                         .color(theme.text_muted),
                     );
                 }
-                empty_queue_notice_ui(ui, theme, state);
+                notice_ui(ui, theme, &mut state.notice);
                 // The archived entry point only appears when there's something
                 // behind it, so the header stays quiet on a fresh board.
                 if !view.archived.is_empty() {
@@ -788,19 +819,19 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
         });
 }
 
-/// "Nothing in review", for [`EMPTY_QUEUE_NOTICE`] seconds after an `R` found
-/// the In Review column empty. Schedules the frame that takes it down.
-fn empty_queue_notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
-    let Some(at) = state.empty_queue_at else {
+/// The [`QueueNotice`] showing, for [`NOTICE_SECS`] seconds after it went up.
+/// Schedules the frame that takes it down.
+fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<(QueueNotice, f64)>) {
+    let Some((shown, at)) = *notice else {
         return;
     };
-    let left = EMPTY_QUEUE_NOTICE - (ui.input(|i| i.time) - at);
+    let left = NOTICE_SECS - (ui.input(|i| i.time) - at);
     if left <= 0.0 {
-        state.empty_queue_at = None;
+        *notice = None;
         return;
     }
     ui.add_space(SPACING_SM);
-    ui.label(egui::RichText::new("Nothing in review").color(theme.warning));
+    ui.label(egui::RichText::new(shown.text()).color(theme.warning));
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_secs_f64(left));
 }

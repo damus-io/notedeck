@@ -7,25 +7,32 @@
 //! within its own, and `R` opens the review queue over the In Review column.
 //!
 //! The review queue has its own keymap, [`queue_keys`]: `n`/`]` and `p`/`[`
-//! step cards, `q`/`Esc` leave it for the grid.
+//! step cards; `j`/`k`, `Ctrl-d`/`Ctrl-u`, `gg`/`G` and `J`/`K` scroll the
+//! diff by a line, half a page, to its ends and by file; `o` opens the
+//! explainer and `Enter` the card; `D` moves the card to Done and `X` asks for
+//! a reason and sends it back to In Progress; `?` toggles its which-key strip
+//! ([`QUEUE_HINTS`]) and `q`/`Esc` leave it for the grid.
 //!
 //! The chord mechanics (reading the press, timing out a pending `g`, swallowing
 //! handled keys) are [`notedeck_ui::chord`]'s; the grid math is
 //! [`crate::cursor`]'s. This module is only the mapping between them, plus the
-//! which-key strip ([`BOARD_HINTS`], [`key_hints_ui`]) that documents it. Both
-//! run once per grid frame from [`crate::ui::board_ui`], so they allocate
-//! nothing of their own.
+//! which-key strips ([`BOARD_HINTS`], [`QUEUE_HINTS`], [`key_hints_ui`]) that
+//! document it. Both run once per frame from [`crate::ui::board_ui`], so they
+//! allocate nothing of their own (bar the comment an `X` posts).
 
 use egui::{Key, Modifiers};
 use notedeck::ColorTheme;
 use notedeck::tokens::SPACING_MD;
 use notedeck_ui::chord::{self, KeyPress};
+use notedeck_ui::diff::PatchScroll;
 use notedeck_ui::keybind_hint::KeybindHint;
 
 use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
 use crate::store::BoardAction;
-use crate::ui::{BoardUiState, QueueStep, ViewFilter, filter_field_id};
+use crate::ui::{
+    BoardUiState, QueuePending, QueueStep, ViewFilter, filter_field_id, reason_field_id,
+};
 
 /// Chord steps the board grid can be waiting on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +107,58 @@ pub(crate) const G_HINTS: &[KeyHint] = &[KeyHint {
     label: "first card",
 }];
 
+/// The review queue's which-key strip, shown while `?` has it pinned open.
+/// Replayed through [`queue_keys`] by the `every_queue_hint_does_what_it_says`
+/// test, as [`BOARD_HINTS`] is through [`board_keys`]. `^d` is Ctrl+D.
+pub(crate) const QUEUE_HINTS: &[KeyHint] = &[
+    KeyHint {
+        keys: &["n", "p"],
+        label: "next/prev card",
+    },
+    KeyHint {
+        keys: &["j", "k"],
+        label: "scroll",
+    },
+    KeyHint {
+        keys: &["^d", "^u"],
+        label: "half page",
+    },
+    KeyHint {
+        keys: &["gg", "G"],
+        label: "top/bottom",
+    },
+    KeyHint {
+        keys: &["J", "K"],
+        label: "next/prev file",
+    },
+    KeyHint {
+        keys: &["o"],
+        label: "explainer",
+    },
+    KeyHint {
+        keys: &["\u{21B5}"],
+        label: "open card",
+    },
+    KeyHint {
+        keys: &["D"],
+        label: "done",
+    },
+    KeyHint {
+        keys: &["X"],
+        label: "send back",
+    },
+    KeyHint {
+        keys: &["q", "esc"],
+        label: "leave",
+    },
+];
+
+/// The queue's strip while a `g` is pending.
+pub(crate) const QUEUE_G_HINTS: &[KeyHint] = &[KeyHint {
+    keys: &["g"],
+    label: "top of diff",
+}];
+
 /// Height of a keycap in the strip.
 const KEYCAP: f32 = 18.0;
 
@@ -114,6 +173,16 @@ pub(crate) fn key_hints(state: &BoardUiState) -> Option<&'static [KeyHint]> {
         return Some(G_HINTS);
     }
     state.key_hints_shown().then_some(BOARD_HINTS)
+}
+
+/// The review queue's counterpart to [`key_hints`]: its `g` continuation
+/// while one is pending, else [`QUEUE_HINTS`] if `?` pinned the strip (the pin
+/// is shared with the grid's).
+pub(crate) fn queue_key_hints(state: &BoardUiState) -> Option<&'static [KeyHint]> {
+    if state.queue_chord.pending() == Some(QueuePending::G) {
+        return Some(QUEUE_G_HINTS);
+    }
+    state.key_hints_shown().then_some(QUEUE_HINTS)
 }
 
 /// Draw `hints` as a row of keycap groups, each followed by its muted label.
@@ -216,32 +285,107 @@ pub(crate) fn board_keys(
     action
 }
 
-/// Read this frame's bare key press and apply it to the open review queue:
-/// `n`/`]` step to the next card and `p`/`[` to the previous (stopping at the
-/// ends), `q`/`Esc` leave for the grid with its cursor on the card last
-/// shown. Runs before the review pane lays out, so a handled key is
-/// swallowed before the pane (whose own Esc would only close the review) sees
-/// it.
+/// Read this frame's key press and apply it to the open review queue (see the
+/// module docs for the map). Runs before anything lays out, so a handled key
+/// is swallowed before the review pane (whose own Esc would only close the
+/// review) or the reason composer sees it. Returns a verdict's board edit:
+/// `D`'s move, or the comment an `X` posts once its reason is entered (its
+/// move follows next frame, see [`BoardUiState::take_follow_up`]).
 ///
-/// Keys are left alone under the same rules as the grid's, bar the grid's own
+/// While the `X` composer is open only its Enter and Esc are read. Otherwise
+/// keys are left alone under the same rules as the grid's, bar the grid's own
 /// overlays: a focused widget, an open popup or menu, or a drag.
-pub(crate) fn queue_keys(ctx: &egui::Context, state: &mut BoardUiState) {
+pub(crate) fn queue_keys(
+    ctx: &egui::Context,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let pending = state.queue_chord.tick(ctx);
+    let now = ctx.input(|i| i.time);
+    if state.rejecting() {
+        state.queue_chord.clear();
+        return reason_keys(ctx, view, state, now);
+    }
     if focus_taken(ctx) {
-        return;
+        state.queue_chord.clear();
+        return None;
     }
-    let Some(press) = ctx.input(chord::first_key_press) else {
-        return;
-    };
+    let press = ctx.input(chord::first_key_press)?;
+
+    // Ctrl-d/Ctrl-u, vi's half-page scroll. Safe to take here: chrome's only
+    // Ctrl binding is Ctrl+Tab.
+    let m = press.modifiers;
+    if m.ctrl && !m.alt && !m.shift {
+        let pages = match press.key {
+            Key::D => 0.5,
+            Key::U => -0.5,
+            _ => return None,
+        };
+        state.queue_chord.clear();
+        state.scroll_review(PatchScroll::Pages(pages));
+        chord::swallow_key_events(ctx);
+        return None;
+    }
     if !press.is_bare() {
-        return;
+        state.queue_chord.clear();
+        return None;
     }
+
+    // With a `g` pending, only a second `g` means anything.
+    if pending.is_some() {
+        state.queue_chord.clear();
+        if is_key(press, Key::G) {
+            state.scroll_review(PatchScroll::Top);
+        }
+        chord::swallow_key_events(ctx);
+        return None;
+    }
+
+    let mut action = None;
     match (press.key, press.modifiers.shift) {
         (Key::N | Key::CloseBracket, false) => state.step_queue(QueueStep::Next),
         (Key::P | Key::OpenBracket, false) => state.step_queue(QueueStep::Prev),
+        (Key::J, false) => state.scroll_review(PatchScroll::Rows(1)),
+        (Key::K, false) => state.scroll_review(PatchScroll::Rows(-1)),
+        (Key::G, false) => state.queue_chord.begin(QueuePending::G, now),
+        (Key::G, true) => state.scroll_review(PatchScroll::Bottom),
+        (Key::J, true) => state.scroll_review(PatchScroll::NextFile),
+        (Key::K, true) => state.scroll_review(PatchScroll::PrevFile),
+        (Key::O, false) => state.open_explainer(ctx, view),
+        (Key::Enter, _) => state.open_queue_card(),
+        (Key::D, true) => action = state.accept_queue_card(view, now),
+        (Key::X, true) => state.start_reject(view, now),
+        (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
         (Key::Q, false) | (Key::Escape, _) => state.close_queue(),
-        _ => return,
+        _ => return None,
     }
+    // Load-bearing for `X`: the composer takes focus as it lays out this
+    // frame and would otherwise type the X.
     chord::swallow_key_events(ctx);
+    action
+}
+
+/// The `X` composer's keys: Enter posts the reason (an empty one does
+/// nothing), Esc cancels. Both are consumed before the field sees them, and
+/// the field's focus goes with the composer.
+fn reason_keys(
+    ctx: &egui::Context,
+    view: &BoardView,
+    state: &mut BoardUiState,
+    now: f64,
+) -> Option<BoardAction> {
+    let action = if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        state.cancel_reject();
+        None
+    } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+        state.submit_reject(view, now)
+    } else {
+        return None;
+    };
+    if !state.rejecting() {
+        ctx.memory_mut(|m| m.surrender_focus(reason_field_id()));
+    }
+    action
 }
 
 /// Whether something other than the grid owns the keyboard this frame.
@@ -389,9 +533,10 @@ fn escape(ctx: &egui::Context, state: &mut BoardUiState, pending: Option<BoardPe
 mod tests {
     use super::*;
     use crate::cursor::tests::{grid, id, square_grid};
-    use crate::ui::CardFilter;
+    use crate::ui::{CardFilter, QueueNotice};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+    use headway::event::{ReviewFields, ReviewView};
     use nostrdb_net::NoteId;
 
     /// What a keymap test frame reads and leaves behind.
@@ -412,6 +557,10 @@ mod tests {
         moved: Option<(NoteId, usize, usize)>,
         /// The card of the last `ArchiveCard` the keymap returned, if any.
         archived: Option<NoteId>,
+        /// The `(card, body)` of the last `AddComment` the keymap returned.
+        commented: Option<(NoteId, String)>,
+        /// The last URL a key asked the platform to open.
+        opened: Option<String>,
     }
 
     /// A harness that runs [`board_keys`] over [`grid`] each frame, unfiltered.
@@ -424,29 +573,48 @@ mod tests {
                     hide_subissues: false,
                 };
                 // As `board_ui` does: the queue's keys while it's open, the
-                // grid's otherwise.
-                if h.state.queue_open() {
-                    queue_keys(ui.ctx(), &mut h.state);
-                }
-                let action = if h.state.queue_open() {
+                // grid's otherwise, then any follow-up an earlier frame left.
+                let verdict = if h.state.queue_open() {
+                    queue_keys(ui.ctx(), &h.view, &mut h.state)
+                } else {
                     None
+                };
+                let action = if h.state.queue_open() || verdict.is_some() {
+                    verdict
                 } else {
                     board_keys(ui.ctx(), &h.view, &filter, &mut h.state)
                 };
-                match action {
+                match action.or_else(|| h.state.take_follow_up()) {
                     Some(BoardAction::MoveCard {
                         card,
                         to_col,
                         to_row,
                     }) => h.moved = Some((card, to_col, to_row)),
                     Some(BoardAction::ArchiveCard { card }) => h.archived = Some(card),
+                    Some(BoardAction::AddComment { card, body, .. }) => {
+                        h.commented = Some((card, body))
+                    }
                     _ => {}
+                }
+                h.state.reason_test_ui(ui);
+                if let Some(url) = ui.ctx().output(|o| {
+                    o.commands.iter().find_map(|c| match c {
+                        egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                        _ => None,
+                    })
+                }) {
+                    h.opened = Some(url);
                 }
                 h.esc_left |= ui.input(|i| i.key_pressed(Key::Escape));
                 if let Some(field) = h.field {
                     ui.add(egui::TextEdit::singleline(&mut h.text).id(field));
                 }
-                if let Some(hints) = key_hints(&h.state) {
+                let hints = if h.state.queue_open() {
+                    queue_key_hints(&h.state)
+                } else {
+                    key_hints(&h.state)
+                };
+                if let Some(hints) = hints {
                     key_hints_ui(ui, &ColorTheme::current(ui.ctx()), hints);
                 }
             },
@@ -458,6 +626,8 @@ mod tests {
                 esc_left: false,
                 moved: None,
                 archived: None,
+                commented: None,
+                opened: None,
             },
         );
         harness.run();
@@ -632,7 +802,7 @@ mod tests {
             focused: harness.ctx.memory(|m| m.focused()),
             moved: h.moved,
             archived: h.archived,
-            reviewing: (h.state.queue_open(), h.state.empty_queue_notice()),
+            reviewing: (h.state.queue_open(), h.state.notice().is_some()),
         }
     }
 
@@ -643,6 +813,10 @@ mod tests {
             "\u{21B5}" => return vec![(Modifiers::NONE, Key::Enter)],
             "esc" => return vec![(Modifiers::NONE, Key::Escape)],
             _ => {}
+        }
+        if let Some(letter) = cap.strip_prefix('^') {
+            let key = Key::from_name(letter).unwrap_or_else(|| panic!("keycap {cap:?}"));
+            return vec![(Modifiers::CTRL, key)];
         }
         cap.chars()
             .map(|c| {
@@ -774,7 +948,10 @@ mod tests {
         // `grid` has no In Review column: nothing opens, the header says so.
         press_with(&mut harness, Modifiers::SHIFT, Key::R);
         assert!(!harness.state().state.queue_open());
-        assert!(harness.state().state.empty_queue_notice());
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NothingInReview)
+        );
 
         harness.state_mut().view.columns[2].id = "in-review".to_string();
         press_with(&mut harness, Modifiers::SHIFT, Key::R);
@@ -814,6 +991,280 @@ mod tests {
         assert!(!harness.state().state.queue_open());
         assert_eq!(harness.state().state.cursor(), Some(id(5)));
         assert!(!harness.state().esc_left, "Esc consumed");
+    }
+
+    /// A 3×3 board shaped for the review queue: `In Progress` holds 1–3,
+    /// `In Review` 4–6 and `Done` 7–9. Card 5 carries a review record with an
+    /// explainer.
+    fn review_board() -> BoardView {
+        let mut view = square_grid();
+        for (col, id) in view
+            .columns
+            .iter_mut()
+            .zip(["in-progress", "in-review", "done"])
+        {
+            col.id = id.to_string();
+        }
+        view.columns[1].cards[1].reviews = vec![ReviewView {
+            id: id(50),
+            author: [0; 32],
+            created_at: 0,
+            fields: ReviewFields {
+                explainer: Some("https://example.com/explainer".to_string()),
+                ..Default::default()
+            },
+        }];
+        view
+    }
+
+    /// A harness on [`review_board`] with the queue open on its second card.
+    fn queue_harness() -> Harness<'static, KeysHarness> {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = review_board();
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        press(&mut harness, Key::N);
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
+        harness
+    }
+
+    /// Everything a queue key can visibly do, for
+    /// [`every_queue_hint_does_what_it_says`] to compare before and after.
+    #[derive(Debug, PartialEq)]
+    struct QueueEffects {
+        open: bool,
+        card: Option<NoteId>,
+        selected: Option<NoteId>,
+        scroll: Option<PatchScroll>,
+        moved: Option<(NoteId, usize, usize)>,
+        commented: Option<(NoteId, String)>,
+        rejecting: bool,
+        notice: Option<QueueNotice>,
+        opened: Option<String>,
+        hints: bool,
+    }
+
+    fn queue_effects(harness: &Harness<'static, KeysHarness>) -> QueueEffects {
+        let h = harness.state();
+        QueueEffects {
+            open: h.state.queue_open(),
+            card: h.state.review_card(),
+            selected: h.state.selected(),
+            scroll: h.state.review_scroll(),
+            moved: h.moved,
+            commented: h.commented.clone(),
+            rejecting: h.state.rejecting(),
+            notice: h.state.notice(),
+            opened: h.opened.clone(),
+            hints: h.state.key_hints_shown(),
+        }
+    }
+
+    /// Replay every keycap in [`QUEUE_HINTS`] from the middle of a three-card
+    /// queue and check it did *something*, so the queue's strip can't
+    /// advertise a key its keymap dropped.
+    #[test]
+    fn every_queue_hint_does_what_it_says() {
+        for hint in QUEUE_HINTS.iter().chain(EXTRA_QUEUE_KEYS) {
+            for &cap in hint.keys {
+                let mut harness = queue_harness();
+                let before = queue_effects(&harness);
+                for (modifiers, key) in keycap_presses(cap) {
+                    press_with(&mut harness, modifiers, key);
+                }
+                assert_ne!(
+                    queue_effects(&harness),
+                    before,
+                    "keycap {cap:?} ({}) did nothing",
+                    hint.label
+                );
+            }
+        }
+    }
+
+    /// `?` isn't in the strip it toggles; replay it alongside.
+    const EXTRA_QUEUE_KEYS: &[KeyHint] = &[KeyHint {
+        keys: &["?"],
+        label: "hints",
+    }];
+
+    /// The scroll keys each ask the diff for their scroll; `J` the next file.
+    #[test]
+    fn queue_scroll_keys_ask_the_diff_to_scroll() {
+        let mut harness = queue_harness();
+        let scroll = |h: &Harness<'static, KeysHarness>| h.state().state.review_scroll();
+        press(&mut harness, Key::J);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Rows(1)));
+        press(&mut harness, Key::K);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Rows(-1)));
+        press_with(&mut harness, Modifiers::CTRL, Key::D);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Pages(0.5)));
+        press_with(&mut harness, Modifiers::CTRL, Key::U);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Pages(-0.5)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::G);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Bottom));
+        press(&mut harness, Key::G);
+        assert!(harness.query_by_label("top of diff").is_some(), "g hint up");
+        press(&mut harness, Key::G);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Top));
+        press_with(&mut harness, Modifiers::SHIFT, Key::J);
+        assert_eq!(scroll(&harness), Some(PatchScroll::NextFile));
+        press_with(&mut harness, Modifiers::SHIFT, Key::K);
+        assert_eq!(scroll(&harness), Some(PatchScroll::PrevFile));
+        assert_eq!(harness.state().state.review_card(), Some(id(5)), "no step");
+    }
+
+    /// `D` moves the card to the end of Done and steps on; on the last card
+    /// it leaves the queue saying it's done.
+    #[test]
+    fn d_moves_the_card_to_done_and_advances() {
+        let mut harness = queue_harness();
+        press_with(&mut harness, Modifiers::SHIFT, Key::D);
+        assert_eq!(harness.state().moved, Some((id(5), 2, 3)));
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
+
+        press_with(&mut harness, Modifiers::SHIFT, Key::D);
+        assert_eq!(harness.state().moved, Some((id(6), 2, 3)));
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.notice(), Some(QueueNotice::QueueDone));
+        assert_eq!(harness.state().state.cursor(), Some(id(6)));
+    }
+
+    /// `X` opens the reason composer, which holds the queue's keys; Enter
+    /// posts the reason as a `review:` comment, the move to In Progress lands
+    /// the frame after, and the queue steps on.
+    #[test]
+    fn x_posts_a_review_comment_and_sends_the_card_back() {
+        let mut harness = queue_harness();
+        // As a keyboard delivers it: the press and the character it types.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("X".to_string()));
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
+        assert!(harness.state().state.rejecting());
+        harness.run();
+        assert_eq!(
+            harness.ctx.memory(|m| m.focused()),
+            Some(crate::ui::reason_field_id()),
+            "composer focused"
+        );
+        assert_eq!(harness.state().state.reason_text(), "", "X not typed");
+
+        // The queue's keys stand down while it's open.
+        press(&mut harness, Key::N);
+        assert_eq!(harness.state().state.review_card(), Some(id(5)), "no step");
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("no tests".to_string()));
+        harness.step();
+        assert_eq!(harness.state().state.reason_text(), "no tests");
+
+        press(&mut harness, Key::Enter);
+        assert_eq!(
+            harness.state().commented,
+            Some((id(5), "review: no tests".to_string()))
+        );
+        assert!(!harness.state().state.rejecting());
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
+        harness.step();
+        assert_eq!(harness.state().moved, Some((id(5), 0, 3)));
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None, "focus returned");
+
+        // The queue's keys are back.
+        press(&mut harness, Key::P);
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
+    }
+
+    /// Esc in the composer cancels it without a comment or a move, and is
+    /// eaten rather than leaving the queue.
+    #[test]
+    fn esc_in_the_reason_composer_cancels() {
+        let mut harness = queue_harness();
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
+        harness.run();
+        press(&mut harness, Key::Enter);
+        assert!(
+            harness.state().state.rejecting(),
+            "empty reason posts nothing"
+        );
+        assert_eq!(harness.state().commented, None);
+
+        press(&mut harness, Key::Escape);
+        harness.step();
+        assert!(!harness.state().state.rejecting());
+        assert!(harness.state().state.queue_open());
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
+        assert_eq!(
+            (harness.state().moved, harness.state().commented.clone()),
+            (None, None)
+        );
+        assert!(!harness.state().esc_left, "Esc consumed");
+    }
+
+    /// `o` opens the shown record's explainer; on a card without one it only
+    /// says so.
+    #[test]
+    fn o_opens_the_explainer_or_says_there_is_none() {
+        let mut harness = queue_harness();
+        press(&mut harness, Key::O);
+        assert_eq!(
+            harness.state().opened.as_deref(),
+            Some("https://example.com/explainer")
+        );
+
+        press(&mut harness, Key::N);
+        harness.state_mut().opened = None;
+        press(&mut harness, Key::O);
+        assert_eq!(harness.state().opened, None);
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NoExplainer)
+        );
+        assert!(harness.state().state.queue_open());
+    }
+
+    /// Enter leaves the queue for its card's detail, keeping the queue's place
+    /// for the back that returns to it.
+    #[test]
+    fn enter_opens_the_queue_card() {
+        let mut harness = queue_harness();
+        press(&mut harness, Key::Enter);
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.selected(), Some(id(5)));
+        assert_eq!(harness.state().state.review_card(), None);
+
+        // Back onto the queue's entry reopens it on the same card.
+        harness.state_mut().state.set_selected(None);
+        harness.state_mut().state.set_queue_open(true);
+        assert_eq!(
+            harness.state().state.queue_review().map(|t| t.card),
+            Some(id(5))
+        );
+    }
+
+    /// A verdict key on a board without its column does nothing but say so.
+    #[test]
+    fn verdicts_need_their_columns() {
+        let mut harness = queue_harness();
+        harness.state_mut().view.columns[2].id = "shipped".to_string();
+        harness.state_mut().view.columns[2].name = "Shipped".to_string();
+        harness.state_mut().view.columns[0].id = "doing".to_string();
+        harness.state_mut().view.columns[0].name = "Doing".to_string();
+
+        press_with(&mut harness, Modifiers::SHIFT, Key::D);
+        assert_eq!(harness.state().moved, None);
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NoDoneColumn)
+        );
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
+        assert!(!harness.state().state.rejecting());
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NoInProgressColumn)
+        );
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
     }
 
     #[test]

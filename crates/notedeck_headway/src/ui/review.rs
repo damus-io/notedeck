@@ -14,12 +14,15 @@ use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
+use notedeck_ui::diff::PatchScroll;
 use std::time::Instant;
 
 use super::widgets::{count_badge, detail_heading};
 use super::{BoardUiState, find_card};
+use crate::keys;
 use crate::nav::ReviewTarget;
 use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
+use crate::store::BoardAction;
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
 /// its records is picked, and the loader its commits come through.
@@ -44,6 +47,10 @@ pub(crate) struct ReviewUi {
     /// The pane was opened (or moved to another card) since it last drew, so
     /// its trailer search is re-run (see [`ReviewLoader::expire`]).
     reopened: bool,
+    /// A scroll the queue's keys asked of the open diff, handed to its
+    /// [`GitPatchState`](notedeck_ui::diff::GitPatchState) on the pane's next
+    /// pass (and dropped there if the diff hasn't loaded).
+    scroll: Option<PatchScroll>,
     /// The loads, cached per record until they go stale.
     loader: ReviewLoader,
 }
@@ -90,33 +97,84 @@ impl ReviewUi {
     pub(crate) fn close(&mut self) {
         self.card = None;
     }
+
+    /// Ask the open diff to scroll; applied on the pane's next pass.
+    pub(crate) fn scroll(&mut self, request: PatchScroll) {
+        self.scroll = Some(request);
+    }
+
+    /// The scroll waiting for the pane's next pass, if any.
+    #[cfg(test)]
+    pub(crate) fn pending_scroll(&self) -> Option<PatchScroll> {
+        self.scroll
+    }
+
+    /// The record of `card` the pane shows: the picked one, or the newest when
+    /// nothing is picked or the card no longer carries the pick.
+    pub(crate) fn shown_record<'a>(&self, card: &'a CardView) -> Option<&'a ReviewView> {
+        self.shown_index(card).and_then(|i| card.reviews.get(i))
+    }
+
+    /// [`shown_record`](Self::shown_record)'s position in the card's records,
+    /// `None` when it has none.
+    fn shown_index(&self, card: &CardView) -> Option<usize> {
+        if card.reviews.is_empty() {
+            return None;
+        }
+        let picked = self
+            .record
+            .and_then(|id| card.reviews.iter().position(|r| r.id == id));
+        Some(picked.unwrap_or(0))
+    }
 }
 
-/// The column the review queue walks, by id; boards that renamed their columns
-/// fall back to [`IN_REVIEW_NAME`].
-const IN_REVIEW_ID: &str = "in-review";
+/// A column the review queue reads or moves cards into: found by its id, or,
+/// on a board that renamed its column ids, by its name (any case).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QueueColumn {
+    id: &'static str,
+    name: &'static str,
+}
 
-/// The In Review column's name, matched case-insensitively when no column has
-/// [`IN_REVIEW_ID`].
-const IN_REVIEW_NAME: &str = "In Review";
+/// The column the review queue walks.
+const IN_REVIEW: QueueColumn = QueueColumn {
+    id: "in-review",
+    name: "In Review",
+};
 
-/// How long, in seconds, the "Nothing in review" notice stays up after an `R`
-/// that found the In Review column empty.
-pub(crate) const EMPTY_QUEUE_NOTICE: f64 = 3.0;
+/// Where `D` sends a card.
+pub(crate) const DONE: QueueColumn = QueueColumn {
+    id: "done",
+    name: "Done",
+};
+
+/// Where `X` sends a card back to.
+pub(crate) const IN_PROGRESS: QueueColumn = QueueColumn {
+    id: "in-progress",
+    name: "In Progress",
+};
+
+impl QueueColumn {
+    /// This column's index on `view`, by id, else by name.
+    pub(crate) fn index(self, view: &BoardView) -> Option<usize> {
+        let columns = &view.columns;
+        columns.iter().position(|c| c.id == self.id).or_else(|| {
+            columns
+                .iter()
+                .position(|c| c.name.eq_ignore_ascii_case(self.name))
+        })
+    }
+}
+
+/// How long, in seconds, a [`QueueNotice`] stays up.
+pub(crate) const NOTICE_SECS: f64 = 3.0;
 
 /// The ids of the board's In Review cards in column order: the review queue's
 /// snapshot. Empty when the board has no such column.
 pub(crate) fn in_review_cards(view: &BoardView) -> Vec<NoteId> {
-    let column = view
-        .columns
-        .iter()
-        .find(|c| c.id == IN_REVIEW_ID)
-        .or_else(|| {
-            view.columns
-                .iter()
-                .find(|c| c.name.eq_ignore_ascii_case(IN_REVIEW_NAME))
-        });
-    column.map_or_else(Vec::new, |c| c.cards.iter().map(|c| c.id).collect())
+    IN_REVIEW.index(view).map_or_else(Vec::new, |i| {
+        view.columns[i].cards.iter().map(|c| c.id).collect()
+    })
 }
 
 /// Which way a queue step goes.
@@ -126,6 +184,50 @@ pub(crate) enum QueueStep {
     Next,
     /// To the previous card (`p`, `[`).
     Prev,
+}
+
+/// Chord steps the review queue can be waiting on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueuePending {
+    /// `g` was pressed; a second `g` scrolls the diff to the top.
+    G,
+}
+
+/// A short-lived message in the board header or the queue bar, for a key that
+/// had nothing to act on. Shown for [`NOTICE_SECS`] seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueueNotice {
+    /// `R` found the In Review column empty.
+    NothingInReview,
+    /// A verdict on the queue's last card closed it.
+    QueueDone,
+    /// `o` on a record with no explainer.
+    NoExplainer,
+    /// `D` on a board with no Done column.
+    NoDoneColumn,
+    /// `X` on a board with no In Progress column.
+    NoInProgressColumn,
+}
+
+impl QueueNotice {
+    /// The message, as drawn.
+    pub(crate) fn text(self) -> &'static str {
+        match self {
+            QueueNotice::NothingInReview => "Nothing in review",
+            QueueNotice::QueueDone => "Review queue done",
+            QueueNotice::NoExplainer => "No explainer on this record",
+            QueueNotice::NoDoneColumn => "No Done column on this board",
+            QueueNotice::NoInProgressColumn => "No In Progress column on this board",
+        }
+    }
+}
+
+/// The `X` composer's one-line reason, posted as a `review:` comment.
+#[derive(Default)]
+pub(crate) struct ReasonComposer {
+    pub(crate) text: String,
+    /// Grab focus on the composer's next layout (the frame after `X`).
+    pub(crate) focus: bool,
 }
 
 /// The review queue: a snapshot of the board's In Review cards, taken when `R`
@@ -146,6 +248,9 @@ pub(crate) struct ReviewQueue {
     open: bool,
     /// `"3 / 12"`, formatted when the position changes rather than every frame.
     position: String,
+    /// The `X` reason composer, while it's open. It owns the keyboard: the
+    /// queue's keys stand down bar its Enter and Esc.
+    pub(crate) reason: Option<ReasonComposer>,
 }
 
 impl ReviewQueue {
@@ -203,10 +308,17 @@ impl ReviewQueue {
         self.go_to(index);
     }
 
+    /// Whether the current card is the snapshot's last.
+    pub(crate) fn at_end(&self) -> bool {
+        self.index + 1 >= self.cards.len()
+    }
+
     /// Close the queue, keeping its snapshot. Returns the card it was showing.
+    /// An open reason composer is dropped with it.
     pub(crate) fn close(&mut self) -> Option<NoteId> {
         let current = self.current();
         self.open = false;
+        self.reason = None;
         current
     }
 
@@ -225,9 +337,11 @@ impl ReviewQueue {
 }
 
 /// Draw the review queue: a bar with where the pane is in the queue and a peek
-/// at the next card's title, above the review pane for the queue's current
-/// card. Starts the next card's load too, so stepping to it is instant. The
-/// queue's keys ([`crate::keys::queue_keys`]) have already run this frame.
+/// at the next card's title, the `X` reason composer while it's open, the
+/// which-key strip while it's pinned or a `g` is pending, and the review pane
+/// for the queue's current card in the rest. Starts the next card's load too,
+/// so stepping to it is instant. The queue's keys
+/// ([`crate::keys::queue_keys`]) have already run this frame.
 pub(super) fn review_queue_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -251,7 +365,31 @@ pub(super) fn review_queue_ui(
             top: SPACING_LG as i8,
             bottom: 0,
         })
-        .show(ui, |ui| queue_bar_ui(ui, theme, view, &state.queue));
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                queue_bar_ui(ui, theme, view, &state.queue);
+                super::notice_ui(ui, theme, &mut state.notice);
+            });
+            if let Some(composer) = &mut state.queue.reason {
+                ui.add_space(SPACING_SM);
+                reason_composer_ui(ui, theme, composer);
+            }
+        });
+
+    // Reserved from the bottom before the pane lays out, since the diff's
+    // scroll area takes every point of height left (as the grid's strip).
+    if let Some(hints) = keys::queue_key_hints(state) {
+        egui::TopBottomPanel::bottom("headway-queue-key-hints")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: SPACING_LG as i8,
+                right: SPACING_LG as i8,
+                top: SPACING_MD as i8,
+                bottom: SPACING_MD as i8,
+            }))
+            .show_inside(ui, |ui| keys::key_hints_ui(ui, theme, hints));
+    }
 
     let Some((_, card)) = find_card(view, current) else {
         // A card that left the board since the snapshot (archived, moved to
@@ -274,24 +412,202 @@ pub(super) fn review_queue_ui(
     }
 }
 
+/// The id of the `X` composer's text field, so tests (and focus requests) can
+/// find it.
+pub(crate) fn reason_field_id() -> egui::Id {
+    egui::Id::new("headway-review-reason")
+}
+
+/// The `X` composer: a one-line reason field. Enter and Esc are the queue
+/// keymap's, read before this lays out ([`crate::keys::queue_keys`]), so the
+/// field only has to take the text and its focus.
+fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut ReasonComposer) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Send back:").color(theme.destructive));
+        let field = egui::TextEdit::singleline(&mut composer.text)
+            .id(reason_field_id())
+            .desired_width(f32::INFINITY)
+            .hint_text("Why? Enter comments and moves it to In Progress, Esc cancels");
+        let response = ui.add(field);
+        if std::mem::take(&mut composer.focus) {
+            response.request_focus();
+        }
+    });
+}
+
 /// The queue's bar: its name, the position (`3 / 12`) and the next card's
 /// title, muted, as a peek. Every string is borrowed, so nothing is formatted
 /// per frame.
 fn queue_bar_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &BoardView, queue: &ReviewQueue) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Review queue").strong());
-        ui.label(egui::RichText::new(queue.position()).color(theme.accent));
-        let Some((_, next)) = queue.next_card().and_then(|c| find_card(view, c)) else {
+    ui.label(egui::RichText::new("Review queue").strong());
+    ui.label(egui::RichText::new(queue.position()).color(theme.accent));
+    let Some((_, next)) = queue.next_card().and_then(|c| find_card(view, c)) else {
+        return;
+    };
+    ui.add_space(SPACING_MD);
+    ui.label(egui::RichText::new("Next:").small().color(theme.text_muted));
+    ui.label(
+        egui::RichText::new(next.title.as_str())
+            .small()
+            .color(theme.text_muted),
+    );
+}
+
+/// The review queue's verdicts and the rest of what its keys do beyond
+/// stepping (see [`crate::keys::queue_keys`]).
+impl BoardUiState {
+    /// Put up `notice` for [`NOTICE_SECS`] from `now` (egui time).
+    pub(crate) fn set_notice(&mut self, notice: QueueNotice, now: f64) {
+        self.notice = Some((notice, now));
+    }
+
+    /// The notice showing, if any.
+    #[cfg(test)]
+    pub(crate) fn notice(&self) -> Option<QueueNotice> {
+        self.notice.map(|(n, _)| n)
+    }
+
+    /// Ask the open diff for `request`.
+    pub(crate) fn scroll_review(&mut self, request: PatchScroll) {
+        self.review.scroll(request);
+    }
+
+    /// The queue's current card, if it's still on `view`.
+    fn queue_card<'a>(&self, view: &'a BoardView) -> Option<&'a CardView> {
+        let current = self.queue.current()?;
+        find_card(view, current).map(|(_, card)| card)
+    }
+
+    /// Open the explainer of the record the pane shows in a browser tab, or
+    /// say there's none.
+    pub(crate) fn open_explainer(&mut self, ctx: &egui::Context, view: &BoardView) {
+        let url = self
+            .queue_card(view)
+            .and_then(|card| self.review.shown_record(card))
+            .and_then(|r| r.fields.explainer.as_deref());
+        match url {
+            Some(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            None => self.set_notice(QueueNotice::NoExplainer, ctx.input(|i| i.time)),
+        }
+    }
+
+    /// Leave the queue for the current card's detail. The queue keeps its
+    /// place, so backing out of the detail lands on its entry where it was.
+    pub(crate) fn open_queue_card(&mut self) {
+        let Some(card) = self.queue.close() else {
             return;
         };
-        ui.add_space(SPACING_MD);
-        ui.label(egui::RichText::new("Next:").small().color(theme.text_muted));
-        ui.label(
-            egui::RichText::new(next.title.as_str())
-                .small()
-                .color(theme.text_muted),
-        );
-    });
+        self.review.close();
+        self.cursor = Some(card);
+        self.selected = Some(card);
+    }
+
+    /// `D`: move the current card to the end of the Done column and step on.
+    /// `None` (and a notice) on a board without a Done column.
+    pub(crate) fn accept_queue_card(&mut self, view: &BoardView, now: f64) -> Option<BoardAction> {
+        let card = self.queue_card(view)?.id;
+        let Some(to_col) = DONE.index(view) else {
+            self.set_notice(QueueNotice::NoDoneColumn, now);
+            return None;
+        };
+        self.advance_queue(now);
+        Some(move_to_end(view, card, to_col))
+    }
+
+    /// `X`: open the reason composer for the current card. Nothing opens on a
+    /// board it couldn't be sent back on.
+    pub(crate) fn start_reject(&mut self, view: &BoardView, now: f64) {
+        if self.queue_card(view).is_none() {
+            return;
+        }
+        if IN_PROGRESS.index(view).is_none() {
+            self.set_notice(QueueNotice::NoInProgressColumn, now);
+            return;
+        }
+        self.queue.reason = Some(ReasonComposer {
+            text: String::new(),
+            focus: true,
+        });
+    }
+
+    /// Enter in the reason composer: post the reason as a `review:` comment
+    /// now, move the card to In Progress on the next frame (a frame applies one
+    /// action), and step on. An empty reason posts nothing and keeps the
+    /// composer open.
+    pub(crate) fn submit_reject(&mut self, view: &BoardView, now: f64) -> Option<BoardAction> {
+        let reason = self.queue.reason.as_ref()?.text.trim();
+        if reason.is_empty() {
+            return None;
+        }
+        let body = format!("review: {reason}");
+        self.queue.reason = None;
+        let card = self.queue_card(view)?.id;
+        let to_col = IN_PROGRESS.index(view)?;
+        self.follow_up = Some(move_to_end(view, card, to_col));
+        self.advance_queue(now);
+        Some(BoardAction::AddComment {
+            card,
+            body,
+            reply_to: None,
+        })
+    }
+
+    /// Esc in the reason composer: close it, sending nothing.
+    pub(crate) fn cancel_reject(&mut self) {
+        self.queue.reason = None;
+    }
+
+    /// Whether the `X` reason composer is open.
+    pub(crate) fn rejecting(&self) -> bool {
+        self.queue.reason.is_some()
+    }
+
+    /// The `X` composer's text, empty when it's closed.
+    #[cfg(test)]
+    pub(crate) fn reason_text(&self) -> &str {
+        self.queue.reason.as_ref().map_or("", |r| r.text.as_str())
+    }
+
+    /// The scroll the queue's keys left for the diff's next pass.
+    #[cfg(test)]
+    pub(crate) fn review_scroll(&self) -> Option<PatchScroll> {
+        self.review.pending_scroll()
+    }
+
+    /// Lay the `X` composer out alone, if it's open, for the keymap tests.
+    #[cfg(test)]
+    pub(crate) fn reason_test_ui(&mut self, ui: &mut egui::Ui) {
+        if let Some(composer) = &mut self.queue.reason {
+            reason_composer_ui(ui, &ColorTheme::current(ui.ctx()), composer);
+        }
+    }
+
+    /// After a verdict: step to the next card, or, on the last, leave the queue
+    /// saying it's done.
+    fn advance_queue(&mut self, now: f64) {
+        if self.queue.at_end() {
+            self.close_queue();
+            self.set_notice(QueueNotice::QueueDone, now);
+        } else {
+            self.step_queue(QueueStep::Next);
+        }
+    }
+
+    /// Take the action a verdict left for the frame after its own (the move
+    /// behind an `X`'s comment).
+    pub(crate) fn take_follow_up(&mut self) -> Option<BoardAction> {
+        self.follow_up.take()
+    }
+}
+
+/// A [`BoardAction::MoveCard`] taking `card` to the end of column `to_col`, as
+/// the detail pane's column picker does.
+fn move_to_end(view: &BoardView, card: NoteId, to_col: usize) -> BoardAction {
+    BoardAction::MoveCard {
+        card,
+        to_col,
+        to_row: view.columns[to_col].cards.len(),
+    }
 }
 
 /// Start the load of `card`'s newest record, if it hasn't been, so the queue's
@@ -344,10 +660,7 @@ pub(super) fn review_pane_ui(
     review
         .loader
         .note_records(card.id, RecordSet::of(&card.reviews));
-    let shown = review
-        .record
-        .and_then(|id| card.reviews.iter().position(|r| r.id == id))
-        .unwrap_or(0);
+    let shown = review.shown_index(card).unwrap_or(0);
     let record = card.reviews.get(shown);
 
     let source = match record {
@@ -372,6 +685,13 @@ pub(super) fn review_pane_ui(
         &mut review.loader,
     );
     review.loader.poll(app_ctx.i18n);
+    // A queue key's scroll goes to the diff if it's in; one asked of a diff
+    // still loading is dropped rather than jumping it once it lands.
+    if let Some(request) = review.scroll.take()
+        && let Some(ReviewLoad::Ready(loaded)) = review.loader.get_mut(source)
+    {
+        loaded.patch_state.scroll(request);
+    }
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
