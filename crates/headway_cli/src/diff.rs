@@ -14,8 +14,6 @@ use headway::wordid;
 
 use nostrdb_net::relay::sync::Result;
 
-use crate::review::host_name;
-
 /// The patch size `diff` prints before cutting it off.
 const MAX_PATCH_BYTES: usize = 4 << 20;
 
@@ -37,8 +35,9 @@ pub(crate) fn print_diff(
         .find(|c| c.id == id)
         .ok_or_else(|| format!("no card matching '{sel}'"))?;
     let card_ref = wordid::card_ref(&view.id, id.bytes());
-    let local_host = host_name().unwrap_or_default();
-    let checkouts = known_checkouts(view, &local_host);
+    let local_host = git::host_name().unwrap_or_default();
+    let cwd = git::toplevel(Path::new(".")).ok().map(PathBuf::from);
+    let checkouts = git::known_checkouts(view, &local_host, cwd);
 
     let resolved = match pick_record(&card.reviews, record)? {
         Some(review) => {
@@ -95,24 +94,6 @@ fn pick_record<'a>(
         })
         .map(Some)
         .ok_or_else(|| format!("no review record with a commit starting '{prefix}'").into())
-}
-
-/// The checkouts on this host worth trying before the cache: the one the
-/// command runs in, then every path a review record on this board says was
-/// recorded here. Deduplicated, in that order.
-fn known_checkouts(view: &BoardView, local_host: &str) -> Vec<PathBuf> {
-    let cwd = git::toplevel(Path::new(".")).ok();
-    let recorded = event::all_cards(view)
-        .flat_map(|c| c.reviews.iter())
-        .filter(|r| r.fields.host.as_deref() == Some(local_host))
-        .filter_map(|r| r.fields.path.clone());
-    let mut out: Vec<PathBuf> = Vec::new();
-    for path in cwd.into_iter().chain(recorded).map(PathBuf::from) {
-        if !out.contains(&path) {
-            out.push(path);
-        }
-    }
-    out
 }
 
 #[cfg(test)]

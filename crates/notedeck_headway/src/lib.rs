@@ -13,12 +13,13 @@ mod cursor;
 mod keys;
 mod nav;
 mod renderers;
+mod review;
 mod tools;
 mod ui;
 
 use cache::BoardCache;
 pub use nav::HeadwayRoute;
-use nav::{NavPos, NavReconcile, reconcile_nav};
+use nav::{NavReconcile, reconcile_nav};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
 use ui::{BoardNav, CardBoardOp, board_ui, card_title, empty_state};
 pub use ui::{
@@ -765,6 +766,8 @@ impl App for Headway {
             .set_selected(route.and_then(|r| r.selected_card()));
         self.state
             .set_graph_epic(route.and_then(|r| r.graph_epic()));
+        self.state
+            .set_review_card(route.and_then(|r| r.review_card()));
         self.render_board(ctx, ui)
     }
 
@@ -794,7 +797,7 @@ impl App for Headway {
     /// placement hasn't folded yet) and selects the card the token already names.
     ///
     /// Why that costs exactly one history entry: `render_nav` seeds the pre-render
-    /// [`NavPos`] from the token as `Card(card)`, and
+    /// [`NavPos`](nav::NavPos) from the token as `Card(card)`, and
     /// [`process_pending_open`](Self::process_pending_open)'s `open_card(card)`
     /// selects that *same* card, so the post-render diff is `Card(card) →
     /// Card(card)` and [`reconcile_nav`] enqueues nothing. The chrome's push is the
@@ -829,7 +832,7 @@ impl Headway {
     /// nav route by [`render_nav`](Self::render_nav) in production, or persisted
     /// across frames in a chrome-less embedding. The UI may then move (a card click,
     /// a detail close, a subissue swap, opening or closing an epic's graph); we diff
-    /// the resulting [`NavPos`] against where it started into a nav request
+    /// the resulting [`NavPos`](nav::NavPos) against where it started into a nav request
     /// afterward — a drill (board→card, card→card, card→graph) pushes a walkable
     /// entry, and stepping shallower (close a card, close the graph) is a single
     /// global-back. Card→card pushes rather than replaces so the back trail stays
@@ -851,7 +854,7 @@ impl Headway {
         // board↔card↔graph move into a nav request afterward. In production this is
         // the route `render_nav` just seeded; a cross-app `open` may override it
         // below.
-        let before = NavPos::of(self.state.selected(), self.state.graph_epic());
+        let before = self.state.nav_pos();
 
         // Navigate to an entity a click elsewhere asked us to open (see `open`).
         self.process_pending_open(ctx, &author);
@@ -956,7 +959,7 @@ impl Headway {
         // UI left, comparing it against `before` (seeded from this entry's route).
         // The card/epic title is snapshotted from the freshly-folded `view` for the
         // entry's history-dropdown label.
-        let after = NavPos::of(self.state.selected(), self.state.graph_epic());
+        let after = self.state.nav_pos();
         match reconcile_nav(before, after) {
             // Opening a card — from the board, or drilling from one card into a
             // subissue/parent/blocker — pushes a new detail entry (the chrome tags
@@ -976,6 +979,12 @@ impl Headway {
             Some(NavReconcile::PushGraph(epic)) => ctx
                 .navigator
                 .push_active_route(HeadwayRoute::graph(epic, card_title(&view, epic))),
+            // Opening a card's review pane from its detail pushes a review entry
+            // one level deeper, a sibling of the graph's, so a global-back
+            // returns to the card.
+            Some(NavReconcile::PushReview(card)) => ctx
+                .navigator
+                .push_active_route(HeadwayRoute::review(card, card_title(&view, card))),
             // Leaving a card (close, delete, or a card that vanished) or closing the
             // graph steps one entry back in the global history.
             Some(NavReconcile::Back) => ctx.navigator.back(),

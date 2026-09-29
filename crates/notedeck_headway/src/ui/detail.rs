@@ -9,12 +9,15 @@ use notedeck::tokens::{
     RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THIN,
 };
 
+use super::review::review_section_ui;
 use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
     priority_label, section_label, status_icon_ui,
 };
 use super::{BoardUiState, EditMode, find_card, seed_edit_mode};
-use crate::event::{self, ActivityKind, ActivityView, BoardView, ColumnPos, CommentView, Priority};
+use crate::event::{
+    self, ActivityKind, ActivityView, BoardView, ColumnPos, CommentView, Priority, ReviewView,
+};
 use crate::store::{self, BoardAction};
 
 /// Max width the full-pane card detail body is constrained to, so a card reads
@@ -110,6 +113,8 @@ pub(super) fn card_detail_pane_ui(
 
     let ctx = DetailCtx {
         card_id,
+        reviews: &card.reviews,
+        terminal: view.columns[current_col].terminal,
         card_ref: headway::wordid::card_ref(&view.id, card_id.bytes()),
         current_col,
         title: card.title.clone(),
@@ -281,8 +286,14 @@ fn detail_pane_topbar_ui(
 
 /// The card data the detail sheet needs, copied out of the (immutable)
 /// `BoardView` so the sheet body doesn't borrow it while we also mutate `state`.
-struct DetailCtx {
+struct DetailCtx<'a> {
     card_id: NoteId,
+    /// The card's review records, newest first — borrowed off the frame's view,
+    /// which outlives the pane, rather than cloned every frame.
+    reviews: &'a [ReviewView],
+    /// The card sits in a terminal ("done") column, so its Review section is
+    /// offered even with no records (the pane then searches by trailer).
+    terminal: bool,
     /// The card's human-friendly reference, e.g. `headway:maple-river-canyon`:
     /// the board slug plus the word-encoded event id (see [`headway::wordid`]).
     card_ref: String,
@@ -515,6 +526,14 @@ fn detail_body_ui(
         if ui.add(graph_btn).clicked() {
             state.open_graph(ctx.card_id);
         }
+    }
+
+    // The commit(s) that finished the card, and the entry point into its review
+    // pane — which, like the graph, `reconcile_nav` turns into a pushed
+    // `HeadwayRoute::Review` entry.
+    if !ctx.reviews.is_empty() || ctx.terminal {
+        ui.add_space(SPACING_LG);
+        review_section_ui(ui, theme, app_ctx, ctx.card_id, ctx.reviews, state);
     }
 }
 

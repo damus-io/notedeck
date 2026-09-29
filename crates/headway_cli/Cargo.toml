@@ -11,7 +11,6 @@ path = "src/main.rs"
 headway = { workspace = true }
 nostrdb_net = { workspace = true }
 enostr = { workspace = true }
-gethostname = "1"
 hex = { workspace = true }
 nostrdb = { workspace = true }
 serde_json = { workspace = true }

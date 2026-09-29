@@ -1642,6 +1642,136 @@ fn render_nav_seeds_board_and_card_from_the_route_token() {
     wait_for_label(&mut harness, "7 cards · 5 columns");
 }
 
+/// Run `git -C <dir> <args>` for the review fixture repo, panicking with git's
+/// stderr on failure; returns stdout, trimmed.
+fn fixture_git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Pump frames until at least one widget carries `label`. Unlike
+/// [`wait_for_label`] this tolerates several (a diff's file path is both a
+/// summary row and a file header).
+fn wait_for_any_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        if harness.query_all_by_label(label).next().is_some() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {label:?}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Behavioural (no lavapipe): a card carrying a review record shows it in the
+/// detail's Review section, and "Review diff" opens the review pane, which
+/// resolves the commit off the UI thread and draws its diff. The record points
+/// at a fixture repo on this host, so resolution is local — no fetch — and the
+/// test waits on the diff's file path, the pane's terminal state. Opening the
+/// pane also pushes exactly one `Review` global-nav entry for the card.
+#[test]
+fn review_diff_opens_the_review_pane_with_the_commit() {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    const CARD: &str = "Define nostr event model for boards";
+    const FILE: &str = "src/reviewed.rs";
+
+    // A one-commit repo touching FILE, on a named branch.
+    let repo = tempfile::tempdir().expect("repo dir");
+    let dir = repo.path();
+    fixture_git(dir, &["init", "-q", "-b", "review-branch"]);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join(FILE), "fn reviewed() {}\n").unwrap();
+    fixture_git(dir, &["add", "."]);
+    fixture_git(
+        dir,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "reviewed: add the reviewed fn",
+        ],
+    );
+    let sha = fixture_git(dir, &["rev-parse", "HEAD"]);
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let card = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let secret = state.account.secret_key.secret_bytes();
+        let app_ctx = &mut state.notedeck.app_context();
+        let card = demo_card_id(app_ctx.ndb, &author, CARD);
+
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let reducer = headway::event::fold_board(app_ctx.ndb, &txn, &author).expect("folded");
+        let boards = reducer.finalize();
+        let view =
+            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+        store::apply(
+            app_ctx.ndb,
+            store::BOARD_ID,
+            view,
+            &author,
+            &store::Signer::new(&secret, None),
+            store::BoardAction::AddReview {
+                card,
+                review: event::ReviewFields {
+                    commit: Some(sha.clone()),
+                    title: Some("reviewed: add the reviewed fn".to_string()),
+                    branch: Some("review-branch".to_string()),
+                    // Recorded on this host, so the resolver uses `path` itself.
+                    host: headway::git::host_name(),
+                    path: Some(dir.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            },
+            &mut store::NoPublish,
+        );
+        card
+    };
+
+    harness.get_by_label(CARD).simulate_click();
+    // The record's short sha is the detail row's own button, once it folds in.
+    wait_for_label(&mut harness, &sha[..12]);
+    harness.get_by_label("⧉ Review diff").click();
+    wait_for_any_label(&mut harness, FILE);
+
+    let requests = harness.state_mut().notedeck.app_context().navigator.take();
+    let reviews: Vec<&HeadwayRoute> = requests
+        .iter()
+        .filter_map(|req| match req {
+            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            _ => None,
+        })
+        .filter(|route| route.review_card().is_some())
+        .collect();
+    assert_eq!(reviews.len(), 1, "opening the review pushes one entry");
+    assert_eq!(reviews[0].review_card(), Some(card));
+    assert_eq!(reviews[0].selected_card(), Some(card));
+
+    // Escape closes the pane back to the card's detail.
+    harness.press_key(egui::Key::Escape);
+    wait_for_label(&mut harness, "⧉ Review diff");
+}
+
 /// Behavioural (no lavapipe): clicking a card also puts the board's keyboard
 /// cursor on it, and the cursor survives the detail closing, so backing out
 /// lands with the ring on the card you came from. The cursor is deliberately

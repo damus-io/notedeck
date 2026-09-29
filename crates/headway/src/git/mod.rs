@@ -19,8 +19,10 @@ pub use resolve::{
 };
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::event::{self, BoardView};
 
 /// A git invocation that failed: either `git` couldn't be run at all, or it ran
 /// and exited non-zero. `stderr` is git's own message, trimmed.
@@ -118,6 +120,34 @@ pub fn repo_identity(dir: &Path, sha: &str) -> Result<String, GitError> {
         command: format!("rev-list --max-parents=0 {sha}"),
         stderr: "no root commit".to_string(),
     })
+}
+
+/// This machine's hostname, the value a review record's `host` is compared
+/// against. `None` when the OS gives back something unusable.
+pub fn host_name() -> Option<String> {
+    let host = gethostname::gethostname()
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    (!host.is_empty()).then_some(host)
+}
+
+/// The checkouts on this host worth trying before the bare cache: `first` (the
+/// CLI's own working checkout, say), then every `path` a review record on the
+/// board says was recorded on `local_host`. Deduplicated, in that order.
+pub fn known_checkouts(view: &BoardView, local_host: &str, first: Option<PathBuf>) -> Vec<PathBuf> {
+    let recorded = event::all_cards(view)
+        .flat_map(|c| c.reviews.iter())
+        .filter(|r| r.fields.host.as_deref() == Some(local_host))
+        .filter_map(|r| r.fields.path.as_deref())
+        .map(PathBuf::from);
+    let mut out: Vec<PathBuf> = Vec::new();
+    for path in first.into_iter().chain(recorded) {
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
 }
 
 /// The smallest non-empty line of `rev-list --max-parents=0` output.

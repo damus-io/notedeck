@@ -8,8 +8,8 @@
 //!
 //! This module owns the board's top-level [`board_ui`] and its [`BoardUiState`];
 //! each surface it draws lives in a submodule: the [`header`], the kanban
-//! [`grid`], the card [`detail`] pane, the dependency [`graph`], the
-//! [`archived`] sheet, the board [`filter`], the [`inline`] widgets the
+//! [`grid`], the card [`detail`] pane, the dependency [`graph`], the commit
+//! [`review`] pane, the [`archived`] sheet, the board [`filter`], the [`inline`] widgets the
 //! `KindRenderer`s use, and the small shared [`widgets`].
 
 use std::collections::{HashMap, HashSet};
@@ -22,6 +22,7 @@ use notedeck_ui::chord::ChordState;
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView};
 use crate::keys::{self, BoardPending};
+use crate::nav::NavPos;
 use crate::store::BoardAction;
 
 mod archived;
@@ -31,6 +32,7 @@ mod graph;
 mod grid;
 mod header;
 mod inline;
+mod review;
 mod widgets;
 
 pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
@@ -45,6 +47,7 @@ use filter::filter_ref_jump;
 use graph::graph_view_ui;
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
+use review::{ReviewUi, review_pane_ui};
 
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
@@ -179,6 +182,10 @@ pub struct BoardUiState {
     /// pointer has usually left the handle. Mirrors notebook's `connecting`.
     /// Transient: cleared whenever the graph view is left.
     graph_connecting: Option<NoteId>,
+    /// The commit review pane: which card's review is open (seeded from the nav
+    /// route like [`graph_epic`](Self::graph_epic)), the picked record, and the
+    /// off-thread loader its diffs arrive through.
+    review: ReviewUi,
 }
 
 impl BoardUiState {
@@ -231,6 +238,25 @@ impl BoardUiState {
     /// the result back into a nav request.
     pub fn set_graph_epic(&mut self, epic: Option<NoteId>) {
         self.graph_epic = epic;
+    }
+
+    /// The card whose review pane is open, if any.
+    pub fn review_card(&self) -> Option<NoteId> {
+        self.review.card()
+    }
+
+    /// Seed whether the review pane is open from the chrome global-history route
+    /// this frame renders, the review counterpart to
+    /// [`set_graph_epic`](Self::set_graph_epic). The picked record and the loaded
+    /// diffs are left alone, so back/forward onto a review returns to where it was.
+    pub fn set_review_card(&mut self, card: Option<NoteId>) {
+        self.review.set_card(card);
+    }
+
+    /// Which view depth this state shows (board, a card, a graph or a review),
+    /// the value the app diffs across a render into a nav request.
+    pub(crate) fn nav_pos(&self) -> NavPos {
+        NavPos::of(self.selected, self.graph_epic, self.review.card())
     }
 
     /// The card whose detail is currently open, if any.
@@ -418,6 +444,17 @@ pub fn board_ui(
         state.graph_epic = None;
         state.graph_scene_rect = None;
         state.graph_connecting = None;
+    }
+
+    // A card's review pane takes over the pane the same way, entered from (and
+    // drawn over) that card's detail. A card that has left the board drops back
+    // to its detail branch below, which drops it in turn.
+    if let Some(card) = state.review.card() {
+        if let Some((_, card)) = find_card(view, card) {
+            review_pane_ui(ui, theme, app_ctx, view, card, state);
+            return None;
+        }
+        state.review.close();
     }
 
     // A selected card takes over the whole view as a full-pane detail screen,

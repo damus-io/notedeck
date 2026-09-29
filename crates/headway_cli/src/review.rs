@@ -45,7 +45,7 @@ pub(crate) fn gather(flags: ReviewFlags) -> Result<ReviewFields> {
     Ok(ReviewFields {
         title: Some(git::commit_title(&dir, &commit)?),
         branch: git::current_branch(&dir)?,
-        host: host_name(),
+        host: git::host_name(),
         path: Some(git::toplevel(&dir)?),
         repo: Some(git::repo_identity(&dir, &commit)?),
         agentium: match flags.agentium {
@@ -61,15 +61,6 @@ pub(crate) fn gather(flags: ReviewFlags) -> Result<ReviewFields> {
         remote: flags.remote,
         commit: Some(commit),
     })
-}
-
-/// This machine's hostname, or `None` when the OS gives back something unusable.
-pub(crate) fn host_name() -> Option<String> {
-    let host = gethostname::gethostname()
-        .to_string_lossy()
-        .trim()
-        .to_string();
-    (!host.is_empty()).then_some(host)
 }
 
 /// `value` as an `agentium:<word-id>` session ref, or `None` when it isn't one

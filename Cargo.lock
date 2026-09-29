@@ -3631,6 +3631,7 @@ dependencies = [
 name = "headway"
 version = "0.11.0-beta.1"
 dependencies = [
+ "gethostname",
  "hex",
  "nostr 0.37.0",
  "nostrdb",
@@ -3649,7 +3650,6 @@ dependencies = [
  "bech32",
  "enostr",
  "futures-util",
- "gethostname",
  "headway",
  "hex",
  "nostrdb",
