@@ -870,158 +870,210 @@ pub enum SandToken {
     Whitespace,
 }
 
-struct LangConfig<'a> {
-    keywords: &'a [&'a str],
+struct LangConfig {
+    keywords: &'static [&'static str],
     double_slash_comments: bool,
     hash_comments: bool,
 }
 
-impl<'a> LangConfig<'a> {
-    fn from_language(language: &str) -> Option<Self> {
-        match language.to_lowercase().as_str() {
-            "rs" | "rust" => Some(Self {
-                keywords: &[
-                    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
-                    "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-                    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
-                    "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
-                    "while",
-                ],
-                double_slash_comments: true,
-                hash_comments: false,
-            }),
-            "c" | "h" | "hpp" | "cpp" | "c++" => Some(Self {
-                keywords: &[
-                    "auto",
-                    "break",
-                    "case",
-                    "char",
-                    "const",
-                    "continue",
-                    "default",
-                    "do",
-                    "double",
-                    "else",
-                    "enum",
-                    "extern",
-                    "false",
-                    "float",
-                    "for",
-                    "goto",
-                    "if",
-                    "inline",
-                    "int",
-                    "long",
-                    "namespace",
-                    "new",
-                    "nullptr",
-                    "return",
-                    "short",
-                    "signed",
-                    "sizeof",
-                    "static",
-                    "struct",
-                    "switch",
-                    "template",
-                    "this",
-                    "true",
-                    "typedef",
-                    "union",
-                    "unsigned",
-                    "using",
-                    "virtual",
-                    "void",
-                    "volatile",
-                    "while",
-                    "class",
-                    "public",
-                    "private",
-                    "protected",
-                ],
-                double_slash_comments: true,
-                hash_comments: false,
-            }),
-            "py" | "python" => Some(Self {
-                keywords: &[
-                    "and", "as", "assert", "break", "class", "continue", "def", "del", "elif",
-                    "else", "except", "False", "finally", "for", "from", "global", "if", "import",
-                    "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise",
-                    "return", "True", "try", "while", "with", "yield",
-                ],
-                double_slash_comments: false,
-                hash_comments: true,
-            }),
-            "toml" => Some(Self {
-                keywords: &[],
-                double_slash_comments: false,
-                hash_comments: true,
-            }),
-            "bash" | "sh" | "zsh" => Some(Self {
-                keywords: &[
-                    "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until",
-                    "do", "done", "in", "function", "return", "local", "export", "set", "unset",
-                ],
-                double_slash_comments: false,
-                hash_comments: true,
-            }),
-            _ => None,
-        }
+/// Language names (matched case-insensitively) and the tokenizer config for
+/// each. A table rather than a `match` on a lowercased copy so that the
+/// per-frame lookup in [`tokenize_code`] never allocates.
+const LANGS: &[(&[&str], LangConfig)] = &[
+    (
+        &["rs", "rust"],
+        LangConfig {
+            keywords: &[
+                "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
+                "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match",
+                "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct",
+                "super", "trait", "true", "type", "unsafe", "use", "where", "while",
+            ],
+            double_slash_comments: true,
+            hash_comments: false,
+        },
+    ),
+    (
+        &["c", "h", "hpp", "cpp", "c++"],
+        LangConfig {
+            keywords: &[
+                "auto",
+                "break",
+                "case",
+                "char",
+                "const",
+                "continue",
+                "default",
+                "do",
+                "double",
+                "else",
+                "enum",
+                "extern",
+                "false",
+                "float",
+                "for",
+                "goto",
+                "if",
+                "inline",
+                "int",
+                "long",
+                "namespace",
+                "new",
+                "nullptr",
+                "return",
+                "short",
+                "signed",
+                "sizeof",
+                "static",
+                "struct",
+                "switch",
+                "template",
+                "this",
+                "true",
+                "typedef",
+                "union",
+                "unsigned",
+                "using",
+                "virtual",
+                "void",
+                "volatile",
+                "while",
+                "class",
+                "public",
+                "private",
+                "protected",
+            ],
+            double_slash_comments: true,
+            hash_comments: false,
+        },
+    ),
+    (
+        &["py", "python"],
+        LangConfig {
+            keywords: &[
+                "and", "as", "assert", "break", "class", "continue", "def", "del", "elif", "else",
+                "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is",
+                "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+                "try", "while", "with", "yield",
+            ],
+            double_slash_comments: false,
+            hash_comments: true,
+        },
+    ),
+    (
+        &["toml"],
+        LangConfig {
+            keywords: &[],
+            double_slash_comments: false,
+            hash_comments: true,
+        },
+    ),
+    (
+        &["bash", "sh", "zsh"],
+        LangConfig {
+            keywords: &[
+                "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until", "do",
+                "done", "in", "function", "return", "local", "export", "set", "unset",
+            ],
+            double_slash_comments: false,
+            hash_comments: true,
+        },
+    ),
+];
+
+impl LangConfig {
+    /// The config for a language name or file extension, ignoring ASCII case.
+    fn from_language(language: &str) -> Option<&'static Self> {
+        LANGS
+            .iter()
+            .find(|(names, _)| names.iter().any(|n| n.eq_ignore_ascii_case(language)))
+            .map(|(_, config)| config)
     }
 }
 
-/// Tokenize source code into (token_type, text_slice) pairs.
-/// Separated from rendering so it can be unit tested.
-pub fn tokenize_code<'a>(code: &'a str, language: &str) -> Vec<(SandToken, &'a str)> {
-    let Some(lang) = LangConfig::from_language(language) else {
-        return vec![(SandToken::Plain, code)];
-    };
+/// Lazy tokenizer returned by [`tokenize_code`].
+///
+/// Each [`Iterator::next`] consumes one token's prefix of the remaining input,
+/// so highlighting a line allocates nothing: callers run it inside per-frame
+/// ui functions (diff rows, markdown code blocks).
+pub struct CodeTokens<'a> {
+    /// Input not yet tokenized.
+    rest: &'a str,
+    /// `None` for an unknown language: `rest` is then yielded whole, once,
+    /// as a single [`SandToken::Plain`] token (even when empty).
+    lang: Option<&'static LangConfig>,
+    /// Set once the unknown-language plain token has been yielded.
+    done: bool,
+}
 
-    let mut tokens = Vec::new();
-    let mut text = code;
+impl<'a> Iterator for CodeTokens<'a> {
+    type Item = (SandToken, &'a str);
 
-    while !text.is_empty() {
-        if (lang.double_slash_comments && text.starts_with("//"))
+    fn next(&mut self) -> Option<Self::Item> {
+        let Some(lang) = self.lang else {
+            if self.done {
+                return None;
+            }
+            self.done = true;
+            return Some((SandToken::Plain, std::mem::take(&mut self.rest)));
+        };
+
+        let text = self.rest;
+        if text.is_empty() {
+            return None;
+        }
+
+        let (token, end) = if (lang.double_slash_comments && text.starts_with("//"))
             || (lang.hash_comments && text.starts_with('#'))
         {
-            let end = text.find('\n').unwrap_or(text.len());
-            tokens.push((SandToken::Comment, &text[..end]));
-            text = &text[end..];
-        } else if text.starts_with('"') {
-            let end = text[1..]
+            (SandToken::Comment, text.find('\n').unwrap_or(text.len()))
+        } else if let Some(body) = text.strip_prefix('"') {
+            let end = body
                 .find('"')
                 .map(|i| i + 2)
                 .or_else(|| text.find('\n'))
                 .unwrap_or(text.len());
-            tokens.push((SandToken::String, &text[..end]));
-            text = &text[end..];
+            (SandToken::String, end)
         } else if text.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
             let end = text[1..]
                 .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                 .map_or_else(|| text.len(), |i| i + 1);
-            let word = &text[..end];
-            let token = if lang.keywords.contains(&word) {
+            let token = if lang.keywords.contains(&&text[..end]) {
                 SandToken::Keyword
             } else {
                 SandToken::Literal
             };
-            tokens.push((token, word));
-            text = &text[end..];
+            (token, end)
         } else if text.starts_with(|c: char| c.is_ascii_whitespace()) {
             let end = text[1..]
                 .find(|c: char| !c.is_ascii_whitespace())
                 .map_or_else(|| text.len(), |i| i + 1);
-            tokens.push((SandToken::Whitespace, &text[..end]));
-            text = &text[end..];
+            (SandToken::Whitespace, end)
         } else {
             let mut it = text.char_indices();
             it.next();
-            let end = it.next().map_or(text.len(), |(idx, _)| idx);
-            tokens.push((SandToken::Punctuation, &text[..end]));
-            text = &text[end..];
-        }
-    }
+            (
+                SandToken::Punctuation,
+                it.next().map_or(text.len(), |(idx, _)| idx),
+            )
+        };
 
-    tokens
+        self.rest = &text[end..];
+        Some((token, &text[..end]))
+    }
+}
+
+/// Tokenize source code into (token_type, text_slice) pairs, lazily.
+/// Separated from rendering so it can be unit tested.
+///
+/// An unknown `language` yields the whole input as one [`SandToken::Plain`]
+/// token.
+pub fn tokenize_code<'a>(code: &'a str, language: &str) -> CodeTokens<'a> {
+    CodeTokens {
+        rest: code,
+        lang: LangConfig::from_language(language),
+        done: false,
+    }
 }
 
 /// Simple syntax highlighter with sand-colored theme.
@@ -1373,15 +1425,12 @@ mod tests {
 
     /// Helper: collect (token, text) pairs
     fn tokens<'a>(code: &'a str, lang: &str) -> Vec<(SandToken, &'a str)> {
-        tokenize_code(code, lang)
+        tokenize_code(code, lang).collect()
     }
 
     /// Reassembled tokens must equal the original input (no bytes lost or duplicated)
     fn assert_roundtrip(code: &str, lang: &str) {
-        let result: String = tokenize_code(code, lang)
-            .into_iter()
-            .map(|(_, s)| s)
-            .collect();
+        let result: String = tokenize_code(code, lang).map(|(_, s)| s).collect();
         assert_eq!(result, code, "roundtrip failed for lang={lang}");
     }
 
@@ -1452,11 +1501,22 @@ mod tests {
         assert_eq!(toks, vec![(SandToken::Plain, "plain text")]);
     }
 
+    #[test]
+    fn test_language_name_ignores_case() {
+        assert_eq!(tokens("fn main", "RUST"), tokens("fn main", "rust"));
+        assert_eq!(tokens("def f", "Py")[0], (SandToken::Keyword, "def"));
+    }
+
+    #[test]
+    fn test_unknown_lang_empty_input_is_one_plain_token() {
+        assert_eq!(tokens("", "text"), vec![(SandToken::Plain, "")]);
+    }
+
     // ---- Edge cases for string indexing ----
 
     #[test]
     fn test_empty_input() {
-        assert!(tokenize_code("", "rust").is_empty());
+        assert!(tokenize_code("", "rust").next().is_none());
     }
 
     #[test]

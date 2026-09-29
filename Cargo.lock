@@ -5797,6 +5797,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "notedeck",
+ "notedeck_testing",
  "poll-promise",
  "pollster",
  "profiling",
