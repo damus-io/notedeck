@@ -1,24 +1,31 @@
 //! [`git_patch_ui`]: a whole [`GitPatch`] in one scroll area — a summary of
-//! the changed files, then each file as a collapsible section of hunks drawn
-//! with [`DiffLines`].
+//! the changed files, then each file as a collapsible section of hunks, whose
+//! lines look like [`DiffLines`](super::DiffLines)' rows.
 //!
 //! Every row (summary line, file header, hunk header, diff line) is the same
 //! height, so the patch is one virtual list: only the rows in the viewport are
 //! laid out, and jumping to a file is arithmetic on row indices. A 5k-line
-//! patch costs what its visible screenful costs.
+//! patch costs what its visible screenful costs. Diff lines are laid out once
+//! as they scroll into view and kept in [`GitPatchState`], so a frame that
+//! repaints the same view lays none of them out again.
 
 use super::patch::{FilePatch, FileStatus, GitPatch, LineKind};
-use super::{DiffLines, DELETE_COLOR, INSERT_COLOR, LINE_NUMBER_COLOR};
+use super::{
+    file_extension, RowGalleys, DELETE_COLOR, DIFF_FONT_SIZE, INSERT_COLOR, LINE_NUMBER_COLOR,
+};
+use egui::emath::GuiRounding;
+use egui::epaint::{mutex::Mutex, TextShape, TextureAtlas};
+use egui::text_selection::LabelSelectionState;
 use egui::{
-    Color32, FontId, Rect, RichText, ScrollArea, Sense, Ui, UiBuilder, WidgetInfo, WidgetType,
+    Color32, FontId, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder, WidgetInfo,
+    WidgetType,
 };
 use notedeck::{tr, tr_plural, Localization};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Files longer than this (in diff lines) start collapsed.
 const COLLAPSE_LINES: usize = 1000;
-
-/// Font size of diff content, as [`DiffLines`] draws it.
-const DIFF_FONT_SIZE: f32 = 12.0;
 
 /// A scroll the caller asks for; applied on the next [`git_patch_ui`] pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,6 +69,110 @@ pub struct GitPatchState {
     viewport_height: f32,
     /// The file whose row is at the top of the view, if any.
     current_file: Option<usize>,
+    /// The diff lines in view, laid out.
+    galleys: LineGalleys,
+}
+
+/// Laid-out diff lines, kept across passes so a line is laid out once, when
+/// it scrolls into view, rather than on every pass it stays there: repainting
+/// the same view builds no gutter strings, layout jobs or galleys.
+///
+/// Holds only the lines drawn in the latest pass, so its size follows the
+/// view, not the patch.
+#[derive(Clone, Default)]
+struct LineGalleys {
+    /// What the galleys were laid out against; when it changes they are
+    /// dropped and laid out again.
+    key: Option<GalleyKey>,
+    /// Per `(file, index into its lines)`.
+    lines: HashMap<(usize, usize), CachedLine>,
+    /// Counts passes, to tell the lines drawn in this one from the rest.
+    pass: u64,
+}
+
+/// What a laid-out diff line depends on besides its text.
+#[derive(Clone)]
+struct GalleyKey {
+    /// The font atlas the glyphs were placed in. egui replaces it when the
+    /// scale changes or it fills up, and a galley laid out against the old
+    /// one points at glyphs that are gone. Held (not just its address) so the
+    /// comparison can't be fooled by a new atlas reusing a freed one's memory.
+    atlas: Arc<Mutex<TextureAtlas>>,
+    /// Picks the syntax theme.
+    dark_mode: bool,
+    /// Colours an unchanged line's prefix.
+    text_color: Color32,
+}
+
+impl GalleyKey {
+    fn of(ui: &Ui) -> Self {
+        Self {
+            atlas: ui.fonts(|f| f.texture_atlas()),
+            dark_mode: ui.visuals().dark_mode,
+            text_color: ui.visuals().text_color(),
+        }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.atlas, &other.atlas)
+            && self.dark_mode == other.dark_mode
+            && self.text_color == other.text_color
+    }
+}
+
+#[derive(Clone)]
+struct CachedLine {
+    galleys: RowGalleys,
+    /// The last pass that drew it.
+    pass: u64,
+}
+
+impl LineGalleys {
+    /// Start a pass: drop everything if what it was laid out against changed.
+    fn begin_pass(&mut self, ui: &Ui) {
+        let key = GalleyKey::of(ui);
+        if !self.key.as_ref().is_some_and(|k| k.same_as(&key)) {
+            self.lines.clear();
+            self.key = Some(key);
+        }
+        self.pass += 1;
+    }
+
+    /// File `f`'s line `i`, laid out now if it wasn't in view last pass.
+    fn get(&mut self, patch: &GitPatch, f: usize, i: usize, ui: &Ui) -> Option<RowGalleys> {
+        let pass = self.pass;
+        if let Some(line) = self.lines.get_mut(&(f, i)) {
+            line.pass = pass;
+            return Some(line.galleys.clone());
+        }
+        let file = &patch.files()[f];
+        let row = patch.diff_row(&file.lines[i])?;
+        let lang = file_extension(file.path()).unwrap_or("text");
+        let galleys = RowGalleys::layout(&row, lang, ui.visuals().text_color(), ui);
+        self.lines.insert(
+            (f, i),
+            CachedLine {
+                galleys: galleys.clone(),
+                pass,
+            },
+        );
+        Some(galleys)
+    }
+
+    /// End a pass: forget the lines it didn't draw.
+    fn end_pass(&mut self) {
+        let pass = self.pass;
+        self.lines.retain(|_, line| line.pass == pass);
+    }
+}
+
+impl std::fmt::Debug for LineGalleys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LineGalleys")
+            .field("lines", &self.lines.len())
+            .field("pass", &self.pass)
+            .finish()
+    }
 }
 
 /// Localized one-line bodies for files without hunks.
@@ -302,6 +413,7 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
         };
     }
 
+    state.galleys.begin_pass(ui);
     let row_height = row_height(ui);
     let row_step = row_height + ui.spacing().item_spacing.y;
     let content_rows = state.layout(patch);
@@ -348,6 +460,7 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
         })
         .inner;
 
+    state.galleys.end_pass();
     state.offset = out.state.offset.y;
     state.viewport_height = out.inner_rect.height();
     let top_row = row_at(state.offset, row_step);
@@ -430,26 +543,78 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 );
             });
         }
-        Row::Line(f, i) => {
-            let file = &patch.files()[f];
-            let line = &file.lines[i];
-            match patch.diff_row(line) {
-                Some(diff_row) => {
-                    DiffLines::for_path(file.path()).show(std::iter::once(diff_row), ui);
-                }
-                None => {
-                    debug_assert_eq!(line.kind, LineKind::NoNewline);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(patch.text(line.text))
-                                .monospace()
-                                .size(DIFF_FONT_SIZE)
-                                .color(LINE_NUMBER_COLOR),
-                        );
-                    });
-                }
+        Row::Line(f, i) => match state.galleys.get(patch, f, i, ui) {
+            Some(galleys) => diff_line_ui(galleys, ui),
+            None => {
+                let line = &patch.files()[f].lines[i];
+                debug_assert_eq!(line.kind, LineKind::NoNewline);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(patch.text(line.text))
+                            .monospace()
+                            .size(DIFF_FONT_SIZE)
+                            .color(LINE_NUMBER_COLOR),
+                    );
+                });
             }
-        }
+        },
+    }
+}
+
+/// One diff line from its laid-out galleys: the gutter, then the content,
+/// placed as a `horizontal` of two labels would place them (left to right,
+/// vertically centred in the row) but without one, because a child `Ui`
+/// allocates, and so does building the labels' text.
+///
+/// The content is selectable like a label's; the gutter is only painted, so
+/// selecting code doesn't pick up its line numbers.
+fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) {
+    let RowGalleys { gutter, content } = galleys;
+    let height = ui.spacing().interact_size.y;
+    let gap = ui.spacing().item_spacing.x;
+    let min = ui.cursor().min;
+    let width = gutter.size().x + gap + content.size().x;
+    let row = Rect::from_min_size(min, egui::vec2(width, height));
+    let id = ui.advance_cursor_after_rect(row);
+
+    let centred = |x: f32, size: egui::Vec2| {
+        Rect::from_min_size(egui::pos2(x, row.center().y - size.y / 2.0), size).round_ui()
+    };
+    let gutter_rect = centred(min.x, gutter.size());
+    let content_rect = centred(gutter_rect.right() + gap, content.size());
+
+    let response = ui.interact(gutter_rect, id.with("gutter"), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, gutter.text()));
+    ui.painter()
+        .add(TextShape::new(gutter_rect.min, gutter, LINE_NUMBER_COLOR));
+
+    let selectable = ui.style().interaction.selectable_labels;
+    let mut sense = Sense::hover();
+    if selectable {
+        // As a selectable `Label` senses: drag selects, except on touch
+        // screens where it scrolls, and never take keyboard focus.
+        let select = if ui.input(|i| i.has_touch_screen()) {
+            Sense::click()
+        } else {
+            Sense::click_and_drag()
+        };
+        sense = sense.union(select - Sense::FOCUSABLE);
+    }
+    let response = ui.interact(content_rect, id.with("content"), sense);
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, content.text()));
+    let color = ui.visuals().text_color();
+    if selectable {
+        LabelSelectionState::label_text_selection(
+            ui,
+            &response,
+            content_rect.min,
+            content,
+            color,
+            Stroke::NONE,
+        );
+    } else {
+        ui.painter()
+            .add(TextShape::new(content_rect.min, content, color));
     }
 }
 

@@ -324,3 +324,27 @@ fn accesskit_toolbar_all_buttons_queryable() {
     harness.get_by_label("Messages");
     harness.get_by_label("Notifications");
 }
+
+// ---------------------------------------------------------------------------
+// Git patch widget
+// ---------------------------------------------------------------------------
+
+/// The multi-file patch view: summary, file headers, hunk headers and
+/// syntax-highlighted diff rows with their gutters.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_git_patch() {
+    use notedeck_ui::diff::{git_patch_ui, GitPatch, GitPatchState};
+
+    let patch = GitPatch::parse(include_str!("../src/diff/testdata/multi.patch"));
+    let state = GitPatchState::new(&patch, &mut notedeck::Localization::default());
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(640.0, 900.0))
+        .renderer(notedeck::software_renderer())
+        .build_ui_state(
+            |ui, (patch, state): &mut (GitPatch, GitPatchState)| git_patch_ui(patch, state, ui),
+            (patch, state),
+        );
+    harness.run();
+    harness.snapshot("git_patch");
+}

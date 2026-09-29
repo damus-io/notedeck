@@ -18,8 +18,9 @@ pub use patch_view::{git_patch_ui, GitPatchState, PatchScroll};
 
 use crate::markdown::{tokenize_code, SandCodeTheme};
 use egui::text::LayoutJob;
-use egui::{Color32, FontId, RichText, TextFormat, Ui};
+use egui::{Color32, FontId, Galley, RichText, TextFormat, Ui};
 use std::fmt::Write;
+use std::sync::Arc;
 
 /// Strong colour of a deleted line's `-` prefix.
 pub const DELETE_COLOR: Color32 = Color32::from_rgb(200, 60, 60);
@@ -27,6 +28,11 @@ pub const DELETE_COLOR: Color32 = Color32::from_rgb(200, 60, 60);
 pub const INSERT_COLOR: Color32 = Color32::from_rgb(60, 180, 60);
 /// Colour of the line-number gutter (and other diff chrome, like expand links).
 pub const LINE_NUMBER_COLOR: Color32 = Color32::from_rgb(128, 128, 128);
+
+/// Font size (monospace) of diff content.
+pub(crate) const DIFF_FONT_SIZE: f32 = 12.0;
+/// Font size (monospace) of the line-number gutter.
+const GUTTER_FONT_SIZE: f32 = 11.0;
 
 /// Soft background tints for syntax-highlighted diff lines.
 /// Uses premultiplied alpha: rgb(200,60,60) @ alpha=40 and rgb(60,180,60) @ alpha=40.
@@ -117,7 +123,7 @@ impl<'a> DiffLines<'a> {
 
     /// Draw `rows` into `ui`.
     pub fn show<'r>(self, rows: impl IntoIterator<Item = DiffRow<'r>>, ui: &mut Ui) {
-        let font_id = FontId::new(12.0, egui::FontFamily::Monospace);
+        let font_id = diff_font();
         let theme = SandCodeTheme::from_visuals(ui.visuals());
 
         for row in rows {
@@ -129,40 +135,85 @@ impl<'a> DiffLines<'a> {
         if self.gutter {
             ui.label(
                 RichText::new(gutter_text(row.old_no, row.new_no))
-                    .monospace()
-                    .size(11.0)
+                    .font(gutter_font())
                     .color(LINE_NUMBER_COLOR),
             );
         }
 
-        // Prefix (with its trailing space), its strong colour, and the
-        // background tint that signals diff status across the whole line.
-        let (prefix, prefix_color, line_bg) = match row.tag {
-            DiffTag::Equal => ("  ", ui.visuals().text_color(), Color32::TRANSPARENT),
-            DiffTag::Delete => ("- ", DELETE_COLOR, DELETE_BG),
-            DiffTag::Insert => ("+ ", INSERT_COLOR, INSERT_BG),
-        };
+        let plain = ui.visuals().text_color();
+        ui.label(row_job(row, self.lang, theme, font_id, plain));
+    }
+}
 
-        let mut job = LayoutJob::default();
-        job.append(
-            prefix,
-            0.0,
-            TextFormat {
-                font_id: font_id.clone(),
-                color: prefix_color,
-                background: line_bg,
-                ..Default::default()
-            },
-        );
+/// Font of diff content.
+fn diff_font() -> FontId {
+    FontId::monospace(DIFF_FONT_SIZE)
+}
 
-        let content = row.text.trim_end_matches('\n');
-        for (token, text) in tokenize_code(content, self.lang) {
-            let mut fmt = theme.format(token, font_id);
-            fmt.background = line_bg;
-            job.append(text, 0.0, fmt);
-        }
+/// Font of the line-number gutter.
+fn gutter_font() -> FontId {
+    FontId::monospace(GUTTER_FONT_SIZE)
+}
 
-        ui.label(job);
+/// The content of `row` as one layout job: its prefix (with its trailing
+/// space) in the prefix's strong colour, then its syntax-highlighted tokens,
+/// all on the background tint that signals diff status across the whole
+/// line. `plain` colours an unchanged line's blank prefix.
+fn row_job(
+    row: &DiffRow<'_>,
+    lang: &str,
+    theme: &SandCodeTheme,
+    font_id: &FontId,
+    plain: Color32,
+) -> LayoutJob {
+    let (prefix, prefix_color, line_bg) = match row.tag {
+        DiffTag::Equal => ("  ", plain, Color32::TRANSPARENT),
+        DiffTag::Delete => ("- ", DELETE_COLOR, DELETE_BG),
+        DiffTag::Insert => ("+ ", INSERT_COLOR, INSERT_BG),
+    };
+
+    let mut job = LayoutJob::default();
+    job.append(
+        prefix,
+        0.0,
+        TextFormat {
+            font_id: font_id.clone(),
+            color: prefix_color,
+            background: line_bg,
+            ..Default::default()
+        },
+    );
+
+    let content = row.text.trim_end_matches('\n');
+    for (token, text) in tokenize_code(content, lang) {
+        let mut fmt = theme.format(token, font_id);
+        fmt.background = line_bg;
+        job.append(text, 0.0, fmt);
+    }
+    job
+}
+
+/// A diff row laid out once, for callers that keep it across frames instead
+/// of laying the row out every frame like [`DiffLines`] does. Both galleys
+/// are unwrapped; an unchanged line's prefix is coloured `plain`.
+#[derive(Clone)]
+pub(crate) struct RowGalleys {
+    /// The old/new line numbers, as [`DiffLines`]' gutter shows them.
+    pub gutter: Arc<Galley>,
+    /// The prefix and highlighted content.
+    pub content: Arc<Galley>,
+}
+
+impl RowGalleys {
+    /// Lay out `row`, highlighting its content as `lang`.
+    pub fn layout(row: &DiffRow<'_>, lang: &str, plain: Color32, ui: &Ui) -> Self {
+        let theme = SandCodeTheme::from_visuals(ui.visuals());
+        let job = row_job(row, lang, &theme, &diff_font(), plain);
+        let gutter = gutter_text(row.old_no, row.new_no);
+        ui.fonts(|fonts| Self {
+            gutter: fonts.layout_no_wrap(gutter, gutter_font(), LINE_NUMBER_COLOR),
+            content: fonts.layout_job(job),
+        })
     }
 }
 
