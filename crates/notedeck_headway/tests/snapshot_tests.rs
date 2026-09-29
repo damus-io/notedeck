@@ -1919,6 +1919,172 @@ fn review_route_opens_the_record_it_names() {
     assert!(harness.query_by_label(other_subject).is_none());
 }
 
+/// Fold the demo board fresh off the harness's db and apply `action` to it,
+/// signed by the harness account.
+fn apply_demo_action(harness: &mut Harness<'static, HeadwayTestState>, action: store::BoardAction) {
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let secret = state.account.secret_key.secret_bytes();
+    let app_ctx = state.notedeck.app_context();
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+        .expect("folded")
+        .finalize();
+    let view = headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+    store::apply(
+        app_ctx.ndb,
+        store::BOARD_ID,
+        view,
+        &author,
+        &store::Signer::new(&secret, None),
+        action,
+        &mut store::NoPublish,
+    );
+}
+
+/// Move the demo card `card` to the end of the In Review column, and wait for
+/// the move to fold in so the next one ranks after it.
+fn move_to_in_review(harness: &mut Harness<'static, HeadwayTestState>, card: NoteId) {
+    let to_row = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+            .expect("folded")
+            .finalize();
+        let view =
+            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+        view.columns[IN_REVIEW_COL].cards.len()
+    };
+    apply_demo_action(
+        harness,
+        store::BoardAction::MoveCard {
+            card,
+            to_col: IN_REVIEW_COL,
+            to_row,
+        },
+    );
+    wait_for_card_column(harness, card, "In Review");
+}
+
+/// The demo board's In Review column, by index.
+const IN_REVIEW_COL: usize = 3;
+
+/// Every [`HeadwayRoute::ReviewQueue`] push the app has enqueued since boot
+/// (nothing drains the Navigator in these harnesses), and whether the last
+/// request of all was a back.
+fn queue_pushes_and_last_back(harness: &mut Harness<'static, HeadwayTestState>) -> (usize, bool) {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    let requests = harness.state_mut().notedeck.app_context().navigator.take();
+    let pushes = requests
+        .iter()
+        .filter_map(|req| match req {
+            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            _ => None,
+        })
+        .filter(|route| route.is_review_queue())
+        .count();
+    let last_back = matches!(requests.last(), Some(NavRequest::Back));
+    (pushes, last_back)
+}
+
+/// Move the demo cards titled `titles` into In Review, in order, each with a
+/// review record naming a fresh commit touching the matching `files` entry in
+/// a fixture repo at `dir` (on this host, so the pane resolves it with no
+/// fetch). Returns the cards' ids.
+fn seed_in_review(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    dir: &std::path::Path,
+    titles: &[&str],
+    files: &[&str],
+) -> Vec<NoteId> {
+    fixture_git(dir, &["init", "-q", "-b", "review-branch"]);
+    let ids: Vec<NoteId> = titles
+        .iter()
+        .map(|title| harness_card_id(harness, title))
+        .collect();
+    for ((&card, title), file) in ids.iter().zip(titles).zip(files) {
+        move_to_in_review(harness, card);
+        let subject = format!("queue: {title}");
+        let sha = fixture_commit(dir, file, "fn queued() {}\n", &subject);
+        apply_demo_action(
+            harness,
+            store::BoardAction::AddReview {
+                card,
+                review: event::ReviewFields {
+                    commit: Some(sha),
+                    title: Some(subject),
+                    branch: Some("review-branch".to_string()),
+                    host: headway::git::host_name(),
+                    path: Some(dir.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            },
+        );
+    }
+    ids
+}
+
+/// Behavioural (no lavapipe): `R` walks the board's In Review cards through the
+/// review pane in column order. `n` steps forward (the position and the card's
+/// title follow, and its record's commit diff loads), `p` steps back, and `q`
+/// leaves for the grid with the cursor on the card last shown. The whole walk
+/// is one global-nav entry, left with one back.
+#[test]
+fn review_queue_walks_the_in_review_column() {
+    const CARDS: [&str; 3] = [
+        "Inline card creation",
+        "Column reordering",
+        "Drag-and-drop between columns",
+    ];
+    const FILES: [&str; 3] = ["src/queue_one.rs", "src/queue_two.rs", "src/queue_three.rs"];
+
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &FILES);
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(&mut harness, "1 / 3");
+    wait_for_label(&mut harness, CARDS[0]);
+    wait_for_any_label(&mut harness, FILES[0]);
+
+    press_board_keys(&mut harness, &[egui::Key::N, egui::Key::N]);
+    wait_for_label(&mut harness, "3 / 3");
+    wait_for_label(&mut harness, CARDS[2]);
+    wait_for_any_label(&mut harness, FILES[2]);
+    assert!(
+        harness.query_by_label(CARDS[0]).is_none(),
+        "the first card is behind us, not peeked"
+    );
+
+    press_board_keys(&mut harness, &[egui::Key::P]);
+    wait_for_label(&mut harness, "2 / 3");
+    wait_for_label(&mut harness, CARDS[1]);
+
+    press_board_keys(&mut harness, &[egui::Key::Q]);
+    wait_for_label(&mut harness, "7 cards · 5 columns");
+    assert!(harness.query_by_label("Review queue").is_none());
+    assert_eq!(harness.state().headway.cursor(), Some(ids[1]));
+
+    let (pushes, last_back) = queue_pushes_and_last_back(&mut harness);
+    assert_eq!(pushes, 1, "stepping the queue pushes nothing more");
+    assert!(last_back, "leaving the queue is one back");
+}
+
+/// Behavioural (no lavapipe): with nothing in In Review, `R` says so in the
+/// header and opens nothing.
+#[test]
+fn review_queue_with_nothing_in_review_does_not_open() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(&mut harness, "Nothing in review");
+    assert!(harness.query_by_label("Review queue").is_none());
+    assert_eq!(queue_pushes_and_last_back(&mut harness).0, 0);
+}
+
 /// Behavioural (no lavapipe): clicking a card also puts the board's keyboard
 /// cursor on it, and the cursor survives the detail closing, so backing out
 /// lands with the ring on the card you came from. The cursor is deliberately
@@ -2521,6 +2687,61 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
         harness.query_by_label("7 cards · 5 columns").is_some(),
         "back returns to the board grid"
     );
+}
+
+/// Full chrome round-trip for the review queue: `R` pushes one entry, stepping
+/// through the queue pushes none, a chrome back returns to the board grid, and
+/// a forward onto the queue's entry reopens it on the card it was left at.
+#[test]
+fn chrome_nav_loop_review_queue_is_one_entry() {
+    use notedeck::{AppId, ChromeNavEntry, NavStack};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_in_review(
+        &mut harness,
+        repo.path(),
+        &CARDS,
+        &["src/queue_one.rs", "src/queue_two.rs"],
+    );
+
+    let mut stack: NavStack<ChromeNavEntry> =
+        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    chrome_frame(&mut harness, &mut stack);
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 2, "opening the queue pushes one entry");
+    assert!(
+        stack
+            .top()
+            .token
+            .downcast_ref::<HeadwayRoute>()
+            .is_some_and(HeadwayRoute::is_review_queue)
+    );
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 2");
+
+    harness.press_key(egui::Key::N);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "2 / 2");
+    wait_for_label(&mut harness, CARDS[1]);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 2, "stepping the queue pushes nothing");
+
+    stack.go_to_route(0);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "7 cards · 5 columns");
+    assert!(harness.query_by_label("Review queue").is_none());
+
+    assert!(stack.go_forward());
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "2 / 2");
+    wait_for_label(&mut harness, CARDS[1]);
+    assert_eq!(stack.len(), 2, "reopening the queue pushes nothing");
 }
 
 /// Title of the one card [`seed_roadmap_board`] puts on its board. It exists on no

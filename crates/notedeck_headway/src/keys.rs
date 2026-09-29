@@ -4,7 +4,10 @@
 //! the filter, `?` toggles the which-key strip and `Esc` drops the cursor.
 //! Shifted, `H`/`L`
 //! move the cursor card to the neighbouring column and `J`/`K` reorder it
-//! within its own.
+//! within its own, and `R` opens the review queue over the In Review column.
+//!
+//! The review queue has its own keymap, [`queue_keys`]: `n`/`]` and `p`/`[`
+//! step cards, `q`/`Esc` leave it for the grid.
 //!
 //! The chord mechanics (reading the press, timing out a pending `g`, swallowing
 //! handled keys) are [`notedeck_ui::chord`]'s; the grid math is
@@ -22,7 +25,7 @@ use notedeck_ui::keybind_hint::KeybindHint;
 use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
 use crate::store::BoardAction;
-use crate::ui::{BoardUiState, ViewFilter, filter_field_id};
+use crate::ui::{BoardUiState, QueueStep, ViewFilter, filter_field_id};
 
 /// Chord steps the board grid can be waiting on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +79,10 @@ pub(crate) const BOARD_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["a"],
         label: "archive",
+    },
+    KeyHint {
+        keys: &["R"],
+        label: "review queue",
     },
     KeyHint {
         keys: &["/"],
@@ -198,6 +205,7 @@ pub(crate) fn board_keys(
         (Key::L, true) => action = move_card(view, filter, state, CardMove::Across(Side::Right)),
         (Key::J, true) => action = move_card(view, filter, state, CardMove::Within(Vertical::Down)),
         (Key::K, true) => action = move_card(view, filter, state, CardMove::Within(Vertical::Up)),
+        (Key::R, true) => state.open_review_queue(view, ctx.input(|i| i.time)),
         _ => return None,
     }
 
@@ -208,17 +216,51 @@ pub(crate) fn board_keys(
     action
 }
 
+/// Read this frame's bare key press and apply it to the open review queue:
+/// `n`/`]` step to the next card and `p`/`[` to the previous (stopping at the
+/// ends), `q`/`Esc` leave for the grid with its cursor on the card last
+/// shown. Runs before the review pane lays out, so a handled key is
+/// swallowed before the pane (whose own Esc would only close the review) sees
+/// it.
+///
+/// Keys are left alone under the same rules as the grid's, bar the grid's own
+/// overlays: a focused widget, an open popup or menu, or a drag.
+pub(crate) fn queue_keys(ctx: &egui::Context, state: &mut BoardUiState) {
+    if focus_taken(ctx) {
+        return;
+    }
+    let Some(press) = ctx.input(chord::first_key_press) else {
+        return;
+    };
+    if !press.is_bare() {
+        return;
+    }
+    match (press.key, press.modifiers.shift) {
+        (Key::N | Key::CloseBracket, false) => state.step_queue(QueueStep::Next),
+        (Key::P | Key::OpenBracket, false) => state.step_queue(QueueStep::Prev),
+        (Key::Q, false) | (Key::Escape, _) => state.close_queue(),
+        _ => return,
+    }
+    chord::swallow_key_events(ctx);
+}
+
 /// Whether something other than the grid owns the keyboard this frame.
 fn keyboard_taken(ctx: &egui::Context, state: &BoardUiState, menu_open: bool) -> bool {
+    // The grid's `menu_button`s report through `menu_open`, which egui's popup
+    // memory can't see (see `focus_taken`).
+    focus_taken(ctx) || menu_open || state.keys_blocked()
+}
+
+/// Whether a widget, popup, menu or drag holds the keyboard this frame: the
+/// part of [`keyboard_taken`] that isn't the grid's own state, shared with
+/// [`queue_keys`].
+fn focus_taken(ctx: &egui::Context) -> bool {
     // Read before any widget runs this frame, so this is the focus the key
     // press was typed into.
     ctx.memory(|m| m.focused().is_some() || m.any_popup_open())
         // `Memory::any_popup_open` sees combo boxes but not egui 0.31's menus:
-        // right-click context menus have their own check, and the grid's
-        // `menu_button`s report through `menu_open`.
+        // right-click context menus have their own check.
         || ctx.is_context_menu_open()
-        || menu_open
-        || state.keys_blocked()
         || egui::DragAndDrop::has_any_payload(ctx)
         || ctx.dragged_id().is_some()
 }
@@ -381,7 +423,17 @@ mod tests {
                     filter: &parsed,
                     hide_subissues: false,
                 };
-                match board_keys(ui.ctx(), &h.view, &filter, &mut h.state) {
+                // As `board_ui` does: the queue's keys while it's open, the
+                // grid's otherwise.
+                if h.state.queue_open() {
+                    queue_keys(ui.ctx(), &mut h.state);
+                }
+                let action = if h.state.queue_open() {
+                    None
+                } else {
+                    board_keys(ui.ctx(), &h.view, &filter, &mut h.state)
+                };
+                match action {
                     Some(BoardAction::MoveCard {
                         card,
                         to_col,
@@ -567,6 +619,8 @@ mod tests {
         focused: Option<egui::Id>,
         moved: Option<(NoteId, usize, usize)>,
         archived: Option<NoteId>,
+        /// The review queue is open, or said there was nothing to review.
+        reviewing: (bool, bool),
     }
 
     fn effects(harness: &Harness<'static, KeysHarness>) -> Effects {
@@ -578,6 +632,7 @@ mod tests {
             focused: harness.ctx.memory(|m| m.focused()),
             moved: h.moved,
             archived: h.archived,
+            reviewing: (h.state.queue_open(), h.state.empty_queue_notice()),
         }
     }
 
@@ -708,6 +763,57 @@ mod tests {
         press(&mut harness, Key::N);
         assert!(harness.state().state.keys_blocked(), "composer open");
         assert_eq!(harness.state().archived, None);
+    }
+
+    /// `R` opens the queue over the In Review column at its first card; `n`/`]`
+    /// and `p`/`[` step it, stopping at the ends; grid keys stand down while
+    /// it's open; and `q` leaves it with the grid cursor on the card it showed.
+    #[test]
+    fn shift_r_walks_the_in_review_column_and_q_leaves_it() {
+        let mut harness = keys_harness(None);
+        // `grid` has no In Review column: nothing opens, the header says so.
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        assert!(!harness.state().state.queue_open());
+        assert!(harness.state().state.empty_queue_notice());
+
+        harness.state_mut().view.columns[2].id = "in-review".to_string();
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        let reviewing = |h: &Harness<'static, KeysHarness>| h.state().state.review_card();
+        assert!(harness.state().state.queue_open());
+        assert_eq!(reviewing(&harness), Some(id(5)));
+
+        press(&mut harness, Key::N);
+        assert_eq!(reviewing(&harness), Some(id(6)));
+        press(&mut harness, Key::CloseBracket);
+        assert_eq!(reviewing(&harness), Some(id(6)), "stops at the end");
+        press(&mut harness, Key::P);
+        assert_eq!(reviewing(&harness), Some(id(5)));
+        press(&mut harness, Key::OpenBracket);
+        assert_eq!(reviewing(&harness), Some(id(5)), "stops at the start");
+        press(&mut harness, Key::CloseBracket);
+        assert_eq!(reviewing(&harness), Some(id(6)));
+
+        // The grid's keys are the queue's to refuse.
+        press(&mut harness, Key::J);
+        assert_eq!(harness.state().state.cursor(), None);
+
+        press(&mut harness, Key::Q);
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(reviewing(&harness), None);
+        assert_eq!(harness.state().state.cursor(), Some(id(6)));
+    }
+
+    /// Esc leaves the queue too, and is eaten doing so rather than reaching
+    /// the review pane or chrome.
+    #[test]
+    fn esc_leaves_the_queue() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view.columns[2].id = "in-review".to_string();
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        press(&mut harness, Key::Escape);
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.cursor(), Some(id(5)));
+        assert!(!harness.state().esc_left, "Esc consumed");
     }
 
     #[test]

@@ -747,7 +747,8 @@ impl App for Headway {
     /// [`Graph`](HeadwayRoute::Graph) ⇒ that epic's dependency graph (with the epic
     /// also seeded as the selected card underneath, so a back off the graph lands
     /// on its detail), [`Review`](HeadwayRoute::Review) ⇒ that card's review pane on
-    /// the record the entry carries, [`Board`](HeadwayRoute::Board) or any unrecognized token (the
+    /// the record the entry carries, [`ReviewQueue`](HeadwayRoute::ReviewQueue) ⇒
+    /// the review queue where it was left, [`Board`](HeadwayRoute::Board) or any unrecognized token (the
     /// `()` a plain app-switch entry carries) ⇒ the board grid — so the nav stack,
     /// not stale view-state, decides which screen shows. A global back/forward/jump
     /// is honored here before the board draws.
@@ -767,7 +768,15 @@ impl App for Headway {
             .set_selected(route.and_then(|r| r.selected_card()));
         self.state
             .set_graph_epic(route.and_then(|r| r.graph_epic()));
-        self.state.set_review(route.and_then(|r| r.review_target()));
+        // The queue route names no card: while it's open the review pane shows
+        // the queue's current card, so seed that rather than closing the pane
+        // (which would read as a re-open every frame).
+        self.state
+            .set_queue_open(route.is_some_and(HeadwayRoute::is_review_queue));
+        let review = route
+            .and_then(|r| r.review_target())
+            .or_else(|| self.state.queue_review());
+        self.state.set_review(review);
         self.render_board(ctx, ui)
     }
 
@@ -986,8 +995,14 @@ impl Headway {
             Some(NavReconcile::PushReview(card)) => ctx.navigator.push_active_route(
                 HeadwayRoute::review(card, self.state.review_record(), card_title(&view, card)),
             ),
-            // Leaving a card (close, delete, or a card that vanished) or closing the
-            // graph steps one entry back in the global history.
+            // Opening the review queue from the grid pushes its one entry; the
+            // steps through it are view state under that entry, so a single
+            // global-back leaves the whole queue.
+            Some(NavReconcile::PushQueue) => {
+                ctx.navigator.push_active_route(HeadwayRoute::ReviewQueue)
+            }
+            // Leaving a card (close, delete, or a card that vanished), closing the
+            // graph or leaving the queue steps one entry back in the global history.
             Some(NavReconcile::Back) => ctx.navigator.back(),
             // Steady frame — nothing moved, so enqueue nothing (this doesn't spin).
             None => {}

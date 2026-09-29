@@ -47,7 +47,11 @@ use filter::filter_ref_jump;
 use graph::graph_view_ui;
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
-use review::{ReviewUi, review_pane_ui};
+use review::{
+    EMPTY_QUEUE_NOTICE, ReviewQueue, ReviewUi, in_review_cards, review_pane_ui, review_queue_ui,
+};
+
+pub(crate) use review::QueueStep;
 
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
@@ -186,6 +190,12 @@ pub struct BoardUiState {
     /// route like [`graph_epic`](Self::graph_epic)), the picked record, and the
     /// off-thread loader its diffs arrive through.
     review: ReviewUi,
+    /// The review queue (`R`): its snapshot of the In Review column and which
+    /// card the review pane shows. While it's open the pane shows its card.
+    queue: ReviewQueue,
+    /// When (egui time) an `R` found the In Review column empty, so the header
+    /// says so for [`EMPTY_QUEUE_NOTICE`] seconds instead of opening nothing.
+    empty_queue_at: Option<f64>,
 }
 
 impl BoardUiState {
@@ -261,10 +271,71 @@ impl BoardUiState {
         self.review.seed(target);
     }
 
-    /// Which view depth this state shows (board, a card, a graph or a review),
-    /// the value the app diffs across a render into a nav request.
+    /// Which view depth this state shows (board, a card, a graph, a review or
+    /// the review queue), the value the app diffs across a render into a nav
+    /// request.
     pub(crate) fn nav_pos(&self) -> NavPos {
-        NavPos::of(self.selected, self.graph_epic, self.review.card())
+        NavPos::of(
+            self.selected,
+            self.graph_epic,
+            self.queue.is_open(),
+            self.review.card(),
+        )
+    }
+
+    /// Seed whether the review queue shows from the chrome global-history route
+    /// this frame renders, the queue counterpart to
+    /// [`set_graph_epic`](Self::set_graph_epic). The queue's snapshot and
+    /// position are left alone, so back/forward onto its entry reopens it where
+    /// it was left.
+    pub fn set_queue_open(&mut self, open: bool) {
+        self.queue.set_open(open);
+    }
+
+    /// The review the open queue shows (its current card, newest record), or
+    /// `None` when it's closed: what the review pane is seeded with under a
+    /// queue route, which names no card itself.
+    pub fn queue_review(&self) -> Option<ReviewTarget> {
+        self.queue.target()
+    }
+
+    /// Open the review queue over the board's In Review column, snapshotted
+    /// now. With nothing in review the queue stays shut and the header says so
+    /// for a few seconds instead (`now` is egui time).
+    pub(crate) fn open_review_queue(&mut self, view: &BoardView, now: f64) {
+        if self.queue.start(in_review_cards(view)) {
+            self.empty_queue_at = None;
+            self.review.seed(self.queue.target());
+        } else {
+            self.empty_queue_at = Some(now);
+        }
+    }
+
+    /// Step the review queue one card `step`'s way, pointing the pane at it.
+    pub(crate) fn step_queue(&mut self, step: QueueStep) {
+        self.queue.step(step);
+        self.review.seed(self.queue.target());
+    }
+
+    /// Leave the review queue for the board grid, with the grid's cursor on the
+    /// card the queue last showed.
+    pub(crate) fn close_queue(&mut self) {
+        if let Some(card) = self.queue.close() {
+            self.set_cursor(card);
+        }
+        self.review.close();
+    }
+
+    /// Whether the review queue is showing.
+    #[cfg(test)]
+    pub(crate) fn queue_open(&self) -> bool {
+        self.queue.is_open()
+    }
+
+    /// Whether the header is saying an `R` found nothing in review.
+    #[cfg(test)]
+    pub(crate) fn empty_queue_notice(&self) -> bool {
+        self.empty_queue_at.is_some()
     }
 
     /// The card whose detail is currently open, if any.
@@ -313,9 +384,10 @@ impl BoardUiState {
     }
 
     /// Whether a board-level overlay owns the keyboard: an inline editor (card
-    /// composer, column rename, new column/board) or the archived sheet.
+    /// composer, column rename, new column/board), the archived sheet, or the
+    /// review queue (whose own keys are [`crate::keys::queue_keys`]).
     pub(crate) fn keys_blocked(&self) -> bool {
-        self.edit != InlineEdit::None || self.showing_archived
+        self.edit != InlineEdit::None || self.showing_archived || self.queue.is_open()
     }
 
     /// Take the [`grid_menu_open`](Self::grid_menu_open) latch: whether one of
@@ -454,6 +526,17 @@ pub fn board_ui(
         state.graph_connecting = None;
     }
 
+    // The review queue draws the review pane over its current card. Its keys
+    // run first, so a `q` that closes it falls through to the grid this same
+    // frame rather than leaving one blank.
+    if state.queue.is_open() {
+        keys::queue_keys(ui.ctx(), state);
+        if let Some(card) = state.queue.current() {
+            review_queue_ui(ui, theme, app_ctx, view, card, state);
+            return None;
+        }
+    }
+
     // A card's review pane takes over the pane the same way, entered from (and
     // drawn over) that card's detail. A card that has left the board drops back
     // to its detail branch below, which drops it in turn.
@@ -563,6 +646,7 @@ pub fn board_ui(
                         .color(theme.text_muted),
                     );
                 }
+                empty_queue_notice_ui(ui, theme, state);
                 // The archived entry point only appears when there's something
                 // behind it, so the header stays quiet on a fresh board.
                 if !view.archived.is_empty() {
@@ -702,6 +786,23 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
                 ui.label(egui::RichText::new(message).color(theme.text_muted));
             });
         });
+}
+
+/// "Nothing in review", for [`EMPTY_QUEUE_NOTICE`] seconds after an `R` found
+/// the In Review column empty. Schedules the frame that takes it down.
+fn empty_queue_notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
+    let Some(at) = state.empty_queue_at else {
+        return;
+    };
+    let left = EMPTY_QUEUE_NOTICE - (ui.input(|i| i.time) - at);
+    if left <= 0.0 {
+        state.empty_queue_at = None;
+        return;
+    }
+    ui.add_space(SPACING_SM);
+    ui.label(egui::RichText::new("Nothing in review").color(theme.warning));
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_secs_f64(left));
 }
 
 /// Find a card anywhere on the board, returning its column index and view.

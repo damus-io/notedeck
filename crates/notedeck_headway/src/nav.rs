@@ -22,6 +22,10 @@
 //! climbs from a sub-issue up to its parent); leaving a screen backs out one
 //! entry. The graph is entered from its epic's detail and carries that epic id,
 //! so a single global-back off the graph returns to the epic's card.
+//!
+//! The [`ReviewQueue`](HeadwayRoute::ReviewQueue) is one entry however many
+//! cards it walks: stepping through it changes view state, not the history, so
+//! a single back leaves the queue for the board.
 
 use nostrdb_net::NoteId;
 
@@ -32,8 +36,10 @@ use nostrdb_net::NoteId;
 /// path: [`Board`](Self::Board) — or any unrecognized token, such as the `()` a
 /// plain app-switch entry carries — draws the board grid (the root),
 /// [`Card`](Self::Card) draws that card's full-pane detail,
-/// [`Graph`](Self::Graph) draws an epic's dependency-graph view, and
-/// [`Review`](Self::Review) draws a card's review records and commit diff.
+/// [`Graph`](Self::Graph) draws an epic's dependency-graph view,
+/// [`Review`](Self::Review) draws a card's review records and commit diff, and
+/// [`ReviewQueue`](Self::ReviewQueue) walks the review pane over the In Review
+/// column.
 pub enum HeadwayRoute {
     /// The board grid — the root view [`App::render`](notedeck::App::render)
     /// draws. A plain app-switch entry's `()` token renders identically.
@@ -92,6 +98,14 @@ pub enum HeadwayRoute {
         /// for [`nav_title`](notedeck::App::nav_title) exactly as a card's is.
         title: Option<String>,
     },
+
+    /// The review queue: the review pane walking a snapshot of the board's In
+    /// Review column, opened from the grid with `R`. The snapshot and the
+    /// position in it live in [`BoardUiState`](crate::ui::BoardUiState), not
+    /// here, so stepping cards swaps no entry. The chrome has no primitive for
+    /// swapping just the top entry (its `replace` collapses the whole history),
+    /// and a push per card would make back rewind every card reviewed.
+    ReviewQueue,
 }
 
 impl HeadwayRoute {
@@ -118,14 +132,19 @@ impl HeadwayRoute {
     /// The card whose detail this route seeds as selected: a [`Card`](Self::Card)'s
     /// own id, a [`Graph`](Self::Graph)'s `epic` or a [`Review`](Self::Review)'s
     /// `card` (so closing either pane returns to that card's detail). `None` for
-    /// the board.
+    /// the board and the review queue, which both close to the grid.
     pub fn selected_card(&self) -> Option<NoteId> {
         match self {
             HeadwayRoute::Card { id, .. } => Some(*id),
             HeadwayRoute::Graph { epic, .. } => Some(*epic),
             HeadwayRoute::Review { card, .. } => Some(*card),
-            HeadwayRoute::Board => None,
+            HeadwayRoute::Board | HeadwayRoute::ReviewQueue => None,
         }
+    }
+
+    /// Whether this route opens the [`ReviewQueue`](Self::ReviewQueue).
+    pub fn is_review_queue(&self) -> bool {
+        matches!(self, HeadwayRoute::ReviewQueue)
     }
 
     /// The epic whose dependency graph this route opens, if it is a
@@ -133,7 +152,10 @@ impl HeadwayRoute {
     pub fn graph_epic(&self) -> Option<NoteId> {
         match self {
             HeadwayRoute::Graph { epic, .. } => Some(*epic),
-            HeadwayRoute::Board | HeadwayRoute::Card { .. } | HeadwayRoute::Review { .. } => None,
+            HeadwayRoute::Board
+            | HeadwayRoute::Card { .. }
+            | HeadwayRoute::Review { .. }
+            | HeadwayRoute::ReviewQueue => None,
         }
     }
 
@@ -151,18 +173,22 @@ impl HeadwayRoute {
                 card: *card,
                 record: *record,
             }),
-            HeadwayRoute::Board | HeadwayRoute::Card { .. } | HeadwayRoute::Graph { .. } => None,
+            HeadwayRoute::Board
+            | HeadwayRoute::Card { .. }
+            | HeadwayRoute::Graph { .. }
+            | HeadwayRoute::ReviewQueue => None,
         }
     }
 
     /// The history-dropdown title for this entry: a card's or graph's snapshotted
-    /// title, or `None` for the board (so the chrome falls back to the "Headway"
-    /// app label).
+    /// title, "Review queue" for the queue, or `None` for the board (so the
+    /// chrome falls back to the "Headway" app label).
     pub fn title(&self) -> Option<&str> {
         match self {
             HeadwayRoute::Card { title, .. }
             | HeadwayRoute::Graph { title, .. }
             | HeadwayRoute::Review { title, .. } => title.as_deref(),
+            HeadwayRoute::ReviewQueue => Some("Review queue"),
             HeadwayRoute::Board => None,
         }
     }
@@ -178,12 +204,12 @@ pub struct ReviewTarget {
     pub record: Option<NoteId>,
 }
 
-/// Which of Headway's view depths a frame is showing, derived from the three
+/// Which of Headway's view depths a frame is showing, derived from the four
 /// [`BoardUiState`](crate::ui::BoardUiState) fields the nav stack seeds: the open-graph
-/// epic, the open-review card and the selected card. A pane wins over the card
-/// when both are set (a graph or review is entered from — and drawn over — its
-/// card's detail), matching the order [`ui::board_ui`](crate::ui::board_ui) renders
-/// them.
+/// epic, whether the review queue is open, the open-review card and the selected
+/// card. A pane wins over the card when both are set (a graph or review is
+/// entered from — and drawn over — its card's detail), matching the order
+/// [`ui::board_ui`](crate::ui::board_ui) renders them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NavPos {
     /// The board grid (root) — nothing selected, no graph open.
@@ -194,32 +220,44 @@ pub(crate) enum NavPos {
     Graph(NoteId),
     /// A card's review pane (records + commit diff).
     Review(NoteId),
+    /// The review queue. Which card it shows is deliberately not part of the
+    /// position: stepping cards is a steady frame, not a transition.
+    Queue,
 }
 
 impl NavPos {
-    /// Fold the `(selected, graph_epic, review_card)` state into the view
-    /// position. The graph, then the review, take precedence over the card,
-    /// mirroring the branch order in [`ui::board_ui`](crate::ui::board_ui).
+    /// Fold the `(selected, graph_epic, queue_open, review_card)` state into the
+    /// view position. The graph, then the queue, then the review take
+    /// precedence over the card, mirroring the branch order in
+    /// [`ui::board_ui`](crate::ui::board_ui). The queue outranks the review
+    /// because it draws through the review pane: its current card is the
+    /// review card.
     pub(crate) fn of(
         selected: Option<NoteId>,
         graph_epic: Option<NoteId>,
+        queue_open: bool,
         review_card: Option<NoteId>,
     ) -> Self {
-        match (graph_epic, review_card, selected) {
-            (Some(epic), _, _) => NavPos::Graph(epic),
-            (None, Some(card), _) => NavPos::Review(card),
-            (None, None, Some(card)) => NavPos::Card(card),
-            (None, None, None) => NavPos::Board,
+        if let Some(epic) = graph_epic {
+            return NavPos::Graph(epic);
+        }
+        if queue_open {
+            return NavPos::Queue;
+        }
+        match (review_card, selected) {
+            (Some(card), _) => NavPos::Review(card),
+            (None, Some(card)) => NavPos::Card(card),
+            (None, None) => NavPos::Board,
         }
     }
 
-    /// Nesting depth: board (root) `0`, a card's detail `1`, an epic's graph or a
-    /// card's review `2`. Drilling to a strictly greater depth pushes; stepping to
-    /// a lesser one backs.
+    /// Nesting depth: board (root) `0`, a card's detail or the review queue `1`,
+    /// an epic's graph or a card's review `2`. Drilling to a strictly greater
+    /// depth pushes; stepping to a lesser one backs.
     fn depth(&self) -> u8 {
         match self {
             NavPos::Board => 0,
-            NavPos::Card(_) => 1,
+            NavPos::Card(_) | NavPos::Queue => 1,
             NavPos::Graph(_) | NavPos::Review(_) => 2,
         }
     }
@@ -229,12 +267,12 @@ impl NavPos {
     fn pane_card(&self) -> Option<NoteId> {
         match self {
             NavPos::Graph(card) | NavPos::Review(card) => Some(*card),
-            NavPos::Board | NavPos::Card(_) => None,
+            NavPos::Board | NavPos::Card(_) | NavPos::Queue => None,
         }
     }
 }
 
-/// The chrome global-history request a board↔card↔graph transition calls for,
+/// The chrome global-history request a board↔card↔graph↔queue transition calls for,
 /// decided by [`reconcile_nav`] and dispatched onto the [`Navigator`](notedeck::Navigator)
 /// in [`Headway::render_board`](crate::Headway::render_board).
 #[derive(Debug, PartialEq, Eq)]
@@ -250,6 +288,9 @@ pub(crate) enum NavReconcile {
     /// A card's review pane was opened from its detail: push a review entry one
     /// level deeper than the card.
     PushReview(NoteId),
+    /// The review queue was opened from the grid: push one queue entry, which
+    /// every step through the queue then shares.
+    PushQueue,
     /// The open screen was dismissed (a card close/delete/vanish, or the graph
     /// closing back to its epic): step one entry back in the global history.
     Back,
@@ -284,6 +325,10 @@ pub(crate) fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcil
         // detail (one level deeper), so landing on either always pushes.
         NavPos::Graph(epic) => Some(NavReconcile::PushGraph(epic)),
         NavPos::Review(card) => Some(NavReconcile::PushReview(card)),
+        // The queue opens only from the grid (`R`), so landing on it pushes.
+        // Stepping inside it never gets here: the position doesn't name the
+        // card, so a step is the steady frame above.
+        NavPos::Queue => Some(NavReconcile::PushQueue),
         // Push a walkable card entry when opening a card that sits deeper than or
         // level with where we started (board→card, or a card→card drill), OR when a
         // node was clicked inside an epic's graph. That last step reads as *shallower*
@@ -391,10 +436,53 @@ mod tests {
     fn nav_pos_prefers_graph_then_review_then_card() {
         let a = NoteId::new([1u8; 32]);
         let b = NoteId::new([2u8; 32]);
-        assert_eq!(NavPos::of(None, None, None), NavPos::Board);
-        assert_eq!(NavPos::of(Some(a), None, None), NavPos::Card(a));
-        assert_eq!(NavPos::of(Some(a), None, Some(a)), NavPos::Review(a));
-        assert_eq!(NavPos::of(Some(a), Some(b), Some(a)), NavPos::Graph(b));
+        assert_eq!(NavPos::of(None, None, false, None), NavPos::Board);
+        assert_eq!(NavPos::of(Some(a), None, false, None), NavPos::Card(a));
+        assert_eq!(NavPos::of(Some(a), None, false, Some(a)), NavPos::Review(a));
+        assert_eq!(
+            NavPos::of(Some(a), Some(b), false, Some(a)),
+            NavPos::Graph(b)
+        );
+        // The queue draws through the review pane, so it wins over the review
+        // card its current card seeds.
+        assert_eq!(NavPos::of(None, None, true, Some(a)), NavPos::Queue);
+    }
+
+    /// The review queue is one entry: opening it from the grid pushes, stepping
+    /// cards inside it (the same position) enqueues nothing, and leaving it for
+    /// the grid is one back, so back never rewinds the cards reviewed.
+    #[test]
+    fn reconcile_nav_maps_review_queue_transitions() {
+        let a = NoteId::new([1u8; 32]);
+        let queue = NavPos::Queue;
+
+        assert_eq!(
+            reconcile_nav(NavPos::Board, queue),
+            Some(NavReconcile::PushQueue)
+        );
+        assert_eq!(reconcile_nav(queue, queue), None);
+        assert_eq!(
+            reconcile_nav(queue, NavPos::Board),
+            Some(NavReconcile::Back)
+        );
+        // Opening a card out of the queue drills in, keeping the queue beneath.
+        assert_eq!(
+            reconcile_nav(queue, NavPos::Card(a)),
+            Some(NavReconcile::PushCard(a))
+        );
+    }
+
+    /// The queue route seeds no card and no graph, names itself in the
+    /// history dropdown, and is the only route that opens the queue.
+    #[test]
+    fn review_queue_route_opens_only_the_queue() {
+        let route = HeadwayRoute::ReviewQueue;
+        assert!(route.is_review_queue());
+        assert!(route.selected_card().is_none());
+        assert!(route.graph_epic().is_none());
+        assert!(route.review_target().is_none());
+        assert_eq!(route.title(), Some("Review queue"));
+        assert!(!HeadwayRoute::Board.is_review_queue());
     }
 
     /// A `Card` route seeds its own id as the selection and opens no graph, so

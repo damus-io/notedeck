@@ -1,6 +1,7 @@
 //! The review pane — a card's review records and the commit diff they name,
-//! full-pane like the dependency graph — and the Review section of the card
-//! detail that opens it.
+//! full-pane like the dependency graph — the Review section of the card detail
+//! that opens it, and the review queue that walks the pane over the board's In
+//! Review column.
 //!
 //! The pane is "render the review for card X": which card and record are open
 //! live in [`ReviewUi`], seeded from the [`Review`](crate::HeadwayRoute::Review)
@@ -15,8 +16,8 @@ use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 use std::time::Instant;
 
-use super::BoardUiState;
 use super::widgets::{count_badge, detail_heading};
+use super::{BoardUiState, find_card};
 use crate::nav::ReviewTarget;
 use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
 
@@ -89,6 +90,232 @@ impl ReviewUi {
     pub(crate) fn close(&mut self) {
         self.card = None;
     }
+}
+
+/// The column the review queue walks, by id; boards that renamed their columns
+/// fall back to [`IN_REVIEW_NAME`].
+const IN_REVIEW_ID: &str = "in-review";
+
+/// The In Review column's name, matched case-insensitively when no column has
+/// [`IN_REVIEW_ID`].
+const IN_REVIEW_NAME: &str = "In Review";
+
+/// How long, in seconds, the "Nothing in review" notice stays up after an `R`
+/// that found the In Review column empty.
+pub(crate) const EMPTY_QUEUE_NOTICE: f64 = 3.0;
+
+/// The ids of the board's In Review cards in column order: the review queue's
+/// snapshot. Empty when the board has no such column.
+pub(crate) fn in_review_cards(view: &BoardView) -> Vec<NoteId> {
+    let column = view
+        .columns
+        .iter()
+        .find(|c| c.id == IN_REVIEW_ID)
+        .or_else(|| {
+            view.columns
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(IN_REVIEW_NAME))
+        });
+    column.map_or_else(Vec::new, |c| c.cards.iter().map(|c| c.id).collect())
+}
+
+/// Which way a queue step goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueueStep {
+    /// To the next card (`n`, `]`).
+    Next,
+    /// To the previous card (`p`, `[`).
+    Prev,
+}
+
+/// The review queue: a snapshot of the board's In Review cards, taken when `R`
+/// opens it, and which of them the review pane shows.
+///
+/// A snapshot so that a verdict moving a card out of In Review doesn't
+/// reshuffle what's left under the reviewer. It outlives the queue closing, so
+/// a back/forward onto the queue's history entry reopens it where it was left;
+/// the next `R` takes a fresh one.
+#[derive(Default)]
+pub(crate) struct ReviewQueue {
+    /// The In Review cards, in column order, when the queue opened.
+    cards: Vec<NoteId>,
+    /// The position in [`cards`](Self::cards) the pane shows.
+    index: usize,
+    /// Whether the queue is showing. Seeded from the nav route like the
+    /// graph's epic, so the nav stack decides.
+    open: bool,
+    /// `"3 / 12"`, formatted when the position changes rather than every frame.
+    position: String,
+}
+
+impl ReviewQueue {
+    /// Open the queue over `cards` at its first card. Returns `false`, leaving
+    /// the queue closed and its previous snapshot alone, when there are none.
+    pub(crate) fn start(&mut self, cards: Vec<NoteId>) -> bool {
+        if cards.is_empty() {
+            return false;
+        }
+        self.cards = cards;
+        self.open = true;
+        self.go_to(0);
+        true
+    }
+
+    /// Whether the queue is showing.
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Seed whether the queue shows from the nav route. There's nothing to show
+    /// without a snapshot, so a queue entry reached before any `R` (none can be,
+    /// today) draws the board.
+    pub(crate) fn set_open(&mut self, open: bool) {
+        self.open = open && !self.cards.is_empty();
+    }
+
+    /// The card the pane shows, while the queue is open.
+    pub(crate) fn current(&self) -> Option<NoteId> {
+        if !self.open {
+            return None;
+        }
+        self.cards.get(self.index).copied()
+    }
+
+    /// The card after the current one, if the queue is open and has one.
+    pub(crate) fn next_card(&self) -> Option<NoteId> {
+        self.current()?;
+        self.cards.get(self.index + 1).copied()
+    }
+
+    /// The review target the pane opens on: the current card's newest record.
+    pub(crate) fn target(&self) -> Option<ReviewTarget> {
+        self.current()
+            .map(|card| ReviewTarget { card, record: None })
+    }
+
+    /// Step one card `step`'s way, stopping at either end (no wrap).
+    pub(crate) fn step(&mut self, step: QueueStep) {
+        let index = match step {
+            QueueStep::Next if self.index + 1 < self.cards.len() => self.index + 1,
+            QueueStep::Prev if self.index > 0 => self.index - 1,
+            QueueStep::Next | QueueStep::Prev => return,
+        };
+        self.go_to(index);
+    }
+
+    /// Close the queue, keeping its snapshot. Returns the card it was showing.
+    pub(crate) fn close(&mut self) -> Option<NoteId> {
+        let current = self.current();
+        self.open = false;
+        current
+    }
+
+    /// Where the pane is in the queue, as `"3 / 12"`.
+    pub(crate) fn position(&self) -> &str {
+        &self.position
+    }
+
+    /// Move to `index` and re-format the position.
+    fn go_to(&mut self, index: usize) {
+        use std::fmt::Write;
+        self.index = index;
+        self.position.clear();
+        let _ = write!(self.position, "{} / {}", index + 1, self.cards.len());
+    }
+}
+
+/// Draw the review queue: a bar with where the pane is in the queue and a peek
+/// at the next card's title, above the review pane for the queue's current
+/// card. Starts the next card's load too, so stepping to it is instant. The
+/// queue's keys ([`crate::keys::queue_keys`]) have already run this frame.
+pub(super) fn review_queue_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    view: &BoardView,
+    current: NoteId,
+    state: &mut BoardUiState,
+) {
+    // The route seeds this too (see `Headway::render_nav`); seeding it here
+    // as well covers a chrome-less embedding and the frame a step lands on.
+    state.review.seed(state.queue.target());
+
+    if let Some((_, next)) = state.queue.next_card().and_then(|c| find_card(view, c)) {
+        prefetch(app_ctx, view, next, &mut state.review.loader);
+    }
+
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: SPACING_LG as i8,
+            right: SPACING_LG as i8,
+            top: SPACING_LG as i8,
+            bottom: 0,
+        })
+        .show(ui, |ui| queue_bar_ui(ui, theme, view, &state.queue));
+
+    let Some((_, card)) = find_card(view, current) else {
+        // A card that left the board since the snapshot (archived, moved to
+        // another board) keeps its place in the queue, so the position still
+        // adds up; there's just nothing to review.
+        egui::Frame::new()
+            .inner_margin(egui::Margin::same(SPACING_LG as i8))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("This card is no longer on the board.")
+                        .color(theme.text_muted),
+                );
+            });
+        return;
+    };
+    review_pane_ui(ui, theme, app_ctx, view, card, state);
+    // The pane's own ← Back closes the review; in the queue that leaves it.
+    if state.review.card().is_none() {
+        state.close_queue();
+    }
+}
+
+/// The queue's bar: its name, the position (`3 / 12`) and the next card's
+/// title, muted, as a peek. Every string is borrowed, so nothing is formatted
+/// per frame.
+fn queue_bar_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &BoardView, queue: &ReviewQueue) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Review queue").strong());
+        ui.label(egui::RichText::new(queue.position()).color(theme.accent));
+        let Some((_, next)) = queue.next_card().and_then(|c| find_card(view, c)) else {
+            return;
+        };
+        ui.add_space(SPACING_MD);
+        ui.label(egui::RichText::new("Next:").small().color(theme.text_muted));
+        ui.label(
+            egui::RichText::new(next.title.as_str())
+                .small()
+                .color(theme.text_muted),
+        );
+    });
+}
+
+/// Start the load of `card`'s newest record, if it hasn't been, so the queue's
+/// next card is ready by the time it's stepped to. A card with no record is
+/// left alone: its trailer search is re-run when the pane opens on it anyway
+/// (see [`ReviewLoader::expire`]), so loading it early would only run it twice.
+fn prefetch(
+    app_ctx: &notedeck::AppContext,
+    view: &BoardView,
+    card: &CardView,
+    loader: &mut ReviewLoader,
+) {
+    let Some(record) = card.reviews.first() else {
+        return;
+    };
+    let source = ReviewSource::Record {
+        card: card.id,
+        record: record.id,
+    };
+    if loader.contains(source) {
+        return;
+    }
+    let card_ref = headway::wordid::card_ref(&view.id, card.id.bytes());
+    start_load(app_ctx, view, &card_ref, Some(record), source, loader);
 }
 
 /// Draw the review pane for `card`: a topbar (back, card ref, title, explainer,
@@ -485,6 +712,106 @@ pub(super) fn review_section_ui(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use headway::event::ColumnView;
+
+    /// A column with id `id`, name `name` and one bare card per id in `cards`.
+    fn column(id: &str, name: &str, cards: &[NoteId]) -> ColumnView {
+        ColumnView {
+            id: id.to_string(),
+            name: name.to_string(),
+            terminal: false,
+            cards: cards
+                .iter()
+                .map(|&card| CardView {
+                    id: card,
+                    ..crate::ui::tests::card("", "", &[])
+                })
+                .collect(),
+        }
+    }
+
+    /// A board holding `columns`, otherwise empty.
+    fn board(columns: Vec<ColumnView>) -> BoardView {
+        BoardView {
+            id: "b".to_string(),
+            author: [0; 32],
+            title: String::new(),
+            description: String::new(),
+            created_at: 0,
+            columns,
+            archived: vec![],
+        }
+    }
+
+    /// The queue snapshots the `in-review` column in column order, falling
+    /// back to a column named In Review (any case) on a board whose ids differ,
+    /// and is empty on a board with neither.
+    #[test]
+    fn in_review_cards_reads_the_in_review_column() {
+        let ids: Vec<NoteId> = (1..=4).map(|i| NoteId::new([i; 32])).collect();
+        let by_id = board(vec![
+            column("todo", "In review", &ids[..1]),
+            column("in-review", "Checking", &ids[1..3]),
+        ]);
+        assert_eq!(in_review_cards(&by_id), ids[1..3]);
+
+        let by_name = board(vec![column("c2", "in REVIEW", &ids[3..])]);
+        assert_eq!(in_review_cards(&by_name), ids[3..]);
+
+        assert!(in_review_cards(&board(vec![column("todo", "Todo", &ids)])).is_empty());
+    }
+
+    /// The queue steps both ways and stops at its ends, keeping its position
+    /// label in step; closing keeps the snapshot, and an empty snapshot never
+    /// opens it.
+    #[test]
+    fn queue_steps_within_its_snapshot() {
+        let ids: Vec<NoteId> = (1..=3).map(|i| NoteId::new([i; 32])).collect();
+        let mut queue = ReviewQueue::default();
+        assert!(!queue.start(vec![]));
+        assert!(!queue.is_open());
+
+        assert!(queue.start(ids.clone()));
+        assert_eq!((queue.current(), queue.position()), (Some(ids[0]), "1 / 3"));
+        assert_eq!(queue.next_card(), Some(ids[1]));
+        queue.step(QueueStep::Prev);
+        assert_eq!(queue.current(), Some(ids[0]), "no wrap back");
+
+        queue.step(QueueStep::Next);
+        queue.step(QueueStep::Next);
+        assert_eq!((queue.current(), queue.position()), (Some(ids[2]), "3 / 3"));
+        assert_eq!(queue.next_card(), None);
+        queue.step(QueueStep::Next);
+        assert_eq!(queue.current(), Some(ids[2]), "no wrap forward");
+        queue.step(QueueStep::Prev);
+        assert_eq!(
+            queue.target(),
+            Some(ReviewTarget {
+                card: ids[1],
+                record: None
+            })
+        );
+
+        // Closing keeps the place; the route reopening it lands back there.
+        assert_eq!(queue.close(), Some(ids[1]));
+        assert_eq!((queue.current(), queue.target()), (None, None));
+        queue.set_open(true);
+        assert_eq!(queue.current(), Some(ids[1]));
+
+        // A failed start leaves the last snapshot alone.
+        queue.close();
+        assert!(!queue.start(vec![]));
+        queue.set_open(true);
+        assert_eq!(queue.current(), Some(ids[1]));
+    }
+
+    /// With no snapshot, a route asking for the queue can't open it.
+    #[test]
+    fn queue_route_without_a_snapshot_stays_closed() {
+        let mut queue = ReviewQueue::default();
+        queue.set_open(true);
+        assert!(!queue.is_open());
+    }
 
     /// Opening the pane, or moving it to another card, flags a re-open once;
     /// the route re-seeding the same card every frame, or closing it, doesn't.
