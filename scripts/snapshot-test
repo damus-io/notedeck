@@ -103,7 +103,7 @@ suites=(
     "notedeck_ui|--test widget_tests|"
     # test_real_codex_*: live-backend tests gated on CODEX_LIVE_TEST, which CI
     # never sets. Swept in they returned early and counted as passes.
-    "notedeck_dave|--lib --test dave_button_tests --test ask_question_wrap_tests --test markdown_table_tests --test reference_chip_tests|--skip test_real_codex"
+    "notedeck_dave|--lib --test dave_button_tests --test ask_question_wrap_tests --test markdown_table_tests --test reference_chip_tests --test diff_view_tests|--skip test_real_codex"
     "notedeck_nostrverse|--test snapshot_tests|"
     # --test-threads=1 --nocapture: this suite intermittently dies with SIGILL
     # on CI's x86_64 lavapipe (headway:notedeck/man-eight-damp), taking the
