@@ -189,6 +189,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
 | `review <card> [--explainer <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION` |
+| `diff <card> [--record <sha>]` | Print the commit the card's newest review record names (`git show`-style), fetching it from the recording host if this one lacks it; falls back to the card's `Headway:` trailer |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |
@@ -249,7 +250,12 @@ flags without the rest.
 When a card's work is committed, record it with `headway review <card>` from the
 checkout (plus `--explainer <url>` when there is one) before the done comment. The
 record is the machine-readable twin of that comment: headway reads it to show the
-commit's diff. `show <card>` lists a card's records under **review**.
+commit's diff. `show <card>` lists a card's records under **review**, and
+`headway diff <card>` prints the commit itself: it looks in the recorded
+checkout, then any checkout of the same repo (matched by root commit), then a
+bare cache under the headway-cli data dir, and fetches over ssh from the
+recording host when none has it — never prompting, never creating refs in your
+checkout.
 
 When commenting a finished card's commit hash, a Dave agentic session should also
 quote its own `agentium:` session ref (from `$AGENTIUM_SESSION`) beside the hash —

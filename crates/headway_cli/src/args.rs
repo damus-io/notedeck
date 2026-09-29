@@ -134,6 +134,14 @@ pub(crate) enum Command {
         card: String,
         review: ReviewFields,
     },
+    /// Print the commit a card's review record names, fetching it from the
+    /// recording host if this one lacks it. A read command — it never signs.
+    Diff {
+        card: String,
+        /// `--record`: pick the record whose commit starts with this prefix
+        /// instead of the newest.
+        record: Option<String>,
+    },
     Delete {
         card: String,
     },
@@ -265,6 +273,7 @@ impl Command {
             | Command::Estimate { card, .. }
             | Command::Comment { card, .. }
             | Command::Review { card, .. }
+            | Command::Diff { card, .. }
             | Command::Delete { card }
             | Command::Archive { card }
             | Command::Restore { card }
@@ -379,6 +388,8 @@ impl Cli {
         let mut ready = false;
         let mut count: Option<usize> = None;
         let mut review = ReviewFlags::default();
+        // `diff --record`: which review record to show.
+        let mut record = None;
         let mut positionals: Vec<String> = Vec::new();
         // `-h`/`--help` is answered after the loop, once the positionals say
         // *which* help — the overview, or one command's page.
@@ -417,6 +428,7 @@ impl Cli {
                 "--agentium" => review.agentium = Some(value("--agentium")?),
                 "--remote" => review.remote = Some(value("--remote")?),
                 "--repo-dir" => review.repo_dir = Some(value("--repo-dir")?),
+                "--record" => record = Some(value("--record")?),
                 "-n" | "--count" => {
                     count = Some(value("-n")?.parse().map_err(|_| "-n must be a number")?)
                 }
@@ -493,6 +505,7 @@ impl Cli {
             ready,
             count,
             review,
+            record,
         )?;
 
         // A card selector like `headway:commerce/purse-metal-toilet` already names
@@ -584,6 +597,7 @@ fn parse_command(
     ready: bool,
     count: Option<usize>,
     review: ReviewFlags,
+    record: Option<String>,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
     Ok(match name {
@@ -693,6 +707,10 @@ fn parse_command(
         "review" => Command::Review {
             card: card()?,
             review: review::gather(review)?,
+        },
+        "diff" => Command::Diff {
+            card: card()?,
+            record,
         },
         "delete" => Command::Delete { card: card()? },
         "archive" => Command::Archive { card: card()? },
@@ -836,6 +854,7 @@ mod tests {
                 false,
                 None,
                 ReviewFlags::default(),
+                None,
             );
             // A command that wants a flag we didn't pass errors about *that*;
             // only the fallback arm means the name has no parser at all.

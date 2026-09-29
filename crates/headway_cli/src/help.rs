@@ -118,6 +118,33 @@ persisted current board between commands.",
             "headway next --in headway:notedeck/saddle-because-liquid --ready",
         ],
     },
+    Command {
+        name: "diff",
+        group: Group::Reading,
+        summary: "Print the commit a card's review record names, fetching it if needed",
+        usage: &["diff <card> [--record <sha-prefix>]"],
+        details: "\
+Resolve the card's newest review record (see `review`) to a commit on
+this host and print it `git show`-style. The commit is looked for in the
+recorded checkout when the record was made here, else in a checkout of
+the same repo (matched by its root commit: this one, or any path a record
+on this board says was recorded here), else in a headway-owned bare cache
+under the data dir. When it isn't there it is fetched — from the record's
+--remote, a remote of that repo pointing at the recording host, or
+<host>:<path> over ssh — without prompting and without creating refs in
+your checkout. If the sha is gone (a rebase), the commit is found by its
+`Headway: <card ref>` trailer instead; a card with no record at all is
+searched for that way too. Where it was found goes to stderr, the commit
+to stdout, so the output pipes into `git apply`.",
+        options: &[(
+            "--record <sha>",
+            "Show the record whose commit starts with this prefix instead of the newest",
+        )],
+        examples: &[
+            "headway diff headway:headway/report-raven-expand",
+            "headway diff headway:headway/report-raven-expand --record 3d718bc",
+        ],
+    },
     // -- cards ------------------------------------------------------------
     Command {
         name: "add",

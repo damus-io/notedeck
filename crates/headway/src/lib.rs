@@ -13,7 +13,8 @@
 //! - [`store`] — sign + ingest into a local nostrdb, board seeding, and
 //!   [`store::apply`], which turns a [`store::BoardAction`] into events.
 //! - [`git`] — thin `git` shell-outs (commit, toplevel, repo identity) for
-//!   review records.
+//!   review records, and the resolver that finds (or fetches) a record's
+//!   commit on this host and reads it back as a patch.
 //! - [`teams`] — the joined-shared-board roster: which SNS channels this account
 //!   holds keys for, so both front ends fold and seal the same shared boards.
 

@@ -7,6 +7,16 @@
 //! match what the user sees on the command line. Failures keep git's own stderr
 //! (see [`GitError`]) because "not a git repository" or "unknown revision" is
 //! exactly what the caller needs to show.
+//!
+//! [`resolve`] (the `resolve` submodule) builds on these to find — or fetch —
+//! the commit a review record names and turn it into a [`CommitPatch`].
+
+mod resolve;
+
+pub use resolve::{
+    CommitPatch, Found, ResolveCtx, Resolved, Target, commit_patch, remote_host, resolve,
+    resolve_by_trailer,
+};
 
 use std::fmt;
 use std::path::Path;

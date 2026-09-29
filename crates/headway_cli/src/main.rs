@@ -12,6 +12,7 @@
 
 mod args;
 mod boards;
+mod diff;
 mod edit;
 mod help;
 mod output;
@@ -427,6 +428,19 @@ async fn run() -> Result<()> {
                 None => Container::BoardRoot(view.id.clone()),
             };
             print_next(&view, &container, ready, limit, as_json);
+        }
+
+        // Read command: resolve the card's review record to a commit (fetching
+        // it if this host lacks it) and print it. The bare cache lives beside
+        // the nostrdb cache, so a `--db` run keeps its git cache there too.
+        Command::Diff { card, record } => {
+            let view = load_board(&ndb, &roster, &author, &board)
+                .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            let cache_root = match cli.db.as_deref() {
+                Some(db) => std::path::Path::new(db).join("git"),
+                None => nostrdb_net::relay::sync::config_path(APP, "git")?,
+            };
+            diff::print_diff(&view, &card, record.as_deref(), &cache_root)?;
         }
 
         edit => {

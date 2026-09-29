@@ -64,7 +64,7 @@ pub(crate) fn gather(flags: ReviewFlags) -> Result<ReviewFields> {
 }
 
 /// This machine's hostname, or `None` when the OS gives back something unusable.
-fn host_name() -> Option<String> {
+pub(crate) fn host_name() -> Option<String> {
     let host = gethostname::gethostname()
         .to_string_lossy()
         .trim()
