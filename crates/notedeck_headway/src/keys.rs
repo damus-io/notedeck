@@ -281,11 +281,15 @@ pub(crate) const BOARD_NAV_HINTS: &[KeyHint] = &[
     },
 ];
 
-/// Scrolling a review pane's diff, in the queue or not. `^d` is Ctrl+D.
+/// Scrolling a review pane's diff, in the queue or not. `^f` is Ctrl+F.
 pub(crate) const REVIEW_NAV_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["j", "k"],
         label: "scroll",
+    },
+    KeyHint {
+        keys: &["space", "^f", "^b"],
+        label: "page",
     },
     KeyHint {
         keys: &["^d", "^u"],
@@ -318,6 +322,10 @@ pub(crate) const DETAIL_NAV_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["j", "k"],
         label: "scroll",
+    },
+    KeyHint {
+        keys: &["space", "^f", "^b"],
+        label: "page",
     },
     KeyHint {
         keys: &["^d", "^u"],
@@ -598,7 +606,8 @@ pub(crate) enum PaneMode {
 }
 
 /// A review pane's keys, in the queue or opened from a card: the card
-/// actions, then scrolling the diff by a line (`j`/`k`), half a page
+/// actions, then scrolling the diff by a line (`j`/`k`), a page
+/// (`Space`/`Shift-Space`, `Ctrl-f`/`Ctrl-b`), half a page
 /// (`Ctrl-d`/`Ctrl-u`), to its ends (`gg`/`G`) or by file (`]`/`[`), `?` and
 /// `q`/`Esc`. Left alone under the grid's rules, bar its own overlays: a
 /// focused widget, an open popup or menu, or a drag.
@@ -614,7 +623,7 @@ pub(crate) fn review_pane_keys(
         return None;
     }
     let press = ctx.input(chord::first_key_press)?;
-    if let Some(pages) = half_page(press) {
+    if let Some(pages) = page_scroll(press) {
         state.pane_chord.clear();
         state.scroll_review(PatchScroll::Pages(pages));
         chord::swallow_key_events(ctx);
@@ -672,7 +681,8 @@ pub(crate) fn review_pane_keys(
 }
 
 /// The card detail's keys: the card actions, then scrolling it by a line
-/// (`j`/`k`), half a page (`Ctrl-d`/`Ctrl-u`) or to its ends (`gg`/`G`), `?`
+/// (`j`/`k`), a page (`Space`/`Shift-Space`, `Ctrl-f`/`Ctrl-b`), half a page
+/// (`Ctrl-d`/`Ctrl-u`) or to its ends (`gg`/`G`), `?`
 /// and `q` back to the grid (the detail's `Esc` is its own). Left alone while
 /// a widget has the keyboard — the comment composer, the title, description
 /// and label editors — or a popup, menu or drag does.
@@ -689,7 +699,7 @@ pub(crate) fn detail_keys(
     // A selection that hasn't folded in yet draws the grid; leave its keys be.
     let card = state.selected().filter(|&c| find_card(view, c).is_some())?;
     let press = ctx.input(chord::first_key_press)?;
-    if let Some(pages) = half_page(press) {
+    if let Some(pages) = page_scroll(press) {
         state.pane_chord.clear();
         state.scroll_detail(PatchScroll::Pages(pages));
         chord::swallow_key_events(ctx);
@@ -728,14 +738,22 @@ pub(crate) fn detail_keys(
     action
 }
 
-/// Ctrl-d/Ctrl-u, vi's half-page scroll, as the fraction of a page to move.
-/// Safe to take: chrome's only Ctrl binding is Ctrl+Tab.
-fn half_page(press: KeyPress) -> Option<f32> {
+/// The page scroll a press asks for, in pages (negative scrolls up): a whole
+/// page for `Space`/`Shift-Space` and vi's `Ctrl-f`/`Ctrl-b`, which lands
+/// exactly (see [`PatchScroll::Pages`]), half of one for vi's
+/// `Ctrl-d`/`Ctrl-u`. Safe to take: chrome's only Ctrl binding is Ctrl+Tab,
+/// and these views put no focus on a button a Space would press.
+fn page_scroll(press: KeyPress) -> Option<f32> {
     let m = press.modifiers;
+    if press.key == Key::Space && press.is_bare() {
+        return Some(if m.shift { -1.0 } else { 1.0 });
+    }
     if !m.ctrl || m.alt || m.shift {
         return None;
     }
     match press.key {
+        Key::F => Some(1.0),
+        Key::B => Some(-1.0),
         Key::D => Some(0.5),
         Key::U => Some(-0.5),
         _ => None,
@@ -1207,6 +1225,7 @@ mod tests {
         match cap {
             "\u{21B5}" => return vec![(Modifiers::NONE, Key::Enter)],
             "esc" => return vec![(Modifiers::NONE, Key::Escape)],
+            "space" => return vec![(Modifiers::NONE, Key::Space)],
             _ => {}
         }
         if let Some(letter) = cap.strip_prefix('^') {
@@ -1621,6 +1640,14 @@ mod tests {
         assert_eq!(scroll(&harness), Some(PatchScroll::Pages(0.5)));
         press_with(&mut harness, Modifiers::CTRL, Key::U);
         assert_eq!(scroll(&harness), Some(PatchScroll::Pages(-0.5)));
+        press(&mut harness, Key::Space);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Pages(1.0)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::Space);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Pages(-1.0)));
+        press_with(&mut harness, Modifiers::CTRL, Key::F);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Pages(1.0)));
+        press_with(&mut harness, Modifiers::CTRL, Key::B);
+        assert_eq!(scroll(&harness), Some(PatchScroll::Pages(-1.0)));
         press_with(&mut harness, Modifiers::SHIFT, Key::G);
         assert_eq!(scroll(&harness), Some(PatchScroll::Bottom));
         press(&mut harness, Key::G);

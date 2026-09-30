@@ -79,7 +79,8 @@ queue opens, and the whole walk is one global-nav history entry.
 
 The queue takes the same keys as every other view, from one table: the card
 actions (`Enter`/`o`, `e`, `s`/`S`, `r`, `a`, `D`, `X`, `n`/`p`) and a review
-pane's navigation (`j`/`k`, `Ctrl-d`/`Ctrl-u`, `gg`/`G`, `]`/`[`). See
+pane's navigation (`j`/`k`, `Space`/`Shift-Space` and `Ctrl-f`/`Ctrl-b` a
+page, `Ctrl-d`/`Ctrl-u` half a page, `gg`/`G`, `]`/`[`). See
 [Keys](../README.md#keys) in the README. What is the queue's own:
 
 - `n` / `p` step through the queue's cards, stopping at the ends.

@@ -344,6 +344,7 @@ detail or a review pane backs out to the grid.
 | ----------------------- | --------------------------- | --------------------------- | --------------- |
 | `j` / `k`               | cursor down / up            | scroll the diff             | scroll          |
 | `gg` / `G`              | first / last in the column  | top / bottom                | top / bottom    |
+| `Space` / `Shift-Space`, `Ctrl-f` / `Ctrl-b` |        | a page, by whole lines      | a page          |
 | `Ctrl-d` / `Ctrl-u`     |                             | half a page                 | half a page     |
 | `]` / `[`               |                             | next / previous file        |                 |
 | `h` / `l`               | column left / right         |                             |                 |
