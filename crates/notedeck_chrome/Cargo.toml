@@ -51,6 +51,8 @@ egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"
 tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing", "auto-update"] }
+notedeck_testing = { workspace = true }
+image = { workspace = true }
 
 [lib]
 crate-type = ["lib", "cdylib"]

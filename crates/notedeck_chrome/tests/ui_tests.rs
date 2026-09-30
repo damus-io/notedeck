@@ -464,3 +464,109 @@ async fn mobile_chrome_add_account_stays_open() {
         "the Add account route must not be popped on the following frame"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Colour emoji
+// ---------------------------------------------------------------------------
+
+/// The body of the seeded note [`snapshot_colour_emoji_note_body`] renders.
+///
+/// Emoji from several blocks, a flag (a regional-indicator pair) and a
+/// variation-selector heart, between plain words so the snapshot also shows
+/// how colour glyphs sit on the text baseline.
+///
+/// The heart renders monochrome, from DejaVuSans: epaint picks a font per
+/// character and ignores the U+FE0F emoji-presentation selector, and DejaVuSans
+/// comes before the emoji font (so text-style symbols like ✓ stay text). If it
+/// turns red, upstream started honouring the selector.
+const EMOJI_NOTE: &str = "colour emoji 🎉🔥👍 😀 ❤️ 🇨🇦 in a note";
+
+/// A Columns note whose body is colour emoji, drawn from the bundled Noto
+/// COLRv1 font.
+///
+/// A real device (account, contact list, seeded note) so it is the timeline's
+/// own note renderer, not a stand-in. The snapshot is cropped to the note body:
+/// the header's relative time ("3s") is measured from the wall clock, which no
+/// Columns test can pin, so a whole-frame image would never be the same twice.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_colour_emoji_note_body() {
+    use nostrdb::{NoteBuildOptions, NoteBuilder};
+    use nostrdb_net::FullKeypair;
+    use notedeck_testing::{
+        device::{build_device_in_tmpdir_with_builder, device_harness_builder},
+        fixtures::seed_local_notes_in_data_dir,
+        stepping::wait_for_device_condition,
+    };
+    use std::time::Duration;
+
+    let alice = FullKeypair::generate();
+    let bob = FullKeypair::generate();
+    let json = |note: nostrdb::Note<'_>| note.json().expect("note json");
+
+    // Alice follows bob, so her contacts column shows bob's note. Seeded on
+    // disk before boot: the device connects to no relay.
+    let contacts = NoteBuilder::new()
+        .kind(3)
+        .content("")
+        .options(NoteBuildOptions::default())
+        .start_tag()
+        .tag_str("p")
+        .tag_str(&bob.pubkey.hex())
+        .sign(&alice.secret_key.secret_bytes())
+        .build()
+        .expect("contact list");
+    let note = NoteBuilder::new()
+        .kind(1)
+        .content(EMOJI_NOTE)
+        .sign(&bob.secret_key.secret_bytes())
+        .build()
+        .expect("emoji note");
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    seed_local_notes_in_data_dir(tmpdir.path(), &[json(contacts), json(note)], &[1, 3]);
+
+    let builder = device_harness_builder()
+        .with_size(egui::Vec2::new(500.0, 400.0))
+        .renderer(notedeck::software_renderer());
+    let mut device = build_device_in_tmpdir_with_builder(
+        builder,
+        &[],
+        &alice,
+        tmpdir,
+        Box::new(|notedeck, _ctx| {
+            let args = vec!["--column".to_string(), "contacts".to_string()];
+            let mut app_ctx = notedeck.app_context();
+            app_ctx.settings.complete_welcome();
+            let damus = Damus::new(&mut app_ctx, &args);
+            drop(app_ctx);
+            notedeck.set_app(damus);
+        }),
+    );
+
+    let body = wait_for_device_condition(
+        &mut device,
+        Duration::from_secs(30),
+        "the contacts timeline to render the emoji note",
+        |device| {
+            device
+                .query_all_by_label(EMOJI_NOTE)
+                .map(|node| node.rect())
+                .next()
+                .ok_or_else(|| "emoji note not rendered yet".to_owned())
+        },
+    );
+
+    let frame = device.render().expect("render");
+    let ppp = device.ctx.pixels_per_point();
+    // Vertical margin only: to the left sits the author's avatar.
+    let body = body.expand2(egui::vec2(0.0, 3.0)) * ppp;
+    let cropped = image::imageops::crop_imm(
+        &frame,
+        body.min.x.max(0.0) as u32,
+        body.min.y.max(0.0) as u32,
+        body.width() as u32,
+        body.height() as u32,
+    )
+    .to_image();
+    egui_kittest::image_snapshot(&cropped, "colour_emoji_note_body");
+}

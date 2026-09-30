@@ -1035,6 +1035,28 @@ fn hide_subissues_view_option() {
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_inline_card() {
+    inline_card_snapshot(
+        "inline_card",
+        "Update headway-cli to use negentropy for sync",
+        "headway",
+    );
+}
+
+/// A card whose title and label carry colour emoji, drawn from notedeck's
+/// bundled Noto COLRv1 font rather than as monochrome outlines.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_inline_card_colour_emoji() {
+    inline_card_snapshot(
+        "inline_card_colour_emoji",
+        "🚀 Ship colour emoji 🎉 in notes",
+        "🐛 bug",
+    );
+}
+
+/// Render one inline card with `title` and a single `label`, centered the way
+/// the notebook lays out node content, and snapshot it as `name`.
+fn inline_card_snapshot(name: &str, title: &str, label: &str) {
     use notedeck_headway::{card_inline_ui, event::CardView};
 
     let tmpdir = tempfile::TempDir::new().unwrap();
@@ -1045,9 +1067,9 @@ fn snapshot_inline_card() {
     let card = CardView {
         id: nostrdb_net::NoteId::new([1u8; 32]),
         author: [0u8; 32],
-        title: "Update headway-cli to use negentropy for sync".to_string(),
+        title: title.to_string(),
         description: String::new(),
-        labels: vec!["headway".to_string()],
+        labels: vec![label.to_string()],
         priority: headway::event::Priority::None,
         rank: String::new(),
         placed_at: 0,
@@ -1083,7 +1105,7 @@ fn snapshot_inline_card() {
         });
 
     harness.run_ok();
-    harness.snapshot("inline_card");
+    harness.snapshot(name);
 }
 
 /// How a chip behaves when it meets the edge of a row — the three cases, top to

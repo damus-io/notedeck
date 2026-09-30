@@ -47,10 +47,13 @@ bech32 = { version = "0.11", default-features = false }
 bip39 = { version = "2.2", default-features = false }
 bitflags = "2.5.0"
 dirs = "5.0.1"
-eframe = { version = "0.36.2", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
+# `system_fonts`: fall back to the OS's fonts for characters the bundled ones
+# lack (e.g. ⧉), and turn on epaint's colour glyphs (COLR/sbix/CBDT).
+eframe = { version = "0.36.2", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity", "system_fonts" ] }
 egui = { version = "0.36.2", features = ["serde"] }
 egui-wgpu = "0.36.2"
 egui_extras = { version = "0.36.2", features = ["all_loaders"] }
+epaint = { version = "0.36.2", features = ["color_fonts"] }
 egui-winit = { version = "0.36.2", features = ["android-game-activity", "clipboard"] }
 egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "989b95c087f35eca134392e959c78f9be02b3422" }
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "f352ebae7acadab328bf92d9ac7188caa520d676" }

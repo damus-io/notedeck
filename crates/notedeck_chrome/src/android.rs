@@ -50,6 +50,11 @@ async fn android_main_async(android_app: AndroidApp) {
     let path = android_app.internal_data_path().expect("data path");
     let mut options = eframe::NativeOptions {
         depth_buffer: 24,
+        // The system font provider blocks the UI thread on its font
+        // enumeration the first time a glyph is missing from the bundled
+        // fonts. Keep it off on Android until that cost is measured on a
+        // device (headway:notedeck/gym-perfect-such).
+        system_font_fallback: false,
         ..eframe::NativeOptions::default()
     };
 

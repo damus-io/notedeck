@@ -180,25 +180,28 @@ pub fn setup_fonts(ctx: &egui::Context) {
         ))),
     );
 
-    // Some good looking emojis. Use as first priority:
+    // Colour emoji (Noto, COLRv1). Bundled rather than left to the system
+    // font provider for two reasons: the provider is only asked about
+    // characters *no* loaded font has, so any emoji font here decides what
+    // emoji look like; and tests (egui_kittest installs no provider) must
+    // render the same glyphs on every machine. Needs epaint's `color_fonts`.
     font_data.insert(
-        "NotoEmoji".to_owned(),
+        "NotoColorEmoji".to_owned(),
         Arc::new(
-            FontData::from_static(include_bytes!(
-                "../../../assets/fonts/NotoEmoji-Regular.ttf"
-            ))
-            .tweak(FontTweak {
-                scale: 1.1, // make them a touch larger
-                y_offset_factor: 0.0,
-                y_offset: 0.0,
-                ..Default::default()
-            }),
+            FontData::from_static(include_bytes!("../../../assets/fonts/Noto-COLRv1.ttf")).tweak(
+                FontTweak {
+                    scale: 1.1, // make them a touch larger
+                    y_offset_factor: 0.0,
+                    y_offset: 0.0,
+                    ..Default::default()
+                },
+            ),
         ),
     );
 
     let base_fonts = vec![
         "DejaVuSans".to_owned(),
-        "NotoEmoji".to_owned(),
+        "NotoColorEmoji".to_owned(),
         "NotoSansCJK".to_owned(),
         "NotoSansThai".to_owned(),
     ];
@@ -215,7 +218,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
     let mut bold = vec!["OnestBold".to_owned()];
     bold.extend(base_fonts.clone());
 
-    let emoji = vec!["NotoEmoji".to_owned()];
+    let emoji = vec!["NotoColorEmoji".to_owned()];
 
     families.insert(egui::FontFamily::Proportional, proportional);
     families.insert(egui::FontFamily::Monospace, mono);

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use egui_kittest::Harness;
+use egui_kittest::{Harness, HarnessBuilder};
 use nostr::nips::nip19::ToBech32;
 use nostrdb_net::FullKeypair;
 use notedeck::{Notedeck, NotedeckRemoteConfig};
@@ -74,6 +74,7 @@ pub fn build_device_with_relays_and_remote_config(
     let tmpdir = TempDir::new().expect("tmpdir");
     let data_dir = tmpdir.path().to_path_buf();
     build_device_with_data_dir(
+        device_harness_builder(),
         relays,
         account,
         data_dir,
@@ -93,6 +94,7 @@ pub fn build_device_in_tmpdir_with_relays(
 ) -> DeviceHarness {
     let data_dir = tmpdir.path().to_path_buf();
     build_device_with_data_dir(
+        device_harness_builder(),
         relays,
         account,
         data_dir,
@@ -112,6 +114,7 @@ pub fn build_public_device_in_tmpdir_with_relays(
 ) -> DeviceHarness {
     let data_dir = tmpdir.path().to_path_buf();
     build_device_with_data_dir(
+        device_harness_builder(),
         relays,
         account,
         data_dir,
@@ -130,10 +133,50 @@ pub fn build_device_in_path_with_relays(
     app_factory: AppFactory,
 ) -> DeviceHarness {
     build_device_with_data_dir(
+        device_harness_builder(),
         relays,
         account,
         data_dir.to_path_buf(),
         DeviceDataDir::External,
+        DeviceKeyMode::Full,
+        NotedeckRemoteConfig::default(),
+        app_factory,
+    )
+}
+
+/// The harness configuration every device is built with: a 900x700 window,
+/// and short steps so a scenario's waits stay cheap.
+///
+/// Start from this and add to it to build a device with extra harness
+/// settings, e.g. a renderer for a snapshot, via
+/// [`build_device_in_tmpdir_with_builder`].
+pub fn device_harness_builder() -> HarnessBuilder<DeviceState> {
+    Harness::builder()
+        .with_size(egui::Vec2::new(900.0, 700.0))
+        .with_max_steps(24)
+        .with_step_dt(0.05)
+}
+
+/// Like [`build_device_in_tmpdir_with_relays`], but built from `builder`
+/// rather than [`device_harness_builder`]'s defaults.
+///
+/// This crate has no renderer, so a test crate that snapshots a device (and
+/// enables `egui_kittest`'s `wgpu` feature) passes a builder with its
+/// renderer set.
+pub fn build_device_in_tmpdir_with_builder(
+    builder: HarnessBuilder<DeviceState>,
+    relays: &[&str],
+    account: &FullKeypair,
+    tmpdir: TempDir,
+    app_factory: AppFactory,
+) -> DeviceHarness {
+    let data_dir = tmpdir.path().to_path_buf();
+    build_device_with_data_dir(
+        builder,
+        relays,
+        account,
+        data_dir,
+        DeviceDataDir::Temp { _dir: tmpdir },
         DeviceKeyMode::Full,
         NotedeckRemoteConfig::default(),
         app_factory,
@@ -145,7 +188,9 @@ enum DeviceKeyMode {
     Public,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_device_with_data_dir(
+    builder: HarnessBuilder<DeviceState>,
     relays: &[&str],
     account: &FullKeypair,
     data_dir: PathBuf,
@@ -173,28 +218,24 @@ fn build_device_with_data_dir(
     // Wrap in Option so we can take() it inside the FnOnce closure
     let mut app_factory = Some(app_factory);
 
-    Harness::builder()
-        .with_size(egui::Vec2::new(900.0, 700.0))
-        .with_max_steps(24)
-        .with_step_dt(0.05)
-        .build_eframe(move |cc| {
-            let mut notedeck =
-                Notedeck::init_with_remote_config(&cc.egui_ctx, &data_dir, &args, remote_config);
+    builder.build_eframe(move |cc| {
+        let mut notedeck =
+            Notedeck::init_with_remote_config(&cc.egui_ctx, &data_dir, &args, remote_config);
 
-            notedeck.setup(&cc.egui_ctx);
-            {
-                let app_ref = &mut notedeck.notedeck_ref();
-                app_ref.app_ctx.settings.set_animate_nav_transitions(false);
-            }
+        notedeck.setup(&cc.egui_ctx);
+        {
+            let app_ref = &mut notedeck.notedeck_ref();
+            app_ref.app_ctx.settings.set_animate_nav_transitions(false);
+        }
 
-            // App-specific hook: install the app
-            if let Some(factory) = app_factory.take() {
-                factory(&mut notedeck, &cc.egui_ctx);
-            }
+        // App-specific hook: install the app
+        if let Some(factory) = app_factory.take() {
+            factory(&mut notedeck, &cc.egui_ctx);
+        }
 
-            DeviceState {
-                notedeck,
-                _data_dir: data_dir_guard,
-            }
-        })
+        DeviceState {
+            notedeck,
+            _data_dir: data_dir_guard,
+        }
+    })
 }

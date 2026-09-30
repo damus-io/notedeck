@@ -21,6 +21,8 @@ egui = { workspace = true }
 egui_nav = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true }
+# color_fonts: the bundled colour emoji font renders without eframe too (tests)
+epaint = { workspace = true }
 image = { workspace = true }
 base32 = { workspace = true }
 poll-promise = { workspace = true }

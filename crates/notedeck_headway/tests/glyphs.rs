@@ -88,6 +88,10 @@ fn every_literal_glyph_is_in_the_loaded_fonts() {
         "the scan should find headway's own \"← Back\" glyph; is the lexer broken?"
     );
 
+    // A bare `Context` has no font provider, so this checks notedeck's bundled
+    // fonts only. The app also falls back to the OS's fonts on desktop, but a
+    // glyph that only a system font has is a box on Android and on any machine
+    // without that font, so it still fails here.
     let ctx = egui::Context::default();
     notedeck::fonts::setup_fonts(&ctx);
     // Fonts set with `set_fonts` take effect at the start of the next pass.
