@@ -143,6 +143,65 @@ fn is_notebook_note(ctx: &mut AppContext, note_id: nostrdb_net::NoteId) -> bool 
         .unwrap_or(false)
 }
 
+/// Resolve `reference` — exactly one reference, e.g. `agentium:some-word-id` —
+/// to the note it names, through the same registered
+/// [`ReferenceParser`](notedeck::ReferenceParser)s the inline-chip renderer
+/// uses, relative to the selected account. `None` when no parser recognizes it
+/// or it doesn't resolve locally yet.
+fn resolve_reference(ctx: &mut AppContext, reference: &str) -> Option<nostrdb_net::NoteId> {
+    let txn = Transaction::new(ctx.ndb).ok()?;
+    let resolve_ctx = notedeck::ReferenceResolveCtx {
+        ndb: ctx.ndb,
+        txn: &txn,
+        selected_account: Some(*ctx.accounts.selected_account_pubkey()),
+    };
+    let resolved = ctx
+        .registries
+        .reference_parsers
+        .resolve_exact(reference, &resolve_ctx)?;
+    Some(resolved.note_id)
+}
+
+/// Open `note_id` in the app that owns its kind — an agentium session in Dave,
+/// a notebook node in Notebook, a headway board/issue in Headway — the way a
+/// click on its inline widget does. Returns `false`, doing nothing, when no
+/// such app claims it, so the caller hands it to the Columns timeline.
+#[cfg_attr(
+    not(any(feature = "dave", feature = "notebook", feature = "headway")),
+    allow(unused_variables)
+)]
+fn open_note_in_owning_app(
+    chrome: &mut Chrome,
+    ctx: &mut AppContext,
+    note_id: nostrdb_net::NoteId,
+) -> bool {
+    #[cfg(feature = "dave")]
+    if is_agentium_note(ctx, note_id) {
+        chrome.switch_to_dave();
+        if let Some(dave) = chrome.get_dave_app() {
+            dave.open(note_id);
+        }
+        return true;
+    }
+
+    #[cfg(feature = "notebook")]
+    if is_notebook_note(ctx, note_id) {
+        chrome.switch_to_notebook();
+        if let Some(notebook) = chrome.get_notebook_app() {
+            notebook.open(note_id);
+        }
+        return true;
+    }
+
+    #[cfg(feature = "headway")]
+    if is_headway_note(ctx, note_id) {
+        open_headway_note(chrome, ctx, note_id);
+        return true;
+    }
+
+    false
+}
+
 pub(super) fn chrome_handle_app_action(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
@@ -152,6 +211,18 @@ pub(super) fn chrome_handle_app_action(
     match action {
         AppAction::ToggleChrome => {
             chrome.toggle();
+        }
+
+        AppAction::Open(open) => {
+            let Some(note_id) = resolve_reference(ctx, &open.reference) else {
+                tracing::warn!("open: no registered parser resolves {:?}", open.reference);
+                return;
+            };
+            // Route it as the click on its inline chip would be, so an open by
+            // reference and an open by click can never land differently.
+            // `open.msg` is dropped here: no app consumes it yet.
+            let click = notedeck::NoteAction::note(note_id);
+            chrome_handle_app_action(chrome, ctx, AppAction::Note(click), ui);
         }
 
         AppAction::Note(note_action) => {
@@ -167,38 +238,10 @@ pub(super) fn chrome_handle_app_action(
                 }
             }
 
-            // Intercept a click on an inline agentium session widget — open it in
-            // the Dave app rather than the timeline (see `is_agentium_kind`).
-            #[cfg(feature = "dave")]
+            // A click on another app's inline widget opens in that app rather than
+            // the timeline (see `open_note_in_owning_app`).
             if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
-                if is_agentium_note(ctx, *note_id) {
-                    chrome.switch_to_dave();
-                    if let Some(dave) = chrome.get_dave_app() {
-                        dave.open(*note_id);
-                    }
-                    return;
-                }
-            }
-
-            // Intercept a click on an inline notebook node widget — open it in the
-            // Notebook app rather than the timeline (see `is_notebook_kind`).
-            #[cfg(feature = "notebook")]
-            if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
-                if is_notebook_note(ctx, *note_id) {
-                    chrome.switch_to_notebook();
-                    if let Some(notebook) = chrome.get_notebook_app() {
-                        notebook.open(*note_id);
-                    }
-                    return;
-                }
-            }
-
-            // Intercept a click on an inline headway board/issue widget — open it
-            // in the Headway app rather than the timeline (see `is_headway_kind`).
-            #[cfg(feature = "headway")]
-            if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
-                if is_headway_note(ctx, *note_id) {
-                    open_headway_note(chrome, ctx, *note_id);
+                if open_note_in_owning_app(chrome, ctx, *note_id) {
                     return;
                 }
             }

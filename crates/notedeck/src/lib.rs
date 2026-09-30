@@ -29,6 +29,7 @@ mod nip51_set;
 pub mod note;
 mod notecache;
 mod oneshot_api;
+mod open_uri;
 mod options;
 mod persist;
 pub mod platform;
@@ -122,6 +123,7 @@ pub use note::{
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use oneshot_api::OneshotApi;
+pub use open_uri::OpenUri;
 pub use options::NotedeckOptions;
 pub use persist::*;
 pub use private_sync::{
@@ -132,7 +134,8 @@ pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi};
 pub use realtime_cache::{PollResponse, RealtimeCache, RealtimeCacheStats, Reducer};
 pub use reference::{
-    NostrRefParser, ReferenceParser, ReferenceParserRegistry, ReferenceResolveCtx, ResolvedRef,
+    NostrRefParser, ReferenceMatch, ReferenceParser, ReferenceParserRegistry, ReferenceResolveCtx,
+    ResolvedRef,
 };
 pub use registries::AppRegistries;
 pub use relay_resolver::RelaySetResolver;

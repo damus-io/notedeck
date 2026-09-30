@@ -150,6 +150,74 @@ impl ReferenceParserRegistry {
     pub fn iter(&self) -> impl Iterator<Item = &dyn ReferenceParser> + '_ {
         self.by_id.values().map(|b| b.as_ref())
     }
+
+    /// The leftmost reference in `text` recognized by any registered parser, or
+    /// `None` if `text` holds none.
+    ///
+    /// Each parser owns its whole grammar via [`find`](ReferenceParser::find);
+    /// this asks every parser for its next match and keeps the earliest (longest
+    /// on a tie) — the one primitive both the renderer's text scans and
+    /// [`resolve_exact`](Self::resolve_exact) walk with. Allocation-free: `find`
+    /// returns byte ranges into `text`, so this is safe to call every frame.
+    #[profiling::function]
+    pub fn find_next(&self, text: &str) -> Option<ReferenceMatch> {
+        let mut best: Option<ReferenceMatch> = None;
+        for parser in self.iter() {
+            let Some(range) = parser.find(text) else {
+                continue;
+            };
+            let better = match &best {
+                Some(b) => {
+                    range.start < b.range.start
+                        || (range.start == b.range.start && range.len() > b.range.len())
+                }
+                None => true,
+            };
+            if better {
+                best = Some(ReferenceMatch {
+                    range,
+                    parser: parser.id(),
+                });
+            }
+        }
+        best
+    }
+
+    /// Resolve `reference` — a string that should be *exactly one* reference,
+    /// such as the target of an [`OpenUri`](crate::OpenUri) — through whichever
+    /// registered parser recognizes it.
+    ///
+    /// Surrounding whitespace is ignored, but the match must span the rest of the
+    /// string: `"see headway:b/a-b-c"` is prose that happens to contain a
+    /// reference, not a reference, and resolves to `None`. Also `None` when no
+    /// parser recognizes it or the recognizing parser can't
+    /// [`resolve`](ReferenceParser::resolve) it (e.g. the entity isn't in the
+    /// local db yet).
+    pub fn resolve_exact(&self, reference: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
+        let reference = reference.trim();
+        let m = self.find_next(reference)?;
+        if m.range != (0..reference.len()) {
+            return None;
+        }
+        self.get(m.parser)?.resolve(reference, ctx)
+    }
+}
+
+/// A reference located in a run of text: its byte range within the scanned
+/// string and the [id](ReferenceParser::id) of the parser that matched it (so the
+/// match can be resolved without re-scanning). Returned by
+/// [`ReferenceParserRegistry::find_next`].
+///
+/// A named struct (not a tuple) so the range and the parser id can't be
+/// transposed at a call site. Holds no borrow of the text — just offsets and a
+/// `'static` id — so it never pins an immutable scan borrow across a mutable
+/// draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceMatch {
+    /// Byte range of the whole matched reference within the scanned string.
+    pub range: Range<usize>,
+    /// [`id`](ReferenceParser::id) of the parser that matched.
+    pub parser: &'static str,
 }
 
 /// The built-in `nostr:` reference parser: matches a `nostr:` scheme followed by
@@ -255,6 +323,78 @@ mod tests {
         assert_eq!(&s[p.find(s).unwrap()], "nostr:note1ok");
         // Prose with no reference yields nothing.
         assert!(p.find("just prose").is_none());
+    }
+
+    #[test]
+    fn find_next_takes_the_leftmost_match_across_parsers() {
+        let mut parsers = ReferenceParserRegistry::default();
+        parsers.register(Box::new(StubParser));
+
+        // The built-in nostr parser still matches its `nostr:` + bech32 reference.
+        let s = "see nostr:nevent1abc done";
+        let m = parsers.find_next(s).unwrap();
+        assert_eq!(m.parser, "nostr");
+        assert_eq!(&s[m.range], "nostr:nevent1abc");
+
+        // A newly registered parser is matched alongside it, with its own bare grammar.
+        let s = "ping @alice please";
+        let m = parsers.find_next(s).unwrap();
+        assert_eq!(m.parser, "stub");
+        assert_eq!(&s[m.range], "@alice");
+
+        // When both appear, the leftmost wins regardless of registration order.
+        let s = "hi @bob and nostr:note1two";
+        let m = parsers.find_next(s).unwrap();
+        assert_eq!(m.parser, "stub");
+        assert_eq!(&s[m.range], "@bob");
+
+        // Text with no recognized reference yields nothing.
+        assert!(parsers.find_next("just prose, no refs").is_none());
+    }
+
+    /// A parser that resolves every `@handle` it finds to one fixed note, so
+    /// [`ReferenceParserRegistry::resolve_exact`]'s whole-span rule can be tested
+    /// without seeding a database.
+    struct ResolvingStub;
+    impl ReferenceParser for ResolvingStub {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn find(&self, text: &str) -> Option<Range<usize>> {
+            StubParser.find(text)
+        }
+        fn resolve(&self, _matched: &str, _ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
+            Some(ResolvedRef::note(NoteId::new([7; 32])))
+        }
+    }
+
+    #[test]
+    fn resolve_exact_requires_the_whole_string_to_be_one_reference() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(
+            dir.path().to_str().unwrap(),
+            &crate::test_util::test_config(),
+        )
+        .unwrap();
+        let txn = Transaction::new(&ndb).unwrap();
+        let ctx = ReferenceResolveCtx {
+            ndb: &ndb,
+            txn: &txn,
+            selected_account: None,
+        };
+        let mut parsers = ReferenceParserRegistry::default();
+        parsers.register(Box::new(ResolvingStub));
+
+        let want = Some(ResolvedRef::note(NoteId::new([7; 32])));
+        assert_eq!(parsers.resolve_exact("@alice", &ctx), want);
+        // Surrounding whitespace is not part of the reference.
+        assert_eq!(parsers.resolve_exact("  @alice\n", &ctx), want);
+        // Prose around a reference is not a reference.
+        assert_eq!(parsers.resolve_exact("ping @alice", &ctx), None);
+        assert_eq!(parsers.resolve_exact("@alice please", &ctx), None);
+        // Nothing recognizable, or a recognized reference that doesn't resolve.
+        assert_eq!(parsers.resolve_exact("", &ctx), None);
+        assert_eq!(parsers.resolve_exact("nostr:note1nope", &ctx), None);
     }
 
     #[test]

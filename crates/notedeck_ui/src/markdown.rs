@@ -185,21 +185,6 @@ pub fn render_markdown_with_refs_editable(
     apply_checkbox_toggles(source, &edits.toggled)
 }
 
-/// A reference located in a run of text: its byte range within the scanned
-/// string and the [id](notedeck::ReferenceParser::id) of the parser that matched
-/// it (so the match can be resolved without re-scanning).
-///
-/// A named struct (not a tuple) so the range and the parser id can't be
-/// transposed at a call site. Holds no borrow of the text — just offsets and a
-/// `'static` id — so it never pins the immutable scan borrow across the mutable
-/// draw below.
-struct RefMatch {
-    /// Byte range of the whole matched reference within the scanned string.
-    range: std::ops::Range<usize>,
-    /// [`id`](notedeck::ReferenceParser::id) of the parser that matched.
-    parser: &'static str,
-}
-
 /// A span whose entire content is one reference: the reference text with the
 /// span's own decoration stripped off, plus the parser that matched it.
 ///
@@ -230,7 +215,7 @@ fn whole_reference<'a>(
     parsers: &notedeck::ReferenceParserRegistry,
 ) -> Option<WholeRef<'a>> {
     let stripped = unwrap_code_span(text.trim());
-    let m = next_reference(stripped, parsers)?;
+    let m = parsers.find_next(stripped)?;
     (m.range.start == 0 && m.range.end == stripped.len()).then_some(WholeRef {
         text: stripped,
         parser: m.parser,
@@ -256,38 +241,6 @@ fn unwrap_code_span(text: &str) -> &str {
         return text;
     }
     inner[..inner.len() - closing].trim()
-}
-
-/// The leftmost reference in `text` recognized by any parser in `parsers`, or
-/// `None` if `text` holds none.
-///
-/// Each parser owns its whole grammar via
-/// [`find`](notedeck::ReferenceParser::find); this asks every parser for its next
-/// match and keeps the earliest (longest on a tie) — the one shared primitive
-/// both the read-only and editable scans walk with. Allocation-free: `find`
-/// returns byte ranges into `text` and this holds no per-frame `Vec`.
-#[profiling::function]
-fn next_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> Option<RefMatch> {
-    let mut best: Option<RefMatch> = None;
-    for parser in parsers.iter() {
-        let Some(range) = parser.find(text) else {
-            continue;
-        };
-        let better = match &best {
-            Some(b) => {
-                range.start < b.range.start
-                    || (range.start == b.range.start && range.len() > b.range.len())
-            }
-            None => true,
-        };
-        if better {
-            best = Some(RefMatch {
-                range,
-                parser: parser.id(),
-            });
-        }
-    }
-    best
 }
 
 /// Resolve `matched` via the parser registered under `parser_id` and draw the
@@ -432,7 +385,7 @@ pub fn render_reference(
     render_context: notedeck::RenderContext,
 ) -> bool {
     let reference = reference.trim();
-    let Some(m) = next_reference(reference, &note.registries.reference_parsers) else {
+    let Some(m) = note.registries.reference_parsers.find_next(reference) else {
         return false;
     };
     draw_resolved_reference(
@@ -621,7 +574,7 @@ fn append_text_with_refs(
     ui: &mut Ui,
 ) {
     let mut rest = text;
-    while let Some(m) = next_reference(rest, &ctx.registries.reference_parsers) {
+    while let Some(m) = ctx.registries.reference_parsers.find_next(rest) {
         job.append(&rest[..m.range.start], 0.0, fmt.clone());
         let matched = &rest[m.range.clone()];
         if !draw_reference(job, ui, ctx, txn, m.parser, matched) {
@@ -659,16 +612,18 @@ pub(crate) fn render_text_run_with_refs(
 ///
 /// The note-content renderer's cheap gate: a `true` sends the block through
 /// [`render_text_run_with_refs`], a `false` (the common case) keeps the plain
-/// selectable-`Label` fast path. Allocation-free — [`next_reference`] returns
-/// borrowed ranges.
+/// selectable-`Label` fast path. Allocation-free —
+/// [`find_next`](notedeck::ReferenceParserRegistry::find_next) returns borrowed
+/// ranges.
 pub(crate) fn contains_reference(text: &str, parsers: &notedeck::ReferenceParserRegistry) -> bool {
-    next_reference(text, parsers).is_some()
+    parsers.find_next(text).is_some()
 }
 
 /// Render a run of inline elements into the current `horizontal_wrapped` layout.
 ///
 /// When `ctx` is `Some`, each [`InlineElement::Text`] span is scanned for a
-/// reference any registered parser recognizes ([`next_reference`]) and a resolved
+/// reference any registered parser recognizes
+/// ([`find_next`](notedeck::ReferenceParserRegistry::find_next)) and a resolved
 /// match is drawn inline as its kind widget ([`draw_reference`]) rather than plain
 /// text, so a reference flows *within* the paragraph. `None` renders every span
 /// as plain text (no registry to resolve against).
@@ -1856,8 +1811,8 @@ mod tests {
     }
 
     /// A stub parser recognizing a bare `@handle` — a reference with *no* scheme
-    /// prefix — so [`next_reference`] can be exercised with a second parser that
-    /// owns an entirely different grammar than the built-in `nostr`.
+    /// prefix — so the scans can be exercised with a second parser that owns an
+    /// entirely different grammar than the built-in `nostr`.
     struct StubParser;
     impl notedeck::ReferenceParser for StubParser {
         fn id(&self) -> &'static str {
@@ -1878,33 +1833,6 @@ mod tests {
         ) -> Option<notedeck::ResolvedRef> {
             None
         }
-    }
-
-    #[test]
-    fn next_reference_matches_a_second_registered_parser() {
-        let mut parsers = notedeck::ReferenceParserRegistry::default();
-        parsers.register(Box::new(StubParser));
-
-        // The built-in nostr parser still matches its `nostr:` + bech32 reference.
-        let s = "see nostr:nevent1abc done";
-        let m = next_reference(s, &parsers).unwrap();
-        assert_eq!(m.parser, "nostr");
-        assert_eq!(&s[m.range], "nostr:nevent1abc");
-
-        // A newly registered parser is matched alongside it, with its own bare grammar.
-        let s = "ping @alice please";
-        let m = next_reference(s, &parsers).unwrap();
-        assert_eq!(m.parser, "stub");
-        assert_eq!(&s[m.range], "@alice");
-
-        // When both appear, the leftmost wins regardless of registration order.
-        let s = "hi @bob and nostr:note1two";
-        let m = next_reference(s, &parsers).unwrap();
-        assert_eq!(m.parser, "stub");
-        assert_eq!(&s[m.range], "@bob");
-
-        // Text with no recognized reference yields nothing.
-        assert!(next_reference("just prose, no refs", &parsers).is_none());
     }
 
     #[test]

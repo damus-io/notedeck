@@ -3409,6 +3409,96 @@ fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
     );
 }
 
+/// An open *by reference string* — `AppAction::Open` with a
+/// `headway:<board>/<word-id>?msg=…` [`notedeck::OpenUri`] — lands exactly where a
+/// click on the card's inline chip does: one global-history entry for the card
+/// (behavioural, no lavapipe).
+///
+/// Mirrors the chrome's `AppAction::Open` arm: parse the URI, resolve its reference
+/// through the *registered* parsers (`ReferenceParserRegistry::resolve_exact`, which
+/// the chrome's `resolve_reference` wraps) relative to the selected account, then
+/// open the note the way the click path does (`open_note_route` + one push). The
+/// `msg` is carried but not consumed, so it must not change where the open lands.
+#[test]
+fn open_uri_for_a_card_ref_lands_one_history_entry() {
+    use notedeck::{AppId, ChromeNavEntry, NavStack, OpenUri, ReferenceResolveCtx};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let card = seed_roadmap_board(&mut harness);
+
+    const SOURCE: AppId = AppId(1);
+    const HEADWAY: AppId = AppId(0);
+    let mut stack: NavStack<ChromeNavEntry> =
+        NavStack::new(vec![ChromeNavEntry::new(SOURCE, Rc::new(()))]);
+
+    let uri = format!(
+        "{}?msg=%22review%20this%22",
+        headway::wordid::card_ref("roadmap", card.bytes())
+    );
+    let open = OpenUri::parse(&uri).expect("a card ref parses");
+    assert_eq!(open.msg.as_deref(), Some("review this"));
+
+    let token = {
+        let state = harness.state_mut();
+        let mut app_ctx = state.notedeck.app_context();
+        let resolved = {
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let resolve_ctx = ReferenceResolveCtx {
+                ndb: app_ctx.ndb,
+                txn: &txn,
+                selected_account: Some(*app_ctx.accounts.selected_account_pubkey()),
+            };
+            app_ctx
+                .registries
+                .reference_parsers
+                .resolve_exact(&open.reference, &resolve_ctx)
+                .expect("the registered headway parser resolves the card ref")
+        };
+        assert_eq!(
+            resolved.note_id, card,
+            "the ref resolves to the card's note"
+        );
+        state
+            .headway
+            .open_note_route(&mut app_ctx, resolved.note_id)
+            .expect("a card note mints a route")
+    };
+    stack.route_to(ChromeNavEntry::new(HEADWAY, token));
+
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "← Back");
+    for _ in 0..5 {
+        chrome_frame(&mut harness, &mut stack);
+    }
+    assert_eq!(stack.len(), 2, "an open by URI is one history entry");
+    let route = stack
+        .top()
+        .token
+        .downcast_ref::<HeadwayRoute>()
+        .expect("the entry carries a Headway route");
+    assert_eq!(route.selected_card(), Some(card), "the route is the card");
+
+    // Prose around the reference is not a reference: nothing resolves.
+    let state = harness.state_mut();
+    let app_ctx = state.notedeck.app_context();
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    let resolve_ctx = ReferenceResolveCtx {
+        ndb: app_ctx.ndb,
+        txn: &txn,
+        selected_account: Some(*app_ctx.accounts.selected_account_pubkey()),
+    };
+    let prose = format!("see {}", open.reference);
+    assert!(
+        app_ctx
+            .registries
+            .reference_parsers
+            .resolve_exact(&prose, &resolve_ctx)
+            .is_none()
+    );
+}
+
 /// A cross-app open of a *board* reference mints the board-root route and makes
 /// that board the active one — the switch is the whole job, so no card is selected
 /// (behavioural, no lavapipe).

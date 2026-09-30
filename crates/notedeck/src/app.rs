@@ -31,9 +31,19 @@ use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
 
+/// A high-level intent an app raises for the shell (the chrome) to carry out,
+/// via [`AppResponse::action`] or the frame-local [`AppActionQueue`].
 pub enum AppAction {
+    /// A note-level action (open a thread, a profile, a context menu choice…).
     Note(NoteAction),
+    /// Show or hide the chrome's sidebar.
     ToggleChrome,
+    /// Open whatever entity a reference names — `agentium:…`, `headway:…`,
+    /// `nostr:…` — in the app that owns it, without the raiser knowing which app
+    /// that is. The shell resolves [`OpenUri::reference`](crate::OpenUri) through
+    /// the registered [`ReferenceParser`](crate::ReferenceParser)s and opens the
+    /// note exactly as a click on its inline chip would.
+    Open(crate::OpenUri),
 }
 
 /// A frame-local queue of [`AppAction`]s raised imperatively *during* rendering
