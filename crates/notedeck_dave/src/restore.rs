@@ -5,13 +5,15 @@
 
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
+use crate::conversation_feed::{self, ConversationFeed};
 use crate::{
     focus_queue, get_backend, secret_key_bytes, session, session_converter, session_events,
     session_loader, session_restore_loader, update, AiMode, ChatSession, Dave, DaveOverlay,
     SessionId,
 };
-use nostrdb::{Subscription, Transaction};
+use nostrdb::{NoteKey, Subscription, Transaction};
 use notedeck::{AppContext, Waker};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Per-frame time budget for draining background-restored sessions into the
@@ -335,10 +337,28 @@ impl Dave {
     /// ([`poll_session_state_events`](Self::poll_session_state_events)): both run
     /// on the render thread and dedup by `event_session_id`, so whichever
     /// materializes a session first wins and the other skips it.
-    pub(crate) fn drain_session_restore(&mut self, waker: &Waker) {
+    ///
+    /// The worker's history is from a snapshot older than the conversation
+    /// poll, which may have delivered, and dropped, some of the session's
+    /// notes before it existed here. Each session is installed with the
+    /// history before the first of those only, and they are then handed to it
+    /// as the poll would have (see
+    /// [`ConversationFeed`](crate::conversation_feed::ConversationFeed)):
+    /// every note is history or goes through the poll's processing, once.
+    /// Returns the remote user messages that replay produced, for the caller
+    /// to dispatch as it does the poll's.
+    pub(crate) fn drain_session_restore(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        secret_key: Option<&[u8; 32]>,
+        waker: &Waker,
+    ) -> Vec<(SessionId, String)> {
         // Messages tagged with a different account are stale (the user switched
         // accounts while an in-flight restore was streaming); drop them.
         let current = self.pns_local_state.as_ref().map(|state| state.account);
+        // Notes the poll dropped for each session installed below, replayed
+        // once the drain is done.
+        let mut replays: HashMap<SessionId, Vec<NoteKey>> = HashMap::new();
 
         // Preserve the user's focus across restore. `new_resumed_session` sets
         // `active` per call, so without this the newest restored session would
@@ -427,8 +447,18 @@ impl Dave {
                     );
                     first_created.get_or_insert(dave_sid);
 
+                    let drops = self
+                        .conversation_feed
+                        .as_mut()
+                        .map(|feed| feed.take_drops(&state.claude_session_id))
+                        .unwrap_or_default();
+                    let loaded =
+                        self.restored_history(ndb, &account, &state, *loaded, drops.first());
                     if let Some(session) = self.session_manager.get_mut(dave_sid) {
-                        hydrate_restored_session(session, &state, *loaded, &self.hostname);
+                        hydrate_session_from_state(session, &state, loaded, &self.hostname);
+                    }
+                    if !drops.is_empty() {
+                        replays.insert(dave_sid, drops);
                     }
                     created_any = true;
                 }
@@ -437,17 +467,30 @@ impl Dave {
                         continue;
                     }
                     tracing::info!("restored {restored} sessions from ndb");
+                    if let Some(feed) = &mut self.conversation_feed {
+                        feed.end_restore();
+                    }
                 }
                 session_restore_loader::SessionRestoreMsg::Failed { account, error } => {
                     if Some(account) == current {
                         tracing::error!("session restore failed: {error}");
+                        if let Some(feed) = &mut self.conversation_feed {
+                            feed.end_restore();
+                        }
                     }
                 }
             }
         }
 
+        let remote_user_messages = match current {
+            Some(account) if !replays.is_empty() => {
+                self.deliver_conversation_notes(ndb, secret_key, &account, replays)
+            }
+            _ => Vec::new(),
+        };
+
         if !created_any {
-            return;
+            return remote_user_messages;
         }
 
         self.session_manager.rebuild_groups();
@@ -463,6 +506,51 @@ impl Dave {
                 }
             }
         }
+
+        remote_user_messages
+    }
+
+    /// The history a background-restored session is installed with: the
+    /// worker's fold, cut back to the notes before `first_drop`, the first one
+    /// the poll dropped for the session (or to everything the poll has
+    /// passed, when it dropped none; see
+    /// [`restored_history_bound`](conversation_feed::restored_history_bound)).
+    ///
+    /// Only a snapshot that reaches past the bound is folded again, here on
+    /// the render thread: one that took in a note the poll then delivered, or
+    /// has yet to. That takes a note stored in the moment between the last
+    /// poll and the worker's read, so it is rare, and it costs one session's
+    /// fold, which a rebuild costs anyway.
+    fn restored_history(
+        &self,
+        ndb: &nostrdb::Ndb,
+        account: &nostrdb_net::Pubkey,
+        state: &session_loader::SessionState,
+        loaded: session_loader::LoadedSession,
+        first_drop: Option<&NoteKey>,
+    ) -> session_loader::LoadedSession {
+        let polled_through = self
+            .conversation_feed
+            .as_ref()
+            .and_then(ConversationFeed::polled_through);
+        let Some(bound) =
+            conversation_feed::restored_history_bound(polled_through, first_drop.copied())
+        else {
+            return loaded;
+        };
+        if loaded.max_key.is_none_or(|max_key| max_key <= bound) {
+            return loaded;
+        }
+        let Ok(txn) = Transaction::new(ndb) else {
+            return loaded;
+        };
+        session_loader::load_session_messages_through(
+            ndb,
+            &txn,
+            account,
+            &state.claude_session_id,
+            bound,
+        )
     }
 
     /// Advance the shared inline-session cache for the selected account so
@@ -695,10 +783,10 @@ impl Dave {
                 )
             };
 
-            // Load any conversation history that arrived with it
-            let loaded = session_loader::load_session_messages_for_author(
-                ctx.ndb, &txn, &account, claude_sid,
-            );
+            // Load any conversation history that arrived with it, up to where
+            // the conversation poll has got: a note past that is still to come
+            // through the poll, which processes it.
+            let loaded = self.load_session_history(ctx.ndb, &txn, &account, claude_sid);
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 // Clear pending state (upgrades placeholder to real session).
@@ -796,12 +884,7 @@ impl Dave {
             backend,
         );
 
-        let loaded = session_loader::load_session_messages_for_author(
-            ndb,
-            &txn,
-            &account,
-            &state.claude_session_id,
-        );
+        let loaded = self.load_session_history(ndb, &txn, &account, &state.claude_session_id);
 
         if let Some(session) = self.session_manager.get_mut(dave_sid) {
             tracing::info!(
@@ -840,16 +923,23 @@ impl Dave {
     /// three things the old picker path dropped: `event_id`, the `seen_note_ids`
     /// dedup set, and the `responded` permission map — so a resumed session keeps
     /// its `agentium:` identity and doesn't double-append its own history.
+    ///
+    /// `source` says how much of the store is history: see [`ResumedHistory`].
     fn load_resumed_session_history(
         &mut self,
         ndb: &nostrdb::Ndb,
         account: nostrdb_net::Pubkey,
         dave_sid: SessionId,
         claude_sid: &str,
+        source: ResumedHistory,
     ) {
         let txn = Transaction::new(ndb).expect("txn");
-        let loaded =
-            session_loader::load_session_messages_for_author(ndb, &txn, &account, claude_sid);
+        let loaded = match source {
+            ResumedHistory::Stored => self.load_session_history(ndb, &txn, &account, claude_sid),
+            ResumedHistory::Imported => {
+                session_loader::load_session_messages_for_author(ndb, &txn, &account, claude_sid)
+            }
+        };
         tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
 
         if let Some(state) =
@@ -901,7 +991,13 @@ impl Dave {
                 "session {} already has events in ndb, skipping archive conversion",
                 claude_sid
             );
-            self.load_resumed_session_history(ctx.ndb, account, dave_sid, &claude_sid);
+            self.load_resumed_session_history(
+                ctx.ndb,
+                account,
+                dave_sid,
+                &claude_sid,
+                ResumedHistory::Stored,
+            );
         } else if let Some(secret_bytes) =
             secret_key_bytes(ctx.accounts.get_selected_account().keypair())
         {
@@ -966,8 +1062,28 @@ impl Dave {
         let claude_sid = pending.claude_session_id.clone();
         self.pending_message_load = None;
 
-        self.load_resumed_session_history(ndb, account, dave_sid, &claude_sid);
+        self.load_resumed_session_history(
+            ndb,
+            account,
+            dave_sid,
+            &claude_sid,
+            ResumedHistory::Imported,
+        );
     }
+}
+
+/// Where a session-picker resume's history comes from, which decides how much
+/// of the store it may claim.
+#[derive(Clone, Copy)]
+enum ResumedHistory {
+    /// Notes already in ndb, which may include one the conversation poll has
+    /// yet to deliver (a phone's message): fold only what the poll has passed,
+    /// and leave the rest to it.
+    Stored,
+    /// Notes this host just converted from the session's JSONL archive: all of
+    /// them are history, however far the poll has got, and none may be taken
+    /// for a live message when the poll reaches it.
+    Imported,
 }
 
 /// Check if a session state represents a remote session.
@@ -977,27 +1093,6 @@ impl Dave {
 fn is_session_remote(hostname: &str, cwd: &str, local_hostname: &str) -> bool {
     (!hostname.is_empty() && hostname != local_hostname)
         || (hostname.is_empty() && !std::path::PathBuf::from(cwd).exists())
-}
-
-/// Hydrate a session the background restore worker loaded.
-///
-/// The worker read its history from an ndb snapshot taken before the session
-/// existed here, and the conversation poll drops a note for a session that
-/// doesn't exist yet. A note stored after that snapshot and polled before
-/// this runs is in neither, so the fold is missing it. The fast-path tail is
-/// left unset, so the session's next note rebuilds from ndb, which holds it,
-/// rather than appending after the gap. The rest of the hydration stands,
-/// subagent rows included.
-fn hydrate_restored_session(
-    session: &mut ChatSession,
-    state: &session_loader::SessionState,
-    loaded: session_loader::LoadedSession,
-    local_hostname: &str,
-) {
-    hydrate_session_from_state(session, state, loaded, local_hostname);
-    if let Some(agentic) = &mut session.agentic {
-        agentic.tail_order = None;
-    }
 }
 
 /// Hydrate an already-created session from its persisted kind-31988
@@ -1308,99 +1403,283 @@ mod tests {
         assert_eq!(info.status, SubagentStatus::Completed);
     }
 
-    /// A background restore folds an older snapshot than the poll has seen: a
-    /// note stored after the worker's read and polled before the session
-    /// existed is in neither. The session's next note must rebuild from ndb,
-    /// which has it, rather than append after the gap.
-    #[tokio::test]
-    async fn background_restore_rebuilds_past_a_dropped_note() {
-        use crate::Message;
+    /// A store and a [`Dave`] wired the way `ensure_pns_local_state` wires
+    /// them, for driving the restore/poll boundary: the account's key unwraps
+    /// PNS envelopes, and the conversation feed is created on demand, so a
+    /// test decides which notes predate it.
+    struct BoundaryHarness {
+        dave: Dave,
+        ndb: Ndb,
+        sk: [u8; 32],
+        account: nostrdb_net::Pubkey,
+        threading: ThreadingState,
+        _dirs: (TempDir, TempDir),
+    }
 
-        let sk = test_secret_key();
-        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
-            .unwrap()
-            .pubkey;
-        let sid = "restored-gap";
-        let tmp = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+    impl BoundaryHarness {
+        fn new() -> Self {
+            let sk = test_secret_key();
+            let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+                .unwrap()
+                .pubkey;
+            let base_dir = TempDir::new().unwrap();
+            let mut dave = test_dave(&DataPath::new(base_dir.path()));
+            dave.pns_local_state = Some(PnsLocalState {
+                account,
+                has_secret_key: true,
+            });
+            let ndb_dir = TempDir::new().unwrap();
+            let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
+            assert!(ndb.add_key(&sk));
+            Self {
+                dave,
+                ndb,
+                sk,
+                account,
+                threading: ThreadingState::new(),
+                _dirs: (base_dir, ndb_dir),
+            }
+        }
 
-        let mut threading = ThreadingState::new();
-        let mut reply = |content: &str| {
-            build_live_event(
+        /// Create the shared conversation subscription: notes stored from
+        /// here on come through the poll, earlier ones never do.
+        fn subscribe(&mut self) {
+            let sub = crate::conversation::subscribe_conversation_events(&self.ndb, self.account)
+                .unwrap();
+            self.dave.conversation_feed = Some(ConversationFeed::new(sub));
+        }
+
+        /// Store a session's kind-31988 state, hosted on `hostname`.
+        async fn store_state(&self, sid: &str, hostname: &str) {
+            let state = session_events::build_session_state_event(
+                sid,
+                "Boundary",
+                None,
+                "/tmp",
+                "idle",
+                None,
+                hostname,
+                "/home/dev",
+                "claude",
+                "default",
+                Some("cli-boundary"),
+                None,
+                None,
+                None,
+                1_000,
+                &self.sk,
+            )
+            .unwrap();
+            let sub = self
+                .ndb
+                .subscribe(&[nostrdb::Filter::new().build()])
+                .unwrap();
+            self.ndb
+                .process_event_with(&state.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+            self.ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        /// Store a conversation note PNS-wrapped, as it arrives from another
+        /// device, and wait until nostrdb has indexed it (without polling the
+        /// conversation feed).
+        async fn store_note(&mut self, sid: &str, role: &str, content: &str) {
+            let ev = build_live_event(
                 content,
-                "assistant",
+                role,
                 sid,
                 None,
                 LiveEventTags::default(),
-                &mut threading,
-                &sk,
+                &mut self.threading,
+                &self.sk,
             )
-            .unwrap()
-        };
-        let (a, b, c) = (reply("A"), reply("B"), reply("C"));
-        let filter = nostrdb::Filter::new()
-            .kinds([session_events::AI_CONVERSATION_KIND as u64])
-            .build();
-        let ingest = |ev: &session_events::BuiltEvent| {
-            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
-            ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+            let sub = self
+                .ndb
+                .subscribe(&[nostrdb::Filter::new()
+                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                    .build()])
                 .unwrap();
-            sub
-        };
+            assert!(crate::publish::pns_ingest(
+                &self.ndb,
+                &ev.note_json,
+                &self.sk
+            ));
+            self.ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
 
-        // The worker reads its snapshot while only A is stored.
-        let sub = ingest(&a);
-        ndb.wait_for_notes(sub, 1).await.unwrap();
-        let loaded = {
-            let txn = Transaction::new(&ndb).unwrap();
-            session_loader::load_session_messages_for_author(&ndb, &txn, &account, sid)
-        };
+        /// One conversation poll; returns the remote user messages and the
+        /// envelopes it collected for fan-out.
+        fn poll(&mut self) -> (Vec<(SessionId, String)>, Vec<NoteKey>) {
+            let mut fan_out = Vec::new();
+            let msgs =
+                self.dave
+                    .poll_remote_conversation_events(&self.ndb, Some(&self.sk), &mut fan_out);
+            (msgs, fan_out)
+        }
 
-        // B is stored and polled before the session exists, so it's dropped.
-        let sub = ingest(&b);
-        ndb.wait_for_notes(sub, 1).await.unwrap();
+        /// Start the background restore the way `ensure_pns_local_state` does,
+        /// and wait until the worker has read its snapshot and sent every
+        /// session (without draining any of it).
+        async fn run_restore_worker(&mut self) -> notedeck::Waker {
+            let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = wakes.clone();
+            let waker = notedeck::Waker::new(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+            if let Some(feed) = &mut self.dave.conversation_feed {
+                feed.begin_restore();
+            }
+            self.dave
+                .session_restore_loader
+                .start(waker.clone(), self.ndb.clone());
+            self.dave
+                .session_restore_loader
+                .restore_account(self.account);
+            // The worker wakes once after `Started` and once after `Finished`.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while wakes.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                assert!(std::time::Instant::now() < deadline, "restore worker hung");
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            waker
+        }
 
-        let mut manager = SessionManager::new();
-        let id = manager.new_resumed_session(
-            PathBuf::from("/tmp/proj"),
-            String::new(),
-            "placeholder".to_string(),
-            AiMode::Agentic,
-            BackendType::Claude,
-        );
-        let session = manager.get_mut(id).unwrap();
-        // Hosted elsewhere, so this is a remote session: its chat is the fold.
-        hydrate_restored_session(session, &hydrate_test_state(sid, None), loaded, "here");
-        assert!(session.is_remote());
-        assert_eq!(session.agentic.as_ref().unwrap().tail_order, None);
+        /// Drain everything the worker sent, as `update` does each frame.
+        fn drain(&mut self, waker: &notedeck::Waker) -> Vec<(SessionId, String)> {
+            self.dave
+                .drain_session_restore(&self.ndb, Some(&self.sk), waker)
+        }
 
-        // C comes through the poll after the session exists.
-        let sub = ingest(&c);
-        let keys = ndb.wait_for_notes(sub, 1).await.unwrap();
-        let txn = Transaction::new(&ndb).unwrap();
-        let batch = vec![ndb.get_note_by_key(&txn, keys[0]).unwrap()];
-        let result = crate::conversation::process_conversation_notes(
-            batch,
-            session,
-            id,
-            true,
-            Some(&sk),
-            &ndb,
-        );
-        assert!(result.rebuild_chat, "an unseeded tail forces a rebuild");
-        drop(txn);
+        fn session_for(&self, sid: &str) -> &ChatSession {
+            self.dave
+                .session_manager
+                .iter()
+                .find(|s| {
+                    s.agentic
+                        .as_ref()
+                        .is_some_and(|a| a.event_session_id() == sid)
+                })
+                .expect("session materialized")
+        }
+    }
 
-        let txn = Transaction::new(&ndb).unwrap();
-        crate::conversation::rebuild_chat_from_fold(session, &ndb, &txn, &account);
-        let texts: Vec<&str> = session
-            .chat
-            .iter()
+    fn texts_of(chat: &[crate::Message]) -> Vec<&str> {
+        chat.iter()
             .filter_map(|m| match m {
-                Message::Assistant(msg) => Some(msg.text()),
+                crate::Message::User(msg) => Some(msg.text.as_str()),
+                crate::Message::Assistant(msg) => Some(msg.text()),
                 _ => None,
             })
-            .collect();
-        assert_eq!(texts, ["A", "B", "C"], "the dropped note is folded back in");
+            .collect()
+    }
+
+    /// A phone's message to a local session, stored after the restore worker
+    /// read its snapshot and polled before the drain installed the session,
+    /// was in neither: shown by nothing, dispatched by nothing. The drain now
+    /// replays it, so it is dispatched once, and the poll fanned it out once.
+    #[tokio::test]
+    async fn restore_dispatches_a_message_the_poll_dropped() {
+        let mut h = BoundaryHarness::new();
+        let host = h.dave.hostname.clone();
+        let sid = "restore-local-drop";
+        h.store_state(sid, &host).await;
+        h.store_note(sid, "assistant", "earlier reply").await;
+        h.subscribe();
+        let waker = h.run_restore_worker().await;
+
+        h.store_note(sid, "user", "from the phone").await;
+        let (msgs, fan_out) = h.poll();
+        assert!(msgs.is_empty(), "no session yet to hand it to");
+        assert_eq!(fan_out.len(), 1, "the poll fans the envelope out");
+
+        let msgs = h.drain(&waker);
+        assert_eq!(msgs.len(), 1, "the dropped message is dispatched once");
+        assert_eq!(msgs[0].1, "from the phone");
+        let session = h.session_for(sid);
+        assert!(!session.is_remote());
+        assert_eq!(texts_of(&session.chat), ["earlier reply", "from the phone"]);
+        assert!(session.should_dispatch_remote_message());
+
+        let (msgs, fan_out) = h.poll();
+        assert!(msgs.is_empty() && fan_out.is_empty(), "and never again");
+    }
+
+    /// The same drop on a remote session left its chat missing the note until
+    /// some later note forced a rebuild; a session that went quiet kept the
+    /// gap until restart. The drain's replay shows it straight away.
+    #[tokio::test]
+    async fn restore_shows_a_remote_note_the_poll_dropped() {
+        let mut h = BoundaryHarness::new();
+        let sid = "restore-remote-drop";
+        h.store_state(sid, "elsewhere").await;
+        h.store_note(sid, "assistant", "A").await;
+        h.subscribe();
+        let waker = h.run_restore_worker().await;
+
+        h.store_note(sid, "assistant", "B").await;
+        h.poll();
+        h.drain(&waker);
+
+        let session = h.session_for(sid);
+        assert!(session.is_remote());
+        assert_eq!(texts_of(&session.chat), ["A", "B"], "no later note needed");
+    }
+
+    /// A note stored after the subscription but before the worker's read is
+    /// in the snapshot *and* was dropped by the poll. It is the poll's, not
+    /// history: the snapshot is cut back before it, and it is replayed like
+    /// any other drop, so it shows once and is dispatched once.
+    #[tokio::test]
+    async fn restore_replays_a_dropped_note_inside_its_snapshot() {
+        let mut h = BoundaryHarness::new();
+        let host = h.dave.hostname.clone();
+        let sid = "restore-snapshot-drop";
+        h.store_state(sid, &host).await;
+        h.store_note(sid, "assistant", "earlier reply").await;
+        h.subscribe();
+        h.store_note(sid, "user", "from the phone").await;
+        h.dave.conversation_feed.as_mut().unwrap().begin_restore();
+        h.poll();
+
+        let waker = h.run_restore_worker().await;
+        let msgs = h.drain(&waker);
+
+        assert_eq!(msgs.len(), 1, "dispatched once");
+        let session = h.session_for(sid);
+        assert_eq!(texts_of(&session.chat), ["earlier reply", "from the phone"]);
+    }
+
+    /// `agentium resume` of a local session loads its history on the render
+    /// thread. A phone's message stored but not yet polled was folded in and
+    /// marked seen, so the poll skipped it: shown, never dispatched. The load
+    /// now stops where the poll has got, and the poll delivers it.
+    #[tokio::test]
+    async fn reopen_leaves_an_unpolled_message_to_the_poll() {
+        let mut h = BoundaryHarness::new();
+        let host = h.dave.hostname.clone();
+        let sid = "reopen-unpolled";
+        h.store_state(sid, &host).await;
+        h.store_note(sid, "assistant", "earlier reply").await;
+        h.subscribe();
+        // The poll has passed something, so the cursor is set.
+        h.store_note("another-session", "assistant", "elsewhere")
+            .await;
+        h.poll();
+        h.store_note(sid, "user", "from the phone").await;
+
+        let reopened = h
+            .dave
+            .reopen_session(&h.ndb, h.account, sid)
+            .expect("reopened");
+        let session = h.dave.session_manager.get(reopened).unwrap();
+        assert_eq!(texts_of(&session.chat), ["earlier reply"]);
+
+        let (msgs, _) = h.poll();
+        assert_eq!(msgs.len(), 1, "the poll delivers it");
+        assert_eq!(msgs[0].1, "from the phone");
+        let session = h.dave.session_manager.get(reopened).unwrap();
+        assert_eq!(texts_of(&session.chat), ["earlier reply", "from the phone"]);
     }
 
     /// Reopening a soft-deleted session materializes it from ndb with its
@@ -1586,7 +1865,7 @@ mod tests {
         // materialized, asserting focus stays put on each frame.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while dave.session_manager.len() < SEEDED + 1 {
-            dave.drain_session_restore(&waker);
+            dave.drain_session_restore(&ndb, Some(&sk), &waker);
             assert_eq!(
                 dave.session_manager.active_id(),
                 Some(user_sid),

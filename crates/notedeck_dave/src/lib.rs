@@ -7,6 +7,7 @@ pub mod config;
 #[cfg(test)]
 mod convergence_tests;
 mod conversation;
+mod conversation_feed;
 mod focus_queue;
 pub(crate) mod git_status;
 pub mod ipc;
@@ -265,14 +266,13 @@ pub struct Dave {
     /// Local ndb subscription for kind-31989 session command events.
     session_command_sub: Option<nostrdb::Subscription>,
     /// One shared per-account subscription for kind-1988 live conversation
-    /// events across every session. Notes are demuxed by their `d`-tag
-    /// (`event_session_id`) to the owning session in
-    /// `poll_remote_conversation_events`, so the number of live sessions is no
-    /// longer bounded by nostrdb's per-db subscription cap.
-    conversation_sub: Option<nostrdb::Subscription>,
+    /// events across every session, with how far it has delivered: the line
+    /// between a session's history and its live notes (see
+    /// [`conversation_feed`]).
+    conversation_feed: Option<conversation_feed::ConversationFeed>,
     /// Independent shared cursor over the same kind-1988 events, consumed by
     /// `poll_remote_conversation_actions` (permission responses / mode commands)
-    /// at a different point in the frame than `conversation_sub`.
+    /// at a different point in the frame than `conversation_feed`.
     conversation_action_sub: Option<nostrdb::Subscription>,
     /// Command UUIDs already processed (dedup for spawn commands).
     processed_commands: std::collections::HashSet<String>,
@@ -552,7 +552,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_message_load: None,
             session_state_sub: None,
             session_command_sub: None,
-            conversation_sub: None,
+            conversation_feed: None,
             conversation_action_sub: None,
             processed_commands: std::collections::HashSet::new(),
             spawn_idempotency: HashMap::new(),
@@ -1243,7 +1243,10 @@ impl notedeck::App for Dave {
         self.poll_session_state_events(ctx);
 
         // Drain background-restored sessions into the manager (a few per frame).
-        self.drain_session_restore(ctx.waker);
+        // Replaying what the poll dropped before a session existed can yield
+        // remote user messages, dispatched below with the poll's.
+        let sk_bytes = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
+        let restored_user_msgs = self.drain_session_restore(ctx.ndb, sk_bytes.as_ref(), ctx.waker);
 
         // Advance the shared inline-session cache backing `agentium:` chips.
         self.pump_session_cache(ctx);
@@ -1264,7 +1267,6 @@ impl notedeck::App for Dave {
         // Only dispatch if the session isn't already streaming a response —
         // the message is already in chat, so it will be included when the
         // current stream finishes and we re-dispatch.
-        let sk_bytes = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
         let mut fan_out_keys: Vec<NoteKey> = Vec::new();
         let remote_user_msgs =
             self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref(), &mut fan_out_keys);
@@ -1300,7 +1302,7 @@ impl notedeck::App for Dave {
             std::time::Instant::now(),
         );
 
-        for (sid, _msg) in remote_user_msgs {
+        for (sid, _msg) in restored_user_msgs.into_iter().chain(remote_user_msgs) {
             let should_dispatch = self
                 .session_manager
                 .get(sid)

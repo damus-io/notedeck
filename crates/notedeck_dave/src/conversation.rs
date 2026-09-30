@@ -183,12 +183,11 @@ impl Dave {
         secret_key: Option<&[u8; 32]>,
         fan_out_keys: &mut Vec<NoteKey>,
     ) -> Vec<(SessionId, String)> {
-        let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
-        let mut rebuild_ids: Vec<SessionId> = Vec::new();
+        let remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return remote_user_messages;
         };
-        let Some(sub) = self.conversation_sub else {
+        let Some(sub) = self.conversation_feed.as_ref().map(|feed| feed.sub) else {
             return remote_user_messages;
         };
 
@@ -211,18 +210,20 @@ impl Dave {
         // within each session so `process_conversation_notes` sees a coherent
         // batch.
         let mut by_session: HashMap<SessionId, Vec<nostrdb::NoteKey>> = HashMap::new();
-        // Local sessions that got notes this poll: each may now be at rest
-        // with all of its own notes indexed.
-        let mut reconcile_ids: Vec<SessionId> = Vec::new();
         for key in note_keys {
+            // Handed over, whatever becomes of it below: an install from here
+            // on treats it as history.
+            if let Some(feed) = &mut self.conversation_feed {
+                feed.mark_polled(key);
+            }
             let Ok(note) = ndb.get_note_by_key(&txn, key) else {
                 continue;
             };
             if *note.pubkey() != *account.bytes() {
                 continue;
             }
-            let session_id = session_events::get_tag_value(&note, "d")
-                .and_then(|dtag| by_dtag.get(dtag).copied());
+            let dtag = session_events::get_tag_value(&note, "d");
+            let session_id = dtag.and_then(|dtag| by_dtag.get(dtag).copied());
 
             // Collect the wrapping envelope for the caller's outbound fan-out
             // (see the doc on this fn), but only for a note we did not publish
@@ -246,11 +247,48 @@ impl Dave {
             }
 
             let Some(session_id) = session_id else {
+                // No session owns it (yet). A background restore that
+                // installs one later replays it from here.
+                if let (Some(dtag), Some(feed)) = (dtag, &mut self.conversation_feed) {
+                    feed.record_drop(dtag, key);
+                }
                 continue;
             };
             by_session.entry(session_id).or_default().push(key);
         }
 
+        // Drop the read txn before delivery, which opens its own.
+        drop(txn);
+
+        self.deliver_conversation_notes(ndb, secret_key, &account, by_session)
+    }
+
+    /// Hand each session its batch of conversation notes, as the poll does:
+    /// run [`process_conversation_notes`] on it, then rebuild the remote
+    /// sessions whose batch reordered their chat and try the reconcile at rest
+    /// on the local ones. Returns the remote user messages to dispatch.
+    ///
+    /// Shared by the poll and a background restore's replay of the notes the
+    /// poll dropped before the session existed (see
+    /// [`ConversationFeed`](crate::conversation_feed::ConversationFeed)), so a
+    /// replayed note gets exactly the handling a polled one does.
+    pub(crate) fn deliver_conversation_notes(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        secret_key: Option<&[u8; 32]>,
+        account: &nostrdb_net::Pubkey,
+        by_session: HashMap<SessionId, Vec<NoteKey>>,
+    ) -> Vec<(SessionId, String)> {
+        let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
+        let mut rebuild_ids: Vec<SessionId> = Vec::new();
+        // Local sessions that got notes: each may now be at rest with all of
+        // its own notes indexed.
+        let mut reconcile_ids: Vec<SessionId> = Vec::new();
+
+        let txn = match Transaction::new(ndb) {
+            Ok(txn) => txn,
+            Err(_) => return remote_user_messages,
+        };
         for (session_id, keys) in by_session {
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
@@ -279,7 +317,7 @@ impl Dave {
         // A new displayable note landed for each of these remote sessions:
         // rebuild each chat from ndb in sorted order. This is the single display
         // path for remote sessions, so the result is independent of arrival/poll
-        // order. Done after the poll loop so each rebuild uses a fresh
+        // order. Done after the processing loop so each rebuild uses a fresh
         // transaction (no nested txns).
         for session_id in rebuild_ids {
             let Ok(txn) = Transaction::new(ndb) else {
@@ -288,7 +326,7 @@ impl Dave {
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
-            rebuild_chat_from_fold(session, ndb, &txn, &account);
+            rebuild_chat_from_fold(session, ndb, &txn, account);
             tracing::debug!(
                 "rebuilt remote session {} chat from ndb ({} messages)",
                 session_id,
@@ -298,7 +336,7 @@ impl Dave {
 
         for session_id in reconcile_ids {
             if let Some(session) = self.session_manager.get_mut(session_id) {
-                reconcile::maybe_reconcile_at_rest(session, ndb, &account);
+                reconcile::maybe_reconcile_at_rest(session, ndb, account);
             }
         }
 
@@ -648,13 +686,17 @@ pub(crate) fn rebuild_chat_from_fold(
 /// Shared by the rebuild ([`rebuild_chat_from_fold`]) and restore, so a
 /// restored session starts with the same bookkeeping as a rebuilt one:
 /// - the dedup set and permission state gain what the fold loaded, and
-///   `seen_through` covers it, so a restored note the poll delivers later is
-///   skipped rather than left out of the next rebuild;
+///   `seen_through` covers it. Every caller folds only notes the poll has
+///   already passed (see
+///   [`ConversationFeed`](crate::conversation_feed::ConversationFeed)), so
+///   nothing marked seen here is still to come through the poll and be
+///   skipped;
 /// - the fast-path tail is seeded from the fold's highest order, so notes
 ///   that sort after it append instead of forcing another rebuild (a real
 ///   order, never the display order of a waiting message). A background
-///   restore, whose fold may predate notes the poll already dropped, clears it
-///   again (see `Dave::drain_session_restore`);
+///   restore replays what the poll dropped before the session existed right
+///   after this (see `Dave::drain_session_restore`), so the tail has no gap
+///   behind it;
 /// - subagent rows are re-indexed, since a background subagent outlives its
 ///   turn and finds its row through that index;
 /// - in-memory permission decisions the fold can't know yet are laid over

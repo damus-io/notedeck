@@ -3,6 +3,7 @@
 //! subscriptions each account's sessions are discovered through.
 
 use crate::conversation::subscribe_conversation_events;
+use crate::conversation_feed::ConversationFeed;
 use crate::focus_queue::FocusQueue;
 use crate::restore::PendingMessageLoad;
 use crate::run_configs::kill_process_tree;
@@ -38,9 +39,8 @@ pub(crate) struct PnsLocalRuntime {
     session_state_sub: Option<nostrdb::Subscription>,
     session_command_sub: Option<nostrdb::Subscription>,
     /// One shared per-account subscription for live conversation events across
-    /// every session (demuxed by `d`-tag in `poll_remote_conversation_events`),
-    /// so the session count is not bounded by nostrdb's per-db subscription cap.
-    conversation_sub: Option<nostrdb::Subscription>,
+    /// every session, with its delivery cursor (see [`ConversationFeed`]).
+    conversation_feed: Option<ConversationFeed>,
     /// Independent shared cursor over the same conversation events, consumed by
     /// `poll_remote_conversation_actions` at a different point in the frame.
     conversation_action_sub: Option<nostrdb::Subscription>,
@@ -79,7 +79,7 @@ impl PnsLocalRuntime {
             pending_message_load: None,
             session_state_sub: None,
             session_command_sub: None,
-            conversation_sub: None,
+            conversation_feed: None,
             conversation_action_sub: None,
             processed_commands: std::collections::HashSet::new(),
             spawn_idempotency: HashMap::new(),
@@ -181,6 +181,12 @@ impl Dave {
         // again would only re-do work the dedup in `drain_session_restore` throws
         // away. The results are drained a few per frame in `update`.
         if self.restored_accounts.insert(account) {
+            // The restore reads an older snapshot than the poll will have
+            // seen by the time it lands: keep what the poll drops meanwhile,
+            // for the restore to replay.
+            if let Some(feed) = &mut self.conversation_feed {
+                feed.begin_restore();
+            }
             self.session_restore_loader.restore_account(account);
         }
         self.load_run_configs(ctx.ndb, account);
@@ -203,7 +209,13 @@ impl Dave {
             pending_message_load: self.pending_message_load.take(),
             session_state_sub: self.session_state_sub.take(),
             session_command_sub: self.session_command_sub.take(),
-            conversation_sub: self.conversation_sub.take(),
+            // A restore still streaming for this account is dropped by the
+            // drain once another account is current, so nothing will replay
+            // what the feed keeps for it.
+            conversation_feed: self.conversation_feed.take().map(|mut feed| {
+                feed.end_restore();
+                feed
+            }),
             conversation_action_sub: self.conversation_action_sub.take(),
             processed_commands: std::mem::take(&mut self.processed_commands),
             spawn_idempotency: std::mem::take(&mut self.spawn_idempotency),
@@ -249,7 +261,7 @@ impl Dave {
         self.pending_message_load = runtime.pending_message_load;
         self.session_state_sub = runtime.session_state_sub;
         self.session_command_sub = runtime.session_command_sub;
-        self.conversation_sub = runtime.conversation_sub;
+        self.conversation_feed = runtime.conversation_feed;
         self.conversation_action_sub = runtime.conversation_action_sub;
         self.processed_commands = runtime.processed_commands;
         self.spawn_idempotency = runtime.spawn_idempotency;
@@ -303,7 +315,8 @@ impl Dave {
         // commands); they poll at different points in the frame, so each needs
         // its own cursor. Notes are demuxed by `d`-tag to the owning session, so
         // one pair of subscriptions serves any number of sessions.
-        self.conversation_sub = subscribe_conversation_events(ndb, account);
+        self.conversation_feed =
+            subscribe_conversation_events(ndb, account).map(ConversationFeed::new);
         self.conversation_action_sub = subscribe_conversation_events(ndb, account);
     }
 }
