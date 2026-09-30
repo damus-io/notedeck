@@ -56,6 +56,18 @@ use crate::update::InputFocus;
 use crate::DaveOverlay;
 use egui::include_image;
 
+/// Give Dave its own horizontal item gap at its render root.
+///
+/// The chrome hands every app a zero horizontal item gap
+/// (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`), which glues
+/// adjacent labels together: "Skill" runs into its summary, a subagent's
+/// description into "· in background", "computing..." into its Esc hint.
+/// Dave's layout assumes a real gap, so it owns one rather than inheriting the
+/// chrome's, as Headway does in its `render_board`.
+pub fn own_item_spacing(ui: &mut egui::Ui) {
+    ui.spacing_mut().item_spacing.x = notedeck::tokens::SPACING_SM;
+}
+
 /// Build a DaveUi from a session, wiring up all the common builder fields.
 fn build_dave_ui<'a>(
     session: &'a mut ChatSession,

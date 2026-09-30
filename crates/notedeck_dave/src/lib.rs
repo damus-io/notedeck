@@ -1548,6 +1548,7 @@ impl notedeck::App for Dave {
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        ui::own_item_spacing(ui);
         self.process_keybindings(ui.ctx());
 
         let mut app_action: Option<AppAction> = None;

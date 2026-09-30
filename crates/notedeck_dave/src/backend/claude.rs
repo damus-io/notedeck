@@ -13,7 +13,7 @@ use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
-    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolResultBlock,
+    PermissionResult, PermissionResultAllow, PermissionResultDeny, ResultMessage, ToolResultBlock,
     ToolResultContent, ToolUseBlock, UserContentBlock, UserMessage,
 };
 use dashmap::DashMap;
@@ -256,12 +256,33 @@ fn cancelled_turn_message_action(message: &ClaudeMessage) -> CancelledTurnMessag
     }
 }
 
+/// The chat error a turn's `Result` should show, if any.
+///
+/// A user who stops a turn (the Stop button, or exiting a tool call) ends it
+/// on purpose, and the CLI reports that turn as `is_error` with no result
+/// text. That is the user's intent, not a failure, so it shows nothing. A
+/// real error with no text names its subtype rather than an opaque
+/// "Unknown error".
+fn result_error(result_msg: &ResultMessage, stopped_by_user: bool) -> Option<String> {
+    if !result_msg.is_error || stopped_by_user {
+        return None;
+    }
+    Some(
+        result_msg
+            .result
+            .clone()
+            .unwrap_or_else(|| format!("Claude Code ended the turn ({})", result_msg.subtype)),
+    )
+}
+
 /// Handle a single message from the continuous Claude stream.
 ///
 /// This runs for every message the CLI emits, whether it belongs to a
 /// user-initiated turn or a spontaneous wake-up turn (a `run_in_background`
 /// task completing). On a `Result` it emits `QueryComplete`, which is the
 /// explicit turn boundary the UI keys off (the session channel stays open).
+/// `stopped_by_user` says the user stopped the turn this message belongs to,
+/// so its closing `Result` is not reported as an error (see [`result_error`]).
 fn handle_stream_message(
     message: ClaudeMessage,
     response_tx: &mpsc::Sender<DaveApiResponse>,
@@ -269,6 +290,7 @@ fn handle_stream_message(
     pending_tools: &mut HashMap<String, (String, serde_json::Value)>,
     subagent_stack: &mut Vec<String>,
     task_tracker: &mut TaskTracker,
+    stopped_by_user: bool,
 ) {
     match message {
         ClaudeMessage::Assistant(assistant_msg) => {
@@ -376,10 +398,7 @@ fn handle_stream_message(
             }
         }
         ClaudeMessage::Result(result_msg) => {
-            if result_msg.is_error {
-                let error_text = result_msg
-                    .result
-                    .unwrap_or_else(|| "Unknown error".to_string());
+            if let Some(error_text) = result_error(&result_msg, stopped_by_user) {
                 let _ = response_tx.send(DaveApiResponse::Failed(error_text));
             }
 
@@ -864,6 +883,10 @@ async fn session_actor(
     // Set when the user exits a tool call; suppresses the rest of that turn's
     // messages until its `Result`, then clears at the turn boundary.
     let mut cancel_current_turn = false;
+    // Set when the user stops the running turn (Stop, or a tool exit); tells
+    // the turn's closing `Result` not to surface as an error. Cleared at that
+    // `Result` and by the next user turn.
+    let mut stopped_by_user = false;
 
     // Pump the CLI message stream continuously, not just while servicing a
     // Query. This is the non-breaking `receive_messages()` variant, held for the
@@ -890,6 +913,7 @@ async fn session_actor(
                         // cancellation from a previous turn.
                         waker = query_waker;
                         cancel_current_turn = false;
+                        stopped_by_user = false;
                         let blocks = build_content_blocks(&images, &prompt);
                         if let Err(err) = client
                             .query_with_content_and_session(blocks, &session_id)
@@ -901,6 +925,7 @@ async fn session_actor(
                     }
                     SessionCommand::Interrupt { waker: interrupt_waker } => {
                         tracing::debug!("Session {} received interrupt", session_id);
+                        stopped_by_user = true;
                         if let Err(err) = client.interrupt().await {
                             tracing::error!("Failed to send interrupt: {}", err);
                         }
@@ -984,10 +1009,12 @@ async fn session_actor(
                         }
                         CancelledTurnMessageAction::FinishTurn => {
                             cancel_current_turn = false;
+                            stopped_by_user = true;
                         }
                     }
                 }
 
+                let is_result = matches!(message, ClaudeMessage::Result(_));
                 handle_stream_message(
                     message,
                     &response_tx,
@@ -995,7 +1022,11 @@ async fn session_actor(
                     &mut pending_tools,
                     &mut subagent_stack,
                     &mut task_tracker,
+                    stopped_by_user,
                 );
+                if is_result {
+                    stopped_by_user = false;
+                }
             }
         }
     }
@@ -1465,6 +1496,7 @@ mod tests {
             &mut pending,
             &mut subagent_stack,
             &mut task_tracker,
+            false,
         );
 
         // Its tool_result arrives with parent_tool_use_id = the root subagent.
@@ -1487,6 +1519,7 @@ mod tests {
             &mut pending,
             &mut subagent_stack,
             &mut task_tracker,
+            false,
         );
 
         let routed = rx.try_iter().any(|resp| {
@@ -1512,6 +1545,8 @@ mod tests {
         pending_tools: HashMap<String, (String, serde_json::Value)>,
         subagent_stack: Vec<String>,
         task_tracker: TaskTracker,
+        /// What `run_stream` would pass after the user stopped the turn.
+        stopped_by_user: bool,
     }
 
     impl StreamHarness {
@@ -1524,6 +1559,7 @@ mod tests {
                 pending_tools: HashMap::new(),
                 subagent_stack: Vec::new(),
                 task_tracker: TaskTracker::new(),
+                stopped_by_user: false,
             }
         }
 
@@ -1538,6 +1574,7 @@ mod tests {
                 &mut self.pending_tools,
                 &mut self.subagent_stack,
                 &mut self.task_tracker,
+                self.stopped_by_user,
             );
         }
 
@@ -1788,6 +1825,63 @@ mod tests {
         assert!(
             harness.running_tools().is_empty(),
             "Task/TodoWrite keep their dedicated rows, not a generic running row"
+        );
+    }
+
+    /// The `Result` the CLI closes a stopped turn with: an error with no text.
+    fn interrupted_result() -> serde_json::Value {
+        serde_json::json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "duration_ms": 1200,
+            "duration_api_ms": 900,
+            "is_error": true,
+            "num_turns": 1,
+            "session_id": "s1"
+        })
+    }
+
+    /// Stopping a turn is the user's intent, so its closing `Result` must not
+    /// put an error in the chat, only end the turn.
+    #[test]
+    fn stopped_turn_result_is_not_an_error() {
+        let mut harness = StreamHarness::new();
+        harness.stopped_by_user = true;
+        harness.feed(interrupted_result());
+
+        let responses: Vec<_> = harness.rx.try_iter().collect();
+        assert!(
+            !responses
+                .iter()
+                .any(|r| matches!(r, DaveApiResponse::Failed(_))),
+            "a stopped turn must not surface as an error"
+        );
+        assert!(
+            responses
+                .iter()
+                .any(|r| matches!(r, DaveApiResponse::QueryComplete(_))),
+            "the stopped turn still ends"
+        );
+    }
+
+    /// An error the user didn't cause still shows, and without result text it
+    /// names the subtype instead of "Unknown error".
+    #[test]
+    fn unstopped_error_result_names_its_subtype() {
+        let mut harness = StreamHarness::new();
+        harness.feed(interrupted_result());
+
+        let failed: Vec<String> = harness
+            .rx
+            .try_iter()
+            .filter_map(|r| match r {
+                DaveApiResponse::Failed(err) => Some(err),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            failed,
+            vec!["Claude Code ended the turn (error_during_execution)".to_string()]
         );
     }
 }

@@ -577,7 +577,7 @@ impl<'a> DaveUi<'a> {
             ));
         } else {
             ui.add(egui::Label::new(
-                egui::RichText::new(format!("An error occured: {err}")).weak(),
+                egui::RichText::new(format!("An error occurred: {err}")).weak(),
             ));
         }
     }
@@ -2717,6 +2717,7 @@ mod tests {
     use crate::config::AiMode;
     use crate::messages::{
         PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
+        SubagentInfo, SubagentStatus,
     };
     use claude_agent_sdk_rs::PermissionMode;
     use egui_kittest::{kittest::Queryable, Harness};
@@ -3726,6 +3727,81 @@ mod tests {
 
         harness.run();
         harness.snapshot("agentic_tool_summaries");
+    }
+
+    /// The rows jb55 saw glued in the live app: a `Skill` call and a
+    /// background subagent, drawn the way Dave's render root draws them. The
+    /// chrome's zero horizontal gap is mirrored first, then Dave takes its own
+    /// back with [`crate::ui::own_item_spacing`], exactly as `Dave::render`
+    /// does, so the harness matches the app.
+    fn tool_rows_under_chrome_ui(ui: &mut egui::Ui) {
+        // Mirror `Chrome::show`, which zeroes the gap for every app.
+        ui.spacing_mut().item_spacing.x = 0.0;
+        crate::ui::own_item_spacing(ui);
+
+        let skill = crate::messages::ExecutedTool {
+            tool_name: "Skill".to_string(),
+            summary: "code-review e8f3670c5e5b".to_string(),
+            output: None,
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: None,
+        };
+        let subagent = SubagentInfo {
+            task_id: "toolu_agent".to_string(),
+            description: "code-review".to_string(),
+            subagent_type: "agent".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4096,
+            tool_results: Vec::new(),
+            background: true,
+        };
+        let mut nav = BlockNav::default();
+        DaveUi::executed_tool_ui(&skill, &mut nav, ui);
+        ui.add_space(4.0);
+        DaveUi::subagent_ui(&subagent, &mut nav, ui);
+    }
+
+    /// Under the chrome's zero gap, Dave's own root spacing keeps a tool row's
+    /// name off its summary and a subagent's description off its "in
+    /// background" flag (headway:headway/skill-either-bench).
+    #[test]
+    fn tool_row_labels_keep_a_gap_under_the_chrome() {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 120.0))
+            .build_ui(tool_rows_under_chrome_ui);
+        harness.run();
+
+        let gap = |left: &str, right: &str| {
+            let x0 = harness.get_by_label(right).bounding_box().unwrap().x0;
+            let x1 = harness.get_by_label(left).bounding_box().unwrap().x1;
+            (x0 - x1) as f32
+        };
+        let min = notedeck::tokens::SPACING_SM - 0.5;
+        assert!(
+            gap("Skill", "code-review e8f3670c5e5b") >= min,
+            "the tool name must not run into its summary"
+        );
+        assert!(
+            gap("code-review", "· in background") >= min,
+            "a subagent's description must not run into its background flag"
+        );
+    }
+
+    /// The glued rows from the live app, with the app's fonts and the chrome's
+    /// zero gap mirrored. Render with
+    /// `scripts/snapshot-test snapshot_tool_rows_under_chrome_spacing`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_tool_rows_under_chrome_spacing() {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(460.0, 70.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(tool_rows_under_chrome_ui);
+        notedeck::fonts::setup_fonts(&harness.ctx);
+        harness.run();
+        harness.snapshot("tool_rows_under_chrome_spacing");
     }
 
     /// A `WebSearch` result (headway:dave/smart-wreck-weapon): the header row
