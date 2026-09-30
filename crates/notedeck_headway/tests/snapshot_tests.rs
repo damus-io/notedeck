@@ -2054,7 +2054,7 @@ fn review_queue_walks_the_in_review_column() {
     wait_for_label(&mut harness, "1 / 3");
     wait_for_label(&mut harness, CARDS[0]);
     wait_for_any_label(&mut harness, FILES[0]);
-    assert_labels_gapped(&harness, "Review queue", "1 / 3");
+    assert_labels_gapped(&harness, "Next:", CARDS[1]);
 
     press_board_keys(&mut harness, &[egui::Key::N, egui::Key::N]);
     wait_for_label(&mut harness, "3 / 3");
@@ -2071,7 +2071,7 @@ fn review_queue_walks_the_in_review_column() {
 
     press_board_keys(&mut harness, &[egui::Key::Q]);
     wait_for_label(&mut harness, "7 cards · 5 columns");
-    assert!(harness.query_by_label("Review queue").is_none());
+    assert!(harness.query_by_label("← Back").is_none());
     assert_eq!(harness.state().headway.cursor(), Some(ids[1]));
 
     let (pushes, last_back) = queue_pushes_and_last_back(&mut harness);
@@ -2082,7 +2082,7 @@ fn review_queue_walks_the_in_review_column() {
 /// Assert `right` starts a real gap after `left` ends on the same row. The
 /// harness hands Headway the chrome's zero item gap (see [`render_headway`]),
 /// so this fails if Headway stops owning its own spacing and the two labels
-/// glue together as "Review queue1 / 3".
+/// glue together as "Next:Column reordering".
 fn assert_labels_gapped(harness: &Harness<'static, HeadwayTestState>, left: &str, right: &str) {
     let left_box = harness
         .get_by_label(left)
@@ -2106,7 +2106,7 @@ fn review_queue_with_nothing_in_review_does_not_open() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     wait_for_label(&mut harness, "Nothing in review");
-    assert!(harness.query_by_label("Review queue").is_none());
+    assert!(harness.query_by_label("← Back").is_none());
     assert_eq!(queue_pushes_and_last_back(&mut harness).0, 0);
 }
 
@@ -2449,6 +2449,20 @@ fn snapshot_headway_review_queue() {
     wait_for_label(&mut harness, "send back");
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_key_hints");
+}
+
+/// Snapshot: the review queue on a phone-width screen, where the header drops
+/// the next card's peek and shrinks the session chip to its status dot so the
+/// title keeps the room.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_queue_narrow() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(420.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness, &fixture);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_queue_narrow");
 }
 
 /// Behavioural (no lavapipe): clicking a card also puts the board's keyboard
@@ -3101,7 +3115,7 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
     stack.go_to_route(0);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "7 cards · 5 columns");
-    assert!(harness.query_by_label("Review queue").is_none());
+    assert!(harness.query_by_label("← Back").is_none());
 
     assert!(stack.go_forward());
     chrome_frame(&mut harness, &mut stack);

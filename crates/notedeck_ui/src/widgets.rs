@@ -170,6 +170,9 @@ const INLINE_ICON_RATIO: f32 = 0.65;
 ///   ellipsizing away to nothing with an empty row waiting below. Wider than a
 ///   whole row, it truncates — breaking can't help there.
 ///
+/// Given less room than its text needs (a width-capped parent), the title
+/// ellipsizes and the full text shows on hover.
+///
 /// `icon` paints the leading glyph into a square of the size it is handed. The
 /// returned response covers the whole chip, so callers add their own
 /// [`Sense`](egui::Sense) and hover feedback.
@@ -196,7 +199,7 @@ pub fn inline_chip(
     let width = frame.total_margin().sum().x + icon_size + SPACING_XS + text_width(ui, text);
     break_row_unless_fits(ui, width);
 
-    frame
+    let response = frame
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = SPACING_XS;
@@ -215,7 +218,19 @@ pub fn inline_chip(
                 );
             })
         })
-        .response
+        .response;
+
+    // An ellipsized label would show its full text on hover by itself, but the
+    // caller's click sense on the whole chip sits above it, so the chip carries
+    // the hover instead. Built only while hovered, so nothing is formatted per
+    // frame.
+    if response.rect.width() + 1.0 < width {
+        response.on_hover_ui(|ui| {
+            ui.label(text);
+        })
+    } else {
+        response
+    }
 }
 
 /// Width `text` occupies in the body font.

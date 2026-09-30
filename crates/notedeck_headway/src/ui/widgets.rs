@@ -78,17 +78,19 @@ pub(super) fn label_chip(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) {
 
 /// A small rounded pill showing a count (e.g. cards in a column).
 pub(super) fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
+    text_pill(ui, theme, &n.to_string());
+}
+
+/// A small rounded pill of muted text, e.g. the review queue's `3 / 12`.
+pub(super) fn text_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> egui::Response {
     egui::Frame::new()
         .fill(theme.surface_elevated)
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(n.to_string())
-                    .small()
-                    .color(theme.text_muted),
-            );
-        });
+            ui.label(egui::RichText::new(text).small().color(theme.text_muted));
+        })
+        .response
 }
 
 /// A small muted, sentence-case group heading (Linear-style) used for the

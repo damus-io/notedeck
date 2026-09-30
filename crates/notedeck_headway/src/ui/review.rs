@@ -17,7 +17,7 @@ use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 use notedeck_ui::diff::PatchScroll;
 use std::time::Instant;
 
-use super::widgets::{count_badge, detail_heading, secondary_action_button};
+use super::widgets::{count_badge, detail_heading, secondary_action_button, text_pill};
 use super::{BoardUiState, find_card};
 use crate::keys;
 use crate::nav::ReviewTarget;
@@ -336,11 +336,11 @@ impl ReviewQueue {
     }
 }
 
-/// Draw the review queue: a bar with where the pane is in the queue and a peek
-/// at the next card's title, the `X` reason composer while it's open, the
+/// Draw the review queue: the `X` reason composer while it's open, the
 /// which-key strip while it's pinned or a `g` is pending, and the review pane
-/// for the queue's current card in the rest. Starts the next card's load too,
-/// so stepping to it is instant. The queue's keys
+/// for the queue's current card in the rest (its header carries where the pane
+/// is in the queue and a peek at the next card, see [`QueueHeader`]). Starts
+/// the next card's load too, so stepping to it is instant. The queue's keys
 /// ([`crate::keys::queue_keys`]) have already run this frame.
 pub(super) fn review_queue_ui(
     ui: &mut egui::Ui,
@@ -358,23 +358,16 @@ pub(super) fn review_queue_ui(
         prefetch(app_ctx, view, next, &mut state.review.loader);
     }
 
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
-            left: SPACING_LG as i8,
-            right: SPACING_LG as i8,
-            top: SPACING_LG as i8,
-            bottom: 0,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                queue_bar_ui(ui, theme, view, &state.queue);
-                super::notice_ui(ui, theme, &mut state.notice);
-            });
-            if let Some(composer) = &mut state.queue.reason {
-                ui.add_space(SPACING_SM);
-                reason_composer_ui(ui, theme, composer);
-            }
-        });
+    if let Some(composer) = &mut state.queue.reason {
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: SPACING_LG as i8,
+                right: SPACING_LG as i8,
+                top: SPACING_LG as i8,
+                bottom: 0,
+            })
+            .show(ui, |ui| reason_composer_ui(ui, theme, composer));
+    }
 
     // Reserved from the bottom before the pane lays out, since the diff's
     // scroll area takes every point of height left (as the grid's strip).
@@ -433,24 +426,6 @@ fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut Reas
             response.request_focus();
         }
     });
-}
-
-/// The queue's bar: its name, the position (`3 / 12`) and the next card's
-/// title, muted, as a peek. Every string is borrowed, so nothing is formatted
-/// per frame.
-fn queue_bar_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &BoardView, queue: &ReviewQueue) {
-    ui.label(egui::RichText::new("Review queue").strong());
-    ui.label(egui::RichText::new(queue.position()).color(theme.accent));
-    let Some((_, next)) = queue.next_card().and_then(|c| find_card(view, c)) else {
-        return;
-    };
-    ui.add_space(SPACING_MD);
-    ui.label(egui::RichText::new("Next:").small().color(theme.text_muted));
-    ui.label(
-        egui::RichText::new(next.title.as_str())
-            .small()
-            .color(theme.text_muted),
-    );
 }
 
 /// The review queue's verdicts and the rest of what its keys do beyond
@@ -634,8 +609,9 @@ fn prefetch(
     start_load(app_ctx, view, &card_ref, Some(record), source, loader);
 }
 
-/// Draw the review pane for `card`: a topbar (back, card ref, title, explainer,
-/// session), the record picker when there are several, the resolve status, and
+/// Draw the review pane for `card`: a one-row header (back, card ref, title,
+/// session; the queue's position and next card when the pane is the queue's;
+/// explainer), the record picker when there are several, the resolve status, and
 /// the commit's diff filling the rest. Escape or ← Back closes it.
 pub(super) fn review_pane_ui(
     ui: &mut egui::Ui,
@@ -645,14 +621,23 @@ pub(super) fn review_pane_ui(
     card: &CardView,
     state: &mut BoardUiState,
 ) {
-    let review = &mut state.review;
     if ui
         .ctx()
         .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
-        review.close();
+        state.review.close();
         return;
     }
+    let queue = (state.queue.current() == Some(card.id)).then(|| QueueHeader {
+        position: state.queue.position(),
+        next: state
+            .queue
+            .next_card()
+            .and_then(|c| find_card(view, c))
+            .map(|(_, c)| c.title.as_str()),
+        notice: &mut state.notice,
+    });
+    let review = &mut state.review;
     if review.ref_for != Some(card.id) {
         review.ref_for = Some(card.id);
         review.card_ref = headway::wordid::card_ref(&view.id, card.id.bytes());
@@ -696,7 +681,7 @@ pub(super) fn review_pane_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            review_topbar_ui(ui, theme, app_ctx, card, record, review);
+            review_topbar_ui(ui, theme, app_ctx, card, record, review, queue);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_SM);
@@ -743,8 +728,32 @@ fn start_load(
     loader.start(source, job, app_ctx.waker.clone());
 }
 
-/// The pane's top bar: ← Back, the card ref (click copies), the title, and —
-/// right-aligned — the record's explainer link and its agentium session chip.
+/// Share of the header row the next card's title may take in the queue.
+const PEEK_SHARE: f32 = 0.4;
+
+/// Widest the header's session chip draws; a longer session title ellipsizes.
+const SESSION_CHIP_MAX_WIDTH: f32 = 220.0;
+
+/// The queue's part of the review header, while the pane shows the queue's
+/// current card. Everything is borrowed, so the header formats nothing.
+struct QueueHeader<'a> {
+    /// `"3 / 12"`, cached on the [`ReviewQueue`].
+    position: &'a str,
+    /// The next card's title, if the queue has one.
+    next: Option<&'a str>,
+    /// The queue keys' short-lived message, shown beside the position.
+    notice: &'a mut Option<(QueueNotice, f64)>,
+}
+
+/// The pane's header, one row. Left: ← Back, the card ref (click copies), the
+/// title elided to one line, and the record's agentium session chip capped at
+/// [`SESSION_CHIP_MAX_WIDTH`]. Right: in the queue, its position as a pill and
+/// the next card's title as a muted peek (at most [`PEEK_SHARE`] of the row);
+/// the record's explainer link at the far end. On a narrow screen the peek
+/// goes, the card ref with it, and the chip shrinks to its status dot.
+///
+/// The right side lays out first, right to left, so the title knows how much
+/// room is left to elide into.
 fn review_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -752,39 +761,85 @@ fn review_topbar_ui(
     card: &CardView,
     record: Option<&ReviewView>,
     review: &mut ReviewUi,
+    queue: Option<QueueHeader<'_>>,
 ) {
+    let fields = record.map(|r| &r.fields);
+    let narrow = notedeck::ui::is_narrow(ui.ctx());
     ui.horizontal(|ui| {
-        let back = egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
-            .fill(egui::Color32::TRANSPARENT)
-            .frame(false);
-        if ui.add(back).clicked() {
-            review.close();
-        }
-        ui.label(egui::RichText::new("›").color(theme.text_muted));
-        // A frameless button, not a Label, so a click copies rather than
-        // starting a text selection (as the detail topbar's ref).
-        let card_ref = egui::Button::new(
-            egui::RichText::new(&review.card_ref)
-                .color(theme.text_muted)
-                .small(),
-        )
-        .frame(false);
-        if ui.add(card_ref).on_hover_text("Click to copy").clicked() {
-            ui.ctx().copy_text(review.card_ref.clone());
-        }
-        ui.label(egui::RichText::new(&card.title).strong());
-        let Some(fields) = record.map(|r| &r.fields) else {
-            return;
-        };
+        let peek_width = ui.available_width() * PEEK_SHARE;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let Some(url) = fields.explainer.as_deref() {
+            if let Some(url) = fields.and_then(|f| f.explainer.as_deref()) {
                 explainer_link_ui(ui, theme, url);
             }
-            if let Some(session) = fields.agentium.as_deref() {
-                agentium_chip_ui(ui, theme, app_ctx, session);
+            if let Some(queue) = queue {
+                queue_header_ui(ui, theme, queue, (!narrow).then_some(peek_width));
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let back =
+                    egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
+                        .fill(egui::Color32::TRANSPARENT)
+                        .frame(false);
+                if ui.add(back).clicked() {
+                    review.close();
+                }
+                ui.label(egui::RichText::new("›").color(theme.text_muted));
+                if !narrow {
+                    card_ref_ui(ui, theme, &review.card_ref);
+                }
+
+                let session = fields.and_then(|f| f.agentium.as_deref());
+                let chip_width = if narrow {
+                    ui.text_style_height(&egui::TextStyle::Body)
+                } else {
+                    SESSION_CHIP_MAX_WIDTH
+                };
+                let reserve = session.map_or(0.0, |_| chip_width + ui.spacing().item_spacing.x);
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - reserve).max(0.0));
+                    ui.add(egui::Label::new(egui::RichText::new(&card.title).strong()).truncate());
+                });
+                if let Some(session) = session {
+                    session_chip_ui(ui, theme, app_ctx, session, chip_width);
+                }
+            });
         });
     });
+}
+
+/// The card's `headway:<board>/<word-id>`, small and muted; a click copies it.
+/// A frameless button, not a Label, so a click copies rather than starting a
+/// text selection (as the detail topbar's ref).
+fn card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, card_ref: &str) {
+    let button = egui::Button::new(
+        egui::RichText::new(card_ref)
+            .color(theme.text_muted)
+            .small(),
+    )
+    .frame(false);
+    if ui.add(button).on_hover_text("Click to copy").clicked() {
+        ui.ctx().copy_text(card_ref.to_owned());
+    }
+}
+
+/// The queue's side of the header, laid out right to left: the next card's
+/// title as a muted peek no wider than `peek_width` (none on a narrow screen),
+/// then the position pill, then any notice.
+fn queue_header_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    queue: QueueHeader<'_>,
+    peek_width: Option<f32>,
+) {
+    if let Some((next, width)) = queue.next.zip(peek_width) {
+        let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
+        ui.scope(|ui| {
+            ui.set_max_width(width);
+            ui.add(egui::Label::new(muted(next)).truncate());
+        });
+        ui.label(muted("Next:"));
+    }
+    text_pill(ui, theme, queue.position);
+    super::notice_ui(ui, theme, queue.notice);
 }
 
 /// One selectable chip per record, newest first, labelled by short sha, with
@@ -924,6 +979,21 @@ fn explainer_link_ui(ui: &mut egui::Ui, theme: &ColorTheme, url: &str) {
     }
 }
 
+/// [`agentium_chip_ui`] no wider than `max_width`: a longer session title
+/// ellipsizes, and its full text shows on hover.
+fn session_chip_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    session: &str,
+    max_width: f32,
+) {
+    ui.scope(|ui| {
+        ui.set_max_width(max_width);
+        agentium_chip_ui(ui, theme, app_ctx, session);
+    });
+}
+
 /// An `agentium:<word-id>` session drawn as its live inline chip through the
 /// registered reference parser (Dave's), or as plain monospace text when no
 /// parser resolves it (Dave isn't loaded, or the session is unknown here).
@@ -944,11 +1014,14 @@ fn agentium_chip_ui(
         )
     });
     if !drawn {
-        ui.label(
-            egui::RichText::new(session)
-                .small()
-                .monospace()
-                .color(theme.text_muted),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(session)
+                    .small()
+                    .monospace()
+                    .color(theme.text_muted),
+            )
+            .truncate(),
         );
     }
 }
