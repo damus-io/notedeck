@@ -353,7 +353,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -364,7 +364,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1792,7 +1792,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2562,7 +2562,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "ecolor"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "bytemuck",
  "emath",
@@ -2572,7 +2572,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2608,7 +2608,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "accesskit",
  "ahash",
@@ -2630,7 +2630,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2649,7 +2649,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "accesskit_winit",
  "arboard",
@@ -2670,7 +2670,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "ahash",
  "egui",
@@ -2688,7 +2688,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "bytemuck",
  "egui",
@@ -2701,7 +2701,7 @@ dependencies = [
 [[package]]
 name = "egui_kittest"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "dify",
  "eframe",
@@ -2732,7 +2732,7 @@ dependencies = [
 [[package]]
 name = "egui_system_fonts"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "epaint",
  "fontique",
@@ -2808,7 +2808,7 @@ dependencies = [
 [[package]]
 name = "emath"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "bytemuck",
  "serde",
@@ -2980,7 +2980,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -3006,7 +3006,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=e4bde0731321656a508338159763335048f9bdbb#e4bde0731321656a508338159763335048f9bdbb"
+source = "git+https://github.com/damus-io/egui?rev=61a38b421b2c60a6af3c1415e6eb00e816203d29#61a38b421b2c60a6af3c1415e6eb00e816203d29"
 
 [[package]]
 name = "equator"
@@ -3041,7 +3041,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3555,7 +3555,7 @@ dependencies = [
  "log",
  "rustversion",
  "windows-link 0.2.1",
- "windows-result 0.3.4",
+ "windows-result 0.4.1",
 ]
 
 [[package]]
@@ -3843,7 +3843,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.18",
- "windows 0.54.0",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -6246,7 +6246,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6989,7 +6989,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -8401,7 +8401,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9087,7 +9087,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9344,7 +9344,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9814,7 +9814,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5f7c95348f20c1c913d72157b3c6dee6ea3e30b3d19502c5a7f6d3f160dacbf"
 dependencies = [
  "cc",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -9935,7 +9935,7 @@ checksum = "51b70b87d15e91f553711b40df3048faf27a7a04e01e0ddc0cf9309f0af7c2ca"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -11016,7 +11016,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
