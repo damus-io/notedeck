@@ -83,14 +83,107 @@ pub(super) fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
 
 /// A small rounded pill of muted text, e.g. the review queue's `3 / 12`.
 pub(super) fn text_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> egui::Response {
+    tinted_pill(ui, theme, text, theme.text_muted)
+}
+
+/// A small rounded pill of `color` text, e.g. the review pane's warning-coloured
+/// `patch truncated`.
+pub(super) fn tinted_pill(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    text: &str,
+    color: egui::Color32,
+) -> egui::Response {
     egui::Frame::new()
         .fill(theme.surface_elevated)
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).small().color(theme.text_muted));
+            ui.label(egui::RichText::new(text).small().color(color));
         })
         .response
+}
+
+/// A one-line label of small text cut in its middle to fit a width —
+/// `monad:/home/jb…/notedeck-headway` — with the full text on hover. It
+/// re-elides only when the width it's given changes, so a steady frame formats
+/// nothing.
+#[derive(Default)]
+pub(super) struct MiddleElided {
+    full: String,
+    /// The whole-pixel width [`shown`](Self::shown) was cut for.
+    width: Option<f32>,
+    shown: String,
+}
+
+impl MiddleElided {
+    /// `full`, not yet elided: the first [`ui`](Self::ui) cuts it.
+    pub(super) fn new(full: String) -> Self {
+        Self {
+            full,
+            ..Default::default()
+        }
+    }
+
+    /// Whether there's no text to show.
+    pub(super) fn is_empty(&self) -> bool {
+        self.full.is_empty()
+    }
+
+    /// Draw the text in small `color`, no wider than `max_width`.
+    pub(super) fn ui(&mut self, ui: &mut egui::Ui, color: egui::Color32, max_width: f32) {
+        let width = max_width.floor();
+        if self.width != Some(width) {
+            let font = egui::TextStyle::Small.resolve(ui.style());
+            self.shown = ui.fonts(|fonts| {
+                elide_middle(&self.full, width, |s| {
+                    fonts
+                        .layout_no_wrap(s.to_owned(), font.clone(), color)
+                        .size()
+                        .x
+                })
+            });
+            self.width = Some(width);
+        }
+        let label = ui.label(
+            egui::RichText::new(self.shown.as_str())
+                .small()
+                .color(color),
+        );
+        if self.shown != self.full {
+            label.on_hover_text(self.full.as_str());
+        }
+    }
+}
+
+/// `text` as it is if `measure` says it fits in `max_width`, else cut in the
+/// middle to the most characters that do fit around a `…`. The tail keeps
+/// twice the head's share, since the end of a path names the repo.
+pub(super) fn elide_middle(text: &str, max_width: f32, measure: impl Fn(&str) -> f32) -> String {
+    if text.is_empty() || measure(text) <= max_width {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |keep: usize| -> String {
+        let tail = keep - keep / 3;
+        let head = keep - tail;
+        chars[..head]
+            .iter()
+            .chain(std::iter::once(&'…'))
+            .chain(&chars[chars.len() - tail..])
+            .collect()
+    };
+    // The largest `keep` that fits; zero (a lone `…`) when nothing does.
+    let (mut lo, mut hi) = (0, chars.len() - 1);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if measure(&cut(mid)) <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut(lo)
 }
 
 /// A small muted, sentence-case group heading (Linear-style) used for the
@@ -384,4 +477,31 @@ pub(super) fn card_frame_ui(
             });
         })
         .response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One unit of width per character.
+    fn chars(s: &str) -> f32 {
+        s.chars().count() as f32
+    }
+
+    /// Text that fits comes back whole; longer text keeps as many characters
+    /// as fit around the `…`, two thirds of them from the end; a width too
+    /// small for anything leaves only the `…`.
+    #[test]
+    fn elide_middle_cuts_to_fit_keeping_the_tail() {
+        let path = "monad:/home/jb55/dev/notedeck-headway";
+        assert_eq!(elide_middle(path, 100.0, chars), path);
+        assert_eq!(elide_middle(path, chars(path), chars), path);
+
+        let cut = elide_middle(path, 16.0, chars);
+        assert_eq!(cut, "monad…ck-headway");
+        assert_eq!(chars(&cut), 16.0);
+
+        assert_eq!(elide_middle(path, 0.0, chars), "…");
+        assert_eq!(elide_middle("", -1.0, chars), "");
+    }
 }

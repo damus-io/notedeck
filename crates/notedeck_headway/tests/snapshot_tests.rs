@@ -2111,8 +2111,8 @@ fn review_queue_with_nothing_in_review_does_not_open() {
 }
 
 /// Where the review-queue snapshot's fixture repo lives. A fixed path, not a
-/// tempdir, because the pane prints it ("found locally in …") and a random
-/// path would change the pixels every run. Spelled `/tmp` rather than
+/// tempdir, because the pane prints it (the source's hover, and the detail's
+/// record rows) and a random path would change the pixels every run. Spelled `/tmp` rather than
 /// `temp_dir()` for the same reason: nix shells point `TMPDIR` elsewhere.
 /// Windows has no `/tmp`, and snapshots only render on Linux, so its
 /// behavioural run takes the temp dir.
@@ -2393,13 +2393,13 @@ fn seed_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: 
 
 /// Open the review queue on the seeded board and wait for its first card's
 /// diff: both files, found in the local checkout rather than fetched.
-fn open_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
+fn open_review_queue(harness: &mut Harness<'static, HeadwayTestState>) {
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     wait_for_label(harness, "1 / 2");
     wait_for_label(harness, QUEUE_CARDS[0]);
     wait_for_any_label(harness, "src/queue.rs");
     wait_for_any_label(harness, "src/keys.rs");
-    wait_for_label(harness, &format!("found locally in {}", fixture.dir));
+    wait_for_label(harness, "local checkout");
 }
 
 /// Behavioural twin of [`snapshot_headway_review_queue`] (no lavapipe): the
@@ -2413,17 +2413,17 @@ fn review_queue_shows_the_recorded_commit_diff() {
     let fixture = review_fixture();
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
-    open_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
 
     wait_for_label(&mut harness, "Explainer ↗");
     wait_for_label(&mut harness, QUEUE_SESSION);
-    wait_for_label(&mut harness, REVIEW_HOST);
-    wait_for_label(&mut harness, "Next:");
-    wait_for_label(&mut harness, QUEUE_CARDS[1]);
     wait_for_label(
         &mut harness,
-        "Headway Tester <tester@example.com> · 2023-11-14T14:13:20-07:00",
+        &format!("{REVIEW_HOST}:/home/jb55/dev/notedeck"),
     );
+    wait_for_label(&mut harness, "Next:");
+    wait_for_label(&mut harness, QUEUE_CARDS[1]);
+    wait_for_label(&mut harness, "Headway Tester · 1h ago");
     assert!(harness.query_by_label("send back").is_none());
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
@@ -2441,7 +2441,7 @@ fn snapshot_headway_review_queue() {
     let fixture = review_fixture();
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
-    open_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
     harness.run_steps(3);
     harness.snapshot("headway_review_queue");
 
@@ -2460,7 +2460,7 @@ fn snapshot_headway_review_queue_narrow() {
     let fixture = review_fixture();
     let mut harness = headway_harness(egui::Vec2::new(420.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
-    open_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_narrow");
 }

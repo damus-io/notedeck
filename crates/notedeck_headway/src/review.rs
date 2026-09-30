@@ -159,16 +159,45 @@ fn stale_in(
 
 /// A commit the worker found and read, with the view state its diff scrolls in.
 pub(crate) struct LoadedReview {
-    /// Where the commit was found, e.g. `fetched from jex0:repos/notedeck into …`.
-    pub found: String,
+    /// Where the commit came from in a few words, e.g. `local checkout` (see
+    /// [`Resolved::source_label`]).
+    pub source: String,
+    /// The full sentence behind [`source`](Self::source), with the repo's
+    /// path, e.g. `fetched from jex0:repos/notedeck into …`; shown on hover.
+    pub source_hover: String,
     /// It was found by its `Headway:` trailer, so its hash may not be the one a
     /// record names (a rebase).
     pub by_trailer: bool,
-    /// `author · date`, formatted once.
-    pub byline: String,
+    /// The commit's author and when, e.g. `William Casarin · 1d ago`.
+    pub byline: Byline,
     pub commit: CommitPatch,
     pub patch: GitPatch,
     pub patch_state: GitPatchState,
+}
+
+/// A commit's author line, formatted once when its load lands rather than
+/// every frame.
+pub(crate) struct Byline {
+    /// The author's name and a relative date: `William Casarin · 1d ago`.
+    pub short: String,
+    /// The full name, email and ISO date, for hover:
+    /// `William Casarin <jb55@jb55.com> · 2026-09-29T02:14:33-07:00`.
+    pub full: String,
+}
+
+impl Byline {
+    /// `commit`'s byline, its relative date measured against
+    /// [`headway::fmt::rel_time`]'s clock (frozen in tests).
+    fn of(commit: &CommitPatch) -> Self {
+        Self {
+            short: format!(
+                "{} · {}",
+                commit.author_name(),
+                headway::fmt::rel_time(commit.time)
+            ),
+            full: format!("{} · {}", commit.author, commit.date),
+        }
+    }
 }
 
 /// What the worker sends back: the resolution and the parsed patch, before the
@@ -343,7 +372,9 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
     })
 }
 
-/// A worker's result, with the view state for its diff attached.
+/// A worker's result, with the view state for its diff attached. Runs on the
+/// UI thread, so the byline's relative date reads the thread's frozen clock
+/// in tests.
 fn loaded(fetched: Fetched, i18n: &mut Localization) -> LoadedReview {
     let Fetched {
         resolved,
@@ -351,9 +382,10 @@ fn loaded(fetched: Fetched, i18n: &mut Localization) -> LoadedReview {
         patch,
     } = fetched;
     LoadedReview {
-        found: resolved.to_string(),
+        source: resolved.source_label().into_owned(),
+        source_hover: resolved.to_string(),
         by_trailer: resolved.how == Found::ByTrailer,
-        byline: format!("{} · {}", commit.author, commit.date),
+        byline: Byline::of(&commit),
         patch_state: GitPatchState::new(&patch, i18n),
         commit,
         patch,
@@ -407,6 +439,31 @@ mod tests {
             "resolving 136ceb9d3bfa…"
         );
         assert!(pending_note(None, "jex0").contains("Headway trailer"));
+    }
+
+    /// The byline keeps only the author's name and measures the date against
+    /// the frozen clock; the hover keeps the email and the exact date.
+    #[test]
+    fn byline_is_name_and_relative_date() {
+        let commit = CommitPatch {
+            sha: "a".repeat(40),
+            author: "William Casarin <jb55@jb55.com>".to_string(),
+            date: "2026-09-29T02:14:33-07:00".to_string(),
+            time: 1_000_000,
+            message: String::new(),
+            patch: String::new(),
+            truncated: false,
+        };
+        headway::fmt::freeze_now(1_000_000 + 86_400 + 5);
+        let byline = Byline::of(&commit);
+        assert_eq!(byline.short, "William Casarin · 1d ago");
+        assert_eq!(
+            byline.full,
+            "William Casarin <jb55@jb55.com> · 2026-09-29T02:14:33-07:00"
+        );
+
+        headway::fmt::freeze_now(1_000_000 + 30);
+        assert_eq!(Byline::of(&commit).short, "William Casarin · just now");
     }
 
     fn id(b: u8) -> NoteId {

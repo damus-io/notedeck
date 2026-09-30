@@ -20,6 +20,7 @@
 //! Everything here is blocking and UI-free: the CLI calls it inline, the GUI off
 //! the UI thread. Fetches never prompt (see [`git_fetch`]).
 
+use std::borrow::Cow;
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -78,6 +79,22 @@ pub struct Resolved {
     pub sha: String,
     pub target: Target,
     pub how: Found,
+}
+
+impl Resolved {
+    /// A few words saying where the commit came from, for a UI that shows the
+    /// full [`Display`](fmt::Display) sentence only on hover: `local checkout`,
+    /// `headway cache`, `fetched from <from>`, or `found by Headway trailer`.
+    /// How it was found outranks where it sits, so a fetch or a trailer match
+    /// names itself whatever repo it landed in.
+    pub fn source_label(&self) -> Cow<'static, str> {
+        match (&self.how, self.target) {
+            (Found::Local, Target::Cache) => Cow::Borrowed("headway cache"),
+            (Found::Local, Target::Recorded | Target::Checkout) => Cow::Borrowed("local checkout"),
+            (Found::Fetched { from }, _) => Cow::Owned(format!("fetched from {from}")),
+            (Found::ByTrailer, _) => Cow::Borrowed("found by Headway trailer"),
+        }
+    }
 }
 
 impl fmt::Display for Resolved {
@@ -190,6 +207,8 @@ pub struct CommitPatch {
     pub author: String,
     /// Author date, strict ISO 8601.
     pub date: String,
+    /// The same author date as unix seconds, for a relative "3h ago".
+    pub time: u64,
     /// The full commit message, subject and body.
     pub message: String,
     /// The `git show` patch (diff only, no header), cut at a line boundary when
@@ -197,6 +216,16 @@ pub struct CommitPatch {
     pub patch: String,
     /// Whether `patch` was cut short.
     pub truncated: bool,
+}
+
+impl CommitPatch {
+    /// The author's name alone: [`author`](Self::author) without its
+    /// ` <email>`, or all of it when there's no email to drop.
+    pub fn author_name(&self) -> &str {
+        self.author
+            .split_once(" <")
+            .map_or(self.author.as_str(), |(name, _)| name)
+    }
 }
 
 /// Read commit `sha` in `repo_dir` as a [`CommitPatch`], its patch capped at
@@ -214,14 +243,14 @@ pub fn commit_patch(repo_dir: &Path, sha: &str, max_bytes: usize) -> Result<Comm
             "--no-ext-diff",
             "--patch",
             "--find-renames",
-            "--format=%H%x00%an <%ae>%x00%aI%x00%B%x00",
+            "--format=%H%x00%an <%ae>%x00%aI%x00%at%x00%B%x00",
             "--end-of-options",
             sha,
         ],
     )?;
-    let mut parts = out.splitn(5, |b| *b == 0);
+    let mut parts = out.splitn(6, |b| *b == 0);
     let mut field = || String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
-    let (sha, author, date, message) = (field(), field(), field(), field());
+    let (sha, author, date, time, message) = (field(), field(), field(), field(), field());
     let rest = parts.next().unwrap_or_default();
     // `%B` ends with a newline, and git puts a blank line before the patch.
     let start = rest.iter().position(|b| *b != b'\n').unwrap_or(rest.len());
@@ -231,6 +260,7 @@ pub fn commit_patch(repo_dir: &Path, sha: &str, max_bytes: usize) -> Result<Comm
         sha,
         author,
         date,
+        time: time.parse().unwrap_or(0),
         message: message.trim_end().to_string(),
         patch: String::from_utf8_lossy(patch).into_owned(),
         truncated,
@@ -928,6 +958,8 @@ mod tests {
         let full = commit_patch(&repo, &sha, usize::MAX).unwrap();
         assert_eq!(full.sha, sha);
         assert_eq!(full.author, "t <t@t>");
+        assert_eq!(full.author_name(), "t");
+        assert!(full.time > 0, "author time parsed: {}", full.time);
         assert_eq!(full.message, "big file\n\nwith a body");
         assert!(
             full.patch.starts_with("diff --git a/big b/big\n"),
@@ -942,5 +974,51 @@ mod tests {
         assert!(cut.patch.len() <= 300);
         assert!(cut.patch.ends_with('\n'));
         assert!(full.patch.starts_with(&cut.patch));
+    }
+
+    /// Every [`Found`] × [`Target`] pair gets its short label: a local find
+    /// says which kind of repo, a fetch or trailer match says how, whatever
+    /// the repo.
+    #[test]
+    fn source_label_names_each_find() {
+        let fetched = || Found::Fetched {
+            from: "jex0:repos/notedeck".to_string(),
+        };
+        let cases = [
+            (Found::Local, Target::Recorded, "local checkout"),
+            (Found::Local, Target::Checkout, "local checkout"),
+            (Found::Local, Target::Cache, "headway cache"),
+            (
+                fetched(),
+                Target::Recorded,
+                "fetched from jex0:repos/notedeck",
+            ),
+            (
+                fetched(),
+                Target::Checkout,
+                "fetched from jex0:repos/notedeck",
+            ),
+            (fetched(), Target::Cache, "fetched from jex0:repos/notedeck"),
+            (
+                Found::ByTrailer,
+                Target::Recorded,
+                "found by Headway trailer",
+            ),
+            (
+                Found::ByTrailer,
+                Target::Checkout,
+                "found by Headway trailer",
+            ),
+            (Found::ByTrailer, Target::Cache, "found by Headway trailer"),
+        ];
+        for (how, target, label) in cases {
+            let resolved = Resolved {
+                repo_dir: PathBuf::from("/x/repo"),
+                sha: "a".repeat(40),
+                target,
+                how,
+            };
+            assert_eq!(resolved.source_label(), label, "{resolved:?}");
+        }
     }
 }

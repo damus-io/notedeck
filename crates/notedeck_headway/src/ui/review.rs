@@ -13,11 +13,13 @@ use headway::event::{BoardView, CardView, ReviewFields, ReviewView};
 use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
-use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
+use notedeck::tokens::{RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 use notedeck_ui::diff::PatchScroll;
 use std::time::Instant;
 
-use super::widgets::{count_badge, detail_heading, secondary_action_button, text_pill};
+use super::widgets::{
+    MiddleElided, count_badge, detail_heading, secondary_action_button, text_pill, tinted_pill,
+};
 use super::{BoardUiState, find_card};
 use crate::keys;
 use crate::nav::ReviewTarget;
@@ -44,6 +46,10 @@ pub(crate) struct ReviewUi {
     /// The open card's `headway:<board>/<word-id>`, formatted once per card
     /// rather than every frame.
     card_ref: String,
+    /// The record [`location`](Self::location) was built for.
+    location_for: Option<NoteId>,
+    /// The shown record's `host:path`, elided to the commit line's width.
+    location: MiddleElided,
     /// The pane was opened (or moved to another card) since it last drew, so
     /// its trailer search is re-run (see [`ReviewLoader::expire`]).
     reopened: bool,
@@ -647,6 +653,12 @@ pub(super) fn review_pane_ui(
         .note_records(card.id, RecordSet::of(&card.reviews));
     let shown = review.shown_index(card).unwrap_or(0);
     let record = card.reviews.get(shown);
+    if let Some(r) = record
+        && review.location_for != Some(r.id)
+    {
+        review.location_for = Some(r.id);
+        review.location = MiddleElided::new(host_path(&r.fields));
+    }
 
     let source = match record {
         Some(r) => ReviewSource::Record {
@@ -693,7 +705,7 @@ pub(super) fn review_pane_ui(
                 ui.add_space(SPACING_XS);
             }
             if let Some(r) = record {
-                ui.horizontal_wrapped(|ui| record_summary_ui(ui, theme, &r.fields));
+                record_summary_ui(ui, theme, &r.fields, &card.title, &mut review.location);
             }
             ui.add_space(SPACING_XS);
             load_ui(ui, theme, &mut review.loader, source);
@@ -862,23 +874,90 @@ fn record_picker_ui(ui: &mut egui::Ui, reviews: &[ReviewView], shown: usize) -> 
     picked
 }
 
-/// A record's one-line summary: short sha and subject, then where it was
-/// recorded (`host:path`, branch). Laid out as separate labels so nothing is
-/// formatted per frame.
-fn record_summary_ui(ui: &mut egui::Ui, theme: &ColorTheme, fields: &ReviewFields) {
-    ui.spacing_mut().item_spacing.x = SPACING_XS;
-    if let Some(sha) = fields.commit.as_deref() {
-        ui.label(
-            egui::RichText::new(short_sha(sha))
-                .monospace()
-                .color(theme.accent),
-        );
+/// Share of the commit line a record's `host:path` may take before it's
+/// elided in its middle.
+const LOCATION_SHARE: f32 = 0.4;
+
+/// A record's `host:path`, or whichever of the two it has. Built once per
+/// record, for [`MiddleElided`].
+fn host_path(fields: &ReviewFields) -> String {
+    match (fields.host.as_deref(), fields.path.as_deref()) {
+        (Some(host), Some(path)) => format!("{host}:{path}"),
+        (Some(part), None) | (None, Some(part)) => part.to_string(),
+        (None, None) => String::new(),
     }
-    if let Some(title) = fields.title.as_deref() {
-        ui.label(egui::RichText::new(title).color(theme.text_primary));
+}
+
+/// The pane's commit line: the sha as a pill (click copies it) and the subject,
+/// unless it's the card's title already in the header; then, on the right, where
+/// the record was made — `location` (`host:path`, elided in its middle past
+/// [`LOCATION_SHARE`] of the row, full on hover) and `⎇ branch`, small and muted.
+/// A narrow screen leaves the location out so the subject keeps the row, as the
+/// header leaves out the card ref.
+///
+/// The right side lays out first, right to left, so the subject knows how much
+/// room is left to elide into.
+fn record_summary_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    fields: &ReviewFields,
+    card_title: &str,
+    location: &mut MiddleElided,
+) {
+    let narrow = notedeck::ui::is_narrow(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+        let location_width = ui.available_width() * LOCATION_SHARE;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !narrow {
+                elided_location_ui(ui, theme, fields, location, location_width);
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                if let Some(sha) = fields.commit.as_deref() {
+                    sha_pill_ui(ui, theme, sha);
+                }
+                if let Some(subject) = fields.title.as_deref().filter(|t| *t != card_title) {
+                    let subject = egui::RichText::new(subject).color(theme.text_primary);
+                    ui.add(egui::Label::new(subject).truncate());
+                }
+            });
+        });
+    });
+}
+
+/// The commit line's right side, laid out right to left: `⎇ branch`, then
+/// `location` elided to `location_width`, small and muted.
+fn elided_location_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    fields: &ReviewFields,
+    location: &mut MiddleElided,
+    location_width: f32,
+) {
+    if let Some(branch) = fields.branch.as_deref() {
+        let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
+        ui.label(muted(branch));
+        ui.label(muted("⎇"));
     }
-    ui.add_space(SPACING_SM);
-    record_location_ui(ui, theme, fields);
+    if !location.is_empty() {
+        location.ui(ui, theme.text_muted, location_width);
+    }
+}
+
+/// A commit's short sha as an accent monospace pill. Hovering shows the full
+/// sha; a click copies it.
+fn sha_pill_ui(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) {
+    let pill = egui::Button::new(
+        egui::RichText::new(short_sha(sha))
+            .monospace()
+            .color(theme.accent),
+    )
+    .fill(theme.surface_elevated)
+    .stroke(egui::Stroke::NONE)
+    .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8));
+    if ui.add(pill).on_hover_text(sha).clicked() {
+        ui.ctx().copy_text(sha.to_owned());
+    }
 }
 
 /// Where a record was made — `host:path ⎇ branch` in small muted text, each
@@ -904,8 +983,9 @@ fn record_location_ui(ui: &mut egui::Ui, theme: &ColorTheme, fields: &ReviewFiel
 
 /// The load's status and, once it's in, the diff: a spinner while the worker
 /// runs, git's own error (command and stderr, verbatim, so a broken ssh or path
-/// can be fixed by hand) with a retry, or where the commit was found above its
-/// diff.
+/// can be fixed by hand) with a retry, or one line above the diff with who
+/// wrote the commit and when, where it came from (the full sentence, with the
+/// repo's path, on hover), and whether its patch was cut short.
 fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, source: ReviewSource) {
     let mut retry = false;
     match loader.get_mut(source) {
@@ -932,11 +1012,24 @@ fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, sou
         }
         Some(ReviewLoad::Ready(loaded)) => {
             ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACING_XS;
+                let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
+                ui.label(muted(&loaded.byline.short))
+                    .on_hover_text(loaded.byline.full.as_str());
+                ui.label(muted("·"));
+                // A trailer match may not be the recorded commit, so its source
+                // is the warning.
+                let source_color = if loaded.by_trailer {
+                    theme.warning
+                } else {
+                    theme.text_muted
+                };
                 ui.label(
-                    egui::RichText::new(loaded.found.as_str())
+                    egui::RichText::new(loaded.source.as_str())
                         .small()
-                        .color(theme.text_muted),
-                );
+                        .color(source_color),
+                )
+                .on_hover_text(loaded.source_hover.as_str());
                 if loaded.by_trailer {
                     ui.label(
                         egui::RichText::new("hash differs from the record? (rebased)")
@@ -948,19 +1041,10 @@ fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, sou
                          commit carrying the card's Headway trailer.",
                     );
                 }
+                if loaded.commit.truncated {
+                    tinted_pill(ui, theme, "patch truncated", theme.warning);
+                }
             });
-            ui.label(
-                egui::RichText::new(loaded.byline.as_str())
-                    .small()
-                    .color(theme.text_muted),
-            );
-            if loaded.commit.truncated {
-                ui.label(
-                    egui::RichText::new("patch truncated")
-                        .small()
-                        .color(theme.warning),
-                );
-            }
             ui.add_space(SPACING_MD);
             notedeck_ui::diff::git_patch_ui(&loaded.patch, &mut loaded.patch_state, ui);
         }
