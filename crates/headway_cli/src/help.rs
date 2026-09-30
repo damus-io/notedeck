@@ -534,6 +534,33 @@ is how you look first.",
             "headway migrate --board ios-port",
         ],
     },
+    Command {
+        name: "share",
+        group: Group::Boards,
+        summary: "Make someone a member of a sealed board you own",
+        usage: &["share <npub|hex> --board <id>"],
+        details: "\
+Gift-wraps the board's channel key to <npub> as a key-share (kind-1082
+in a kind-1059). Their next run pulls it, joins the board, and can read
+its whole history and edit it with `--author <you> --board <id>`.
+
+Only the board's owner can share it, and only a sealed board (`headway
+migrate` a plaintext one first). There is no revocation: the key can't
+be taken back, so the board must be named explicitly.
+
+Needs a reachable relay — a key-share is sent once and never re-sent by
+a later run, so an offline share would be lost. Each run wraps with a
+fresh throwaway key, so re-running publishes another copy; that's
+harmless, since the member's roster dedups by channel and board.",
+        options: &[(
+            "--json",
+            "Machine-readable output: {ok, board, recipient, team_pubkey}",
+        )],
+        examples: &[
+            "headway share --board ios-port npub1...",
+            "headway share --board ios-port --json <64-hex-pubkey>",
+        ],
+    },
     // -- keys -------------------------------------------------------------
     Command {
         name: "login",

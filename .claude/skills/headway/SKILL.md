@@ -197,6 +197,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `move-board <card> --to <board>` | Move the card off this board onto another |
 | `board [id]` | Switch the current board to `id`, or (no arg) list boards and mark the current one |
 | `rename <title...>` | Rename the current board's display title (slug unchanged) |
+| `share <npub\|hex> --board <id>` | Make someone a member of a sealed board you own (see Sharing a board) |
 | `terminal <col> [on\|off]` | Mark a column as a "done" column, or clear it with `off` (see Terminal columns) |
 | `login <nsec>` | Store a signing key so later runs just work |
 | `logout` | Forget the stored signing key |
@@ -450,6 +451,30 @@ headway --board work move-board 1a2b3c4d… --to personal  # re-homed: off work,
 - The card is resolved on the **source** board, so combine `--board <source>`
   with `--to <target>`. The target board must already exist — seed it first
   with `headway --board <target> seed` if it doesn't.
+
+## Sharing a board
+
+A sealed board can be shared with another nostr identity, who then reads and
+edits it from their own CLI or app:
+
+```bash
+# owner: gift-wrap the board's channel key to the member (kind-1082 in a 1059)
+headway --board ios-port share npub1…
+# member: read and edit the owner's board by naming its owner
+headway --author <owner-hex> --board ios-port show
+headway --author <owner-hex> --board ios-port add "From a member" --col todo
+```
+
+- **Owner-only.** A member's `share` is refused; so is sharing to yourself.
+- **Sealed boards only.** A plaintext board has no channel to hand out —
+  `headway migrate --board <id>` it first (never on a real board casually).
+- **`--board` is required**, never the persisted current board: a share can't
+  be revoked, so the board must be named on purpose.
+- **Needs a reachable relay.** A key-share is sent once and never re-sent by a
+  later run, so an offline share is refused rather than silently lost.
+- Not idempotent on the wire (a fresh throwaway wrap key each run), but a
+  repeat share is harmless: the member's roster dedups it.
+- The member's edits fold on the owner's side attributed to the member's pubkey.
 
 ## Typical workflow
 

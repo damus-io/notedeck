@@ -338,6 +338,81 @@ async fn run() -> Result<()> {
             );
         }
 
+        Command::Share { recipient } => {
+            // Like `migrate`, never lean on the persisted current board: a
+            // key-share can't be revoked, so sharing the wrong board leaks it for
+            // good.
+            if !board_explicit {
+                return Err(
+                    "share never uses the persisted current board — pass --board <id>, \
+                     so you can't accidentally share the wrong board"
+                        .into(),
+                );
+            }
+            let secret = secret.ok_or("share needs --nsec to sign")?;
+            // Owner-only, and checked before the roster lookup below: a member's
+            // roster holds the owner's root too, so without this a member could
+            // hand the board on to anyone.
+            if me != author {
+                return Err(format!(
+                    "only the board owner can share it — '{board}' belongs to {}",
+                    author.hex()
+                )
+                .into());
+            }
+            if recipient == me {
+                return Err("that's your own key — you already hold this board's channel".into());
+            }
+            if load_board(&ndb, &roster, &author, &board).is_none() {
+                return Err(format!("no board '{board}' to share").into());
+            }
+            // The root of the board's *primary* channel, from the roster — never
+            // re-derived from the slug. A migrated or epoch-bumped board seals into
+            // a channel whose root isn't `derive_board_root(secret, slug)`, and a
+            // member handed the derived one would join a channel nobody writes to.
+            let root = roster.team_root(&board).ok_or_else(|| {
+                format!("'{board}' is not sealed — `headway migrate --board {board}` it first")
+            })?;
+            // Nothing re-sends a key-share later: the gift-wrap leg is pull-only and
+            // the self-share flush re-wraps only our own boards to ourselves. So a
+            // share made offline would be ingested here and never reach the member —
+            // refuse instead of printing a success that isn't one.
+            let Some(live) = relay.as_mut() else {
+                return Err(format!(
+                    "can't reach {} — share needs a live relay, since a key-share is \
+                     never re-sent by a later run",
+                    cli.relay
+                )
+                .into());
+            };
+            let mut sink = Collect::default();
+            let addr = event::board_address(&author, &board);
+            if !store::share_board(&ndb, &secret, &recipient, &addr, &root, &mut sink) {
+                return Err(format!("failed to wrap the key-share for {}", recipient.hex()).into());
+            }
+            live.publish(&sink.0).await?;
+            let team_pubkey = nostrdb_net::sns::derive_sns_keys(&root)
+                .map(|k| k.team_keypair.pubkey.hex())
+                .unwrap_or_default();
+            if as_json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "board": board,
+                        "recipient": recipient.hex(),
+                        "team_pubkey": team_pubkey,
+                    })
+                );
+            } else {
+                println!(
+                    "shared board '{board}' with {}",
+                    recipient.npub().unwrap_or_else(|| recipient.hex())
+                );
+                println!("  team pk {}", nostrdb_net::relay::sync::dim(&team_pubkey));
+            }
+        }
+
         Command::Board { id } => match id {
             // Switch: persist the new current board, then report whether it
             // already exists so the next step (seed vs. use) is obvious.

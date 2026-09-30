@@ -1028,24 +1028,46 @@ fn member_folds_and_edits_a_board_shared_by_its_owner() {
     );
     show_board_until(&url, owner_db, slug, 1);
 
-    // 2. Share the board's root with the member, the way the owner-side share
-    // path does: a kind-1082 key-share gift-wrapped to the member's pubkey.
-    let share_dir = tempfile::tempdir().expect("share dir");
-    let share_ndb =
-        Ndb::new(share_dir.path().to_str().unwrap(), &test_config()).expect("share ndb");
-    let root = nostrdb_net::sns::derive_board_root(&SECRET, slug);
-    let addr = headway::event::board_address(&owner, slug);
-    let mut frames = Frames::default();
-    assert!(
-        headway::store::share_board(&share_ndb, &SECRET, &member, &addr, &root, &mut frames),
-        "wrap the key-share"
+    // 2. The owner shares the board with the member: `headway share` gift-wraps
+    // the board's root to the member's pubkey as a kind-1082 key-share.
+    let member_npub = member.npub().expect("member npub");
+    let out = headway(
+        &url,
+        owner_db,
+        &["--board", slug, "--json", "share", &member_npub],
     );
-    rt.block_on(async {
-        let mut relay = nostrdb_net::relay::sync::Relay::connect(&url)
-            .await
-            .expect("connect");
-        relay.publish(&frames.0).await.expect("publish key-share");
-    });
+    assert!(
+        out.status.success(),
+        "owner share: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let shared: Value = serde_json::from_slice(&out.stdout).expect("share --json");
+    assert_eq!(shared["ok"], true);
+    assert_eq!(shared["board"], slug);
+    assert_eq!(shared["recipient"], member.hex());
+    let root = nostrdb_net::sns::derive_board_root(&SECRET, slug);
+    let team_pk = nostrdb_net::sns::derive_sns_keys(&root)
+        .expect("team keys")
+        .team_keypair
+        .pubkey
+        .hex();
+    assert_eq!(
+        shared["team_pubkey"], team_pk,
+        "the share must hand out the board's own channel"
+    );
+    // The relay ingests asynchronously, so give the wrap a moment to land.
+    let mut wraps = 0;
+    for _ in 0..50 {
+        wraps = giftwraps_to(&relay_store, &member);
+        if wraps > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        wraps, 1,
+        "exactly one key-share reached the relay for the member"
+    );
 
     // 3. The member, on a fresh cache, folds the owner's board.
     let member_dir = tempfile::tempdir().expect("member dir");
@@ -1120,5 +1142,126 @@ fn member_folds_and_edits_a_board_shared_by_its_owner() {
         giftwraps_to(&relay_store, &owner),
         wraps_to_owner,
         "a member run must not re-wrap the owner's root to the owner"
+    );
+}
+
+/// `headway share` refuses every case where handing out the key would be wrong
+/// or silently lost: a member re-sharing the owner's board, sharing to yourself,
+/// a board that isn't named explicitly, a plaintext board (no channel to hand
+/// out), a board that doesn't exist, and an unreachable relay (a key-share is
+/// never re-sent). None of them may put a key-share on the relay.
+#[test]
+fn share_refuses_what_it_must_not_share() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let relay_store = app_ndb.clone();
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let owner = author();
+    let owner_hex = owner.hex();
+    let member = nostrdb_net::FullKeypair::from_secret_bytes(&MEMBER_SECRET)
+        .expect("member keypair")
+        .pubkey;
+    let member_hex = member.hex();
+    let member_key = hex::encode(MEMBER_SECRET);
+    let slug = "shared";
+
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner_db = owner_dir.path().to_str().unwrap();
+    assert!(
+        headway(&url, owner_db, &["--board", slug, "seed"])
+            .status
+            .success(),
+        "owner seed"
+    );
+    show_board_until_cols(&url, owner_db, slug, 5);
+
+    // A plaintext board of the owner's, published straight to the relay the way
+    // a pre-SNS client wrote one: no channel, so nothing to share.
+    let plain_dir = tempfile::tempdir().expect("plain dir");
+    let plain_ndb =
+        Ndb::new(plain_dir.path().to_str().unwrap(), &test_config()).expect("plain ndb");
+    let mut frames = Frames::default();
+    headway::store::seed_board(&plain_ndb, &owner, &SECRET, "plain", "Plain", &mut frames);
+    rt.block_on(async {
+        let mut relay = nostrdb_net::relay::sync::Relay::connect(&url)
+            .await
+            .expect("connect");
+        relay
+            .publish(&frames.0)
+            .await
+            .expect("publish plaintext board");
+    });
+    show_board_until_cols(&url, owner_db, "plain", 5);
+
+    let refused = |key: &str, relay_url: &str, db: &str, args: &[&str], why: &str| {
+        let out = headway_as(key, relay_url, db, args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} should have been refused");
+        assert!(err.contains(why), "{args:?}: expected '{why}' in:\n{err}");
+    };
+
+    // A member re-sharing the owner's board — even one it holds the key to.
+    let member_dir = tempfile::tempdir().expect("member dir");
+    let member_db = member_dir.path().to_str().unwrap();
+    refused(
+        &member_key,
+        &url,
+        member_db,
+        &["--author", &owner_hex, "--board", slug, "share", &owner_hex],
+        "only the board owner can share it",
+    );
+    let owner_key = nsec();
+    refused(
+        &owner_key,
+        &url,
+        owner_db,
+        &["--board", slug, "share", &owner_hex],
+        "your own key",
+    );
+    // No --board: the persisted/env current board is never shared.
+    refused(
+        &owner_key,
+        &url,
+        owner_db,
+        &["share", &member_hex],
+        "pass --board",
+    );
+    refused(
+        &owner_key,
+        &url,
+        owner_db,
+        &["--board", "plain", "share", &member_hex],
+        "is not sealed",
+    );
+    refused(
+        &owner_key,
+        &url,
+        owner_db,
+        &["--board", "nope", "share", &member_hex],
+        "no board 'nope'",
+    );
+    // Port 1 on loopback refuses the connection, so the run works offline.
+    refused(
+        &owner_key,
+        "ws://127.0.0.1:1",
+        owner_db,
+        &["--board", slug, "share", &member_hex],
+        "share needs a live relay",
+    );
+
+    assert_eq!(
+        giftwraps_to(&relay_store, &member),
+        0,
+        "a refused share must not put a key-share on the relay"
     );
 }

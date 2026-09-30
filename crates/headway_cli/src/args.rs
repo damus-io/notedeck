@@ -32,6 +32,12 @@ pub(crate) enum Command {
     /// so it can be shared, re-sealing existing notes in place (no data loss). See
     /// [`store::migrate_board_to_sns`].
     Migrate,
+    /// Gift-wrap the target board's channel root to `recipient` as a kind-1082
+    /// key-share, making them a member. Owner-only, sealed boards only, and it
+    /// needs a live relay: a key-share is never re-sent by a later run.
+    Share {
+        recipient: Pubkey,
+    },
     Add {
         title: String,
         col: Option<String>,
@@ -281,6 +287,7 @@ impl Command {
             | Command::MoveBoard { card, .. } => selectors.push(card),
             Command::Seed { .. }
             | Command::Migrate
+            | Command::Share { .. }
             | Command::Rename { .. }
             | Command::Terminal { .. }
             | Command::Board { .. }
@@ -606,6 +613,10 @@ fn parse_command(
         },
         "seed" => Command::Seed { title },
         "migrate" => Command::Migrate,
+        "share" => Command::Share {
+            recipient: Pubkey::parse(&arg(rest, 0, name)?)
+                .map_err(|e| format!("share: not an npub or hex pubkey: {e}"))?,
+        },
         "add" => Command::Add {
             title: joined(rest, 0, name)?,
             col,
@@ -1177,6 +1188,24 @@ mod tests {
     fn migrate_board_explicitness() {
         assert!(!parse(&["migrate"]).board_explicit);
         assert!(parse(&["migrate", "--board", "commerce"]).board_explicit);
+    }
+
+    /// `share` takes its recipient as an npub or as hex, and names the key it
+    /// couldn't read rather than failing later at wrap time.
+    #[test]
+    fn share_parses_npub_and_hex_recipients() {
+        let hex = "0ca678de0a151cc2425631f23605c2edee96d4723a3d06582bfff13311e52cb6";
+        let npub = Pubkey::from_hex(hex).unwrap().npub().unwrap();
+        for given in [hex, npub.as_str()] {
+            match parse(&["share", given, "--board", "commerce"]).command {
+                Command::Share { recipient } => assert_eq!(recipient.hex(), hex),
+                _ => panic!("expected a Share command"),
+            }
+        }
+        let err = parse_err(&["share", "not-a-key"]);
+        assert!(err.contains("not an npub or hex pubkey"), "{err}");
+        let err = parse_err(&["share"]);
+        assert!(err.contains("missing an argument"), "{err}");
     }
 
     #[test]
