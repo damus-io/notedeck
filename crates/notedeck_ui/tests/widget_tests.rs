@@ -1,5 +1,5 @@
 use egui::accesskit::Role;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 use notedeck_ui::context_menu::{stationary_arbitrary_menu_button_padding, MenuPadding};
 use notedeck_ui::icons;
@@ -18,7 +18,7 @@ fn test_search_input_box_renders() {
 
     // Verify the search input renders with the correct role
     let input = harness.get_by_role(Role::TextInput);
-    assert_eq!(input.role(), Role::TextInput);
+    assert_eq!(input.accesskit_node().role(), Role::TextInput);
 }
 
 #[test]
@@ -34,11 +34,12 @@ fn test_search_input_box_type_text() {
 
     // Click to focus the search input
     let input = harness.get_by_role(Role::TextInput);
-    input.click();
+    input.click_accesskit();
     harness.run();
 
     // Type into the search box
     let input = harness.get_by_role(Role::TextInput);
+    input.focus();
     input.type_text("hello");
     harness.run();
 
@@ -59,7 +60,7 @@ fn menu_items(ui: &mut egui::Ui) {
 fn context_menu_harness(padding: MenuPadding) -> Harness<'static> {
     Harness::new_ui(move |ui| {
         let resp = ui.button("...");
-        stationary_arbitrary_menu_button_padding(ui, resp, padding, menu_items);
+        stationary_arbitrary_menu_button_padding(resp, padding, menu_items);
     })
 }
 
@@ -69,7 +70,7 @@ fn test_context_menu_snapshot() {
     let mut harness = context_menu_harness(MenuPadding::default());
 
     let btn = harness.get_by_label("...");
-    btn.click();
+    btn.click_accesskit();
     harness.run();
     harness.run();
 
@@ -87,7 +88,7 @@ fn test_context_menu_thin_snapshot() {
     let mut harness = context_menu_harness(thin);
 
     let btn = harness.get_by_label("...");
-    btn.click();
+    btn.click_accesskit();
     harness.run();
     harness.run();
 
@@ -342,12 +343,18 @@ fn git_patch_snapshot(name: &str, patch: &str, width: f32) {
         .renderer(notedeck::software_renderer())
         .build_ui_state(
             |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                // Fonts set during a pass load at the start of the next one, so
+                // the first pass only installs them: drawing in egui's default
+                // fonts, which lack the rename arrow, would panic.
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    notedeck::fonts::setup_fonts(ui.ctx());
+                    return;
+                }
                 ui.spacing_mut().item_spacing.x = 0.0;
-                git_patch_ui(patch, state, ui)
+                git_patch_ui(patch, state, ui);
             },
             (patch, state),
         );
-    notedeck::fonts::setup_fonts(&harness.ctx);
     harness.run();
     harness.snapshot(name);
 }
@@ -404,10 +411,10 @@ fn mono_baseline_offset(size: f32, ui_fn: impl Fn(&mut egui::Ui) + 'static) -> i
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(320.0, 60.0))
         .renderer(notedeck::software_renderer())
-        .build(move |ctx| {
+        .build_ui(move |ui| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     ui.style_mut().visuals.override_text_color = Some(PROSE_INK);
                     ui.style_mut()
                         .text_styles

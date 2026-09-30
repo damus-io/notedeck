@@ -297,8 +297,7 @@ fn place_editor(
     let resp = ui.put(
         rect,
         egui::TextEdit::singleline(&mut state.buf)
-            .frame(false)
-            .margin(vec2(9.0, 4.0))
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(9, 4)))
             .text_color(theme::SELECTED_TEXT)
             .font(FontId::proportional(12.0)),
     );
@@ -390,7 +389,7 @@ fn allday_row(
         let bar = egui::Rect::from_min_max(pos2(left, y0), pos2(right, y0 + ALLDAY_ROW_H));
         let is_sel = selected == Some(i);
 
-        let resp = ui.interact(bar, ui.id().with(("allday", i)), Sense::click());
+        let resp = ui.interact(bar, ui.scope_id().with(("allday", i)), Sense::click());
         let (fill, text) = if is_sel {
             (theme::SELECTED_FILL, theme::SELECTED_TEXT)
         } else {
@@ -518,7 +517,7 @@ fn draw_blocks(
 
         let is_sel = selected == Some(i);
         let tall = y1 - y0 > 30.0;
-        let resp = ui.interact(rect, ui.id().with(("block", i)), Sense::click());
+        let resp = ui.interact(rect, ui.scope_id().with(("block", i)), Sense::click());
 
         if is_sel {
             // Where the inline editor sits: the title line when there's room,

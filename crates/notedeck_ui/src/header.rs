@@ -214,10 +214,13 @@ fn measure_width(
     measure_ui.set_invisible();
 
     let start_width = measure_ui.next_widget_position();
-    let res = measure_ui.scope_builder(UiBuilder::new().id_salt(ui.id().with("measure")), |ui| {
-        render(ui);
-        render
-    });
+    let res = measure_ui.scope_builder(
+        UiBuilder::new().id_salt(ui.scope_id().with("measure")),
+        |ui| {
+            render(ui);
+            render
+        },
+    );
     let end_width = measure_ui.next_widget_position();
 
     (

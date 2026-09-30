@@ -34,7 +34,7 @@ impl<'a> ConfigureDeckView<'a> {
     }
 
     pub fn scroll_id() -> egui::Id {
-        egui::Id::new("configure-deck")
+        egui::Id::unique("configure-deck")
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<ConfigureDeckResponse> {
@@ -75,7 +75,7 @@ impl<'a> ConfigureDeckView<'a> {
 
             if ui
                 .add(deck_icon(
-                    ui.id().with("config-deck"),
+                    ui.scope_id().with("config-deck"),
                     self.state.selected_glyph,
                     38.0,
                     64.0,

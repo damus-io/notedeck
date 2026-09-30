@@ -75,7 +75,7 @@ impl<'a> CustomZapView<'a> {
             }
         };
 
-        let id = ui.id().with(("CustomZap", self.target_pubkey));
+        let id = ui.scope_id().with(("CustomZap", self.target_pubkey));
 
         let default_sats = self.default_msats / 1000;
         ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
@@ -92,7 +92,7 @@ impl<'a> CustomZapView<'a> {
 
             let prev_slider_sats = maybe_sats.unwrap_or(default_sats).clamp(1, 100000);
             let mut slider_sats = prev_slider_sats;
-            ui.allocate_new_ui(egui::UiBuilder::new(), |ui| {
+            ui.scope_builder(egui::UiBuilder::new(), |ui| {
                 ui.set_width(slider_width);
                 ui.add(
                     Slider::new(&mut slider_sats, 1..=100000)
@@ -233,7 +233,7 @@ fn show_amount(
             ui.add_space(8.0);
             ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
                 let textedit = egui::TextEdit::singleline(user_input)
-                    .frame(false)
+                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
                     .id(user_input_id)
                     .font(user_input_font);
 
@@ -273,7 +273,7 @@ fn show_amount(
                 };
 
                 let textout = ui
-                    .allocate_new_ui(
+                    .scope_builder(
                         egui::UiBuilder::new()
                             .max_rect(user_input_rect)
                             .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
@@ -394,7 +394,7 @@ fn show_selection_button(
     None
 }
 
-#[derive(Hash)]
+#[derive(Debug, Hash)]
 enum ZapSelectionButton {
     First,
     Second,

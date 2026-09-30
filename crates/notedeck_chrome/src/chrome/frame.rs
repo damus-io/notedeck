@@ -87,7 +87,7 @@ impl Chrome {
 
                     let frame = nav_frame(
                         ui,
-                        egui::Id::new("chrome_global_nav"),
+                        egui::Id::unique("chrome_global_nav"),
                         nav,
                         animate,
                         |ui, ui_type, frame_nav| match ui_type {

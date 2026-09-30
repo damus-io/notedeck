@@ -50,7 +50,7 @@ impl<'a> FollowPackOnboardingView<'a> {
     }
 
     pub fn scroll_id() -> egui::Id {
-        egui::Id::new("follow_pack_onboarding")
+        egui::Id::unique("follow_pack_onboarding")
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<OnboardingResponse> {

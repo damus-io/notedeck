@@ -401,11 +401,11 @@ pub enum InsertionResponse {
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
-    use egui::ahash::HashMap;
     use nostrdb::NoteKey;
     use nostrdb_net::Pubkey;
     use notedeck::NoteRef;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
 
     use uuid::Uuid;
 

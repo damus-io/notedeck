@@ -152,6 +152,7 @@ fn show_error(ui: &mut egui::Ui, i18n: &mut Localization, err: &AcquireKeyError)
 
 #[cfg(test)]
 mod tests {
+    use egui::text::CharIndex;
     use nostrdb_net::Pubkey;
 
     use super::*;
@@ -171,14 +172,14 @@ mod tests {
             if cur_time < Duration::from_millis(10u64) {
                 let _ = manager.get_acquire_textedit(|text| {
                     text.clear();
-                    text.insert_text("test", 0);
+                    text.insert_text("test", CharIndex(0));
                     egui::TextEdit::singleline(text)
                 });
                 manager.apply_acquire();
             } else if cur_time < Duration::from_millis(30u64) {
                 let _ = manager.get_acquire_textedit(|text| {
                     text.clear();
-                    text.insert_text("test2", 0);
+                    text.insert_text("test2", CharIndex(0));
                     egui::TextEdit::singleline(text)
                 });
                 manager.apply_acquire();
@@ -187,7 +188,7 @@ mod tests {
                     text.clear();
                     text.insert_text(
                         "3efdaebb1d8923ebd99c9e7ace3b4194ab45512e2be79c1b7d68d9243e0d2681",
-                        0,
+                        CharIndex(0),
                     );
                     egui::TextEdit::singleline(text)
                 });

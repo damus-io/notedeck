@@ -242,7 +242,7 @@ mod tests {
     fn seed(nav: &mut BlockNav, count: usize) {
         for i in 0..count {
             nav.blocks.push(BlockRef {
-                id: egui::Id::new(("block", i)),
+                id: egui::Id::unique(("block", i)),
                 default_open: false,
             });
         }

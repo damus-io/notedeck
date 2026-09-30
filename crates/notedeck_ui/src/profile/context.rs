@@ -21,11 +21,10 @@ impl ProfileContextWidget {
             ui.visuals().window_fill,
         );
 
-        context_button(ui, ui.id().with(pubkey), self.place_at.shrink(4.0))
+        context_button(ui, ui.scope_id().with(pubkey), self.place_at.shrink(4.0))
     }
 
     pub fn context_menu(
-        ui: &mut egui::Ui,
         i18n: &mut Localization,
         button_response: egui::Response,
         can_sign: bool,
@@ -33,7 +32,7 @@ impl ProfileContextWidget {
     ) -> Option<ProfileContextSelection> {
         let mut context_selection: Option<ProfileContextSelection> = None;
 
-        stationary_arbitrary_menu_button(ui, button_response, |ui| {
+        stationary_arbitrary_menu_button(button_response, |ui| {
             ui.set_max_width(100.0);
 
             if ui
@@ -45,7 +44,7 @@ impl ProfileContextWidget {
                 .clicked()
             {
                 context_selection = Some(ProfileContextSelection::AddProfileColumn);
-                ui.close_menu();
+                ui.close();
             }
 
             if ui
@@ -53,7 +52,7 @@ impl ProfileContextWidget {
                 .clicked()
             {
                 context_selection = Some(ProfileContextSelection::ViewAs);
-                ui.close_menu();
+                ui.close();
             }
 
             if ui
@@ -65,7 +64,7 @@ impl ProfileContextWidget {
                 .clicked()
             {
                 context_selection = Some(ProfileContextSelection::CopyLink);
-                ui.close_menu();
+                ui.close();
             }
 
             if can_sign {
@@ -76,7 +75,7 @@ impl ProfileContextWidget {
                 };
                 if ui.button(label).clicked() {
                     context_selection = Some(ProfileContextSelection::MuteUser);
-                    ui.close_menu();
+                    ui.close();
                 }
 
                 if ui
@@ -88,7 +87,7 @@ impl ProfileContextWidget {
                     .clicked()
                 {
                     context_selection = Some(ProfileContextSelection::ReportUser);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });

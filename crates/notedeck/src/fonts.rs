@@ -161,7 +161,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
                 scale: INCONSOLATA_SCALE,
                 y_offset_factor: INCONSOLATA_Y_OFFSET_FACTOR,
                 y_offset: 0.0,
-                baseline_offset_factor: 0.0,
+                ..Default::default()
             }),
         ),
     );
@@ -191,7 +191,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
                 scale: 1.1, // make them a touch larger
                 y_offset_factor: 0.0,
                 y_offset: 0.0,
-                baseline_offset_factor: 0.0,
+                ..Default::default()
             }),
         ),
     );

@@ -46,17 +46,20 @@ fn make_test_state(egui_ctx: &egui::Context) -> TestState {
 /// context and skips rendering — `set_fonts` is deferred in egui, so fonts
 /// aren't usable until the next `ctx.run()`. The harness's `run_ok()` loop
 /// (called during construction) will invoke this again with fonts loaded.
-fn render_damus_frame(ctx: &egui::Context, state: &mut TestState) {
-    if !state.fonts_installed {
-        state.notedeck.setup(ctx);
-        state.fonts_installed = true;
-        return;
-    }
-    let mut app_ctx = state.notedeck.app_context();
-    egui::CentralPanel::default().show(ctx, |ui| {
-        state.damus.render(&mut app_ctx, ui);
+fn render_damus_frame(ui: &mut egui::Ui, state: &mut TestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.fonts_installed {
+            state.notedeck.setup(ctx);
+            state.fonts_installed = true;
+            return;
+        }
+        let mut app_ctx = state.notedeck.app_context();
+        egui::CentralPanel::default().show(ui, |ui| {
+            state.damus.render(&mut app_ctx, ui);
+        });
+        app_ctx.remote.flush();
     });
-    app_ctx.remote.flush();
 }
 
 #[tokio::test]
@@ -66,7 +69,7 @@ async fn test_damus_renders() {
 
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
-        .build_state(render_damus_frame, state);
+        .build_ui_state(render_damus_frame, state);
 
     harness.run();
 }
@@ -80,7 +83,7 @@ async fn snapshot_damus_columns() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
         .renderer(notedeck::software_renderer())
-        .build_state(render_damus_frame, state);
+        .build_ui_state(render_damus_frame, state);
 
     harness.run();
 
@@ -98,7 +101,7 @@ fn snapshot_at_size(width: f32, height: f32, name: &str) {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(width, height))
         .renderer(notedeck::software_renderer())
-        .build_state(render_damus_frame, state);
+        .build_ui_state(render_damus_frame, state);
 
     harness.run();
     harness.snapshot(name);
@@ -127,18 +130,21 @@ async fn snapshot_desktop_wide() {
 // ---------------------------------------------------------------------------
 
 /// Same as render_damus_frame but switches to light theme after font setup.
-fn render_damus_frame_light(ctx: &egui::Context, state: &mut TestState) {
-    if !state.fonts_installed {
-        state.notedeck.setup(ctx);
-        ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
-        state.fonts_installed = true;
-        return;
-    }
-    let mut app_ctx = state.notedeck.app_context();
-    egui::CentralPanel::default().show(ctx, |ui| {
-        state.damus.render(&mut app_ctx, ui);
+fn render_damus_frame_light(ui: &mut egui::Ui, state: &mut TestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.fonts_installed {
+            state.notedeck.setup(ctx);
+            ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
+            state.fonts_installed = true;
+            return;
+        }
+        let mut app_ctx = state.notedeck.app_context();
+        egui::CentralPanel::default().show(ui, |ui| {
+            state.damus.render(&mut app_ctx, ui);
+        });
+        app_ctx.remote.flush();
     });
-    app_ctx.remote.flush();
 }
 
 #[tokio::test]
@@ -150,7 +156,7 @@ async fn snapshot_light_mode() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
         .renderer(notedeck::software_renderer())
-        .build_state(render_damus_frame_light, state);
+        .build_ui_state(render_damus_frame_light, state);
 
     harness.run();
     harness.snapshot("damus_light_mode");
@@ -163,20 +169,23 @@ async fn snapshot_light_mode() {
 /// Like render_damus_frame but also calls update() so that the Welcome
 /// route gets pushed during initialization. Disables animations for
 /// deterministic snapshots.
-fn render_damus_frame_with_update(ctx: &egui::Context, state: &mut TestState) {
-    if !state.fonts_installed {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
-        state.fonts_installed = true;
-        return;
-    }
-    let mut app_ctx = state.notedeck.app_context();
-    app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
-    state.damus.update(&mut app_ctx);
-    egui::CentralPanel::default().show(ctx, |ui| {
-        state.damus.render(&mut app_ctx, ui);
+fn render_damus_frame_with_update(ui: &mut egui::Ui, state: &mut TestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.fonts_installed {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            state.fonts_installed = true;
+            return;
+        }
+        let mut app_ctx = state.notedeck.app_context();
+        app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+        state.damus.update(&mut app_ctx);
+        egui::CentralPanel::default().show(ui, |ui| {
+            state.damus.render(&mut app_ctx, ui);
+        });
+        app_ctx.remote.flush();
     });
-    app_ctx.remote.flush();
 }
 
 /// Regression test: clicking "I have a Nostr key" on the welcome screen must
@@ -191,7 +200,7 @@ async fn snapshot_welcome_login_navigation() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
         .renderer(notedeck::software_renderer())
-        .build_state(render_damus_frame_with_update, state);
+        .build_ui_state(render_damus_frame_with_update, state);
 
     // The welcome screen should be showing
     assert!(
@@ -200,7 +209,7 @@ async fn snapshot_welcome_login_navigation() {
     );
 
     // Click "I have a Nostr key"
-    harness.get_by_label("I have a Nostr key").click();
+    harness.get_by_label("I have a Nostr key").click_accesskit();
     harness.run();
 
     // After clicking, we should be on the login screen, not back on Welcome
@@ -229,14 +238,17 @@ struct TickTestState {
 /// Render via Notedeck::tick(), which runs the full app loop
 /// including the Chrome sidebar with update item.
 #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
-fn render_notedeck_tick(ctx: &egui::Context, state: &mut TickTestState) {
-    if !state.fonts_installed {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
-        state.fonts_installed = true;
-        return;
-    }
-    state.notedeck.tick(ctx);
+fn render_notedeck_tick(ui: &mut egui::Ui, state: &mut TickTestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.fonts_installed {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            state.fonts_installed = true;
+            return;
+        }
+        state.notedeck.tick(ui);
+    });
 }
 
 #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
@@ -309,7 +321,7 @@ async fn snapshot_update_bar() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
         .renderer(notedeck::software_renderer())
-        .build_state(render_notedeck_tick, state);
+        .build_ui_state(render_notedeck_tick, state);
 
     harness.snapshot("update_bar");
 }
@@ -375,7 +387,7 @@ async fn snapshot_global_nav_header() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
         .renderer(notedeck::software_renderer())
-        .build_state(render_notedeck_tick_no_anim, state);
+        .build_ui_state(render_notedeck_tick_no_anim, state);
 
     // Settle without run()'s fixed max_steps: chrome self-schedules repaint
     // bursts that trip run()'s step budget (kittest-run-repaint-burst-flake).
@@ -387,20 +399,23 @@ async fn snapshot_global_nav_header() {
 /// Like [`render_notedeck_tick`] but pins animations off so the tab strip and
 /// nav transitions render deterministically for the snapshot.
 #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
-fn render_notedeck_tick_no_anim(ctx: &egui::Context, state: &mut TickTestState) {
-    if !state.fonts_installed {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
-        {
-            let app_ctx = state.notedeck.app_context();
-            // Completing welcome is what gates the desktop tab strip / header.
-            app_ctx.settings.complete_welcome();
-            app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+fn render_notedeck_tick_no_anim(ui: &mut egui::Ui, state: &mut TickTestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.fonts_installed {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            {
+                let app_ctx = state.notedeck.app_context();
+                // Completing welcome is what gates the desktop tab strip / header.
+                app_ctx.settings.complete_welcome();
+                app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+            }
+            state.fonts_installed = true;
+            return;
         }
-        state.fonts_installed = true;
-        return;
-    }
-    state.notedeck.tick(ctx);
+        state.notedeck.tick(ui);
+    });
 }
 
 #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
@@ -434,12 +449,12 @@ async fn mobile_chrome_add_account_stays_open() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(375.0, 667.0))
         .with_max_steps(100)
-        .build_state(render_notedeck_tick_no_anim, state);
+        .build_ui_state(render_notedeck_tick_no_anim, state);
 
     let _ = harness.run_ok();
-    harness.get_by_label("Accounts").simulate_click();
+    harness.get_by_label("Accounts").click();
     let _ = harness.run_ok();
-    harness.get_by_label("Add account").simulate_click();
+    harness.get_by_label("Add account").click();
     let _ = harness.run_ok();
 
     assert!(harness.query_by_label("Login").is_some());

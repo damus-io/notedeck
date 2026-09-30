@@ -62,7 +62,7 @@ pub fn horizontal_bar_chart(
 
     // Layout: label column + bar column
     let label_col_w = ui
-        .fonts(|f| {
+        .fonts_mut(|f| {
             bars.iter()
                 .map(|b| {
                     f.layout_no_wrap(
@@ -103,7 +103,7 @@ pub fn horizontal_bar_chart(
         );
         let row_resp = ui.interact(
             row_rect,
-            ui.id().with(&b.label).with(y as i64),
+            ui.scope_id().with(&b.label).with(y as i64),
             Sense::hover(),
         );
 

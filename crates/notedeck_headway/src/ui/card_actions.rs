@@ -470,7 +470,7 @@ fn move_to_end(view: &BoardView, card: NoteId, to_col: usize) -> BoardAction {
 /// The id of the `X` composer's text field, so tests (and focus requests) can
 /// find it.
 pub(crate) fn reason_field_id() -> egui::Id {
-    egui::Id::new("headway-review-reason")
+    egui::Id::unique("headway-review-reason")
 }
 
 /// The `X` composer across the top of the view it was asked in, while it's

@@ -230,7 +230,7 @@ fn show_no_wallet(
                 ))
                 .text_style(notedeck::NotedeckTextStyle::Body.text_style()),
             )
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .desired_width(f32::INFINITY)
             .min_size(egui::Vec2::new(0.0, 40.0))
             .margin(egui::Margin::same(12))
@@ -389,7 +389,7 @@ fn show_default_zap(
                         }
                     };
 
-                    let id = ui.id().with("default_zap_amount");
+                    let id = ui.scope_id().with("default_zap_amount");
 
                     {
                         let r = ui.add(

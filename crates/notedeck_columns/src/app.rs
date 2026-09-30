@@ -185,7 +185,7 @@ fn handle_egui_events(
 fn handle_input(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    let wants_keyboard_input = ctx.wants_keyboard_input();
+    let wants_keyboard_input = ctx.egui_wants_keyboard_input();
     ctx.input(|i| {
         handle_egui_events(
             i,
@@ -848,7 +848,7 @@ fn hovering_post_button(
     mut rect: egui::Rect,
 ) {
     let should_show_compose = should_show_compose_button(&app.decks_cache, app_ctx.accounts);
-    let btn_id = ui.id().with("hover_post_btn");
+    let btn_id = ui.scope_id().with("hover_post_btn");
     let button_y = ui
         .ctx()
         .animate_bool_responsive(btn_id, should_show_compose);
@@ -857,7 +857,7 @@ fn hovering_post_button(
     rect.min.y = rect.max.y - 100.0;
     rect.max.x += 48.0 * (1.0 - button_y);
 
-    let darkmode = ui.ctx().style().visuals.dark_mode;
+    let darkmode = ui.ctx().global_style().visuals.dark_mode;
 
     // only show the compose button on profile pages and on home
     let compose_resp = ui
@@ -931,7 +931,7 @@ fn render_damus_desktop(
     app_ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
 ) -> AppResponse {
-    let screen_size = ui.ctx().screen_rect().width();
+    let screen_size = ui.ctx().content_rect().width();
     let calc_panel_width = (screen_size
         / get_active_columns(app_ctx.accounts, &app.decks_cache).num_columns() as f32)
         - 30.0;

@@ -492,7 +492,7 @@ mod tests {
             texture: crate::media::load_texture_checked(
                 &ctx,
                 name,
-                egui::ColorImage::new([side, side], egui::Color32::RED),
+                egui::ColorImage::filled([side, side], egui::Color32::RED),
                 Default::default(),
             ),
         };

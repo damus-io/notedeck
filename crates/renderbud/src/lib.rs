@@ -375,8 +375,13 @@ impl Renderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
-            bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[
+                Some(&globals_bgl),
+                Some(&object_bgl),
+                Some(&material_bgl),
+                Some(&ibl_bgl),
+            ],
+            immediate_size: 0,
         });
 
         /*
@@ -397,7 +402,7 @@ impl Renderer {
                 module: &shader,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -415,13 +420,13 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         // Skybox pipeline
@@ -433,8 +438,13 @@ impl Renderer {
         let skybox_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("skybox_pipeline_layout"),
-                bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[
+                    Some(&globals_bgl),
+                    Some(&object_bgl),
+                    Some(&material_bgl),
+                    Some(&ibl_bgl),
+                ],
+                immediate_size: 0,
             });
 
         let skybox_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -463,13 +473,13 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         // Grid pipeline (infinite ground plane)
@@ -480,8 +490,13 @@ impl Renderer {
 
         let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("grid_pipeline_layout"),
-            bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[
+                Some(&globals_bgl),
+                Some(&object_bgl),
+                Some(&material_bgl),
+                Some(&ibl_bgl),
+            ],
+            immediate_size: 0,
         });
 
         let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -510,13 +525,13 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         // Shadow depth pipeline (depth-only, no fragment stage)
@@ -554,8 +569,8 @@ impl Renderer {
         let shadow_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("shadow_pipeline_layout"),
-                bind_group_layouts: &[&shadow_globals_bgl, &object_bgl],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&shadow_globals_bgl), Some(&object_bgl)],
+                immediate_size: 0,
             });
 
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -566,7 +581,7 @@ impl Renderer {
                 module: &shadow_shader,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
             },
             fragment: None, // depth-only pass
             primitive: wgpu::PrimitiveState {
@@ -575,8 +590,8 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState {
                     constant: 2,
@@ -585,7 +600,7 @@ impl Renderer {
                 },
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         // Outline pipeline (inverted hull, front-face culling)
@@ -597,8 +612,8 @@ impl Renderer {
         let outline_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("outline_pipeline_layout"),
-                bind_group_layouts: &[&shadow_globals_bgl, &object_bgl],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&shadow_globals_bgl), Some(&object_bgl)],
+                immediate_size: 0,
             });
 
         let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -609,7 +624,7 @@ impl Renderer {
                 module: &outline_shader,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &outline_shader,
@@ -628,13 +643,13 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         let (depth_tex, depth_view) = create_depth(device, width, height);
@@ -1021,6 +1036,7 @@ impl Renderer {
             }),
             occlusion_query_set: None,
             timestamp_writes: None,
+            multiview_mask: None,
         });
 
         shadow_pass.set_pipeline(&self.shadow_pipeline);
@@ -1052,6 +1068,7 @@ impl Renderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: frame,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: 0.00,
@@ -1072,6 +1089,7 @@ impl Renderer {
             }),
             occlusion_query_set: None,
             timestamp_writes: None,
+            multiview_mask: None,
         });
 
         self.render_pass(&mut rpass);
@@ -1155,10 +1173,12 @@ impl Renderer {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        device.poll(wgpu::Maintain::Wait);
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll failed");
         rx.recv().unwrap().unwrap();
 
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().expect("buffer not mapped");
 
         // Strip row padding
         let mut img_data = Vec::with_capacity((unpadded_row * height) as usize);

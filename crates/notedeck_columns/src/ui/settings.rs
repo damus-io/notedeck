@@ -406,7 +406,7 @@ impl<'a> SettingsView<'a> {
     }
 
     pub fn storage_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
-        let id = ui.id();
+        let id = ui.scope_id();
         let mut action: Option<SettingsAction> = None;
         let title = tr!(
             self.note_context.i18n,
@@ -508,7 +508,7 @@ impl<'a> SettingsView<'a> {
     }
 
     pub fn database_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
-        let id = ui.id();
+        let id = ui.scope_id();
         let mut action: Option<SettingsAction> = None;
 
         // Poll prune status; invalidate cached size when done
@@ -892,7 +892,7 @@ impl<'a> SettingsView<'a> {
                 );
             });
 
-            let is_password_id = ui.id().with("is-password");
+            let is_password_id = ui.scope_id().with("is-password");
             let is_password = ui
                 .ctx()
                 .data_mut(|d| d.get_temp(is_password_id))
@@ -915,7 +915,9 @@ impl<'a> SettingsView<'a> {
                                                 TextEdit::singleline(&mut nsec)
                                                     .password(is_password)
                                                     .interactive(false)
-                                                    .frame(false),
+                                                    .frame(egui::Frame::NONE.inner_margin(
+                                                        egui::Margin::symmetric(4, 2),
+                                                    )),
                                             );
                                         } else {
                                             ui.horizontal_wrapped(|ui| {

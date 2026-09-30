@@ -47,10 +47,7 @@ fn generate_image(i: usize) -> ColorImage {
             ));
         }
     }
-    ColorImage {
-        size: [IMAGE_SIZE, IMAGE_SIZE],
-        pixels,
-    }
+    ColorImage::new([IMAGE_SIZE, IMAGE_SIZE], pixels)
 }
 
 /// The `owned unmapped (graphics)` row and totals from `vmmap -summary`, which
@@ -118,7 +115,8 @@ struct Harness {
 }
 
 impl eframe::App for Harness {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         // This harness is its own host, so it owns the clock the caches age
         // entries against, exactly as `Notedeck::tick_core` does.
         self.pass_nr += 1;
@@ -137,7 +135,7 @@ impl eframe::App for Harness {
         // Scroll: each frame the visible window slides forward by one image, so
         // after IMAGE_COUNT frames every image has been on screen once.
         let offset = self.frame % IMAGE_COUNT;
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for i in 0..WINDOW {
                     let url = url_for((offset + i) % IMAGE_COUNT);

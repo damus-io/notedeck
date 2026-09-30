@@ -434,24 +434,24 @@ fn main_panel(style: &egui::Style) -> egui::CentralPanel {
 fn render_notedeck(
     app: Rc<RefCell<dyn App + 'static>>,
     app_ctx: &mut AppContext,
-    egui: Option<&egui::Context>,
+    egui: Option<&mut egui::Ui>,
 ) {
     app.borrow_mut().update(app_ctx);
-    let Some(ctx) = egui else {
+    let Some(ui) = egui else {
         return;
     };
-    main_panel(&ctx.style()).show(ctx, |ui| {
+    main_panel(ui.style()).show(ui, |ui| {
         app.borrow_mut().render(app_ctx, ui);
     });
 }
 
 impl eframe::App for Notedeck {
     #[profiling::function]
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         profiling::finish_frame!();
         self.frame_history
-            .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
-        self.tick(ctx);
+            .on_new_frame(ui.input(|i| i.time), frame.info().cpu_usage);
+        self.tick(ui);
     }
 
     /// Called by the framework to save state before shutdown.
@@ -468,9 +468,10 @@ fn setup_puffin() {
 
 impl Notedeck {
     /// Core per-frame logic, independent of eframe::Frame.
-    /// Called by `eframe::App::update` in production and directly in tests.
-    pub fn tick(&mut self, ctx: &egui::Context) {
-        self.tick_core(Some(ctx));
+    /// Called by `eframe::App::ui` in production and directly in tests, with
+    /// the pass's root [`egui::Ui`] the main panel is drawn into.
+    pub fn tick(&mut self, ui: &mut egui::Ui) {
+        self.tick_core(Some(ui));
     }
 
     /// The host's current pass number: how many [`tick_core`](Self::tick_core)
@@ -543,12 +544,12 @@ impl Notedeck {
     /// Shared body of [`tick`](Self::tick) and [`tick_headless`](Self::tick_headless).
     ///
     /// Everything up to and including the outbox flush is background work that
-    /// runs in both modes. `egui` — `None` headless, this pass's context in the
+    /// runs in both modes. `egui` — `None` headless, this pass's root Ui in the
     /// GUI — gates only the display-coupled steps: the active app's render pass
     /// (via [`render_notedeck`]) and the trailing display-preference
     /// persistence. When no app is installed the function returns early in both
     /// modes, so neither the render nor the persistence tail runs.
-    fn tick_core(&mut self, egui: Option<&egui::Context>) {
+    fn tick_core(&mut self, mut egui: Option<&mut egui::Ui>) {
         // The pass number is the clock the texture caches age entries against,
         // and publishing it is the only way one enters the cache layer — so the
         // reads the render path makes below, the writes the job seam makes, and
@@ -598,7 +599,7 @@ impl Notedeck {
                 .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
         }
 
-        render_notedeck(app, &mut app_ref.app_ctx, egui);
+        render_notedeck(app, &mut app_ref.app_ctx, egui.as_deref_mut());
 
         {
             let app_ctx = &mut app_ref.app_ctx;
@@ -615,14 +616,15 @@ impl Notedeck {
 
         // Display-preference persistence below reads the context's zoom/theme and
         // the window size, none of which a headless run has.
-        let Some(ctx) = egui else {
+        let Some(ui) = egui else {
             return;
         };
+        let ctx = ui.ctx();
 
         self.settings.update_batch(|settings| {
             settings.zoom_factor = ctx.zoom_factor();
             settings.locale = self.i18n.get_current_locale().to_string();
-            settings.theme = if ctx.style().visuals.dark_mode {
+            settings.theme = if ctx.global_style().visuals.dark_mode {
                 ThemePreference::Dark
             } else {
                 ThemePreference::Light
@@ -1690,7 +1692,7 @@ mod tick_headless_tests {
         let app_cell = RefCell::new(app.clone());
         egui::__run_test_ui(|ui| {
             let mut ctx = app_ctx.borrow_mut();
-            render_notedeck(app_cell.borrow().clone(), &mut ctx, Some(ui.ctx()));
+            render_notedeck(app_cell.borrow().clone(), &mut ctx, Some(ui));
         });
         assert_eq!(updates.get(), 2, "gui render_notedeck must also update");
         assert_eq!(renders.get(), 1, "gui render_notedeck must render");
@@ -1871,7 +1873,8 @@ mod tick_headless_tests {
         });
 
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| notedeck.tick(ctx));
+        ctx.run_ui(egui::RawInput::default(), |ui| notedeck.tick(ui))
+            .drop_without_applying_deltas();
         assert_eq!(
             saw_egui.get(),
             Some(true),

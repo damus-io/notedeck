@@ -419,7 +419,7 @@ fn render_undecorated_note_contents<'a>(
     let mut media_action = None;
     if !supported_medias.is_empty() && !options.contains(NoteOptions::Textmode) {
         ui.add_space(2.0);
-        let carousel_id = egui::Id::new(("carousel", note.key().expect("expected tx note")));
+        let carousel_id = egui::Id::unique(("carousel", note.key().expect("expected tx note")));
 
         media_action = image_carousel(
             ui,

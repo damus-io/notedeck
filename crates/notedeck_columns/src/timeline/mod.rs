@@ -331,7 +331,7 @@ impl Timeline {
     }
 
     pub fn make_view_id(id: &TimelineKind, col: usize, selected_view: usize) -> egui::Id {
-        egui::Id::new((id, selected_view, col))
+        egui::Id::unique((id, selected_view, col))
     }
 
     pub fn view_id(&self, col: usize) -> egui::Id {

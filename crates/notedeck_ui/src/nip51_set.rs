@@ -202,7 +202,7 @@ fn render_pack(
 ) -> RenderPackResponse {
     let max_img_size = vec2(ui.available_width(), 200.0);
 
-    ui.allocate_new_ui(UiBuilder::new(), |ui| 's: {
+    ui.scope_builder(UiBuilder::new(), |ui| 's: {
         let Some(url) = &pack.image else {
             break 's;
         };
@@ -303,7 +303,7 @@ fn render_profile_item(
 
     let checkbox_rect = egui::Rect::from_center_size(checkbox_section_rect.center(), checkbox_size);
 
-    let resp = ui.allocate_new_ui(UiBuilder::new().max_rect(checkbox_rect), |ui| {
+    let resp = ui.scope_builder(UiBuilder::new().max_rect(checkbox_rect), |ui| {
         ui.add(Checkbox::without_text(checked));
     });
     ui.advance_cursor_after_rect(checkbox_rect);
@@ -314,7 +314,7 @@ fn render_profile_item(
         remaining_rect.split_left_right_at_x(remaining_rect.left() + PFP_SIZE);
 
     let pfp_response = ui
-        .allocate_new_ui(UiBuilder::new().max_rect(pfp_rect), |ui| {
+        .scope_builder(UiBuilder::new().max_rect(pfp_rect), |ui| {
             ui.add(
                 &mut ProfilePic::new(images, jobs, get_profile_url(profile))
                     .sense(Sense::click())
@@ -329,7 +329,7 @@ fn render_profile_item(
 
     let (name_rect, description_rect) = body_rect.split_top_bottom_at_fraction(0.5);
 
-    let resp = ui.allocate_new_ui(UiBuilder::new().max_rect(name_rect), |ui| {
+    let resp = ui.scope_builder(UiBuilder::new().max_rect(name_rect), |ui| {
         let name = get_display_name(profile);
 
         let painter = ui.painter_at(name_rect);
@@ -372,7 +372,7 @@ fn render_profile_item(
 
     clicked_response = clicked_response.union(resp.response);
 
-    let resp = ui.allocate_new_ui(UiBuilder::new().max_rect(description_rect), |ui| 's: {
+    let resp = ui.scope_builder(UiBuilder::new().max_rect(description_rect), |ui| 's: {
         let Some(record) = profile else {
             break 's;
         };

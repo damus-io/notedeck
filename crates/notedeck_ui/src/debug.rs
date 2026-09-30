@@ -17,7 +17,9 @@ pub fn debug_slider(
     ui.put(label, egui::Label::new(format!("{val}")));
 
     if val != old_val {
-        ui.data_mut(|d| d.insert_temp(id, val))
+        ui.data_mut(|d| {
+            d.insert_temp(id, val);
+        });
     }
 
     val

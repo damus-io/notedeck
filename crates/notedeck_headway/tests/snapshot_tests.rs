@@ -1,7 +1,9 @@
+use notedeck::test_harness::PressKey;
 use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::{Key, Node, Queryable};
+use egui_kittest::Node;
+use egui_kittest::kittest::{NodeT, Queryable};
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
 use nostrdb_net::{FullKeypair, Keypair, NoteId, Pubkey};
 use notedeck::{App, AppContext, Notedeck};
@@ -39,67 +41,70 @@ struct HeadwayTestState {
     chrome_nav: Option<ChromeNav>,
 }
 
-fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
-    // Fonts/styles must be installed before the first real frame; do it once,
-    // and take the same first frame to inject a signing account.
-    if !state.fonts_installed {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
+fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        // Fonts/styles must be installed before the first real frame; do it once,
+        // and take the same first frame to inject a signing account.
+        if !state.fonts_installed {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
 
-        let secret = state.account.secret_key.clone();
-        let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context();
-        if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            resp.unk_id_action
-                .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
-        }
-        app_ctx.select_account(&pubkey);
+            let secret = state.account.secret_key.clone();
+            let pubkey = state.account.pubkey;
+            let app_ctx = &mut state.notedeck.app_context();
+            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                resp.unk_id_action
+                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            }
+            app_ctx.select_account(&pubkey);
 
-        // The production seed is card-less; seed demo cards here (before the app
-        // auto-seeds) so the snapshots and flows have content to render against.
-        seed_demo(
-            app_ctx.ndb,
-            &pubkey,
-            &state.account.secret_key.secret_bytes(),
-        );
+            // The production seed is card-less; seed demo cards here (before the app
+            // auto-seeds) so the snapshots and flows have content to render against.
+            seed_demo(
+                app_ctx.ndb,
+                &pubkey,
+                &state.account.secret_key.secret_bytes(),
+            );
 
-        state.fonts_installed = true;
-        return;
-    }
-
-    let mut app_ctx = state.notedeck.app_context();
-    // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
-    // every opened app each frame, then `render` for the foreground one.
-    state.headway.update(&mut app_ctx);
-
-    // The inline-reference snapshot views a kind-1 note through NoteView rather
-    // than the Headway app; the board sync above keeps its cache live either way.
-    if let Some(note_id) = state.ref_note {
-        render_ref_note(ctx, &mut app_ctx, note_id);
-        return;
-    }
-
-    egui::CentralPanel::default().show(ctx, |ui| {
-        // Mirror the chrome, which zeroes the horizontal item gap for every app
-        // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`): a Headway that
-        // stops owning its spacing then shows up glued here, as it would live.
-        ui.spacing_mut().item_spacing.x = 0.0;
-        if let Some(nav) = &mut state.chrome_nav {
-            chrome_nav_pass(ui, &mut app_ctx, &mut state.headway, nav);
+            state.fonts_installed = true;
             return;
         }
-        // Mirror the chrome: when a global-history entry is set, draw it through
-        // `render_nav` with its route token (the chrome always reaches an app this
-        // way); otherwise the plain `render` root.
-        match &state.nav_token {
-            Some(token) => {
-                state.headway.render_nav(&mut app_ctx, ui, token);
-            }
-            None => {
-                state.headway.render(&mut app_ctx, ui);
-            }
+
+        let mut app_ctx = state.notedeck.app_context();
+        // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
+        // every opened app each frame, then `render` for the foreground one.
+        state.headway.update(&mut app_ctx);
+
+        // The inline-reference snapshot views a kind-1 note through NoteView rather
+        // than the Headway app; the board sync above keeps its cache live either way.
+        if let Some(note_id) = state.ref_note {
+            render_ref_note(ui, &mut app_ctx, note_id);
+            return;
         }
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            // Mirror the chrome, which zeroes the horizontal item gap for every app
+            // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`): a Headway that
+            // stops owning its spacing then shows up glued here, as it would live.
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if let Some(nav) = &mut state.chrome_nav {
+                chrome_nav_pass(ui, &mut app_ctx, &mut state.headway, nav);
+                return;
+            }
+            // Mirror the chrome: when a global-history entry is set, draw it through
+            // `render_nav` with its route token (the chrome always reaches an app this
+            // way); otherwise the plain `render` root.
+            match &state.nav_token {
+                Some(token) => {
+                    state.headway.render_nav(&mut app_ctx, ui, token);
+                }
+                None => {
+                    state.headway.render(&mut app_ctx, ui);
+                }
+            }
+        });
     });
 }
 
@@ -183,8 +188,8 @@ fn chrome_nav_pass(
 /// note-renderer inline-reference feature lights up: a `headway:board/word-word-word` in
 /// the note's content resolves to the card's live status chip via the registered
 /// reference parser + issue renderer, with no note→headway dependency.
-fn render_ref_note(ctx: &egui::Context, app_ctx: &mut AppContext, note_id: NoteId) {
-    egui::CentralPanel::default().show(ctx, |ui| {
+fn render_ref_note(ui: &mut egui::Ui, app_ctx: &mut AppContext, note_id: NoteId) {
+    egui::CentralPanel::default().show(ui, |ui| {
         ui.add_space(16.0);
         let mut note_context = app_ctx.note_context();
         let txn = Transaction::new(note_context.ndb).expect("txn");
@@ -305,7 +310,7 @@ fn harness_builder(size: egui::Vec2) -> egui_kittest::HarnessBuilder<HeadwayTest
 fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     let mut harness = harness_builder(size)
         .renderer(notedeck::software_renderer())
-        .build_state(render_headway, headway_state());
+        .build_ui_state(render_headway, headway_state());
 
     wait_for_board(&mut harness);
     harness
@@ -317,7 +322,7 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
 /// accesskit tree (via [`wait_for_label`]); it cannot `snapshot()` (that rasterises
 /// through the renderer, which is exactly what needs lavapipe).
 fn behavioral_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
-    let mut harness = harness_builder(size).build_state(render_headway, headway_state());
+    let mut harness = harness_builder(size).build_ui_state(render_headway, headway_state());
 
     wait_for_board(&mut harness);
     harness
@@ -538,9 +543,9 @@ fn snapshot_headway() {
 fn snapshot_headway_filtered() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
 
-    harness.get_by_label("☰ View").simulate_click();
+    harness.get_by_label("☰ View").click();
     harness.run_ok();
-    harness.get_by_label("Hide sub-issues").simulate_click();
+    harness.get_by_label("Hide sub-issues").click();
     harness.run_steps(3);
     harness.snapshot("headway_filtered");
 }
@@ -559,7 +564,7 @@ fn snapshot_headway_detail() {
     // underneath and opens the detail view.
     harness
         .get_by_label("Define nostr event model for boards")
-        .simulate_click();
+        .click();
     harness.run_ok();
 
     for &(name, w, h) in &[
@@ -579,9 +584,7 @@ fn snapshot_headway_detail() {
 fn snapshot_headway_subissue_detail() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
 
-    harness
-        .get_by_label("Sync cards across relays")
-        .simulate_click();
+    harness.get_by_label("Sync cards across relays").click();
     harness.run_steps(3);
     harness.snapshot("headway_subissue_detail");
 }
@@ -600,11 +603,9 @@ fn snapshot_headway_graph_hover() {
     // Open the epic's detail, then its dependency graph from the detail action.
     harness
         .get_by_label("Define nostr event model for boards")
-        .simulate_click();
+        .click();
     harness.run_steps(3);
-    harness
-        .get_by_label("☍ View dependency graph")
-        .simulate_click();
+    harness.get_by_label("☍ View dependency graph").click();
     harness.run_steps(3);
 
     // Hover the sync card's node so its incident edges highlight. The node lives
@@ -614,6 +615,7 @@ fn snapshot_headway_graph_hover() {
     // scene space, so this positions it deterministically).
     let bb = harness
         .get_by_label("Sync cards across relays")
+        .accesskit_node()
         .bounding_box()
         .expect("the graph node has an on-screen box");
     let local = egui::pos2((bb.x0 + bb.x1) as f32 / 2.0, (bb.y0 + bb.y1) as f32 / 2.0);
@@ -653,11 +655,9 @@ fn snapshot_headway_graph() {
     // the same entry point the hover snapshot uses, minus the pointer move.
     harness
         .get_by_label("Define nostr event model for boards")
-        .simulate_click();
+        .click();
     harness.run_steps(3);
-    harness
-        .get_by_label("☍ View dependency graph")
-        .simulate_click();
+    harness.get_by_label("☍ View dependency graph").click();
     harness.run_steps(3);
     harness.snapshot("headway_graph");
 }
@@ -747,7 +747,7 @@ fn snapshot_headway_graph_nodes() {
         .build_ui(move |ui| {
             if !installed {
                 notedeck.setup(ui.ctx());
-                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                ui.ctx().global_style_mut(|s| s.animation_time = 0.0);
                 installed = true;
             }
             let theme = notedeck::ColorTheme::current(ui.ctx());
@@ -780,9 +780,7 @@ fn snapshot_headway_graph_nodes() {
 fn snapshot_headway_blocked_detail() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
 
-    harness
-        .get_by_label("Sync cards across relays")
-        .simulate_click();
+    harness.get_by_label("Sync cards across relays").click();
     harness.run_steps(3);
     harness.snapshot("headway_blocked_detail");
 }
@@ -863,7 +861,7 @@ fn snapshot_headway_detail_inline_ref() {
     wait_for_label(&mut harness, &description);
     harness
         .get_by_label("Define nostr event model for boards")
-        .simulate_click();
+        .click();
     harness.run_steps(3);
     harness.snapshot("headway_detail_inline_ref");
 }
@@ -884,7 +882,7 @@ fn detail_pane_live_updates_open_card() {
     // board as it stands now.
     harness
         .get_by_label("Define nostr event model for boards")
-        .simulate_click();
+        .click();
     harness.run_ok();
 
     // Now edit the open card the way a `headway` CLI run or a relay peer would —
@@ -981,7 +979,7 @@ fn add_subissue_flow() {
 
     harness
         .get_by_label("Define nostr event model for boards")
-        .simulate_click();
+        .click();
     harness.run_ok();
 
     // The fixture rollup: one of the two children sits in Done.
@@ -989,11 +987,13 @@ fn add_subissue_flow() {
 
     // The composer is collapsed behind "+ Add sub-issue" (Linear-style);
     // opening it focuses the field, so typing can start immediately.
-    harness.get_by_label("+ Add sub-issue").simulate_click();
+    harness.get_by_label("+ Add sub-issue").click();
     harness.run_ok();
+    focused_text_input(&harness).focus();
     focused_text_input(&harness).type_text("Write a relay conformance suite");
     harness.run_ok();
-    focused_text_input(&harness).key_press(Key::Enter);
+    focused_text_input(&harness).focus();
+    harness.key_press(egui::Key::Enter);
 
     // The new child lands in the checklist (in Backlog, so not done).
     wait_for_label(&mut harness, "1/3");
@@ -1016,9 +1016,9 @@ fn hide_subissues_view_option() {
     harness.get_by_label("7 cards · 5 columns");
 
     // Open the View menu and toggle "Hide sub-issues".
-    harness.get_by_label("☰ View").simulate_click();
+    harness.get_by_label("☰ View").click();
     harness.run_ok();
-    harness.get_by_label("Hide sub-issues").simulate_click();
+    harness.get_by_label("Hide sub-issues").click();
     harness.run_ok();
 
     // Both sub-issue cards leave the grid, and the muted size summary gives way
@@ -1073,7 +1073,7 @@ fn snapshot_inline_card() {
         .build_ui(move |ui| {
             if !installed {
                 notedeck.setup(ui.ctx());
-                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                ui.ctx().global_style_mut(|s| s.animation_time = 0.0);
                 installed = true;
             }
             let theme = notedeck::ColorTheme::current(ui.ctx());
@@ -1125,7 +1125,7 @@ fn snapshot_inline_chip_row_wrapping() {
         .build_ui(move |ui| {
             if !installed {
                 notedeck.setup(ui.ctx());
-                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                ui.ctx().global_style_mut(|s| s.animation_time = 0.0);
                 installed = true;
             }
             let theme = notedeck::ColorTheme::current(ui.ctx());
@@ -1186,7 +1186,7 @@ fn snapshot_inline_chip() {
         .build_ui(move |ui| {
             if !installed {
                 notedeck.setup(ui.ctx());
-                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                ui.ctx().global_style_mut(|s| s.animation_time = 0.0);
                 installed = true;
             }
             let theme = notedeck::ColorTheme::current(ui.ctx());
@@ -1226,7 +1226,7 @@ fn open_first_column_menu(harness: &mut Harness<'static, HeadwayTestState>) {
         .get_all_by_label("⋯")
         .next()
         .expect("at least one column menu")
-        .simulate_click();
+        .click();
     harness.run_ok();
 }
 
@@ -1246,14 +1246,15 @@ fn add_column_flow() {
     harness.get_by_label("7 cards · 5 columns");
 
     // Open the add-column composer.
-    harness.get_by_label("+ Add column").simulate_click();
+    harness.get_by_label("+ Add column").click();
     harness.run_ok();
 
     // Type into the (auto-focused) composer field, then commit via "Add". The
     // field has no label, so target it by focus.
+    focused_text_input(&harness).focus();
     focused_text_input(&harness).type_text("Ideas");
     harness.run_ok();
-    harness.get_by_label("Add").simulate_click();
+    harness.get_by_label("Add").click();
 
     // A sixth column now exists (asserted via the always-visible board summary,
     // since the new column itself renders off-screen to the right). The ingest
@@ -1275,16 +1276,19 @@ fn rename_column_flow() {
     harness.get_by_label("Backlog"); // precondition
 
     open_first_column_menu(&mut harness);
-    harness.get_by_label("Rename").simulate_click();
+    harness.get_by_label("Rename").click();
     harness.run_ok();
 
     // The header is now an inline field seeded with "Backlog". Select all
     // (Command+A maps to egui's select-all), replace it, and commit with Enter.
-    focused_text_input(&harness).key_combination(&[Key::Command, Key::A]);
+    focused_text_input(&harness).focus();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     harness.run_ok();
+    focused_text_input(&harness).focus();
     focused_text_input(&harness).type_text("Inbox");
     harness.run_ok();
-    focused_text_input(&harness).key_press(Key::Enter);
+    focused_text_input(&harness).focus();
+    harness.key_press(egui::Key::Enter);
 
     wait_for_label(&mut harness, "Inbox");
     wait_for_absent(&mut harness, "Backlog");
@@ -1297,19 +1301,39 @@ fn rename_column_flow() {
 fn reorder_column_flow() {
     let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
 
-    let backlog_x = harness.get_by_label("Backlog").bounding_box().unwrap().x0;
-    let todo_x = harness.get_by_label("Todo").bounding_box().unwrap().x0;
+    let backlog_x = harness
+        .get_by_label("Backlog")
+        .accesskit_node()
+        .bounding_box()
+        .unwrap()
+        .x0;
+    let todo_x = harness
+        .get_by_label("Todo")
+        .accesskit_node()
+        .bounding_box()
+        .unwrap()
+        .x0;
     assert!(backlog_x < todo_x, "precondition: Backlog is left of Todo");
 
     open_first_column_menu(&mut harness);
-    harness.get_by_label("Move right").simulate_click();
+    harness.get_by_label("Move right").click();
 
     // Wait for the reordered board to materialise (Backlog moves right of Todo).
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
-        let backlog_x = harness.get_by_label("Backlog").bounding_box().unwrap().x0;
-        let todo_x = harness.get_by_label("Todo").bounding_box().unwrap().x0;
+        let backlog_x = harness
+            .get_by_label("Backlog")
+            .accesskit_node()
+            .bounding_box()
+            .unwrap()
+            .x0;
+        let todo_x = harness
+            .get_by_label("Todo")
+            .accesskit_node()
+            .bounding_box()
+            .unwrap()
+            .x0;
         if backlog_x > todo_x {
             break;
         }
@@ -1333,7 +1357,7 @@ fn delete_column_flow() {
     harness.get_by_label("7 cards · 5 columns"); // precondition
 
     open_first_column_menu(&mut harness);
-    harness.get_by_label("Delete column").simulate_click();
+    harness.get_by_label("Delete column").click();
 
     wait_for_absent(&mut harness, "Backlog");
     // Cards survive the column removal (they reflow into the first column).
@@ -1356,7 +1380,7 @@ fn add_card_flow() {
         .get_all_by_label("+ Add card")
         .next()
         .expect("an add-card affordance")
-        .simulate_click();
+        .click();
     harness.run_ok();
 
     // Enter (not the "Add" button) must commit the card — the composer is a
@@ -1365,11 +1389,15 @@ fn add_card_flow() {
     harness
         // The card composer is multiline, so it has the MultilineTextInput role.
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("Write integration tests");
     harness.run_ok();
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
-        .key_press(Key::Enter);
+        .focus();
+    harness.key_press(egui::Key::Enter);
 
     wait_for_label(&mut harness, "Write integration tests");
     harness.get_by_label("8 cards · 5 columns");
@@ -1378,11 +1406,15 @@ fn add_card_flow() {
     // go straight in without clicking "+ Add card" again.
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("Ship the feature");
     harness.run_ok();
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
-        .key_press(Key::Enter);
+        .focus();
+    harness.key_press(egui::Key::Enter);
 
     wait_for_label(&mut harness, "Ship the feature");
     harness.get_by_label("9 cards · 5 columns");
@@ -1402,7 +1434,11 @@ fn add_card_reachable_when_column_overflows() {
     let mut harness = headway_harness(egui::Vec2::new(700.0, 300.0));
 
     // Hover the first (Backlog) column and wheel it to the bottom.
-    let col = harness.get_by_label("Backlog").bounding_box().unwrap();
+    let col = harness
+        .get_by_label("Backlog")
+        .accesskit_node()
+        .bounding_box()
+        .unwrap();
     let pos = egui::pos2(col.x0 as f32 + 20.0, col.y0 as f32 + 90.0);
     for _ in 0..40 {
         harness
@@ -1412,6 +1448,8 @@ fn add_card_reachable_when_column_overflows() {
         harness.input_mut().events.push(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
             delta: egui::vec2(0.0, -120.0),
+            // A discrete wheel notch, as egui-winit reports a mouse wheel.
+            phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::default(),
         });
         harness.run_ok();
@@ -1423,11 +1461,12 @@ fn add_card_reachable_when_column_overflows() {
     // (16pt) of bottom padding and each column reserves SPACING_SM (8pt); the
     // button's bottom must clear both. Before the fix the column overflowed its
     // slot and the button sat exactly on the board edge (failing this bound).
-    let limit = harness.ctx.screen_rect().max.y - 16.0 - 8.0;
+    let limit = harness.ctx.content_rect().max.y - 16.0 - 8.0;
     let btn = harness
         .get_all_by_label("+ Add card")
         .next()
         .expect("an add-card affordance")
+        .accesskit_node()
         .bounding_box()
         .unwrap();
     assert!(
@@ -1661,7 +1700,7 @@ fn opening_a_card_pushes_a_global_nav_entry() {
     // drag-source card surface beneath it and opens the detail (the same trick the
     // detail snapshots use). Then wait for the detail's "← Back" back affordance
     // so the board↔card diff has run and enqueued the push.
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     wait_for_label(&mut harness, "← Back");
 
     let state = harness.state_mut();
@@ -1839,11 +1878,11 @@ fn review_diff_opens_the_review_pane_with_the_commit() {
         card
     };
 
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     // The record's short sha is the detail row's own button, once it folds in
     // (and the sidebar's too, as the newest record).
     wait_for_any_label(&mut harness, &sha[..12]);
-    harness.get_by_label("± Review diff").click();
+    harness.get_by_label("± Review diff").click_accesskit();
     wait_for_any_label(&mut harness, FILE);
 
     let requests = harness.state_mut().notedeck.app_context().navigator.take();
@@ -1957,7 +1996,7 @@ fn review_route_opens_the_record_it_names() {
     };
 
     // Both records fold in: each is a row in the card detail's Review section.
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     // (The newest is in the sidebar's Review block too.)
     for sha in &shas {
         wait_for_any_label(&mut harness, &sha[..12]);
@@ -2286,8 +2325,22 @@ fn review_header_shows_the_card_status() {
     wait_for_label(&mut harness, "In Review");
     let card_ref = headway::wordid::card_ref(store::BOARD_ID, ids[0].bytes());
     assert_labels_gapped(&harness, "In Review", &card_ref);
-    let bottom = |label: &str| harness.get_by_label(label).bounding_box().expect("box").y1;
-    let top = |label: &str| harness.get_by_label(label).bounding_box().expect("box").y0;
+    let bottom = |label: &str| {
+        harness
+            .get_by_label(label)
+            .accesskit_node()
+            .bounding_box()
+            .expect("box")
+            .y1
+    };
+    let top = |label: &str| {
+        harness
+            .get_by_label(label)
+            .accesskit_node()
+            .bounding_box()
+            .expect("box")
+            .y0
+    };
     assert!(
         bottom("In Review") <= top(CARDS[0]),
         "the status sits in the bar above the title"
@@ -2313,10 +2366,12 @@ fn review_header_shows_the_card_status() {
 fn assert_labels_gapped(harness: &Harness<'static, HeadwayTestState>, left: &str, right: &str) {
     let left_box = harness
         .get_by_label(left)
+        .accesskit_node()
         .bounding_box()
         .expect("left bounds");
     let right_box = harness
         .get_by_label(right)
+        .accesskit_node()
         .bounding_box()
         .expect("right bounds");
     let gap = right_box.x0 - left_box.x1;
@@ -2705,8 +2760,8 @@ fn text_width(
     text: &str,
     style: egui::TextStyle,
 ) -> f64 {
-    let font = style.resolve(&harness.ctx.style());
-    let width = harness.ctx.fonts(|f| {
+    let font = style.resolve(&harness.ctx.global_style());
+    let width = harness.ctx.fonts_mut(|f| {
         f.layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
             .size()
             .x
@@ -2718,6 +2773,7 @@ fn text_width(
 fn label_box(harness: &Harness<'static, HeadwayTestState>, label: &str) -> egui::accesskit::Rect {
     harness
         .get_by_label(label)
+        .accesskit_node()
         .bounding_box()
         .unwrap_or_else(|| panic!("{label:?} has a box"))
 }
@@ -2785,12 +2841,12 @@ fn review_header_arrows_step_the_queue() {
     seed_review_queue(&mut harness, &fixture);
     open_review_queue(&mut harness);
 
-    harness.get_by_label("Next card").click();
+    harness.get_by_label("Next card").click_accesskit();
     wait_for_label(&mut harness, "2 / 2");
     wait_for_label(&mut harness, QUEUE_CARDS[1]);
     wait_for_any_label(&mut harness, "src/keys.rs");
 
-    harness.get_by_label("Previous card").click();
+    harness.get_by_label("Previous card").click_accesskit();
     wait_for_label(&mut harness, "1 / 2");
     wait_for_label(&mut harness, QUEUE_CARDS[0]);
 }
@@ -2832,14 +2888,14 @@ fn review_header_icons_are_their_keys() {
     harness.run_ok();
     let keyed = raised_opens(&mut harness);
     assert_eq!(keyed, vec![notedeck::OpenUri::new(QUEUE_SESSION)]);
-    harness.get_by_label("Open session").click();
+    harness.get_by_label("Open session").click_accesskit();
     harness.run_ok();
     assert_eq!(raised_opens(&mut harness), keyed, "the icon is s");
 
     harness.press_key(egui::Key::E);
     let keyed = opened_url(&mut harness);
     assert_eq!(keyed.as_deref(), Some(QUEUE_EXPLAINER));
-    harness.get_by_label("Explainer").click();
+    harness.get_by_label("Explainer").click_accesskit();
     assert_eq!(opened_url(&mut harness), keyed, "the icon is e");
 }
 
@@ -2871,6 +2927,7 @@ fn assert_queue_hints_fit(harness: &Harness<'static, HeadwayTestState>, width: f
     for label in QUEUE_HINT_LABELS {
         let bb = harness
             .get_by_label(label)
+            .accesskit_node()
             .bounding_box()
             .expect("a hint label has a box");
         assert!(
@@ -2907,7 +2964,7 @@ fn review_queue_key_hints_wrap_on_a_narrow_pane() {
 fn label_top(harness: &Harness<'static, HeadwayTestState>, label: &str) -> Option<f64> {
     harness
         .get_all_by_label(label)
-        .filter_map(|node| node.bounding_box())
+        .filter_map(|node| node.accesskit_node().bounding_box())
         .map(|bb| bb.y0)
         .reduce(f64::min)
 }
@@ -2978,7 +3035,7 @@ fn keys_hunk<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> Node<'h> {
 /// Pick the keys.rs hunk, write `body` in the composer (`c` gives it the
 /// keyboard) and file it with Ctrl+Enter.
 fn draft_on_keys_hunk(harness: &mut Harness<'static, HeadwayTestState>, body: &str) {
-    keys_hunk(harness).click();
+    keys_hunk(harness).click_accesskit();
     wait_for_label(harness, "src/keys.rs:1-16");
     harness.press_key(egui::Key::C);
     harness.run_ok();
@@ -3025,12 +3082,19 @@ fn review_comments_draft_then_send_to_the_session() {
 
     // New line 17 is only in queue.rs; the shift-click on its context line 5
     // stretches the pick up over the added block.
-    harness.get_by_label("       17").click();
+    harness.get_by_label("       17").click_accesskit();
     wait_for_label(&mut harness, "src/queue.rs:17");
-    harness.input_mut().modifiers = egui::Modifiers::SHIFT;
-    harness.get_by_label("   5    5").click();
+    // Modifiers are input state, set by events since egui 0.36.
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    harness.get_by_label("   5    5").click_accesskit();
     harness.run_ok();
-    harness.input_mut().modifiers = egui::Modifiers::NONE;
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
     wait_for_label(&mut harness, "src/queue.rs:5-17");
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::C);
@@ -3071,7 +3135,7 @@ fn snapshot_headway_review_comments() {
     open_review_queue(&mut harness);
     wait_for_label(&mut harness, POSTED_COMMENT);
     draft_on_keys_hunk(&mut harness, "keys want a test");
-    keys_hunk(&harness).click();
+    keys_hunk(&harness).click_accesskit();
     // The composer, over the pick (its place reads as the draft's does).
     wait_for_label(&mut harness, "Comment on");
     harness.run_steps(3);
@@ -3088,9 +3152,9 @@ fn a_plain_review_pane_reads_with_the_queue_keys() {
     // Short, so the two-file diff overflows and has somewhere to scroll.
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 420.0));
     seed_review_queue(&mut harness, &fixture);
-    harness.get_by_label(QUEUE_CARDS[0]).simulate_click();
+    harness.get_by_label(QUEUE_CARDS[0]).click();
     wait_for_label(&mut harness, "± Review diff");
-    harness.get_by_label("± Review diff").click();
+    harness.get_by_label("± Review diff").click_accesskit();
     wait_for_any_label(&mut harness, "src/queue.rs");
     wait_for_label(&mut harness, "local checkout");
     harness.run_steps(3);
@@ -3139,7 +3203,7 @@ fn the_detail_takes_the_card_actions() {
             },
         },
     );
-    harness.get_by_label(FIRST).simulate_click();
+    harness.get_by_label(FIRST).click();
     wait_for_any_label(&mut harness, &sha[..12]);
     raised_opens(&mut harness);
 
@@ -3156,11 +3220,15 @@ fn the_detail_takes_the_card_actions() {
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
     wait_for_card_column(&mut harness, second, "Done");
 
+    // Focused through AccessKit rather than clicked: the move's fold can still
+    // add rows above the composer after the column changes, and a click (a
+    // press frame then a release frame since egui 0.36) aimed at where the
+    // field was then lands on whatever moved into its place.
     harness
         .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
         .last()
         .expect("the comment composer")
-        .simulate_click();
+        .focus();
     harness.run_ok();
     type_key(&mut harness, egui::Key::S, "s");
     assert_eq!(raised_opens(&mut harness), vec![], "s typed, not a session");
@@ -3192,7 +3260,7 @@ fn the_reason_composer_does_not_follow_you_to_another_card() {
         )
     };
 
-    harness.get_by_label(FIRST).simulate_click();
+    harness.get_by_label(FIRST).click();
     wait_for_label(&mut harness, "← Back");
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
     wait_for_label(&mut harness, "Send back");
@@ -3202,15 +3270,15 @@ fn the_reason_composer_does_not_follow_you_to_another_card() {
         .push(egui::Event::Text("flaky".to_string()));
     harness.run_ok();
 
-    harness.get_by_label("← Back").click();
+    harness.get_by_label("← Back").click_accesskit();
     harness.run_ok();
-    harness.get_by_label(SECOND).simulate_click();
+    harness.get_by_label(SECOND).click();
     wait_for_label(&mut harness, "← Back");
     harness
         .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
         .last()
         .expect("the comment composer")
-        .simulate_click();
+        .click();
     harness.run_ok();
     type_key(&mut harness, egui::Key::H, "hi");
     harness.press_key(egui::Key::Enter);
@@ -3291,7 +3359,7 @@ fn a_grid_x_shows_its_composer_at_once() {
 fn the_detail_sidebar_review_block_opens_the_pane() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
     seed_detail_reviews(&mut harness);
-    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
     let newest = DETAIL_RECORDS[3].0;
     wait_for_label(&mut harness, "All 4 records ›");
     // The newest record, its session and its explainer are in the body's
@@ -3301,7 +3369,7 @@ fn the_detail_sidebar_review_block_opens_the_pane() {
     assert_eq!(harness.get_all_by_label("Explainer ↗").count(), 3);
     assert!(harness.query_by_label("Review in session").is_none());
 
-    harness.get_by_label("All 4 records ›").click();
+    harness.get_by_label("All 4 records ›").click_accesskit();
     wait_for_absent(&mut harness, "± Review diff");
     assert!(harness.query_by_label("All 4 records ›").is_none());
 }
@@ -3350,12 +3418,12 @@ fn snapshot_headway_review_queue_epic() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
     let epic = parent_under_demo_epic(&mut harness, &QUEUE_CARDS);
-    harness.get_by_label(DEMO_EPIC).simulate_click();
+    harness.get_by_label(DEMO_EPIC).click();
     wait_for_label(&mut harness, "Review 2");
     harness.run_steps(3);
     harness.snapshot("headway_detail_epic_review");
 
-    harness.get_by_label("Review 2").click();
+    harness.get_by_label("Review 2").click_accesskit();
     wait_for_label(&mut harness, "1 / 2");
     wait_for_label(
         &mut harness,
@@ -3375,9 +3443,9 @@ fn snapshot_headway_review_pane_key_hints() {
     let fixture = review_fixture();
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
-    harness.get_by_label(QUEUE_CARDS[0]).simulate_click();
+    harness.get_by_label(QUEUE_CARDS[0]).click();
     wait_for_label(&mut harness, "± Review diff");
-    harness.get_by_label("± Review diff").click();
+    harness.get_by_label("± Review diff").click_accesskit();
     wait_for_any_label(&mut harness, "src/queue.rs");
     wait_for_label(&mut harness, "local checkout");
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
@@ -3394,7 +3462,7 @@ fn snapshot_headway_detail_key_hints() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     harness
         .get_by_label("Define nostr event model for boards")
-        .simulate_click();
+        .click();
     wait_for_label(&mut harness, "← Back");
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
     wait_for_label(&mut harness, "session/review");
@@ -3515,7 +3583,7 @@ fn seed_records(
 fn detail_review_section_shows_the_newest_three_until_show_all() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     seed_detail_reviews(&mut harness);
-    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
 
     let short = |i: usize| &DETAIL_RECORDS[i].0[..12];
     // The newest is in the sidebar's Review block too.
@@ -3527,9 +3595,9 @@ fn detail_review_section_shows_the_newest_three_until_show_all() {
         "the oldest record waits behind Show all"
     );
 
-    harness.get_by_label("Show all 4").click();
+    harness.get_by_label("Show all 4").click_accesskit();
     wait_for_label(&mut harness, short(0));
-    harness.get_by_label("Show fewer").click();
+    harness.get_by_label("Show fewer").click_accesskit();
     wait_for_absent(&mut harness, short(0));
 }
 
@@ -3561,7 +3629,7 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
         assert_eq!(record.fields.commit.as_deref(), Some(DETAIL_RECORDS[2].0));
         record.id
     };
-    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
     let second_sha = &DETAIL_RECORDS[2].0[..12];
     wait_for_label(&mut harness, second_sha);
     wait_for_label(&mut harness, "All 4 records ›");
@@ -3571,21 +3639,27 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
     let sha_top = label_top(&harness, second_sha).expect("second row's sha");
     let sidebar_left = harness
         .get_by_label("All 4 records ›")
+        .accesskit_node()
         .bounding_box()
         .expect("sidebar records line")
         .x0;
     harness
         .get_all_by_label("Explainer ↗")
         .filter(|node| {
-            node.bounding_box()
+            node.accesskit_node()
+                .bounding_box()
                 .is_some_and(|bb| bb.x1 < sidebar_left && bb.y0 > sha_top)
         })
         .min_by(|a, b| {
-            let top = |n: &Node<'_>| n.bounding_box().map_or(f64::MAX, |bb| bb.y0);
+            let top = |n: &Node<'_>| {
+                n.accesskit_node()
+                    .bounding_box()
+                    .map_or(f64::MAX, |bb| bb.y0)
+            };
             top(a).total_cmp(&top(b))
         })
         .expect("the second row's explainer")
-        .click();
+        .click_accesskit();
     let mut opened = None;
     for _ in 0..4 {
         harness.step();
@@ -3605,7 +3679,7 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
     assert_eq!(opened.as_deref(), Some(DETAIL_OLDER_EXPLAINER));
 
     harness.state_mut().notedeck.app_context().navigator.take();
-    harness.get_by_label(second_sha).click();
+    harness.get_by_label(second_sha).click_accesskit();
     wait_for_absent(&mut harness, "± Review diff");
     let requests = harness.state_mut().notedeck.app_context().navigator.take();
     let reviews: Vec<&HeadwayRoute> = requests
@@ -3715,7 +3789,7 @@ fn a_detail_session_chip_click_opens_its_records_session() {
     records[2].2 = Some(OLDER_SESSION);
     seed_records(&mut harness, &records);
 
-    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
     wait_for_label(&mut harness, OLDER_CHIP);
     wait_for_label(&mut harness, "All 4 records ›");
     harness
@@ -3742,7 +3816,7 @@ fn a_detail_session_chip_click_opens_its_records_session() {
             })
             .collect::<Vec<_>>()
     };
-    harness.get_by_label(OLDER_CHIP).click();
+    harness.get_by_label(OLDER_CHIP).click_accesskit();
     assert_eq!(
         raised(&mut harness),
         vec![Ok(notedeck::OpenUri::new(OLDER_SESSION))],
@@ -3751,14 +3825,19 @@ fn a_detail_session_chip_click_opens_its_records_session() {
 
     let sidebar_left = harness
         .get_by_label("All 4 records ›")
+        .accesskit_node()
         .bounding_box()
         .expect("sidebar records line")
         .x0;
     harness
         .get_all_by_label(NEWEST_CHIP)
-        .find(|node| node.bounding_box().is_some_and(|bb| bb.x0 >= sidebar_left))
+        .find(|node| {
+            node.accesskit_node()
+                .bounding_box()
+                .is_some_and(|bb| bb.x0 >= sidebar_left)
+        })
         .expect("the sidebar's chip")
-        .click();
+        .click_accesskit();
     assert_eq!(
         raised(&mut harness),
         vec![Ok(notedeck::OpenUri::new(QUEUE_SESSION))],
@@ -3782,10 +3861,10 @@ fn a_detail_review_click_keeps_a_same_frame_description_edit() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
     seed_detail_reviews(&mut harness);
     let card = harness_card_id(&mut harness, DETAIL_REVIEW_CARD);
-    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
     wait_for_label(&mut harness, "All 4 records ›");
 
-    harness.get_by_label("Add description…").click();
+    harness.get_by_label("Add description…").click_accesskit();
     harness.run_ok();
     harness
         .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
@@ -3799,6 +3878,7 @@ fn a_detail_review_click_keeps_a_same_frame_description_edit() {
     // kittest's own click runs a frame per event.
     let link = harness
         .get_by_label("All 4 records ›")
+        .accesskit_node()
         .bounding_box()
         .expect("the sidebar records line");
     let pos = egui::pos2(
@@ -3860,7 +3940,7 @@ fn a_detail_review_click_keeps_a_same_frame_description_edit() {
 fn snapshot_headway_detail_review() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 900.0));
     seed_detail_reviews(&mut harness);
-    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
     // The newest sha shows twice (the section and the sidebar); this is once.
     wait_for_label(&mut harness, "All 4 records ›");
     for &(name, w, h) in &[
@@ -3914,7 +3994,7 @@ fn snapshot_headway_detail_review_sidebar() {
         );
     }
     wait_for_card_comments(&mut harness, card, 1);
-    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
     wait_for_label(&mut harness, "All 4 records ›");
     harness.run_steps(3);
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::G);
@@ -3940,7 +4020,7 @@ fn g_and_gg_scroll_the_detail() {
         },
     );
     wait_for_card_comments(&mut harness, card, 1);
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     wait_for_label(&mut harness, "← Back");
     harness.run_steps(3);
 
@@ -3948,7 +4028,7 @@ fn g_and_gg_scroll_the_detail() {
         harness
             .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
             .last()
-            .and_then(|node| node.bounding_box())
+            .and_then(|node| node.accesskit_node().bounding_box())
             .map(|bb| bb.y0)
             .expect("the comment composer")
     };
@@ -3984,10 +4064,10 @@ fn esc_in_the_title_editor_commits_and_keeps_the_detail() {
     const CARD: &str = "Define nostr event model for boards";
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     let card = harness_card_id(&mut harness, CARD);
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     wait_for_label(&mut harness, "← Back");
 
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     harness.run_ok();
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
@@ -4053,9 +4133,9 @@ fn clicking_a_card_leaves_the_cursor_on_it_after_back() {
         demo_card_id(app_ctx.ndb, &author, CARD)
     };
 
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     wait_for_label(&mut harness, "← Back");
-    harness.get_by_label("← Back").click();
+    harness.get_by_label("← Back").click_accesskit();
     wait_for_absent(&mut harness, "← Back");
 
     assert_eq!(harness.state().headway.cursor(), Some(card));
@@ -4211,6 +4291,10 @@ fn wait_for_card_column(
         let author = state.account.pubkey;
         let now_in = demo_card_column(state.notedeck.app_context().ndb, &author, card);
         if now_in == column {
+            // The db has the move; the app's view folds it in on its next
+            // pass. Take that pass, so a click aimed off the layout that
+            // follows hits the card where it now is, not where it was.
+            harness.run_ok();
             return;
         }
         assert!(
@@ -4284,7 +4368,7 @@ fn typing_in_the_filter_never_navigates() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
-        .simulate_click();
+        .click();
     harness.run_ok();
 
     type_key(&mut harness, egui::Key::J, "j");
@@ -4423,8 +4507,11 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
     // delete's.
     harness.state_mut().notedeck.app_context().navigator.take();
 
-    harness.get_by_label("Delete card").click();
-    harness.run_ok();
+    harness.get_by_label("Delete card").click_accesskit();
+    // The frame that takes the click. Not `run_ok`: once the delete folds in,
+    // the card is gone and the detail asks for Back again every frame until
+    // the chrome lands the first one, which this harness never does.
+    harness.step();
 
     let backs = harness
         .state_mut()
@@ -4487,7 +4574,7 @@ fn slide_harness() -> Harness<'static, HeadwayTestState> {
         slid: 0,
     });
     let mut harness =
-        harness_builder(egui::Vec2::new(1200.0, 800.0)).build_state(render_headway, state);
+        harness_builder(egui::Vec2::new(1200.0, 800.0)).build_ui_state(render_headway, state);
     wait_for_board(&mut harness);
     harness
 }
@@ -4558,7 +4645,7 @@ fn a_finished_epic_queue_says_so_after_the_back_slide() {
     let mut harness = slide_harness();
     seed_in_review(&mut harness, repo.path(), &[SUBISSUE], &["src/sync.rs"]);
 
-    harness.get_by_label(EPIC).simulate_click();
+    harness.get_by_label(EPIC).click();
     settle_slides(&mut harness, 2);
     wait_for_label(&mut harness, "← Back");
 
@@ -4594,7 +4681,7 @@ fn a_gone_epics_finished_queue_says_so_on_the_grid() {
     seed_in_review(&mut harness, repo.path(), &[SUBISSUE], &["src/sync.rs"]);
     let epic = harness_card_id(&mut harness, DEMO_EPIC);
 
-    harness.get_by_label(DEMO_EPIC).simulate_click();
+    harness.get_by_label(DEMO_EPIC).click();
     settle_slides(&mut harness, 2);
     wait_for_label(&mut harness, "← Back");
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
@@ -4653,7 +4740,7 @@ fn a_pane_notice_stays_with_its_pane_through_the_slides() {
     let mut harness = slide_harness();
     seed_in_review(&mut harness, repo.path(), &[CARD], &["src/pane.rs"]);
 
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     settle_slides(&mut harness, 2);
     wait_for_label(&mut harness, "± Review diff");
     press_board_keys(&mut harness, &[egui::Key::R]);
@@ -4717,7 +4804,7 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
         let app_ctx = state.notedeck.app_context();
         demo_card_id(app_ctx.ndb, &author, CARD)
     };
-    harness.get_by_label(CARD).simulate_click();
+    harness.get_by_label(CARD).click();
     chrome_frame(&mut harness, &mut stack);
 
     // The click pushed a Card entry onto the global stack (so the back chevron is now
@@ -4755,7 +4842,7 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
         .get_all_by_label(SUBISSUE)
         .next()
         .expect("subissue row present in the parent detail")
-        .simulate_click();
+        .click();
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(
         stack.len(),
@@ -4825,7 +4912,7 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
         demo_card_id(app_ctx.ndb, &author, EPIC)
     };
     chrome_frame(&mut harness, &mut stack);
-    harness.get_by_label(EPIC).simulate_click();
+    harness.get_by_label(EPIC).click();
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(stack.len(), 2, "opening the epic card grows the stack");
     // Render the card detail and wait for its graph entry point.
@@ -4835,9 +4922,7 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     // Click the graph entry point. It sets local graph mode, which the app diffs
     // into a pushed `Graph` route — the stack grows to three, one deeper than the
     // card, carrying the epic id.
-    harness
-        .get_by_label("☍ View dependency graph")
-        .simulate_click();
+    harness.get_by_label("☍ View dependency graph").click();
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(
         stack.len(),
@@ -5072,11 +5157,11 @@ fn chrome_nav_loop_pane_step_backs_out_to_the_new_cards_detail() {
     let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
     let mut stack = chrome_stack_at_board(&mut harness);
 
-    harness.get_by_label(CARDS[0]).simulate_click();
+    harness.get_by_label(CARDS[0]).click();
     chrome_frame(&mut harness, &mut stack);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "± Review diff");
-    harness.get_by_label("± Review diff").click();
+    harness.get_by_label("± Review diff").click_accesskit();
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(stack.len(), 3, "the review over the detail it came from");
     chrome_frame(&mut harness, &mut stack);
@@ -5129,7 +5214,11 @@ fn chrome_nav_loop_pane_archive_ends_on_the_board() {
     wait_for_label(&mut harness, "local checkout");
 
     harness.press_key(egui::Key::A);
-    harness.run_ok();
+    // The frame that reads the key. Not `run_ok`: once the archive folds in
+    // the pane's card has left the board, and it asks for Back again every
+    // frame until the chrome lands the first one, which this harness only
+    // does in `chrome_frame`.
+    harness.step();
     let requests = harness.state_mut().notedeck.app_context().navigator.take();
     assert!(
         matches!(requests[..], [NavRequest::Back]),
@@ -5158,7 +5247,7 @@ fn chrome_nav_loop_detail_step_backs_to_the_previous_card() {
     let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
     let mut stack = chrome_stack_at_board(&mut harness);
 
-    harness.get_by_label(CARDS[0]).simulate_click();
+    harness.get_by_label(CARDS[0]).click();
     chrome_frame(&mut harness, &mut stack);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "± Review diff");
@@ -5241,7 +5330,7 @@ fn chrome_nav_loop_epic_review_queue() {
     let mut stack: NavStack<ChromeNavEntry> =
         NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
     chrome_frame(&mut harness, &mut stack);
-    harness.get_by_label(DEMO_EPIC).simulate_click();
+    harness.get_by_label(DEMO_EPIC).click();
     chrome_frame(&mut harness, &mut stack);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "Review 2");
@@ -5401,11 +5490,11 @@ fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
     let epic = parent_under_demo_epic(&mut harness, &CARDS);
     let mut stack = chrome_stack_at_board(&mut harness);
 
-    harness.get_by_label(DEMO_EPIC).simulate_click();
+    harness.get_by_label(DEMO_EPIC).click();
     chrome_frame(&mut harness, &mut stack);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "Review 1");
-    harness.get_by_label("Review 1").click();
+    harness.get_by_label("Review 1").click_accesskit();
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(stack.len(), 3, "the button opens the epic's queue");
     // The epic's, not the board's: both would read "1 / 1" here.
@@ -5479,7 +5568,7 @@ fn epic_review_queue_with_nothing_under_the_card_does_not_open() {
         &["Inline card creation"],
         &["src/one.rs"],
     );
-    harness.get_by_label(DEMO_EPIC).simulate_click();
+    harness.get_by_label(DEMO_EPIC).click();
     wait_for_label(&mut harness, "← Back");
     assert!(harness.query_by_label("Review 1").is_none());
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
@@ -5549,7 +5638,7 @@ fn shift_s_in_the_queue_opens_the_session_asking_for_a_review() {
     wait_for_label(&mut harness, "1 / 2");
 
     // The header icon does the same.
-    harness.get_by_label("Review in session").click();
+    harness.get_by_label("Review in session").click_accesskit();
     chrome_frame(&mut harness, &mut stack);
     let clicked = opens(&mut harness);
     assert_eq!(clicked, raised, "the icon is S");
@@ -5629,6 +5718,7 @@ fn seed_roadmap_board(harness: &mut Harness<'static, HeadwayTestState>) -> NoteI
 fn secondary_click(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
     let bounds = harness
         .get_by_label(label)
+        .accesskit_node()
         .bounding_box()
         .expect("the node's bounds");
     let pos = egui::pos2(
@@ -5663,7 +5753,7 @@ fn move_to_board_from_the_card_menu_lands() {
     secondary_click(&mut harness, CARD);
     harness.get_by_label("Move to board").hover();
     harness.run_ok();
-    harness.get_by_label("Roadmap").click();
+    harness.get_by_label("Roadmap").click_accesskit();
     harness.run_ok();
 
     wait_for_label(&mut harness, "6 cards · 5 columns");
@@ -5932,10 +6022,10 @@ fn restart_reopens_saved_board_coordinate() {
     seed_roadmap_board(&mut harness);
 
     // Switch to the roadmap board through the real switcher menu.
-    harness.get_by_label(SWITCHER_LABEL).simulate_click();
+    harness.get_by_label(SWITCHER_LABEL).click();
     // The entry appears once the roadmap board folds into the switcher list.
     wait_for_label(&mut harness, "Roadmap");
-    harness.get_by_label("Roadmap").simulate_click();
+    harness.get_by_label("Roadmap").click();
 
     // The switch persists a kind-30623 preference. Wait until both the roadmap-only
     // card renders (active board is now roadmap) and the preference has committed,
@@ -5990,16 +6080,16 @@ fn unfolded_shared_board_keeps_the_switcher_reachable() {
 
     // Switch onto it through the real switcher. With no definition to title it, the
     // roster lists it (and the switcher button then names it) by slug.
-    harness.get_by_label(SWITCHER_LABEL).simulate_click();
+    harness.get_by_label(SWITCHER_LABEL).click();
     wait_for_label(&mut harness, "ghost");
-    harness.get_by_label("ghost").simulate_click();
+    harness.get_by_label("ghost").click();
     wait_for_label(&mut harness, "Loading shared board…");
 
     // The escape hatch: the switcher is still on screen, so the demo board is one
     // switch away — the whole point of not dead-ending on a full-pane message.
-    harness.get_by_label("ghost  ▾").simulate_click();
+    harness.get_by_label("ghost  ▾").click();
     wait_for_label(&mut harness, "Headway");
-    harness.get_by_label("Headway").simulate_click();
+    harness.get_by_label("Headway").click();
     wait_for_board(&mut harness);
 }
 
@@ -6080,7 +6170,7 @@ fn snapshot_switcher_same_slug_boards() {
     // Open the switcher and wait until every joined board has been picked up and
     // listed: the own+shared `roadmap` once, and both same-slug `notes` boards.
     phase!("switcher clicked");
-    harness.get_by_label(SWITCHER_LABEL).simulate_click();
+    harness.get_by_label(SWITCHER_LABEL).click();
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();

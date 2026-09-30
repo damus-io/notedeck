@@ -54,6 +54,8 @@ pub mod sound;
 pub mod storage;
 mod style;
 mod style_cache;
+#[cfg(feature = "snapshot-testing")]
+pub mod test_harness;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod theme;
@@ -196,7 +198,7 @@ pub fn software_renderer() -> egui_kittest::wgpu::WgpuTestRenderer {
     use egui_wgpu::wgpu;
     use std::sync::Arc;
 
-    let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
 
     setup
         .instance_descriptor

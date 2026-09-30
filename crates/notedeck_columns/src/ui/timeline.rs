@@ -1,4 +1,5 @@
 use egui::containers::scroll_area::ScrollBarVisibility;
+use egui::emath::GuiRounding;
 use egui::{vec2, Color32, Direction, Layout, Margin, Pos2, RichText, ScrollArea, Sense, Stroke};
 use egui_tabs::TabColor;
 use nostrdb::{Note, ProfileRecord, Transaction};
@@ -48,8 +49,8 @@ enum TimelineScrollOwner {
 impl TimelineScrollOwner {
     fn scroll_id(self, timeline_id: &TimelineKind, timeline: &Timeline) -> egui::Id {
         match self {
-            Self::Column(col) => egui::Id::new(("tlscroll", timeline.view_id(col))),
-            Self::DeepLink(id) => egui::Id::new((
+            Self::Column(col) => egui::Id::unique(("tlscroll", timeline.view_id(col))),
+            Self::DeepLink(id) => egui::Id::unique((
                 "tlscroll",
                 "deeplink",
                 id,
@@ -169,7 +170,7 @@ fn timeline_ui(
     // need this for some reason??
     ui.add_space(3.0);
 
-    let show_top_button_id = ui.id().with((scroll_id, "at_top"));
+    let show_top_button_id = ui.scope_id().with((scroll_id, "at_top"));
 
     let show_top_button = ui
         .ctx()
@@ -180,7 +181,7 @@ fn timeline_ui(
         let top_button_pos_x = if is_narrow(ui.ctx()) { 28.0 } else { 48.0 };
         let top_button_pos =
             ui.available_rect_before_wrap().right_top() - vec2(top_button_pos_x, -24.0);
-        egui::Area::new(ui.id().with("foreground_area"))
+        egui::Area::new(ui.scope_id().with("foreground_area"))
             .order(egui::Order::Middle)
             .fixed_pos(top_button_pos)
             .show(ui.ctx(), |ui| Some(ui.add(goto_top_button(top_button_pos))))
@@ -261,7 +262,7 @@ fn goto_top_button(center: Pos2) -> impl egui::Widget {
         let helper = AnimationHelper::new_from_rect(ui, "goto_top", {
             let painter = ui.painter();
             #[allow(deprecated)]
-            let center = painter.round_pos_to_pixel_center(center);
+            let center = center.round_to_pixel_center(painter.pixels_per_point());
             egui::Rect::from_center_size(center, max_size)
         });
 
@@ -283,14 +284,17 @@ fn goto_top_button(center: Pos2) -> impl egui::Widget {
         };
 
         #[allow(deprecated)]
-        let left_pt =
-            painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(-PI)));
+        let left_pt = helper
+            .scale_pos_from_center(create_pt(-PI))
+            .round_to_pixel_center(painter.pixels_per_point());
         #[allow(deprecated)]
-        let center_pt =
-            painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(-PI / 2.0)));
+        let center_pt = helper
+            .scale_pos_from_center(create_pt(-PI / 2.0))
+            .round_to_pixel_center(painter.pixels_per_point());
         #[allow(deprecated)]
-        let right_pt =
-            painter.round_pos_to_pixel_center(helper.scale_pos_from_center(create_pt(0.0)));
+        let right_pt = helper
+            .scale_pos_from_center(create_pt(0.0))
+            .round_to_pixel_center(painter.pixels_per_point());
 
         let line_width = helper.scale_1d_pos(4.0);
         let line_color = ui.visuals().text_color();
@@ -341,7 +345,10 @@ pub fn tabs_ui(
                 let underline =
                     shrink_range_to_width(rect.x_range(), get_label_width(ui, &txt) * 1.15);
                 #[allow(deprecated)]
-                let underline_y = ui.painter().round_to_pixel(rect.bottom()) - 1.5;
+                let underline_y = rect
+                    .bottom()
+                    .round_to_pixels(ui.painter().pixels_per_point())
+                    - 1.5;
                 return (underline, underline_y);
             }
 
@@ -358,7 +365,7 @@ pub fn tabs_ui(
     let (underline, underline_y) = res_inner.inner;
     let underline_width = underline.span();
 
-    let tab_anim_id = ui.id().with("tab_anim");
+    let tab_anim_id = ui.scope_id().with("tab_anim");
     let tab_anim_size = tab_anim_id.with("size");
 
     let stroke = egui::Stroke {
@@ -387,7 +394,8 @@ pub fn tabs_ui(
 
 fn get_label_width(ui: &mut egui::Ui, text: &str) -> f32 {
     let font_id = egui::FontId::default();
-    let galley = ui.fonts(|r| r.layout_no_wrap(text.to_string(), font_id, egui::Color32::WHITE));
+    let galley =
+        ui.fonts_mut(|r| r.layout_no_wrap(text.to_string(), font_id, egui::Color32::WHITE));
     galley.rect.width()
 }
 

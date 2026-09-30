@@ -144,7 +144,7 @@ fn login_textedit<'a>(
                 ))
                 .text_style(NotedeckTextStyle::Body.text_style()),
             )
-            .vertical_align(Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .min_size(Vec2::new(0.0, 40.0))
             .margin(Margin::same(12))
     };
@@ -168,7 +168,9 @@ pub fn eye_button(ui: &mut egui::Ui, is_visible: bool) -> egui::Response {
     } else {
         app_images::eye_slash_light_image()
     };
-    ui.add(Button::image(icon).frame(false))
+    // An icon alone gives the button no name to be read by.
+    ui.add(Button::new(icon).frame(false))
+        .accessible_name("Toggle key visibility")
 }
 
 mod preview {

@@ -45,6 +45,9 @@ re_memory = { workspace = true, optional = true }
 
 [dev-dependencies]
 agentium-core = { workspace = true }
+# egui no longer bundles fonts by default; harnesses that don't install
+# notedeck's own fonts fall back to egui's, as they did before 0.36.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing", "auto-update"] }

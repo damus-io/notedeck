@@ -30,7 +30,7 @@ pub struct MediaViewerState {
 impl Default for MediaViewerState {
     fn default() -> Self {
         Self {
-            anim_id: egui::Id::new("notedeck-fullscreen-media-viewer"),
+            anim_id: egui::Id::unique("notedeck-fullscreen-media-viewer"),
             media_info: Default::default(),
             scene_rect: None,
             flags: MediaViewerFlags::Transition | MediaViewerFlags::Fullscreen,
@@ -99,8 +99,8 @@ impl<'a> MediaViewer<'a> {
         if self.state.flags.contains(MediaViewerFlags::Fullscreen) {
             egui::Window::new("Media Viewer")
                 .title_bar(false)
-                .fixed_size(ui.ctx().screen_rect().size())
-                .fixed_pos(ui.ctx().screen_rect().min)
+                .fixed_size(ui.ctx().content_rect().size())
+                .fixed_pos(ui.ctx().content_rect().min)
                 .frame(egui::Frame::NONE)
                 .show(ui.ctx(), |ui| self.ui_content(images, jobs, ui))
                 .unwrap() // SAFETY: we are always open

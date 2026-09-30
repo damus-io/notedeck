@@ -56,14 +56,13 @@ impl NoteContextButton {
 
     #[profiling::function]
     pub fn show(ui: &mut egui::Ui, note_key: NoteKey, put_at: Rect) -> egui::Response {
-        let id = ui.id().with(("more_options_anim", note_key));
+        let id = ui.scope_id().with(("more_options_anim", note_key));
 
         context_button(ui, id, put_at)
     }
 
     #[profiling::function]
     pub fn menu(
-        ui: &mut egui::Ui,
         i18n: &mut Localization,
         button_response: egui::Response,
         note_id: NoteId,
@@ -72,7 +71,7 @@ impl NoteContextButton {
     ) -> Option<NoteContextSelection> {
         let mut context_selection: Option<NoteContextSelection> = None;
 
-        stationary_arbitrary_menu_button(ui, button_response, |ui| {
+        stationary_arbitrary_menu_button(button_response, |ui| {
             ui.set_max_width(200.0);
 
             if ui
@@ -84,7 +83,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::SummarizeThread(note_id));
-                ui.close_menu();
+                ui.close();
             }
 
             if ui
@@ -96,7 +95,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::CopyNeventLink);
-                ui.close_menu();
+                ui.close();
             }
 
             // Debug: Check what the tr! macro returns
@@ -108,7 +107,7 @@ impl NoteContextButton {
 
             if ui.button(copy_text).clicked() {
                 context_selection = Some(NoteContextSelection::CopyText);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -119,7 +118,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::CopyPubkey);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -130,7 +129,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::CopyNevent);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -141,7 +140,7 @@ impl NoteContextButton {
                 .clicked()
             {
                 context_selection = Some(NoteContextSelection::CopyNoteJSON);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -154,7 +153,7 @@ impl NoteContextButton {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::Everywhere,
                 ));
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .button(tr!(
@@ -167,7 +166,7 @@ impl NoteContextButton {
                 context_selection = Some(NoteContextSelection::Broadcast(
                     BroadcastContext::LocalNetwork,
                 ));
-                ui.close_menu();
+                ui.close();
             }
 
             if can_sign {
@@ -178,7 +177,7 @@ impl NoteContextButton {
                 };
                 if ui.button(label).clicked() {
                     context_selection = Some(NoteContextSelection::MuteUser);
-                    ui.close_menu();
+                    ui.close();
                 }
 
                 if ui
@@ -190,7 +189,7 @@ impl NoteContextButton {
                     .clicked()
                 {
                     context_selection = Some(NoteContextSelection::ReportUser);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });

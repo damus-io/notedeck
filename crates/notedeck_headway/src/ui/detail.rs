@@ -459,7 +459,7 @@ enum DetailOutcome {
 /// The dimmed full-screen backdrop behind the sheet. Returns true if it was
 /// clicked (a tap outside the sheet, which closes the detail).
 pub(super) fn detail_scrim_ui(ui: &mut egui::Ui, screen: egui::Rect) -> bool {
-    egui::Area::new(egui::Id::new("headway-detail-scrim"))
+    egui::Area::new(egui::Id::unique("headway-detail-scrim"))
         .order(egui::Order::Middle)
         .fixed_pos(screen.min)
         .show(ui.ctx(), |ui| {
@@ -1034,7 +1034,7 @@ fn subissue_row_ui(
 fn subissue_drag_handle(ui: &mut egui::Ui, theme: &ColorTheme, id: NoteId) {
     let resp = ui
         .dnd_drag_source(
-            egui::Id::new(("headway-subissue-drag", id)),
+            egui::Id::unique(("headway-subissue-drag", id)),
             DragSubissue(id),
             |ui| {
                 let (rect, _) =
@@ -1365,7 +1365,7 @@ fn detail_status_row_ui(
                         if !selected {
                             *outcome = DetailOutcome::MoveTo(i);
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -1410,7 +1410,7 @@ fn detail_priority_row_ui(
                         if !selected {
                             *outcome = DetailOutcome::SetPriority(level);
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -1725,7 +1725,7 @@ fn comment_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, comment: &CommentView) 
 /// above the composer (the card's status change, a new activity line) would
 /// otherwise rename the field and drop its focus while someone is typing.
 fn comment_field_id() -> egui::Id {
-    egui::Id::new("headway-detail-comment")
+    egui::Id::unique("headway-detail-comment")
 }
 
 /// The "leave a comment" composer at the foot of the thread, Linear-style: a
@@ -1750,7 +1750,7 @@ fn detail_comment_composer_ui(
             let resp = ui.add(
                 egui::TextEdit::multiline(&mut state.comment_draft)
                     .id(comment_field_id())
-                    .frame(false)
+                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)
                     .hint_text("Leave a comment…"),

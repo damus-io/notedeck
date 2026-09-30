@@ -171,7 +171,7 @@ impl WorktreeCreator {
         let mut action: Option<WorktreeCreatorAction> = None;
 
         Nav::new(&[WorktreeRoute::Settings])
-            .id_source(egui::Id::new("worktree_creator_nav"))
+            .id_source(egui::Id::unique("worktree_creator_nav"))
             .show_mut(ui, |ui, render_type, _nav| match render_type {
                 NavUiType::Title => {
                     ui.label(egui::RichText::new("New Worktree").strong().size(16.0));

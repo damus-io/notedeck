@@ -43,7 +43,7 @@ pub fn virtual_keyboard_rect(ui: &egui::Ui, virt: bool) -> Option<egui::Rect> {
     if height <= 0 {
         return None;
     }
-    let screen_rect = ui.ctx().screen_rect();
+    let screen_rect = ui.ctx().content_rect();
     let min = egui::Pos2::new(0.0, screen_rect.max.y - height as f32);
     Some(egui::Rect::from_min_max(min, screen_rect.max))
 }

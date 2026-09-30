@@ -256,7 +256,7 @@ pub(crate) fn run_config_editor_overlay_ui(
                                         },
                                     );
 
-                                    if ui.add(egui::SelectableLabel::new(false, job)).clicked() {
+                                    if ui.add(egui::Button::selectable(false, job)).clicked() {
                                         editor.name.clone_from(&suggestion.name);
                                         editor.command.clone_from(&suggestion.command);
                                     }
@@ -385,9 +385,9 @@ mod tests {
         harness.run();
         harness
             .get_by_label_contains("cargo build --workspace")
-            .click();
+            .click_accesskit();
         harness.run();
-        harness.get_by_label("Save").click();
+        harness.get_by_label("Save").click_accesskit();
         harness.run();
 
         assert_eq!(harness.state().editor.name, "Build");

@@ -46,10 +46,10 @@ pub struct AnimationHelper {
 impl AnimationHelper {
     pub fn new(
         ui: &mut egui::Ui,
-        animation_name: impl std::hash::Hash,
+        animation_name: impl egui::AsIdSalt,
         max_size: egui::Vec2,
     ) -> Self {
-        let id = ui.id().with(animation_name);
+        let id = ui.scope_id().with(animation_name);
         let (rect, response) = ui.allocate_exact_size(max_size, Sense::click());
 
         let animation_progress =
@@ -79,10 +79,10 @@ impl AnimationHelper {
 
     pub fn new_from_rect(
         ui: &mut egui::Ui,
-        animation_name: impl std::hash::Hash,
+        animation_name: impl egui::AsIdSalt,
         animation_rect: egui::Rect,
     ) -> Self {
-        let id = ui.id().with(animation_name);
+        let id = ui.scope_id().with(animation_name);
         let response = ui.allocate_rect(animation_rect, Sense::click());
 
         let animation_progress =
@@ -215,7 +215,7 @@ impl<'a> PulseAlpha<'a> {
 
 /// Stateless rolling number using egui's internal animation memory.
 /// Each digit has a different "speed" / easing.
-pub fn rolling_number(ui: &mut egui::Ui, id_source: impl std::hash::Hash, value: u32) -> Response {
+pub fn rolling_number(ui: &mut egui::Ui, id_source: impl egui::AsIdSalt, value: u32) -> Response {
     let ctx = ui.ctx();
     let id = ui.make_persistent_id(id_source);
 

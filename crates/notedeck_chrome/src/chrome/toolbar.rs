@@ -74,7 +74,7 @@ pub(super) enum ChromeToolbarAction {
 /// Compute the animated toolbar height, auto-hiding on scroll and
 /// when the soft keyboard is open.
 pub(super) fn toolbar_visibility_height(skb_rect: Option<Rect>, ui: &mut Ui) -> f32 {
-    let toolbar_visible_id = egui::Id::new("chrome_toolbar_visible");
+    let toolbar_visible_id = egui::Id::unique("chrome_toolbar_visible");
 
     let scroll_delta = scroll_delta(ui.ctx());
     let velocity_threshold = 1.0;

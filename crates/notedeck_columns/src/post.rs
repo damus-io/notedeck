@@ -1,5 +1,5 @@
 use egui::{
-    text::{CCursor, CCursorRange, LayoutJob},
+    text::{CCursor, CCursorRange, CharIndex, LayoutJob},
     text_edit::TextEditOutput,
     TextBuffer, TextEdit, TextFormat,
 };
@@ -8,7 +8,6 @@ use nostrdb_net::{FullKeypair, Pubkey};
 use std::{
     any::TypeId,
     collections::{BTreeMap, HashMap, HashSet},
-    hash::{DefaultHasher, Hash, Hasher},
     ops::Range,
 };
 use tracing::error;
@@ -341,8 +340,9 @@ impl PostBuffer {
     }
 
     pub fn get_mention_string<'a>(&'a self, mention_key: &MentionIndex<'a>) -> &'a str {
-        self.text_buffer
-            .char_range(mention_key.info.start_index + 1..mention_key.info.end_index)
+        self.text_buffer.char_range(
+            CharIndex(mention_key.info.start_index + 1)..CharIndex(mention_key.info.end_index),
+        )
         // don't include the delim
     }
 
@@ -366,11 +366,12 @@ impl PostBuffer {
             return None;
         };
         let text_start_index = info.start_index + 1; // increment by one to exclude the mention indicator, '@'
-        self.delete_char_range(text_start_index..info.end_index);
-        let text_chars_inserted = self.insert_text(full_name, text_start_index);
+        self.delete_char_range(CharIndex(text_start_index)..CharIndex(info.end_index));
+        let text_chars_inserted = self.insert_text(full_name, CharIndex(text_start_index));
         self.select_full_mention(mention_key, pk);
 
-        let space_chars_inserted = self.insert_text(" ", text_start_index + text_chars_inserted);
+        let space_chars_inserted =
+            self.insert_text(" ", CharIndex(text_start_index + text_chars_inserted));
 
         Some(MentionSelectedResponse {
             next_cursor_index: text_start_index + text_chars_inserted + space_chars_inserted,
@@ -492,11 +493,7 @@ fn char_indices_to_byte(text: &str, char_range: Range<usize>) -> Option<Range<us
 }
 
 pub fn downcast_post_buffer(buffer: &dyn TextBuffer) -> Option<&PostBuffer> {
-    let mut hasher = DefaultHasher::new();
-    TypeId::of::<PostBuffer>().hash(&mut hasher);
-    let post_id = hasher.finish() as usize;
-
-    if buffer.type_id() == post_id {
+    if buffer.type_id() == TypeId::of::<PostBuffer>() {
         unsafe { Some(&*(buffer as *const dyn TextBuffer as *const PostBuffer)) }
     } else {
         None
@@ -542,12 +539,14 @@ impl TextBuffer for PostBuffer {
         self.text_buffer.as_str()
     }
 
-    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+    fn insert_text(&mut self, text: &str, char_index: CharIndex) -> usize {
         if text.is_empty() {
             return 0;
         }
         let text_num_chars = text.chars().count();
         self.text_buffer.insert_text(text, char_index);
+        // Mentions are tracked in plain char offsets.
+        let char_index = char_index.0;
 
         // the text was inserted before or inside these mentions. We need to at least move their ends
         let pending_ends_to_update: Vec<usize> = self
@@ -641,14 +640,15 @@ impl TextBuffer for PostBuffer {
         text_num_chars
     }
 
-    fn delete_char_range(&mut self, char_range: Range<usize>) {
-        let deletion_num_chars = char_range.len();
-        let Range {
-            start: deletion_start,
-            end: deletion_end,
-        } = char_range;
+    fn delete_char_range(&mut self, char_range: Range<CharIndex>) {
+        self.text_buffer.delete_char_range(char_range.clone());
 
-        self.text_buffer.delete_char_range(char_range);
+        // Mentions are tracked in plain char offsets.
+        let Range {
+            start: CharIndex(deletion_start),
+            end: CharIndex(deletion_end),
+        } = char_range;
+        let deletion_num_chars = deletion_end.saturating_sub(deletion_start);
 
         // these mentions will be affected by the deletion
         let ends_to_update: Vec<usize> = self
@@ -733,10 +733,8 @@ impl TextBuffer for PostBuffer {
         }
     }
 
-    fn type_id(&self) -> usize {
-        let mut hasher = DefaultHasher::new();
-        TypeId::of::<PostBuffer>().hash(&mut hasher);
-        hasher.finish() as usize
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<PostBuffer>()
     }
 }
 
@@ -801,19 +799,19 @@ mod tests {
     }
 
     fn apply_mention_example(buf: &mut PostBuffer) -> MentionExample {
-        buf.insert_text("test ", 0);
-        buf.insert_text("@jb55", 5);
+        buf.insert_text("test ", CharIndex(0));
+        buf.insert_text("@jb55", CharIndex(5));
         buf.select_full_mention(0, JB55());
-        buf.insert_text(" test ", 10);
-        buf.insert_text("@vrod", 16);
+        buf.insert_text(" test ", CharIndex(10));
+        buf.insert_text("@vrod", CharIndex(16));
         buf.select_full_mention(1, JB55());
-        buf.insert_text(" test ", 21);
-        buf.insert_text("@elsat", 27);
+        buf.insert_text(" test ", CharIndex(21));
+        buf.insert_text("@elsat", CharIndex(27));
         buf.select_full_mention(2, JB55());
-        buf.insert_text(" test ", 33);
-        buf.insert_text("@kernelkind", 39);
+        buf.insert_text(" test ", CharIndex(33));
+        buf.insert_text("@kernelkind", CharIndex(39));
         buf.select_full_mention(3, KK());
-        buf.insert_text(" test", 50);
+        buf.insert_text(" test", CharIndex(50));
 
         let mention1_bounds = 5..10;
         let mention2_bounds = 16..21;
@@ -905,10 +903,10 @@ mod tests {
     #[test]
     fn test_insert_single_mention() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("test ", 0);
-        buf.insert_text("@", 5);
+        buf.insert_text("test ", CharIndex(0));
+        buf.insert_text("@", CharIndex(5));
         assert!(buf.get_mention(5).is_some());
-        buf.insert_text("jb55", 6);
+        buf.insert_text("jb55", CharIndex(6));
         assert_eq!(buf.as_str(), "test @jb55");
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 5..10);
@@ -924,13 +922,13 @@ mod tests {
     #[test]
     fn test_insert_mention_with_space() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("@", 0);
-        buf.insert_text("jb", 1);
-        buf.insert_text("55", 3);
+        buf.insert_text("@", CharIndex(0));
+        buf.insert_text("jb", CharIndex(1));
+        buf.insert_text("55", CharIndex(3));
         assert!(buf.get_mention(1).is_some());
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..5);
-        buf.insert_text(" test", 5);
+        buf.insert_text(" test", CharIndex(5));
         assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..10);
         assert_eq!(buf.as_str(), "@jb55 test");
 
@@ -945,10 +943,10 @@ mod tests {
     #[test]
     fn test_insert_mention_with_emojis() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("test ", 0);
-        buf.insert_text("@test😀 🏴‍☠️ :D", 5);
+        buf.insert_text("test ", CharIndex(0));
+        buf.insert_text("@test😀 🏴‍☠️ :D", CharIndex(5));
         buf.select_full_mention(0, JB55());
-        buf.insert_text(" test", 19);
+        buf.insert_text(" test", CharIndex(19));
 
         assert_eq!(buf.as_str(), "test @test😀 🏴‍☠️ :D test");
         let mention = buf.mentions.get(&0).unwrap();
@@ -965,13 +963,13 @@ mod tests {
     #[test]
     fn test_insert_partial_to_full() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("@jb", 0);
+        buf.insert_text("@jb", CharIndex(0));
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..3);
         buf.select_mention_and_replace_name(0, "jb55", JB55());
         assert_eq!(buf.as_str(), "@jb55 ");
 
-        buf.insert_text("test", 6);
+        buf.insert_text("test", CharIndex(6));
         assert_eq!(buf.as_str(), "@jb55 test");
 
         assert_eq!(buf.mentions.len(), 1);
@@ -983,10 +981,10 @@ mod tests {
     #[test]
     fn mention_selection_updates_text_input_state() {
         let mut buffer = PostBuffer::default();
-        buffer.insert_text("@jb", 0);
+        buffer.insert_text("@jb", CharIndex(0));
 
-        let full_output = egui::Context::default().run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let mut full_output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let text_edit_output = egui::TextEdit::multiline(&mut buffer)
                     .id_salt("post-buffer-android-ime-regression")
                     .show(ui);
@@ -997,6 +995,9 @@ mod tests {
                 selection.process(ui.ctx(), &text_edit_output, buffer.as_str());
             });
         });
+
+        // Only the platform output is inspected; drop the font atlas upload.
+        full_output.textures_delta.clear();
 
         assert_eq!(buffer.as_str(), "@jb55 ");
 
@@ -1019,8 +1020,8 @@ mod tests {
     #[test]
     fn test_insert_mention_after_text() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("test text here", 0);
-        buf.insert_text("@jb55", 4);
+        buf.insert_text("test text here", CharIndex(0));
+        buf.insert_text("@jb55", CharIndex(4));
 
         assert!(buf.mentions.is_empty());
     }
@@ -1028,8 +1029,8 @@ mod tests {
     #[test]
     fn test_insert_mention_with_space_after_text() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("test  text here", 0);
-        buf.insert_text("@jb55", 5);
+        buf.insert_text("test  text here", CharIndex(0));
+        buf.insert_text("@jb55", CharIndex(5));
 
         assert!(buf.get_mention(5).is_some());
         assert_eq!(buf.mentions.len(), 1);
@@ -1047,8 +1048,8 @@ mod tests {
     #[test]
     fn test_insert_mention_after_newlines() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("\n\n", 0);
-        buf.insert_text("@jb", 2);
+        buf.insert_text("\n\n", CharIndex(0));
+        buf.insert_text("@jb", CharIndex(2));
 
         assert_eq!("\n\n@jb", buf.as_str());
         assert_eq!(buf.mentions.len(), 1);
@@ -1064,10 +1065,10 @@ mod tests {
     fn test_insert_mention_then_text() {
         let mut buf = PostBuffer::default();
 
-        buf.insert_text("@jb55", 0);
+        buf.insert_text("@jb55", CharIndex(0));
         buf.select_full_mention(0, JB55());
 
-        buf.insert_text(" test", 5);
+        buf.insert_text(" test", CharIndex(5));
         assert_eq!(buf.as_str(), "@jb55 test");
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mentions.get(&0).unwrap().bounds(), 0..5);
@@ -1078,12 +1079,12 @@ mod tests {
     fn test_insert_two_mentions() {
         let mut buf = PostBuffer::default();
 
-        buf.insert_text("@jb55", 0);
+        buf.insert_text("@jb55", CharIndex(0));
         buf.select_full_mention(0, JB55());
-        buf.insert_text(" test ", 5);
-        buf.insert_text("@kernelkind", 11);
+        buf.insert_text(" test ", CharIndex(5));
+        buf.insert_text("@kernelkind", CharIndex(11));
         buf.select_full_mention(1, KK());
-        buf.insert_text(" test", 22);
+        buf.insert_text(" test", CharIndex(22));
 
         assert_eq!(buf.as_str(), "@jb55 test @kernelkind test");
         assert_eq!(buf.mentions.len(), 2);
@@ -1095,16 +1096,16 @@ mod tests {
     fn test_insert_into_mention() {
         let mut buf = PostBuffer::default();
 
-        buf.insert_text("@jb55", 0);
+        buf.insert_text("@jb55", CharIndex(0));
         buf.select_full_mention(0, JB55());
-        buf.insert_text(" test", 5);
+        buf.insert_text(" test", CharIndex(5));
 
         assert_eq!(buf.mentions.len(), 1);
         let mention = buf.mentions.get(&0).unwrap();
         assert_eq!(mention.bounds(), 0..5);
         assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
 
-        buf.insert_text("oops", 2);
+        buf.insert_text("oops", CharIndex(2));
         assert_eq!(buf.as_str(), "@joopsb55 test");
         assert_eq!(buf.mentions.len(), 1);
         let mention = buf.mentions.get(&0).unwrap();
@@ -1116,17 +1117,17 @@ mod tests {
     fn test_insert_mention_inside_mention() {
         let mut buf = PostBuffer::default();
 
-        buf.insert_text("@jb55", 0);
+        buf.insert_text("@jb55", CharIndex(0));
         buf.select_full_mention(0, JB55());
-        buf.insert_text(" test", 5);
+        buf.insert_text(" test", CharIndex(5));
 
         assert_eq!(buf.mentions.len(), 1);
         let mention = buf.mentions.get(&0).unwrap();
         assert_eq!(mention.bounds(), 0..5);
         assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
 
-        buf.insert_text(" ", 3);
-        buf.insert_text("@oops", 4);
+        buf.insert_text(" ", CharIndex(3));
+        buf.insert_text("@oops", CharIndex(4));
         assert_eq!(buf.as_str(), "@jb @oops55 test");
         assert_eq!(buf.mentions.len(), 1);
         assert_eq!(buf.mention_ends.len(), 1);
@@ -1143,7 +1144,7 @@ mod tests {
 
         let range = 1..5;
         let len = range.len();
-        buf.delete_char_range(range);
+        buf.delete_char_range(CharIndex(range.start)..CharIndex(range.end));
 
         assert_eq!(
             MentionExample {
@@ -1164,7 +1165,7 @@ mod tests {
 
         let range = 11..16;
         let len = range.len();
-        buf.delete_char_range(range);
+        buf.delete_char_range(CharIndex(range.start)..CharIndex(range.end));
 
         assert_eq!(
             MentionExample {
@@ -1185,7 +1186,7 @@ mod tests {
 
         let range = 17..20;
         let len = range.len();
-        buf.delete_char_range(range);
+        buf.delete_char_range(CharIndex(range.start)..CharIndex(range.end));
 
         assert_eq!(
             MentionExample {
@@ -1210,7 +1211,7 @@ mod tests {
 
         let range = 17..27;
         let len = range.len();
-        buf.delete_char_range(range);
+        buf.delete_char_range(CharIndex(range.start)..CharIndex(range.end));
 
         assert_eq!(
             MentionExample {
@@ -1233,7 +1234,7 @@ mod tests {
         let mut buf = PostBuffer::default();
         let before = apply_mention_example(&mut buf);
 
-        buf.delete_char_range(17..28);
+        buf.delete_char_range(CharIndex(17)..CharIndex(28));
 
         assert_eq!(
             MentionExample {
@@ -1262,7 +1263,7 @@ mod tests {
 
         let range = 10..26;
         let len = range.len();
-        buf.delete_char_range(range);
+        buf.delete_char_range(CharIndex(range.start)..CharIndex(range.end));
 
         assert_eq!(
             MentionExample {
@@ -1281,7 +1282,7 @@ mod tests {
         let mut buf = PostBuffer::default();
         let before = apply_mention_example(&mut buf);
 
-        buf.delete_char_range(11..28);
+        buf.delete_char_range(CharIndex(11)..CharIndex(28));
 
         assert_eq!(
             MentionExample {
@@ -1303,20 +1304,20 @@ mod tests {
     fn test_two_then_one_between() {
         let mut buf = PostBuffer::default();
 
-        buf.insert_text("@jb", 0);
+        buf.insert_text("@jb", CharIndex(0));
         buf.select_mention_and_replace_name(0, "jb55", JB55());
-        buf.insert_text("test ", 6);
+        buf.insert_text("test ", CharIndex(6));
         assert_eq!(buf.as_str(), "@jb55 test ");
-        buf.insert_text("@kernel", 11);
+        buf.insert_text("@kernel", CharIndex(11));
         buf.select_mention_and_replace_name(1, "KernelKind", KK());
         assert_eq!(buf.as_str(), "@jb55 test @KernelKind ");
 
-        buf.insert_text("test", 23);
+        buf.insert_text("test", CharIndex(23));
         assert_eq!(buf.as_str(), "@jb55 test @KernelKind test");
 
         assert_eq!(buf.mentions.len(), 2);
 
-        buf.insert_text("@els", 6);
+        buf.insert_text("@els", CharIndex(6));
         assert_eq!(buf.as_str(), "@jb55 @elstest @KernelKind test");
 
         assert_eq!(buf.mentions.len(), 3);
@@ -1338,7 +1339,7 @@ mod tests {
     #[test]
     fn note_single_mention() {
         let mut buf = PostBuffer::default();
-        buf.insert_text("@jb55", 0);
+        buf.insert_text("@jb55", CharIndex(0));
         buf.select_full_mention(0, JB55());
 
         let out = buf.output();
@@ -1363,12 +1364,12 @@ mod tests {
     fn note_two_mentions() {
         let mut buf = PostBuffer::default();
 
-        buf.insert_text("@jb55", 0);
+        buf.insert_text("@jb55", CharIndex(0));
         buf.select_full_mention(0, JB55());
-        buf.insert_text(" test ", 5);
-        buf.insert_text("@KernelKind", 11);
+        buf.insert_text(" test ", CharIndex(5));
+        buf.insert_text("@KernelKind", CharIndex(11));
         buf.select_full_mention(1, KK());
-        buf.insert_text(" test", 22);
+        buf.insert_text(" test", CharIndex(22));
         assert_eq!(buf.as_str(), "@jb55 test @KernelKind test");
 
         let out = buf.output();
@@ -1397,8 +1398,8 @@ mod tests {
     fn note_one_pending() {
         let mut buf = PostBuffer::default();
 
-        buf.insert_text("test ", 0);
-        buf.insert_text("@jb55 test", 5);
+        buf.insert_text("test ", CharIndex(0));
+        buf.insert_text("@jb55 test", CharIndex(5));
 
         let out = buf.output();
         let kp = FullKeypair::generate();

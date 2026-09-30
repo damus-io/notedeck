@@ -245,7 +245,7 @@ pub fn event_tag<'a>(ev: &nostrdb::Note<'a>, name: &str) -> Option<&'a str> {
 /// Temporary way of checking whether a user has sent a reaction.
 /// Should be replaced with nostrdb metadata
 pub fn reaction_sent_id(sender_pk: &nostrdb_net::Pubkey, note_reacted_to: &[u8; 32]) -> egui::Id {
-    egui::Id::new(("sent-reaction-id", note_reacted_to, sender_pk))
+    egui::Id::unique(("sent-reaction-id", note_reacted_to, sender_pk))
 }
 
 /// Count the number of hashtags in a note by examining its tags

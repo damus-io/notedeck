@@ -900,7 +900,9 @@ mod tests {
                 let mut app_ctx = h.notedeck.app_context();
                 app_ctx.accounts.update(app_ctx.ndb, &mut app_ctx.remote);
             }
-            h.notedeck.tick(&h.ui_ctx);
+            h.ui_ctx
+                .run_ui(Default::default(), |ui| h.notedeck.tick(ui))
+                .drop_without_applying_deltas();
             let mut app_ctx = h.notedeck.app_context();
             let scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
             let readiness = scoped_subs.sub_readiness(identity);

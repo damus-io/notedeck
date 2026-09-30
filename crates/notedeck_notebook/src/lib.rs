@@ -322,8 +322,8 @@ const MOVE_ANIM_SECS: f32 = 0.28;
 /// the committed position each frame is all the slide needs.
 fn move_anim_ids(id: &NodeId) -> (egui::Id, egui::Id) {
     (
-        egui::Id::new(("notebook-move-x", id)),
-        egui::Id::new(("notebook-move-y", id)),
+        egui::Id::unique(("notebook-move-x", id)),
+        egui::Id::unique(("notebook-move-y", id)),
     )
 }
 
@@ -340,8 +340,8 @@ const REVEAL_TOP_MARGIN: f32 = 24.0;
 /// pan runs at a time.
 fn pan_anim_ids() -> (egui::Id, egui::Id) {
     (
-        egui::Id::new("notebook-pan-x"),
-        egui::Id::new("notebook-pan-y"),
+        egui::Id::unique("notebook-pan-x"),
+        egui::Id::unique("notebook-pan-y"),
     )
 }
 
@@ -1279,14 +1279,14 @@ impl notedeck::App for Notebook {
             .to_owned();
         let mut open_editor = false;
         let mut new_canvas = false;
-        egui::TopBottomPanel::top("notebook-toolbar")
+        egui::Panel::top("notebook-toolbar")
             .frame(egui::Frame::new().fill(theme.surface_primary).inner_margin(
                 egui::Margin::symmetric(
                     notedeck::tokens::SPACING_MD as i8,
                     notedeck::tokens::SPACING_SM as i8,
                 ),
             ))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(canvas_title)
@@ -1327,9 +1327,9 @@ impl notedeck::App for Notebook {
             || self.vault_rows.iter().any(|r| r.kind == VaultDocKind::Note);
         let mut vault_action = None;
         if show_vault {
-            egui::SidePanel::left("notebook-vault")
+            egui::Panel::left("notebook-vault")
                 .resizable(true)
-                .default_width(230.0)
+                .default_size(230.0)
                 .frame(
                     egui::Frame::new()
                         .fill(theme.surface_secondary)
@@ -1338,7 +1338,7 @@ impl notedeck::App for Notebook {
                             0,
                         )),
                 )
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     vault_action = vault_ui(&self.vault_rows, &mut self.vault, ui);
                 });
         }

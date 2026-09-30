@@ -453,7 +453,7 @@ impl<'a> DaveUi<'a> {
                         egui::vec2(max_width, 32.0),
                     );
                     let truncation = ui
-                        .allocate_new_ui(egui::UiBuilder::new().max_rect(details_rect), |ui| {
+                        .scope_builder(egui::UiBuilder::new().max_rect(details_rect), |ui| {
                             ui.set_clip_rect(details_rect);
                             session_header_ui(ui, details, self.backend_type)
                         })
@@ -462,7 +462,7 @@ impl<'a> DaveUi<'a> {
                     if let Some(cwd) = &truncation.full {
                         let hover_resp = ui.interact(
                             details_rect,
-                            egui::Id::new("session_header_hover"),
+                            egui::Id::unique("session_header_hover"),
                             egui::Sense::hover(),
                         );
                         hover_resp.on_hover_text_at_pointer(cwd);
@@ -1372,7 +1372,7 @@ impl<'a> DaveUi<'a> {
             // auto / accept-edits mode the CLI approves the edit itself, so no
             // permission row ever showed this diff: this row is the only place
             // the user sees what changed. A user toggle still collapses it.
-            let expand_id = ui.id().with("exec_diff").with(&result.summary);
+            let expand_id = ui.scope_id().with("exec_diff").with(&result.summary);
             let block = nav.register(expand_id, true, ui);
 
             let header_resp = Self::exec_tool_header_ui(
@@ -1403,7 +1403,7 @@ impl<'a> DaveUi<'a> {
             // the command and its output are visible without a click, mirroring
             // auto-accepted permission rows: the user never approved it up front,
             // so what ran should stay on-screen. A user toggle still collapses it.
-            let expand_id = ui.id().with("exec_output").with(&result.summary);
+            let expand_id = ui.scope_id().with("exec_output").with(&result.summary);
             let block = nav.register(expand_id, true, ui);
 
             let header_resp = Self::exec_tool_header_ui(
@@ -1468,7 +1468,7 @@ impl<'a> DaveUi<'a> {
         let tool_count = info.tool_results.len();
         let has_tools = tool_count > 0;
         // Compute expand ID from outer ui, before horizontal changes the id scope
-        let expand_id = ui.id().with("subagent_expand").with(&info.task_id);
+        let expand_id = ui.scope_id().with("subagent_expand").with(&info.task_id);
         // Only a subagent with tools is collapsible, so only that one registers.
         let block = has_tools.then(|| nav.register(expand_id, false, ui));
         let mut expanded = block.is_some_and(|block| block.expanded);
@@ -1689,7 +1689,7 @@ impl<'a> DaveUi<'a> {
         let layout = InputboxLayout::new(self.input, i18n)
             .show_stop(show_stop)
             .show_esc_hint(show_esc_hint)
-            .id(egui::Id::new(("dave_input", self.session_id)));
+            .id(egui::Id::unique(("dave_input", self.session_id)));
 
         let result = layout.show(ui);
 
@@ -1809,7 +1809,7 @@ impl<'a> DaveUi<'a> {
             notedeck_ui::context_menu::context_menu(&content, |ui| {
                 if ui.button("Copy").clicked() {
                     ui.ctx().copy_text(msg.text.clone());
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         });
@@ -1838,7 +1838,7 @@ impl<'a> DaveUi<'a> {
         notedeck_ui::context_menu::context_menu(&r.response, |ui| {
             if ui.button("Copy").clicked() {
                 ui.ctx().copy_text(text.clone());
-                ui.close_menu();
+                ui.close();
             }
         });
     }
@@ -1974,7 +1974,9 @@ impl<'a> InputboxLayout<'a> {
                                     Key::Enter,
                                 ))
                                 .hint_text(egui::RichText::new(&self.hint_text).weak())
-                                .frame(false);
+                                .frame(
+                                    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)),
+                                );
 
                             if let Some(id) = self.id {
                                 edit = edit.id_source(id);
@@ -2012,18 +2014,18 @@ fn dave_input_context(
             if !pasted_image {
                 append_clipboard_text(clipboard, input);
             }
-            ui.close_menu();
+            ui.close();
         }
 
         if ui.button("Copy").clicked() {
             clipboard.set_text(input.to_owned());
-            ui.close_menu();
+            ui.close();
         }
 
         if ui.button("Cut").clicked() {
             clipboard.set_text(input.to_owned());
             input.clear();
-            ui.close_menu();
+            ui.close();
         }
     });
 
@@ -2207,7 +2209,7 @@ fn responded_permission_ui(
                 // rows (runtime allowlist / auto mode) start expanded so the
                 // user can review what they never approved up front; manually
                 // approved rows start collapsed. A user toggle overrides either.
-                let expand_id = ui.id().with(("responded_perm", request.id));
+                let expand_id = ui.scope_id().with(("responded_perm", request.id));
                 let block = expandable.then(|| nav.register(expand_id, request.auto_accepted, ui));
                 let mut expanded = block.is_some_and(|block| block.expanded);
 
@@ -2301,7 +2303,7 @@ fn responded_permission_header_ui(
     // Re-sensing the horizontal layout's response (`.interact(Sense::click())`)
     // doesn't reliably register hover/click, so allocate a dedicated clickable
     // region over the row's rect with a stable id keyed by the request.
-    let click_id = ui.id().with(("responded_perm_header", request.id));
+    let click_id = ui.scope_id().with(("responded_perm_header", request.id));
     ui.interact(header.response.rect, click_id, egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -2607,15 +2609,15 @@ fn toggle_badges_ui(
         ui.label(egui::RichText::new("Permission mode").small().weak());
         if ui.button("Manual").clicked() {
             action = Some(DaveAction::SetPermissionMode(PermissionMode::Default));
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Plan").clicked() {
             action = Some(DaveAction::SetPermissionMode(PermissionMode::Plan));
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Accept Edits").clicked() {
             action = Some(DaveAction::SetPermissionMode(PermissionMode::AcceptEdits));
-            ui.close_menu();
+            ui.close();
         }
         if ui
             .button("Auto")
@@ -2626,7 +2628,7 @@ fn toggle_badges_ui(
             .clicked()
         {
             action = Some(DaveAction::SetPermissionMode(PermissionMode::Auto));
-            ui.close_menu();
+            ui.close();
         }
     });
     if mode_resp.clicked() {
@@ -2720,7 +2722,11 @@ mod tests {
         SubagentInfo, SubagentStatus,
     };
     use claude_agent_sdk_rs::PermissionMode;
-    use egui_kittest::{kittest::Queryable, Harness};
+    use egui_kittest::{
+        kittest::{NodeT, Queryable},
+        Harness,
+    };
+    use notedeck::test_harness::PressKey;
     use serde_json::json;
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -2733,7 +2739,7 @@ mod tests {
     }
 
     fn badge_harness(mode: PermissionMode) -> Harness<'static, BadgeHarnessState> {
-        Harness::new_ui_state(
+        notedeck::test_harness::lenient_builder().build_ui_state(
             |ui, state: &mut BadgeHarnessState| {
                 if let Some(action) = toggle_badges_ui(ui, state.mode, false, None) {
                     state.action = Some(action);
@@ -2747,6 +2753,7 @@ mod tests {
     fn right_click(harness: &mut Harness<'static, BadgeHarnessState>, label: &str) {
         let bounds = harness
             .get_by_label(label)
+            .accesskit_node()
             .raw_bounds()
             .expect("badge bounds");
         let center = egui::pos2(
@@ -2765,7 +2772,9 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
             });
         }
-        harness.step();
+        // The menu's first frame is an invisible sizing pass; settle so its
+        // items are laid out and reachable.
+        harness.run();
     }
 
     #[test]
@@ -2774,7 +2783,7 @@ mod tests {
         // NOT jump straight to a specific mode.
         let mut harness = badge_harness(PermissionMode::Default);
         harness.run();
-        harness.get_by_label("MANUAL").click();
+        harness.get_by_label("MANUAL").click_accesskit();
         harness.run();
         assert!(
             matches!(
@@ -2792,7 +2801,7 @@ mod tests {
 
         // Open the mode badge's context menu and pick "Auto".
         right_click(&mut harness, "MANUAL");
-        harness.get_by_label("Auto").click();
+        harness.get_by_label("Auto").click_accesskit();
         harness.run();
 
         assert!(
@@ -2822,7 +2831,7 @@ mod tests {
             ("Accept Edits", PermissionMode::AcceptEdits),
             ("Auto", PermissionMode::Auto),
         ];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(360.0, 250.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -2877,7 +2886,7 @@ mod tests {
             }),
         );
 
-        let mut harness = Harness::new_ui_state(
+        let mut harness = notedeck::test_harness::lenient_builder().build_ui_state(
             |ui, state: &mut PermissionUiHarnessState| {
                 let mut dave_ui = DaveUi::new(
                     false,
@@ -2898,7 +2907,7 @@ mod tests {
         harness.run();
         harness.get_by_label("SaveIssue");
         harness.get_by_label("Allow this action?");
-        harness.get_by_label("Allow").click();
+        harness.get_by_label("Allow").click_accesskit();
         harness.run();
 
         match harness.state().action.as_ref() {
@@ -2927,7 +2936,7 @@ mod tests {
             }),
         );
 
-        let mut harness = Harness::new_ui_state(
+        let mut harness = notedeck::test_harness::lenient_builder().build_ui_state(
             |ui, state: &mut PermissionUiHarnessState| {
                 let mut dave_ui = DaveUi::new(
                     false,
@@ -2946,7 +2955,7 @@ mod tests {
         );
 
         harness.run();
-        harness.get_by_label("Exit").click();
+        harness.get_by_label("Exit").click_accesskit();
         harness.run();
 
         match harness.state().action.as_ref() {
@@ -2976,7 +2985,7 @@ mod tests {
             }),
         );
 
-        let mut harness = Harness::new_ui_state(
+        let mut harness = notedeck::test_harness::lenient_builder().build_ui_state(
             |ui, state: &mut PermissionUiHarnessState| {
                 let mut dave_ui = DaveUi::new(
                     false,
@@ -2998,11 +3007,12 @@ mod tests {
 
         harness.run();
         harness.get_by_label("Pick a theme");
-        harness.get_by_label("Light");
+        // The option's text, and its radio button named after it.
+        harness.get_by_role_and_label(egui::accesskit::Role::RadioButton, "Light");
         harness.get_by_label("Bright background");
         harness.press_key(egui::Key::Num1);
         harness.step();
-        harness.get_by_label("Submit").click();
+        harness.get_by_label("Submit").click_accesskit();
         harness.run();
 
         match harness.state().action.as_ref() {
@@ -3024,7 +3034,7 @@ mod tests {
     fn responded_permission_harness(
         request: PermissionRequest,
     ) -> Harness<'static, PermissionUiHarnessState> {
-        Harness::new_ui_state(
+        notedeck::test_harness::lenient_builder().build_ui_state(
             |ui, state: &mut PermissionUiHarnessState| {
                 let mut dave_ui = DaveUi::new(
                     false,
@@ -3050,6 +3060,7 @@ mod tests {
     fn click_label(harness: &mut Harness<'static, PermissionUiHarnessState>, label: &str) {
         let bounds = harness
             .get_by_label(label)
+            .accesskit_node()
             .raw_bounds()
             .expect("label bounds");
         let center = egui::pos2(
@@ -3176,7 +3187,7 @@ mod tests {
             ),
         ];
 
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 180.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3231,7 +3242,7 @@ mod tests {
             ),
         ];
 
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 320.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3260,6 +3271,7 @@ mod tests {
         for status in ["Allowed", "Denied"] {
             let bounds = harness
                 .get_by_label(status)
+                .accesskit_node()
                 .raw_bounds()
                 .expect("status label bounds");
             let center = egui::pos2(
@@ -3346,7 +3358,7 @@ mod tests {
             file_update: Some(file_update),
             tool_use_id: None,
         }];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 800.0))
             .build_ui(move |ui| {
                 let mut nav = BlockNav::default();
@@ -3376,7 +3388,7 @@ mod tests {
             file_update: None,
             tool_use_id: None,
         }];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
             .build_ui(move |ui| {
                 let mut nav = BlockNav::default();
@@ -3395,6 +3407,7 @@ mod tests {
         // target rather than a tiny region around the chevron.
         let bounds = harness
             .get_by_label("Bash")
+            .accesskit_node()
             .raw_bounds()
             .expect("tool-name label bounds");
         let y = ((bounds.y0 + bounds.y1) / 2.0) as f32;
@@ -3445,7 +3458,7 @@ mod tests {
                 summary: "'fn handle_stream_message'".to_string(),
             },
         ];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3464,7 +3477,7 @@ mod tests {
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_executed_tool_results() {
         let results = executed_tool_fixtures();
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3488,7 +3501,7 @@ mod tests {
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_executed_tool_results_hover() {
         let results = executed_tool_fixtures();
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3516,14 +3529,14 @@ mod tests {
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_executed_tool_results_expanded() {
         let results = executed_tool_fixtures();
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 200.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 // Seed the ls row's disclosure open so the stdout block renders.
                 // `executed_tool_ui` keys its expand flag off `exec_output` +
                 // summary against this same `ui`'s id, so the key matches.
-                let expand_id = ui.id().with("exec_output").with("`ls -la crates`");
+                let expand_id = ui.scope_id().with("exec_output").with("`ls -la crates`");
                 ui.data_mut(|d| d.insert_temp(expand_id, true));
                 let mut nav = BlockNav::default();
                 for result in &results {
@@ -3562,7 +3575,7 @@ mod tests {
 
         let render_nav = nav.clone();
         let render_offset = offset.clone();
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
             .build_ui(move |ui| {
                 let mut nav = render_nav.borrow_mut();
@@ -3628,7 +3641,7 @@ mod tests {
             None,
         );
 
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 200.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3639,7 +3652,7 @@ mod tests {
                 // Collapse the Bash row so the cursor lands on a one-line row,
                 // which is what a keyboard walk through a transcript mostly
                 // sees. Same `exec_output` + summary key `executed_tool_ui` uses.
-                let expand_id = ui.id().with("exec_output").with("`ls -la crates`");
+                let expand_id = ui.scope_id().with("exec_output").with("`ls -la crates`");
                 ui.data_mut(|d| d.insert_temp(expand_id, false));
 
                 let mut nav = BlockNav::default();
@@ -3714,7 +3727,7 @@ mod tests {
                 tool_use_id: None,
             },
         ];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 120.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3774,8 +3787,18 @@ mod tests {
         harness.run();
 
         let gap = |left: &str, right: &str| {
-            let x0 = harness.get_by_label(right).bounding_box().unwrap().x0;
-            let x1 = harness.get_by_label(left).bounding_box().unwrap().x1;
+            let x0 = harness
+                .get_by_label(right)
+                .accesskit_node()
+                .bounding_box()
+                .unwrap()
+                .x0;
+            let x1 = harness
+                .get_by_label(left)
+                .accesskit_node()
+                .bounding_box()
+                .unwrap()
+                .x1;
             (x0 - x1) as f32
         };
         let min = notedeck::tokens::SPACING_SM - 0.5;
@@ -3824,7 +3847,7 @@ mod tests {
             file_update: None,
             tool_use_id: None,
         }];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 140.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3861,7 +3884,7 @@ mod tests {
             file_update: None,
             tool_use_id: None,
         }];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(700.0, 260.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
@@ -3869,7 +3892,7 @@ mod tests {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
-                            let expand_id = ui.id().with("exec_output").with(summary);
+                            let expand_id = ui.scope_id().with("exec_output").with(summary);
                             ui.data_mut(|d| d.insert_temp(expand_id, true));
                             let mut nav = BlockNav::default();
                             for result in &results {
@@ -3903,14 +3926,14 @@ mod tests {
             file_update: None,
             tool_use_id: None,
         }];
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 80.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 ui.vertical(|ui| {
                     // Bash-output rows start expanded; force the collapsed state
                     // to exercise the header-truncation path this test guards.
-                    let expand_id = ui.id().with("exec_output").with(summary);
+                    let expand_id = ui.scope_id().with("exec_output").with(summary);
                     ui.data_mut(|d| d.insert_temp(expand_id, false));
                     let mut nav = BlockNav::default();
                     for result in &results {

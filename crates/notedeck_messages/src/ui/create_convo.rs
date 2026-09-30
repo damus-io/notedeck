@@ -157,7 +157,7 @@ fn search_results_list(
                 ProfileRowOptions::new().contact_badge(result.is_contact),
             ));
             response.widget_info(move || {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                egui::WidgetInfo::labeled(egui::Role::Button, true, label.clone())
             });
             if response.clicked() {
                 action = Some(CreateConvoResponse { recipient });

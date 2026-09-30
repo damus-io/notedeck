@@ -36,7 +36,7 @@ impl<'a> EditProfileView<'a> {
     }
 
     pub fn scroll_id() -> egui::Id {
-        egui::Id::new("edit_profile")
+        egui::Id::unique("edit_profile")
     }
 
     // return true to save
@@ -225,7 +225,7 @@ fn singleline_textedit(ui: &mut egui::Ui, data: &mut String, clipboard: &mut Cli
     let r = ui.add(
         TextEdit::singleline(data)
             .min_size(vec2(0.0, 40.0))
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .margin(Margin::symmetric(12, 10))
             .desired_width(f32::INFINITY),
     );
@@ -237,7 +237,7 @@ fn multiline_textedit(ui: &mut egui::Ui, data: &mut String, clipboard: &mut Clip
     let r = ui.add(
         TextEdit::multiline(data)
             // .min_size(vec2(0.0, 40.0))
-            .vertical_align(egui::Align::TOP)
+            .align(egui::Align2::LEFT_TOP)
             .margin(Margin::symmetric(12, 10))
             .desired_width(f32::INFINITY)
             .desired_rows(1),

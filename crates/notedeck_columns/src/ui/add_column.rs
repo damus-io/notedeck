@@ -2,8 +2,8 @@ use core::f32;
 use std::collections::HashMap;
 
 use egui::{
-    pos2, vec2, Align, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, ScrollArea,
-    Separator, Ui, Vec2, Widget,
+    pos2, vec2, Color32, FontId, Id, Image, Margin, Pos2, Rect, RichText, ScrollArea, Separator,
+    Ui, Vec2, Widget,
 };
 use nostrdb::{Filter, Ndb, Transaction};
 use nostrdb_net::Pubkey;
@@ -232,7 +232,7 @@ impl<'a> AddColumnView<'a> {
     }
 
     pub fn scroll_id(route: &AddColumnRoute) -> egui::Id {
-        egui::Id::new(("add_column", route))
+        egui::Id::unique(("add_column", route))
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
@@ -456,7 +456,7 @@ impl<'a> AddColumnView<'a> {
         id_salt: &str,
         to_response: fn(Pubkey, &UserAccount) -> AddColumnResponse,
     ) -> Option<AddColumnResponse> {
-        let id = ui.id().with(id_salt);
+        let id = ui.scope_id().with(id_salt);
 
         ui.add_space(8.0);
         let hint = tr!(
@@ -539,7 +539,7 @@ impl<'a> AddColumnView<'a> {
                 desc_min_font_size * ICON_EXPANSION_MULTIPLE,
                 desc_style.font_family(),
             );
-            let max_desc_galley = ui.fonts(|f| {
+            let max_desc_galley = ui.fonts_mut(|f| {
                 f.layout(
                     data.description.to_string(),
                     desc_max_font,
@@ -547,7 +547,7 @@ impl<'a> AddColumnView<'a> {
                     max_wrap_width,
                 )
             });
-            let max_title_galley = ui.fonts(|f| {
+            let max_title_galley = ui.fonts_mut(|f| {
                 f.layout(
                     data.title.to_string(),
                     title_max_font,
@@ -1141,12 +1141,12 @@ pub fn render_add_column_routes(
 /// Keyed by column so two columns creating a list at once don't share the same
 /// name buffer. Must match the id used by [`create_people_list_ui`].
 fn create_people_list_name_id(col: usize) -> Id {
-    Id::new(("create_people_list_name", col))
+    Id::unique(("create_people_list_name", col))
 }
 
 /// Id keying the create-people-list profile-search buffer for a given column.
 fn create_people_list_search_id(col: usize) -> Id {
-    Id::new(("create_people_list_search", col))
+    Id::unique(("create_people_list_search", col))
 }
 
 fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usize) {
@@ -1228,7 +1228,7 @@ pub fn hashtag_ui(
     id_string_map: &mut HashMap<Id, String>,
 ) -> Option<AddColumnResponse> {
     padding(16.0, ui, |ui| {
-        let id = ui.id().with("hashtag)");
+        let id = ui.scope_id().with("hashtag)");
         let text_buffer = id_string_map.entry(id).or_default();
 
         let text_edit = egui::TextEdit::singleline(text_buffer)
@@ -1240,7 +1240,7 @@ pub fn hashtag_ui(
                 ))
                 .text_style(NotedeckTextStyle::Body.text_style()),
             )
-            .vertical_align(Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .desired_width(f32::INFINITY)
             .min_size(Vec2::new(0.0, 40.0))
             .margin(Margin::same(12));
@@ -1297,7 +1297,7 @@ pub fn create_people_list_ui(
                 RichText::new("Enter list name...")
                     .text_style(NotedeckTextStyle::Body.text_style()),
             )
-            .vertical_align(Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .desired_width(f32::INFINITY)
             .min_size(Vec2::new(0.0, 40.0))
             .margin(Margin::same(12));

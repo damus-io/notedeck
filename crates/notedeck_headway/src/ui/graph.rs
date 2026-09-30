@@ -240,7 +240,7 @@ pub(super) fn graph_view_ui(
                         );
                         let resp = ui.interact(
                             hit,
-                            ui.id().with(("hw-graph-handle", id.bytes(), si)),
+                            ui.scope_id().with(("hw-graph-handle", id.bytes(), si)),
                             egui::Sense::click_and_drag(),
                         );
                         graph_handle_ui(ui, theme, center, resp.hovered() || resp.dragged());
@@ -530,7 +530,7 @@ fn graph_edge_delete_ui(
         egui::Rect::from_points(&drawn.polyline).expand(notedeck_ui::graph::EDGE_HOVER_DIST);
     let hover = ui.interact(
         bounds,
-        ui.id().with(("hw-graph-edge", key)),
+        ui.scope_id().with(("hw-graph-edge", key)),
         egui::Sense::hover(),
     );
     let over_edge = hover.hover_pos().is_some_and(|p| {
@@ -542,7 +542,7 @@ fn graph_edge_delete_ui(
         egui::Rect::from_center_size(drawn.mid, egui::vec2(GRAPH_HANDLE_HIT, GRAPH_HANDLE_HIT));
     let resp = ui.interact(
         hit,
-        ui.id().with(("hw-graph-edge-del", key)),
+        ui.scope_id().with(("hw-graph-edge-del", key)),
         egui::Sense::click(),
     );
     if over_edge || resp.hovered() {
@@ -806,6 +806,15 @@ mod tests {
     use super::*;
     use crate::event::{self, ColumnView};
     use crate::ui::tests::BOARD;
+    use egui_kittest::Harness;
+
+    /// A bare harness on egui's default fonts, which lack the graph's `←` and
+    /// `⊘`: they draw as tofu here, as they did before egui 0.36 made a
+    /// missing glyph panic under kittest. The app's bundled fonts have them
+    /// (`tests/glyphs.rs` checks that).
+    fn graph_harness<'a>(app: impl FnMut(&mut egui::Ui) + 'a) -> Harness<'a> {
+        Harness::builder().allow_missing_glyphs().build_ui(app)
+    }
 
     /// Every node variant — plain, blocked, done, and ghost — renders through a
     /// live frame without panicking and reports back exactly the fixed
@@ -814,8 +823,6 @@ mod tests {
     /// icon, ⊘ glyph, recede opacity) the geometry alone can't.
     #[test]
     fn graph_node_renders_variants_at_its_rect() {
-        use egui_kittest::Harness;
-
         let three = |idx: usize| {
             Some(ColumnPos {
                 index: idx,
@@ -863,7 +870,7 @@ mod tests {
         for node in &cases {
             let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), GRAPH_NODE_SIZE);
             let mut got = None;
-            let mut harness = Harness::new_ui(|ui| {
+            let mut harness = graph_harness(|ui| {
                 let theme = ColorTheme::current(ui.ctx());
                 got = Some(graph_node_ui(ui, &theme, rect, node).rect);
             });
@@ -949,8 +956,6 @@ mod tests {
     /// pan/zoom carries across frames.
     #[test]
     fn graph_view_renders_and_seeds_scene() {
-        use egui_kittest::Harness;
-
         // Epic E(1) owns A(2) and B(3); B is blocked by A — one internal edge.
         let epic = graph_card(1, None, &[2, 3], &[]);
         let a = graph_card(2, Some(1), &[], &[]);
@@ -966,7 +971,7 @@ mod tests {
             "scene rect unseeded on open"
         );
 
-        let mut harness = Harness::new_ui(|ui| {
+        let mut harness = graph_harness(|ui| {
             let theme = ColorTheme::current(ui.ctx());
             let action = graph_view_ui(ui, &theme, &view, &mut state);
             assert!(
@@ -993,7 +998,6 @@ mod tests {
     /// headway:headway/hybrid-blossom-menu).
     #[test]
     fn graph_node_click_selects_card_and_closes_graph() {
-        use egui_kittest::Harness;
         use std::cell::RefCell;
 
         // Epic E(1) owns A(2) and B(3); B is blocked by A — one internal edge.
@@ -1023,7 +1027,7 @@ mod tests {
         let state = RefCell::new(BoardUiState::default());
         state.borrow_mut().open_graph(epic_id);
 
-        let mut harness = Harness::new_ui(|ui| {
+        let mut harness = graph_harness(|ui| {
             let theme = ColorTheme::current(ui.ctx());
             graph_view_ui(ui, &theme, &view, &mut state.borrow_mut());
         });
@@ -1071,7 +1075,6 @@ mod tests {
     /// sub-issues, not the epic, so the top bar is its only route in.
     #[test]
     fn graph_topbar_link_opens_the_epic() {
-        use egui_kittest::Harness;
         use egui_kittest::kittest::Queryable;
         use std::cell::RefCell;
 
@@ -1083,13 +1086,13 @@ mod tests {
         let state = RefCell::new(BoardUiState::default());
         state.borrow_mut().open_graph(epic_id);
 
-        let mut harness = Harness::new_ui(|ui| {
+        let mut harness = graph_harness(|ui| {
             let theme = ColorTheme::current(ui.ctx());
             graph_view_ui(ui, &theme, &view, &mut state.borrow_mut());
         });
         harness.run();
         // The link sits in the topbar above the scene, after the breadcrumb.
-        harness.get_by_label("↗ Open card").click();
+        harness.get_by_label("↗ Open card").click_accesskit();
         harness.run();
 
         let state = state.borrow();
@@ -1137,7 +1140,6 @@ mod tests {
     /// headway:headway/hybrid-blossom-menu for the transform gotcha).
     #[test]
     fn graph_drag_draws_block_edge() {
-        use egui_kittest::Harness;
         use std::cell::RefCell;
 
         // Epic E(1) owns A(2), B(3), C(4) with no blockers — a legal A → C draw.
@@ -1172,7 +1174,7 @@ mod tests {
         state.borrow_mut().open_graph(epic_id);
         let captured: RefCell<Option<BoardAction>> = RefCell::new(None);
 
-        let mut harness = Harness::new_ui(|ui| {
+        let mut harness = graph_harness(|ui| {
             let theme = ColorTheme::current(ui.ctx());
             if let Some(action) = graph_view_ui(ui, &theme, &view, &mut state.borrow_mut()) {
                 *captured.borrow_mut() = Some(action);
@@ -1232,7 +1234,6 @@ mod tests {
     /// `Unblock { card: blocked, on: blocker }`, mirroring the detail pane's ✕.
     #[test]
     fn graph_edge_delete_handle_unblocks() {
-        use egui_kittest::Harness;
         use std::cell::RefCell;
 
         // Epic E(1) owns A(2) and B(3); B is blocked by A — one internal edge.
@@ -1265,7 +1266,7 @@ mod tests {
         state.borrow_mut().open_graph(epic_id);
         let captured: RefCell<Option<BoardAction>> = RefCell::new(None);
 
-        let mut harness = Harness::new_ui(|ui| {
+        let mut harness = graph_harness(|ui| {
             let theme = ColorTheme::current(ui.ctx());
             if let Some(action) = graph_view_ui(ui, &theme, &view, &mut state.borrow_mut()) {
                 *captured.borrow_mut() = Some(action);

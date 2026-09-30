@@ -72,7 +72,7 @@ impl<'a> MentionPickerView<'a> {
         rect: egui::Rect,
         ui: &mut egui::Ui,
     ) -> DragResponse<MentionPickerResponse> {
-        let widget_id = ui.id().with("mention_results");
+        let widget_id = ui.scope_id().with("mention_results");
         let area_resp = egui::Area::new(widget_id)
             .order(egui::Order::Foreground)
             .fixed_pos(rect.left_top())
@@ -94,7 +94,7 @@ impl<'a> MentionPickerView<'a> {
                                 close_section_rect.right() - close_button_size,
                             );
                             let button_resp = ui.allocate_rect(button_rect, egui::Sense::click());
-                            ui.allocate_new_ui(
+                            ui.scope_builder(
                                 UiBuilder::new()
                                     .max_rect(close_section_rect)
                                     .layout(Layout::right_to_left(egui::Align::Center)),

@@ -15,12 +15,12 @@ use super::{
     LINE_NUMBER_COLOR,
 };
 use egui::emath::GuiRounding;
-use egui::epaint::{mutex::Mutex, TextShape, TextureAtlas};
+use egui::epaint::{text::TextOptions, TextShape};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::text_selection::LabelSelectionState;
 use egui::{
-    Color32, FontId, Galley, Label, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder,
-    WidgetInfo, WidgetType,
+    Color32, FontId, Galley, Label, Rect, RichText, Role, ScrollArea, Sense, Stroke, Ui, UiBuilder,
+    WidgetInfo,
 };
 use notedeck::{tr, tr_plural, Localization};
 use std::collections::HashMap;
@@ -223,25 +223,37 @@ struct LineGalleys {
 /// What a laid-out diff line depends on besides its text.
 #[derive(Clone)]
 struct GalleyKey {
-    /// The font atlas the glyphs were placed in. egui replaces it when the
-    /// scale changes or it fills up, and a galley laid out against the old
-    /// one points at glyphs that are gone. Held (not just its address) so the
-    /// comparison can't be fooled by a new atlas reusing a freed one's memory.
-    atlas: Arc<Mutex<TextureAtlas>>,
+    /// The scale the glyphs were rasterized at.
+    pixels_per_point: f32,
+    /// The text options the atlas was built with. epaint throws the atlas
+    /// away when they change.
+    text_options: TextOptions,
+    /// How full the font atlas was. epaint clears the atlas once it is over
+    /// 80% full, and a galley laid out against the old one points at glyphs
+    /// that are gone. The atlas only ever grows between clears, so a lower
+    /// ratio than last pass means it was cleared.
+    atlas_fill: f32,
     /// Picks the syntax theme.
     dark_mode: bool,
 }
 
 impl GalleyKey {
     fn of(ui: &Ui) -> Self {
+        let (text_options, atlas_fill) = ui.fonts(|f| (*f.options(), f.font_atlas_fill_ratio()));
         Self {
-            atlas: ui.fonts(|f| f.texture_atlas()),
+            pixels_per_point: ui.ctx().pixels_per_point(),
+            text_options,
+            atlas_fill,
             dark_mode: ui.visuals().dark_mode,
         }
     }
 
-    fn same_as(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.atlas, &other.atlas) && self.dark_mode == other.dark_mode
+    /// Are galleys laid out under `self` still valid under `now`?
+    fn still_valid(&self, now: &Self) -> bool {
+        self.pixels_per_point == now.pixels_per_point
+            && self.text_options == now.text_options
+            && self.atlas_fill <= now.atlas_fill
+            && self.dark_mode == now.dark_mode
     }
 }
 
@@ -262,12 +274,14 @@ struct CachedNote {
 impl LineGalleys {
     /// Start a pass: drop everything if what it was laid out against changed.
     fn begin_pass(&mut self, ui: &Ui) {
+        // The key is refreshed every pass, not only on a miss, so the atlas
+        // fill it remembers is last pass's and a clear shows up as a drop.
         let key = GalleyKey::of(ui);
-        if !self.key.as_ref().is_some_and(|k| k.same_as(&key)) {
+        if !self.key.as_ref().is_some_and(|k| k.still_valid(&key)) {
             self.lines.clear();
             self.notes.clear();
-            self.key = Some(key);
         }
+        self.key = Some(key);
         self.pass += 1;
     }
 
@@ -301,7 +315,7 @@ impl LineGalleys {
         }
         let first = note.text.lines().next().unwrap_or_default().to_owned();
         let font = egui::TextStyle::Body.resolve(ui.style());
-        let galley = ui.fonts(|f| f.layout_no_wrap(first, font, ui.visuals().text_color()));
+        let galley = ui.fonts_mut(|f| f.layout_no_wrap(first, font, ui.visuals().text_color()));
         self.notes.insert(
             n,
             CachedNote {
@@ -393,7 +407,7 @@ impl StatColumns {
         }
         let widest = |label: fn(&Stats) -> &String| {
             let stats = rows.iter().map(|r| &r.stats).chain(std::iter::once(totals));
-            ui.fonts(|f| {
+            ui.fonts_mut(|f| {
                 stats
                     .map(label)
                     .filter(|s| !s.is_empty())
@@ -478,8 +492,8 @@ impl GitPatchState {
     /// queue stepping cards) passes something that names the patch: a new
     /// one then opens at the top, and going back to one returns to where it
     /// was left. Without it every patch there shares one offset.
-    pub fn with_id_salt(mut self, salt: impl std::hash::Hash) -> Self {
-        self.id_salt = Some(egui::Id::new(salt));
+    pub fn with_id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
+        self.id_salt = Some(egui::Id::unique(salt));
         self
     }
 
@@ -926,7 +940,9 @@ pub fn git_patch_ui_with(
     let target = state.take_target(content_rows, rows);
     let total_rows = content_rows + state.padding_rows(row_step);
 
-    let id_salt = state.id_salt.unwrap_or_else(|| egui::Id::new("git_patch"));
+    let id_salt = state
+        .id_salt
+        .unwrap_or_else(|| egui::Id::unique("git_patch"));
     let mut area = ScrollArea::both()
         .id_salt(id_salt)
         .auto_shrink([false, false]);
@@ -1002,7 +1018,7 @@ pub fn git_patch_ui_with(
 /// The one height every row is drawn at: tall enough for a diff line, a
 /// body-text label and egui's own minimum interactive height.
 fn row_height(ui: &Ui) -> f32 {
-    let mono = ui.fonts(|f| f.row_height(&FontId::monospace(DIFF_FONT_SIZE)));
+    let mono = ui.fonts_mut(|f| f.row_height(&FontId::monospace(DIFF_FONT_SIZE)));
     let body = ui.text_style_height(&egui::TextStyle::Body);
     ui.spacing().interact_size.y.max(mono).max(body)
 }
@@ -1021,7 +1037,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
         Row::SummaryFile(f) => {
             let file = &patch.files()[f];
             let row = file_row_ui(file, &state.rows[f], &state.columns, None, ui);
-            if clickable(row, WidgetType::Link, file.path()) {
+            if clickable(row, Role::Link, file.path()) {
                 state.set_collapsed(f, false);
                 state.scroll(PatchScroll::File(f));
             }
@@ -1068,7 +1084,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 );
             });
             // Takes the whole hunk for a comment.
-            if clickable(row.response, WidgetType::Button, header) {
+            if clickable(row.response, Role::Button, header) {
                 state.click_hunk(patch, f, h);
             }
         }
@@ -1179,12 +1195,12 @@ fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) -> egui::Response {
     let numbers = ui
         .interact(gutter_rect, id.with("gutter"), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    numbers.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, gutter.text()));
+    numbers.widget_info(|| WidgetInfo::labeled(Role::Button, true, gutter.text()));
     ui.painter()
         .add(TextShape::new(gutter_rect.min, gutter, LINE_NUMBER_COLOR));
     if tag != DiffTag::Equal {
         let response = ui.interact(marker_rect, id.with("marker"), Sense::hover());
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, marker.text()));
+        response.widget_info(|| WidgetInfo::labeled(Role::Label, true, marker.text()));
     }
     ui.painter()
         .add(TextShape::new(marker_rect.min, marker, LINE_NUMBER_COLOR));
@@ -1202,7 +1218,7 @@ fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) -> egui::Response {
         sense = sense.union(select - Sense::FOCUSABLE);
     }
     let response = ui.interact(content_rect, id.with("content"), sense);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, content.text()));
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, content.text()));
     let color = ui.visuals().text_color();
     if selectable {
         LabelSelectionState::label_text_selection(
@@ -1262,7 +1278,7 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
         .with_clip_rect(row.intersect(ui.clip_rect()))
         .galley(text_min.round_ui(), galley, visuals.text_color());
     let response = ui.interact(row, id.with("note"), Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &note.text));
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &note.text));
     response.on_hover_ui(|ui| {
         ui.label(&note.text);
     });
@@ -1338,7 +1354,7 @@ fn file_header_ui(patch: &GitPatch, state: &GitPatchState, f: usize, ui: &mut Ui
     let file = &patch.files()[f];
     let openness = if state.is_collapsed(f) { 0.0 } else { 1.0 };
     let row = file_row_ui(file, &state.rows[f], &state.columns, Some(openness), ui);
-    clickable(row, WidgetType::Button, file.path())
+    clickable(row, Role::Button, file.path())
 }
 
 /// One row of the file table, shared by the summary and the file headers:
@@ -1386,14 +1402,14 @@ fn file_row_ui(
         };
         let dir_color = visuals.weak_text_color();
         let (_, name) = split_path(file.path());
-        let name = ui.fonts(|f| f.layout_no_wrap(name.to_owned(), body.clone(), name_color));
+        let name = ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), body.clone(), name_color));
         let right = row_right(ui);
         let room = right - ui.cursor().left() - name.size().x - COLUMN_GAP - columns.width();
         let mut elided = false;
         if !row.dir.is_empty() {
             let mut job = LayoutJob::simple_singleline(row.dir.clone(), body, dir_color);
             job.wrap = TextWrapping::truncate_at_width(room.max(0.0));
-            let dir = ui.fonts(|f| f.layout_job(job));
+            let dir = ui.fonts_mut(|f| f.layout_job(job));
             elided = dir.elided;
             ui.add(Label::new(dir));
         }
@@ -1414,7 +1430,7 @@ fn file_row_ui(
 
 /// Make a whole row clickable, as one accessible widget named `label` (the
 /// labels inside it are only text). Returns whether it was clicked.
-fn clickable(row: egui::Response, typ: WidgetType, label: &str) -> bool {
+fn clickable(row: egui::Response, typ: Role, label: &str) -> bool {
     let row = row
         .interact(Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1504,7 +1520,7 @@ fn stats_ui(stats: &Stats, columns: &StatColumns, ui: &mut Ui) {
             ui.add_space(width + COLUMN_GAP);
             continue;
         }
-        let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font.clone(), color));
+        let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), font.clone(), color));
         ui.add_space(width - galley.size().x);
         ui.add(Label::new(galley));
         ui.add_space(COLUMN_GAP);
@@ -1595,7 +1611,10 @@ mod tests {
     use super::*;
     use crate::diff::{DiffSide, LineSpan};
     use egui::accesskit::Role;
-    use egui_kittest::{kittest::Queryable, Harness};
+    use egui_kittest::{
+        kittest::{NodeT, Queryable},
+        Harness,
+    };
 
     const MULTI: &str = include_str!("testdata/multi.patch");
     const NESTED: &str = include_str!("testdata/nested.patch");
@@ -1621,10 +1640,15 @@ mod tests {
         size: egui::Vec2,
     ) -> Harness<'static, (GitPatch, GitPatchState)> {
         let state = GitPatchState::new(&patch, &mut Localization::default());
-        Harness::builder().with_size(size).build_ui_state(
-            |ui, (patch, state)| git_patch_ui(patch, state, ui),
-            (patch, state),
-        )
+        // egui's default fonts lack the rename arrow `→`; it draws as tofu
+        // here, as before egui 0.36 made a missing glyph panic under kittest.
+        Harness::builder()
+            .with_size(size)
+            .allow_missing_glyphs()
+            .build_ui_state(
+                |ui, (patch, state)| git_patch_ui(patch, state, ui),
+                (patch, state),
+            )
     }
 
     fn shown(harness: &Harness<'_, (GitPatch, GitPatchState)>, label: &str) -> usize {
@@ -1751,15 +1775,19 @@ mod tests {
         // As tall as a longer note was last pass.
         state.set_note_rows(0, 4);
         let size = egui::vec2(800.0, 1600.0);
-        let mut harness = Harness::builder().with_size(size).build_ui_state(
-            |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
-                let mut draw = |ui: &mut Ui, _: &PatchNote| {
-                    ui.label("one line now");
-                };
-                git_patch_ui_with(patch, state, ui, Some(&mut draw));
-            },
-            (patch, state),
-        );
+        // MULTI renames a file; see `sized_harness` for the tofu `→`.
+        let mut harness = Harness::builder()
+            .with_size(size)
+            .allow_missing_glyphs()
+            .build_ui_state(
+                |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                    let mut draw = |ui: &mut Ui, _: &PatchNote| {
+                        ui.label("one line now");
+                    };
+                    git_patch_ui_with(patch, state, ui, Some(&mut draw));
+                },
+                (patch, state),
+            );
         harness.run();
         assert!(harness.query_by_label("one line now").is_some());
         let (_, state) = harness.state();
@@ -1782,17 +1810,21 @@ mod tests {
         };
         state.set_notes(&patch, vec![note], 1);
         let size = egui::vec2(800.0, 1600.0);
-        let mut harness = Harness::builder().with_size(size).build_ui_state(
-            |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
-                let mut draw = |ui: &mut Ui, note: &PatchNote| {
-                    ui.label(format!("{} by someone", note.text));
-                    ui.label("second line");
-                    ui.label("third line");
-                };
-                git_patch_ui_with(patch, state, ui, Some(&mut draw));
-            },
-            (patch, state),
-        );
+        // MULTI renames a file; see `sized_harness` for the tofu `→`.
+        let mut harness = Harness::builder()
+            .with_size(size)
+            .allow_missing_glyphs()
+            .build_ui_state(
+                |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                    let mut draw = |ui: &mut Ui, note: &PatchNote| {
+                        ui.label(format!("{} by someone", note.text));
+                        ui.label("second line");
+                        ui.label("third line");
+                    };
+                    git_patch_ui_with(patch, state, ui, Some(&mut draw));
+                },
+                (patch, state),
+            );
         harness.run();
         assert!(harness.query_by_label("drawn by someone").is_some());
         assert!(harness.query_by_label("third line").is_some());
@@ -1831,7 +1863,7 @@ mod tests {
         harness.run();
         harness
             .get_by_role_and_label(Role::Button, "@@ -1,3 +1,4 @@")
-            .click();
+            .click_accesskit();
         harness.run();
         let (patch, state) = harness.state();
         let main = patch.file_named("main.rs").unwrap();
@@ -1890,14 +1922,15 @@ mod tests {
         // Fluent wraps the count in bidi isolation marks once the ftl has
         // the key, so match around them.
         harness.get_by_label_contains("files changed");
-        // The summary link, then the header button, each with its path as
-        // plain text inside.
-        assert_eq!(shown(&harness, "main.rs"), 4);
+        // The summary link, then the header button. Since egui 0.36 the path
+        // text drawn inside each is no longer a node of its own, so each row
+        // reads its path once.
+        assert_eq!(shown(&harness, "main.rs"), 2);
         harness.get_by_role_and_label(Role::Link, "main.rs");
         harness.get_by_role_and_label(Role::Button, "main.rs");
-        // The hunk header's text, and the header as the button that picks
-        // the whole hunk.
-        assert_eq!(shown(&harness, "@@ -1,3 +1,4 @@"), 2);
+        // The hunk header is the button that picks the whole hunk; its text
+        // is drawn inside it, so (as the paths above) it reads once.
+        assert_eq!(shown(&harness, "@@ -1,3 +1,4 @@"), 1);
         harness.get_by_role_and_label(Role::Button, "@@ -1,3 +1,4 @@");
         assert_eq!(shown(&harness, "    new();"), 1);
         assert_eq!(shown(&harness, "Binary file not shown"), 1);
@@ -1911,7 +1944,7 @@ mod tests {
         assert_eq!(shown(&harness, "−5"), 1);
         // The rename's old path leads its muted part, in both rows.
         assert_eq!(shown(&harness, "old name.txt → "), 2);
-        assert_eq!(shown(&harness, "new name.txt"), 4);
+        assert_eq!(shown(&harness, "new name.txt"), 2);
     }
 
     #[test]
@@ -1930,7 +1963,7 @@ mod tests {
             harness
                 .query_all_by_label(label)
                 .map(|n| {
-                    let b = n.bounding_box().expect("laid out");
+                    let b = n.accesskit_node().bounding_box().expect("laid out");
                     (b.x0, b.x1)
                 })
                 .collect()
@@ -1944,8 +1977,9 @@ mod tests {
             assert!(name.1 < add.0, "{name:?} runs into {add:?}");
             assert!(add.1 <= WIDTH as f64, "{add:?} is past the view");
         }
-        // A root file has no directory part at all.
-        assert_eq!(harness.query_all_by_label("README.md").count(), 4);
+        // A root file has no directory part at all: its link and its header
+        // button, each read once.
+        assert_eq!(harness.query_all_by_label("README.md").count(), 2);
     }
 
     #[test]
@@ -2216,7 +2250,7 @@ mod tests {
 
         harness
             .get_by_role_and_label(Role::Button, "big.txt")
-            .click();
+            .click_accesskit();
         harness.run();
         assert!(!harness.state().1.is_collapsed(0));
         assert_eq!(shown(&harness, "big 1"), 1);
@@ -2250,7 +2284,9 @@ mod tests {
         render: bool,
     ) -> Harness<'static, (GitPatch, GitPatchState)> {
         let state = GitPatchState::new(&patch, &mut Localization::default());
-        let mut builder = Harness::builder().with_size(egui::vec2(400.0, 300.0));
+        let mut builder = Harness::builder()
+            .with_size(egui::vec2(400.0, 300.0))
+            .allow_missing_glyphs();
         if render {
             builder = builder.renderer(notedeck::software_renderer());
         }
@@ -2267,6 +2303,7 @@ mod tests {
     fn span(harness: &Harness<'_, (GitPatch, GitPatchState)>, label: &str) -> (f64, f64, f64) {
         let b = harness
             .get_by_label(label)
+            .accesskit_node()
             .bounding_box()
             .expect("laid out");
         (b.x0, b.x1, (b.y0 + b.y1) / 2.0)

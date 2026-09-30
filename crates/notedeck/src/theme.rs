@@ -89,21 +89,21 @@ impl ColorTheme {
     /// Store light and dark themes in egui context for later retrieval.
     pub fn store_themes(ctx: &egui::Context, light: ColorTheme, dark: ColorTheme) {
         ctx.data_mut(|d| {
-            d.insert_temp(egui::Id::new(THEME_LIGHT_ID), light);
-            d.insert_temp(egui::Id::new(THEME_DARK_ID), dark);
+            d.insert_temp(egui::Id::unique(THEME_LIGHT_ID), light);
+            d.insert_temp(egui::Id::unique(THEME_DARK_ID), dark);
         });
     }
 
     /// Retrieve the active ColorTheme from egui context.
     /// Falls back to reconstructing the theme if not stored.
     pub fn current(ctx: &egui::Context) -> ColorTheme {
-        let is_dark = ctx.style().visuals.dark_mode;
+        let is_dark = ctx.global_style().visuals.dark_mode;
         let id = if is_dark {
             THEME_DARK_ID
         } else {
             THEME_LIGHT_ID
         };
-        ctx.data(|d| d.get_temp(egui::Id::new(id)))
+        ctx.data(|d| d.get_temp(egui::Id::unique(id)))
             .unwrap_or_else(|| {
                 if is_dark {
                     desktop_dark_color_theme()

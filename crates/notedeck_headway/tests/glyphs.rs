@@ -91,12 +91,13 @@ fn every_literal_glyph_is_in_the_loaded_fonts() {
     let ctx = egui::Context::default();
     notedeck::fonts::setup_fonts(&ctx);
     // Fonts set with `set_fonts` take effect at the start of the next pass.
-    let _ = ctx.run(Default::default(), |_| {});
+    ctx.run_pass(Default::default(), |_| {})
+        .drop_without_applying_deltas();
     let font = egui::FontId::proportional(14.0);
 
     let missing: Vec<String> = found
         .iter()
-        .filter(|f| !ctx.fonts(|fonts| fonts.has_glyph(&font, f.ch)))
+        .filter(|f| !ctx.fonts_mut(|fonts| fonts.has_glyph(&font, f.ch)))
         .map(|f| {
             format!(
                 "{} (U+{:04X}) at {}:{}",

@@ -232,7 +232,7 @@ pub(super) fn board_switcher(
                         board.id.clone(),
                     ))));
                 }
-                ui.close_menu();
+                ui.close();
             }
         }
         ui.separator();
@@ -243,7 +243,7 @@ pub(super) fn board_switcher(
             state.edit = InlineEdit::NewBoard;
             state.edit_text.clear();
             state.focus_edit = true;
-            ui.close_menu();
+            ui.close();
         }
     });
     // Open this frame: hold the board keys off it (see `grid_menu_open`).

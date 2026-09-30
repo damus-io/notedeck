@@ -122,14 +122,15 @@ mod tests {
     fn run_update(app: &mut WasmApp) -> Vec<UiCommand> {
         let mut result_cmds = Vec::new();
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let cmds = app.run_wasm_frame(ui.available_size());
                 result_cmds = cmds.clone();
                 let new_events = commands::render_commands(&cmds, ui);
                 app.env.as_mut(&mut app.store).button_events = new_events;
             });
-        });
+        })
+        .drop_without_applying_deltas();
         result_cmds
     }
 

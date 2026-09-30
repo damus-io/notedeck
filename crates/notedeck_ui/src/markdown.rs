@@ -711,7 +711,7 @@ fn render_inlines(
     // the code would then pull it away from the bottom-aligned prose.
     let code_font = FontId::new(font_size, FontFamily::Monospace);
     let (prose_row, code_row) =
-        ui.fonts(|f| (f.row_height(&text_fmt.font_id), f.row_height(&code_font)));
+        ui.fonts_mut(|f| (f.row_height(&text_fmt.font_id), f.row_height(&code_font)));
     let code_fmt = TextFormat {
         font_id: code_font,
         color: theme.code_text,
@@ -1165,6 +1165,10 @@ fn render_list_items(
     ui.add_space(notedeck::tokens::SPACING_SM);
 }
 
+/// Accessible name of a GFM task-list checkbox, which has no text of its own:
+/// the item's text is laid out beside it as separate widgets.
+const TASK_CHECKBOX_NAME: &str = "Task";
+
 fn render_list_item(
     item: &ListItem,
     marker: &str,
@@ -1182,12 +1186,17 @@ fn render_list_item(
             let mut checked = task.checked;
             match edits.as_deref_mut() {
                 Some(edits) => {
-                    if ui.add(egui::Checkbox::without_text(&mut checked)).changed() {
+                    if ui
+                        .add(egui::Checkbox::without_text(&mut checked))
+                        .accessible_name(TASK_CHECKBOX_NAME)
+                        .changed()
+                    {
                         edits.toggled.push(task.state_offset());
                     }
                 }
                 None => {
-                    ui.add_enabled(false, egui::Checkbox::without_text(&mut checked));
+                    ui.add_enabled(false, egui::Checkbox::without_text(&mut checked))
+                        .accessible_name(TASK_CHECKBOX_NAME);
                 }
             }
         } else {
@@ -1417,7 +1426,10 @@ fn render_partial(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui_kittest::{kittest::Queryable, Harness};
+    use egui_kittest::{
+        kittest::{NodeT, Queryable},
+        Harness,
+    };
     use md_stream::{InlineElement, Span};
 
     /// The editable render path with no `AppContext` — the `ctx`-less twin of
@@ -1601,8 +1613,8 @@ mod tests {
 
         let alpha = harness.get_by_label("alpha");
         let beta = harness.get_by_label("beta");
-        let alpha_bounds = alpha.raw_bounds().expect("alpha bounds");
-        let beta_bounds = beta.raw_bounds().expect("beta bounds");
+        let alpha_bounds = alpha.accesskit_node().raw_bounds().expect("alpha bounds");
+        let beta_bounds = beta.accesskit_node().raw_bounds().expect("beta bounds");
         assert!(
             beta_bounds.y0 > alpha_bounds.y1,
             "hard line breaks should render the following text on a later row"
@@ -1763,7 +1775,7 @@ mod tests {
         });
         harness.run();
 
-        harness.get_by_role(Role::CheckBox).click();
+        harness.get_by_role(Role::CheckBox).click_accesskit();
         harness.run();
 
         assert_eq!(*source.borrow(), "- [x] task\n");
@@ -1782,7 +1794,7 @@ mod tests {
         });
         harness.run();
 
-        harness.get_by_role(Role::CheckBox).click();
+        harness.get_by_role(Role::CheckBox).click_accesskit();
         harness.run();
 
         assert_eq!(*source.borrow(), "- [ ] task\n");
@@ -1807,7 +1819,7 @@ mod tests {
             .get_all_by_role(Role::CheckBox)
             .nth(1)
             .unwrap()
-            .click();
+            .click_accesskit();
         harness.run();
 
         assert_eq!(*source.borrow(), "- [ ] first\n- [x] second\n- [ ] third\n");
@@ -1840,7 +1852,7 @@ mod tests {
             test_render_with_refs_editable(&mut s, ui);
         });
         harness.run();
-        harness.get_by_role(Role::CheckBox).click();
+        harness.get_by_role(Role::CheckBox).click_accesskit();
         harness.run();
         assert_eq!(*source.borrow(), "- [x] task\n");
     }
@@ -1861,7 +1873,7 @@ mod tests {
             test_render_with_refs_editable(&mut s, ui);
         });
         harness.run();
-        harness.get_by_role(Role::CheckBox).click();
+        harness.get_by_role(Role::CheckBox).click_accesskit();
         harness.run();
         assert_eq!(
             *source.borrow(),

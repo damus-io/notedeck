@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 use nostrdb::{Ndb, NoteBuilder, Transaction};
 use nostrdb_net::{FullKeypair, Keypair};
@@ -81,74 +81,81 @@ fn seed_session(ndb: &Ndb, secret: &[u8; 32], session_id: &str, title: &str, sta
 fn copy_menu(response: &egui::Response) {
     notedeck_ui::context_menu::context_menu(response, |ui| {
         if ui.button("Copy").clicked() {
-            ui.close_menu();
+            ui.close();
         }
     });
 }
 
-fn render(ctx: &egui::Context, state: &mut State) {
-    if !state.setup_done {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
-        let secret = state.account.secret_key.clone();
-        let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context();
-        if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            resp.unk_id_action
-                .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+fn render(ui: &mut egui::Ui, state: &mut State) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.setup_done {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            let secret = state.account.secret_key.clone();
+            let pubkey = state.account.pubkey;
+            let app_ctx = &mut state.notedeck.app_context();
+            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                resp.unk_id_action
+                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            }
+            app_ctx.select_account(&pubkey);
+            state.setup_done = true;
+            return;
         }
-        app_ctx.select_account(&pubkey);
-        state.setup_done = true;
-        return;
-    }
 
-    let mut app_ctx = state.notedeck.app_context();
-    let body = state.body.clone();
-    let surface = state.surface;
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.add_space(16.0);
-        match surface {
-            Surface::User => {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    let content = egui::Frame::new()
-                        .inner_margin(10.0)
-                        .corner_radius(10.0)
-                        .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-                        .show(ui, |ui| {
-                            ui.scope(|ui| {
-                                let mut note_ctx = app_ctx.note_context();
-                                let txn = Transaction::new(note_ctx.ndb).expect("txn");
-                                render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
+        let mut app_ctx = state.notedeck.app_context();
+        let body = state.body.clone();
+        let surface = state.surface;
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.add_space(16.0);
+            match surface {
+                Surface::User => {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                        let content = egui::Frame::new()
+                            .inner_margin(10.0)
+                            .corner_radius(10.0)
+                            .fill(ui.visuals().widgets.inactive.weak_bg_fill)
+                            .show(ui, |ui| {
+                                ui.scope(|ui| {
+                                    let mut note_ctx = app_ctx.note_context();
+                                    let txn = Transaction::new(note_ctx.ndb).expect("txn");
+                                    render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
+                                })
+                                .response
                             })
-                            .response
-                        })
-                        .inner;
-                    copy_menu(&content);
-                });
+                            .inner;
+                        copy_menu(&content);
+                    });
+                }
+                Surface::Assistant => {
+                    let r = ui.scope(|ui| {
+                        let mut note_ctx = app_ctx.note_context();
+                        let txn = Transaction::new(note_ctx.ndb).expect("txn");
+                        render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
+                    });
+                    copy_menu(&r.response);
+                }
             }
-            Surface::Assistant => {
-                let r = ui.scope(|ui| {
-                    let mut note_ctx = app_ctx.note_context();
-                    let txn = Transaction::new(note_ctx.ndb).expect("txn");
-                    render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
-                });
-                copy_menu(&r.response);
-            }
+        });
+
+        // Drain any imperative action the chip click raised.
+        let drained = app_ctx.app_actions.take().len();
+        if drained > 0 {
+            state.actions_seen += drained;
         }
     });
-
-    // Drain any imperative action the chip click raised.
-    let drained = app_ctx.app_actions.take().len();
-    if drained > 0 {
-        state.actions_seen += drained;
-    }
 }
 
 /// Primary-click the center of a labelled node via a real positional pointer
 /// event (a plain `Label` exposes no accesskit action, so `.click()` is a no-op).
 fn click_label(harness: &mut Harness<'static, State>, label: &str) {
-    let bounds = harness.get_by_label(label).raw_bounds().expect("bounds");
+    let bounds = harness
+        .get_by_label(label)
+        .accesskit_node()
+        .raw_bounds()
+        .expect("bounds");
     let center = egui::pos2(
         ((bounds.x0 + bounds.x1) / 2.0) as f32,
         ((bounds.y0 + bounds.y1) / 2.0) as f32,
@@ -193,7 +200,7 @@ fn actions_after_chip_click(surface: Surface) -> usize {
 
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(640.0, 380.0))
-        .build_state(render, state);
+        .build_ui_state(render, state);
     harness.run_steps(2);
 
     let secret = harness.state().account.secret_key.secret_bytes();

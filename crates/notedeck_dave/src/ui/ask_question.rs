@@ -135,7 +135,13 @@ pub fn ask_user_question_ui(
                         if question.multi_select {
                             // Checkbox for multi-select
                             let mut checked = is_selected;
-                            if ui.checkbox(&mut checked, "").changed() {
+                            // The option's text is laid out beside the box, so
+                            // name the box after it.
+                            if ui
+                                .checkbox(&mut checked, "")
+                                .accessible_name(&option.label)
+                                .changed()
+                            {
                                 if checked {
                                     answers[current_idx].selected.push(opt_idx);
                                 } else {
@@ -145,7 +151,11 @@ pub fn ask_user_question_ui(
                         } else {
                             // Radio button for single-select
                             let selected = is_selected && !other_is_selected;
-                            if ui.radio(selected, "").clicked() {
+                            if ui
+                                .radio(selected, "")
+                                .accessible_name(&option.label)
+                                .clicked()
+                            {
                                 answers[current_idx].selected = vec![opt_idx];
                                 answers[current_idx].other_text = None;
                             }
@@ -192,14 +202,22 @@ pub fn ask_user_question_ui(
 
                     if question.multi_select {
                         let mut checked = other_selected;
-                        if ui.checkbox(&mut checked, "").changed() {
+                        if ui
+                            .checkbox(&mut checked, "")
+                            .accessible_name("Other")
+                            .changed()
+                        {
                             if checked {
                                 answers[current_idx].other_text = Some(String::new());
                             } else {
                                 answers[current_idx].other_text = None;
                             }
                         }
-                    } else if ui.radio(other_selected, "").clicked() {
+                    } else if ui
+                        .radio(other_selected, "")
+                        .accessible_name("Other")
+                        .clicked()
+                    {
                         answers[current_idx].selected.clear();
                         answers[current_idx].other_text = Some(String::new());
                     }

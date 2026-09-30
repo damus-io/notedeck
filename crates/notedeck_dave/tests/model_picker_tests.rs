@@ -1,4 +1,4 @@
-use egui_kittest::Harness;
+use notedeck::test_harness::PressKey;
 use notedeck_dave::backend::traits::{BackendType, Model};
 use notedeck_dave::config::AiMode;
 use notedeck_dave::session::SessionManager;
@@ -18,7 +18,7 @@ struct PickerState {
 /// Drive the picker UI with the given backend and model index, press the
 /// hotkey for the first backend, and return the resulting selection.
 fn pick(bt: BackendType, model_index: usize) -> (BackendType, Model) {
-    let mut harness = Harness::new_ui_state(
+    let mut harness = notedeck::test_harness::lenient_builder().build_ui_state(
         |ui, state: &mut PickerState| {
             state.result =
                 backend_picker_overlay_ui(&state.backends, &mut state.selected_models, ui);

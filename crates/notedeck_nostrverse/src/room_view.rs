@@ -384,7 +384,7 @@ pub fn show_room_view(
 
         // Scroll: always routes to camera (zoom/speed)
         if response.hover_pos().is_some() {
-            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {
                 r.on_scroll(scroll * 0.01);
             }

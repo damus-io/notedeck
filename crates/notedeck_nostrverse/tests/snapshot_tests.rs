@@ -22,21 +22,20 @@ fn create_headless_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::None,
         force_fallback_adapter: false,
         compatible_surface: None,
+        ..Default::default()
     }))
     .expect("No GPU adapter found — install lavapipe for headless rendering");
 
     let info = adapter.get_info();
     eprintln!("Using adapter: {} ({:?})", info.name, info.device_type);
 
-    pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("snapshot_test"),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-        },
-        None,
-    ))
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("snapshot_test"),
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        ..Default::default()
+    }))
     .expect("Failed to create device")
 }
 

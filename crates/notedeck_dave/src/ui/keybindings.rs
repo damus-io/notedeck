@@ -783,7 +783,7 @@ pub fn check_keybindings(
     }
 
     // Delete key to delete active session (only when no text input has focus)
-    if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Delete)) {
+    if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Delete)) {
         return Some(KeyAction::DeleteActiveSession);
     }
 
@@ -826,7 +826,10 @@ pub fn check_keybindings(
     // IMPORTANT: Only handle these when no text input has focus, to avoid
     // capturing keypresses when user is typing a message in tentative state
     // AskUserQuestion uses number keys for option selection, so we skip these bindings
-    if is_agentic && has_pending_permission && !has_pending_question && !ctx.wants_keyboard_input()
+    if is_agentic
+        && has_pending_permission
+        && !has_pending_question
+        && !ctx.egui_wants_keyboard_input()
     {
         // Shift+1 = tentative accept, Shift+2 = tentative deny
         // Note: egui may report shifted keys as their symbol (e.g., Shift+1 as Exclamationmark)
@@ -875,6 +878,7 @@ mod tests {
     use crate::config::AiMode;
     use egui::{Key, Modifiers};
     use egui_kittest::Harness;
+    use notedeck::test_harness::PressKey;
 
     /// Press `modifiers`+`key` in a headless egui frame and return whatever
     /// `check_keybindings` detects (agentic mode, no pending prompts).
@@ -1226,12 +1230,13 @@ mod tests {
 
     #[test]
     fn the_chord_hands_focus_back_when_it_ends() {
-        let input_id = egui::Id::new("chat_input");
+        let input_id = egui::Id::unique("chat_input");
         // A real text field: egui drops focus from an id no widget claims.
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
                 check(ui.ctx(), chord, Leader::DEFAULT, true);
-                ui.add(egui::TextEdit::singleline(text).id(input_id));
+                ui.add(egui::TextEdit::singleline(text).id(input_id))
+                    .accessible_name("test field");
             },
             (ChordState::default(), String::new()),
         );
@@ -1268,11 +1273,12 @@ mod tests {
 
     #[test]
     fn escape_ends_the_chord_and_hands_focus_back() {
-        let input_id = egui::Id::new("chat_input");
+        let input_id = egui::Id::unique("chat_input");
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
                 check(ui.ctx(), chord, Leader::DEFAULT, true);
-                ui.add(egui::TextEdit::singleline(text).id(input_id));
+                ui.add(egui::TextEdit::singleline(text).id(input_id))
+                    .accessible_name("test field");
             },
             (ChordState::default(), String::new()),
         );

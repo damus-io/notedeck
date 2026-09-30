@@ -66,8 +66,7 @@ pub fn notifications_button(
     }
 
     let response = helper.take_animation_response();
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Notifications"));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Notifications"));
     response
 }
 
@@ -139,7 +138,7 @@ pub fn chat_button(ui: &mut egui::Ui, size: f32, is_active: bool) -> egui::Respo
     draw_envelope(&painter, ui, center, s, color, stroke_width, is_active);
 
     let response = helper.take_animation_response();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Messages"));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Messages"));
     response
 }
 
@@ -194,7 +193,7 @@ pub fn home_button(ui: &mut egui::Ui, size: f32, is_active: bool) -> egui::Respo
     draw_house(&painter, ui, center, s, color, stroke_width, is_active);
 
     let response = helper.take_animation_response();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Home"));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Home"));
     response
 }
 
@@ -327,8 +326,7 @@ pub fn search_button(_color: Color32, line_width: f32, is_active: bool) -> impl 
         let response = helper
             .take_animation_response()
             .on_hover_cursor(CursorIcon::PointingHand);
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Search"));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Search"));
         response
     }
 }
@@ -647,6 +645,6 @@ pub fn expanding_button(
     }
 
     let response = helper.take_animation_response();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
     response
 }

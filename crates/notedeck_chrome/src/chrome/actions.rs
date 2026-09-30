@@ -513,9 +513,11 @@ mod open_tests {
             time: Some(time),
             ..Default::default()
         };
-        let _ = egui_ctx.run(input, |c| {
-            egui::CentralPanel::default().show(c, |ui| f(ui));
-        });
+        egui_ctx
+            .run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| f(ui));
+            })
+            .drop_without_applying_deltas();
     }
 
     /// A chrome built the way the app builds one, with a fresh account.

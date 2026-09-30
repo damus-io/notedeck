@@ -706,7 +706,6 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 .is_pk_muted(self.note.pubkey());
             let note_id = NoteId::new(*self.note.id());
             if let Some(action) = NoteContextButton::menu(
-                ui,
                 self.note_context.i18n,
                 resp.clone(),
                 note_id,
@@ -830,7 +829,7 @@ fn show_actual_pfp(
 
     let (rect, size, resp) = crate::anim::hover_expand(
         ui,
-        egui::Id::new((profile_key, note_key)),
+        egui::Id::unique((profile_key, note_key)),
         pfp_size as f32,
         NoteView::expand_size() as f32,
         anim_speed,
@@ -882,7 +881,7 @@ fn note_hitbox_id(
     note_options: NoteOptions,
     parent: Option<NoteKey>,
 ) -> egui::Id {
-    Id::new(("note_size", note_key, note_options, parent))
+    Id::unique(("note_size", note_key, note_options, parent))
 }
 
 fn maybe_note_hitbox(ui: &mut egui::Ui, hitbox_id: egui::Id) -> Option<Response> {
@@ -897,10 +896,9 @@ fn maybe_note_hitbox(ui: &mut egui::Ui, hitbox_id: egui::Id) -> Option<Response>
                 max: pos2(container_rect.max.x, container_rect.min.y + note_size.y),
             };
 
-            let response = ui.interact(rect, ui.id().with(hitbox_id), egui::Sense::click());
+            let response = ui.interact(rect, ui.scope_id().with(hitbox_id), egui::Sense::click());
 
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "hitbox"));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "hitbox"));
 
             response
         })
@@ -1025,7 +1023,7 @@ fn zap_actionbar_button(
             );
             if notedeck::state_entered(
                 ui.ctx(),
-                egui::Id::new(("zap_confirm_sound", note_id)),
+                egui::Id::unique(("zap_confirm_sound", note_id)),
                 is_confirmed,
             ) {
                 sound.play(notedeck::SoundEffect::ZapConfirm);
@@ -1219,7 +1217,7 @@ fn actionbar_ui(
     if let Some(c) = &stats.counts {
         let count = c.reply_count(note);
         if count > 0 {
-            crate::anim::rolling_number(ui, egui::Id::new((note_key, "replies")), count);
+            crate::anim::rolling_number(ui, egui::Id::unique((note_key, "replies")), count);
         }
     }
 
@@ -1235,7 +1233,7 @@ fn actionbar_ui(
 
     if let Some(c) = &stats.counts {
         if c.reactions > 0 {
-            crate::anim::rolling_number(ui, egui::Id::new((note_key, "likes")), c.reactions);
+            crate::anim::rolling_number(ui, egui::Id::unique((note_key, "likes")), c.reactions);
         }
     }
 
@@ -1247,7 +1245,7 @@ fn actionbar_ui(
     if let Some(c) = &stats.counts {
         let count = c.repost_count();
         if count > 0 {
-            crate::anim::rolling_number(ui, egui::Id::new((note_key, "quotes")), count);
+            crate::anim::rolling_number(ui, egui::Id::unique((note_key, "quotes")), count);
         }
     }
 
@@ -1332,7 +1330,7 @@ fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -
     };
 
     let (rect, size, resp) =
-        crate::anim::hover_expand_small(ui, ui.id().with(("reply_anim", note_key)));
+        crate::anim::hover_expand_small(ui, ui.scope_id().with(("reply_anim", note_key)));
 
     // align rect to note contents
     let expand_size = 5.0; // from hover_expand_small
@@ -1364,7 +1362,7 @@ fn like_button(
     };
 
     let (rect, size, resp) =
-        crate::anim::hover_expand_small(ui, ui.id().with(("like_anim", note_key)));
+        crate::anim::hover_expand_small(ui, ui.scope_id().with(("like_anim", note_key)));
 
     // align rect to note contents
     let expand_size = 5.0; // from hover_expand_small
@@ -1395,7 +1393,7 @@ fn quote_repost_button(
     let size = crate::anim::hover_small_size() + 4.0;
     let expand_size = 5.0;
     let anim_speed = 0.05;
-    let id = ui.id().with(("repost_anim", note_key));
+    let id = ui.scope_id().with(("repost_anim", note_key));
 
     let (rect, size, resp) = crate::anim::hover_expand(ui, id, size, expand_size, anim_speed);
 
@@ -1418,10 +1416,10 @@ fn zap_button<'a>(
     noteid: &'a [u8; 32],
 ) -> impl egui::Widget + use<'a> {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.id().with("zap"));
+        let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.scope_id().with("zap"));
 
         let mut img = app_images::zap_dark_image().max_width(size);
-        let id = ui.id().with(("pulse", noteid));
+        let id = ui.scope_id().with(("pulse", noteid));
         let ctx = ui.ctx().clone();
 
         match state {

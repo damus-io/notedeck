@@ -257,7 +257,11 @@ pub fn notebook_ui(
     egui::Scene::new().show(ui, &mut scene_rect, |ui| {
         // Background handle first (underneath the nodes) covering the visible
         // region, so a click on empty canvas clears the selection.
-        let bg = ui.interact(view, ui.id().with("notebook_bg"), egui::Sense::click());
+        let bg = ui.interact(
+            view,
+            ui.scope_id().with("notebook_bg"),
+            egui::Sense::click(),
+        );
         if bg.clicked() {
             out.gesture = Some(Gesture::BgClick);
         }
@@ -366,7 +370,7 @@ pub fn notebook_ui(
             notedeck_ui::context_menu::context_menu(&resp, |ui| {
                 if ui.button("Delete").clicked() {
                     out.gesture = Some(Gesture::RequestDelete(id.clone()));
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         }
@@ -405,7 +409,8 @@ pub fn notebook_ui(
             for (hx, hy) in RESIZE_HANDLES {
                 let resp = ui.interact(
                     resize_grab_rect(rect, hx, hy),
-                    ui.id().with(("notebook_resize", sel.as_str(), hx, hy)),
+                    ui.scope_id()
+                        .with(("notebook_resize", sel.as_str(), hx, hy)),
                     egui::Sense::drag(),
                 );
                 if resp.hovered() || resp.dragged() {
@@ -467,7 +472,7 @@ pub fn notebook_ui(
                 let hit = Rect::from_center_size(center, vec2(HANDLE_HIT, HANDLE_HIT));
                 let resp = ui.interact(
                     hit,
-                    ui.id()
+                    ui.scope_id()
                         .with(("notebook_handle", nid.as_str(), side_str(&side))),
                     egui::Sense::click_and_drag(),
                 );
@@ -731,26 +736,27 @@ enum DeleteConfirm {
 /// Show a centered confirmation modal for deleting a node, returning the user's
 /// choice this frame. Clicking the backdrop or pressing Esc counts as cancelling.
 fn delete_confirm_ui(ui: &egui::Ui) -> DeleteConfirm {
-    let modal = egui::Modal::new(egui::Id::new("notebook_delete_confirm")).show(ui.ctx(), |ui| {
-        ui.set_max_width(300.0);
-        ui.heading("Delete note?");
-        ui.add_space(notedeck::tokens::SPACING_SM);
-        ui.label("This removes the note from your canvas.");
-        ui.add_space(notedeck::tokens::SPACING_LG);
-        ui.horizontal(|ui| {
-            let delete = egui::Button::new(
-                egui::RichText::new("Delete").color(Color32::from_rgb(0xE0, 0x31, 0x31)),
-            );
-            if ui.add(delete).clicked() {
-                return DeleteConfirm::Confirmed;
-            }
-            if ui.button("Cancel").clicked() {
-                return DeleteConfirm::Cancelled;
-            }
-            DeleteConfirm::Pending
-        })
-        .inner
-    });
+    let modal =
+        egui::Modal::new(egui::Id::unique("notebook_delete_confirm")).show(ui.ctx(), |ui| {
+            ui.set_max_width(300.0);
+            ui.heading("Delete note?");
+            ui.add_space(notedeck::tokens::SPACING_SM);
+            ui.label("This removes the note from your canvas.");
+            ui.add_space(notedeck::tokens::SPACING_LG);
+            ui.horizontal(|ui| {
+                let delete = egui::Button::new(
+                    egui::RichText::new("Delete").color(Color32::from_rgb(0xE0, 0x31, 0x31)),
+                );
+                if ui.add(delete).clicked() {
+                    return DeleteConfirm::Confirmed;
+                }
+                if ui.button("Cancel").clicked() {
+                    return DeleteConfirm::Cancelled;
+                }
+                DeleteConfirm::Pending
+            })
+            .inner
+        });
 
     // The buttons take precedence; a backdrop/Esc dismissal otherwise cancels.
     match modal.inner {
@@ -791,7 +797,8 @@ fn text_edit_node_ui(
             .show(ui, |ui| {
                 let resp = ui.add_sized(
                     ui.available_size(),
-                    egui::TextEdit::multiline(buffer).frame(false),
+                    egui::TextEdit::multiline(buffer)
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2))),
                 );
                 if request_focus {
                     resp.request_focus();
@@ -970,7 +977,7 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     let bounds = Rect::from_points(&polyline).expand(graph::EDGE_HOVER_DIST);
     let hover = ui.interact(
         bounds,
-        ui.id().with(("notebook_edge", edge.id().as_str())),
+        ui.scope_id().with(("notebook_edge", edge.id().as_str())),
         egui::Sense::hover(),
     );
     let over_edge = hover
@@ -983,7 +990,8 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     let hit = Rect::from_center_size(mid, vec2(HANDLE_HIT, HANDLE_HIT));
     let resp = ui.interact(
         hit,
-        ui.id().with(("notebook_edge_del", edge.id().as_str())),
+        ui.scope_id()
+            .with(("notebook_edge_del", edge.id().as_str())),
         egui::Sense::click(),
     );
     if over_edge || resp.hovered() {
@@ -1195,7 +1203,7 @@ fn node_box_ui<R>(
     // Handle first (underneath); see the doc comment for why ordering matters.
     let resp = ui.interact(
         rect,
-        ui.id().with(("notebook_node", node.id.as_str())),
+        ui.scope_id().with(("notebook_node", node.id.as_str())),
         egui::Sense::click_and_drag(),
     );
 
@@ -1219,7 +1227,7 @@ fn node_box_ui<R>(
                 // forbid shrinking. (`inner` bounds the wrap width; an infinite
                 // max_rect would feed NaNs into egui's layout.)
                 let content =
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| contents(ui));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| contents(ui));
                 out = Some(content.inner);
                 content_height = content.response.rect.height() + margin * 2.0;
                 // Pad the frame down to the declared box height so the fill and
@@ -1279,7 +1287,7 @@ mod tests {
         });
         harness.run();
 
-        harness.get_by_role(Role::CheckBox).simulate_click();
+        harness.get_by_role(Role::CheckBox).click();
         harness.run();
 
         assert_eq!(

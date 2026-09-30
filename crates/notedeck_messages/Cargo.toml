@@ -26,6 +26,9 @@ egui-winit = { workspace = true }
 crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
+# egui no longer bundles fonts by default; harnesses that don't install
+# notedeck's own fonts fall back to egui's, as they did before 0.36.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = { workspace = true, features = ["eframe"] }
 enostr_test_support = { path = "../enostr_test_support" }
 eframe = { workspace = true }

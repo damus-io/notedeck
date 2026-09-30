@@ -178,7 +178,7 @@ fn mini_month(
             }
 
             if ui
-                .interact(cell, ui.id().with(("mm", week, dow)), Sense::click())
+                .interact(cell, ui.scope_id().with(("mm", week, dow)), Sense::click())
                 .clicked()
             {
                 action.focus = Some(date);

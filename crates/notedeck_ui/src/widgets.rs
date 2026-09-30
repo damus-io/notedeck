@@ -121,11 +121,12 @@ pub fn search_input_box<'a>(query: &'a mut String, hint_text: &'a str) -> impl e
                             [ui.available_width(), SEARCH_INPUT_HEIGHT],
                             TextEdit::singleline(query)
                                 .hint_text(RichText::new(hint_text).weak())
-                                .margin(egui::vec2(0.0, 8.0))
-                                .frame(false),
+                                .frame(
+                                    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 8)),
+                                ),
                         );
                         response.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, hint_text)
+                            egui::WidgetInfo::labeled(egui::Role::TextInput, true, hint_text)
                         });
                         response
                     })
@@ -240,14 +241,13 @@ pub fn inline_chip(
 ///
 /// Sums glyph advances rather than laying the text out: `Fonts::layout_no_wrap`
 /// needs an owned `String` (galleys are cached by their content), an allocation
-/// every frame for every widget on screen. egui lays text out by those advances
-/// plus each glyph pair's kerning (`pair_kerning` in epaint's `text_layout.rs`),
-/// which this leaves out. The sum still matches the galley for the UI font,
-/// Onest, only because it has no legacy `kern` table for egui to read; a font
-/// that has one would measure a little wide here.
+/// every frame for every widget on screen. egui shapes text with harfrust, so a
+/// galley also carries each glyph pair's GPOS kerning, which this leaves out: a
+/// string with kerned pairs can measure a little off here. The chip only uses it
+/// to decide whether to break the row first, where that much doesn't matter.
 fn text_width(ui: &egui::Ui, text: &str, style: &egui::TextStyle) -> f32 {
     let font = style.resolve(ui.style());
-    ui.fonts(|f| text.chars().map(|c| f.glyph_width(&font, c)).sum())
+    ui.fonts_mut(|f| text.chars().map(|c| f.glyph_width(&font, c)).sum())
 }
 
 /// Start a fresh row when a widget `width` wide wouldn't fit in what is left of

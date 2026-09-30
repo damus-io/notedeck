@@ -101,7 +101,7 @@ impl Error {
 }
 
 pub fn show_one_error_message(ui: &mut egui::Ui, message: &str) {
-    let id = ui.id().with(("error", message));
+    let id = ui.scope_id().with(("error", message));
     let res: Option<()> = ui.ctx().data(|d| d.get_temp(id));
 
     if res.is_none() {

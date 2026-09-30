@@ -194,7 +194,7 @@ fn header_ui(
                 TextEdit::singleline(&mut editor.title)
                     .hint_text("Untitled")
                     .font(egui::TextStyle::Heading)
-                    .frame(false)
+                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
                     .desired_width(f32::INFINITY),
             );
         });
@@ -252,9 +252,7 @@ fn segment_ui(
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
     // Painted, not a real widget, so publish an accessible label + selected state
     // for screen readers (and so kittest can find the segment by name).
-    resp.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label)
-    });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     let fill = if selected {
         Some(theme.interactive_hover)
     } else if resp.hovered() {
@@ -327,13 +325,16 @@ fn centered_column_ui(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui
 /// highlighted span and Paste ([`PasteBehavior::Append`]) drops the clipboard over
 /// the selection or at the caret (never clearing the whole note).
 fn source_panel_ui(ui: &mut egui::Ui, content: &mut String, ctx: &mut AppContext, rows: usize) {
-    let resp = ui.add(
-        TextEdit::multiline(content)
-            .code_editor()
-            .frame(false)
-            .desired_width(f32::INFINITY)
-            .desired_rows(rows),
-    );
+    let resp = ui
+        .add(
+            TextEdit::multiline(content)
+                .code_editor()
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
+                .desired_width(f32::INFINITY)
+                .desired_rows(rows),
+        )
+        // The body has no label or placeholder of its own to be read by.
+        .accessible_name("Note body");
     input_context(ui, &resp, ctx.clipboard, content, PasteBehavior::Append);
 }
 
@@ -654,14 +655,14 @@ fn note_menu_row_ui(
                 buffer: row.title.clone(),
                 focus: true,
             });
-            ui.close_menu();
+            ui.close();
         }
         if ui.button("Delete").clicked() {
             *state = VaultState::ConfirmingDelete {
                 kind: row.kind,
                 d: row.d.clone(),
             };
-            ui.close_menu();
+            ui.close();
         }
     });
     action
@@ -752,7 +753,7 @@ fn note_delete_confirm_ui(ui: &egui::Ui, kind: VaultDocKind, title: &str) -> Del
     let shown = title.trim();
     let shown = if shown.is_empty() { "Untitled" } else { shown };
     let modal =
-        egui::Modal::new(egui::Id::new("notebook_note_delete_confirm")).show(ui.ctx(), |ui| {
+        egui::Modal::new(egui::Id::unique("notebook_note_delete_confirm")).show(ui.ctx(), |ui| {
             ui.set_max_width(320.0);
             ui.heading(heading);
             ui.add_space(SPACING_SM);
@@ -790,7 +791,7 @@ fn drag_chip_ui(ui: &egui::Ui, theme: &ColorTheme, title: &str) {
     let Some(pos) = ui.ctx().pointer_interact_pos() else {
         return;
     };
-    egui::Area::new(egui::Id::new("notebook-vault-drag-chip"))
+    egui::Area::new(egui::Id::unique("notebook-vault-drag-chip"))
         .order(egui::Order::Tooltip)
         .fixed_pos(pos + egui::vec2(12.0, 8.0))
         .interactable(false)
@@ -852,7 +853,7 @@ fn note_row_ui(
         inner.max,
     );
 
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(text_rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),

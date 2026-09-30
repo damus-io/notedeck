@@ -463,24 +463,24 @@ impl Horizon {
             self.editing = None;
         }
 
-        egui::TopBottomPanel::top("horizon_toolbar")
+        egui::Panel::top("horizon_toolbar")
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
-            .show_inside(ui, |ui| self.toolbar(ui, narrow));
+            .show(ui, |ui| self.toolbar(ui, narrow));
 
         // On phones the sidebar + inspector leave the timeline no usable room,
         // so collapse to a single column and move the view switcher into a
         // bottom bar. The tap-to-open detail sheet is a later card.
         if narrow {
-            egui::TopBottomPanel::bottom("horizon_mobile_bar")
+            egui::Panel::bottom("horizon_mobile_bar")
                 .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 8)))
-                .show_inside(ui, |ui| self.mobile_view_bar(ui));
+                .show(ui, |ui| self.mobile_view_bar(ui));
         } else {
             let today = self.now.date_naive();
-            egui::SidePanel::left("horizon_sidebar")
+            egui::Panel::left("horizon_sidebar")
                 .resizable(true)
-                .default_width(300.0)
+                .default_size(300.0)
                 .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 4)))
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     let action = sidebar::show(
                         ui,
                         self.focus,
@@ -504,11 +504,11 @@ impl Horizon {
             // opens as its own detail view — see hole-grape-artist).
             if wide {
                 let selected_locked = self.selected.is_some_and(|i| self.is_locked(i));
-                egui::SidePanel::right("horizon_inspector")
+                egui::Panel::right("horizon_inspector")
                     .resizable(true)
-                    .default_width(320.0)
+                    .default_size(320.0)
                     .frame(panel_frame().inner_margin(egui::Margin::symmetric(16, 4)))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         inspector::show(ui, &self.blocks, self.selected, selected_locked);
                     });
             }
@@ -516,7 +516,7 @@ impl Horizon {
 
         egui::CentralPanel::default()
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(8, 4)))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 if show_detail {
                     self.event_detail(ui);
                 } else {

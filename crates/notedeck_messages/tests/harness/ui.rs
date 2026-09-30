@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use egui_kittest::kittest::{Key, Queryable};
+use egui_kittest::kittest::Queryable;
 
 use super::{step_device_frames, DeviceHarness, TEST_TIMEOUT};
 
@@ -16,15 +16,16 @@ pub fn open_conversation_via_ui(sender: &mut DeviceHarness, recipient_npub: &str
     step_device_frames(sender, 2);
 
     wait_for_label(sender, "Search profiles...", TEST_TIMEOUT);
-    sender.get_by_label("Search profiles...").click();
+    sender.get_by_label("Search profiles...").click_accesskit();
     sender.step();
+    sender.get_by_label("Search profiles...").focus();
     sender
         .get_by_label("Search profiles...")
         .type_text(recipient_npub);
     step_device_frames(sender, 2);
 
     wait_for_label(sender, recipient_npub, TEST_TIMEOUT);
-    sender.get_by_label(recipient_npub).click();
+    sender.get_by_label(recipient_npub).click_accesskit();
     step_device_frames(sender, 3);
     wait_for_label(sender, "Message composer", TEST_TIMEOUT);
 }
@@ -32,8 +33,9 @@ pub fn open_conversation_via_ui(sender: &mut DeviceHarness, recipient_npub: &str
 /// Sends one message through the Messages UI composer and Enter keypath.
 pub fn send_message_via_ui(sender: &mut DeviceHarness, content: &str) {
     wait_for_label(sender, "Message composer", TEST_TIMEOUT);
-    sender.get_by_label("Message composer").click();
+    sender.get_by_label("Message composer").click_accesskit();
     sender.step();
+    sender.get_by_label("Message composer").focus();
     sender.get_by_label("Message composer").type_text(content);
     sender.step();
     press_message_composer_enter(sender);
@@ -42,11 +44,10 @@ pub fn send_message_via_ui(sender: &mut DeviceHarness, content: &str) {
 /// Presses Enter in the existing Messages composer without changing its text.
 pub fn press_message_composer_enter(sender: &mut DeviceHarness) {
     wait_for_label(sender, "Message composer", TEST_TIMEOUT);
-    sender.get_by_label("Message composer").click();
+    sender.get_by_label("Message composer").click_accesskit();
     sender.step();
-    sender
-        .get_by_label("Message composer")
-        .key_press(Key::Enter);
+    sender.get_by_label("Message composer").focus();
+    sender.key_press(egui::Key::Enter);
     step_device_frames(sender, 2);
 }
 

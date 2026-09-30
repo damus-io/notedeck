@@ -220,7 +220,7 @@ impl<'a> SessionListUi<'a> {
         };
         let queue_priority = self.focus_queue.get_session_priority(session.id);
 
-        let rename_id = egui::Id::new("session_rename_state");
+        let rename_id = egui::Id::unique("session_rename_state");
         let mut renaming: Option<(SessionId, String)> =
             ui.data(|d| d.get_temp::<(SessionId, String)>(rename_id));
         let is_renaming = renaming
@@ -296,7 +296,7 @@ impl<'a> SessionListUi<'a> {
 
         // Long-press to rename (mobile)
         if !is_renaming {
-            let press_id = egui::Id::new("session_long_press");
+            let press_id = egui::Id::unique("session_long_press");
             if response.is_pointer_button_down_on() {
                 let now = ui.input(|i| i.time);
                 let start: Option<PressStart> = ui.data(|d| d.get_temp(press_id));
@@ -317,7 +317,7 @@ impl<'a> SessionListUi<'a> {
 
         let ctrl_held = self.ctrl_held;
         let is_agentic = session.ai_mode == AiMode::Agentic;
-        let confirm_id = egui::Id::new("confirm_delete_worktree").with(session.id);
+        let confirm_id = egui::Id::unique("confirm_delete_worktree").with(session.id);
 
         notedeck_ui::context_menu::context_menu(&response, |ui| {
             ui.horizontal(|ui| {
@@ -325,7 +325,7 @@ impl<'a> SessionListUi<'a> {
                     let rename_state = (session.id, session.details.display_title().to_string());
                     ui.ctx()
                         .data_mut(|d| d.insert_temp(rename_id, rename_state));
-                    ui.close_menu();
+                    ui.close();
                 }
                 if is_active && ctrl_held {
                     keybind_hint(ui, "⌃⇧R");
@@ -335,7 +335,7 @@ impl<'a> SessionListUi<'a> {
                 ui.horizontal(|ui| {
                     if ui.button("Duplicate").clicked() {
                         action = Some(SessionListAction::Duplicate(session.id));
-                        ui.close_menu();
+                        ui.close();
                     }
                     if is_active && ctrl_held {
                         keybind_hint(ui, "⌃⇧T");
@@ -344,7 +344,7 @@ impl<'a> SessionListUi<'a> {
                 ui.horizontal(|ui| {
                     if ui.button("Clear").clicked() {
                         action = Some(SessionListAction::Reset(session.id));
-                        ui.close_menu();
+                        ui.close();
                     }
                     if is_active && ctrl_held {
                         keybind_hint(ui, "⌃⇧K");
@@ -354,7 +354,7 @@ impl<'a> SessionListUi<'a> {
             ui.horizontal(|ui| {
                 if ui.button("Delete").clicked() {
                     action = Some(SessionListAction::Delete(session.id));
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ctrl_held {
                     keybind_hint(ui, "Del");
@@ -368,7 +368,7 @@ impl<'a> SessionListUi<'a> {
                 .unwrap_or(false);
             if is_git_repo && ui.button("New worktree from this session").clicked() {
                 action = Some(SessionListAction::NewWorktree(session.id));
-                ui.close_menu();
+                ui.close();
             }
             let is_worktree = is_git_repo
                 && session
@@ -594,7 +594,7 @@ fn inline_rename_ui(
     buf: &mut String,
 ) -> Option<RenameOutcome> {
     let edit_rect = response.rect.shrink2(egui::vec2(8.0, 4.0));
-    let edit = egui::Area::new(egui::Id::new("rename_textedit"))
+    let edit = egui::Area::new(egui::Id::unique("rename_textedit"))
         .fixed_pos(edit_rect.min)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
@@ -602,7 +602,7 @@ fn inline_rename_ui(
             ui.add(
                 egui::TextEdit::singleline(buf)
                     .font(egui::FontId::proportional(14.0))
-                    .frame(false),
+                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2))),
             )
         })
         .inner;
@@ -781,7 +781,7 @@ fn render_row_right_side(
             let hint_rect = egui::Rect::from_center_size(center, egui::vec2(hint_width, hint_size));
             ui.interact(
                 hint_rect,
-                ui.id().with(("keybind_tip", *hint_text)),
+                ui.scope_id().with(("keybind_tip", *hint_text)),
                 Sense::hover(),
             )
             .on_hover_text(*tooltip);
@@ -802,7 +802,7 @@ fn render_row_right_side(
             );
             let dot_response = ui.interact(
                 dot_rect,
-                ui.id().with(("dismiss_dot", session_id)),
+                ui.scope_id().with(("dismiss_dot", session_id)),
                 egui::Sense::click(),
             );
             if dot_response.clicked() {
@@ -873,7 +873,7 @@ fn render_agent_row_right_side(
             let hint_rect = egui::Rect::from_center_size(center, egui::vec2(hint_width, hint_size));
             ui.interact(
                 hint_rect,
-                ui.id().with(("keybind_tip", *hint_text)),
+                ui.scope_id().with(("keybind_tip", *hint_text)),
                 Sense::hover(),
             )
             .on_hover_text(*tooltip);
@@ -896,7 +896,7 @@ fn render_agent_row_right_side(
             );
             let dot_response = ui.interact(
                 dot_rect,
-                ui.id().with(("dismiss_dot", session_id)),
+                ui.scope_id().with(("dismiss_dot", session_id)),
                 egui::Sense::click(),
             );
             if dot_response.clicked() {
@@ -1512,7 +1512,7 @@ fn cwd_folder_ui(
                 hostname.to_string(),
                 cwd_group.cwd.clone(),
             ));
-            ui.close_menu();
+            ui.close();
         }
     });
 
@@ -1572,12 +1572,12 @@ fn delete_worktree_menu_item(
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(confirm_id, false));
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Delete").clicked() {
                 action = Some(SessionListAction::DeleteWorktree(session_id));
                 ui.ctx().data_mut(|d| d.insert_temp(confirm_id, false));
-                ui.close_menu();
+                ui.close();
             }
         });
     } else if ui.button("Delete worktree").clicked() {
@@ -1597,7 +1597,10 @@ mod tests {
     use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::SessionManager;
     use egui::Event;
-    use egui_kittest::{kittest::Queryable, Harness};
+    use egui_kittest::{
+        kittest::{NodeT, Queryable},
+        Harness,
+    };
     use std::path::PathBuf;
 
     struct SessionListHarnessState {
@@ -1675,7 +1678,10 @@ mod tests {
         harness.run();
 
         let header = harness.get_by_label(harness.state().ui.cwd_label.as_str());
-        let bounds = header.raw_bounds().expect("cwd header bounds");
+        let bounds = header
+            .accesskit_node()
+            .raw_bounds()
+            .expect("cwd header bounds");
         let center = egui::pos2(
             ((bounds.x0 + bounds.x1) / 2.0) as f32,
             ((bounds.y0 + bounds.y1) / 2.0) as f32,
@@ -1693,9 +1699,11 @@ mod tests {
             pressed: false,
             modifiers: egui::Modifiers::NONE,
         });
-        harness.step();
+        // The menu's first frame is an invisible sizing pass; settle so its
+        // items are laid out and reachable.
+        harness.run();
 
-        harness.get_by_label("New Session").click();
+        harness.get_by_label("New Session").click_accesskit();
         harness.run();
 
         match harness.state().action.as_ref() {
@@ -1842,7 +1850,7 @@ mod tests {
 
                 // A multi-worktree "notedeck" project: main checkout + two
                 // worktrees, all sharing one repo root.
-                let mut wt = |sm: &mut SessionManager, cwd: &str, title: &str| {
+                let wt = |sm: &mut SessionManager, cwd: &str, title: &str| {
                     let id =
                         sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
                     let s = sm.get_mut(id).expect("session");

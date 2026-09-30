@@ -12,7 +12,7 @@ pub fn file_update_ui(update: &FileUpdate, is_local: bool, ui: &mut Ui) {
     let can_expand = is_local && matches!(update.update_type, FileUpdateType::Edit { .. });
 
     // egui temp state for how many extra lines above/below
-    let expand_id = ui.id().with("diff_expand").with(&update.file_path);
+    let expand_id = ui.scope_id().with("diff_expand").with(&update.file_path);
     let (extra_above, extra_below): (usize, usize) = if can_expand {
         ui.data(|d| d.get_temp(expand_id).unwrap_or((0, 0)))
     } else {

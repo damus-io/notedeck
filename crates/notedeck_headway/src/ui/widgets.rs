@@ -160,9 +160,9 @@ pub(super) fn tinted_control(
     let desired = egui::vec2(galley.size().x + 2.0 * pad_x, height);
     let (rect, response) = ui.allocate_exact_size(desired, sense);
     let kind = if sense.senses_click() {
-        egui::WidgetType::Button
+        egui::Role::Button
     } else {
-        egui::WidgetType::Label
+        egui::Role::Label
     };
     response.widget_info(|| egui::WidgetInfo::labeled(kind, ui.is_enabled(), galley.text()));
     if !ui.is_rect_visible(rect) {
@@ -256,9 +256,7 @@ pub(super) fn round_icon_button(
 ) -> egui::Response {
     let sense = egui::Sense::click();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(diameter, diameter), sense);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -353,7 +351,7 @@ impl MiddleElided {
         let width = max_width.floor();
         if self.width != Some(width) {
             let font = egui::TextStyle::Small.resolve(ui.style());
-            self.shown = ui.fonts(|fonts| {
+            self.shown = ui.fonts_mut(|fonts| {
                 elide_middle(&self.full, width, |s| {
                     fonts
                         .layout_no_wrap(s.to_owned(), font.clone(), color)
@@ -377,7 +375,11 @@ impl MiddleElided {
 /// `text` as it is if `measure` says it fits in `max_width`, else cut in the
 /// middle to the most characters that do fit around a `…`. The tail keeps
 /// twice the head's share, since the end of a path names the repo.
-pub(super) fn elide_middle(text: &str, max_width: f32, measure: impl Fn(&str) -> f32) -> String {
+pub(super) fn elide_middle(
+    text: &str,
+    max_width: f32,
+    mut measure: impl FnMut(&str) -> f32,
+) -> String {
     if text.is_empty() || measure(text) <= max_width {
         return text.to_owned();
     }

@@ -42,7 +42,7 @@ impl<'a, 'd> QuoteRepostView<'a, 'd> {
     }
 
     fn id(col: usize, note_id: &[u8; 32]) -> egui::Id {
-        egui::Id::new(("quote_repost", col, note_id))
+        egui::Id::unique(("quote_repost", col, note_id))
     }
 
     pub fn scroll_id(col: usize, note_id: &[u8; 32]) -> egui::Id {

@@ -271,12 +271,13 @@ mod tests {
     fn with_ui(cache: &mut StyleCache, mut f: impl FnMut(&mut StyleCache, &mut Ui)) -> Arc<Style> {
         let ctx = egui::Context::default();
         let mut out = None;
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 f(cache, ui);
                 out = Some(ui.style().clone());
             });
-        });
+        })
+        .drop_without_applying_deltas();
         out.expect("panel ran")
     }
 
@@ -297,8 +298,8 @@ mod tests {
         let mut cache = StyleCache::new();
         let mut styles = Vec::new();
 
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 for _ in 0..3 {
                     ui.horizontal(|ui| {
                         cache.item_spacing_x(ui, 4.0);
@@ -306,7 +307,8 @@ mod tests {
                     });
                 }
             });
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert_eq!(cache.len(), 1, "one variant for one spacing");
         assert!(Arc::ptr_eq(&styles[0], &styles[1]));
@@ -318,7 +320,7 @@ mod tests {
     fn inherited_spacing_derives_nothing() {
         let mut cache = StyleCache::new();
         let ctx = egui::Context::default();
-        let inherited = ctx.style().spacing.item_spacing;
+        let inherited = ctx.global_style().spacing.item_spacing;
 
         with_ui(&mut cache, |cache, ui| {
             cache.item_spacing(ui, inherited);
@@ -335,8 +337,8 @@ mod tests {
         let mut cache = StyleCache::new();
         let mut derived = Vec::new();
 
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.horizontal(|ui| {
                     cache.item_spacing_x(ui, 4.0);
                     derived.push(ui.style().clone());
@@ -348,7 +350,8 @@ mod tests {
                     derived.push(ui.style().clone());
                 });
             });
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert_eq!(cache.len(), 2);
         assert!(!Arc::ptr_eq(&derived[0], &derived[1]));
@@ -366,8 +369,8 @@ mod tests {
         let mut cache = StyleCache::new();
         let mut derived = Vec::new();
 
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 for _ in 0..3 {
                     ui.horizontal(|ui| {
                         // Force a fresh `Arc` holding an identical `Style`,
@@ -380,7 +383,8 @@ mod tests {
                     });
                 }
             });
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert_eq!(cache.len(), 1, "rebased, not copied");
         assert!(Arc::ptr_eq(&derived[0], &derived[1]));
@@ -442,15 +446,16 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = StyleCache::new();
 
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 for i in 0..(MAX_VARIANTS * 3) {
                     ui.horizontal(|ui| {
                         cache.item_spacing_x(ui, i as f32);
                     });
                 }
             });
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert!(cache.len() <= MAX_VARIANTS);
     }

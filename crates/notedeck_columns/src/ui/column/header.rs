@@ -89,7 +89,7 @@ impl<'a> NavTitle<'a> {
                 );
 
                 let interact_rect =
-                    child_ui.interact(rect, child_ui.id().with("drag"), Sense::drag());
+                    child_ui.interact(rect, child_ui.scope_id().with("drag"), Sense::drag());
                 if interact_rect.drag_started_by(egui::PointerButton::Primary) {
                     child_ui
                         .ctx()
@@ -226,7 +226,7 @@ impl<'a> NavTitle<'a> {
     }
 
     fn delete_button_section(&mut self, ui: &mut egui::Ui) -> bool {
-        let id = ui.id().with("title");
+        let id = ui.scope_id().with("title");
 
         let delete_button_resp = self.delete_column_button(ui, 32.0);
         if delete_button_resp.clicked() {
@@ -269,7 +269,7 @@ impl<'a> NavTitle<'a> {
 
     // returns the column index to switch to, if any
     fn move_button_section(&mut self, ui: &mut egui::Ui) -> Option<usize> {
-        let cur_id = ui.id().with("move");
+        let cur_id = ui.scope_id().with("move");
         let mut move_resp = ui
             .add(grab_button())
             .on_hover_cursor(egui::CursorIcon::PointingHand);

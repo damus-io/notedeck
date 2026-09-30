@@ -874,14 +874,14 @@ fn board_pane_ui(
             // bottom before the columns lay out, since their scroll area takes
             // every point of height left; the columns size off what remains.
             if let Some(hints) = keys::key_hints(state) {
-                egui::TopBottomPanel::bottom("headway-key-hints")
+                egui::Panel::bottom("headway-key-hints")
                     .resizable(false)
                     .show_separator_line(false)
                     .frame(egui::Frame::new().inner_margin(egui::Margin {
                         top: SPACING_MD as i8,
                         ..Default::default()
                     }))
-                    .show_inside(ui, |ui| keys::key_hints_ui(ui, theme, hints));
+                    .show(ui, |ui| keys::key_hints_ui(ui, theme, hints));
             }
 
             egui::ScrollArea::horizontal()
@@ -1003,7 +1003,7 @@ fn pane_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &BoardUiState) {
     let Some(strip) = keys::pane_key_hints(state) else {
         return;
     };
-    egui::TopBottomPanel::bottom("headway-pane-key-hints")
+    egui::Panel::bottom("headway-pane-key-hints")
         .resizable(false)
         .show_separator_line(false)
         .frame(egui::Frame::new().inner_margin(egui::Margin {
@@ -1012,7 +1012,7 @@ fn pane_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &BoardUiState) {
             top: SPACING_MD as i8,
             bottom: SPACING_MD as i8,
         }))
-        .show_inside(ui, |ui| keys::key_hints_ui(ui, theme, strip));
+        .show(ui, |ui| keys::key_hints_ui(ui, theme, strip));
 }
 
 /// Find a card anywhere on the board, returning its column index and view.

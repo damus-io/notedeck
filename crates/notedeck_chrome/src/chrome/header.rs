@@ -198,18 +198,11 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
         7.0,
         ui.visuals().text_color(),
     );
-    let popup_id = ui.make_persistent_id("chrome_history_popup");
-    if clock_resp.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(popup_id));
-    }
-
+    // A click on the clock toggles the list; picking an entry closes it.
     let mut jump_to: Option<usize> = None;
-    egui::popup_below_widget(
-        ui,
-        popup_id,
-        &clock_resp,
-        egui::PopupCloseBehavior::CloseOnClick,
-        |ui| {
+    egui::Popup::from_toggle_button_response(&clock_resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
             ui.set_min_width(220.0);
             let Some(nav) = chrome.global_nav.as_ref() else {
                 return;
@@ -231,8 +224,7 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
                     jump_to = Some(i);
                 }
             }
-        },
-    );
+        });
     if let Some(index) = jump_to {
         chrome.global_go_to(index);
     }
@@ -361,7 +353,7 @@ pub(super) fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mu
             // stay in sync with app switches that happen elsewhere (Ctrl+Tab, the
             // sidebar, note actions). It must be keyed off the *same* ui we hand
             // to `Tabs::show`.
-            let tabs_id = ui.id().with("tabs");
+            let tabs_id = ui.scope_id().with("tabs");
             ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
 
             egui_tabs::Tabs::new(n_tabs as i32)

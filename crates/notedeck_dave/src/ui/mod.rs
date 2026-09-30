@@ -383,11 +383,11 @@ fn backend_picker_row(
 
     let mut result = None;
 
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
         ui.horizontal(|ui| {
             // Model dropdown: index 0 = "Default", then each override model
             if !models.is_empty() {
-                let combo_id = ui.id().with("model").with(idx);
+                let combo_id = ui.scope_id().with("model").with(idx);
                 egui::ComboBox::from_id_salt(combo_id)
                     .selected_text(egui::RichText::new(display_name).size(11.0))
                     .width(160.0)
@@ -667,7 +667,7 @@ pub fn desktop_ui(
     );
 
     let session_action = ui
-        .allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+        .scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
             egui::Frame::new()
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 12))
@@ -703,7 +703,7 @@ pub fn desktop_ui(
     if show_task_panel {
         if let Some(session) = session_manager.get_active() {
             let chat = &session.chat;
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(task_panel_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(task_panel_rect), |ui| {
                 egui::Frame::new()
                     .fill(ui.visuals().faint_bg_color)
                     .inner_margin(egui::Margin::symmetric(8, 12))
@@ -715,7 +715,7 @@ pub fn desktop_ui(
     }
 
     let chat_response = ui
-        .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
+        .scope_builder(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
             if let Some(session) = session_manager.get_active_mut() {
                 build_dave_ui(
                     session,
@@ -1013,7 +1013,7 @@ pub fn handle_key_action(
         KeyAction::RenameAgent => {
             if let Some(id) = session_manager.active_id() {
                 if let Some(session) = session_manager.get(id) {
-                    let rename_id = egui::Id::new("session_rename_state");
+                    let rename_id = egui::Id::unique("session_rename_state");
                     let rename_state = (id, session.details.display_title().to_string());
                     ctx.data_mut(|d| d.insert_temp(rename_id, rename_state));
                 }
@@ -1358,6 +1358,7 @@ mod tests {
     use crate::ui::AgentScene;
     use egui::{Key, Modifiers};
     use egui_kittest::Harness;
+    use notedeck::test_harness::PressKey;
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
 
@@ -1457,10 +1458,12 @@ mod tests {
         let Some(session) = d.session_manager.get_active_mut() else {
             return;
         };
-        let input = ui.add(
-            egui::TextEdit::singleline(&mut session.input)
-                .id(egui::Id::new(("dave_input", session.id))),
-        );
+        let input = ui
+            .add(
+                egui::TextEdit::singleline(&mut session.input)
+                    .id(egui::Id::unique(("dave_input", session.id))),
+            )
+            .accessible_name("test field");
         if std::mem::take(&mut session.focus_requested) {
             input.request_focus();
         }
@@ -1470,7 +1473,7 @@ mod tests {
     fn a_chord_that_switched_sessions_hands_focus_to_the_new_input() {
         let mut harness = Harness::new_ui_state(chord_frame, Dispatch::new());
         let [first, second] = harness.state().sessions;
-        let input = |id: SessionId| egui::Id::new(("dave_input", id));
+        let input = |id: SessionId| egui::Id::unique(("dave_input", id));
         harness.ctx.memory_mut(|m| m.request_focus(input(first)));
         harness.run();
 
@@ -1513,7 +1516,7 @@ mod tests {
         harness.run();
         assert_eq!(
             harness.ctx.memory(|m| m.focused()),
-            Some(egui::Id::new(("dave_input", second)))
+            Some(egui::Id::unique(("dave_input", second)))
         );
     }
 

@@ -94,7 +94,7 @@ pub(crate) fn show(
             day_chips(&painter, cell, blocks, layout, max_chips);
 
             if ui
-                .interact(cell, ui.id().with(("month", idx)), Sense::click())
+                .interact(cell, ui.scope_id().with(("month", idx)), Sense::click())
                 .clicked()
             {
                 clicked = Some(date);

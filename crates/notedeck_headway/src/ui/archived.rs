@@ -22,7 +22,7 @@ pub(super) fn archived_sheet_ui(
         return;
     }
 
-    let screen = ui.ctx().screen_rect();
+    let screen = ui.ctx().content_rect();
     let pad = SPACING_LG;
     let sheet_width = if notedeck::ui::is_narrow(ui.ctx()) {
         screen.width() - 2.0 * pad
@@ -40,7 +40,7 @@ pub(super) fn archived_sheet_ui(
         close = true;
     }
 
-    egui::Area::new(egui::Id::new("headway-archived"))
+    egui::Area::new(egui::Id::unique("headway-archived"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ui.ctx(), |ui| {

@@ -31,7 +31,7 @@ struct DragCard(NoteId);
 
 /// The egui animation-manager id holding a card's 0→1 move-slide progress.
 fn move_progress_id(card: &NoteId) -> egui::Id {
-    egui::Id::new(("headway-move", card))
+    egui::Id::unique(("headway-move", card))
 }
 
 /// Begin (and retire) card slide animations for this frame.
@@ -45,7 +45,7 @@ fn move_progress_id(card: &NoteId) -> egui::Id {
 /// the card renders normally again.
 pub(super) fn start_move_anims(ctx: &egui::Context, view: &BoardView, state: &mut BoardUiState) {
     for col in &view.columns {
-        let col_key = egui::Id::new(&col.id);
+        let col_key = egui::Id::unique(&col.id);
         for card in &col.cards {
             let Some(prev) = state.card_pos.get(&card.id) else {
                 continue;
@@ -84,7 +84,7 @@ fn draw_moving_card(
     t: f32,
 ) {
     let pos = from.min + (dest.min - from.min) * egui::emath::easing::cubic_out(t);
-    egui::Area::new(egui::Id::new(("headway-move-ghost", card.id)))
+    egui::Area::new(egui::Id::unique(("headway-move-ghost", card.id)))
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
         .show(ui.ctx(), |ui| {
@@ -229,7 +229,7 @@ fn cards_drop_zone(
                         card.id,
                         CardPos {
                             rect: dest,
-                            col: egui::Id::new(&column.id),
+                            col: egui::Id::unique(&column.id),
                         },
                     );
                     // No ring while in flight, but a cursor card still scrolls its
@@ -246,7 +246,7 @@ fn cards_drop_zone(
                     continue;
                 }
 
-                let card_id = egui::Id::new(("headway-card", card.id));
+                let card_id = egui::Id::unique(("headway-card", card.id));
                 let response = ui
                     .dnd_drag_source(card_id, DragCard(card.id), |ui| {
                         card_ui(ui, theme, card);
@@ -268,7 +268,7 @@ fn cards_drop_zone(
                         if let Some(uri) = issue_nostr_uri(&card.id) {
                             ui.ctx().copy_text(uri);
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                     // Cross-board: relocate (move) or share (link) the card onto
                     // another of the account's boards. Membership is
@@ -355,7 +355,7 @@ fn cards_drop_zone(
                     card.id,
                     CardPos {
                         rect: response.rect,
-                        col: egui::Id::new(&column.id),
+                        col: egui::Id::unique(&column.id),
                     },
                 );
             }
@@ -416,7 +416,7 @@ fn card_board_submenu(
                     to_board: board.id.clone(),
                     op,
                 }));
-                ui.close_menu();
+                ui.close();
             }
         }
     });
@@ -461,7 +461,7 @@ fn card_parent_menu(
                             parent: Some(parent.id),
                         });
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -471,7 +471,7 @@ fn card_parent_menu(
             card: card.id,
             parent: None,
         });
-        ui.close_menu();
+        ui.close();
     }
 }
 
@@ -512,7 +512,7 @@ fn card_blocker_menu(
                         card: card.id,
                         on: blocker.id,
                     });
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -525,7 +525,7 @@ fn card_blocker_menu(
                         card: card.id,
                         on: edge.id,
                     });
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -769,14 +769,14 @@ fn column_menu(
             if let Some(uri) = board_nostr_uri(&view.author, &view.id) {
                 ui.ctx().copy_text(uri);
             }
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
         if ui.button("Rename").clicked() {
             state.edit_text = view.columns[col_idx].name.clone();
             state.edit = InlineEdit::RenameColumn(col_idx);
             state.focus_edit = true;
-            ui.close_menu();
+            ui.close();
         }
         if ui
             .add_enabled(col_idx > 0, egui::Button::new("Move left"))
@@ -786,7 +786,7 @@ fn column_menu(
                 from: col_idx,
                 to: col_idx - 1,
             });
-            ui.close_menu();
+            ui.close();
         }
         if ui
             .add_enabled(col_idx + 1 < n, egui::Button::new("Move right"))
@@ -796,7 +796,7 @@ fn column_menu(
                 from: col_idx,
                 to: col_idx + 1,
             });
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
         if ui
@@ -804,7 +804,7 @@ fn column_menu(
             .clicked()
         {
             *action = Some(BoardAction::RemoveColumn { col: col_idx });
-            ui.close_menu();
+            ui.close();
         }
     });
     // Open this frame: hold the board keys off it (see `grid_menu_open`).

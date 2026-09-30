@@ -40,6 +40,7 @@ pub use widgets::{
     SEARCH_INPUT_HEIGHT,
 };
 
+use egui::emath::GuiRounding;
 use egui::{Label, Margin, Pos2, RichText};
 
 /// This is kind of like the Widget trait but is meant for larger top-level
@@ -72,8 +73,7 @@ pub fn hline(ui: &egui::Ui) {
 pub fn hline_with_width(ui: &egui::Ui, range: egui::Rangef) {
     // pixel perfect horizontal line
     let rect = ui.available_rect_before_wrap();
-    #[allow(deprecated)]
-    let resize_y = ui.painter().round_to_pixel(rect.top()) - 0.5;
+    let resize_y = rect.top().round_to_pixels(ui.pixels_per_point()) - 0.5;
     let stroke = ui.style().visuals.widgets.noninteractive.bg_stroke;
     ui.painter().hline(range, resize_y, stroke);
 }
@@ -94,10 +94,14 @@ pub fn include_input(ui: &mut egui::Ui, resp: &egui::Response) {
     }
 
     ui.data_mut(|d| {
-        let id = egui::Id::new(INPUT_RECT_KEY);
+        let id = egui::Id::unique(INPUT_RECT_KEY);
         match d.get_temp::<egui::Rect>(id) {
-            Some(r) => d.insert_temp(id, resp.rect.union(r)),
-            None => d.insert_temp(id, resp.rect),
+            Some(r) => {
+                d.insert_temp(id, resp.rect.union(r));
+            }
+            None => {
+                d.insert_temp(id, resp.rect);
+            }
         }
     })
 }
@@ -105,13 +109,13 @@ pub fn include_input(ui: &mut egui::Ui, resp: &egui::Response) {
 /// Set the last input rect for keyboard visibility purposes. We use this to move the screen up if
 /// a soft keyboard intersects with the input box
 pub fn input_rect(ui: &mut egui::Ui) -> Option<egui::Rect> {
-    ui.data(|d| d.get_temp(egui::Id::new(INPUT_RECT_KEY)))
+    ui.data(|d| d.get_temp(egui::Id::unique(INPUT_RECT_KEY)))
 }
 
 /// Set the last input rect for keyboard visibility purposes. We use this to move the screen up if
 /// a soft keyboard intersects with the input box
 pub fn clear_input_rect(ui: &mut egui::Ui) {
-    ui.data_mut(|d| d.remove::<egui::Rect>(egui::Id::new(INPUT_RECT_KEY)))
+    ui.data_mut(|d| d.remove::<egui::Rect>(egui::Id::unique(INPUT_RECT_KEY)))
 }
 
 /// Center the galley on the center pos, returning the position of the top left position of the galley,

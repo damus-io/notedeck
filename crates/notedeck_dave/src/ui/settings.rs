@@ -623,6 +623,7 @@ mod tests {
     use egui::{Key, Modifiers};
     use egui_kittest::kittest::Queryable;
     use egui_kittest::Harness;
+    use notedeck::test_harness::PressKey;
 
     /// The panel, the settings it edits, and whatever `overlay_ui` last
     /// returned.
@@ -669,9 +670,10 @@ mod tests {
     /// A settings overlay over default settings, with the leader button
     /// already clicked so it is waiting for a key.
     fn capturing_harness() -> Harness<'static, State> {
-        let mut harness = Harness::new_ui_state(overlay, State::new(DaveSettings::default()));
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .build_ui_state(overlay, State::new(DaveSettings::default()));
         harness.run();
-        harness.get_by_label("Ctrl+;").click();
+        harness.get_by_label("Ctrl+;").click_accesskit();
         harness.run();
         assert!(harness.state().panel.is_capturing_leader());
         harness
@@ -736,7 +738,8 @@ mod tests {
     /// that Save hands back, and nothing changes until then.
     #[test]
     fn session_env_edits_round_trip_into_saved_settings() {
-        let mut harness = Harness::new_ui_state(overlay, State::new(settings_with_env()));
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .build_ui_state(overlay, State::new(settings_with_env()));
         harness.run();
 
         // Edit: replace the key file path.
@@ -752,11 +755,15 @@ mod tests {
         harness.run();
 
         // Remove: rows follow the map's key order, so RUST_LOG is the second.
-        harness.get_all_by_label("×").nth(1).unwrap().click();
+        harness
+            .get_all_by_label("×")
+            .nth(1)
+            .unwrap()
+            .click_accesskit();
         harness.run();
 
         // Add: the new row's name field takes focus; Tab moves to its value.
-        harness.get_by_label("+ Add variable").click();
+        harness.get_by_label("+ Add variable").click_accesskit();
         harness.run();
         harness.get_by(|node| node.is_focused()).type_text("FOO");
         harness.run();
@@ -768,7 +775,7 @@ mod tests {
         harness.run();
 
         assert!(harness.state().action.is_none(), "only Save applies edits");
-        harness.get_by_label("Save").click();
+        harness.get_by_label("Save").click_accesskit();
         harness.run();
 
         let Some(SettingsPanelAction::Save(saved)) = &harness.state().action else {
@@ -843,7 +850,7 @@ mod tests {
             .panel
             .push_env_row("MY VAR".to_string(), "oops".to_string());
 
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(size)
             .renderer(notedeck::software_renderer())
             .build_ui_state(overlay, state);

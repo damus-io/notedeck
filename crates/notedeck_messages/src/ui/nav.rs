@@ -252,10 +252,10 @@ impl<'a> NavTitle<'a> {
                             .max_height(24.0)
                             .alt_text("New Chat");
                         let response = ui
-                            .add(egui::ImageButton::new(new_msg_icon).frame(false))
+                            .add(egui::Button::new(new_msg_icon).frame(false))
                             .on_hover_cursor(CursorIcon::PointingHand);
                         response.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New Chat")
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, "New Chat")
                         });
                         if response.clicked() {
                             tracing::info!("CLICKED NEW MSG");

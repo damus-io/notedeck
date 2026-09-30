@@ -40,8 +40,8 @@ pub fn shutdown_device(device: DeviceHarness) {
 }
 
 impl eframe::App for DeviceState {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        eframe::App::update(&mut self.notedeck, ctx, frame);
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        eframe::App::ui(&mut self.notedeck, ui, frame);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

@@ -79,7 +79,7 @@ impl<'a> AccountsView<'a> {
     }
 
     pub fn scroll_id() -> egui::Id {
-        egui::Id::new("accounts")
+        egui::Id::unique("accounts")
     }
 
     fn show_accounts(
@@ -111,7 +111,7 @@ impl<'a> AccountsView<'a> {
                         let max_size = egui::vec2(ui.available_width(), 77.0);
                         let resp = ui.allocate_response(max_size, egui::Sense::click());
                         account_context_menu(&resp, &account.key, i18n);
-                        ui.allocate_new_ui(UiBuilder::new().max_rect(resp.rect), |ui| {
+                        ui.scope_builder(UiBuilder::new().max_rect(resp.rect), |ui| {
                             let preview = SimpleProfilePreview::new(
                                 profile.as_ref(),
                                 img_cache,
@@ -180,7 +180,7 @@ fn account_context_menu(card_resp: &egui::Response, key: &Keypair, i18n: &mut Lo
                 Some(npub) => ui.ctx().copy_text(npub),
                 None => error!("could not encode pubkey as npub"),
             }
-            ui.close_menu();
+            ui.close();
         }
 
         // Read-only accounts have no secret key to hand back.
@@ -202,7 +202,7 @@ fn account_context_menu(card_resp: &egui::Response, key: &Keypair, i18n: &mut Lo
                 Some(nsec) => ui.ctx().copy_text(nsec),
                 None => error!("could not encode secret key as nsec"),
             }
-            ui.close_menu();
+            ui.close();
         }
     });
 }
@@ -368,7 +368,7 @@ mod tests {
                 });
             }
             harness.run_ok();
-            harness.get_by_label(item).click();
+            harness.get_by_label(item).click_accesskit();
             harness.run_ok();
         };
 

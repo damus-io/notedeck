@@ -25,34 +25,37 @@ struct HorizonTestState {
     setup_done: bool,
 }
 
-fn render_horizon(ctx: &egui::Context, state: &mut HorizonTestState) {
-    // Install fonts/styles and inject a signing account on the first frame,
-    // then seed the demo calendar before the app's first `update`.
-    if !state.setup_done {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
+fn render_horizon(ui: &mut egui::Ui, state: &mut HorizonTestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        // Install fonts/styles and inject a signing account on the first frame,
+        // then seed the demo calendar before the app's first `update`.
+        if !state.setup_done {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
 
-        let secret = state.account.secret_key.clone();
-        let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context();
-        if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-            let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
-            resp.unk_id_action
-                .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            let secret = state.account.secret_key.clone();
+            let pubkey = state.account.pubkey;
+            let app_ctx = &mut state.notedeck.app_context();
+            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
+                let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
+                resp.unk_id_action
+                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            }
+            app_ctx.select_account(&pubkey);
+
+            seed_calendar(app_ctx.ndb, &state.account.secret_key.secret_bytes());
+
+            state.setup_done = true;
+            return;
         }
-        app_ctx.select_account(&pubkey);
 
-        seed_calendar(app_ctx.ndb, &state.account.secret_key.secret_bytes());
-
-        state.setup_done = true;
-        return;
-    }
-
-    let mut app_ctx = state.notedeck.app_context();
-    // Drive the app's data load (subscribe + reload) then render.
-    state.horizon.update(&mut app_ctx);
-    egui::CentralPanel::default().show(ctx, |ui| {
-        state.horizon.render(&mut app_ctx, ui);
+        let mut app_ctx = state.notedeck.app_context();
+        // Drive the app's data load (subscribe + reload) then render.
+        state.horizon.update(&mut app_ctx);
+        egui::CentralPanel::default().show(ui, |ui| {
+            state.horizon.render(&mut app_ctx, ui);
+        });
     });
 }
 
@@ -257,7 +260,7 @@ fn horizon_harness(size: egui::Vec2) -> Harness<'static, HorizonTestState> {
         .with_size(size)
         .with_max_steps(16)
         .renderer(renderer())
-        .build_state(render_horizon, state);
+        .build_ui_state(render_horizon, state);
 
     // Seeded notes ingest on nostrdb's writer thread, so pump frames until the
     // app has reloaded them all before any snapshot — otherwise the first size

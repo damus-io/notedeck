@@ -108,7 +108,7 @@ impl RelayView<'_> {
     }
 
     pub fn scroll_id() -> egui::Id {
-        egui::Id::new("relay_scroll")
+        egui::Id::unique("relay_scroll")
     }
 }
 
@@ -132,7 +132,7 @@ impl<'a> RelayView<'a> {
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.ui(ui));
     }
 
     /// Show active relay websockets, grouped by whether the relay is advertised by the selected account.
@@ -400,7 +400,7 @@ fn show_add_relay_entry_ui(
     // Collapsed "add relay" button that expands into a relay-url entry. `id_key`
     // namespaces the entry's transient text buffer so multiple add fields do not
     // share state.
-    let id = ui.id().with(id_key);
+    let id = ui.scope_id().with(id_key);
     match id_string_map.get(&id) {
         None => {
             ui.add_space(4.0);
@@ -443,7 +443,7 @@ fn add_relay_entry(
                 ))
                 .text_style(NotedeckTextStyle::Body.text_style()),
             )
-            .vertical_align(Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .desired_width(f32::INFINITY)
             .min_size(Vec2::new(0.0, 40.0))
             .margin(Margin::same(12));
@@ -534,7 +534,7 @@ fn delete_button(dark_mode: bool) -> egui::Button<'static> {
         app_images::delete_light_image()
     };
 
-    egui::Button::image(img.max_width(14.0).tint(Color32::from_white_alpha(150))).frame(false)
+    egui::Button::new(img.max_width(14.0).tint(Color32::from_white_alpha(150))).frame(false)
 }
 
 /// The dot color standing in for a relay's connection state.

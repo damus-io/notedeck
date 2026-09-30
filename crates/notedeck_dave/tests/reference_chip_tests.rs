@@ -67,53 +67,56 @@ fn seed_session(ndb: &Ndb, secret: &[u8; 32], session_id: &str, title: &str, sta
         .unwrap();
 }
 
-fn render_ref_chip(ctx: &egui::Context, state: &mut RefChipState) {
-    if !state.setup_done {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
+fn render_ref_chip(ui: &mut egui::Ui, state: &mut RefChipState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.setup_done {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
 
-        let secret = state.account.secret_key.clone();
-        let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context();
-        if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            resp.unk_id_action
-                .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            let secret = state.account.secret_key.clone();
+            let pubkey = state.account.pubkey;
+            let app_ctx = &mut state.notedeck.app_context();
+            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                resp.unk_id_action
+                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            }
+            app_ctx.select_account(&pubkey);
+            state.setup_done = true;
+            return;
         }
-        app_ctx.select_account(&pubkey);
-        state.setup_done = true;
-        return;
-    }
 
-    let mut app_ctx = state.notedeck.app_context();
-    let body = state.body.clone();
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.add_space(16.0);
-        ui.vertical_centered(|ui| {
-            ui.set_max_width(560.0);
+        let mut app_ctx = state.notedeck.app_context();
+        let body = state.body.clone();
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.add_space(16.0);
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(560.0);
 
-            ui.label(egui::RichText::new("In a note").weak());
-            ui.add_space(4.0);
-            egui::Frame::group(ui.style())
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                    let mut note_ctx = app_ctx.note_context();
-                    render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
-                });
+                ui.label(egui::RichText::new("In a note").weak());
+                ui.add_space(4.0);
+                egui::Frame::group(ui.style())
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                        let mut note_ctx = app_ctx.note_context();
+                        render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
+                    });
 
-            ui.add_space(24.0);
+                ui.add_space(24.0);
 
-            ui.label(egui::RichText::new("In a Dave message").weak());
-            ui.add_space(4.0);
-            egui::Frame::group(ui.style())
-                .fill(ui.visuals().faint_bg_color)
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                    let mut note_ctx = app_ctx.note_context();
-                    render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
-                });
+                ui.label(egui::RichText::new("In a Dave message").weak());
+                ui.add_space(4.0);
+                egui::Frame::group(ui.style())
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                        let mut note_ctx = app_ctx.note_context();
+                        render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
+                    });
+            });
         });
     });
 }
@@ -143,7 +146,7 @@ fn build_harness() -> Harness<'static, RefChipState> {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(640.0, 380.0))
         .renderer(notedeck::software_renderer())
-        .build_state(render_ref_chip, state);
+        .build_ui_state(render_ref_chip, state);
     // First frame installs fonts + injects the account.
     harness.run_steps(2);
     harness

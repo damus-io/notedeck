@@ -168,7 +168,7 @@ fn cross_board_ref<'a>(
 /// The header filter field's pinned id, shared by the field itself and the `/`
 /// key that focuses it (see [`crate::keys`]).
 pub(crate) fn filter_field_id() -> egui::Id {
-    egui::Id::new("headway-filter-field")
+    egui::Id::unique("headway-filter-field")
 }
 
 /// React to a full cross-board reference pasted into the filter field: a

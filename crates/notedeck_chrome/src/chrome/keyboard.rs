@@ -145,7 +145,7 @@ fn soft_keyboard_anim(
     };
 
     // move screen up if virtual keyboard intersects with input_rect
-    let screen_rect = ui.ctx().screen_rect();
+    let screen_rect = ui.ctx().content_rect();
     let mut skb_rect: Option<Rect> = None;
 
     let keyboard_height =
@@ -158,7 +158,7 @@ fn soft_keyboard_anim(
 
     let anim_height =
         ui.ctx()
-            .animate_value_with_time(egui::Id::new("keyboard_anim"), keyboard_height, 0.1);
+            .animate_value_with_time(egui::Id::unique("keyboard_anim"), keyboard_height, 0.1);
 
     SoftKeyboardAnim {
         anim_height,

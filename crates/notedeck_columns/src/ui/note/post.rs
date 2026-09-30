@@ -145,7 +145,7 @@ impl<'a, 'd> PostView<'a, 'd> {
     /// constant, so the focus state stored for one column's composer doesn't
     /// collide with another column's.
     fn id(ui: &egui::Ui) -> egui::Id {
-        ui.id().with("post")
+        ui.scope_id().with("post")
     }
 
     pub fn scroll_id(ui: &egui::Ui) -> egui::Id {
@@ -210,7 +210,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             };
 
             layout_job.wrap.max_width = wrap_width;
-            ui.fonts(|f| f.layout_job(layout_job))
+            ui.fonts_mut(|f| f.layout_job(layout_job))
         };
 
         let textedit = TextEdit::multiline(&mut self.draft.buffer)
@@ -222,7 +222,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                 ))
                 .weak(),
             )
-            .frame(false)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
             .desired_width(ui.available_width())
             .layouter(&mut layouter);
 
@@ -256,11 +256,12 @@ impl<'a, 'd> PostView<'a, 'd> {
 
         let focused = out.response.has_focus();
 
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(PostView::id(ui), focused));
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(PostView::id(ui), focused);
+        });
 
         EditBoxResponse {
-            resp: out.response,
+            resp: out.response.response,
             mention_hints_drag_id,
         }
     }
@@ -831,7 +832,7 @@ fn get_cursor_index(cursor: &Option<CCursorRange>) -> Option<usize> {
     let range = cursor.as_ref()?;
 
     if range.primary.index == range.secondary.index {
-        Some(range.primary.index)
+        Some(range.primary.index.0)
     } else {
         None
     }
@@ -845,7 +846,7 @@ fn calculate_mention_hints_pos(out: &TextEditOutput, char_pos: usize) -> egui::P
             cur_pos += row.glyphs.len();
         } else if let Some(glyph) = row.glyphs.get(char_pos - cur_pos) {
             let mut pos = glyph.pos + out.galley_pos.to_vec2();
-            pos.y += row.rect.height();
+            pos.y += row.rect().height();
             return pos;
         }
     }

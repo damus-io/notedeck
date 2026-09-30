@@ -13,7 +13,7 @@ use egui::{Context, Id, Response};
 
 /// Well-known id for the chrome's pending autofocus request.
 fn autofocus_id() -> Id {
-    Id::new("notedeck_autofocus_request")
+    Id::unique("notedeck_autofocus_request")
 }
 
 /// Ask the active app's autofocus widget to grab keyboard focus this frame.

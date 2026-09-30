@@ -16,6 +16,9 @@ hex = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# egui no longer bundles fonts by default; harnesses that don't install
+# notedeck's own fonts fall back to egui's, as they did before 0.36.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
 tempfile = { workspace = true }

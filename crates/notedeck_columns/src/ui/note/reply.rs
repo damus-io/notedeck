@@ -42,7 +42,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
     }
 
     fn id(col: usize, note_id: &[u8; 32]) -> egui::Id {
-        egui::Id::new(("reply_view", col, note_id))
+        egui::Id::unique(("reply_view", col, note_id))
     }
 
     pub fn scroll_id(col: usize, note_id: &[u8; 32]) -> egui::Id {

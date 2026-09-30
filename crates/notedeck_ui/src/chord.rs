@@ -127,6 +127,7 @@ impl<P: Copy> ChordState<P> {
 mod tests {
     use super::*;
     use egui_kittest::Harness;
+    use notedeck::test_harness::PressKey;
 
     /// A one-step chord, standing in for an app's pending enum.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,13 +235,14 @@ mod tests {
     /// [`swallow_key_events`] before the field lays out when `swallow` is set,
     /// and return what the field ends up holding.
     fn type_a_into_focused_field(swallow: bool) -> String {
-        let input_id = egui::Id::new("chord_test_input");
+        let input_id = egui::Id::unique("chord_test_input");
         let mut harness = Harness::new_ui_state(
             |ui, text: &mut String| {
                 if swallow {
                     swallow_key_events(ui.ctx());
                 }
-                ui.add(egui::TextEdit::singleline(text).id(input_id));
+                ui.add(egui::TextEdit::singleline(text).id(input_id))
+                    .accessible_name("test field");
             },
             String::new(),
         );

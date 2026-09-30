@@ -83,7 +83,7 @@ impl<'a> ConversationUi<'a> {
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
                     ScrollArea::vertical()
                         .stick_to_bottom(true)
-                        .id_salt(ui.id().with(self.conversation.id))
+                        .id_salt(ui.scope_id().with(self.conversation.id))
                         .show(ui, |ui| {
                             if let Some(a) = conversation_history(
                                 ui,
@@ -365,7 +365,7 @@ fn conversation_composer(
                         let text_resp = ui.add(text_edit);
                         text_resp.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::TextEdit,
+                                egui::Role::TextInput,
                                 true,
                                 "Message composer",
                             )
@@ -511,7 +511,7 @@ fn self_chat_bubble(
     notedeck_ui::context_menu::context_menu(&r.response, |ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(message.to_owned());
-            ui.close_menu();
+            ui.close();
         }
     });
     r.response
@@ -585,7 +585,7 @@ fn other_chat_bubble(
     notedeck_ui::context_menu::context_menu(&r.response, |ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(message_owned.clone());
-            ui.close_menu();
+            ui.close();
         }
     });
     name_clicked

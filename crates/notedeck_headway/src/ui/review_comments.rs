@@ -207,7 +207,7 @@ impl ReviewDrafts {
 
 /// The id of the composer's text field, so a test can find it.
 pub(crate) fn composer_field_id() -> egui::Id {
-    egui::Id::new("headway-review-comment-composer")
+    egui::Id::unique("headway-review-comment-composer")
 }
 
 /// Hand the diff its rows for `record`'s comments — posted ones and drafts —

@@ -18,18 +18,21 @@ struct DashTestState {
     fonts_installed: bool,
 }
 
-fn render_dashboard(ctx: &egui::Context, state: &mut DashTestState) {
-    if !state.fonts_installed {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| s.animation_time = 0.0);
-        state.fonts_installed = true;
-        return;
-    }
+fn render_dashboard(ui: &mut egui::Ui, state: &mut DashTestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        if !state.fonts_installed {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            state.fonts_installed = true;
+            return;
+        }
 
-    let mut app_ctx = state.notedeck.app_context();
-    state.dashboard.update(&mut app_ctx);
-    egui::CentralPanel::default().show(ctx, |ui| {
-        state.dashboard.render(&mut app_ctx, ui);
+        let mut app_ctx = state.notedeck.app_context();
+        state.dashboard.update(&mut app_ctx);
+        egui::CentralPanel::default().show(ui, |ui| {
+            state.dashboard.render(&mut app_ctx, ui);
+        });
     });
 }
 
@@ -118,7 +121,7 @@ fn snapshot_dashboard() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(1200.0, 800.0))
         .renderer(notedeck::software_renderer())
-        .build_state(render_dashboard, state);
+        .build_ui_state(render_dashboard, state);
 
     // Let the dashboard initialize — auto-refresh begins on first frame
     harness.run();
@@ -128,7 +131,7 @@ fn snapshot_dashboard() {
     wait_for_label(&mut harness, &expected, Duration::from_secs(5));
 
     // Click the refresh button to trigger a second pass
-    harness.get_by_label("⟳ Refresh").click();
+    harness.get_by_label("⟳ Refresh").click_accesskit();
     harness.run();
 
     // Wait for the count to stabilize after the second refresh

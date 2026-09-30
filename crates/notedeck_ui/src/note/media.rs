@@ -46,7 +46,10 @@ pub fn image_carousel(
     //let has_touch_screen = ui.ctx().input(|i| i.has_touch_screen());
     ui.add_sized(size, |ui: &mut egui::Ui| {
         egui::ScrollArea::horizontal()
-            .drag_to_scroll(false)
+            .scroll_source(egui::scroll_area::ScrollSource {
+                drag: egui::scroll_area::DragScroll::Never,
+                ..Default::default()
+            })
             .id_salt(carousel_id)
             .show(ui, |ui| {
                 let response = ui
@@ -270,7 +273,7 @@ fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
             .clicked()
         {
             ui.ctx().copy_text(url.to_owned());
-            ui.close_menu();
+            ui.close();
         }
     });
 }
@@ -500,7 +503,8 @@ fn render_success_media(
 ) -> Response {
     let scaled = ScaledTexture::new(tex, size, scale_flags);
 
-    let img_resp = ui.add(Button::image(scaled.get_image()).frame(false));
+    // `Button::new`, not `Button::image`: that one caps the image at the font's height.
+    let img_resp = ui.add(Button::new(scaled.get_image()).frame(false));
 
     copy_link(i18n, url, &img_resp);
 
@@ -514,7 +518,7 @@ fn texture_to_image<'a>(tex: &TextureHandle, size: Vec2) -> egui::Image<'a> {
         .maintain_aspect_ratio(true)
 }
 
-static BLUR_SHIMMER_ID: fn(&str) -> egui::Id = |url| egui::Id::new(("blur_shimmer", url));
+static BLUR_SHIMMER_ID: fn(&str) -> egui::Id = |url| egui::Id::unique(("blur_shimmer", url));
 
 fn get_blur_current_alpha(ui: &mut egui::Ui, url: &str) -> u8 {
     let id = BLUR_SHIMMER_ID(url);
@@ -693,7 +697,7 @@ fn render_blur_fade(
     blur_img: Image,
     image_texture: &ScaledTexture,
 ) -> egui::InnerResponse<FinishedTransition> {
-    let blur_fade_id = ui.id().with(("blur_fade", url));
+    let blur_fade_id = ui.scope_id().with(("blur_fade", url));
 
     let cur_alpha = {
         PulseAlpha::new(ui.ctx(), blur_fade_id, 0, 255)

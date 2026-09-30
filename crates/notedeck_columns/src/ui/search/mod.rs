@@ -401,7 +401,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
     }
 
     pub fn scroll_id() -> egui::Id {
-        egui::Id::new("search_results")
+        egui::Id::unique("search_results")
     }
 }
 
@@ -561,8 +561,7 @@ fn search_box(
                                 ))
                                 .weak(),
                             )
-                            .margin(vec2(0.0, 8.0))
-                            .frame(false),
+                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 8))),
                     );
 
                     if response.has_focus()

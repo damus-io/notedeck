@@ -40,7 +40,11 @@ pub fn aspect_fill(
     let (response, painter) = ui.allocate_painter(ui.available_size(), sense);
 
     // Draw the texture within the calculated rect, potentially clipping it
-    painter.rect_filled(content_rect, 0.0, ui.ctx().style().visuals.window_fill());
+    painter.rect_filled(
+        content_rect,
+        0.0,
+        ui.ctx().global_style().visuals.window_fill(),
+    );
     painter.image(texture_id, content_rect, uv, Color32::WHITE);
 
     // Restore the original clipping rectangle
@@ -181,15 +185,24 @@ pub fn parse_img_response(
     let content_type = content_type.unwrap_or_default();
     let imgtyp = normalize_image_type_for_request(imgtyp);
     let size_hint = match imgtyp {
-        ImageType::Profile(size) => SizeHint::Size(size, size),
-        ImageType::Content(Some(pixels)) => SizeHint::Size(pixels.x, pixels.y),
+        ImageType::Profile(size) => SizeHint::Size {
+            width: size,
+            height: size,
+            maintain_aspect_ratio: false,
+        },
+        ImageType::Content(Some(pixels)) => SizeHint::Size {
+            width: pixels.x,
+            height: pixels.y,
+            maintain_aspect_ratio: false,
+        },
         ImageType::Content(None) => SizeHint::default(),
     };
 
     if content_type.starts_with("image/svg") {
         profiling::scope!("load_svg");
 
-        let mut color_image = egui_extras::image::load_svg_bytes_with_size(bytes, Some(size_hint))?;
+        let mut color_image =
+            egui_extras::image::load_svg_bytes_with_size(bytes, size_hint, &Default::default())?;
         round_image(&mut color_image);
         Ok(color_image)
     } else if content_type.starts_with("image/") {

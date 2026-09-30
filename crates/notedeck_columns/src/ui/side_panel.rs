@@ -534,7 +534,7 @@ fn show_decks<'a>(
     decks_cache: &'a DecksCache,
     selected_account: &'a UserAccount,
 ) -> InnerResponse<Option<usize>> {
-    let show_decks_id = ui.id().with("show-decks");
+    let show_decks_id = ui.scope_id().with("show-decks");
     let account_id = selected_account.key.pubkey;
     let (cur_decks, account_id) = (
         decks_cache.decks(&account_id),

@@ -1,6 +1,7 @@
 pub mod edit;
 
 pub use edit::EditProfileView;
+use egui::emath::GuiRounding;
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
 use nostrdb::{ProfileRecord, Transaction};
 use nostrdb_net::Pubkey;
@@ -65,7 +66,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
     }
 
     pub fn scroll_id(col_id: usize, profile_pubkey: &Pubkey) -> egui::Id {
-        egui::Id::new(("profile_scroll", col_id, profile_pubkey))
+        egui::Id::unique(("profile_scroll", col_id, profile_pubkey))
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<ProfileViewAction> {
@@ -181,13 +182,9 @@ fn profile_body(
             .secret_key
             .is_some();
         let is_muted = note_context.accounts.mute().is_pk_muted(pubkey.bytes());
-        if let Some(selection) = ProfileContextWidget::context_menu(
-            ui,
-            note_context.i18n,
-            context_resp,
-            can_sign,
-            is_muted,
-        ) {
+        if let Some(selection) =
+            ProfileContextWidget::context_menu(note_context.i18n, context_resp, can_sign, is_muted)
+        {
             action = Some(ProfileViewAction::Context(ProfileContext {
                 profile: *pubkey,
                 selection,
@@ -459,14 +456,13 @@ fn copy_key_widget<'a>(
     |ui: &mut egui::Ui| -> egui::Response {
         let painter = ui.painter();
         #[allow(deprecated)]
-        let copy_key_rect = painter.round_rect_to_pixels(egui::Rect::from_center_size(
-            pfp_rect.center_bottom(),
-            egui::vec2(48.0, 28.0),
-        ));
+        let copy_key_rect =
+            egui::Rect::from_center_size(pfp_rect.center_bottom(), egui::vec2(48.0, 28.0))
+                .round_to_pixels(painter.pixels_per_point());
         let resp = ui
             .interact(
                 copy_key_rect,
-                ui.id().with("custom_painter"),
+                ui.scope_id().with("custom_painter"),
                 Sense::click(),
             )
             .on_hover_text(tr!(
@@ -494,10 +490,8 @@ fn copy_key_widget<'a>(
         app_images::key_image().paint_at(
             ui,
             #[allow(deprecated)]
-            painter.round_rect_to_pixels(egui::Rect::from_center_size(
-                copy_key_rect.center(),
-                egui::vec2(16.0, 16.0),
-            )),
+            egui::Rect::from_center_size(copy_key_rect.center(), egui::vec2(16.0, 16.0))
+                .round_to_pixels(painter.pixels_per_point()),
         );
 
         resp
@@ -509,7 +503,7 @@ fn edit_profile_button<'a>(i18n: &'a mut Localization) -> impl egui::Widget + 'a
         let (rect, resp) = ui.allocate_exact_size(vec2(124.0, 32.0), Sense::click());
         let painter = ui.painter_at(rect);
         #[allow(deprecated)]
-        let rect = painter.round_rect_to_pixels(rect);
+        let rect = rect.round_to_pixels(painter.pixels_per_point());
 
         painter.rect_filled(
             rect,
@@ -550,10 +544,11 @@ fn edit_profile_button<'a>(i18n: &'a mut Localization) -> impl egui::Widget + 'a
             let mut center = galley_rect.left_center();
             center.x -= half_icon_size + space_between_icon_galley;
             #[allow(deprecated)]
-            painter.round_rect_to_pixels(Rect::from_center_size(
-                painter.round_pos_to_pixel_center(center),
+            Rect::from_center_size(
+                center.round_to_pixel_center(painter.pixels_per_point()),
                 edit_icon_size,
-            ))
+            )
+            .round_to_pixels(painter.pixels_per_point())
         };
 
         painter.galley(galley_rect.left_top(), galley, Color32::WHITE);

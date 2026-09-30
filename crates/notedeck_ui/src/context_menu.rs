@@ -26,7 +26,7 @@ impl TextSelection {
         let range = egui::TextEdit::load_state(ctx, response.id)?
             .cursor
             .char_range()?;
-        let (a, b) = (range.primary.index, range.secondary.index);
+        let (a, b) = (range.primary.index.0, range.secondary.index.0);
         Some(TextSelection {
             id: response.id,
             range: a.min(b)..a.max(b),
@@ -184,12 +184,12 @@ pub fn input_context(
                 paste_behavior,
                 selection.as_ref(),
             );
-            ui.close_menu();
+            ui.close();
         }
 
         if ui.button("Copy").clicked() {
             clipboard.set_text(copy_target(input, selection.as_ref()).to_owned());
-            ui.close_menu();
+            ui.close();
         }
 
         if ui.button("Cut").clicked() {
@@ -203,7 +203,7 @@ pub fn input_context(
                 // No span selected: cut the whole field, as before.
                 None => input.clear(),
             }
-            ui.close_menu();
+            ui.close();
         }
     });
 
@@ -237,34 +237,25 @@ impl Default for MenuPadding {
 }
 
 pub fn stationary_arbitrary_menu_button<R>(
-    ui: &mut egui::Ui,
     button_response: egui::Response,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
-    stationary_arbitrary_menu_button_padding(
-        ui,
-        button_response,
-        MenuPadding::default(),
-        add_contents,
-    )
+    stationary_arbitrary_menu_button_padding(button_response, MenuPadding::default(), add_contents)
 }
 
 pub fn stationary_arbitrary_menu_button_padding<R>(
-    ui: &mut egui::Ui,
     button_response: egui::Response,
     padding: MenuPadding,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
-    let bar_id = ui.id();
-    let mut bar_state = egui::menu::BarState::load(ui.ctx(), bar_id);
-
-    let inner = bar_state.bar_menu(&button_response, |ui| {
+    // A click on the button toggles the menu, anchored to the button; a click
+    // outside it, or on a menu item, closes it.
+    let inner = egui::Popup::menu(&button_response).show(|ui| {
         ui.spacing_mut().button_padding = padding.button_padding;
         ui.spacing_mut().item_spacing.y = padding.item_spacing_y;
         add_contents(ui)
     });
 
-    bar_state.store(ui.ctx(), bar_id);
     egui::InnerResponse::new(inner.map(|r| r.inner), button_response)
 }
 
@@ -331,7 +322,7 @@ mod tests {
 
     fn selection(range: std::ops::Range<usize>) -> TextSelection {
         TextSelection {
-            id: egui::Id::new("test"),
+            id: egui::Id::unique("test"),
             range,
         }
     }
@@ -379,7 +370,7 @@ mod tests {
     /// Read a text widget's stored selection as an ordered char range.
     fn stored_range(ctx: &egui::Context, id: egui::Id) -> Option<std::ops::Range<usize>> {
         let range = egui::TextEdit::load_state(ctx, id)?.cursor.char_range()?;
-        let (a, b) = (range.primary.index, range.secondary.index);
+        let (a, b) = (range.primary.index.0, range.secondary.index.0);
         Some(a.min(b)..a.max(b))
     }
 
@@ -394,7 +385,7 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        let id = egui::Id::new("frozen_selection_test_edit");
+        let id = egui::Id::unique("frozen_selection_test_edit");
 
         struct Shared {
             text: String,
@@ -417,16 +408,20 @@ mod tests {
         let closure_shared = shared.clone();
         let mut harness = Harness::new_ui(move |ui| {
             let mut sh = closure_shared.borrow_mut();
-            let resp = ui.add(
-                egui::TextEdit::multiline(&mut sh.text)
-                    .id(id)
-                    .desired_rows(2),
-            );
+            let resp = ui
+                .add(
+                    egui::TextEdit::multiline(&mut sh.text)
+                        .id(id)
+                        .desired_rows(2),
+                )
+                .accessible_name("test field");
             sh.rect = resp.rect;
 
             // Seed the "hello" span once, before any press, exactly as a mouse
-            // drag-select would leave it.
+            // drag-select would leave it: in a focused field, since egui drops
+            // an unfocused field's selection.
             if sh.frame == 0 {
+                ui.memory_mut(|m| m.request_focus(id));
                 let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
                 state
                     .cursor

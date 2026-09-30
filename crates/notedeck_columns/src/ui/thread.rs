@@ -64,12 +64,12 @@ impl<'a, 'd> ThreadView<'a, 'd> {
     }
 
     pub fn scroll_id(selected_note_id: &[u8; 32], col: usize) -> egui::Id {
-        egui::Id::new(("threadscroll", selected_note_id, col))
+        egui::Id::unique(("threadscroll", selected_note_id, col))
     }
 
     /// Build the scroll identity for a thread rendered by a global deep-link.
     pub(crate) fn deep_link_scroll_id(selected_note_id: &[u8; 32], id: DeepLinkId) -> egui::Id {
-        egui::Id::new(("threadscroll", "deeplink", id, selected_note_id))
+        egui::Id::unique(("threadscroll", "deeplink", id, selected_note_id))
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<NoteAction> {

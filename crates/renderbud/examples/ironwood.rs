@@ -31,15 +31,13 @@ impl Renderbud {
             .unwrap();
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -60,6 +58,7 @@ impl Renderbud {
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
         surface.configure(&device, &config);
@@ -116,8 +115,14 @@ impl Renderbud {
             .load_gltf_model(&self.device, &self.queue, path)
     }
 
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let frame = self.surface.get_current_texture()?;
+    /// Render one frame. Returns the surface status when no frame could be
+    /// acquired, so the caller can reconfigure or bail.
+    fn render(&mut self) -> Result<(), wgpu::CurrentSurfaceTexture> {
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            other => return Err(other),
+        };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -128,7 +133,7 @@ impl Renderbud {
 
         self.renderer.render(&view, &mut encoder);
         self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        self.queue.present(frame);
 
         Ok(())
     }
@@ -229,7 +234,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
         let Some(renderbud) = self.renderbud.as_mut() else {
             return;
         };
@@ -240,8 +245,9 @@ impl ApplicationHandler for App {
 
         match renderbud.render() {
             Ok(_) => {}
-            Err(wgpu::SurfaceError::Lost) => renderbud.resize(renderbud.size()),
-            Err(wgpu::SurfaceError::OutOfMemory) => el.exit(),
+            Err(wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
+                renderbud.resize(renderbud.size())
+            }
             Err(_) => {}
         }
     }

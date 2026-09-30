@@ -413,7 +413,9 @@ async fn notedeck_init_seeds_selected_account_before_immediate_scoped_sub() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        notedeck.tick(&ui_ctx);
+        ui_ctx
+            .run_ui(Default::default(), |ui| notedeck.tick(ui))
+            .drop_without_applying_deltas();
         if let Some(frame) = captured
             .lock()
             .expect("lock captured startup relay frames")

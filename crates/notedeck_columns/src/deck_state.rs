@@ -50,11 +50,8 @@ impl Default for DeckState {
 }
 
 fn available_characters(ui: &egui::Ui, family: egui::FontFamily) -> Vec<char> {
-    ui.fonts(|f| {
-        f.lock()
-            .fonts
-            .font(&egui::FontId::new(10.0, family)) // size is arbitrary for getting the characters
-            .characters()
+    ui.fonts_mut(|f| {
+        f.characters(&family)
             .keys()
             .filter(|chr| !chr.is_whitespace() && !chr.is_ascii_control())
             .copied()

@@ -197,7 +197,7 @@ impl AgentScene {
                     // Handle click on empty space to deselect
                     let bg_response = ui.interact(
                         ui.max_rect(),
-                        ui.id().with("scene_bg"),
+                        ui.scope_id().with("scene_bg"),
                         Sense::click_and_drag(),
                     );
 
@@ -258,7 +258,7 @@ impl AgentScene {
 
         // Handle keyboard input (only when no text input has focus)
         // Note: N key for spawning agents is handled globally in keybindings.rs
-        if !ui.ctx().wants_keyboard_input()
+        if !ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete))
             && !self.selected.is_empty()
         {
@@ -346,7 +346,7 @@ impl AgentScene {
         // Interact with the agent
         let response = ui.interact(
             agent_rect,
-            ui.id().with(("agent", id)),
+            ui.scope_id().with(("agent", id)),
             Sense::click_and_drag(),
         );
 

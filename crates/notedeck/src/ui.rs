@@ -12,7 +12,7 @@ where
 /// Determine if the screen is narrow. This is useful for detecting mobile
 /// contexts, but with the nuance that we may also have a wide android tablet.
 pub fn is_narrow(ctx: &egui::Context) -> bool {
-    let screen_size = ctx.input(|c| c.screen_rect().size());
+    let screen_size = ctx.input(|c| c.content_rect().size());
     screen_size.x < NARROW_SCREEN_WIDTH
 }
 

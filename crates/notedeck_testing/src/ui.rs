@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 /// Waits until a labeled UI node appears on the given harness.
@@ -28,7 +28,7 @@ pub fn wait_for_label<S>(harness: &mut Harness<'_, S>, label: &str, timeout: Dur
 pub fn click_enabled_label<S>(harness: &Harness<'_, S>, label: &str) {
     let node = harness
         .query_all_by_label(label)
-        .find(|node| !node.is_disabled())
+        .find(|node| !node.accesskit_node().is_disabled())
         .unwrap_or_else(|| panic!("no enabled UI node found for label {label:?}"));
-    node.click();
+    node.click_accesskit();
 }

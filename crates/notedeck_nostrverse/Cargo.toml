@@ -23,4 +23,4 @@ image = { workspace = true }
 
 [dev-dependencies]
 pollster = "0.4.0"
-wgpu = "24"
+wgpu = { workspace = true }

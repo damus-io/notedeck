@@ -839,7 +839,7 @@ fn note_detail_ui(
         return zap_detail_ui(ui, ndb, note_id, note_context);
     }
 
-    let cache_id = egui::Id::new(("note_detail_cache", note_id, std::mem::discriminant(detail)));
+    let cache_id = egui::Id::unique(("note_detail_cache", note_id, std::mem::discriminant(detail)));
 
     let contacts = ui
         .ctx()
@@ -900,7 +900,7 @@ fn zap_detail_ui(
     note_id: &nostrdb_net::NoteId,
     note_context: &mut NoteContext<'_>,
 ) -> DragResponse<RenderNavAction> {
-    let cache_id = egui::Id::new(("zap_detail_cache", note_id));
+    let cache_id = egui::Id::unique(("zap_detail_cache", note_id));
 
     let cached = ui
         .ctx()
@@ -1230,7 +1230,7 @@ fn render_nav_body(
             DragResponse::none()
         }
         Route::Search => {
-            let id = ui.id().with(("search", depth, col));
+            let id = ui.scope_id().with(("search", depth, col));
             let navigating =
                 get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
                     .column(col)
@@ -1254,7 +1254,7 @@ fn render_nav_body(
                 .map_output(RenderNavAction::NoteAction)
         }
         Route::NewDeck => {
-            let id = ui.id().with("new-deck");
+            let id = ui.scope_id().with("new-deck");
             let new_deck_state = app.view_state.id_to_deck_state.entry(id).or_default();
             let mut resp = None;
             if let Some(config_resp) = ConfigureDeckView::new(new_deck_state, ctx.i18n).ui(ui) {
@@ -1285,9 +1285,9 @@ fn render_nav_body(
                 .decks_mut()
                 .get_mut(*index)
                 .expect("index wasn't valid");
-            let id = ui
-                .id()
-                .with(("edit-deck", ctx.accounts.selected_account_pubkey(), index));
+            let id =
+                ui.scope_id()
+                    .with(("edit-deck", ctx.accounts.selected_account_pubkey(), index));
             let deck_state = app
                 .view_state
                 .id_to_deck_state
@@ -1348,7 +1348,7 @@ fn render_nav_body(
             })
         }
         Route::Following(pubkey) => {
-            let cache_id = egui::Id::new(("following_contacts_cache", pubkey));
+            let cache_id = egui::Id::unique(("following_contacts_cache", pubkey));
 
             let contacts = ui
                 .ctx()
@@ -1597,7 +1597,7 @@ pub fn render_nav(
             .cloned();
         if let Some(bg_route) = bg_route {
             let resp = PopupSheet::new(&bg_route, &sheet_route)
-                .id_source(egui::Id::new(("nav", col)))
+                .id_source(egui::Id::unique(("nav", col)))
                 .navigating(navigating)
                 .returning(returning)
                 .with_split(split)
@@ -1641,7 +1641,7 @@ pub fn render_nav(
         .router()
         .routes()
         .clone();
-    let nav = Nav::new(&routes).id_source(egui::Id::new(("nav", col)));
+    let nav = Nav::new(&routes).id_source(egui::Id::unique(("nav", col)));
 
     let nav_response = nav
         .navigating(
@@ -2046,17 +2046,19 @@ mod tests {
         let mut result = None;
         let mut app_ctx = notedeck.app_context();
 
-        let _ = ui_ctx.run(egui::RawInput::default(), |egui_ctx| {
-            egui::CentralPanel::default().show(egui_ctx, |ui| {
-                result = process_render_nav_action(
-                    &mut app,
-                    &mut app_ctx,
-                    ui,
-                    0,
-                    action.take().expect("action should be processed once"),
-                );
-            });
-        });
+        ui_ctx
+            .run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    result = process_render_nav_action(
+                        &mut app,
+                        &mut app_ctx,
+                        ui,
+                        0,
+                        action.take().expect("action should be processed once"),
+                    );
+                });
+            })
+            .drop_without_applying_deltas();
 
         assert!(result.is_none());
         assert_eq!(app_ctx.accounts.selected_account_pubkey(), &target_account);

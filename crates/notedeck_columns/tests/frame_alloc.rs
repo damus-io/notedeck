@@ -79,8 +79,8 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// seeded kind-1 notes from two authors, no relay connected, 60 warm-up frames
 /// discarded and 120 frames measured, `dev` profile on x86-64 Linux.
 ///
-/// It was **991** when this test landed. Six changes have taken it down
-/// since:
+/// It was **991** when this test landed. Six changes took it down to 718,
+/// and the egui 0.31 -> 0.36 upgrade then took it up to 1054:
 ///
 /// - **991 -> 885**: `notedeck::StyleCache` stopped the note path deep-cloning
 ///   an `egui::Style` seven times per visible note, which took 66,400 bytes a
@@ -109,23 +109,38 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 ///   lookup heap-allocated eight bytes to carry a pointer it already had. It
 ///   returns `&Arc<Muted>` now. The note context button did it once per visible
 ///   note and `TimelineTabView::show` once more.
+/// - **718 -> 1054** (+336), measured 2026-09-30: the upgrade to egui 0.36
+///   (upstream main, damus-io/egui `b5bf6c6f18b6`). None of it is a new
+///   allocation in notedeck's code; the per-site attribution before and after
+///   (`report_where_the_frames_allocations_go` on both trees) puts it inside
+///   egui. About +164 is the AccessKit tree, which now pushes every child
+///   into its parent's node and gives each widget a label and description of
+///   its own; +48 is `Label` turning its `RichText` into a `WidgetText` and a
+///   `LayoutJob` on every call; +9 is a `str::to_owned` whose caller three
+///   frames up is still inside egui. The notedeck call sites in the ranking are
+///   the same ones as before, renamed (`allocate_new_ui` became
+///   `scope_builder`). The empty-app floor went from 21 to 25.
 ///
-/// The measurement is bit-exact — across all 120 frames, min, median and max
-/// are the same number — but it is not portable. At the 991 baseline the same
+/// The measurement was bit-exact up to egui 0.31 — across all 120 frames, min,
+/// median and max were the same number — and on 0.36 the median still is,
+/// with one frame three over. It is not portable. At the 991 baseline the same
 /// code in an `ubuntu:22.04` container, the image CI runs on, measured **990**:
 /// bit-exact there too, one allocation apart. That gap is what
 /// [`AllocBudget::tolerance_allocs`] is sized against, and it is why the
 /// tolerance is a count rather than a percentage.
 ///
-/// The same frame costs 683 allocations in the `release` profile, which is why
+/// The same frame costs 1001 allocations in the `release` profile (683 before
+/// the egui upgrade), which is why
 /// [`the_steady_state_frame_stays_within_its_allocation_budget`] only asserts in
-/// `dev`. It also allocates **179,783 bytes** and does **169 reallocations** per
-/// frame; those are not in the budget because a ratchet on one well-chosen
+/// `dev`. It also allocates **358,889 bytes** and does **27 reallocations** per
+/// frame (179,783 and 169 before the upgrade); those are not in the budget because a ratchet on one well-chosen
 /// number is a ratchet people keep, and the allocation count is the number that
 /// moves when somebody adds an allocation. The report prints all of them.
 const HOME_TIMELINE_BUDGET: AllocBudget = AllocBudget {
-    measured_median: 718,
-    measured_peak: 718,
+    measured_median: 1054,
+    // No longer bit-exact across the window since the egui upgrade: one frame
+    // in the 120 (frame 103) made three more.
+    measured_peak: 1057,
 
     // Four: comfortably over the one-allocation spread measured between this
     // box and an ubuntu-22.04 container, and comfortably under the seven a

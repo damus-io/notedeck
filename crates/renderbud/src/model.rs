@@ -413,7 +413,7 @@ fn make_default_sampler(device: &wgpu::Device) -> wgpu::Sampler {
         address_mode_w: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     })
 }
@@ -427,30 +427,32 @@ fn map_wrap_mode(wrap_mode: gltf::texture::WrappingMode) -> wgpu::AddressMode {
     }
 }
 
-fn map_min_filter(f: Option<gltf::texture::MinFilter>) -> (wgpu::FilterMode, wgpu::FilterMode) {
+fn map_min_filter(
+    f: Option<gltf::texture::MinFilter>,
+) -> (wgpu::FilterMode, wgpu::MipmapFilterMode) {
     // (min, mipmap)
     match f {
         Some(gltf::texture::MinFilter::Nearest) => {
-            (wgpu::FilterMode::Nearest, wgpu::FilterMode::Nearest)
+            (wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest)
         }
         Some(gltf::texture::MinFilter::Linear) => {
-            (wgpu::FilterMode::Linear, wgpu::FilterMode::Nearest)
+            (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Nearest)
         }
 
         Some(gltf::texture::MinFilter::NearestMipmapNearest) => {
-            (wgpu::FilterMode::Nearest, wgpu::FilterMode::Nearest)
+            (wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest)
         }
         Some(gltf::texture::MinFilter::LinearMipmapNearest) => {
-            (wgpu::FilterMode::Linear, wgpu::FilterMode::Nearest)
+            (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Nearest)
         }
         Some(gltf::texture::MinFilter::NearestMipmapLinear) => {
-            (wgpu::FilterMode::Nearest, wgpu::FilterMode::Linear)
+            (wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Linear)
         }
         Some(gltf::texture::MinFilter::LinearMipmapLinear) => {
-            (wgpu::FilterMode::Linear, wgpu::FilterMode::Linear)
+            (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear)
         }
 
-        None => (wgpu::FilterMode::Linear, wgpu::FilterMode::Nearest),
+        None => (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Nearest),
     }
 }
 

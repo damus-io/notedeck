@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::{FullKeypair, Keypair, Pubkey};
 use notedeck::{App, Notedeck};
@@ -81,91 +81,94 @@ struct SeedNode {
     y: i64,
 }
 
-fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
-    // Fonts/styles must be installed before the first real frame; do it once,
-    // and take the same first frame to inject a signing account (and optionally
-    // seed a canvas).
-    if !state.setup_done {
-        state.notedeck.setup(ctx);
-        ctx.style_mut(|s| {
-            s.animation_time = 0.0;
-            // Steady (non-blinking) text caret so a focused field — the inline
-            // vault rename — renders identically regardless of how much virtual
-            // time elapsed before the snapshot. The blink phase otherwise tracks
-            // `input.time`, which the variable-length seed barrier makes
-            // nondeterministic across machines (it flaked only on CI).
-            s.visuals.text_cursor.blink = false;
+fn render_notebook(ui: &mut egui::Ui, state: &mut NotebookTestState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        let ctx = &ui.ctx().clone();
+        // Fonts/styles must be installed before the first real frame; do it once,
+        // and take the same first frame to inject a signing account (and optionally
+        // seed a canvas).
+        if !state.setup_done {
+            state.notedeck.setup(ctx);
+            ctx.global_style_mut(|s| {
+                s.animation_time = 0.0;
+                // Steady (non-blinking) text caret so a focused field — the inline
+                // vault rename — renders identically regardless of how much virtual
+                // time elapsed before the snapshot. The blink phase otherwise tracks
+                // `input.time`, which the variable-length seed barrier makes
+                // nondeterministic across machines (it flaked only on CI).
+                s.visuals.text_cursor.blink = false;
+            });
+
+            let secret = state.account.secret_key.clone();
+            let pubkey = state.account.pubkey;
+            let app_ctx = &mut state.notedeck.app_context();
+            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                resp.unk_id_action
+                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            }
+            app_ctx.select_account(&pubkey);
+
+            let secret = state.account.secret_key.secret_bytes();
+            // Seeding below writes through `store::ingest`, which seals each event
+            // into the account's SNS workspace. nostrdb only peels those kind-1081
+            // envelopes back to the rumor once the workspace root is registered, and
+            // the app's own registration doesn't happen until its first `update` —
+            // which is a frame away. Register it here so the seed barrier can
+            // actually see the canvases it is waiting for.
+            store::register_workspace(app_ctx.ndb, &secret);
+            let mut seeded_canvas_ids: Vec<String> = Vec::new();
+            if state.seed_colors {
+                seed_colored_canvas(app_ctx.ndb, &pubkey, &secret);
+                seeded_canvas_ids.push(CANVAS_ID.to_string());
+            }
+            for canvas in &state.seed_canvases {
+                seed_canvas_with_nodes(app_ctx.ndb, &pubkey, &secret, canvas);
+                seeded_canvas_ids.push(canvas.d.clone());
+            }
+            // Block until the seeded canvas docs commit, so the app's *first* history
+            // fold (next frame's `update`) already sees them and doesn't spuriously
+            // auto-seed a second empty canvas before they land — which would pop the
+            // vault sidebar open (≥2 canvases) and offset these canvas fixtures. This
+            // is the test-side stand-in for the deferred sync-caught-up seed gate
+            // (headway:notebook/social-genuine-crane).
+            wait_canvases_committed(app_ctx.ndb, &pubkey, &seeded_canvas_ids);
+            // Same reasoning, for the vault sidebar: a note seeded after this frame
+            // pops the sidebar open once it folds, which narrows the canvas and
+            // rescales everything on it.
+            if let Some(note) = &state.seed_longform {
+                seed_embed_note(
+                    app_ctx.ndb,
+                    &secret,
+                    &note.d,
+                    &note.title,
+                    &note.summary,
+                    &note.body,
+                );
+                wait_longform_committed(app_ctx.ndb, &pubkey, &note.d);
+            }
+
+            state.setup_done = true;
+            return;
+        }
+
+        let mut app_ctx = state.notedeck.app_context();
+        // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
+        // every opened app each frame, then `render` for the foreground one.
+        state.notebook.update(&mut app_ctx);
+
+        // Reference-chip mode: draw note/Dave surfaces holding an inline
+        // `notebook:<word-id>` instead of the canvas. `update` above already folded
+        // this frame, so the chip resolves against the same live cache the canvas
+        // would.
+        if let Some(body) = &state.ref_surface {
+            render_ref_surfaces(ui, &mut app_ctx, body);
+            return;
+        }
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            state.notebook.render(&mut app_ctx, ui);
         });
-
-        let secret = state.account.secret_key.clone();
-        let pubkey = state.account.pubkey;
-        let app_ctx = &mut state.notedeck.app_context();
-        if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            resp.unk_id_action
-                .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
-        }
-        app_ctx.select_account(&pubkey);
-
-        let secret = state.account.secret_key.secret_bytes();
-        // Seeding below writes through `store::ingest`, which seals each event
-        // into the account's SNS workspace. nostrdb only peels those kind-1081
-        // envelopes back to the rumor once the workspace root is registered, and
-        // the app's own registration doesn't happen until its first `update` —
-        // which is a frame away. Register it here so the seed barrier can
-        // actually see the canvases it is waiting for.
-        store::register_workspace(app_ctx.ndb, &secret);
-        let mut seeded_canvas_ids: Vec<String> = Vec::new();
-        if state.seed_colors {
-            seed_colored_canvas(app_ctx.ndb, &pubkey, &secret);
-            seeded_canvas_ids.push(CANVAS_ID.to_string());
-        }
-        for canvas in &state.seed_canvases {
-            seed_canvas_with_nodes(app_ctx.ndb, &pubkey, &secret, canvas);
-            seeded_canvas_ids.push(canvas.d.clone());
-        }
-        // Block until the seeded canvas docs commit, so the app's *first* history
-        // fold (next frame's `update`) already sees them and doesn't spuriously
-        // auto-seed a second empty canvas before they land — which would pop the
-        // vault sidebar open (≥2 canvases) and offset these canvas fixtures. This
-        // is the test-side stand-in for the deferred sync-caught-up seed gate
-        // (headway:notebook/social-genuine-crane).
-        wait_canvases_committed(app_ctx.ndb, &pubkey, &seeded_canvas_ids);
-        // Same reasoning, for the vault sidebar: a note seeded after this frame
-        // pops the sidebar open once it folds, which narrows the canvas and
-        // rescales everything on it.
-        if let Some(note) = &state.seed_longform {
-            seed_embed_note(
-                app_ctx.ndb,
-                &secret,
-                &note.d,
-                &note.title,
-                &note.summary,
-                &note.body,
-            );
-            wait_longform_committed(app_ctx.ndb, &pubkey, &note.d);
-        }
-
-        state.setup_done = true;
-        return;
-    }
-
-    let mut app_ctx = state.notedeck.app_context();
-    // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
-    // every opened app each frame, then `render` for the foreground one.
-    state.notebook.update(&mut app_ctx);
-
-    // Reference-chip mode: draw note/Dave surfaces holding an inline
-    // `notebook:<word-id>` instead of the canvas. `update` above already folded
-    // this frame, so the chip resolves against the same live cache the canvas
-    // would.
-    if let Some(body) = &state.ref_surface {
-        render_ref_surfaces(ctx, &mut app_ctx, body);
-        return;
-    }
-
-    egui::CentralPanel::default().show(ctx, |ui| {
-        state.notebook.render(&mut app_ctx, ui);
     });
 }
 
@@ -174,8 +177,8 @@ fn render_notebook(ctx: &egui::Context, state: &mut NotebookTestState) {
 /// Dave messages use for `NoteOptions::InlineReferences`. A `notebook:<word-id>` in
 /// `body` resolves via the registered parser and draws as a live node chip folded
 /// from the shared cache — the cross-app demo the card asks for, in one frame.
-fn render_ref_surfaces(ctx: &egui::Context, app_ctx: &mut notedeck::AppContext, body: &str) {
-    egui::CentralPanel::default().show(ctx, |ui| {
+fn render_ref_surfaces(ui: &mut egui::Ui, app_ctx: &mut notedeck::AppContext, body: &str) {
+    egui::CentralPanel::default().show(ui, |ui| {
         ui.add_space(16.0);
         ui.vertical_centered(|ui| {
             ui.set_max_width(560.0);
@@ -454,7 +457,7 @@ fn build_harness_inner(
     if renderer {
         builder = builder.renderer(notedeck::software_renderer());
     }
-    let mut harness = builder.build_state(render_notebook, state);
+    let mut harness = builder.build_ui_state(render_notebook, state);
 
     // First frame installs fonts + injects the account; pump more so the canvas
     // folds and the scene lays out.
@@ -601,7 +604,7 @@ fn snapshot_notebook_colors() {
 fn snapshot_notebook_selected() {
     let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, true);
     wait_for_label(&mut harness, "Cyan");
-    harness.get_by_label("Cyan").simulate_click();
+    harness.get_by_label("Cyan").click();
     harness.run_steps(3);
     harness.snapshot("notebook_selected");
 }
@@ -660,7 +663,7 @@ fn snapshot_notebook_vault_delete() {
     wait_for_vault(&mut harness, 3);
     harness.run_steps(3);
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Delete").simulate_click();
+    harness.get_by_label("Delete").click();
     wait_for_label(&mut harness, "Delete note?");
     harness.run_steps(2);
     harness.snapshot("notebook_vault_delete");
@@ -686,7 +689,7 @@ fn snapshot_notebook_vault_rename() {
     wait_for_vault(&mut harness, 3);
     harness.run_steps(3);
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Rename").simulate_click();
+    harness.get_by_label("Rename").click();
     harness.run_steps(3);
     harness.snapshot("notebook_vault_rename");
 }
@@ -727,7 +730,7 @@ fn snapshot_notebook_editor() {
 
     // Open the note from the vault into the editor.
     wait_for_label(&mut harness, "Q3 Planning");
-    harness.get_by_label("Q3 Planning").simulate_click();
+    harness.get_by_label("Q3 Planning").click();
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
@@ -744,7 +747,7 @@ fn snapshot_notebook_editor() {
     harness.snapshot("notebook_editor");
 
     // Flip to the Write face and snapshot the raw markdown source.
-    harness.get_by_label("Write").simulate_click();
+    harness.get_by_label("Write").click();
     harness.run_steps(3);
     harness.snapshot("notebook_editor_write");
 }
@@ -1459,7 +1462,7 @@ fn create_and_edit_longform_via_editor() {
     // still seeding). Opening the editor takes over the whole view.
     wait_for_label(&mut harness, "+ New note");
     assert!(!harness.state().notebook.editor_is_open());
-    harness.get_by_label("+ New note").simulate_click();
+    harness.get_by_label("+ New note").click();
     wait_for_label(&mut harness, "← Canvas");
     assert!(harness.state().notebook.editor_is_open());
     assert_eq!(harness.state().notebook.editor_saved(), None);
@@ -1468,8 +1471,14 @@ fn create_and_edit_longform_via_editor() {
     // multiline field).
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
         .type_text("My first note");
     harness.run_ok();
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .focus();
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("# Hello\n\nthis is **markdown**");
@@ -1477,7 +1486,7 @@ fn create_and_edit_longform_via_editor() {
 
     // Save. create_longform runs synchronously, so the editor records its
     // (d, created_at) within a frame or two.
-    harness.get_by_label("Save").simulate_click();
+    harness.get_by_label("Save").click();
     let (d, created_at) = {
         let deadline = Instant::now() + SETTLE_TIMEOUT;
         loop {
@@ -1503,9 +1512,12 @@ fn create_and_edit_longform_via_editor() {
     // edit still wins).
     harness
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("\n\nmore");
     harness.run_ok();
-    harness.get_by_label("Save").simulate_click();
+    harness.get_by_label("Save").click();
     {
         let deadline = Instant::now() + SETTLE_TIMEOUT;
         loop {
@@ -1524,14 +1536,14 @@ fn create_and_edit_longform_via_editor() {
     assert!(edited.created_at > created_at, "the edit superseded");
 
     // Close returns to the canvas.
-    harness.get_by_label("← Canvas").simulate_click();
+    harness.get_by_label("← Canvas").click();
     harness.run_ok();
     assert!(!harness.state().notebook.editor_is_open());
 
     // Back on the canvas, the saved note now shows in the vault sidebar; clicking
     // it reopens the editor bound to that same note.
     wait_for_label(&mut harness, "My first note");
-    harness.get_by_label("My first note").simulate_click();
+    harness.get_by_label("My first note").click();
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
@@ -1619,10 +1631,13 @@ fn rename_note_via_vault_context_menu() {
 
     // Right-click a row and choose Rename, arming the inline field.
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Rename").simulate_click();
+    harness.get_by_label("Rename").click();
     harness.run_ok();
 
     // Type into the field (appending to the seeded title) and commit with Enter.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
         .type_text(" v2");
@@ -1673,12 +1688,12 @@ fn delete_note_via_vault_context_menu() {
     // Right-click the first vault row (its rough on-screen position, same spot the
     // vault snapshot hovers) to open the context menu, then choose Delete.
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Delete").simulate_click();
+    harness.get_by_label("Delete").click();
     harness.run_ok();
 
     // The confirmation modal appears; its Delete button fires the tombstone.
     wait_for_label(&mut harness, "Delete note?");
-    harness.get_by_label("Delete").simulate_click();
+    harness.get_by_label("Delete").click();
 
     // The tombstone ingests + unwraps asynchronously; poll until the vault drops
     // to a single note.
@@ -1789,7 +1804,7 @@ fn open_canvas_swaps_active_surface() {
 
     // Click the *other* canvas's vault row (by its title label — the same way the
     // note tests open a note). It must swap the surface, not open the editor.
-    harness.get_by_label("Roadmap").simulate_click();
+    harness.get_by_label("Roadmap").click();
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
@@ -1834,10 +1849,13 @@ fn rename_canvas_via_vault_context_menu() {
     // Which row `(120,120)` lands on isn't pinned — like the note-rename test we
     // don't depend on it, only that the clicked canvas is renamed in place.
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Rename").simulate_click();
+    harness.get_by_label("Rename").click();
     harness.run_ok();
 
     // Append " v2" to the seeded title and commit with Enter.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
         .type_text(" v2");
@@ -1883,10 +1901,10 @@ fn delete_canvas_via_vault_context_menu() {
     // Right-click a canvas row (both seeded docs are canvases; row position isn't
     // pinned) and choose Delete, then confirm the modal — worded "Delete canvas?".
     secondary_click_at(&mut harness, egui::pos2(120.0, 120.0));
-    harness.get_by_label("Delete").simulate_click();
+    harness.get_by_label("Delete").click();
     harness.run_ok();
     wait_for_label(&mut harness, "Delete canvas?");
-    harness.get_by_label("Delete").simulate_click();
+    harness.get_by_label("Delete").click();
 
     // The tombstone folds in and drops the clicked canvas; exactly one survives,
     // and it's one of the two seeded (not a re-seeded replacement).
@@ -1955,7 +1973,7 @@ fn snapshot_notebook_canvas_open() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    harness.get_by_label("Roadmap").simulate_click();
+    harness.get_by_label("Roadmap").click();
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     while harness.state().notebook.active_canvas() != Some("cv-roadmap") {
         harness.run_ok();
@@ -2029,6 +2047,7 @@ fn drag_vault_row(
 ) {
     let row = harness
         .get_by_label(label)
+        .accesskit_node()
         .bounding_box()
         .unwrap_or_else(|| panic!("vault row {label:?} has no bounding box"));
     let from = egui::pos2(

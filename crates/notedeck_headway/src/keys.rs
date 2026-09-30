@@ -897,10 +897,9 @@ fn keyboard_taken(ctx: &egui::Context, state: &BoardUiState, menu_open: bool) ->
 fn focus_taken(ctx: &egui::Context) -> bool {
     // Read before any widget runs this frame, so this is the focus the key
     // press was typed into.
-    ctx.memory(|m| m.focused().is_some() || m.any_popup_open())
-        // `Memory::any_popup_open` sees combo boxes but not egui 0.31's menus:
-        // right-click context menus have their own check.
-        || ctx.is_context_menu_open()
+    ctx.memory(|m| m.focused().is_some())
+        // Combo boxes, menus and right-click context menus are all popups.
+        || egui::Popup::is_any_open(ctx)
         || egui::DragAndDrop::has_any_payload(ctx)
         || ctx.dragged_id().is_some()
 }
@@ -1021,6 +1020,7 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use headway::event::{ReviewFields, ReviewView};
+    use notedeck::test_harness::PressKey;
 
     /// What a keymap test frame reads and leaves behind.
     struct KeysHarness {
@@ -1109,7 +1109,8 @@ mod tests {
                 }
                 h.esc_left |= ui.input(|i| i.key_pressed(Key::Escape));
                 if let Some(field) = h.field {
-                    ui.add(egui::TextEdit::singleline(&mut h.text).id(field));
+                    ui.add(egui::TextEdit::singleline(&mut h.text).id(field))
+                        .accessible_name("test field");
                 }
                 // As the detail's pass ends, after its fields laid out.
                 h.state.latch_detail_focus(ui.ctx());
@@ -1238,7 +1239,7 @@ mod tests {
 
     #[test]
     fn a_focused_text_field_keeps_its_keys() {
-        let field = egui::Id::new("keys_test_field");
+        let field = egui::Id::unique("keys_test_field");
         let mut harness = keys_harness(Some(field));
         harness.ctx.memory_mut(|m| m.request_focus(field));
         harness.run();
@@ -2004,7 +2005,7 @@ mod tests {
     /// field is still there to commit its edit; the next Esc leaves the card.
     #[test]
     fn esc_in_a_detail_field_only_leaves_the_field() {
-        let field = egui::Id::new("keys_test_detail_field");
+        let field = egui::Id::unique("keys_test_detail_field");
         let mut harness = detail_harness(Some(field));
         harness.ctx.memory_mut(|m| m.request_focus(field));
         harness.run();
@@ -2406,7 +2407,7 @@ diff --git a/b.txt b/b.txt
     /// Esc to it; once nothing does, they're the composer's again.
     #[test]
     fn the_reason_composer_leaves_enter_to_a_focused_field() {
-        let comment = egui::Id::new("comment");
+        let comment = egui::Id::unique("comment");
         let mut harness = detail_harness(Some(comment));
         press_with(&mut harness, Modifiers::SHIFT, Key::X);
         harness.run();
@@ -2646,7 +2647,7 @@ diff --git a/b.txt b/b.txt
     /// its keys: an `s` there opens no session.
     #[test]
     fn typing_in_the_detail_composer_keeps_its_keys() {
-        let field = egui::Id::new("keys_test_comment");
+        let field = egui::Id::unique("keys_test_comment");
         let mut harness = detail_harness(Some(field));
         harness.ctx.memory_mut(|m| m.request_focus(field));
         harness.run();

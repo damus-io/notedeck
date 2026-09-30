@@ -251,7 +251,7 @@ impl RowGalleys {
             DiffTag::Insert => ("+", INSERT_COLOR),
         };
         let gutter = gutter_text(row.old_no, row.new_no);
-        ui.fonts(|fonts| Self {
+        ui.fonts_mut(|fonts| Self {
             tag: row.tag,
             gutter: fonts.layout_no_wrap(gutter, gutter_font(), LINE_NUMBER_COLOR),
             marker: fonts.layout_no_wrap(marker.to_owned(), font_id.clone(), marker_color),

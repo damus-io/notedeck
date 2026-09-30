@@ -1536,6 +1536,7 @@ mod tests {
     use crate::collapse_state::CollapseState;
     use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::{SessionId, SessionSource};
+    use notedeck::test_harness::PressKey;
 
     #[test]
     fn cycle_walks_manual_plan_edits_auto() {
@@ -2898,7 +2899,7 @@ mod tests {
             harness.state().is_none(),
             "no action before anyone clicks anything"
         );
-        harness.get_by_label("Stop").click();
+        harness.get_by_label("Stop").click_accesskit();
         harness.run();
         harness.state_mut().take()
     }

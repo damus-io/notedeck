@@ -46,7 +46,7 @@ fn rust_patch(lines: usize) -> GitPatch {
 /// scroll applied, the view's rows laid out once.
 fn settled(patch: &GitPatch, height: f32, selectable: bool) -> (Context, GitPatchState, RawInput) {
     let ctx = Context::default();
-    ctx.style_mut(|s| s.interaction.selectable_labels = selectable);
+    ctx.global_style_mut(|s| s.interaction.selectable_labels = selectable);
     let mut state = GitPatchState::new(patch, &mut Localization::default());
     state.scroll(PatchScroll::Rows(200));
     let input = RawInput {
@@ -60,9 +60,10 @@ fn settled(patch: &GitPatch, height: f32, selectable: bool) -> (Context, GitPatc
 }
 
 fn frame(ctx: &Context, patch: &GitPatch, state: &mut GitPatchState, input: RawInput) {
-    let _ = ctx.run(input, |ctx| {
-        CentralPanel::default().show(ctx, |ui| git_patch_ui(patch, state, ui));
-    });
+    ctx.run_ui(input, |ui| {
+        CentralPanel::default().show(ui, |ui| git_patch_ui(patch, state, ui));
+    })
+    .drop_without_applying_deltas();
 }
 
 /// Allocations (fresh + regrown) one steady-state frame makes on this thread.
@@ -90,17 +91,17 @@ fn diff_rows_do_not_allocate_per_frame() {
 }
 
 /// With selection on (egui's default), each row's content goes through
-/// egui's `LabelSelectionState`, which loads and re-stores its state per
-/// selectable label and boxes it on every store: one allocation per row that
-/// this widget can't avoid without giving up text selection.
+/// egui's `LabelSelectionState`. Up to egui 0.31 that boxed its state on every
+/// store, one allocation per row (57 for the tall view's 57 extra rows); since
+/// egui 0.36 it no longer does, so selectable rows cost nothing per frame
+/// either.
 ///
-/// Measured, not chosen: the tall view shows 57 more rows than the short one.
-/// Before the galley cache the same 57 rows cost 855 (a gutter `String`, a
-/// `LayoutJob` and its regrowth, a `horizontal` child `Ui` and two labels'
-/// selection state per row).
+/// Measured, not chosen. Before the galley cache the same 57 rows cost 855 (a
+/// gutter `String`, a `LayoutJob` and its regrowth, a `horizontal` child `Ui`
+/// and two labels' selection state per row).
 #[test]
-fn selectable_rows_cost_only_egui_selection_state() {
-    assert_eq!(marginal_allocs(true), 57);
+fn selectable_rows_do_not_allocate_per_frame() {
+    assert_eq!(marginal_allocs(true), 0);
 }
 
 /// Where a tall selectable frame's allocations go, heaviest first:
