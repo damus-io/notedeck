@@ -43,7 +43,7 @@ mod update;
 pub use actions::ChromePanelAction;
 use actions::PendingOpen;
 use keyboard::AnimState;
-use nav::seed_global_nav;
+use nav::{seed_global_nav, PendingPrune};
 #[cfg(feature = "auto-update")]
 use update::poll_updater;
 
@@ -99,6 +99,11 @@ pub struct Chrome {
     /// resolve on the frame it was raised, retried on the frames after it (see
     /// [`PendingOpen`]). At most one: a newer unresolved open replaces it.
     pending_open: Option<PendingOpen>,
+
+    /// Prunes ([`NavRequest::RemoveActive`](notedeck::NavRequest)) raised
+    /// while a `global_nav` slide was in flight, applied in order once it
+    /// lands (see [`Chrome::apply_nav_requests`]).
+    pending_prunes: Vec<PendingPrune>,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -217,6 +222,7 @@ impl Chrome {
             nav: DrawerRouter::default(),
             global_nav: Some(seed_global_nav()),
             pending_open: None,
+            pending_prunes: Vec::new(),
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 app_ref.app_ctx.path,
@@ -327,6 +333,7 @@ impl Chrome {
             nav: DrawerRouter::default(),
             global_nav: Some(seed_global_nav()),
             pending_open: None,
+            pending_prunes: Vec::new(),
             updater: notedeck::updater::Updater::new(
                 ctx.path,
                 &ctx.ndb,
@@ -447,10 +454,14 @@ impl notedeck::App for Chrome {
         }
 
         // Apply any navigation requests apps enqueued while rendering to the
-        // global history, then re-derive the active app. Empty until an app
-        // starts pushing routes (a later subissue), but wired now so it's ready.
+        // global history, then re-derive the active app. Entries a prune took
+        // out go to their app's cleanup, as a popped entry does.
         let nav_requests = ctx.navigator.take();
-        self.apply_nav_requests(nav_requests);
+        for entry in self.apply_nav_requests(nav_requests) {
+            if let Some(app) = self.apps.get_mut(entry.app.slot()) {
+                app.cleanup_nav(ctx, &entry.token);
+            }
+        }
 
         // Fallback keybindings — only fire if no app consumed the key.
         self.handle_fallback_keybindings(ui.ctx());

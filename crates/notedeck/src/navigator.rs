@@ -115,12 +115,23 @@ pub enum NavRequest {
     /// [`Navigator::replace_active`].
     ReplaceActive(ActiveNavEntry),
 
+    /// Drop every entry owned by the *currently active* app whose token the
+    /// predicate matches, from both the back and the forward history, in one
+    /// step. The chrome tags it with the active [`AppId`] on drain, like
+    /// [`PushToActive`](Self::PushToActive), so an app can only prune its own
+    /// entries. See [`Navigator::remove_active`].
+    RemoveActive(RoutePredicate),
+
     /// Go back one step in the global history.
     Back,
 
     /// Go forward one step in the global history.
     Forward,
 }
+
+/// Picks out route tokens for [`NavRequest::RemoveActive`]: true means the
+/// entry holding the token is dead and should be removed.
+pub type RoutePredicate = Box<dyn Fn(&dyn Any) -> bool>;
 
 /// A frame-local queue of navigation requests raised by apps during rendering.
 ///
@@ -183,6 +194,32 @@ impl Navigator {
     /// app's own `route` value, boxed like [`push_active_route`](Self::push_active_route).
     pub fn replace_active_route<R: Any>(&mut self, route: R) {
         self.replace_active(Rc::new(route));
+    }
+
+    /// Enqueue a prune of the active app's own dead entries: every entry it
+    /// owns whose token `is_dead` matches leaves the global history, back and
+    /// forward, in one step (see [`NavRequest::RemoveActive`]).
+    ///
+    /// When what an entry names goes away (a card leaves its board, say), the
+    /// app removes the entry up front, rather than finding out by drawing it.
+    /// The root entry always stays. If the current entry goes, the chrome
+    /// lands on the entry beneath it at once, with no slide, and hands each
+    /// removed entry to its app's `cleanup_nav`. A prune raised during a slide
+    /// waits for it to end.
+    ///
+    /// Raise it while rendering as the active app: the chrome tags it with
+    /// whichever app is active when it drains the queue, so a prune queued
+    /// from a background app's `update` would be tagged with another app.
+    pub fn remove_active(&mut self, is_dead: impl Fn(&dyn Any) -> bool + 'static) {
+        self.requests
+            .push(NavRequest::RemoveActive(Box::new(is_dead)));
+    }
+
+    /// Typed helper: [`remove_active`](Self::remove_active) over an app's own
+    /// route type. A token that isn't an `R` (such as the chrome's `()`
+    /// app-switch entry) is never matched.
+    pub fn remove_active_routes<R: Any>(&mut self, is_dead: impl Fn(&R) -> bool + 'static) {
+        self.remove_active(move |token| token.downcast_ref::<R>().is_some_and(&is_dead));
     }
 
     /// Enqueue a back navigation.
@@ -302,5 +339,21 @@ mod navigator_tests {
             tagged.token.downcast_ref::<TestRoute>(),
             Some(&TestRoute::Home)
         );
+    }
+
+    #[test]
+    fn typed_prune_matches_only_its_own_route_type() {
+        let mut nav = Navigator::default();
+        nav.remove_active_routes(|r: &TestRoute| *r == TestRoute::Thread(7));
+
+        let requests = nav.take();
+        let [NavRequest::RemoveActive(is_dead)] = &requests[..] else {
+            panic!("expected one prune request");
+        };
+        assert!(is_dead(&TestRoute::Thread(7)));
+        assert!(!is_dead(&TestRoute::Thread(8)));
+        assert!(!is_dead(&TestRoute::Home));
+        // The chrome's app-switch token is a `()`, never an app route.
+        assert!(!is_dead(&()));
     }
 }

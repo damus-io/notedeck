@@ -185,29 +185,68 @@ impl<R: Clone> NavStack<R> {
 
         self.returning = false;
 
-        let is_overlay = 's: {
-            let Some(last_range) = self.overlay_ranges.last_mut() else {
-                break 's false;
-            };
-
-            if last_range.end != self.routes.len() {
-                break 's false;
-            }
-
-            if last_range.end - 1 <= last_range.start {
-                self.overlay_ranges.pop();
-            } else {
-                last_range.end -= 1;
-            }
-
-            true
-        };
-
-        let popped = self.routes.pop()?;
-        if keep_forward_route && !is_overlay {
-            self.forward_stack.push(popped.clone());
+        let RemovedRoute { route, in_overlay } = self.remove_route_at(self.routes.len() - 1);
+        if keep_forward_route && !in_overlay {
+            self.forward_stack.push(route.clone());
         }
-        Some(popped)
+        Some(route)
+    }
+
+    /// Remove every route the owner says is dead: each back-stack route
+    /// above the root for which `keep` returns false, and each forward-stack
+    /// route likewise, so a later [`go_forward`](Self::go_forward) can't
+    /// replay one. Returns the removed back-stack routes, oldest first, for
+    /// the caller to clean up.
+    ///
+    /// The forward-stack drops are not returned: a route only reaches the
+    /// forward stack by being popped, and a pop already hands the route to
+    /// its owner's cleanup.
+    ///
+    /// The root (index 0) always stays, so the stack is never emptied. If the
+    /// top is removed, the route beneath it becomes the top **instantly**,
+    /// like [`go_to_route`](Self::go_to_route), not through an animated back:
+    /// the old top is dead, and an animated back would have to draw it
+    /// sliding out. Overlay ranges shift to follow the routes they cover.
+    ///
+    /// Call it only between transitions (neither [`navigating`](Self::navigating)
+    /// nor [`returning`](Self::returning)): egui-nav indexes `routes` while it
+    /// animates, so removing one mid-slide would shift what it draws.
+    pub fn retain_routes(&mut self, mut keep: impl FnMut(&R) -> bool) -> Vec<R> {
+        self.forward_stack.retain(&mut keep);
+
+        let mut removed = Vec::new();
+        // Walk top-down so a removal never shifts an index still to visit.
+        for index in (1..self.routes.len()).rev() {
+            if keep(&self.routes[index]) {
+                continue;
+            }
+            removed.push(self.remove_route_at(index).route);
+        }
+        removed.reverse();
+        removed
+    }
+
+    /// Remove the route at `index` and shift the overlay ranges to match:
+    /// a range covering `index` shrinks by one (and is dropped once empty),
+    /// and a range above it moves down one. The single removal path under
+    /// both a top pop and [`retain_routes`](Self::retain_routes).
+    fn remove_route_at(&mut self, index: usize) -> RemovedRoute<R> {
+        let mut in_overlay = false;
+        self.overlay_ranges.retain_mut(|range| {
+            if index < range.start {
+                range.start -= 1;
+                range.end -= 1;
+            } else if index < range.end {
+                in_overlay = true;
+                range.end -= 1;
+            }
+            range.start < range.end
+        });
+
+        RemovedRoute {
+            route: self.routes.remove(index),
+            in_overlay,
+        }
     }
 
     /// Removes all routes in the overlay besides the last.
@@ -254,10 +293,13 @@ impl<R: Clone> NavStack<R> {
 
         match replacement {
             ReplacementType::Single => {
-                self.routes.remove(num_routes - 2);
+                self.remove_route_at(num_routes - 2);
             }
             ReplacementType::All => {
                 self.routes.drain(..num_routes - 1);
+                // Only the new top is left, and a replacing push never starts
+                // an overlay, so no range covers anything any more.
+                self.overlay_ranges.clear();
             }
         }
     }
@@ -383,6 +425,16 @@ impl<R: Clone> NavStack<R> {
     pub fn is_empty(&self) -> bool {
         self.routes.is_empty()
     }
+}
+
+/// One route taken out of a [`NavStack`] by its single removal path.
+struct RemovedRoute<R> {
+    /// The route that was removed.
+    route: R,
+    /// Whether it sat inside an overlay range. A popped overlay route isn't
+    /// kept for [`NavStack::go_forward`], since going back collapses the
+    /// whole overlay.
+    in_overlay: bool,
 }
 
 /// A business-logic-free navigation event surfaced by [`nav_frame`] (or
@@ -558,6 +610,7 @@ impl<R> DragResponse<R> {
 #[cfg(test)]
 mod nav_stack_tests {
     use super::{NavStack, NavStackEvent};
+    use crate::route::ReplacementType;
     use egui_nav::{NavAction, ReturnType};
 
     #[test]
@@ -761,6 +814,125 @@ mod nav_stack_tests {
         stack.complete_replacement();
         assert!(!stack.is_replacing());
         assert_eq!(stack.routes(), &vec![3]);
+    }
+
+    #[test]
+    fn retain_routes_removes_a_middle_entry() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to(3);
+
+        assert_eq!(stack.retain_routes(|r| *r != 2), vec![2]);
+        assert_eq!(stack.routes(), &vec![1, 3]);
+        assert_eq!(*stack.top(), 3, "a middle removal leaves the top alone");
+    }
+
+    #[test]
+    fn retain_routes_removing_the_top_lands_on_the_next_live_route() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to(3);
+        stack.route_to(4);
+        stack.navigating_mut(false);
+
+        // 3 and 4 are dead: the top lands on 2 at once, with no slide.
+        assert_eq!(stack.retain_routes(|r| *r < 3), vec![3, 4]);
+        assert_eq!(stack.routes(), &vec![1, 2]);
+        assert_eq!(*stack.top(), 2);
+        assert!(!stack.returning());
+        assert!(!stack.navigating());
+        assert!(
+            !stack.can_go_forward(),
+            "a pruned top is not redo-able, unlike a pop"
+        );
+    }
+
+    #[test]
+    fn retain_routes_prunes_the_forward_stack() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to(3);
+        stack.pop();
+        stack.pop(); // forward stack replays 2 then 3
+
+        // Only back-stack routes come back for cleanup; 3 was cleaned on its pop.
+        assert!(stack.retain_routes(|r| *r != 3).is_empty());
+        assert!(stack.go_forward());
+        assert_eq!(stack.routes(), &vec![1, 2]);
+        assert!(!stack.go_forward(), "3 was pruned from the redo history");
+    }
+
+    #[test]
+    fn retain_routes_never_removes_the_root() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+
+        assert_eq!(stack.retain_routes(|_| false), vec![2]);
+        assert_eq!(stack.routes(), &vec![1], "the root survives a prune-all");
+        assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn retain_routes_keeps_overlay_ranges_consistent() {
+        // [1, 2, 3, 4, 5] with 4 and 5 one overlay group (indices 3..5)
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to(3);
+        stack.route_to_overlaid(4);
+        stack.route_to_overlaid(5);
+        assert_eq!(stack.overlay_ranges, vec![3..5]);
+
+        // Removing a route below the group shifts it down.
+        assert_eq!(stack.retain_routes(|r| *r != 2), vec![2]);
+        assert_eq!(stack.routes(), &vec![1, 3, 4, 5]);
+        assert_eq!(stack.overlay_ranges, vec![2..4]);
+
+        // Removing one member shrinks the group.
+        assert_eq!(stack.retain_routes(|r| *r != 4), vec![4]);
+        assert_eq!(stack.routes(), &vec![1, 3, 5]);
+        assert_eq!(stack.overlay_ranges, vec![2..3]);
+
+        // One back collapses what's left of the group and lands on 3. A range
+        // left at 3..5 would have drained past the end of the stack here.
+        assert_eq!(stack.go_back(), Some(3));
+        assert_eq!(stack.pop(), Some(5));
+        assert_eq!(stack.routes(), &vec![1, 3]);
+    }
+
+    #[test]
+    fn retain_routes_drops_an_emptied_overlay_group() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to(2);
+        stack.route_to_overlaid(3);
+
+        // The group's only member goes, and so does the group.
+        assert_eq!(stack.retain_routes(|r| *r != 3), vec![3]);
+        assert_eq!(stack.routes(), &vec![1, 2]);
+        assert!(stack.overlay_ranges.is_empty());
+    }
+
+    #[test]
+    fn replace_single_keeps_overlay_ranges_consistent() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to_overlaid(2);
+        stack.route_to(3);
+        stack.replacing = Some(ReplacementType::Single);
+
+        // 3 replaces the route beneath it, which was the group's only member.
+        stack.complete_replacement();
+        assert_eq!(stack.routes(), &vec![1, 3]);
+        assert!(stack.overlay_ranges.is_empty());
+    }
+
+    #[test]
+    fn replace_all_clears_overlay_ranges() {
+        let mut stack = NavStack::new(vec![1]);
+        stack.route_to_overlaid(2);
+        stack.route_to_replaced(3);
+
+        stack.complete_replacement();
+        assert_eq!(stack.routes(), &vec![3]);
+        assert!(stack.overlay_ranges.is_empty());
     }
 
     #[test]

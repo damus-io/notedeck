@@ -6,8 +6,35 @@
 use super::Chrome;
 #[cfg(feature = "headway")]
 use notedeck::{App, AppContext};
-use notedeck::{AppId, ChromeNavEntry, NavRequest, NavStack};
+use notedeck::{AppId, ChromeNavEntry, NavRequest, NavStack, RoutePredicate};
 use std::rc::Rc;
+
+/// A [`NavRequest::RemoveActive`] prune, tagged with the app that raised it.
+///
+/// Held on [`Chrome`] while a slide is in flight, because egui-nav indexes the
+/// history's routes during the animation; applied once the slide has landed.
+pub(super) struct PendingPrune {
+    /// The app whose entries this prune may remove: the active app when the
+    /// request was drained.
+    app: AppId,
+    /// True for a token whose entry is dead.
+    is_dead: RoutePredicate,
+}
+
+impl PendingPrune {
+    /// Remove this prune's dead entries from `nav`, returning the removed
+    /// back-stack entries (oldest first) for their app's `cleanup_nav`.
+    fn apply(&self, nav: &mut NavStack<ChromeNavEntry>) -> Vec<ChromeNavEntry> {
+        // `as_ref` hands the predicate the token itself: `&entry.token` would
+        // coerce the `Rc` to a `dyn Any`, which no route type downcasts from.
+        nav.retain_routes(|entry| entry.app != self.app || !(self.is_dead)(entry.token.as_ref()))
+    }
+}
+
+/// True while `nav` is animating a slide, when its routes must not move.
+fn sliding(nav: &NavStack<ChromeNavEntry>) -> bool {
+    nav.navigating() || nav.returning()
+}
 
 /// Seed the chrome-global navigation history with the initial app's route
 /// (slot 0). [`NavStack::new`] panics on an empty stack, so the chrome is born
@@ -105,28 +132,59 @@ impl Chrome {
     ///
     /// This is the chrome's half of the [`Navigator`](notedeck::Navigator)
     /// contract: apps never touch the authoritative stack, they queue intent and
-    /// the chrome applies it here. Empty in practice until an app starts pushing
-    /// routes (a later subissue), but wired now so it is ready and testable.
-    pub(super) fn apply_nav_requests(&mut self, requests: Vec<NavRequest>) {
-        if requests.is_empty() {
-            return;
+    /// the chrome applies it here.
+    ///
+    /// Returns the entries a prune ([`NavRequest::RemoveActive`]) took off the
+    /// back stack, oldest first. The caller hands each to its app's
+    /// `cleanup_nav`, as a popped entry is. A prune that meets a slide in
+    /// flight is held in `pending_prunes` and applied by the first call after
+    /// the slide lands, so this runs every frame even with no new requests.
+    pub(super) fn apply_nav_requests(&mut self, requests: Vec<NavRequest>) -> Vec<ChromeNavEntry> {
+        if requests.is_empty() && self.pending_prunes.is_empty() {
+            return Vec::new();
         }
 
-        // The active-owned requests (`PushToActive`/`ReplaceActive`) don't name
-        // their app — the enqueuing app doesn't know its own slot — so the chrome
-        // completes them here by tagging the token with the active slot. This
-        // runs during the same frame's render as the enqueue and before
-        // `sync_active_from_nav`, so `active` still names the app that raised the
-        // request (a plain app-switch funnels through `set_active`, not here).
+        // The active-owned requests (`PushToActive`/`ReplaceActive`/
+        // `RemoveActive`) don't name their app — the enqueuing app doesn't know
+        // its own slot — so the chrome completes them here by tagging them with
+        // the active slot. This runs during the same frame's render as the
+        // enqueue and before `sync_active_from_nav`, so `active` still names the
+        // app that raised the request (a plain app-switch funnels through
+        // `set_active`, not here).
         let active = AppId(self.active as usize);
 
-        if let Some(nav) = self.global_nav.as_mut() {
+        let mut removed = Vec::new();
+        let Chrome {
+            global_nav,
+            pending_prunes,
+            ..
+        } = self;
+        if let Some(nav) = global_nav.as_mut() {
+            // Prunes held over a slide that has since landed go first: they
+            // were raised before anything in this frame's batch.
+            if !sliding(nav) {
+                for prune in pending_prunes.drain(..) {
+                    removed.extend(prune.apply(nav));
+                }
+            }
+
             for request in requests {
                 match request {
                     NavRequest::Push(entry) => nav.route_to(entry),
                     NavRequest::Replace(entry) => nav.route_to_replaced(entry),
                     NavRequest::PushToActive(entry) => nav.route_to(entry.tag(active)),
                     NavRequest::ReplaceActive(entry) => nav.route_to_replaced(entry.tag(active)),
+                    NavRequest::RemoveActive(is_dead) => {
+                        let prune = PendingPrune {
+                            app: active,
+                            is_dead,
+                        };
+                        if sliding(nav) {
+                            pending_prunes.push(prune);
+                        } else {
+                            removed.extend(prune.apply(nav));
+                        }
+                    }
                     NavRequest::Back => {
                         nav.go_back();
                     }
@@ -138,6 +196,7 @@ impl Chrome {
         }
 
         self.sync_active_from_nav();
+        removed
     }
 
     /// Step one entry back in the global history, then re-derive the active app.
@@ -213,7 +272,37 @@ mod global_nav_tests {
             nav: DrawerRouter::default(),
             global_nav: Some(seed_global_nav()),
             pending_open: None,
+            pending_prunes: Vec::new(),
         }
+    }
+
+    /// Land the global history's in-flight forward slide, as `nav_frame`
+    /// does once egui-nav reports it placed.
+    fn land_slide(chrome: &mut Chrome) {
+        chrome
+            .global_nav
+            .as_mut()
+            .unwrap()
+            .reconcile(NavAction::Navigated);
+    }
+
+    /// The app slot and `u32` token of every entry on the history, oldest first.
+    fn history(chrome: &Chrome) -> Vec<(usize, Option<u32>)> {
+        chrome
+            .global_nav
+            .as_ref()
+            .unwrap()
+            .routes()
+            .iter()
+            .map(|e| (e.app.slot(), e.token.downcast_ref::<u32>().copied()))
+            .collect()
+    }
+
+    /// A prune request for the active app's `u32` tokens equal to `dead`.
+    fn prune(dead: u32) -> NavRequest {
+        let mut navigator = notedeck::Navigator::default();
+        navigator.remove_active_routes(move |t: &u32| *t == dead);
+        navigator.take().pop().unwrap()
     }
 
     #[test]
@@ -399,5 +488,90 @@ mod global_nav_tests {
         let nav = chrome.global_nav.as_ref().unwrap();
         assert_eq!(nav.top().app, AppId(1));
         assert_eq!(chrome.active, 1, "forward crossed back to app1");
+    }
+
+    #[test]
+    fn drained_prune_is_tagged_with_the_active_app_and_rederives_active() {
+        let mut chrome = nav_test_chrome();
+        // [app0, app2:7, app1:7] — the same token value under two apps.
+        chrome.apply_nav_requests(vec![
+            NavRequest::Push(ChromeNavEntry::new(AppId(2), Rc::new(7u32))),
+            NavRequest::Push(ChromeNavEntry::new(AppId(1), Rc::new(7u32))),
+        ]);
+        land_slide(&mut chrome);
+        assert_eq!(chrome.active, 1);
+
+        let removed = chrome.apply_nav_requests(vec![prune(7)]);
+
+        // Only app1's entry went: the prune was tagged with the active slot.
+        assert_eq!(history(&chrome), vec![(0, None), (2, Some(7))]);
+        assert_eq!(removed.len(), 1, "the removed entry comes back for cleanup");
+        assert_eq!(removed[0].app, AppId(1));
+        assert_eq!(removed[0].token.downcast_ref::<u32>(), Some(&7));
+
+        // The top was removed, so the landing is instant and on app2's entry.
+        let nav = chrome.global_nav.as_ref().unwrap();
+        assert!(!nav.navigating() && !nav.returning());
+        assert_eq!(chrome.active, 2, "active follows the new top across apps");
+        assert!(chrome.pending_prunes.is_empty());
+    }
+
+    #[test]
+    fn prune_during_a_forward_slide_waits_for_it_to_land() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        land_slide(&mut chrome);
+
+        // A push starts a slide, and the prune in the same batch must wait.
+        let removed = chrome.apply_nav_requests(vec![
+            NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(7u32))),
+            prune(7),
+        ]);
+        assert!(removed.is_empty());
+        assert_eq!(history(&chrome), vec![(0, None), (1, None), (1, Some(7))]);
+        assert_eq!(chrome.pending_prunes.len(), 1);
+
+        // A frame with no requests while still sliding changes nothing.
+        assert!(chrome.apply_nav_requests(Vec::new()).is_empty());
+        assert_eq!(chrome.pending_prunes.len(), 1);
+
+        // Once the slide lands, the next drain applies the held prune.
+        land_slide(&mut chrome);
+        let removed = chrome.apply_nav_requests(Vec::new());
+        assert_eq!(removed.len(), 1);
+        assert_eq!(history(&chrome), vec![(0, None), (1, None)]);
+        assert!(chrome.pending_prunes.is_empty());
+        assert_eq!(chrome.active, 1);
+    }
+
+    #[test]
+    fn prune_during_a_back_slide_waits_for_the_pop() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        chrome.apply_nav_requests(vec![
+            NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(7u32))),
+            NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(8u32))),
+        ]);
+        land_slide(&mut chrome);
+
+        // Back off 8 and prune 7 in one batch: the prune waits for the pop.
+        chrome.apply_nav_requests(vec![NavRequest::Back, prune(7)]);
+        assert_eq!(
+            history(&chrome),
+            vec![(0, None), (1, None), (1, Some(7)), (1, Some(8))],
+            "nothing moves under egui-nav while the back slides"
+        );
+
+        chrome
+            .global_nav
+            .as_mut()
+            .unwrap()
+            .reconcile(NavAction::Returned(ReturnType::Click));
+        let removed = chrome.apply_nav_requests(Vec::new());
+
+        // 8 was popped by the back, then 7 pruned: one step lands on app1's root.
+        assert_eq!(removed.len(), 1);
+        assert_eq!(history(&chrome), vec![(0, None), (1, None)]);
+        assert_eq!(chrome.active, 1);
     }
 }
