@@ -191,6 +191,10 @@ pub struct GitPatchState {
     /// Running totals of `note_rows`, one longer than it: the rows every note
     /// before index `n` takes is `note_prefix[n]`.
     note_prefix: Vec<usize>,
+    /// Drawn notes whose drawer used a different number of rows than they
+    /// had, as `(note, rows)`: applied once the pass's rows are all placed,
+    /// since every row of a pass is located against the sizes it began with.
+    resized: Vec<(usize, usize)>,
     /// What the caller said `line_notes` were built from (see
     /// [`GitPatchState::set_notes`]); `None` until it sets any.
     notes_stamp: Option<u64>,
@@ -976,6 +980,14 @@ pub fn git_patch_ui_with(
         .inner;
 
     state.galleys.end_pass();
+    if !state.resized.is_empty() {
+        for i in 0..state.resized.len() {
+            let (n, rows) = state.resized[i];
+            state.set_note_rows(n, rows);
+        }
+        state.resized.clear();
+        ui.ctx().request_repaint();
+    }
     state.offset = out.state.offset.y;
     state.viewport_height = out.inner_rect.height();
     state.synced = true;
@@ -1259,7 +1271,7 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
 /// Note `n`, drawn by the caller's `draw` from row `part` of it (the row this
 /// pass is at). Its band and bar are painted across every row it takes, the
 /// drawer gets the width past the gutter, and when the drawer used more or
-/// fewer rows than the note has, the note is resized for the next pass.
+/// fewer rows than the note has, the note is resized once the pass is done.
 /// Advances one row, as every row does; the note's later rows skip.
 fn drawn_note_ui(
     state: &mut GitPatchState,
@@ -1298,8 +1310,9 @@ fn drawn_note_ui(
     let used = child.min_rect().height();
     let needed = (((used + spacing) / step).ceil() as usize).max(1);
     if needed != rows {
-        state.set_note_rows(n, needed);
-        ui.ctx().request_repaint();
+        // Not now: the rows after this one are still to be located against
+        // the size this pass began with.
+        state.resized.push((n, needed));
     }
     skip_row(ui);
 }
@@ -1715,6 +1728,42 @@ mod tests {
         }
         assert_eq!(state.locate(&patch, long + 12), Row::HunkHeader(4, 1));
         assert_eq!(state.locate(&patch, long + 14), Row::Comment(1, 0));
+    }
+
+    /// A drawn note that turns out shorter than the rows it had (a note
+    /// whose content got shorter, say) is resized after the pass, not in the
+    /// middle of it: the rows below it in the same pass were placed against
+    /// the old size, and resizing under them mapped one past the last note
+    /// (index out of bounds in the row loop).
+    #[test]
+    fn a_drawn_note_that_shrinks_is_resized_after_the_pass() {
+        let patch = GitPatch::parse(MULTI);
+        let mut state = GitPatchState::new(&patch, &mut Localization::default());
+        let note = PatchNote {
+            file: 4,
+            lines: 0..1,
+            text: "drawn".to_string(),
+            kind: PatchNoteKind::Posted,
+            caller_draws: true,
+            key: 0,
+        };
+        state.set_notes(&patch, vec![note], 1);
+        // As tall as a longer note was last pass.
+        state.set_note_rows(0, 4);
+        let size = egui::vec2(800.0, 1600.0);
+        let mut harness = Harness::builder().with_size(size).build_ui_state(
+            |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                let mut draw = |ui: &mut Ui, _: &PatchNote| {
+                    ui.label("one line now");
+                };
+                git_patch_ui_with(patch, state, ui, Some(&mut draw));
+            },
+            (patch, state),
+        );
+        harness.run();
+        assert!(harness.query_by_label("one line now").is_some());
+        let (_, state) = harness.state();
+        assert!(state.note_rows[0] < 4, "shrank to {}", state.note_rows[0]);
     }
 
     /// A note the caller draws is handed to its drawer, and grows to the rows
