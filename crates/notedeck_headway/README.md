@@ -326,7 +326,7 @@ replays each key in each view).
 | `Enter` / `o` | open the card's detail (a plain review pane backs out to it; no-op on the detail) |
 | `e`           | open the record's explainer                                            |
 | `s` / `S`     | open the record's agentium session / the same, asking it for a `/code-review` |
-| `r`           | open the review pane on the newest record                              |
+| `r`           | open the review pane on the newest record, over the card's detail (in the queue: back to the newest record) |
 | `a`           | archive                                                                |
 | `D`           | move to Done                                                           |
 | `X`           | ask for a reason, post it as a `review: …` comment, move to In Progress |
@@ -335,8 +335,13 @@ replays each key in each view).
 The record is the one a review pane shows, else the card's newest. What differs
 by view: `n`/`p` step the grid's cursor (as `j`/`k`), the queue, or the card's
 neighbour in its column (the detail opens that card, a review pane that card's
-review). In the queue a verdict (`D`, `X`, `a`) steps it on; archiving from the
-detail or a review pane backs out to the grid.
+review). In the queue a verdict (`D`, `X`, `a`) steps it on, and a card that
+has left the board since the queue opened takes no action, only `n`/`p`.
+Archiving from the detail backs out of it; from a review pane, out to the
+card's detail, which leaves in turn once the archive lands.
+
+A review pane always sits on its card's detail in the history, however it was
+opened (the grid's `r`, a pane's `n`/`p`), so its `q` lands on that detail.
 
 **Navigation** keeps its meaning while its target is whatever the view shows.
 
@@ -352,7 +357,7 @@ detail or a review pane backs out to the grid.
 | `c`                     | new card                    |                             |                 |
 | `/`                     | filter                      |                             |                 |
 | `R`                     | review queue over In Review |                             | review queue over the card's In Review sub-issues, at any depth |
-| `q` / `Esc`             | (`Esc` clears the cursor)   | queue: leave for the grid (an epic's queue: for the epic's detail); plain: back to the card | back to the grid |
+| `q` / `Esc`             | (`Esc` clears the cursor)   | queue: leave for the grid (an epic's queue: for the epic's detail); plain: back to the card | back (to the grid, or the card `n`/`p` left) |
 
 The review queue itself is in [docs/review-queue.md](docs/review-queue.md#queue-keys).
 

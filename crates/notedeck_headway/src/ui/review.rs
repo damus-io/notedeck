@@ -316,6 +316,8 @@ pub(crate) enum QueueNotice {
     NoInProgressColumn,
     /// `s`/`S` on a card whose record names no agentium session.
     NoSession,
+    /// A card action on the queue's card after it left the board.
+    CardGone,
 }
 
 /// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
@@ -343,6 +345,7 @@ impl QueueNotice {
             QueueNotice::NoDoneColumn => "No Done column on this board",
             QueueNotice::NoInProgressColumn => "No In Progress column on this board",
             QueueNotice::NoSession => "No agentium session on this record",
+            QueueNotice::CardGone => "This card has left the board",
         }
     }
 }

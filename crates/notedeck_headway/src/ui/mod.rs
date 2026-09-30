@@ -109,6 +109,15 @@ pub struct BoardUiState {
     /// Which card the detail edit buffers below were seeded from. When this
     /// differs from `selected`, the buffers are refreshed from the board.
     detail_for: Option<NoteId>,
+    /// The card a review pane's `a` archived, which the pane backs out to the
+    /// detail of. The selection drops once the card leaves the board, as it
+    /// does for a card [`detail_for`](Self::detail_for) names. That one alone
+    /// can't say so here: the chrome's back slides, redrawing the pane's entry
+    /// until it lands, and if the archive folds in meanwhile the pane's frame
+    /// drops the selection and clears `detail_for`, so the detail entry the
+    /// slide lands on would hold a card that never comes back. Cleared when
+    /// the detail draws another card.
+    archived: Option<NoteId>,
     /// Edit buffer for the selected card's title.
     detail_title: String,
     /// The board's title value the title buffer was last synced to. While the
@@ -381,8 +390,8 @@ impl BoardUiState {
                     self.set_cursor(card);
                 }
             }
-            // An `r` inside the queue may have pointed the selection at the
-            // queue's card; the epic is what the queue was opened from.
+            // The epic is what the queue was opened from, and stays selected
+            // underneath it.
             QueueScope::Epic(epic) => self.selected = Some(epic),
         }
         self.review.close();
@@ -688,7 +697,12 @@ fn board_pane_ui(
     // (see `reconcile_nav`), snapping a just-opened deep link back to the board.
     // Holding it costs nothing — the grid draws underneath, and the detail opens
     // the frame the card lands.
-    if state.detail_for.is_some() && state.detail_for == state.selected {
+    //
+    // A card a review pane's `a` archived has left too, whatever `detail_for`
+    // says: the pane's back slides, and a drop during the slide clears
+    // `detail_for` before the detail's entry lands (see `archived`).
+    let gone = state.detail_for == state.selected || state.archived == state.selected;
+    if state.selected.is_some() && gone {
         state.selected = None;
         state.detail_for = None;
     }

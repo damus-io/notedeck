@@ -3424,7 +3424,9 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
 /// `render_nav` (its token), pump the harness, then drain the app's queued nav
 /// requests into the stack the way `Chrome::apply_nav_requests` does —
 /// `PushToActive`/`Back` are the only kinds Headway raises. A self-push inherits
-/// the active (top) app's slot. Shared by the `chrome_nav_loop_*` tests.
+/// the active (top) app's slot. A back lands at once, as the chrome's does
+/// when its slide ends (the frames in between redraw the outgoing entry).
+/// Shared by the `chrome_nav_loop_*` tests.
 fn chrome_frame(
     harness: &mut Harness<'static, HeadwayTestState>,
     stack: &mut notedeck::NavStack<notedeck::ChromeNavEntry>,
@@ -3440,10 +3442,12 @@ fn chrome_frame(
     for request in app_ctx.navigator.take() {
         match request {
             NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
-            // A back step from the chevron is instant here (go_to_route), so the
-            // app never raises one; handle it for completeness.
+            // `go_back` only flags the slide; `pop` is what its end does.
             NavRequest::Back => {
                 stack.go_back();
+                if stack.returning() {
+                    stack.pop();
+                }
             }
             _ => panic!("unexpected nav request kind from Headway"),
         }
@@ -3710,6 +3714,241 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
     wait_for_label(&mut harness, "2 / 2");
     wait_for_label(&mut harness, CARDS[1]);
     assert_eq!(stack.len(), 2, "reopening the queue pushes nothing");
+}
+
+/// Drive [`chrome_frame`] until `done` holds of the stack, or panic naming
+/// `what` after a deadline. For a change that lands through async ndb ingest,
+/// such as an archive folding in.
+fn chrome_frames_until(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    stack: &mut notedeck::NavStack<notedeck::ChromeNavEntry>,
+    what: &str,
+    done: impl Fn(&notedeck::NavStack<notedeck::ChromeNavEntry>) -> bool,
+) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        chrome_frame(harness, stack);
+        if done(stack) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// The Headway route on top of the stack, if it is one.
+fn top_route(
+    stack: &notedeck::NavStack<notedeck::ChromeNavEntry>,
+) -> Option<&notedeck_headway::HeadwayRoute> {
+    stack
+        .top()
+        .token
+        .downcast_ref::<notedeck_headway::HeadwayRoute>()
+}
+
+/// Whether the stack's top is `card`'s detail (not a pane over it).
+fn top_is_detail(stack: &notedeck::NavStack<notedeck::ChromeNavEntry>, card: NoteId) -> bool {
+    top_route(stack).is_some_and(|r| {
+        r.selected_card() == Some(card)
+            && r.review_card().is_none()
+            && r.graph_epic().is_none()
+            && !r.is_review_queue()
+    })
+}
+
+/// A chrome global-nav stack at the board root, with the harness drawn
+/// through it once.
+fn chrome_stack_at_board(
+    harness: &mut Harness<'static, HeadwayTestState>,
+) -> notedeck::NavStack<notedeck::ChromeNavEntry> {
+    use notedeck::{AppId, ChromeNavEntry, NavStack};
+    let mut stack = NavStack::new(vec![ChromeNavEntry::new(AppId(0), std::rc::Rc::new(()))]);
+    chrome_frame(harness, &mut stack);
+    stack
+}
+
+/// Put the grid's cursor on the first In Review card by walking the review
+/// queue there and leaving it, which leaves the cursor on the card last shown.
+fn cursor_on_first_in_review(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    stack: &mut notedeck::NavStack<notedeck::ChromeNavEntry>,
+) {
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    chrome_frame(harness, stack);
+    chrome_frame(harness, stack);
+    wait_for_label(harness, "1 / 2");
+    harness.press_key(egui::Key::Q);
+    chrome_frame(harness, stack);
+    assert_eq!(stack.len(), 1, "leaving the queue backs out to the board");
+}
+
+/// Grid `r` opens the cursor card's review over its detail, which the pane
+/// never came from: under the chrome's stack the detail goes in underneath,
+/// so the pane's `q` lands on the card's detail, as its strip says, and one
+/// more back lands on the board. Before, the pane sat straight on the board
+/// and `q` skipped the detail.
+#[test]
+fn chrome_nav_loop_grid_review_backs_out_to_the_detail() {
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
+    let mut stack = chrome_stack_at_board(&mut harness);
+    cursor_on_first_in_review(&mut harness, &mut stack);
+
+    harness.press_key(egui::Key::R);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 3, "the detail, then the review over it");
+    assert_eq!(
+        top_route(&stack).and_then(|r| r.review_card()),
+        Some(ids[0])
+    );
+    assert!(top_is_detail_below(&stack, ids[0]));
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "local checkout");
+
+    harness.press_key(egui::Key::Q);
+    chrome_frame(&mut harness, &mut stack);
+    assert!(
+        top_is_detail(&stack, ids[0]),
+        "q lands on the card's detail"
+    );
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "± Review diff");
+    assert!(harness.query_by_label("7 cards · 5 columns").is_none());
+
+    harness.press_key(egui::Key::Q);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 1, "one more back lands on the board");
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "7 cards · 5 columns");
+}
+
+/// Whether the entry under the stack's top is `card`'s detail.
+fn top_is_detail_below(stack: &notedeck::NavStack<notedeck::ChromeNavEntry>, card: NoteId) -> bool {
+    let routes = stack.routes();
+    routes.len() >= 2
+        && routes[routes.len() - 2]
+            .token
+            .downcast_ref::<notedeck_headway::HeadwayRoute>()
+            .is_some_and(|r| r.selected_card() == Some(card) && r.review_card().is_none())
+}
+
+/// A pane's `n` opens the next card's review over that card's detail, so the
+/// pane's `q` lands on the next card's detail. Before, `n` pushed the review
+/// straight onto the first card's review, and `q` went back to it after a
+/// frame of the second card's detail.
+#[test]
+fn chrome_nav_loop_pane_step_backs_out_to_the_new_cards_detail() {
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
+    let mut stack = chrome_stack_at_board(&mut harness);
+
+    harness.get_by_label(CARDS[0]).simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "± Review diff");
+    harness.get_by_label("± Review diff").click();
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 3, "the review over the detail it came from");
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "local checkout");
+
+    harness.press_key(egui::Key::N);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 5, "the next card's detail, then its review");
+    assert_eq!(
+        top_route(&stack).and_then(|r| r.review_card()),
+        Some(ids[1])
+    );
+    assert!(top_is_detail_below(&stack, ids[1]));
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, CARDS[1]);
+
+    harness.press_key(egui::Key::Q);
+    chrome_frame(&mut harness, &mut stack);
+    assert!(
+        top_is_detail(&stack, ids[1]),
+        "q lands on the next card's detail"
+    );
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "± Review diff");
+    wait_for_label(&mut harness, CARDS[1]);
+}
+
+/// A pane's `a` archives its card and backs out to its detail; the detail
+/// then leaves for the board once the archive folds in. Opened from the grid
+/// with `r`, the detail under the pane never drew the card, and if the
+/// archive folds in during the back's slide it never will: that is the case
+/// that used to strand the grid under a stale detail entry for good. The
+/// test holds the slide open (the chrome keeps drawing the outgoing pane's
+/// entry, and ignores backs, until it ends) until the archive has folded.
+#[test]
+fn chrome_nav_loop_pane_archive_ends_on_the_board() {
+    use notedeck::NavRequest;
+
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
+    let mut stack = chrome_stack_at_board(&mut harness);
+    cursor_on_first_in_review(&mut harness, &mut stack);
+
+    harness.press_key(egui::Key::R);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 3);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "local checkout");
+
+    harness.press_key(egui::Key::A);
+    harness.run_ok();
+    let requests = harness.state_mut().notedeck.app_context().navigator.take();
+    assert!(
+        matches!(requests[..], [NavRequest::Back]),
+        "a is one back, to the detail"
+    );
+    // The slide: the pane's entry is still the top, drawn until it ends.
+    wait_for_label(&mut harness, "6 cards · 5 columns");
+    harness.state_mut().notedeck.app_context().navigator.take();
+    stack.go_back();
+    stack.pop();
+    assert_eq!(stack.len(), 2, "the slide lands on the card's detail");
+
+    chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "6 cards · 5 columns");
+    assert!(harness.query_by_label("← Back").is_none());
+}
+
+/// The detail's `n` opens the next card as a drill, so its `q` (one back)
+/// returns to the card `n` left, as the strip's "back" says, not the grid.
+#[test]
+fn chrome_nav_loop_detail_step_backs_to_the_previous_card() {
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
+    let mut stack = chrome_stack_at_board(&mut harness);
+
+    harness.get_by_label(CARDS[0]).simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "± Review diff");
+
+    harness.press_key(egui::Key::N);
+    chrome_frame(&mut harness, &mut stack);
+    assert!(top_is_detail(&stack, ids[1]));
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, CARDS[1]);
+
+    harness.press_key(egui::Key::Q);
+    chrome_frame(&mut harness, &mut stack);
+    assert!(top_is_detail(&stack, ids[0]), "back to the card n left");
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "← Back");
+    wait_for_label(&mut harness, CARDS[0]);
 }
 
 /// The demo board's epic: "Sync cards across relays" and "Scaffold the

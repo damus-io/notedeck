@@ -98,13 +98,21 @@ page, `Ctrl-d`/`Ctrl-u` half a page, `gg`/`G`, `]`/`[`). See
 - `n` / `p` step through the queue's cards, stopping at the ends.
 - A verdict steps it on: `D` (Done), `X` (reason, then In Progress) and `a`
   (archive). A verdict on the last card closes the queue ("Review queue done").
+- `r` goes back to the card's newest record; the queue stays on the card.
+- The queue's cards are a snapshot taken when it opened. A card that has left
+  the board since (archived elsewhere) takes no card action but `n`/`p`; the
+  rest say "This card has left the board".
 - `q` / `Esc` leave for the grid, with the cursor on the card last shown; an
   epic's queue leaves for the epic's detail. So does a verdict on its last
   card.
 
 A review pane opened from a card's "Review diff" instead of the queue takes the
 same keys; there `n`/`p` open the neighbouring card's review in its column and
-`q`/`Esc` back out to the card's detail.
+`q`/`Esc` back out to the card's detail. The pane sits on its card's detail in
+the global history however it was opened: the grid's `r` and a pane's `n`/`p`
+push the detail's entry under the review's in the same frame, so `q` (one
+back) always lands on the card shown. `a` backs out to that detail, which
+leaves for whatever is under it once the archive lands.
 
 The keymap is `keys::review_pane_keys` (both modes, `PaneMode`), and its strip
 is `keys::QUEUE_STRIP` / `keys::PANE_STRIP`. The tests

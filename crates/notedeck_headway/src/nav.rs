@@ -331,9 +331,18 @@ pub(crate) enum NavReconcile {
     /// An epic's dependency graph was opened from its detail: push a graph entry
     /// one level deeper than the card.
     PushGraph(NoteId),
-    /// A card's review pane was opened from its detail: push a review entry one
-    /// level deeper than the card.
-    PushReview(NoteId),
+    /// A card's review pane was opened: push a review entry one level deeper
+    /// than the card's detail. A review always sits on its own card's detail,
+    /// so a pane opened from anywhere but that detail (the grid's `r`, a
+    /// pane's `n`/`p` onto the next card) pushes the detail under it first,
+    /// and the pane's `q`, a plain back, lands on the detail.
+    PushReview {
+        /// The card under review.
+        card: NoteId,
+        /// Whether the card's detail entry has to be pushed first, because
+        /// the pane wasn't opened from it.
+        detail_first: bool,
+    },
     /// The review queue was opened — the board's from the grid, an epic's from
     /// its detail: push one queue entry, which every step through the queue
     /// then shares.
@@ -351,7 +360,10 @@ pub(crate) enum NavReconcile {
 /// doesn't spin. Landing deeper (board→card, card→graph) — or drilling across at
 /// the same card depth (card→other-card), or clicking a node in an epic's graph
 /// (graph→another-card) — pushes a walkable entry; stepping shallower (card→board,
-/// or the graph closing back to its own epic) backs out one. Kept a pure function
+/// or the graph closing back to its own epic) backs out one. A review always
+/// sits on its own card's detail, so landing on one from anywhere else (the
+/// grid's `r`, a pane's `n`/`p`) pushes that detail under it in the same frame,
+/// and the pane's one-back exit always lands on the card. Kept a pure function
 /// (no `egui`/`Ndb`) so the mapping is unit-tested on its own.
 ///
 /// Picking a different record inside an open review pane is *not* a transition:
@@ -368,10 +380,16 @@ pub(crate) fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcil
         return None;
     }
     match after {
-        // The graph and the review are only ever reachable from their card's
-        // detail (one level deeper), so landing on either always pushes.
+        // The graph is only ever reachable from its epic's detail (one level
+        // deeper), so landing on it always pushes.
         NavPos::Graph(epic) => Some(NavReconcile::PushGraph(epic)),
-        NavPos::Review(card) => Some(NavReconcile::PushReview(card)),
+        // A review always sits on its card's detail, so the pane's `q` (one
+        // back) lands there. Opened from anywhere else, the detail goes under
+        // it in the same frame.
+        NavPos::Review(card) => Some(NavReconcile::PushReview {
+            card,
+            detail_first: before != NavPos::Card(card),
+        }),
         // The queue opens only from the grid or an epic's detail (`R`), so
         // landing on it pushes. Stepping inside it never gets here: the
         // position doesn't name the card, so a step is the steady frame above.
@@ -464,7 +482,10 @@ mod tests {
         assert_eq!(reconcile_nav(review_a, review_a), None);
         assert_eq!(
             reconcile_nav(card_a, review_a),
-            Some(NavReconcile::PushReview(a))
+            Some(NavReconcile::PushReview {
+                card: a,
+                detail_first: false
+            })
         );
         assert_eq!(reconcile_nav(review_a, card_a), Some(NavReconcile::Back));
         assert_eq!(
@@ -475,6 +496,25 @@ mod tests {
             reconcile_nav(review_a, NavPos::Board),
             Some(NavReconcile::Back)
         );
+    }
+
+    /// A review opened anywhere but its own card's detail — the grid's `r`,
+    /// a pane's `n` onto the next card, a detail's `r` on another card —
+    /// pushes that card's detail under it, so the pane's one-back `q` lands
+    /// on the detail rather than wherever the pane was opened from.
+    #[test]
+    fn a_review_opened_off_its_detail_pushes_the_detail_first() {
+        let a = NoteId::new([1u8; 32]);
+        let b = NoteId::new([2u8; 32]);
+        let over = |card| {
+            Some(NavReconcile::PushReview {
+                card,
+                detail_first: true,
+            })
+        };
+        assert_eq!(reconcile_nav(NavPos::Board, NavPos::Review(a)), over(a));
+        assert_eq!(reconcile_nav(NavPos::Review(a), NavPos::Review(b)), over(b));
+        assert_eq!(reconcile_nav(NavPos::Card(a), NavPos::Review(b)), over(b));
     }
 
     /// A review wins over the selection it was entered from, and a graph wins

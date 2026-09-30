@@ -122,18 +122,36 @@ impl BoardUiState {
         }
     }
 
-    /// `r`: open `card`'s review pane on its newest record, over its detail
-    /// (which a back off the pane returns to when the pane was opened from
-    /// it).
+    /// `r`: open `card`'s review pane on its newest record, over its detail.
+    /// The app's nav diff puts the detail's entry under the pane's when the
+    /// pane wasn't opened from it (the grid, a pane's `n`/`p`), so the pane's
+    /// `q` always backs out to the card.
     pub(crate) fn open_review(&mut self, card: NoteId) {
         self.review.open(card, None);
         self.selected = Some(card);
+    }
+
+    /// `r` in the review queue: point the pane back at `card`'s newest
+    /// record. The queue already shows the card, and leaving it must not land
+    /// on the card's detail, so the selection stays what the queue was opened
+    /// over.
+    pub(crate) fn newest_record(&mut self, card: NoteId) {
+        self.review.open(card, None);
     }
 
     /// Leave a plain review pane for `card`'s detail (its `q`/`Esc`/`Enter`).
     pub(crate) fn back_to_detail(&mut self, card: NoteId) {
         self.review.close();
         self.selected = Some(card);
+    }
+
+    /// `a` in a plain review pane: back out to `card`'s detail, which leaves
+    /// in turn once the archive folds in, as the detail does for any card
+    /// that left the board. That takes two frames, one back each: the chrome
+    /// runs one back at a time.
+    pub(crate) fn archive_from_pane(&mut self, card: NoteId) {
+        self.back_to_detail(card);
+        self.archived = Some(card);
     }
 
     /// Leave the detail (and any review pane over it) for the grid: the

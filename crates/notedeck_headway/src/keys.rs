@@ -41,8 +41,8 @@ use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
-    BoardUiState, CardStep, QueueScope, SessionOpen, ViewFilter, filter_field_id, find_card,
-    reason_field_id,
+    BoardUiState, CardStep, QueueNotice, QueueScope, SessionOpen, ViewFilter, filter_field_id,
+    find_card, reason_field_id,
 };
 
 /// Chord steps the board grid can be waiting on.
@@ -127,9 +127,11 @@ pub(crate) enum ActionView<'a> {
 /// board edit it makes, if any; everything else lands in `state`.
 ///
 /// Most actions do the same thing everywhere. Where the view matters: `Open`
-/// leaves the queue or a plain review pane for the card's detail; `Archive`
-/// steps the grid's cursor off the card, steps the queue on (as `D` does), or
-/// backs a detail or plain pane out to the board; `Step` walks the grid's
+/// leaves the queue or a plain review pane for the card's detail; `Review`
+/// in the queue only goes back to the newest record, since the queue already
+/// shows the card; `Archive` steps the grid's cursor off the card, steps the
+/// queue on (as `D` does), backs a detail out of it, or backs a plain pane
+/// out to the card's detail, which then leaves too; `Step` walks the grid's
 /// cursor, the queue, or the card's column.
 pub(crate) fn apply_card_action(
     ctx: &egui::Context,
@@ -153,7 +155,10 @@ pub(crate) fn apply_card_action(
         },
         CardAction::Explainer => state.open_explainer(ctx, view, card),
         CardAction::Session(how) => state.open_card_session(view, card, how, now),
-        CardAction::Review => state.open_review(card),
+        CardAction::Review => match at {
+            ActionView::Queue => state.newest_record(card),
+            ActionView::Grid(_) | ActionView::Pane | ActionView::Detail => state.open_review(card),
+        },
         CardAction::Archive => return archive_card(view, state, card, at, now),
         CardAction::Done => return state.accept_card(view, card, now),
         CardAction::SendBack => state.start_reject(view, card, now),
@@ -179,7 +184,8 @@ fn archive_card(
     match at {
         ActionView::Grid(filter) => return archive_cursor_card(view, filter, state),
         ActionView::Queue => state.advance_queue(now),
-        ActionView::Pane | ActionView::Detail => state.leave_card(),
+        ActionView::Pane => state.archive_from_pane(card),
+        ActionView::Detail => state.leave_card(),
     }
     Some(BoardAction::ArchiveCard { card })
 }
@@ -662,8 +668,20 @@ pub(crate) fn review_pane_keys(
             PaneMode::Queue => ActionView::Queue,
             PaneMode::Plain => ActionView::Pane,
         };
-        if let Some(card) = card {
-            action = apply_card_action(ctx, view, state, card, card_action, at);
+        // The queue's cards are a snapshot, so its card can have left the
+        // board since (archived or moved away elsewhere). Stepping off it
+        // still works; acting on it only says it's gone, rather than raising
+        // an edit the store would drop and stepping on as if it had landed.
+        let on_board = card.filter(|&c| find_card(view, c).is_some());
+        match (on_board, card_action, mode) {
+            (Some(card), _, _) => {
+                action = apply_card_action(ctx, view, state, card, card_action, at);
+            }
+            (None, CardAction::Step(step), PaneMode::Queue) => state.step_queue(step),
+            (None, _, _) if card.is_some() => {
+                state.set_notice(QueueNotice::CardGone, ctx.input(|i| i.time));
+            }
+            (None, _, _) => {}
         }
     } else {
         match (press.key, press.modifiers.shift) {
@@ -1684,6 +1702,14 @@ mod tests {
     fn every_queue_hint_does_what_it_says() {
         for (cap, label) in strip_keycaps(QUEUE_STRIP).chain([("?", "hints")]) {
             let mut harness = queue_harness();
+            if cap == "r" {
+                // `r` only goes back to the newest record, so start from
+                // another pick for it to have somewhere to go.
+                harness.state_mut().state.set_review(Some(ReviewTarget {
+                    card: id(5),
+                    record: Some(id(99)),
+                }));
+            }
             let before = queue_effects(&harness);
             for (modifiers, key) in keycap_presses(cap) {
                 press_with(&mut harness, modifiers, key);
@@ -1781,6 +1807,46 @@ mod tests {
         assert_eq!(harness.state().state.review_card(), Some(id(6)));
         assert!(harness.state().state.queue_open());
         assert_eq!(harness.state().session, None, "not a session open");
+    }
+
+    /// `r` in the queue goes back to the card's newest record and nothing
+    /// else: the queue stays open on the card, and the selection stays what
+    /// the queue was opened over (none, from the grid), so leaving the queue
+    /// still lands on the grid rather than the card's detail.
+    #[test]
+    fn r_in_the_queue_only_resets_the_record() {
+        let mut harness = queue_harness();
+        harness.state_mut().state.set_review(Some(ReviewTarget {
+            card: id(5),
+            record: Some(id(99)),
+        }));
+        press(&mut harness, Key::R);
+        let state = &harness.state().state;
+        assert_eq!(state.review_record(), None, "newest record");
+        assert!(state.queue_open());
+        assert_eq!(state.review_card(), Some(id(5)));
+        assert_eq!(state.selected(), None, "no selection leaks out");
+
+        press(&mut harness, Key::Q);
+        assert_eq!(harness.state().state.selected(), None, "back to the grid");
+    }
+
+    /// The queue's cards are a snapshot: once its card has left the board, a
+    /// card action on it raises no edit and doesn't step the queue on, only
+    /// says so; `n` still steps off it.
+    #[test]
+    fn queue_actions_on_a_card_that_left_the_board_only_say_so() {
+        let mut harness = queue_harness();
+        harness.state_mut().view.columns[1].cards.remove(1);
+        press(&mut harness, Key::A);
+        assert_eq!(harness.state().archived, None);
+        assert_eq!(harness.state().state.review_card(), Some(id(5)), "no step");
+        assert_eq!(harness.state().state.notice(), Some(QueueNotice::CardGone));
+        press(&mut harness, Key::Enter);
+        assert!(harness.state().state.queue_open(), "no detail to open");
+
+        press(&mut harness, Key::N);
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
     }
 
     /// `X` opens the reason composer, which holds the queue's keys; Enter
@@ -2124,6 +2190,19 @@ mod tests {
         assert!(harness.query_by_label("session/review").is_some());
         press(&mut harness, Key::Q);
         assert_eq!(harness.state().state.selected(), None);
+    }
+
+    /// `a` in a plain review pane archives its card and backs out to the
+    /// card's detail, not past it: the chrome takes one back a frame, and the
+    /// detail leaves in turn once the archive folds in
+    /// (`chrome_nav_loop_pane_archive_ends_on_the_board`).
+    #[test]
+    fn a_in_a_plain_pane_backs_out_to_the_detail() {
+        let mut harness = pane_harness();
+        press(&mut harness, Key::A);
+        assert_eq!(harness.state().archived, Some(id(5)));
+        assert_eq!(harness.state().state.review_card(), None);
+        assert_eq!(harness.state().state.selected(), Some(id(5)));
     }
 
     /// `a` on the detail archives its card and backs out to the grid.

@@ -76,6 +76,10 @@ pub(super) fn card_detail_pane_ui(
         state.detail_for = None;
         return;
     };
+    // Another card is drawing, so the one a pane archived is behind us.
+    if state.archived != Some(card_id) {
+        state.archived = None;
+    }
 
     // (Re)seed the edit buffers when the open card changes. The board is
     // immutable here, so live editing happens against these buffers and is

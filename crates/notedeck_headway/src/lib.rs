@@ -998,13 +998,25 @@ impl Headway {
             Some(NavReconcile::PushGraph(epic)) => ctx
                 .navigator
                 .push_active_route(HeadwayRoute::graph(epic, card_title(&view, epic))),
-            // Opening a card's review pane from its detail pushes a review entry
-            // one level deeper, a sibling of the graph's, so a global-back
-            // returns to the card. The entry carries the record the pane opened
-            // on, so back/forward onto it reopens that record.
-            Some(NavReconcile::PushReview(card)) => ctx.navigator.push_active_route(
-                HeadwayRoute::review(card, self.state.review_record(), card_title(&view, card)),
-            ),
+            // Opening a card's review pane pushes a review entry one level
+            // deeper than the card, a sibling of the graph's, so a global-back
+            // returns to the card. Opened off the card's detail (the grid's
+            // `r`, a pane's `n`/`p`), the detail goes under it first: the
+            // chrome drains both pushes in order this frame and draws only the
+            // top. The entry carries the record the pane opened on, so
+            // back/forward onto it reopens that record.
+            Some(NavReconcile::PushReview { card, detail_first }) => {
+                let title = card_title(&view, card);
+                if detail_first {
+                    ctx.navigator
+                        .push_active_route(HeadwayRoute::card(card, title.clone()));
+                }
+                ctx.navigator.push_active_route(HeadwayRoute::review(
+                    card,
+                    self.state.review_record(),
+                    title,
+                ));
+            }
             // Opening the review queue — from the grid, or an epic's from its
             // detail — pushes its one entry; the steps through it are view
             // state under that entry, so a single global-back leaves the whole
