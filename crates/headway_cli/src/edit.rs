@@ -161,6 +161,7 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
         | Command::Diff { .. }
         | Command::Seed { .. }
         | Command::Migrate
+        | Command::Share { .. }
         | Command::Link { .. }
         | Command::MoveBoard { .. }
         | Command::Board { .. }

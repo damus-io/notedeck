@@ -261,7 +261,14 @@ three spellings are equivalent.",
         group: Group::Cards,
         summary: "Comment on a card",
         usage: &["comment <card> <text...>"],
-        details: "The comment body is every remaining positional joined with spaces.",
+        details: "\
+The comment body is every remaining positional joined with spaces.
+
+With --comment-nsec <key> (or $HEADWAY_COMMENT_NSEC) the comment is signed
+by that key instead of yours, so it shows as that key's comment. It is
+still sealed into the board's channel with your access, so the key needs
+no membership. Sealed boards only: a plaintext board shows just its
+owner's events, so this is refused there.",
         options: &[(
             "--reply-to <c>",
             "Thread this reply under another comment on the same card (its id, a prefix, or its word-id)",
@@ -441,7 +448,14 @@ required.",
         usage: &["board [id]"],
         details: "\
 With no argument, list the boards in the cache and mark the current
-selection. With an id, switch to it persistently.
+selection, then — under \"shared with me\" — the boards other people
+shared with you, each with its owner. With an id, switch to it
+persistently.
+
+A shared board's slug is enough to address it: with no `--author`,
+`--board <slug>` (or a headway:<slug>/<word-id> ref) that isn't one of
+your own boards resolves to the one board shared with you under that
+slug. If two owners shared one, pass `--author` to pick.
 
 Scripts and agents should prefer naming the board per command —
 `--board <id>`, or a self-routing headway:<board>/<word-id> card ref —
@@ -534,6 +548,33 @@ is how you look first.",
             "headway migrate --board ios-port",
         ],
     },
+    Command {
+        name: "share",
+        group: Group::Boards,
+        summary: "Make someone a member of a sealed board you own",
+        usage: &["share <npub|hex> --board <id>"],
+        details: "\
+Gift-wraps the board's channel key to <npub> as a key-share (kind-1082
+in a kind-1059). Their next run pulls it, joins the board, and can read
+its whole history and edit it with `--author <you> --board <id>`.
+
+Only the board's owner can share it, and only a sealed board (`headway
+migrate` a plaintext one first). There is no revocation: the key can't
+be taken back, so the board must be named explicitly.
+
+Needs a reachable relay — a key-share is sent once and never re-sent by
+a later run, so an offline share would be lost. Each run wraps with a
+fresh throwaway key, so re-running publishes another copy; that's
+harmless, since the member's roster dedups by channel and board.",
+        options: &[(
+            "--json",
+            "Machine-readable output: {ok, board, recipient, team_pubkey}",
+        )],
+        examples: &[
+            "headway share --board ios-port npub1...",
+            "headway share --board ios-port --json <64-hex-pubkey>",
+        ],
+    },
     // -- keys -------------------------------------------------------------
     Command {
         name: "login",
@@ -607,12 +648,16 @@ Run `headway <command> --help` for that command's own options and examples.",
                 ),
             ),
             (
-                "--nsec <nsec>",
-                "Signing key for this run. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
+                "--nsec <key>",
+                "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
+            ),
+            (
+                "--comment-nsec <key>",
+                "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too. The comment still seals into the board's channel with your key's access, and only sealed boards show it",
             ),
             (
                 "--author <pk>",
-                "Board author to read (defaults to the signer)",
+                "Board owner whose board to read and edit (defaults to the signer, or to whoever shared a board under --board's slug with you when you have none by that name). The signer may be a member of it rather than its owner",
             ),
             (
                 "--relay <url>",

@@ -197,6 +197,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `move-board <card> --to <board>` | Move the card off this board onto another |
 | `board [id]` | Switch the current board to `id`, or (no arg) list boards and mark the current one |
 | `rename <title...>` | Rename the current board's display title (slug unchanged) |
+| `share <npub\|hex> --board <id>` | Make someone a member of a sealed board you own (see Sharing a board) |
 | `terminal <col> [on\|off]` | Mark a column as a "done" column, or clear it with `off` (see Terminal columns) |
 | `login <nsec>` | Store a signing key so later runs just work |
 | `logout` | Forget the stored signing key |
@@ -450,6 +451,63 @@ headway --board work move-board 1a2b3c4d… --to personal  # re-homed: off work,
 - The card is resolved on the **source** board, so combine `--board <source>`
   with `--to <target>`. The target board must already exist — seed it first
   with `headway --board <target> seed` if it doesn't.
+
+## Sharing a board
+
+A sealed board can be shared with another nostr identity, who then reads and
+edits it from their own CLI or app:
+
+```bash
+# owner: gift-wrap the board's channel key to the member (kind-1082 in a 1059)
+headway --board ios-port share npub1…
+# member: read and edit the owner's board — its slug is enough
+headway --board ios-port show
+headway --board ios-port add "From a member" --col todo
+```
+
+- **Owner-only.** A member's `share` is refused; so is sharing to yourself.
+- **Sealed boards only.** A plaintext board has no channel to hand out —
+  `headway migrate --board <id>` it first (never on a real board casually).
+- **`--board` is required**, never the persisted current board: a share can't
+  be revoked, so the board must be named on purpose.
+- **Needs a reachable relay.** A key-share is sent once and never re-sent by a
+  later run, so an offline share is refused rather than silently lost.
+- Not idempotent on the wire (a fresh throwaway wrap key each run), but a
+  repeat share is harmless: the member's roster dedups it.
+- The member's edits fold on the owner's side attributed to the member's pubkey.
+
+### Working on a board someone shared with you
+
+- **`headway board` lists it** under a "shared with me" heading, after your own
+  boards, with its owner (short npub) and card count. `show --all` includes it
+  too (JSON boards carry an `owner` hex).
+- **The slug resolves the owner.** With no `--author`, a `--board <slug>` or a
+  `headway:<slug>/<word-id>` card ref that isn't one of *your* boards folds the
+  one board shared with you under that slug — so a card ref pasted from the
+  owner works as-is.
+- **Your own board wins.** If you have a board with that slug in your cache,
+  it is used instead; `--author <owner>` reaches the shared one.
+- **Same slug from two owners is an error** that lists both owners in full;
+  pick one with `--author <npub|hex>`. An explicit `--author` always wins.
+- `seed` and `migrate` never resolve to someone else's board: they only act on
+  boards you own.
+
+## Commenting as an agent (a separate comment key)
+
+An agent that runs `headway` as its user can sign its **comments** with its own
+key, so they show as the agent's rather than the user's. Everything else (reads,
+adds, moves) stays the user's:
+
+```bash
+HEADWAY_COMMENT_NSEC="$(cat ~/.local/share/jex0/nsec)" \
+  headway comment headway:headway/some-card "…"
+# or per run: headway --comment-nsec <nsec|hex> comment …
+```
+
+The comment is sealed into the board's channel with the user's access, so the
+comment key needs no membership and holds no board key. It only works on
+**sealed** boards: a plaintext board shows just its owner's own events, so the
+CLI refuses rather than publish a comment nobody would see.
 
 ## Typical workflow
 
