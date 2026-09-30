@@ -123,6 +123,12 @@ const TINT_PRESSED: f32 = 0.36;
 /// already carries the font's own ascent and descent, so a little is enough.
 const PILL_PAD_Y: f32 = 3.0;
 
+/// Height a [`text_pill`] of one line of small text draws at, known before it
+/// draws: for a row that has to be as tall as its tallest part up front.
+pub(super) fn pill_height(ui: &egui::Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Small) + 2.0 * PILL_PAD_Y
+}
+
 /// The one way headway draws a filled chip or button around a line of text —
 /// the sha pill, the queue's `1 / 2`, count badges, "patch truncated", "±
 /// Review diff". Two rules make them read as one family:

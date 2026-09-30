@@ -2226,6 +2226,47 @@ fn review_queue_opens_each_diff_at_the_top() {
     );
 }
 
+/// Every part of the review header's breadcrumb bar sits on one centre line,
+/// left side and right: ← Back, the status, the card ref, the position pill and
+/// ↓/↑. egui centres a row's item in the row's height as it stands when the
+/// item is placed, so a row that grows mid-layout (the ↓/↑ are its tallest
+/// parts, and draw after ← Back) walks each later part down a step.
+#[test]
+fn review_breadcrumb_parts_share_a_centre_line() {
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    const FILES: [&str; 2] = ["src/queue_one.rs", "src/queue_two.rs"];
+
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &FILES);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_any_label(&mut harness, FILES[0]);
+    harness.run_steps(2);
+
+    let card_ref = headway::wordid::card_ref(store::BOARD_ID, ids[0].bytes());
+    let parts = [
+        "← Back",
+        "In Review",
+        card_ref.as_str(),
+        "1 / 2",
+        "Next card",
+        "Previous card",
+    ];
+    let centre = |label: &str| {
+        let bb = label_box(&harness, label);
+        (bb.y0 + bb.y1) / 2.0
+    };
+    let back = centre(parts[0]);
+    for part in parts {
+        let y = centre(part);
+        assert!(
+            (y - back).abs() < 0.5,
+            "{part:?} is centred at y={y}, ← Back at y={back}"
+        );
+    }
+}
+
 /// Behavioural (no lavapipe): the review header's breadcrumb bar shows the
 /// current card's column, live rather than the queue's snapshot, gapped from
 /// the card ref after it and above the title row. The queue opens on an In

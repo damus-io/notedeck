@@ -20,8 +20,8 @@ use std::time::Instant;
 use super::card_actions::CardStep;
 use super::widgets::{
     ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
-    count_badge, detail_heading, round_icon_button, secondary_action_button, section_label,
-    status_icon_ui, text_pill, tinted_control, tinted_pill,
+    count_badge, detail_heading, pill_height, round_icon_button, secondary_action_button,
+    section_label, status_icon_ui, text_pill, tinted_control, tinted_pill,
 };
 use super::{BoardUiState, find_card, pane_hints_ui};
 use crate::keys::{ActionView, CardAction, apply_card_action};
@@ -935,6 +935,12 @@ fn breadcrumb_ui(
     let narrow = notedeck::ui::is_narrow(ui.ctx());
     let mut stepped = None;
     ui.horizontal(|ui| {
+        // Fix the bar's height to its tallest part (the position pill or the
+        // ↓/↑) before placing anything. egui centres each part in the row's
+        // height as it stands when the part is placed, so a row that grows as
+        // the pill and arrows draw leaves everything placed after them a step
+        // lower.
+        ui.set_min_height(ICON_BUTTON_SM.max(pill_height(ui)));
         let back = egui::Button::new(
             egui::RichText::new("← Back")
                 .small()
