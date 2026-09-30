@@ -441,7 +441,14 @@ required.",
         usage: &["board [id]"],
         details: "\
 With no argument, list the boards in the cache and mark the current
-selection. With an id, switch to it persistently.
+selection, then — under \"shared with me\" — the boards other people
+shared with you, each with its owner. With an id, switch to it
+persistently.
+
+A shared board's slug is enough to address it: with no `--author`,
+`--board <slug>` (or a headway:<slug>/<word-id> ref) that isn't one of
+your own boards resolves to the one board shared with you under that
+slug. If two owners shared one, pass `--author` to pick.
 
 Scripts and agents should prefer naming the board per command —
 `--board <id>`, or a self-routing headway:<board>/<word-id> card ref —
@@ -639,7 +646,7 @@ Run `headway <command> --help` for that command's own options and examples.",
             ),
             (
                 "--author <pk>",
-                "Board owner whose board to read and edit (defaults to the signer). The signer may be a member of it rather than its owner",
+                "Board owner whose board to read and edit (defaults to the signer, or to whoever shared a board under --board's slug with you when you have none by that name). The signer may be a member of it rather than its owner",
             ),
             (
                 "--relay <url>",

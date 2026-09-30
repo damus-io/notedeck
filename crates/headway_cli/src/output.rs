@@ -1,7 +1,7 @@
 //! Rendering: the board listing, `show`'s card detail, `next`'s frontier, the
 //! `board` list, and the decline messages an edit reports.
 
-use nostrdb_net::NoteId;
+use nostrdb_net::{NoteId, Pubkey};
 use serde_json::json;
 
 use headway::event::{
@@ -17,27 +17,66 @@ pub(crate) fn card_count(view: &BoardView) -> usize {
     view.columns.iter().map(|c| c.cards.len()).sum()
 }
 
-/// Render the board list, marking `current` with a `*` and dimming each id's
-/// title/card-count. Falls back to a hint when the cache holds no boards.
-pub(crate) fn print_boards(boards: &[BoardView], current: &str) {
-    if boards.is_empty() {
+/// Render the board list: our own boards, then the ones `shared` with us under
+/// their own heading, each owner shown so two same-slug boards tell apart.
+/// `current` is marked with a `*` — on our own board by that slug, else on the
+/// one shared board it resolves to (see `shared_owner` in `main.rs`). Falls
+/// back to a hint when the cache holds no boards at all.
+pub(crate) fn print_boards(own: &[BoardView], shared: &[BoardView], current: &str) {
+    if own.is_empty() && shared.is_empty() {
         println!(
             "no boards yet — current selection is '{current}'. Run `headway seed` to create it."
         );
         return;
     }
-    for view in boards {
+    let own_current = own.iter().any(|v| v.id == current);
+    for view in own {
         let mark = if view.id == current { "*" } else { " " };
         let detail =
             nostrdb_net::relay::sync::dim(&format!("{} · {} cards", view.title, card_count(view)));
         println!("{mark} {}  {detail}", view.id);
     }
-    if !boards.iter().any(|v| v.id == current) {
+    // The shared board `--board <current>` resolves to, if exactly one does;
+    // several are ambiguous, so none is marked.
+    let shared_matches = shared.iter().filter(|v| v.id == current).count();
+    let shared_current = !own_current && shared_matches == 1;
+    let unresolved = !own_current && shared_matches == 0;
+    if unresolved {
         println!(
             "* {current}  {}",
             nostrdb_net::relay::sync::dim("(not created yet — run `headway seed`)")
         );
     }
+    if shared.is_empty() {
+        return;
+    }
+    if !own.is_empty() || unresolved {
+        println!();
+    }
+    println!("shared with me");
+    for view in shared {
+        let mark = if shared_current && view.id == current {
+            "*"
+        } else {
+            " "
+        };
+        let detail = nostrdb_net::relay::sync::dim(&format!(
+            "{} · {} cards · owner {}",
+            view.title,
+            card_count(view),
+            short_owner(&view.author)
+        ));
+        println!("{mark} {}  {detail}", view.id);
+    }
+}
+
+/// A board owner as a short npub (`npub1pjn83hs2…`) — enough to tell owners
+/// apart in a listing. `--author` wants the whole key, which the ambiguity error
+/// prints in full.
+fn short_owner(owner: &[u8; 32]) -> String {
+    let pk = Pubkey::new(*owner);
+    let full = pk.npub().unwrap_or_else(|| pk.hex());
+    format!("{}…", &full[..full.len().min(14)])
 }
 
 pub(crate) fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
@@ -86,9 +125,24 @@ pub(crate) fn print_board(view: &BoardView, as_json: bool, show_archived: bool) 
 /// Render every board in the cache. In text mode each board is printed with
 /// [`print_board`], the boards separated by a blank line; in JSON mode they
 /// become a single array so the combined output stays machine-parseable.
-pub(crate) fn print_all_boards(boards: &[BoardView], as_json: bool, show_archived: bool) {
+///
+/// A board someone else owns (one shared with `me`) is headed with its owner, and
+/// every JSON board carries an `owner` hex, since slugs are only unique per owner.
+pub(crate) fn print_all_boards(
+    boards: &[BoardView],
+    me: &Pubkey,
+    as_json: bool,
+    show_archived: bool,
+) {
     if as_json {
-        let arr: Vec<_> = boards.iter().map(event::board_json).collect();
+        let arr: Vec<_> = boards
+            .iter()
+            .map(|view| {
+                let mut board = event::board_json(view);
+                board["owner"] = json!(hex::encode(view.author));
+                board
+            })
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&arr).unwrap_or_else(|_| "[]".into())
@@ -106,7 +160,12 @@ pub(crate) fn print_all_boards(boards: &[BoardView], as_json: bool, show_archive
         // Lead with the addressable slug: board titles can collide (two boards
         // both titled "Headway"), and the slug is what `--board`/`board <id>`
         // take, so it's the anchor for the human-readable title that follows.
-        println!("{}", nostrdb_net::relay::sync::dim(&view.id));
+        let heading = if &view.author == me.bytes() {
+            view.id.clone()
+        } else {
+            format!("{} · shared by {}", view.id, short_owner(&view.author))
+        };
+        println!("{}", nostrdb_net::relay::sync::dim(&heading));
         print_board(view, false, show_archived);
     }
 }

@@ -28,11 +28,12 @@ use headway::event::{self, Container, resolve_card};
 use headway::store;
 use headway::teams;
 
+use nostrdb::Ndb;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::args::{Cli, Command, Invocation};
-use crate::boards::{Roster, list_boards, load_board};
+use crate::boards::{Roster, list_boards, list_shared_with_me, load_board};
 use crate::edit::{Collect, build_action, resolve_container};
 use crate::output::{
     card_count, declined_message, plain_ref, print_all_boards, print_board, print_boards,
@@ -92,6 +93,59 @@ fn require_owner(me: &Pubkey, owner: &Pubkey, cmd: &str) -> Result<()> {
         owner.hex()
     )
     .into())
+}
+
+/// Whether `cmd` addresses a single existing board, and so should find a board
+/// shared with us by its slug alone when there's no `--author` (see
+/// [`shared_owner`]).
+///
+/// Not the listings — `headway board` and `show --all` cover every board, so no
+/// one slug is theirs to resolve (and an ambiguous current board mustn't break
+/// them). Not `seed`/`migrate` either: they only ever act on a board *we* own,
+/// and `headway --board shared seed` must create our own `shared` even when
+/// someone else's is in the roster.
+fn resolves_owner_by_slug(cmd: &Command, show_all: bool) -> bool {
+    !matches!(
+        cmd,
+        Command::Board { id: None } | Command::Seed { .. } | Command::Migrate
+    ) && !(show_all && matches!(cmd, Command::Show { .. }))
+}
+
+/// The owner of the board `board_id` names when it isn't one of ours: the one
+/// owner in the roster sharing a board under that slug with `me`.
+///
+/// `None` when we have our own board by that name (ours always wins) or no one
+/// shared one — the caller keeps `me` as the owner and the usual "no board" path
+/// takes over. Several owners is an error, since picking one would silently act
+/// on a board the caller may not have meant; it lists them so `--author` can
+/// choose.
+///
+/// "Our own" means one in this cache. A sealed board of ours that only another
+/// device has seen is found later by deriving its root, which this runs before —
+/// so if someone also shared a board under the same slug, that one wins here and
+/// `--author <our own key>` is how to reach ours.
+fn shared_owner(ndb: &Ndb, roster: &Roster, me: &Pubkey, board_id: &str) -> Result<Option<Pubkey>> {
+    if load_board(ndb, roster, me, board_id).is_some() {
+        return Ok(None);
+    }
+    let owners = roster.owners_of(me, board_id);
+    match owners.as_slice() {
+        [] => Ok(None),
+        [owner] => Ok(Some(*owner)),
+        _ => {
+            let list: Vec<String> = owners
+                .iter()
+                .map(|pk| format!("  {}", pk.npub().unwrap_or_else(|| pk.hex())))
+                .collect();
+            Err(format!(
+                "'{board_id}' names boards shared with you by {} owners — pass \
+                 --author <owner> to pick one:\n{}",
+                owners.len(),
+                list.join("\n")
+            )
+            .into())
+        }
+    }
 }
 
 async fn run() -> Result<()> {
@@ -175,6 +229,20 @@ async fn run() -> Result<()> {
     let mut root_registry = teams::RootRegistry::default();
     let roster = Roster::load(&ndb, &me, &author, &mut root_registry);
 
+    // With no `--author`, a slug we don't own ourselves may still name a board
+    // someone shared with us. Only the roster knows who owns it, so this is the
+    // earliest the owner can be settled; everything below reads and writes at the
+    // resolved owner's coordinate.
+    let (author, roster) = if cli.author.is_none() && resolves_owner_by_slug(&cli.command, cli.all)
+    {
+        match shared_owner(&ndb, &roster, &me, &cli.board)? {
+            Some(owner) => (owner, roster.for_author(owner)),
+            None => (author, roster),
+        }
+    } else {
+        (author, roster)
+    };
+
     // Sync each joined board's kind-1081 SNS envelopes (see `sync_envelopes`).
     // Runs after `Roster::load` has registered the channel roots, so every pulled
     // envelope auto-unwraps into a queryable rumor and the sealed board folds.
@@ -225,7 +293,12 @@ async fn run() -> Result<()> {
         // `--all` fans the render across every board in the cache, ignoring any
         // card selectors (which address a single board).
         Command::Show { .. } if show_all => {
-            print_all_boards(&list_boards(&ndb, &roster, &author), as_json, show_archived)
+            let mut boards = list_boards(&ndb, &roster, &author);
+            // Only when listing our own: `--author <someone>` asks for their boards.
+            if author == me {
+                boards.extend(list_shared_with_me(&ndb, &roster, &me));
+            }
+            print_all_boards(&boards, &me, as_json, show_archived)
         }
 
         Command::Show { cards } => match load_board(&ndb, &roster, &author, &board) {
@@ -428,7 +501,16 @@ async fn run() -> Result<()> {
                 }
             }
             // List: every board in the cache, the current selection marked.
-            None => print_boards(&list_boards(&ndb, &roster, &author), &board),
+            None => {
+                // Boards shared with us only alongside our own: `--author
+                // <someone>` asks for their boards, not ours.
+                let shared = if author == me {
+                    list_shared_with_me(&ndb, &roster, &me)
+                } else {
+                    Vec::new()
+                };
+                print_boards(&list_boards(&ndb, &roster, &author), &shared, &board)
+            }
         },
 
         // Cross-board: place/move a card from the current board onto another.

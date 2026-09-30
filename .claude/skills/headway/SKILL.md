@@ -460,9 +460,9 @@ edits it from their own CLI or app:
 ```bash
 # owner: gift-wrap the board's channel key to the member (kind-1082 in a 1059)
 headway --board ios-port share npub1…
-# member: read and edit the owner's board by naming its owner
-headway --author <owner-hex> --board ios-port show
-headway --author <owner-hex> --board ios-port add "From a member" --col todo
+# member: read and edit the owner's board — its slug is enough
+headway --board ios-port show
+headway --board ios-port add "From a member" --col todo
 ```
 
 - **Owner-only.** A member's `share` is refused; so is sharing to yourself.
@@ -475,6 +475,22 @@ headway --author <owner-hex> --board ios-port add "From a member" --col todo
 - Not idempotent on the wire (a fresh throwaway wrap key each run), but a
   repeat share is harmless: the member's roster dedups it.
 - The member's edits fold on the owner's side attributed to the member's pubkey.
+
+### Working on a board someone shared with you
+
+- **`headway board` lists it** under a "shared with me" heading, after your own
+  boards, with its owner (short npub) and card count. `show --all` includes it
+  too (JSON boards carry an `owner` hex).
+- **The slug resolves the owner.** With no `--author`, a `--board <slug>` or a
+  `headway:<slug>/<word-id>` card ref that isn't one of *your* boards folds the
+  one board shared with you under that slug — so a card ref pasted from the
+  owner works as-is.
+- **Your own board wins.** If you have a board with that slug in your cache,
+  it is used instead; `--author <owner>` reaches the shared one.
+- **Same slug from two owners is an error** that lists both owners in full;
+  pick one with `--author <npub|hex>`. An explicit `--author` always wins.
+- `seed` and `migrate` never resolve to someone else's board: they only act on
+  boards you own.
 
 ## Typical workflow
 

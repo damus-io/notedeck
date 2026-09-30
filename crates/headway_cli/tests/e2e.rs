@@ -1265,3 +1265,209 @@ fn share_refuses_what_it_must_not_share() {
         "a refused share must not put a key-share on the relay"
     );
 }
+
+/// A third identity's secret: a second owner who shares a board under the same
+/// slug as [`SECRET`]'s, to make the bare slug ambiguous for the member.
+const OTHER_OWNER_SECRET: [u8; 32] = [0x44; 32];
+
+/// Seal a board `slug` as `owner_key`, put a card titled `card` on it, and share
+/// it with `member` — waiting until that key-share has reached the relay, so a
+/// member run right after it can join.
+fn seed_and_share(
+    relay_store: &Ndb,
+    url: &str,
+    owner_key: &str,
+    owner_db: &str,
+    slug: &str,
+    card: &str,
+    member: &nostrdb_net::Pubkey,
+) {
+    let run = |args: &[&str]| {
+        let out = headway_as(owner_key, url, owner_db, args);
+        assert!(
+            out.status.success(),
+            "owner {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let wraps = giftwraps_to(relay_store, member);
+    run(&["--board", slug, "seed"]);
+    run(&["--board", slug, "add", card, "--col", "Todo"]);
+    run(&["--board", slug, "share", &member.hex()]);
+    for _ in 0..50 {
+        if giftwraps_to(relay_store, member) > wraps {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("the key-share for '{slug}' never reached the relay");
+}
+
+/// A member finds a board shared with it by its slug alone, with no `--author`.
+///
+/// Card refs name a board's slug but not its owner, so without this a member had
+/// to carry the owner's hex on every call, and `headway board` listed nothing
+/// (headway:headway/place-wheel-web). After an owner shares a board, the member's
+/// `headway board` lists it under "shared with me" with its owner, and a bare
+/// `--board <slug>` (or a self-routing card ref) folds the owner's board. A
+/// second owner sharing a same-slug board makes the bare slug an error that names
+/// both owners, an explicit `--author` still picks either, and a board of the
+/// member's own by that slug wins over both.
+#[test]
+fn member_resolves_a_shared_board_by_its_slug() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let relay_store = app_ndb.clone();
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let owner = author();
+    let other = nostrdb_net::FullKeypair::from_secret_bytes(&OTHER_OWNER_SECRET)
+        .expect("other owner keypair")
+        .pubkey;
+    let member = nostrdb_net::FullKeypair::from_secret_bytes(&MEMBER_SECRET)
+        .expect("member keypair")
+        .pubkey;
+    let member_key = hex::encode(MEMBER_SECRET);
+    let slug = "shared";
+
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner_db = owner_dir.path().to_str().unwrap();
+    seed_and_share(
+        &relay_store,
+        &url,
+        &nsec(),
+        owner_db,
+        slug,
+        "Owner card",
+        &member,
+    );
+
+    let member_dir = tempfile::tempdir().expect("member dir");
+    let member_db = member_dir.path().to_str().unwrap();
+    let member_run = |args: &[&str]| headway_as(&member_key, &url, member_db, args);
+    let short = |pk: &nostrdb_net::Pubkey| pk.npub().unwrap()[..14].to_string();
+
+    // 1. `headway board` lists the owner's board under "shared with me".
+    let mut listing = String::new();
+    for _ in 0..50 {
+        let out = member_run(&["board"]);
+        listing = String::from_utf8_lossy(&out.stdout).into_owned();
+        if listing.contains("1 cards") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let shared_section = listing
+        .split("shared with me\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no shared-with-me section in:\n{listing}"));
+    assert!(
+        shared_section.contains(slug)
+            && shared_section.contains("1 cards")
+            && shared_section.contains(&short(&owner)),
+        "the shared board, its card and its owner must be listed:\n{listing}"
+    );
+
+    // 2. A bare `--board <slug>` folds the owner's board, no `--author`.
+    let out = member_run(&["--board", slug, "show", "--json"]);
+    assert!(
+        out.status.success(),
+        "member show: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let board: Value = serde_json::from_slice(&out.stdout).expect("show --json");
+    let (card, _) = find_titled(&board, "Owner card")
+        .unwrap_or_else(|| panic!("the owner's card must fold for the member: {board:#}"));
+    let card_ref = card["ref"].as_str().expect("card ref").to_string();
+
+    // ...and so does a self-routing card ref, which names only the slug. Editing
+    // through it lands on the owner's board.
+    let out = member_run(&["comment", &card_ref, "found it by slug"]);
+    assert!(
+        out.status.success(),
+        "member comment via {card_ref}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    show_as_until(&member_key, &url, member_db, &owner.hex(), slug, |b| {
+        find_titled(b, "Owner card")
+            .is_some_and(|(c, _)| c["comments"][0]["body"] == "found it by slug")
+    });
+
+    // 3. A second owner shares a board under the same slug: the bare slug is now
+    // ambiguous, and the error names both owners in full.
+    let other_dir = tempfile::tempdir().expect("other owner dir");
+    let other_db = other_dir.path().to_str().unwrap();
+    seed_and_share(
+        &relay_store,
+        &url,
+        &hex::encode(OTHER_OWNER_SECRET),
+        other_db,
+        slug,
+        "Other card",
+        &member,
+    );
+    let mut err = String::new();
+    for _ in 0..50 {
+        let out = member_run(&["--board", slug, "show"]);
+        err = String::from_utf8_lossy(&out.stderr).into_owned();
+        if !out.status.success() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        err.contains("--author")
+            && err.contains(&owner.npub().unwrap())
+            && err.contains(&other.npub().unwrap()),
+        "an ambiguous slug must name both owners and point at --author:\n{err}"
+    );
+
+    // The listing, which resolves no single slug, still works and shows both.
+    let out = member_run(&["board"]);
+    assert!(out.status.success(), "board listing with an ambiguous slug");
+    let listing = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        listing.contains(&short(&owner)) && listing.contains(&short(&other)),
+        "both same-slug boards must be listed with their owners:\n{listing}"
+    );
+
+    // An explicit --author still picks the second owner's board.
+    show_as_until(&member_key, &url, member_db, &other.hex(), slug, |b| {
+        find_titled(b, "Other card").is_some()
+    });
+
+    // 4. A board of the member's own by that slug wins over both shared ones.
+    let out = member_run(&["--board", slug, "seed"]);
+    assert!(
+        out.status.success(),
+        "member seeds its own '{slug}': {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut own = Value::Null;
+    for _ in 0..50 {
+        let out = member_run(&["--board", slug, "show", "--json"]);
+        if out.status.success()
+            && let Ok(board) = serde_json::from_slice::<Value>(&out.stdout)
+            && board.is_object()
+        {
+            own = board;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        own.is_object()
+            && find_titled(&own, "Owner card").is_none()
+            && find_titled(&own, "Other card").is_none(),
+        "the member's own '{slug}' must win over the boards shared with it: {own:#}"
+    );
+}
