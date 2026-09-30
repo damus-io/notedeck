@@ -109,6 +109,26 @@ pub(super) fn detail_heading(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) 
     );
 }
 
+/// A frameless accent-coloured text button for a pane's secondary action —
+/// "± Review diff" in the detail's Review section, "☍ View dependency graph"
+/// under an epic's sub-issues — so both read as the same kind of link: one
+/// leading glyph, one space, the label, all in the body font and accent colour.
+///
+/// The leading glyph must be one the loaded fonts carry (`tests/glyphs.rs`
+/// checks every non-ASCII character in headway's string literals); "⧉", the
+/// original icon, is in none of them and rendered as a box.
+pub(super) fn secondary_action_button(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    text: &str,
+) -> egui::Response {
+    // `.frame(false)` must come after `.fill()`: `fill` re-enables the frame.
+    let button = egui::Button::new(egui::RichText::new(text).color(theme.accent))
+        .fill(egui::Color32::TRANSPARENT)
+        .frame(false);
+    ui.add(button)
+}
+
 /// Which Linear-style status circle to paint for a column or subissue.
 #[derive(Clone, Copy)]
 pub(super) enum StatusIcon {

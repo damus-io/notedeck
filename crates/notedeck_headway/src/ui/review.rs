@@ -17,7 +17,7 @@ use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 use notedeck_ui::diff::PatchScroll;
 use std::time::Instant;
 
-use super::widgets::{count_badge, detail_heading};
+use super::widgets::{count_badge, detail_heading, secondary_action_button};
 use super::{BoardUiState, find_card};
 use crate::keys;
 use crate::nav::ReviewTarget;
@@ -1018,10 +1018,7 @@ pub(super) fn review_section_ui(
     }
 
     ui.add_space(SPACING_XS);
-    let button = egui::Button::new(egui::RichText::new("⧉ Review diff").color(theme.accent))
-        .fill(egui::Color32::TRANSPARENT)
-        .frame(false);
-    if ui.add(button).clicked() {
+    if secondary_action_button(ui, theme, "± Review diff").clicked() {
         open = Some(None);
     }
     if let Some(record) = open {

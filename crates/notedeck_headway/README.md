@@ -268,7 +268,7 @@ rebalance (future work).
 An **epic** (a card with sub-issues) has a full-pane **dependency-graph view**:
 its sub-issues drawn as nodes, with a directed arrow per blocking relationship
 (`from` blocks `to`). It is reached from the epic's card detail — the
-"⧉ View dependency graph" action — and joins the chrome global-nav stack as a new
+"☍ View dependency graph" action — and joins the chrome global-nav stack as a new
 `HeadwayRoute::Graph` entry (opened via `BoardUiState::open_graph`), so a single
 global-back off the graph returns to the epic's card. See `nav.rs` for the route
 variant and `ui.rs` (`graph_view_ui`) for the view.

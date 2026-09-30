@@ -12,7 +12,7 @@ use notedeck::tokens::{
 use super::review::review_section_ui;
 use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
-    priority_label, section_label, status_icon_ui,
+    priority_label, secondary_action_button, section_label, status_icon_ui,
 };
 use super::{BoardUiState, EditMode, find_card, seed_edit_mode};
 use crate::event::{
@@ -519,11 +519,7 @@ fn detail_body_ui(
     // global-back returns to this epic's detail.
     if !ctx.subissues.is_empty() {
         ui.add_space(SPACING_MD);
-        let graph_btn =
-            egui::Button::new(egui::RichText::new("⧉ View dependency graph").color(theme.accent))
-                .fill(egui::Color32::TRANSPARENT)
-                .frame(false);
-        if ui.add(graph_btn).clicked() {
+        if secondary_action_button(ui, theme, "☍ View dependency graph").clicked() {
             state.open_graph(ctx.card_id);
         }
     }

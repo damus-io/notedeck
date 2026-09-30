@@ -516,7 +516,7 @@ fn snapshot_headway_graph_hover() {
         .simulate_click();
     harness.run_steps(3);
     harness
-        .get_by_label("⧉ View dependency graph")
+        .get_by_label("☍ View dependency graph")
         .simulate_click();
     harness.run_steps(3);
 
@@ -569,7 +569,7 @@ fn snapshot_headway_graph() {
         .simulate_click();
     harness.run_steps(3);
     harness
-        .get_by_label("⧉ View dependency graph")
+        .get_by_label("☍ View dependency graph")
         .simulate_click();
     harness.run_steps(3);
     harness.snapshot("headway_graph");
@@ -1361,9 +1361,9 @@ fn add_card_reachable_when_column_overflows() {
 // ---------------------------------------------------------------------------
 
 /// The active board's switcher button label — its title plus the dropdown caret,
-/// exactly as `board_switcher` composes it (`"{title}  ⏷"`, two spaces). The demo
+/// exactly as `board_switcher` composes it (`"{title}  ▾"`, two spaces). The demo
 /// board is titled "Headway".
-const SWITCHER_LABEL: &str = "Headway  ⏷";
+const SWITCHER_LABEL: &str = "Headway  ▾";
 
 /// Poll the shared board at `board_addr` (async ingest) until its sealed
 /// definition has folded in, returning the folded view. Sleeps between reads
@@ -1755,7 +1755,7 @@ fn review_diff_opens_the_review_pane_with_the_commit() {
     harness.get_by_label(CARD).simulate_click();
     // The record's short sha is the detail row's own button, once it folds in.
     wait_for_label(&mut harness, &sha[..12]);
-    harness.get_by_label("⧉ Review diff").click();
+    harness.get_by_label("± Review diff").click();
     wait_for_any_label(&mut harness, FILE);
 
     let requests = harness.state_mut().notedeck.app_context().navigator.take();
@@ -1775,7 +1775,7 @@ fn review_diff_opens_the_review_pane_with_the_commit() {
 
     // Escape closes the pane back to the card's detail.
     harness.press_key(egui::Key::Escape);
-    wait_for_label(&mut harness, "⧉ Review diff");
+    wait_for_label(&mut harness, "± Review diff");
 }
 
 /// Commit `file` (containing `body`) in the fixture repo `dir` with subject
@@ -1912,7 +1912,7 @@ fn review_route_opens_the_record_it_names() {
     // Landing on the card's detail and then an entry naming no record opens
     // the head, not the record the pane last showed.
     harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::card(card, None)));
-    wait_for_label(&mut harness, "⧉ Review diff");
+    wait_for_label(&mut harness, "± Review diff");
     harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::review(
         card,
         None,
@@ -2998,13 +2998,13 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     assert_eq!(stack.len(), 2, "opening the epic card grows the stack");
     // Render the card detail and wait for its graph entry point.
     chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "⧉ View dependency graph");
+    wait_for_label(&mut harness, "☍ View dependency graph");
 
     // Click the graph entry point. It sets local graph mode, which the app diffs
     // into a pushed `Graph` route — the stack grows to three, one deeper than the
     // card, carrying the epic id.
     harness
-        .get_by_label("⧉ View dependency graph")
+        .get_by_label("☍ View dependency graph")
         .simulate_click();
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(
@@ -3042,7 +3042,7 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     );
     // The graph is gone and the epic's detail (with its graph entry point) is back.
     wait_for_absent(&mut harness, "· dependency graph");
-    wait_for_label(&mut harness, "⧉ View dependency graph");
+    wait_for_label(&mut harness, "☍ View dependency graph");
 
     // A second back pops to the board root.
     stack.go_to_route(stack.len() - 2);
@@ -3391,7 +3391,7 @@ fn unfolded_shared_board_keeps_the_switcher_reachable() {
 
     // The escape hatch: the switcher is still on screen, so the demo board is one
     // switch away — the whole point of not dead-ending on a full-pane message.
-    harness.get_by_label("ghost  ⏷").simulate_click();
+    harness.get_by_label("ghost  ▾").simulate_click();
     wait_for_label(&mut harness, "Headway");
     harness.get_by_label("Headway").simulate_click();
     wait_for_board(&mut harness);

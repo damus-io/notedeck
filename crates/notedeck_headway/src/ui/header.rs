@@ -216,7 +216,7 @@ pub(super) fn board_switcher(
         return;
     }
 
-    let label = egui::RichText::new(format!("{}  ⏷", view.title))
+    let label = egui::RichText::new(format!("{}  ▾", view.title))
         .size(18.0)
         .strong()
         .color(theme.text_primary);
