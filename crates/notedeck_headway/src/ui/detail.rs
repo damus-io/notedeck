@@ -21,6 +21,7 @@ use crate::event::{
     self, ActivityKind, ActivityView, BoardView, ColumnPos, CommentView, Priority, ReviewView,
 };
 use crate::keys::{ActionView, CardAction, apply_card_action};
+use crate::nav::NavPos;
 use crate::store::{self, BoardAction};
 
 /// Max width the full-pane card detail body is constrained to, so a card reads
@@ -186,11 +187,12 @@ pub(super) fn card_detail_pane_ui(
     // scroll area the layout below draws.
     let scroll = state.detail_scroll.take();
     pane_hints_ui(ui, theme, state);
+    let here = state.nav_pos();
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            detail_pane_topbar_ui(ui, theme, &ctx, &mut state.notice, &mut outcome);
+            detail_pane_topbar_ui(ui, theme, &ctx, &mut state.notice, here, &mut outcome);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
@@ -267,6 +269,7 @@ fn detail_pane_topbar_ui(
     theme: &ColorTheme,
     ctx: &DetailCtx,
     notice: &mut Option<super::Notice>,
+    here: NavPos,
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
@@ -297,7 +300,7 @@ fn detail_pane_topbar_ui(
             if ui.add(x).clicked() {
                 *outcome = DetailOutcome::Close;
             }
-            notice_ui(ui, theme, notice);
+            notice_ui(ui, theme, notice, here);
         });
     });
 }

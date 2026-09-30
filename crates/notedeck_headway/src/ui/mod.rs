@@ -222,8 +222,8 @@ pub struct BoardUiState {
     subtree_review: SubtreeReviewLabel,
     /// A short-lived message, when it went up and in which view: an `R` that
     /// found nothing in review, a verdict that finished the queue, a queue key
-    /// with nothing to act on. Drawn in the header, or the queue's bar while
-    /// it's open, for [`NOTICE_SECS`] seconds, or until its view is left.
+    /// with nothing to act on. Drawn in its view's header, or the queue's bar
+    /// while it's open, for [`NOTICE_SECS`] seconds, or until its view is left.
     notice: Option<Notice>,
     /// A board edit left for the next frame, because a frame applies one: the
     /// move behind an `X` verdict's comment.
@@ -636,7 +636,7 @@ pub fn board_ui(
     // view; it closes before its keys could take this frame's Enter.
     state.retire_stale_reason();
     let keyed = keys::pane_keys(ui.ctx(), view, state);
-    state.retire_stale_notice();
+    state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
     if keyed.is_some() {
         // The next card, and an `X`'s follow-up move, want a frame.
         ui.ctx().request_repaint();
@@ -785,6 +785,7 @@ fn board_pane_ui(
                 .flat_map(|c| &c.cards)
                 .filter(|c| view_filter.shows(c))
                 .count();
+            let here = state.nav_pos();
             ui.horizontal(|ui| {
                 // Sync affordance: is this board reaching a private relay?
                 sync_indicator(ui, theme, sync);
@@ -806,7 +807,7 @@ fn board_pane_ui(
                         .color(theme.text_muted),
                     );
                 }
-                notice_ui(ui, theme, &mut state.notice);
+                notice_ui(ui, theme, &mut state.notice, here);
                 // The archived entry point only appears when there's something
                 // behind it, so the header stays quiet on a fresh board.
                 if !view.archived.is_empty() {
@@ -948,15 +949,23 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
         });
 }
 
-/// The [`QueueNotice`] showing, for [`NOTICE_SECS`] seconds after it went up.
-/// Schedules the frame that takes it down.
-fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>) {
+/// The [`QueueNotice`] showing, for [`NOTICE_SECS`] seconds after it went up,
+/// when it's about `here`, the view drawing. Another view leaves it alone: a
+/// nav slide draws two views in one pass, and the notice belongs to one of
+/// them. Schedules the frame that takes it down.
+fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>, here: NavPos) {
     let Some(Notice {
-        what: shown, at, ..
+        what: shown,
+        at,
+        pos,
+        ..
     }) = *notice
     else {
         return;
     };
+    if pos != here {
+        return;
+    }
     let left = NOTICE_SECS - (ui.input(|i| i.time) - at);
     if left <= 0.0 {
         *notice = None;

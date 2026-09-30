@@ -54,23 +54,46 @@ impl BoardUiState {
             what: notice,
             at: now,
             pos: self.nav_pos(),
+            seen: None,
         });
     }
 
     /// Take down a notice whose view has been left — by a key, a click, or a
-    /// global back/forward the route seeded — so it doesn't show in the one
-    /// landed on. [`super::board_ui`] runs it after the frame's pane keys.
-    pub(crate) fn retire_stale_notice(&mut self) {
-        let pos = self.nav_pos();
-        if self.notice.is_some_and(|n| n.pos != pos) {
+    /// global back/forward the route seeded — so it isn't still up when that
+    /// view comes back. [`super::board_ui`] runs it after the frame's pane
+    /// keys, once per view it draws; `pass` is egui's
+    /// [`cumulative_pass_nr`](egui::Context::cumulative_pass_nr).
+    ///
+    /// A view other than the notice's isn't enough to take it down: during a
+    /// chrome nav slide egui_nav draws the stack's top *and* the entry beneath
+    /// it, each through `render_nav`, which reseeds the view. A verdict that
+    /// finishes the queue puts "Review queue done" up in the view the back
+    /// lands on, and for the length of that back the outgoing queue entry is
+    /// the top, drawing too. So the notice goes only once a whole pass has
+    /// gone by without its view, and meanwhile it draws only in its own
+    /// ([`super::notice_ui`]).
+    pub(crate) fn retire_stale_notice(&mut self, pass: u64) {
+        let here = self.nav_pos();
+        let Some(notice) = &mut self.notice else {
+            return;
+        };
+        let seen = notice.seen.get_or_insert(pass);
+        // The last pass went by without its view: it was left, even if this
+        // pass is back in it.
+        if *seen + 1 < pass {
             self.notice = None;
+            return;
+        }
+        if notice.pos == here {
+            *seen = pass;
         }
     }
 
-    /// The notice showing, if any.
+    /// The notice showing in the current view, if any.
     #[cfg(test)]
     pub(crate) fn notice(&self) -> Option<QueueNotice> {
-        self.notice.map(|n| n.what)
+        let here = self.nav_pos();
+        self.notice.filter(|n| n.pos == here).map(|n| n.what)
     }
 
     /// The record of `card` a key acts on: the one the review pane shows, if

@@ -332,7 +332,8 @@ pub(crate) enum QueueNotice {
 }
 
 /// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
-/// It's about that view, so it comes down when the view changes (see
+/// It's about that view, so it only draws there, and it comes down once a
+/// pass has gone by without that view (see
 /// [`BoardUiState::retire_stale_notice`]) rather than following the user two
 /// screens away from its cause.
 #[derive(Clone, Copy, Debug)]
@@ -343,6 +344,10 @@ pub(crate) struct Notice {
     pub(crate) at: f64,
     /// The view it went up in.
     pub(crate) pos: NavPos,
+    /// The last egui pass that drew its view, or `None` until the first
+    /// [`retire_stale_notice`](BoardUiState::retire_stale_notice) after it
+    /// went up, which counts the pass it went up in.
+    pub(crate) seen: Option<u64>,
 }
 
 impl QueueNotice {
@@ -665,6 +670,7 @@ pub(super) fn review_pane_ui(
             .and_then(|c| find_card(view, c))
             .map(|(_, c)| c.title.as_str()),
     });
+    let here = state.nav_pos();
     let notice = &mut state.notice;
     let effects = &mut state.effects;
     let review = &mut state.review;
@@ -722,7 +728,7 @@ pub(super) fn review_pane_ui(
                 record,
                 queue,
             };
-            if let Some(open) = review_topbar_ui(ui, theme, app_ctx, header, review, notice) {
+            if let Some(open) = review_topbar_ui(ui, theme, app_ctx, header, review, notice, here) {
                 effects.push(BoardEffect::Open(open));
             }
             ui.add_space(SPACING_SM);
@@ -813,7 +819,7 @@ struct QueueHeader<'a> {
 /// `S`. Right: in the queue, which epic it walks (if it's an epic's), its
 /// position as a pill and the next card's title as a muted peek (at most
 /// [`PEEK_SHARE`] of the row); a key's short-lived
-/// notice; the record's explainer link at the far end. On a narrow screen the
+/// notice, when it's about `here`; the record's explainer link at the far end. On a narrow screen the
 /// peek goes, the card ref and the button with it, and the chip shrinks to its
 /// status dot.
 ///
@@ -829,6 +835,7 @@ fn review_topbar_ui(
     header: ReviewHeader<'_>,
     review: &mut ReviewUi,
     notice: &mut Option<Notice>,
+    here: NavPos,
 ) -> Option<notedeck::OpenUri> {
     let ReviewHeader {
         card,
@@ -847,7 +854,7 @@ fn review_topbar_ui(
             if let Some(queue) = queue {
                 queue_header_ui(ui, theme, queue, (!narrow).then_some(peek_width));
             }
-            super::notice_ui(ui, theme, notice);
+            super::notice_ui(ui, theme, notice, here);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let back =
                     egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))

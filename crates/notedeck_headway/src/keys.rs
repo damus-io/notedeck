@@ -1007,7 +1007,7 @@ mod tests {
                 let showed_pane = pane(&h.state);
                 h.state.retire_stale_reason();
                 let keyed = pane_keys(ui.ctx(), &h.view, &mut h.state);
-                h.state.retire_stale_notice();
+                h.state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
                 let action = if showed_pane || keyed.is_some() {
                     keyed
                 } else {
@@ -2185,7 +2185,8 @@ mod tests {
 
     /// A notice is about the view it went up in: `s` on a sessionless record
     /// in a plain review pane says so there, and it's gone once Esc has backed
-    /// out to the card's detail, rather than following on to the grid.
+    /// out to the card's detail, rather than following on to the grid — or
+    /// coming back with the pane when `r` reopens it the very next frame.
     #[test]
     fn a_pane_notice_comes_down_with_the_pane() {
         let mut harness = pane_harness();
@@ -2197,6 +2198,10 @@ mod tests {
         press(&mut harness, Key::Escape);
         assert_eq!(harness.state().state.review_card(), None);
         assert_eq!(harness.state().state.selected(), Some(id(6)));
+        assert_eq!(harness.state().state.notice(), None);
+
+        press(&mut harness, Key::R);
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
         assert_eq!(harness.state().state.notice(), None);
     }
 
