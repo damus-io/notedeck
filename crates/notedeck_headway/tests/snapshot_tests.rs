@@ -3884,15 +3884,35 @@ fn snapshot_headway_detail_review_sidebar() {
     seed_detail_reviews(&mut harness);
     let card = harness_card_id(&mut harness, DETAIL_REVIEW_CARD);
     // One comment, since comments added in the same second would order by id
-    // and so differ from run to run.
-    apply_demo_action(
-        &mut harness,
-        store::BoardAction::AddComment {
-            card,
-            body: SIDEBAR_THREAD.to_string(),
-            reply_to: None,
-        },
-    );
+    // and so differ from run to run. It's stamped in the oldest record's
+    // second, not by `AddComment`: the records are stamped one past another
+    // (T, T+1, …, running ahead of the clock), so a wall-clock comment lands
+    // between whichever two records the seeding time put it. A same-second
+    // tie draws the activity row first, so the thread is always the oldest
+    // record, the comment, then the other three. The comment's "now" is
+    // still wall-clock (the note renderer isn't on the frozen clock), so it
+    // holds only while seeding through render stays under ~2s.
+    {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let secret = state.account.secret_key.secret_bytes();
+        let app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+            .expect("folded")
+            .finalize();
+        let c = headway::event::find_board(&boards, &author, store::BOARD_ID)
+            .and_then(|view| view.card(card))
+            .expect("the review card");
+        let oldest = c.reviews.last().expect("the seeded records").created_at;
+        store::ingest_signed(
+            app_ctx.ndb,
+            event::build_comment(&card, &Pubkey::new(c.author), None, SIDEBAR_THREAD)
+                .created_at(oldest),
+            &store::Signer::new(&secret, None),
+            &mut store::NoPublish,
+        );
+    }
     wait_for_card_comments(&mut harness, card, 1);
     harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
     wait_for_label(&mut harness, "All 4 records ›");
