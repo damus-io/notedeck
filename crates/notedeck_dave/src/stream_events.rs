@@ -57,6 +57,11 @@ impl Dave {
                 .get(&backend_type)
                 .map(|b| b.persistent_stream())
                 .unwrap_or(false);
+            let ctx = ApplyCtx {
+                ndb: app_ctx.ndb,
+                secret_key: &secret_key,
+                persistent_stream,
+            };
             let mut turn_ended = false;
 
             while let Ok(res) = recvr.try_recv() {
@@ -71,148 +76,11 @@ impl Dave {
                     break;
                 };
 
-                // Determine the live event to publish for this response.
-                // Centralised here so every response type that needs relay
-                // propagation is handled in one place.
-                let live_event: Option<(String, &str, Option<&str>)> = match &res {
-                    DaveApiResponse::Failed(err) => Some((err.clone(), "error", None)),
-                    DaveApiResponse::ToolResult(result) => {
-                        // Encode summary + raw output so a remote observer can
-                        // reconstruct the full result, not just the one-line
-                        // summary (headway:dave/sting-february-sausage). The
-                        // output is capped to a wire budget here (the host keeps
-                        // the full copy in memory; the UI truncates for display)
-                        // so the PNS-wrapped event stays under relay limits. An
-                        // edit's diff rides along too (budget permitting): an
-                        // edit the CLI auto-approved has no permission_request
-                        // note to rebuild it from. The tool name travels in the
-                        // `tool-name` tag below.
-                        let capped_output = result
-                            .output
-                            .as_deref()
-                            .map(|o| backend::truncate_output(o, MAX_TOOL_OUTPUT_WIRE_BYTES));
-                        let file_update = wire_file_update(
-                            result.file_update.as_ref(),
-                            capped_output.as_deref().map_or(0, str::len),
-                        );
-                        Some((
-                            session_loader::ToolResultContent::encode(
-                                &result.summary,
-                                capped_output.as_deref(),
-                                file_update,
-                            ),
-                            "tool_result",
-                            Some(result.tool_name.as_str()),
-                        ))
-                    }
-                    DaveApiResponse::CompactionStarted => {
-                        Some((String::new(), "compaction_started", None))
-                    }
-                    DaveApiResponse::CompactionComplete(info) => {
-                        Some((info.pre_tokens.to_string(), "compaction_complete", None))
-                    }
-                    // PermissionRequest and the subagent lifecycle
-                    // (spawned/completed/failed) have custom event building
-                    // (below). Token, ToolCalls, SessionInfo and streamed
-                    // SubagentOutput don't publish.
-                    _ => None,
-                };
-
-                if let Some((content, role, tool_name)) = live_event {
-                    if let Some(sk) = &secret_key {
-                        ingest_live_event(
-                            session,
-                            app_ctx.ndb,
-                            sk,
-                            &content,
-                            role,
-                            None,
-                            tool_name,
-                        );
-                    }
+                let outcome = apply_response(session, session_id, res, &ctx);
+                if outcome.needs_send {
+                    needs_send.insert(session_id);
                 }
-
-                // Backend produced real content — transition dispatch
-                // state so redispatch knows the backend consumed our
-                // messages (AwaitingResponse → Streaming).
-                if !matches!(
-                    res,
-                    DaveApiResponse::SessionInfo(_)
-                        | DaveApiResponse::CompactionStarted
-                        | DaveApiResponse::CompactionComplete(_)
-                        | DaveApiResponse::QueryComplete(_)
-                ) {
-                    session.dispatch_state.backend_responded();
-                }
-
-                match res {
-                    DaveApiResponse::Failed(ref err) => {
-                        session.insert_turn_content(Message::Error(err.to_string()));
-                    }
-                    DaveApiResponse::Token(token) => {
-                        session.append_token(&token);
-                    }
-                    DaveApiResponse::ToolCalls(toolcalls) => {
-                        if handle_tool_calls(session, &toolcalls, app_ctx.ndb) {
-                            needs_send.insert(session_id);
-                        }
-                    }
-                    DaveApiResponse::ToolRunning(running) => {
-                        session.push_running_tool(running);
-                    }
-                    DaveApiResponse::PermissionRequest(pending) => {
-                        handle_permission_request(session, pending, &secret_key, app_ctx.ndb);
-                    }
-                    DaveApiResponse::ToolResult(result) => {
-                        handle_tool_result(session, result);
-                    }
-                    DaveApiResponse::SessionInfo(info) => {
-                        handle_session_info(session, info);
-                    }
-                    DaveApiResponse::SubagentSpawned(subagent) => {
-                        let task_id = subagent.task_id.clone();
-                        handle_subagent_spawned(session, subagent);
-                        publish_subagent(session, &task_id, &secret_key, app_ctx.ndb);
-                    }
-                    DaveApiResponse::SubagentOutput { task_id, output } => {
-                        session.update_subagent_output(&task_id, &output);
-                    }
-                    DaveApiResponse::SubagentCompleted { task_id, result } => {
-                        session.complete_subagent(&task_id, &result);
-                        publish_subagent(session, &task_id, &secret_key, app_ctx.ndb);
-                    }
-                    DaveApiResponse::SubagentFailed { task_id, error } => {
-                        session.fail_subagent(&task_id, &error);
-                        publish_subagent(session, &task_id, &secret_key, app_ctx.ndb);
-                    }
-                    DaveApiResponse::CompactionStarted => {
-                        if let Some(agentic) = &mut session.agentic {
-                            if agentic.compact_intent.is_none() {
-                                agentic.compact_intent = Some(session::CompactIntent::Manual);
-                            }
-                        }
-                    }
-                    DaveApiResponse::CompactionComplete(info) => {
-                        handle_compaction_complete(session, session_id, info);
-                    }
-                    DaveApiResponse::UsageUpdate(info) => {
-                        handle_usage_update(session, info);
-                    }
-                    DaveApiResponse::QueryComplete(info) => {
-                        handle_query_complete(session, info);
-                        // For a persistent-stream backend this is the turn
-                        // boundary — the channel stays open, so run stream-end
-                        // handling after the drain instead of on disconnect.
-                        if persistent_stream {
-                            turn_ended = true;
-                        }
-                    }
-
-                    DaveApiResponse::TodoUpdate(todos) => {
-                        tracing::debug!("Todo update for session {}", session_id);
-                        session.insert_turn_content(Message::TodoUpdate(todos));
-                    }
-                }
+                turn_ended |= outcome.turn_ended;
             }
 
             // Decide the turn boundary. A disconnected channel means the backend
@@ -273,6 +141,175 @@ impl Dave {
     pub(crate) fn dispatch_compact(&mut self, bt: BackendType, ui: &egui::Ui) {
         dispatch_compact_for_active(&mut self.session_manager, &self.backends, bt, ui.ctx());
     }
+}
+
+/// What [`apply_response`] needs from outside the session: the database the
+/// live events are ingested into, the key they are signed with, and how the
+/// backend ends a turn.
+pub(crate) struct ApplyCtx<'a> {
+    /// Where published live events are PNS-ingested (the host fans them out).
+    pub(crate) ndb: &'a nostrdb::Ndb,
+    /// The account's signing key; `None` publishes nothing.
+    pub(crate) secret_key: &'a Option<[u8; 32]>,
+    /// Whether the backend keeps one channel for the whole session, so a turn
+    /// ends on an explicit `QueryComplete` rather than a disconnect.
+    pub(crate) persistent_stream: bool,
+}
+
+/// What applying one backend response asks the caller to do next.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApplyOutcome {
+    /// A tool produced a response that has to be sent back to the backend.
+    pub(crate) needs_send: bool,
+    /// The response closed the turn on a persistent stream; the caller runs
+    /// [`handle_stream_end`] after the drain.
+    pub(crate) turn_ended: bool,
+}
+
+/// Apply one backend response to a session: publish its live event, advance
+/// the dispatch state, and update the chat.
+///
+/// This is the body of [`Dave::process_events`]'s drain loop, lifted out so it
+/// needs no `AppContext` — the convergence tests drive a session through it
+/// and compare the host's chat with the fold over what it published.
+pub(crate) fn apply_response(
+    session: &mut session::ChatSession,
+    session_id: SessionId,
+    res: DaveApiResponse,
+    ctx: &ApplyCtx<'_>,
+) -> ApplyOutcome {
+    let mut outcome = ApplyOutcome::default();
+
+    // Determine the live event to publish for this response.
+    // Centralised here so every response type that needs relay
+    // propagation is handled in one place.
+    let live_event: Option<(String, &str, Option<&str>)> = match &res {
+        DaveApiResponse::Failed(err) => Some((err.clone(), "error", None)),
+        DaveApiResponse::ToolResult(result) => {
+            // Encode summary + raw output so a remote observer can
+            // reconstruct the full result, not just the one-line
+            // summary (headway:dave/sting-february-sausage). The
+            // output is capped to a wire budget here (the host keeps
+            // the full copy in memory; the UI truncates for display)
+            // so the PNS-wrapped event stays under relay limits. An
+            // edit's diff rides along too (budget permitting): an
+            // edit the CLI auto-approved has no permission_request
+            // note to rebuild it from. The tool name travels in the
+            // `tool-name` tag below.
+            let capped_output = result
+                .output
+                .as_deref()
+                .map(|o| backend::truncate_output(o, MAX_TOOL_OUTPUT_WIRE_BYTES));
+            let file_update = wire_file_update(
+                result.file_update.as_ref(),
+                capped_output.as_deref().map_or(0, str::len),
+            );
+            Some((
+                session_loader::ToolResultContent::encode(
+                    &result.summary,
+                    capped_output.as_deref(),
+                    file_update,
+                ),
+                "tool_result",
+                Some(result.tool_name.as_str()),
+            ))
+        }
+        DaveApiResponse::CompactionStarted => Some((String::new(), "compaction_started", None)),
+        DaveApiResponse::CompactionComplete(info) => {
+            Some((info.pre_tokens.to_string(), "compaction_complete", None))
+        }
+        // PermissionRequest and the subagent lifecycle
+        // (spawned/completed/failed) have custom event building
+        // (below). Token, ToolCalls, SessionInfo and streamed
+        // SubagentOutput don't publish.
+        _ => None,
+    };
+
+    if let Some((content, role, tool_name)) = live_event {
+        if let Some(sk) = ctx.secret_key {
+            ingest_live_event(session, ctx.ndb, sk, &content, role, None, tool_name);
+        }
+    }
+
+    // Backend produced real content — transition dispatch
+    // state so redispatch knows the backend consumed our
+    // messages (AwaitingResponse → Streaming).
+    if !matches!(
+        res,
+        DaveApiResponse::SessionInfo(_)
+            | DaveApiResponse::CompactionStarted
+            | DaveApiResponse::CompactionComplete(_)
+            | DaveApiResponse::QueryComplete(_)
+    ) {
+        session.dispatch_state.backend_responded();
+    }
+
+    match res {
+        DaveApiResponse::Failed(ref err) => {
+            session.insert_turn_content(Message::Error(err.to_string()));
+        }
+        DaveApiResponse::Token(token) => {
+            session.append_token(&token);
+        }
+        DaveApiResponse::ToolCalls(toolcalls) => {
+            outcome.needs_send = handle_tool_calls(session, &toolcalls, ctx.ndb);
+        }
+        DaveApiResponse::ToolRunning(running) => {
+            session.push_running_tool(running);
+        }
+        DaveApiResponse::PermissionRequest(pending) => {
+            handle_permission_request(session, pending, ctx.secret_key, ctx.ndb);
+        }
+        DaveApiResponse::ToolResult(result) => {
+            handle_tool_result(session, result);
+        }
+        DaveApiResponse::SessionInfo(info) => {
+            handle_session_info(session, info);
+        }
+        DaveApiResponse::SubagentSpawned(subagent) => {
+            let task_id = subagent.task_id.clone();
+            handle_subagent_spawned(session, subagent);
+            publish_subagent(session, &task_id, ctx.secret_key, ctx.ndb);
+        }
+        DaveApiResponse::SubagentOutput { task_id, output } => {
+            session.update_subagent_output(&task_id, &output);
+        }
+        DaveApiResponse::SubagentCompleted { task_id, result } => {
+            session.complete_subagent(&task_id, &result);
+            publish_subagent(session, &task_id, ctx.secret_key, ctx.ndb);
+        }
+        DaveApiResponse::SubagentFailed { task_id, error } => {
+            session.fail_subagent(&task_id, &error);
+            publish_subagent(session, &task_id, ctx.secret_key, ctx.ndb);
+        }
+        DaveApiResponse::CompactionStarted => {
+            if let Some(agentic) = &mut session.agentic {
+                if agentic.compact_intent.is_none() {
+                    agentic.compact_intent = Some(session::CompactIntent::Manual);
+                }
+            }
+        }
+        DaveApiResponse::CompactionComplete(info) => {
+            handle_compaction_complete(session, session_id, info);
+        }
+        DaveApiResponse::UsageUpdate(info) => {
+            handle_usage_update(session, info);
+        }
+        DaveApiResponse::QueryComplete(info) => {
+            handle_query_complete(session, info);
+            // For a persistent-stream backend this is the turn
+            // boundary — the channel stays open, so run stream-end
+            // handling after the drain instead of on disconnect.
+            outcome.turn_ended = ctx.persistent_stream;
+        }
+
+        DaveApiResponse::TodoUpdate(todos) => {
+            tracing::debug!("Todo update for session {}", session_id);
+            session.insert_turn_content(Message::TodoUpdate(todos));
+        }
+    }
+
+    outcome
 }
 
 /// Handle tool calls from the AI backend.
@@ -543,7 +580,7 @@ fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo) {
 ///
 /// Finalizes the assistant message, ingests the live event locally (the host
 /// fans it out), and checks whether queued messages need redispatch.
-fn handle_stream_end(
+pub(crate) fn handle_stream_end(
     session: &mut session::ChatSession,
     session_id: SessionId,
     secret_key: &Option<[u8; 32]>,

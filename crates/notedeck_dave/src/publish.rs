@@ -5,9 +5,10 @@
 //! plus the per-frame drains of queued permission, mode, interrupt and
 //! deletion events.
 
+use crate::update::PermissionPublish;
 use crate::{
     embedded_engine, file_update, secret_key_bytes, session, session_events, session_loader,
-    ChatSession, Dave,
+    ChatSession, Dave, ImageAttachment, Message, UserMessage,
 };
 use nostrdb::Transaction;
 use notedeck::AppContext;
@@ -278,6 +279,61 @@ pub(crate) fn build_user_send_event(
     }
 }
 
+/// Record a user-authored message on a session — the one path every user send
+/// takes, interactive or programmatic.
+///
+/// Publishes its kind-1988 `user` note when a signing key is available (see
+/// [`build_user_send_event`]), appends it to chat, and retitles the session.
+/// Whether to dispatch it is the caller's call.
+pub(crate) fn record_user_message(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: Option<&[u8; 32]>,
+    text: String,
+    images: Vec<ImageAttachment>,
+) {
+    if let Some(sk) = secret_key {
+        build_user_send_event(session, ndb, sk, &text);
+    }
+    session
+        .chat
+        .push(Message::User(UserMessage::new(text, images)));
+    session.update_title_from_last_message();
+}
+
+/// Build and locally ingest one permission response through the engine (which
+/// resolves the request's note id from ndb); the host's private-sync Session
+/// fans it out. Returns the built event, or `None` after logging a failure.
+pub(crate) fn publish_permission_response(
+    engine: &agentium_core::Engine,
+    resp: &PermissionPublish,
+) -> Option<session_events::BuiltEvent> {
+    match engine.prepare_permission_response(
+        &resp.event_session_id,
+        &resp.perm_id.to_string(),
+        resp.allowed,
+        resp.message.as_deref(),
+        resp.cancel_turn,
+    ) {
+        Ok(event) => {
+            tracing::info!(
+                "queued permission response for {} ({})",
+                resp.perm_id,
+                if resp.allowed { "allow" } else { "deny" }
+            );
+            Some(event)
+        }
+        Err(e) => {
+            tracing::error!(
+                "failed to build permission response for {}: {:?}",
+                resp.perm_id,
+                e
+            );
+            None
+        }
+    }
+}
+
 impl Dave {
     /// Publish kind-31988 state events for sessions whose status changed.
     pub(crate) fn publish_dirty_session_states(&mut self, ctx: &mut AppContext<'_>) {
@@ -395,26 +451,7 @@ impl Dave {
         };
 
         for resp in std::mem::take(&mut self.pending_perm_responses) {
-            match engine.prepare_permission_response(
-                &resp.event_session_id,
-                &resp.perm_id.to_string(),
-                resp.allowed,
-                resp.message.as_deref(),
-                resp.cancel_turn,
-            ) {
-                Ok(_) => {
-                    tracing::info!(
-                        "queued permission response for {} ({})",
-                        resp.perm_id,
-                        if resp.allowed { "allow" } else { "deny" }
-                    );
-                }
-                Err(e) => tracing::error!(
-                    "failed to build permission response for {}: {:?}",
-                    resp.perm_id,
-                    e
-                ),
-            }
+            publish_permission_response(&engine, &resp);
         }
     }
 

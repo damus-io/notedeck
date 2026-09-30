@@ -386,16 +386,8 @@ pub fn render_conversation_note(
             let tool_name = get_tag_value(note, "tool-name")
                 .unwrap_or("tool")
                 .to_string();
-            // Pre-encoding (and any legacy/plaintext) notes stored content as
-            // `"{tool_name}: {summary}"`, which `decode` keeps whole as the
-            // summary. The renderer prepends `tool_name` again, so the raw
-            // summary would double the name ("Bash Bash: ..."). Strip a
-            // redundant leading "<tool_name>: " so the name shows exactly once.
-            let summary_text = decoded
-                .summary
-                .strip_prefix(&format!("{tool_name}: "))
-                .unwrap_or(&decoded.summary);
-            let summary = crate::util::truncate(summary_text, 200);
+            let summary_text = strip_tool_name_prefix(&decoded.summary, &tool_name);
+            let summary = crate::util::truncate(summary_text, TOOL_SUMMARY_MAX_CHARS);
             Some(Message::ToolResponse(ToolResponse::executed_tool(
                 ExecutedTool {
                     tool_name,
@@ -451,6 +443,131 @@ pub fn render_conversation_note(
         }
         // Skip progress, queue-operation, etc.
         _ => None,
+    }
+}
+
+/// How many characters of a `tool_result` summary the loader keeps; longer
+/// summaries are cut here and end in an ellipsis.
+pub const TOOL_SUMMARY_MAX_CHARS: usize = 200;
+
+/// Strip a redundant leading `"<tool_name>: "` from a `tool_result` summary.
+///
+/// Pre-encoding (and any legacy/plaintext) notes stored content as
+/// `"{tool_name}: {summary}"`, which [`ToolResultContent::decode`] keeps whole
+/// as the summary. The renderer prepends `tool_name` again, so the raw summary
+/// would double the name ("Bash Bash: ..."); stripping it shows the name once.
+pub fn strip_tool_name_prefix<'a>(summary: &'a str, tool_name: &str) -> &'a str {
+    summary
+        .strip_prefix(tool_name)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .unwrap_or(summary)
+}
+
+/// One chat row reduced to what a fold over the session's notes can carry.
+///
+/// Two views of the same session — the host's live chat and
+/// [`load_session_messages_for_author`]'s fold — agree when their
+/// [`view_signature`]s are equal. Each variant keeps the fields a note
+/// round-trips and drops the rest (parser state, images, full tool output, the
+/// question-set answer summary), so a difference here is a row a viewer would
+/// actually see differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowSig {
+    /// A `System` notice's text.
+    System(String),
+    /// An `Error` row's text.
+    Error(String),
+    /// A user message's text. Images are not on the wire, so they are dropped.
+    User(String),
+    /// An assistant segment's text, trimmed: the host accumulates raw tokens,
+    /// whose leading and trailing whitespace a viewer never sees.
+    Assistant(String),
+    /// A chat-mode tool-call batch, by length. Chat mode publishes no notes.
+    ToolCalls(usize),
+    /// An in-flight tool, by the id its result will carry.
+    ToolRunning {
+        tool_use_id: String,
+        tool_name: String,
+    },
+    /// A finished agentic tool.
+    ToolResponse {
+        tool_name: String,
+        /// The summary after [`strip_tool_name_prefix`], cut to its first
+        /// [`TOOL_SUMMARY_MAX_CHARS`] characters. Cutting (rather than
+        /// [`truncate`](crate::util::truncate), which appends an ellipsis)
+        /// makes the host's raw summary and the loader's truncated one agree.
+        summary: String,
+        tool_use_id: Option<String>,
+    },
+    /// A chat-mode tool response (query, present-notes, error), by call id.
+    ChatToolResponse(String),
+    /// A permission request and the decision shown on it.
+    PermissionRequest {
+        id: uuid::Uuid,
+        response: Option<crate::messages::PermissionResponseType>,
+        auto_accepted: bool,
+    },
+    /// A subagent row. `tool_result_count` is how many of its internal tool
+    /// results were folded into it; the output text is display-truncated
+    /// differently on each side, so it is not compared.
+    Subagent {
+        task_id: String,
+        status: crate::messages::SubagentStatus,
+        tool_result_count: usize,
+    },
+    /// A todo list, as its JSON.
+    TodoUpdate(String),
+    /// A compaction boundary.
+    CompactionComplete { pre_tokens: u64 },
+}
+
+/// Project a chat onto the rows a viewer sees, normalized so two views of the
+/// same session compare equal exactly when they would render the same.
+///
+/// Used to check that the host's live chat matches the fold over what it
+/// published, both in tests and as a drift warning when the host reconciles.
+pub fn view_signature(messages: &[Message]) -> Vec<RowSig> {
+    messages.iter().map(row_signature).collect()
+}
+
+/// The [`RowSig`] of one chat row.
+fn row_signature(message: &Message) -> RowSig {
+    use crate::tools::ToolResponses;
+    match message {
+        Message::System(text) => RowSig::System(text.clone()),
+        Message::Error(text) => RowSig::Error(text.clone()),
+        Message::User(user) => RowSig::User(user.as_str().to_string()),
+        Message::Assistant(msg) => RowSig::Assistant(msg.text().trim().to_string()),
+        Message::ToolCalls(calls) => RowSig::ToolCalls(calls.len()),
+        Message::ToolRunning(running) => RowSig::ToolRunning {
+            tool_use_id: running.tool_use_id.clone(),
+            tool_name: running.tool_name.clone(),
+        },
+        Message::ToolResponse(resp) => match resp.responses() {
+            ToolResponses::ExecutedTool(tool) => RowSig::ToolResponse {
+                tool_name: tool.tool_name.clone(),
+                summary: strip_tool_name_prefix(&tool.summary, &tool.tool_name)
+                    .chars()
+                    .take(TOOL_SUMMARY_MAX_CHARS)
+                    .collect(),
+                tool_use_id: tool.tool_use_id.clone(),
+            },
+            _ => RowSig::ChatToolResponse(resp.id().to_string()),
+        },
+        Message::PermissionRequest(req) => RowSig::PermissionRequest {
+            id: req.id,
+            response: req.response,
+            auto_accepted: req.auto_accepted,
+        },
+        Message::CompactionComplete(info) => RowSig::CompactionComplete {
+            pre_tokens: info.pre_tokens,
+        },
+        Message::Subagent(info) => RowSig::Subagent {
+            task_id: info.task_id.clone(),
+            status: info.status,
+            tool_result_count: info.tool_results.len(),
+        },
+        Message::TodoUpdate(todos) => RowSig::TodoUpdate(todos.to_string()),
     }
 }
 
@@ -1576,6 +1693,96 @@ mod tests {
             authored, reversed,
             "displayed order must be independent of ingestion order, even for a \
              (ms, seq) collision: authored={authored:?} reversed={reversed:?}"
+        );
+    }
+
+    /// A host-side executed tool row, as the live stream builds it.
+    fn host_tool(tool_name: &str, summary: &str, tool_use_id: Option<&str>) -> Message {
+        Message::ToolResponse(ToolResponse::executed_tool(ExecutedTool {
+            tool_name: tool_name.to_string(),
+            summary: summary.to_string(),
+            output: None,
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: tool_use_id.map(str::to_string),
+        }))
+    }
+
+    /// The signature normalizes exactly what the loader changes on the way
+    /// through a note: a long tool summary (the loader cuts it to 200 chars
+    /// plus an ellipsis), a legacy `"<tool>: "` prefix, and whitespace around
+    /// an assistant segment. The host's raw row and the loaded row must agree.
+    #[tokio::test]
+    async fn view_signature_matches_a_loaded_tool_result() {
+        let sk = test_secret_key();
+        let session_id = "view-signature-test";
+        let t = 1_770_000_000u64;
+        let long_summary = "x".repeat(250);
+
+        let events = [
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "assistant",
+                "hello there",
+                t,
+                0,
+                &[("ms", &(t * 1000 + 1).to_string())],
+            ),
+            // Legacy plaintext content: `"Bash: <summary>"`.
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "tool_result",
+                &format!("Bash: {long_summary}"),
+                t,
+                1,
+                &[("ms", &(t * 1000 + 2).to_string()), ("tool-name", "Bash")],
+            ),
+        ];
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        let host = [
+            Message::Assistant(AssistantMessage::from_text("  hello there\n".to_string())),
+            host_tool("Bash", &long_summary, None),
+        ];
+        assert_eq!(view_signature(&loaded.messages), view_signature(&host));
+    }
+
+    /// Rows that a viewer would see differently must not compare equal.
+    #[test]
+    fn view_signature_distinguishes_visible_differences() {
+        let differ = [
+            (Message::User("a".into()), Message::User("b".into())),
+            (
+                host_tool("Bash", "exit 0", Some("toolu_1")),
+                host_tool("Bash", "exit 0", None),
+            ),
+            (
+                host_tool("Bash", "exit 0", None),
+                host_tool("Read", "exit 0", None),
+            ),
+            (
+                Message::Error("boom".into()),
+                Message::System("boom".into()),
+            ),
+        ];
+        for (a, b) in &differ {
+            assert_ne!(
+                view_signature(std::slice::from_ref(a)),
+                view_signature(std::slice::from_ref(b)),
+                "{a:?} and {b:?} must differ"
+            );
+        }
+        // A legacy prefix is the only summary rewrite that is not a difference.
+        assert_eq!(
+            view_signature(&[host_tool("Bash", "Bash: exit 0", None)]),
+            view_signature(&[host_tool("Bash", "exit 0", None)]),
         );
     }
 

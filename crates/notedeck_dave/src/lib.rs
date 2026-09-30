@@ -4,6 +4,8 @@ mod avatar;
 pub mod backend;
 pub(crate) mod collapse_state;
 pub mod config;
+#[cfg(test)]
+mod convergence_tests;
 mod conversation;
 mod focus_queue;
 pub(crate) mod git_status;
@@ -53,7 +55,7 @@ use notedeck::{
     Waker,
 };
 use pns_runtime::{PnsLocalRuntime, PnsLocalState};
-use publish::{build_user_send_event, session_state_snapshot};
+use publish::{record_user_message, session_state_snapshot};
 use restore::PendingMessageLoad;
 use run_configs::kill_process_tree;
 use session_commands::{PendingResumeCommand, PendingSpawnCommand, SpawnIdempotencyRecord};
@@ -1074,16 +1076,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return false;
         };
 
-        // Generate the kind-1988 `user` event (remote sends route through the
-        // engine, local sends archive the host turn in-place).
-        if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-            build_user_send_event(session, app_ctx.ndb, &sk, &user_text);
-        }
-
-        session
-            .chat
-            .push(Message::User(UserMessage::new(user_text, images)));
-        session.update_title_from_last_message();
+        let sk = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
+        record_user_message(session, app_ctx.ndb, sk.as_ref(), user_text, images);
 
         // Remote sessions: the event above publishes it to the host; there's no
         // local backend to send it to.
