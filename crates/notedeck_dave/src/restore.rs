@@ -1145,6 +1145,7 @@ mod tests {
             permissions: session::PermissionTracker::new(),
             note_ids: note_ids.clone(),
             max_order: None,
+            max_key: None,
         };
 
         let session = manager.get_mut(sid).unwrap();
@@ -1184,6 +1185,7 @@ mod tests {
             permissions: session::PermissionTracker::new(),
             note_ids: HashSet::new(),
             max_order: None,
+            max_key: None,
         };
 
         let session = manager.get_mut(sid).unwrap();

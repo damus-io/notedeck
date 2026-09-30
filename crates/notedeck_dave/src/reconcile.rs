@@ -31,7 +31,7 @@ use std::collections::HashMap;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ReconcileOutcome {
     /// The session isn't ready: not at rest, a note it published isn't indexed
-    /// yet, or nothing was published since the last reconcile.
+    /// yet, or its chat gained no row since the last reconcile.
     NotReady,
     /// The chat was swapped for the fold and showed the same rows.
     Converged,
@@ -53,8 +53,9 @@ pub(crate) struct Drift {
 /// Swap a local session's chat for the fold over its notes, if it is at rest.
 ///
 /// Runs only when all of these hold:
-/// - the session is at rest ([`ChatSession::at_rest`]);
-/// - it published something since its last reconcile (`fold_dirty`);
+/// - the session is at rest ([`ChatSession::at_rest`]), which includes no
+///   user message waiting to be dispatched;
+/// - its chat gained a row since its last reconcile (`fold_dirty`);
 /// - nostrdb has handed back every note it published
 ///   (`unindexed_self_notes` is empty), so the fold is complete.
 ///

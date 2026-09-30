@@ -21,13 +21,13 @@
 
 use crate::backend::BackendType;
 use crate::config::AiMode;
-use crate::conversation::process_conversation_notes;
+use crate::conversation::{process_conversation_notes, ProcessedNotes};
 use crate::messages::{
     CompactionInfo, PendingPermission, PermissionRequest, QuestionAnswer, RunningTool,
     SubagentInfo, SubagentStatus,
 };
 use crate::publish::{
-    publish_auto_accept_response, publish_user_permission_response, record_dispatch,
+    pns_ingest, publish_auto_accept_response, publish_user_permission_response, record_dispatch,
     record_user_message, MAX_TOOL_OUTPUT_WIRE_BYTES,
 };
 use crate::reconcile::{maybe_reconcile_at_rest, Drift, ReconcileOutcome};
@@ -36,7 +36,9 @@ use crate::stream_events::{apply_response, handle_stream_end, ApplyCtx};
 use crate::tests::{test_config, test_secret_key};
 use crate::tools::ToolResponses;
 use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
-use agentium_core::session_events::AI_CONVERSATION_KIND;
+use agentium_core::session_events::{
+    build_live_event, BuiltEvent, LiveEventTags, ThreadingState, AI_CONVERSATION_KIND,
+};
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
 };
@@ -238,6 +240,49 @@ impl Host {
         drop(txn);
         maybe_reconcile_at_rest(session, &self.ndb, &author)
     }
+
+    /// A user message another device (a phone, the `agentium` CLI) sends to
+    /// the session: stamped now, stored whenever the scenario says.
+    fn remote_user_note(&self, text: &str) -> BuiltEvent {
+        build_live_event(
+            text,
+            "user",
+            SESSION,
+            None,
+            LiveEventTags::default(),
+            &mut ThreadingState::new(),
+            &self.secret_key.unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Store a note another device published, and wait until it is indexed.
+    async fn store_remote(&mut self, note: &BuiltEvent) {
+        assert!(pns_ingest(
+            &self.ndb,
+            &note.note_json,
+            &self.secret_key.unwrap()
+        ));
+        let mut ids = self.published_note_ids();
+        ids.insert(note.note_id);
+        self.indexed.wait_for(&self.ndb, &ids).await;
+    }
+
+    /// Hand the session one stored note the way the conversation poll does.
+    fn poll_note(&mut self, note_id: &[u8; 32]) -> ProcessedNotes {
+        let sid = self.sid;
+        let txn = Transaction::new(&self.ndb).unwrap();
+        let note = self.ndb.get_note_by_id(&txn, note_id).unwrap();
+        let session = self.sessions.get_mut(sid).unwrap();
+        process_conversation_notes(
+            vec![note],
+            session,
+            sid,
+            false,
+            self.secret_key.as_ref(),
+            &self.ndb,
+        )
+    }
 }
 
 /// Counts the scenario session's conversation notes as they commit to an ndb.
@@ -336,8 +381,22 @@ async fn reversed_backfill_signature(
 }
 
 /// Drive `script` through a fresh host, then assert the host's chat, the fold
-/// over what it published, and the fold after a reversed backfill all agree.
+/// over what it published, and the fold after a reversed backfill all agree,
+/// and that the host converges to the fold at rest.
 async fn assert_host_matches_fold(script: Vec<Step>) {
+    assert_host_matches_fold_then(script, ReconcileOutcome::Converged).await;
+}
+
+/// [`assert_host_matches_fold`] for a script that ends with a message still
+/// waiting to be dispatched. A turn is about to start, so the host must not
+/// reconcile; its chat already matches the fold.
+async fn assert_waiting_host_matches_fold(script: Vec<Step>) {
+    assert_host_matches_fold_then(script, ReconcileOutcome::NotReady).await;
+}
+
+/// Drive `script`, assert the host's chat and the folds agree, then hand the
+/// host its notes back and expect `after_poll` from its reconcile.
+async fn assert_host_matches_fold_then(script: Vec<Step>, after_poll: ReconcileOutcome) {
     let mut host = Host::new();
     host.drive(script).await;
     host.settle().await;
@@ -365,8 +424,8 @@ async fn assert_host_matches_fold(script: Vec<Step>) {
     );
     assert_eq!(
         host.poll_and_reconcile(),
-        ReconcileOutcome::Converged,
-        "the host's chat drifted from the fold at rest"
+        after_poll,
+        "the host's reconcile once its notes came back"
     );
     assert_eq!(
         view_signature(&host.session().chat),
@@ -649,7 +708,8 @@ async fn question_reply() {
 }
 
 /// G6: compact-and-proceed's local "Proceed…" user message is published, so
-/// the fold shows it too.
+/// the fold shows it too. The host dispatches it as the turn ends, as it does
+/// any message left waiting.
 #[tokio::test]
 async fn compact_and_proceed() {
     let mut script = Vec::from(user_turn("approve the plan"));
@@ -663,6 +723,9 @@ async fn compact_and_proceed() {
             pre_tokens: 120_000,
         })),
         token("compacted"),
+        Step::StreamEnd,
+        Step::Dispatch,
+        token("implementing"),
         Step::StreamEnd,
     ]);
     assert_host_matches_fold(script).await;
@@ -697,7 +760,7 @@ async fn queued_send_still_waiting() {
         token("the first"),
         Step::StreamEnd,
     ]);
-    assert_host_matches_fold(script).await;
+    assert_waiting_host_matches_fold(script).await;
 }
 
 /// G5: a message queued before the turn produced anything still trails the
@@ -739,7 +802,7 @@ fn queued_behind_question_reply(dispatch: bool) -> Vec<Step> {
 
 #[tokio::test]
 async fn queued_send_behind_question_reply_waiting() {
-    assert_host_matches_fold(queued_behind_question_reply(false)).await;
+    assert_waiting_host_matches_fold(queued_behind_question_reply(false)).await;
 }
 
 #[tokio::test]
@@ -881,4 +944,64 @@ async fn reconcile_keeps_background_subagent_live() {
     });
     assert!(completed, "the completion found the rebuilt row");
     assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+}
+
+/// A message from another device reaches the host after its turn ended, but
+/// was typed before the turn's last row was published (the phone sent it as
+/// the reply finished). The fold places it by when it was typed, above that
+/// row. The host must still dispatch it, so it stays the trailing user turn:
+/// a message waiting for dispatch keeps the session from resting.
+#[tokio::test]
+async fn late_remote_message_still_dispatches() {
+    let mut host = Host::new();
+    let typed = host.remote_user_note("sent from the phone");
+    // Strictly before the host's first row, so the fold can't tie-break it
+    // after them.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([token("hi"), Step::StreamEnd]);
+    host.drive(script).await;
+    host.settle().await;
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+
+    host.store_remote(&typed).await;
+    let polled = host.poll_note(&typed.note_id);
+    assert_eq!(polled.remote_user_messages.len(), 1);
+    assert_eq!(
+        host.reconcile_now(),
+        ReconcileOutcome::NotReady,
+        "a message waiting for dispatch keeps the session from resting"
+    );
+    assert!(
+        host.session().should_dispatch_remote_message(),
+        "the message is still the trailing user turn, so it is dispatched"
+    );
+}
+
+/// A note stored after the poll ran but before the reconcile read the fold
+/// (another device's message landing mid-frame) is left out of it. Folded in,
+/// it would be marked seen and the next poll would skip it, so it would show
+/// without ever being dispatched or fanned out. The next poll delivers it.
+#[tokio::test]
+async fn note_stored_after_the_poll_waits_for_the_next_one() {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([token("hi"), Step::StreamEnd]);
+    let mut host = driven(script).await;
+
+    let phone = host.remote_user_note("sent from the phone");
+    host.store_remote(&phone).await;
+    assert_eq!(
+        host.poll_and_reconcile(),
+        ReconcileOutcome::Converged,
+        "the fold leaves out the note the poll hasn't handed over"
+    );
+
+    let polled = host.poll_note(&phone.note_id);
+    assert_eq!(
+        polled.remote_user_messages.len(),
+        1,
+        "the next poll delivers it as a message to dispatch"
+    );
+    assert!(host.session().should_dispatch_remote_message());
 }

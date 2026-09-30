@@ -397,13 +397,15 @@ pub(crate) fn process_conversation_notes<'a>(
     for (idx, note) in notes.iter().enumerate() {
         // Skip events we've already processed (dedup). A note this host
         // published is one of those, but its arrival means nostrdb has indexed
-        // it, which the reconcile at rest waits for.
+        // it, which the reconcile at rest waits for. Either way the poll has
+        // now handed it over, so a rebuild may fold it.
         let note_id = *note.id();
         let dominated = session
             .agentic
             .as_mut()
             .map(|a| {
                 a.unindexed_self_notes.remove(&note_id);
+                a.seen_through = a.seen_through.max(note.key());
                 !a.seen_note_ids.insert(note_id)
             })
             .unwrap_or(true);
@@ -608,20 +610,29 @@ pub(crate) fn process_conversation_notes<'a>(
 /// pure, total function of the persisted event set, independent of the order
 /// events arrived or were ingested (the fresh-machine backfill case), then
 /// installs it with [`apply_loaded_chat`].
+///
+/// Only notes the poll has handed the session are folded (see
+/// `AgenticSessionData::seen_through`). `txn` is opened after the poll, so it
+/// can hold a note stored since; folding that one would mark it seen before
+/// the poll processed it, and a remote user message would show without ever
+/// being dispatched. It comes through the next poll instead.
 pub(crate) fn rebuild_chat_from_fold(
     session: &mut session::ChatSession,
     ndb: &nostrdb::Ndb,
     txn: &Transaction,
     author: &nostrdb_net::Pubkey,
 ) {
-    let Some(claude_sid) = session
-        .agentic
-        .as_ref()
-        .map(|a| a.event_session_id().to_string())
-    else {
+    let Some(agentic) = session.agentic.as_ref() else {
         return;
     };
-    let loaded = session_loader::load_session_messages_for_author(ndb, txn, author, &claude_sid);
+    let claude_sid = agentic.event_session_id();
+    let loaded = match agentic.seen_through {
+        Some(through) => {
+            session_loader::load_session_messages_through(ndb, txn, author, claude_sid, through)
+        }
+        // Nothing has come through the poll, so none of it can be racing it.
+        None => session_loader::load_session_messages_for_author(ndb, txn, author, claude_sid),
+    };
     apply_loaded_chat(session, loaded);
 }
 
@@ -630,7 +641,9 @@ pub(crate) fn rebuild_chat_from_fold(
 ///
 /// Shared by the rebuild ([`rebuild_chat_from_fold`]) and restore, so a
 /// restored session starts with the same bookkeeping as a rebuilt one:
-/// - the dedup set and permission state gain what the fold loaded;
+/// - the dedup set and permission state gain what the fold loaded, and
+///   `seen_through` covers it, so a restored note the poll delivers later is
+///   skipped rather than left out of the next rebuild;
 /// - the fast-path tail is seeded from the fold's highest order, so notes
 ///   that sort after it append instead of forcing another rebuild (a real
 ///   order, never the display order of a waiting message);
@@ -649,6 +662,7 @@ pub(crate) fn apply_loaded_chat(
         return;
     };
     agentic.seen_note_ids.extend(loaded.note_ids);
+    agentic.seen_through = agentic.seen_through.max(loaded.max_key);
     agentic.tail_order = loaded.max_order;
     agentic.permissions.merge_loaded(loaded.permissions);
     agentic.reindex_rows(&session.chat);

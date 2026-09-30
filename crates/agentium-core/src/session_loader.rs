@@ -14,7 +14,7 @@ use crate::session_events::{
     is_queued_note, referenced_note_id, AI_CONVERSATION_KIND, DISPATCHED_ROLE, LIVE_EVENT_SOURCE,
 };
 use crate::tools::ToolResponse;
-use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use std::collections::{HashMap, HashSet};
 
 // `query_replaceable` / `query_replaceable_filtered` now live in `enostr`, so
@@ -115,6 +115,10 @@ pub struct LoadedSession {
     /// Always a note's own order, never a tail order: a follower that advanced
     /// its cursor to a tail order would never see another message.
     pub max_order: Option<EventOrder>,
+    /// Highest [`NoteKey`] among the loaded notes: nostrdb assigns keys in the
+    /// order it stores notes, so this marks how far into the store the load
+    /// reached (see [`load_session_messages_through`]). `None` when empty.
+    pub max_key: Option<NoteKey>,
 }
 
 /// A permission request in a loaded session that no response has answered yet —
@@ -165,7 +169,7 @@ pub fn pending_permission_requests(loaded: &LoadedSession) -> Vec<PendingPermiss
 /// This queries for kind-1988 events with a `d` tag matching the session ID,
 /// sorts them by `seq`, and converts relevant roles into Messages.
 pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> LoadedSession {
-    load_session_messages_with_author(ndb, txn, session_id, None)
+    load_session_messages_with_author(ndb, txn, session_id, None, None)
 }
 
 /// Load conversation messages for one author-scoped Dave session.
@@ -175,7 +179,26 @@ pub fn load_session_messages_for_author(
     author: &nostrdb_net::Pubkey,
     session_id: &str,
 ) -> LoadedSession {
-    load_session_messages_with_author(ndb, txn, session_id, Some(author))
+    load_session_messages_with_author(ndb, txn, session_id, Some(author), None)
+}
+
+/// Load one author-scoped Dave session, folding only the notes nostrdb stored
+/// at or before `through`.
+///
+/// nostrdb keys notes in the order it stores them and hands a subscription its
+/// notes in that order, so a subscriber that has been handed the note at
+/// `through` has been handed every earlier one too. Folding up to there gives
+/// the view over exactly the notes the subscriber has seen: a note stored
+/// since is left for the subscription to deliver, rather than shown before
+/// the subscriber has processed it.
+pub fn load_session_messages_through(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &nostrdb_net::Pubkey,
+    session_id: &str,
+    through: NoteKey,
+) -> LoadedSession {
+    load_session_messages_with_author(ndb, txn, session_id, Some(author), Some(through))
 }
 
 /// The ndb filter selecting one session's kind-1988 conversation notes.
@@ -210,6 +233,7 @@ fn load_session_messages_with_author(
     txn: &Transaction,
     session_id: &str,
     author: Option<&nostrdb_net::Pubkey>,
+    through: Option<NoteKey>,
 ) -> LoadedSession {
     let filter = session_conversation_filter(Filter::new(), session_id);
 
@@ -224,7 +248,9 @@ fn load_session_messages_with_author(
     // note the `d` index already narrowed us to.
     let mut notes = match ndb.fold(txn, &[filter], Vec::new(), |mut notes, note| {
         let ours = author.is_none_or(|author| note.pubkey() == author.bytes());
-        if ours {
+        let stored_by_then =
+            through.is_none_or(|through| note.key().is_some_and(|key| key <= through));
+        if ours && stored_by_then {
             notes.push(note);
         }
         notes
@@ -239,6 +265,7 @@ fn load_session_messages_with_author(
                 permissions: PermissionTracker::new(),
                 note_ids: HashSet::new(),
                 max_order: None,
+                max_key: None,
             };
         }
     };
@@ -293,6 +320,7 @@ fn load_session_messages_with_author(
     // Highest ordering key present, for seeding the live-merge tail (notes are
     // sorted, so the last one is the max).
     let max_order = notes.last().map(EventOrder::from_note);
+    let max_key = notes.iter().filter_map(nostrdb::Note::key).max();
 
     // Display order: a queued user note shows where its turn began, not where
     // it was typed (see [`display_order`]). A stable sort on a total order, so
@@ -338,6 +366,7 @@ fn load_session_messages_with_author(
         permissions,
         note_ids,
         max_order,
+        max_key,
     }
 }
 
@@ -2652,6 +2681,48 @@ mod tests {
             "the queued note sorts past every real order"
         );
         assert_eq!(max, loaded.orders[1], "max_order is the reply's own order");
+    }
+
+    /// A load through a key folds only the notes stored by then: a marker
+    /// stored later is left out, so its queued note still waits at the tail.
+    #[tokio::test]
+    async fn load_through_a_key_leaves_out_later_notes() {
+        let session_id = "load-through";
+        let events = queued_turn(session_id, true);
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&test_secret_key())
+            .unwrap()
+            .pubkey;
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+
+        // first, second, reply to first
+        ingest_all(&ndb, &filter, &events[..3]).await;
+        let through = {
+            let txn = Transaction::new(&ndb).unwrap();
+            load_session_messages(&ndb, &txn, session_id)
+                .max_key
+                .unwrap()
+        };
+        // the marker, reply to second
+        ingest_all(&ndb, &filter, &events[3..]).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages_through(&ndb, &txn, &author, session_id, through);
+        assert_eq!(
+            rows(&loaded.messages),
+            [
+                ("user", "first".to_string()),
+                ("assistant", "reply to first".to_string()),
+                ("user", "second".to_string()),
+            ],
+        );
+        assert!(matches!(&loaded.messages[2], Message::User(u) if u.queued));
+        assert_eq!(loaded.max_key, Some(through));
+
+        let everything = load_session_messages_for_author(&ndb, &txn, &author, session_id);
+        assert_eq!(everything.messages.len(), 4);
+        assert!(everything.max_key > Some(through));
     }
 
     /// An untagged user note keeps its own order even mid-turn, as every note

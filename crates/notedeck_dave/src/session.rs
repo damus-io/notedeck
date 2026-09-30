@@ -231,6 +231,16 @@ pub struct AgenticSessionData {
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
     pub seen_note_ids: HashSet<[u8; 32]>,
+    /// Newest note the conversation poll has handed this session, or a
+    /// restore loaded into its chat.
+    ///
+    /// nostrdb delivers notes in the order it stores them, so every note of
+    /// this session stored at or before this key has been through the poll.
+    /// A rebuild folds only up to here: a note stored since is still on its
+    /// way through the poll, which must see it unseen to run its side effects
+    /// (a remote user message is dispatched and fanned out from there).
+    /// `None` until the first note arrives.
+    pub seen_through: Option<nostrdb::NoteKey>,
     /// Highest [`EventOrder`](agentium_core::session_loader::EventOrder) already
     /// reflected in `chat` for a remote session — the fast-path tail marker.
     /// When a poll batch's new notes all sort after this, they are appended in
@@ -246,8 +256,9 @@ pub struct AgenticSessionData {
     /// is only rebuilt from the fold while this is empty: a fold taken earlier
     /// would be missing rows the host is showing.
     pub unindexed_self_notes: HashSet<[u8; 32]>,
-    /// The host published something since its chat last matched the fold, so
-    /// the next reconcile at rest has work to do (see `reconcile.rs`).
+    /// The chat gained a row since it last matched the fold (the host
+    /// published a note, or a remote user message arrived), so the next
+    /// reconcile at rest has work to do (see `reconcile.rs`).
     pub fold_dirty: bool,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
@@ -290,6 +301,7 @@ impl AgenticSessionData {
             remote_status: None,
             remote_status_ts: 0,
             seen_note_ids: HashSet::new(),
+            seen_through: None,
             tail_order: None,
             unindexed_self_notes: HashSet::new(),
             fold_dirty: false,
@@ -1730,6 +1742,12 @@ impl ChatSession {
     /// turn streams without a dispatch), no permission awaits an answer and no
     /// compaction is under way. Remote sessions already show the fold, and
     /// chat-mode sessions publish nothing to fold.
+    ///
+    /// A user message waiting to be dispatched isn't at rest either: a turn is
+    /// about to start. The dispatch sends the chat's trailing user messages,
+    /// and the fold places a message by when it was typed, which can be above
+    /// the host's last row (a phone sending as the turn finished). Swapping
+    /// the chat then would leave nothing trailing to dispatch.
     pub fn at_rest(&self) -> bool {
         let Some(agentic) = &self.agentic else {
             return false;
@@ -1742,6 +1760,7 @@ impl ChatSession {
             && agentic.running_tool_indices.is_empty()
             && agentic.permissions.pending.is_empty()
             && agentic.compact_intent.is_none()
+            && !self.has_pending_user_message()
     }
 
     /// Append a streaming token to the current assistant message.
