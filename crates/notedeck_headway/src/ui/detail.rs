@@ -8,13 +8,15 @@ use notedeck::ColorTheme;
 use notedeck::tokens::{
     RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THIN,
 };
+use notedeck_ui::diff::PatchScroll;
 
+use super::card_actions::detail_scroll_ui;
 use super::review::review_section_ui;
 use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
     priority_label, secondary_action_button, section_label, status_icon_ui,
 };
-use super::{BoardUiState, EditMode, find_card, seed_edit_mode};
+use super::{BoardUiState, EditMode, find_card, notice_ui, pane_hints_ui, seed_edit_mode};
 use crate::event::{
     self, ActivityKind, ActivityView, BoardView, ColumnPos, CommentView, Priority, ReviewView,
 };
@@ -163,8 +165,9 @@ pub(super) fn card_detail_pane_ui(
         blocks: card.blocks.iter().map(|e| detail_edge(view, e)).collect(),
     };
 
-    // Escape backs out to the board. Consume it so it doesn't also fall through
-    // to Chrome's Escape handler, which would toggle the side menu.
+    // Escape backs out to the board (as `q` does, `crate::keys::detail_keys`).
+    // Consume it so it doesn't also fall through to Chrome's Escape handler,
+    // which would toggle the side menu.
     let mut outcome = if ui
         .ctx()
         .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
@@ -173,11 +176,15 @@ pub(super) fn card_detail_pane_ui(
     } else {
         DetailOutcome::None
     };
+    // A scroll the detail's keys asked for, applied at the end of whichever
+    // scroll area the layout below draws.
+    let scroll = state.detail_scroll.take();
+    pane_hints_ui(ui, theme, state);
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            detail_pane_topbar_ui(ui, theme, &ctx, &mut outcome);
+            detail_pane_topbar_ui(ui, theme, &ctx, &mut state.notice, &mut outcome);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
@@ -203,6 +210,7 @@ pub(super) fn card_detail_pane_ui(
                                 state,
                                 action,
                                 &mut outcome,
+                                scroll,
                             );
                         },
                     );
@@ -220,6 +228,7 @@ pub(super) fn card_detail_pane_ui(
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
+                        let top = ui.cursor().min;
                         ui.set_max_width(avail.min(DETAIL_CONTENT_WIDTH));
                         detail_body_ui(ui, theme, app_ctx, &ctx, state, action, &mut outcome);
                         ui.add_space(SPACING_MD);
@@ -230,6 +239,7 @@ pub(super) fn card_detail_pane_ui(
                         ui.separator();
                         ui.add_space(SPACING_MD);
                         detail_comments_ui(ui, theme, app_ctx, &ctx, state, &mut outcome);
+                        detail_scroll_ui(ui, scroll, top);
                     });
             }
         });
@@ -240,7 +250,7 @@ pub(super) fn card_detail_pane_ui(
 /// The full-pane detail top bar, a Linear-style breadcrumb: a back affordance,
 /// then the card's word-id reference (click to copy — the GUI mirror of what
 /// the CLI prints, a stable handle for commits/chat), and a trailing ✕ that
-/// also dismisses.
+/// also dismisses, with a key's short-lived notice ahead of it.
 ///
 /// The back button steps one entry back in the chrome global history (the same
 /// as the browser back chevron), so from a card opened off the board it returns
@@ -250,6 +260,7 @@ fn detail_pane_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     ctx: &DetailCtx,
+    notice: &mut Option<(super::QueueNotice, f64)>,
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
@@ -280,6 +291,7 @@ fn detail_pane_topbar_ui(
             if ui.add(x).clicked() {
                 *outcome = DetailOutcome::Close;
             }
+            notice_ui(ui, theme, notice);
         });
     });
 }
@@ -464,7 +476,8 @@ pub(super) fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
 
 /// The wide layout's scrolling main column: the card body with the activity
 /// thread beneath it, width-capped so it reads like a document while the
-/// properties sidebar sits fixed to its right.
+/// properties sidebar sits fixed to its right. Takes the detail keys' `scroll`.
+#[allow(clippy::too_many_arguments)]
 fn detail_main_column_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -473,16 +486,19 @@ fn detail_main_column_ui(
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
     outcome: &mut DetailOutcome,
+    scroll: Option<PatchScroll>,
 ) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            let top = ui.cursor().min;
             ui.set_max_width(ui.available_width().min(DETAIL_CONTENT_WIDTH));
             detail_body_ui(ui, theme, app_ctx, ctx, state, action, outcome);
             ui.add_space(SPACING_MD);
             ui.separator();
             ui.add_space(SPACING_MD);
             detail_comments_ui(ui, theme, app_ctx, ctx, state, outcome);
+            detail_scroll_ui(ui, scroll, top);
         });
 }
 

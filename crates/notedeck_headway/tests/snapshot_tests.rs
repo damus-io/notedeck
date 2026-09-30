@@ -2434,17 +2434,19 @@ fn review_queue_shows_the_recorded_commit_diff() {
 
 /// The queue's key-strip labels, in strip order: what [`assert_queue_hints_fit`]
 /// checks for.
-const QUEUE_HINT_LABELS: [&str; 11] = [
+const QUEUE_HINT_LABELS: [&str; 13] = [
+    "open",
+    "explainer",
+    "session/review",
+    "review diff",
+    "archive",
+    "done",
+    "send back",
     "next/prev card",
     "scroll",
     "half page",
     "top/bottom",
     "next/prev file",
-    "explainer",
-    "open card",
-    "done",
-    "send back",
-    "session/review",
     "leave",
 ];
 
@@ -2487,6 +2489,123 @@ fn review_queue_key_hints_wrap_on_a_narrow_pane() {
     assert!(rows >= 2, "the strip wrapped onto {rows} row(s)");
 }
 
+/// The top of the highest node labelled `label`, or `None` when none is laid
+/// out (scrolled out of a `show_rows` area, say).
+fn label_top(harness: &Harness<'static, HeadwayTestState>, label: &str) -> Option<f64> {
+    harness
+        .get_all_by_label(label)
+        .filter_map(|node| node.bounding_box())
+        .map(|bb| bb.y0)
+        .reduce(f64::min)
+}
+
+/// The agentium sessions the app was asked to open since the last call.
+fn raised_opens(harness: &mut Harness<'static, HeadwayTestState>) -> Vec<notedeck::OpenUri> {
+    let app_ctx = harness.state_mut().notedeck.app_context();
+    app_ctx
+        .app_actions
+        .take()
+        .into_iter()
+        .filter_map(|action| match action {
+            notedeck::AppAction::Open(open) => Some(open),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A review pane opened from a card's detail ("Review diff"), not the queue,
+/// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
+/// says `q` goes back to the card, `n` steps to the next In Review card's
+/// review, and `q` backs out to that card's detail.
+#[test]
+fn a_plain_review_pane_reads_with_the_queue_keys() {
+    let fixture = review_fixture();
+    // Short, so the two-file diff overflows and has somewhere to scroll.
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 420.0));
+    seed_review_queue(&mut harness, &fixture);
+    harness.get_by_label(QUEUE_CARDS[0]).simulate_click();
+    wait_for_label(&mut harness, "± Review diff");
+    harness.get_by_label("± Review diff").click();
+    wait_for_any_label(&mut harness, "src/queue.rs");
+    wait_for_label(&mut harness, "local checkout");
+    harness.run_steps(3);
+
+    let before = label_top(&harness, "src/queue.rs");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::G);
+    harness.run_steps(3);
+    let after = label_top(&harness, "src/queue.rs");
+    assert!(
+        after.is_none_or(|y| Some(y) < before),
+        "G scrolls the diff: src/queue.rs went from {before:?} to {after:?}"
+    );
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "back to card");
+    wait_for_label(&mut harness, "next/prev file");
+
+    press_board_keys(&mut harness, &[egui::Key::N]);
+    wait_for_label(&mut harness, QUEUE_CARDS[1]);
+    wait_for_any_label(&mut harness, "src/keys.rs");
+
+    press_board_keys(&mut harness, &[egui::Key::Q]);
+    wait_for_label(&mut harness, "± Review diff");
+    wait_for_label(&mut harness, QUEUE_CARDS[1]);
+}
+
+/// The card detail takes the card actions: `s` opens its record's agentium
+/// session, `n` steps to the next card in its column, `D` moves that card to
+/// Done. An `s` typed into the comment composer stays text.
+#[test]
+fn the_detail_takes_the_card_actions() {
+    const FIRST: &str = "Define nostr event model for boards";
+    const SECOND: &str = "Sync cards across relays";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let first = harness_card_id(&mut harness, FIRST);
+    let second = harness_card_id(&mut harness, SECOND);
+    let sha = "4e5f60718293a4b5c6d7e8f9012345678ab9c0d1";
+    apply_demo_action(
+        &mut harness,
+        store::BoardAction::AddReview {
+            card: first,
+            review: event::ReviewFields {
+                commit: Some(sha.to_string()),
+                agentium: Some(QUEUE_SESSION.to_string()),
+                ..Default::default()
+            },
+        },
+    );
+    harness.get_by_label(FIRST).simulate_click();
+    wait_for_label(&mut harness, &sha[..12]);
+    raised_opens(&mut harness);
+
+    press_board_keys(&mut harness, &[egui::Key::S]);
+    assert_eq!(
+        raised_opens(&mut harness),
+        vec![notedeck::OpenUri::new(QUEUE_SESSION)]
+    );
+
+    press_board_keys(&mut harness, &[egui::Key::N]);
+    wait_for_label(&mut harness, SECOND);
+
+    // `D` lands on the card `n` stepped to, not the one it stepped from.
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
+    wait_for_card_column(&mut harness, second, "Done");
+
+    harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .last()
+        .expect("the comment composer")
+        .simulate_click();
+    harness.run_ok();
+    type_key(&mut harness, egui::Key::S, "s");
+    assert_eq!(raised_opens(&mut harness), vec![], "s typed, not a session");
+    let composer = harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .find(|n| n.is_focused())
+        .expect("the focused comment composer");
+    assert_eq!(composer.value().as_deref(), Some("s"));
+}
+
 /// Snapshot: the review queue open on the first of two In Review cards — the
 /// queue bar with its position and the next card, the record's explainer link
 /// and agentium session, where the commit was found, and its two-file diff.
@@ -2505,6 +2624,41 @@ fn snapshot_headway_review_queue() {
     wait_for_label(&mut harness, "send back");
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_key_hints");
+}
+
+/// Snapshot: a plain review pane (opened from a card's "Review diff") with `?`
+/// pinning its key strip: the queue's strip, bar `q` going back to the card.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_pane_key_hints() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    harness.get_by_label(QUEUE_CARDS[0]).simulate_click();
+    wait_for_label(&mut harness, "± Review diff");
+    harness.get_by_label("± Review diff").click();
+    wait_for_any_label(&mut harness, "src/queue.rs");
+    wait_for_label(&mut harness, "local checkout");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "back to card");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_pane_key_hints");
+}
+
+/// Snapshot: a card's detail with `?` pinning its key strip: the card actions
+/// and the detail's scrolling.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_detail_key_hints() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    harness
+        .get_by_label("Define nostr event model for boards")
+        .simulate_click();
+    wait_for_label(&mut harness, "← Back");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "session/review");
+    harness.run_steps(3);
+    harness.snapshot("headway_detail_key_hints");
 }
 
 /// Snapshot: the review queue on a phone-width screen, where the header drops
@@ -2834,12 +2988,12 @@ fn slash_focuses_an_empty_filter() {
     assert_eq!(field.value().as_deref(), Some(""), "the / was not typed");
 }
 
-/// Behavioural (no lavapipe): `n` opens the add-card composer, focused and
-/// empty — the `n` itself isn't typed into it.
+/// Behavioural (no lavapipe): `c` opens the add-card composer, focused and
+/// empty — the `c` itself isn't typed into it.
 #[test]
-fn n_opens_an_empty_add_card_composer() {
+fn c_opens_an_empty_add_card_composer() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    type_key(&mut harness, egui::Key::N, "n");
+    type_key(&mut harness, egui::Key::C, "c");
     harness.run_ok();
 
     // The card composer is multiline, so it's the one MultilineTextInput.
@@ -2847,7 +3001,7 @@ fn n_opens_an_empty_add_card_composer() {
         .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
         .find(|n| n.is_focused())
         .expect("a focused add-card composer");
-    assert_eq!(composer.value().as_deref(), Some(""), "the n was not typed");
+    assert_eq!(composer.value().as_deref(), Some(""), "the c was not typed");
 }
 
 /// Behavioural (no lavapipe): keys typed into the filter field stay text — `j`
@@ -3306,7 +3460,7 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
     assert_eq!(stack.len(), 2, "reopening the queue pushes nothing");
 }
 
-/// `A` in the review queue leaves for the record's agentium session: the app
+/// `S` in the review queue leaves for the record's agentium session: the app
 /// raises exactly one `AppAction::Open` naming the session, with a
 /// `/code-review` message that names the commit and the card, and Headway
 /// itself pushes no history entry, so the chrome's switch to Dave is the only
@@ -3314,7 +3468,7 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
 /// its `dave` feature; see `open_note_in_owning_app`.) The header's "Review in
 /// session" button, beside the session chip, raises the same open.
 #[test]
-fn shift_a_in_the_queue_opens_the_session_asking_for_a_review() {
+fn shift_s_in_the_queue_opens_the_session_asking_for_a_review() {
     use notedeck::{AppAction, AppId, ChromeNavEntry, NavStack};
     use std::rc::Rc;
 
@@ -3348,13 +3502,13 @@ fn shift_a_in_the_queue_opens_the_session_asking_for_a_review() {
     // Nothing the harness drains yet (a chip click, say) may count below.
     opens(&mut harness);
 
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::A);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::S);
     chrome_frame(&mut harness, &mut stack);
     let raised = opens(&mut harness);
     assert_eq!(raised.len(), 1, "one open: {raised:?}");
     let open = &raised[0];
     assert_eq!(open.reference, QUEUE_SESSION);
-    let msg = open.msg.as_deref().expect("A sends a message");
+    let msg = open.msg.as_deref().expect("S sends a message");
     assert!(msg.starts_with("launch a /code-review"), "{msg}");
     assert!(
         msg.contains(&format!("commit {}", &fixture.queue[..12])),
@@ -3370,10 +3524,10 @@ fn shift_a_in_the_queue_opens_the_session_asking_for_a_review() {
     harness.get_by_label("Review in session").click();
     chrome_frame(&mut harness, &mut stack);
     let clicked = opens(&mut harness);
-    assert_eq!(clicked, raised, "the button is A");
+    assert_eq!(clicked, raised, "the button is S");
 
-    // `a` opens the session with no message.
-    harness.press_key(egui::Key::A);
+    // `s` opens the session with no message.
+    harness.press_key(egui::Key::S);
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(
         opens(&mut harness),

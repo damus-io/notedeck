@@ -309,6 +309,52 @@ the module is egui-only (rects, sides, colors) and carries no board or jsoncanva
 data, so each caller maps its own edge model onto it. See the notedeck_ui
 [component guide](../notedeck_ui/docs/components.md#graph-edges--layout).
 
+## Keys
+
+Bare keys, read before anything lays out and left alone while a text field,
+menu or drag has the keyboard. `?` pins a which-key strip in every view. Two
+classes, one table each, both in `src/keys.rs`.
+
+**Card actions** act on the current card: the grid's cursor card, the review
+queue's card, a review pane's card, or the open detail's card. They mean the
+same thing in all four views (`CARD_ACTION_HINTS`, `keys::card_action`,
+`keys::apply_card_action`; the test `card_actions_mean_the_same_in_every_view`
+replays each key in each view).
+
+| Key           | Action                                                                 |
+| ------------- | ---------------------------------------------------------------------- |
+| `Enter` / `o` | open the card's detail (a plain review pane backs out to it; no-op on the detail) |
+| `e`           | open the record's explainer                                            |
+| `s` / `S`     | open the record's agentium session / the same, asking it for a `/code-review` |
+| `r`           | open the review pane on the newest record                              |
+| `a`           | archive                                                                |
+| `D`           | move to Done                                                           |
+| `X`           | ask for a reason, post it as a `review: …` comment, move to In Progress |
+| `n` / `p`     | next / previous card (see below)                                       |
+
+The record is the one a review pane shows, else the card's newest. What differs
+by view: `n`/`p` step the grid's cursor (as `j`/`k`), the queue, or the card's
+neighbour in its column (the detail opens that card, a review pane that card's
+review). In the queue a verdict (`D`, `X`, `a`) steps it on; archiving from the
+detail or a review pane backs out to the grid.
+
+**Navigation** keeps its meaning while its target is whatever the view shows.
+
+| Key                     | Grid                        | Review pane (queue or not)  | Detail          |
+| ----------------------- | --------------------------- | --------------------------- | --------------- |
+| `j` / `k`               | cursor down / up            | scroll the diff             | scroll          |
+| `gg` / `G`              | first / last in the column  | top / bottom                | top / bottom    |
+| `Ctrl-d` / `Ctrl-u`     |                             | half a page                 | half a page     |
+| `]` / `[`               |                             | next / previous file        |                 |
+| `h` / `l`               | column left / right         |                             |                 |
+| `H` / `L`, `J` / `K`    | move the card across / reorder it |                       |                 |
+| `c`                     | new card                    |                             |                 |
+| `/`                     | filter                      |                             |                 |
+| `R`                     | review queue over In Review |                             |                 |
+| `q` / `Esc`             | (`Esc` clears the cursor)   | queue: leave for the grid; plain: back to the card | back to the grid |
+
+The review queue itself is in [docs/review-queue.md](docs/review-queue.md#queue-keys).
+
 ## Source map
 
 - `src/event.rs` — the pure schema: builders, parsers, the reducer

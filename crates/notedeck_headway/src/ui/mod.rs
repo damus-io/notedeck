@@ -18,14 +18,16 @@ use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM};
 use notedeck_ui::chord::ChordState;
+use notedeck_ui::diff::PatchScroll;
 
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView};
-use crate::keys::{self, BoardPending};
+use crate::keys::{self, BoardPending, PanePending};
 use crate::nav::{NavPos, ReviewTarget};
 use crate::store::BoardAction;
 
 mod archived;
+mod card_actions;
 mod detail;
 mod filter;
 mod graph;
@@ -39,9 +41,11 @@ pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
 pub use header::SyncStatus;
 pub use inline::{board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
+pub(crate) use card_actions::{CardStep, reason_field_id};
 pub(crate) use filter::{CardFilter, ViewFilter, filter_field_id};
 
 use archived::archived_sheet_ui;
+use card_actions::{ReasonComposer, reason_bar_ui};
 use detail::card_detail_pane_ui;
 use filter::filter_ref_jump;
 use graph::graph_view_ui;
@@ -52,7 +56,7 @@ use review::{
     review_queue_ui,
 };
 
-pub(crate) use review::{QueueNotice, QueuePending, QueueStep, SessionOpen, reason_field_id};
+pub(crate) use review::{QueueNotice, SessionOpen};
 
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
@@ -87,8 +91,10 @@ pub struct BoardUiState {
     /// How far into a board-key chord (`gg`) the grid is. Ticked and advanced
     /// by [`crate::keys::board_keys`].
     pub(crate) chord: ChordState<BoardPending>,
-    /// The review queue's own `gg` chord, ticked by [`crate::keys::queue_keys`].
-    pub(crate) queue_chord: ChordState<QueuePending>,
+    /// The `gg` chord of the review pane (queue or not) or the detail, ticked
+    /// by [`crate::keys::review_pane_keys`] and [`crate::keys::detail_keys`].
+    /// Only one of them shows at a time, so they share it.
+    pub(crate) pane_chord: ChordState<PanePending>,
     /// Set by the grid's own drop-down menus (board switcher, View, column ⋯)
     /// on each frame they're open, and taken by the next frame's
     /// [`crate::keys::board_keys`]. egui 0.31's `menu_button` keeps its open
@@ -207,7 +213,16 @@ pub struct BoardUiState {
     /// A board edit left for the next frame, because a frame applies one: the
     /// move behind an `X` verdict's comment.
     follow_up: Option<BoardAction>,
-    /// An agentium session a review key (`a`/`A`) asked to open this frame.
+    /// The `X` composer, while it's open, in whichever view `X` was pressed.
+    /// It owns the keyboard: every keymap stands down bar its Enter and Esc.
+    reason: Option<ReasonComposer>,
+    /// A scroll the detail's keys asked of it, applied on its next pass.
+    detail_scroll: Option<PatchScroll>,
+    /// The last card action a keymap applied, and to which card: what the
+    /// `card_actions_mean_the_same_in_every_view` test compares across views.
+    #[cfg(test)]
+    pub(crate) last_card_action: Option<(keys::CardAction, NoteId)>,
+    /// An agentium session a card key (`s`/`S`) asked to open this frame.
     /// The keys run without an [`AppContext`](notedeck::AppContext), so
     /// [`board_ui`] takes it ([`take_open`](Self::take_open)) and raises it as
     /// an [`AppAction::Open`](notedeck::AppAction::Open).
@@ -328,25 +343,25 @@ impl BoardUiState {
     }
 
     /// Step the review queue one card `step`'s way, pointing the pane at it.
-    pub(crate) fn step_queue(&mut self, step: QueueStep) {
+    pub(crate) fn step_queue(&mut self, step: CardStep) {
         self.queue.step(step);
         self.review.seed(self.queue.target());
     }
 
     /// Leave the review queue for the board grid, with the grid's cursor on the
     /// card the queue last showed. A notice about the queue's card (no
-    /// explainer) goes with it.
+    /// explainer) and an open `X` composer go with it.
     pub(crate) fn close_queue(&mut self) {
         if let Some(card) = self.queue.close() {
             self.set_cursor(card);
         }
         self.review.close();
-        self.queue_chord.clear();
+        self.pane_chord.clear();
+        self.reason = None;
         self.notice = None;
     }
 
     /// Whether the review queue is showing.
-    #[cfg(test)]
     pub(crate) fn queue_open(&self) -> bool {
         self.queue.is_open()
     }
@@ -389,7 +404,7 @@ impl BoardUiState {
     }
 
     /// Open the "add card" composer at the foot of column `col`, empty and
-    /// focused. Shared by the column's "+ Add card" button and the `n` key.
+    /// focused. Shared by the column's "+ Add card" button and the `c` key.
     pub(crate) fn open_add_card(&mut self, col: usize) {
         self.edit = InlineEdit::AddCard(col);
         self.edit_text.clear();
@@ -397,10 +412,14 @@ impl BoardUiState {
     }
 
     /// Whether a board-level overlay owns the keyboard: an inline editor (card
-    /// composer, column rename, new column/board), the archived sheet, or the
-    /// review queue (whose own keys are [`crate::keys::queue_keys`]).
+    /// composer, column rename, new column/board), the archived sheet, the `X`
+    /// composer, or the review queue (whose own keys are
+    /// [`crate::keys::review_pane_keys`]).
     pub(crate) fn keys_blocked(&self) -> bool {
-        self.edit != InlineEdit::None || self.showing_archived || self.queue.is_open()
+        self.edit != InlineEdit::None
+            || self.showing_archived
+            || self.reason.is_some()
+            || self.queue.is_open()
     }
 
     /// Take the [`grid_menu_open`](Self::grid_menu_open) latch: whether one of
@@ -525,27 +544,25 @@ pub fn board_ui(
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
-    // The review queue's keys run before anything lays out, so one that
-    // leaves the queue (`q`, a verdict on its last card, Enter onto the card)
-    // has the grid or the detail draw this same frame rather than a blank one.
-    let verdict = if state.queue.is_open() {
-        keys::queue_keys(ui.ctx(), view, state)
-    } else {
-        None
-    };
-    if verdict.is_some() {
+    // The keys of the queue, a review pane, the detail or the `X` composer
+    // run before anything lays out, so one that leaves its view (`q`, a
+    // verdict on the queue's last card, Enter onto the card) has the view it
+    // lands on draw this same frame rather than a blank one. (The grid's run
+    // as it lays out, in `board_pane_ui`.)
+    let keyed = keys::pane_keys(ui.ctx(), view, state);
+    if keyed.is_some() {
         // The next card, and an `X`'s follow-up move, want a frame.
         ui.ctx().request_repaint();
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
-    // `a`/`A` in the queue or a review pane leave for the record's session.
+    // `s`/`S` leave for the card's session.
     if let Some(open) = state.take_open() {
         app_ctx.app_actions.push(notedeck::AppAction::Open(open));
     }
-    // A verdict swallowed the frame's keys, so the pane's edit could only be a
-    // drop landing in the same frame; the verdict wins, as a key does over a
-    // drop in the grid.
-    verdict.or(action).or_else(|| state.take_follow_up())
+    // A key swallowed the frame's keys, so the pane's edit could only be a
+    // drop landing in the same frame; the key wins, as it does over a drop in
+    // the grid.
+    keyed.or(action).or_else(|| state.take_follow_up())
 }
 
 /// [`board_ui`]'s body: whichever pane the state names, and its edit.
@@ -574,8 +591,11 @@ fn board_pane_ui(
         state.graph_connecting = None;
     }
 
+    // An `X`'s reason, above whichever view it was asked in.
+    reason_bar_ui(ui, theme, state);
+
     // The review queue draws the review pane over its current card (its keys
-    // ran in `board_ui`).
+    // ran in `board_ui`, as the plain pane's and the detail's did).
     if let Some(card) = state.queue.current() {
         review_queue_ui(ui, theme, app_ctx, view, card, state);
         return None;
@@ -586,8 +606,7 @@ fn board_pane_ui(
     // to its detail branch below, which drops it in turn.
     if let Some(card) = state.review.card() {
         if let Some((_, card)) = find_card(view, card) {
-            // The queue's session keys (`a`/`A`) work in a plain pane too.
-            keys::review_keys(ui.ctx(), view, state);
+            pane_hints_ui(ui, theme, state);
             review_pane_ui(ui, theme, app_ctx, view, card, state);
             return None;
         }
@@ -632,9 +651,10 @@ fn board_pane_ui(
         hide_subissues: state.hide_subissues,
     };
 
-    // Board keys (j/k/h/l, gg/G, Enter, a, /, ?, Esc; H/J/K/L move the cursor
-    // card, returned as the action a drop would raise). Only the grid reaches here —
-    // the graph and the detail pane returned above and handle their own keys —
+    // Board keys (j/k/h/l, gg/G, c, /, ?, Esc, the card actions; H/J/K/L move
+    // the cursor card, returned as the action a drop would raise). Only the grid
+    // reaches here — the graph, the review panes and the detail returned above
+    // and have their own keys —
     // and it runs before any grid widget lays out, so a key it handles is
     // swallowed before a field that `a` or `/` focuses could type it. The keys
     // stand down during a drag, but should a key action and a drop below ever
@@ -851,8 +871,28 @@ fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<(QueueNo
         .request_repaint_after(std::time::Duration::from_secs_f64(left));
 }
 
+/// The which-key strip of the pane showing over the grid ([`keys::pane_key_hints`]:
+/// the queue's, a plain review pane's or the detail's), while `?` pins it or a
+/// `g` is pending. Reserved from the bottom before the pane lays out, since the
+/// pane's scroll area takes every point of height left (as the grid's strip).
+fn pane_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &BoardUiState) {
+    let Some(strip) = keys::pane_key_hints(state) else {
+        return;
+    };
+    egui::TopBottomPanel::bottom("headway-pane-key-hints")
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().inner_margin(egui::Margin {
+            left: SPACING_LG as i8,
+            right: SPACING_LG as i8,
+            top: SPACING_MD as i8,
+            bottom: SPACING_MD as i8,
+        }))
+        .show_inside(ui, |ui| keys::key_hints_ui(ui, theme, strip));
+}
+
 /// Find a card anywhere on the board, returning its column index and view.
-fn find_card(view: &BoardView, card: NoteId) -> Option<(usize, &CardView)> {
+pub(crate) fn find_card(view: &BoardView, card: NoteId) -> Option<(usize, &CardView)> {
     view.columns
         .iter()
         .enumerate()

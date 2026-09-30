@@ -77,23 +77,24 @@ CLI and the pane. It is blocking, so the pane runs it off the UI thread.
 with id `in-review`, else one named In Review). The card list is fixed when the
 queue opens, and the whole walk is one global-nav history entry.
 
-| Keys                | Does                                                  |
-| ------------------- | ----------------------------------------------------- |
-| `n` `]` / `p` `[`   | next / previous card (stops at the ends)              |
-| `j` / `k`           | scroll the diff a line                                |
-| `Ctrl-d` / `Ctrl-u` | half a page                                           |
-| `gg` / `G`          | top / bottom of the diff                              |
-| `J` / `K`           | next / previous file                                  |
-| `o`                 | open the record's explainer                           |
-| `Enter`             | open the card                                         |
-| `D`                 | move the card to Done and step on                     |
-| `X`                 | ask for a reason, post it as a `review: …` comment, move the card to In Progress, step on |
-| `?`                 | toggle the which-key strip                            |
-| `q` / `Esc`         | leave for the grid, cursor on the card last shown     |
+The queue takes the same keys as every other view, from one table: the card
+actions (`Enter`/`o`, `e`, `s`/`S`, `r`, `a`, `D`, `X`, `n`/`p`) and a review
+pane's navigation (`j`/`k`, `Ctrl-d`/`Ctrl-u`, `gg`/`G`, `]`/`[`). See
+[Keys](../README.md#keys) in the README. What is the queue's own:
 
-A verdict on the last card closes the queue ("Review queue done"). The keymap is
-`keys::queue_keys` and its strip is `keys::QUEUE_HINTS`. The test
-`every_queue_hint_does_what_it_says` checks each strip entry against the keymap.
+- `n` / `p` step through the queue's cards, stopping at the ends.
+- A verdict steps it on: `D` (Done), `X` (reason, then In Progress) and `a`
+  (archive). A verdict on the last card closes the queue ("Review queue done").
+- `q` / `Esc` leave for the grid, with the cursor on the card last shown.
+
+A review pane opened from a card's "Review diff" instead of the queue takes the
+same keys; there `n`/`p` open the neighbouring card's review in its column and
+`q`/`Esc` back out to the card's detail.
+
+The keymap is `keys::review_pane_keys` (both modes, `PaneMode`), and its strip
+is `keys::QUEUE_STRIP` / `keys::PANE_STRIP`. The tests
+`every_queue_hint_does_what_it_says` and `every_review_pane_hint_does_what_it_says`
+check each strip entry against the keymap.
 
 ## When a fetch fails
 
