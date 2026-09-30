@@ -12,7 +12,7 @@ use notedeck::tokens::SPACING_LG;
 use notedeck_ui::diff::PatchScroll;
 
 use super::review::{DONE, IN_PROGRESS, Notice, QueueNotice, SessionOpen, session_open};
-use super::{BoardUiState, find_card};
+use super::{BoardEffect, BoardUiState, find_card};
 use crate::store::BoardAction;
 
 /// Which way `n`/`p` step from the current card.
@@ -90,9 +90,8 @@ impl BoardUiState {
     }
 
     /// `s`/`S`: ask the app to open the agentium session of `card`'s record
-    /// ([`acted_record`]) as `how` says; the request waits in
-    /// [`take_open`](Self::take_open) for [`super::board_ui`] to raise. A
-    /// record with no session only says so.
+    /// ([`acted_record`]) as `how` says, as a [`BoardEffect::Open`]. A record
+    /// with no session only says so.
     ///
     /// [`acted_record`]: Self::acted_record
     pub(crate) fn open_card_session(
@@ -110,16 +109,9 @@ impl BoardUiState {
             .acted_record(card)
             .and_then(|r| session_open(&r.fields, &card_ref, how));
         match open {
-            Some(open) => self.open = Some(open),
+            Some(open) => self.raise(BoardEffect::Open(open)),
             None => self.set_notice(QueueNotice::NoSession, now),
         }
-    }
-
-    /// Take the session open a key asked for this frame, if any, for the app
-    /// to raise as an [`AppAction::Open`](notedeck::AppAction::Open). Clears
-    /// it so it fires once.
-    pub(crate) fn take_open(&mut self) -> Option<notedeck::OpenUri> {
-        self.open.take()
     }
 
     /// `r`: open `card`'s review pane on its newest record, over its detail

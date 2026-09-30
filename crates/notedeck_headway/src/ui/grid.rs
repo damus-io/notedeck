@@ -13,7 +13,7 @@ use super::widgets::{
     StatusIcon, board_nostr_uri, count_badge, issue_nostr_uri, label_chip, priority_icon_ui,
     priority_label, progress_pill, status_icon_ui,
 };
-use super::{BoardUiState, CardBoardMove, CardBoardOp, CardPos, InlineEdit};
+use super::{BoardEffect, BoardUiState, CardBoardMove, CardBoardOp, CardPos, InlineEdit};
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView, ColumnView, Priority};
 use crate::store::BoardAction;
@@ -411,11 +411,11 @@ fn card_board_submenu(
     ui.menu_button(label, |ui| {
         for board in boards.iter().filter(|b| b.id != source_board) {
             if ui.button(&board.title).clicked() {
-                state.card_move = Some(CardBoardMove {
+                state.raise(BoardEffect::CardMove(CardBoardMove {
                     card,
                     to_board: board.id.clone(),
                     op,
-                });
+                }));
                 ui.close_menu();
             }
         }

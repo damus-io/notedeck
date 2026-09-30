@@ -4,7 +4,7 @@
 use notedeck::ColorTheme;
 use notedeck::tokens::{RADIUS_PILL, SPACING_SM, SPACING_XS, STROKE_THIN};
 
-use super::{BoardNav, BoardUiState, InlineEdit};
+use super::{BoardEffect, BoardNav, BoardUiState, InlineEdit};
 use crate::BoardSummary;
 use crate::event::{self, BoardView};
 
@@ -209,7 +209,7 @@ pub(super) fn board_switcher(
                 state.edit_text.clear();
                 state.edit = InlineEdit::None;
                 if !title.is_empty() {
-                    state.nav = Some(BoardNav::Create(title));
+                    state.raise(BoardEffect::Nav(BoardNav::Create(title)));
                 }
             }
         });
@@ -227,10 +227,10 @@ pub(super) fn board_switcher(
             let current = board.id == view.id && board.owner == view.author;
             if ui.selectable_label(current, &board.title).clicked() {
                 if !current {
-                    state.nav = Some(BoardNav::Switch(event::BoardCoord::new(
+                    state.raise(BoardEffect::Nav(BoardNav::Switch(event::BoardCoord::new(
                         board.owner,
                         board.id.clone(),
-                    )));
+                    ))));
                 }
                 ui.close_menu();
             }

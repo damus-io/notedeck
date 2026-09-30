@@ -22,7 +22,7 @@ use super::widgets::{
     MiddleElided, count_badge, detail_heading, secondary_action_button, section_label, text_pill,
     tinted_pill,
 };
-use super::{BoardUiState, find_card, pane_hints_ui};
+use super::{BoardEffect, BoardUiState, find_card, pane_hints_ui};
 use crate::keys::CardAction;
 use crate::nav::{NavPos, ReviewTarget};
 use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
@@ -651,7 +651,7 @@ pub(super) fn review_pane_ui(
             .map(|(_, c)| c.title.as_str()),
     });
     let notice = &mut state.notice;
-    let open = &mut state.open;
+    let effects = &mut state.effects;
     let review = &mut state.review;
     if review.ref_for != Some(card.id) {
         review.ref_for = Some(card.id);
@@ -707,8 +707,8 @@ pub(super) fn review_pane_ui(
                 record,
                 queue,
             };
-            if let Some(asked) = review_topbar_ui(ui, theme, app_ctx, header, review, notice) {
-                *open = Some(asked);
+            if let Some(open) = review_topbar_ui(ui, theme, app_ctx, header, review, notice) {
+                effects.push(BoardEffect::Open(open));
             }
             ui.add_space(SPACING_SM);
             ui.separator();
@@ -805,9 +805,8 @@ struct QueueHeader<'a> {
 /// The right side lays out first, right to left, so the title knows how much
 /// room is left to elide into.
 ///
-/// Returns the session open the button asked for. The pane leaves it in
-/// [`BoardUiState::open`] for [`super::board_ui`] to raise, the one way out
-/// an `S` takes too.
+/// Returns the session open the button asked for. The pane raises it as a
+/// [`BoardEffect::Open`], the one way out an `S` takes too.
 fn review_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,

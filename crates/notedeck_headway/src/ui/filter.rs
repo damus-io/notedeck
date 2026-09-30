@@ -2,7 +2,7 @@
 //! combined [`ViewFilter`] visibility predicate, and the cross-board reference
 //! jump a pasted card ref triggers.
 
-use super::{BoardNav, BoardUiState};
+use super::{BoardEffect, BoardNav, BoardUiState};
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView};
 
@@ -186,7 +186,9 @@ pub(super) fn filter_ref_jump(view: &BoardView, boards: &[BoardSummary], state: 
         .map(|t| if t == r.term { r.words } else { t })
         .collect::<Vec<_>>()
         .join(" ");
-    state.nav = Some(BoardNav::Switch(event::BoardCoord::new(r.owner, r.board)));
+    state.raise(BoardEffect::Nav(BoardNav::Switch(event::BoardCoord::new(
+        r.owner, r.board,
+    ))));
     state.filter = rewritten;
 }
 

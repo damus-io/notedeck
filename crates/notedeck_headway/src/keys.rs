@@ -929,7 +929,7 @@ mod tests {
     use super::*;
     use crate::cursor::tests::{grid, id, square_grid};
     use crate::nav::ReviewTarget;
-    use crate::ui::{CardFilter, QueueNotice};
+    use crate::ui::{BoardEffect, CardFilter, QueueNotice};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use headway::event::{ReviewFields, ReviewView};
@@ -956,8 +956,8 @@ mod tests {
         commented: Option<(NoteId, String)>,
         /// The last URL a key asked the platform to open.
         opened: Option<String>,
-        /// The last agentium session open a key raised, as `board_ui` takes
-        /// it ([`BoardUiState::take_open`]).
+        /// The last agentium session open a key raised, as the app drains
+        /// it ([`BoardUiState::take_effects`]).
         session: Option<notedeck::OpenUri>,
     }
 
@@ -983,8 +983,10 @@ mod tests {
                 } else {
                     board_keys(ui.ctx(), &h.view, &filter, &mut h.state)
                 };
-                if let Some(open) = h.state.take_open() {
-                    h.session = Some(open);
+                for effect in h.state.take_effects() {
+                    if let BoardEffect::Open(open) = effect {
+                        h.session = Some(open);
+                    }
                 }
                 match action.or_else(|| h.state.take_follow_up()) {
                     Some(BoardAction::MoveCard {

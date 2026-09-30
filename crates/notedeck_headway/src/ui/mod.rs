@@ -140,13 +140,13 @@ pub struct BoardUiState {
     comment_draft: String,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
-    /// A board-switcher request raised this frame (switch or create). The app
-    /// reads and clears it to act on it; the new-board *composer* is just another
-    /// [`InlineEdit`], sharing `edit_text`.
-    nav: Option<BoardNav>,
-    /// A cross-board card request raised this frame from a card's context menu
-    /// (move to / link onto another board). The app reads and clears it to act.
-    card_move: Option<CardBoardMove>,
+    /// What this frame asked of the app: a board switch, a cross-board card
+    /// move, a session open. The keys and widgets that raise them run without
+    /// an [`AppContext`](notedeck::AppContext), so they queue here and the app
+    /// drains them once a frame ([`take_effects`](Self::take_effects)). Empty
+    /// on almost every frame, which costs nothing: an empty `Vec` holds no
+    /// allocation.
+    effects: Vec<BoardEffect>,
     /// Free-text board filter. Empty means no filtering. Plain words match a
     /// card's title/description/labels/word-id (all must match,
     /// case-insensitive); a `label:foo` token narrows to cards carrying a
@@ -225,25 +225,18 @@ pub struct BoardUiState {
     /// `card_actions_mean_the_same_in_every_view` test compares across views.
     #[cfg(test)]
     pub(crate) last_card_action: Option<(keys::CardAction, NoteId)>,
-    /// An agentium session a card key (`s`/`S`), or the review header's
-    /// "Review in session" button, asked to open this frame.
-    /// The keys run without an [`AppContext`](notedeck::AppContext), so
-    /// [`board_ui`] takes it ([`take_open`](Self::take_open)) and raises it as
-    /// an [`AppAction::Open`](notedeck::AppAction::Open).
-    open: Option<notedeck::OpenUri>,
 }
 
 impl BoardUiState {
-    /// Take this frame's board-switcher request (switch or create), if any, for
-    /// the app to act on. Clears it so it fires once.
-    pub fn take_nav(&mut self) -> Option<BoardNav> {
-        self.nav.take()
+    /// Take what this frame asked of the app, in the order it was asked, so
+    /// each fires once.
+    pub fn take_effects(&mut self) -> Vec<BoardEffect> {
+        std::mem::take(&mut self.effects)
     }
 
-    /// Take this frame's cross-board card request (move or link), if any, for the
-    /// app to act on. Clears it so it fires once.
-    pub fn take_card_move(&mut self) -> Option<CardBoardMove> {
-        self.card_move.take()
+    /// Ask the app for `effect`; it's drained after the frame's render.
+    pub(crate) fn raise(&mut self, effect: BoardEffect) {
+        self.effects.push(effect);
     }
 
     /// Open a card's full-pane detail view, e.g. when navigating in from a click
@@ -512,9 +505,27 @@ enum InlineEdit {
     NewBoard,
 }
 
-/// A request from the board switcher, raised in [`BoardUiState::nav`] for the app
-/// to act on. Switching and creating are mutually exclusive, so one enum models
-/// the frame's intent rather than a clutch of `Option`s.
+/// Something the board UI asks of the app, which only the app can do: it
+/// needs the signing key, the other boards' folds, or another app. Raised into
+/// [`BoardUiState::effects`] and drained by the app after the frame's render.
+///
+/// A board edit is not one of these: [`board_ui`] returns that as its
+/// [`BoardAction`], and an edit left for the next frame (an `X`'s move) waits in
+/// `follow_up`, since it goes out the same way the next frame's edit does.
+pub enum BoardEffect {
+    /// Switch to another board, or create one.
+    Nav(BoardNav),
+    /// Move a card to another board, or link it onto one.
+    CardMove(CardBoardMove),
+    /// Open a reference — a card's agentium session, from `s`/`S` or the
+    /// review header's button — in the app that owns it, as an
+    /// [`AppAction::Open`](notedeck::AppAction::Open).
+    Open(notedeck::OpenUri),
+}
+
+/// A request from the board switcher, raised as a [`BoardEffect::Nav`] for the
+/// app to act on. Switching and creating are mutually exclusive, so one enum
+/// models the request rather than a clutch of `Option`s.
 pub enum BoardNav {
     /// Switch the active board to this coordinate (owner + slug), so a joined
     /// board owned by a co-member selects distinctly from one of yours.
@@ -533,8 +544,8 @@ pub enum CardBoardOp {
     Link,
 }
 
-/// A cross-board card request raised from a card's context menu, in
-/// [`BoardUiState::card_move`] for the app to act on. The `card` moves to (or is
+/// A cross-board card request raised from a card's context menu, as a
+/// [`BoardEffect::CardMove`] for the app to act on. The `card` moves to (or is
 /// linked onto) the board with slug `to_board`.
 pub struct CardBoardMove {
     pub card: NoteId,
@@ -593,10 +604,6 @@ pub fn board_ui(
         ui.ctx().request_repaint();
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
-    // `s`/`S`, and the review header's button, leave for the card's session.
-    if let Some(open) = state.take_open() {
-        app_ctx.app_actions.push(notedeck::AppAction::Open(open));
-    }
     // A key swallowed the frame's keys, so the pane's edit could only be a
     // drop landing in the same frame; the key wins, as it does over a drop in
     // the grid.

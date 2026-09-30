@@ -21,7 +21,7 @@ use cache::BoardCache;
 pub use nav::{HeadwayRoute, ReviewTarget};
 use nav::{NavReconcile, reconcile_nav};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
-use ui::{BoardNav, CardBoardOp, board_ui, card_title, empty_state};
+use ui::{BoardEffect, BoardNav, CardBoardMove, CardBoardOp, board_ui, card_title, empty_state};
 pub use ui::{
     BoardUiState, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui, card_inline_ui,
     graph_node_ui, issue_inline_ui,
@@ -962,10 +962,11 @@ impl Headway {
             };
             let placeholder = placeholder_board(self.active(), &boards);
             ui::unfolded_board_ui(ui, &theme, &placeholder, &boards, &mut self.state, msg);
-            // Only the switcher is live here, so that's the only request to drain
-            // — no `board_ui` action exists to apply, and applying one against a
-            // placeholder would republish a board definition over the real one.
-            self.drain_board_nav(ctx, &author, Some(secret), &boards);
+            // Only the switcher is live here, so a switch is the only effect to
+            // act on — no `board_ui` action exists to apply, and applying one
+            // against a placeholder would republish a board definition over the
+            // real one.
+            self.drain_effects(ctx, &author, Some(secret), &boards, None);
             return AppResponse::default();
         };
 
@@ -1021,66 +1022,11 @@ impl Headway {
             None => {}
         }
 
-        self.drain_board_nav(ctx, &author, signer.as_ref(), &boards);
-
-        // A cross-board card request (move or link, raised from a card's context
-        // menu): resolve the target board's view out of the same reducer and
-        // link/relocate the card. Needs a signing key, and silently no-ops if the
-        // target board can't be folded (e.g. it was just deleted).
-        if let (Some(mv), Some(secret)) = (self.state.take_card_move(), &signer)
-            && let Some(target_view) = Transaction::new(ctx.ndb).ok().and_then(|txn| {
-                self.board_cache
-                    .borrow_mut()
-                    .board(ctx.ndb, &txn, &author, &mv.to_board)
-            })
-        {
-            // Each board seals with its own channel: the source tombstone under
-            // the active board's, the target placement under the target's. Sealing
-            // both with the source's — what this did before boards carried
-            // per-board channels — handed the target a placement its own fold
-            // refuses to trust, so the card left one board without arriving at the
-            // other (headway:headway/series-high-praise).
-            let target_channel =
-                board_channel(&self.teams, &event::board_address(&author, &mv.to_board));
-            let source = store::BoardRef {
-                id: &self.active().slug,
-                view: &view,
-                channel: channel.as_ref(),
-            };
-            let target = store::BoardRef {
-                id: &mv.to_board,
-                view: &target_view,
-                channel: target_channel.as_ref(),
-            };
-            // Ingest locally only; `update`'s poll fans the new events out to the
-            // private relays next frame (see `wake`).
-            let placed = match mv.op {
-                CardBoardOp::Move => store::move_card_between_boards(
-                    ctx.ndb,
-                    source,
-                    target,
-                    secret,
-                    mv.card,
-                    &mut store::NoPublish,
-                ),
-                CardBoardOp::Link => store::link_card(
-                    ctx.ndb,
-                    source,
-                    target,
-                    secret,
-                    mv.card,
-                    &mut store::NoPublish,
-                ),
-            };
-            // A refusal writes nothing, so the card simply stays where it is. The
-            // app has no way to say so yet — it needs a transient-message surface
-            // it doesn't have — so log it and leave the board unchanged rather
-            // than move a card into a board that can't show it.
-            if let Err(err) = placed {
-                tracing::warn!("headway: cross-board {:?} refused: {err}", mv.op);
-            }
-            self.wake();
-        }
+        let folded = FoldedBoard {
+            view: &view,
+            channel: channel.as_ref(),
+        };
+        self.drain_effects(ctx, &author, signer.as_ref(), &boards, Some(folded));
 
         // Apply the collected action by ingesting events locally. Mutations need
         // a signing key; a watch-only account simply can't edit. `update`'s poll
@@ -1101,25 +1047,114 @@ impl Headway {
         AppResponse::default()
     }
 
-    /// Drain a switcher request (raised in the UI state): switch the active board
-    /// or seed a new one. Both persist the selection so it survives a restart,
-    /// which needs `signer` — a watch-only account can still switch boards for the
-    /// session, it just can't record the choice or create a board.
+    /// Act on what the frame's render asked of the app
+    /// ([`BoardUiState::take_effects`]), in the order it asked: switch or
+    /// create a board, move a card across boards, open a reference in its app.
     ///
-    /// Split out of [`render_board`](Self::render_board) because a board that
-    /// hasn't folded still draws its switcher (see [`ui::unfolded_board_ui`]) and
-    /// so still has this one request to drain, even though no board edit exists to
-    /// apply there.
-    fn drain_board_nav(
+    /// `folded` is the board the frame drew, `None` on the placeholder an
+    /// unfolded board draws (see [`ui::unfolded_board_ui`]). Only its switcher
+    /// is live there, so a card move can't have been asked; one that somehow
+    /// was is dropped rather than applied against the placeholder.
+    fn drain_effects(
         &mut self,
         ctx: &mut AppContext<'_>,
         author: &Pubkey,
         signer: Option<&[u8; 32]>,
         boards: &[BoardSummary],
+        folded: Option<FoldedBoard<'_>>,
     ) {
-        let Some(nav) = self.state.take_nav() else {
+        for effect in self.state.take_effects() {
+            match effect {
+                BoardEffect::Nav(nav) => self.apply_board_nav(ctx, author, signer, boards, nav),
+                BoardEffect::CardMove(mv) => {
+                    if let (Some(folded), Some(secret)) = (&folded, signer) {
+                        self.move_card_across_boards(ctx, author, secret, folded, mv);
+                    }
+                }
+                BoardEffect::Open(open) => ctx.app_actions.push(notedeck::AppAction::Open(open)),
+            }
+        }
+    }
+
+    /// A cross-board card request (move or link, raised from a card's context
+    /// menu): resolve the target board's view out of the same reducer and
+    /// link/relocate the card. Silently no-ops if the target board can't be
+    /// folded (e.g. it was just deleted).
+    fn move_card_across_boards(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        author: &Pubkey,
+        secret: &[u8; 32],
+        source: &FoldedBoard<'_>,
+        mv: CardBoardMove,
+    ) {
+        let Some(target_view) = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+            self.board_cache
+                .borrow_mut()
+                .board(ctx.ndb, &txn, author, &mv.to_board)
+        }) else {
             return;
         };
+        // Each board seals with its own channel: the source tombstone under
+        // the active board's, the target placement under the target's. Sealing
+        // both with the source's — what this did before boards carried
+        // per-board channels — handed the target a placement its own fold
+        // refuses to trust, so the card left one board without arriving at the
+        // other (headway:headway/series-high-praise).
+        let target_channel =
+            board_channel(&self.teams, &event::board_address(author, &mv.to_board));
+        let source = store::BoardRef {
+            id: &self.active().slug,
+            view: source.view,
+            channel: source.channel,
+        };
+        let target = store::BoardRef {
+            id: &mv.to_board,
+            view: &target_view,
+            channel: target_channel.as_ref(),
+        };
+        // Ingest locally only; `update`'s poll fans the new events out to the
+        // private relays next frame (see `wake`).
+        let placed = match mv.op {
+            CardBoardOp::Move => store::move_card_between_boards(
+                ctx.ndb,
+                source,
+                target,
+                secret,
+                mv.card,
+                &mut store::NoPublish,
+            ),
+            CardBoardOp::Link => store::link_card(
+                ctx.ndb,
+                source,
+                target,
+                secret,
+                mv.card,
+                &mut store::NoPublish,
+            ),
+        };
+        // A refusal writes nothing, so the card simply stays where it is. The
+        // app has no way to say so yet — it needs a transient-message surface
+        // it doesn't have — so log it and leave the board unchanged rather
+        // than move a card into a board that can't show it.
+        if let Err(err) = placed {
+            tracing::warn!("headway: cross-board {:?} refused: {err}", mv.op);
+        }
+        self.wake();
+    }
+
+    /// Act on a switcher request: switch the active board or seed a new one.
+    /// Both persist the selection so it survives a restart, which needs
+    /// `signer` — a watch-only account can still switch boards for the
+    /// session, it just can't record the choice or create a board.
+    fn apply_board_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        author: &Pubkey,
+        signer: Option<&[u8; 32]>,
+        boards: &[BoardSummary],
+        nav: BoardNav,
+    ) {
         match nav {
             // The switcher entry carries the board's full coordinate, so selecting
             // a joined board (owned by a co-member) keeps its owner rather than
@@ -1160,6 +1195,13 @@ impl Headway {
             }
         }
     }
+}
+
+/// The board a frame drew, which a cross-board card move leaves: its fold and
+/// the SNS channel its edits seal into (`None` for an unshared board).
+struct FoldedBoard<'a> {
+    view: &'a BoardView,
+    channel: Option<&'a store::SnsChannel>,
 }
 
 /// An empty stand-in for a board that hasn't folded yet, so the board chrome (the
