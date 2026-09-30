@@ -12,6 +12,7 @@ use crate::messages::{
 use crate::Message;
 use claude_agent_sdk_rs::PermissionMode;
 use notedeck::Waker;
+use std::collections::BTreeMap;
 use std::sync::mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
@@ -327,6 +328,44 @@ pub fn prepare_prompt_and_images(
     }
 }
 
+/// The environment a subprocess backend exports into one agent session: the
+/// user's configured `session_env` (from `dave_settings.json`) plus this
+/// session's agentium identity. Both the Claude and Codex backends export
+/// exactly this map, so the two can't drift.
+///
+/// The identity comes from `agentium_session_id`, which MUST be the stable
+/// kind-31988 d-tag ([`event_session_id`]) that `agentium_core::wordid`
+/// hashes, NOT the ephemeral `dave-session-{n}` routing key, which resets every
+/// run and would resolve to no session. `AGENTIUM_SESSION_ID` is that raw,
+/// lossless id; `AGENTIUM_SESSION` is the sayable `agentium:<word-id>` URI
+/// derived from it (the word-id is a one-way hash, so both are exported). With
+/// them an in-session agent identifies its OWN session deterministically, e.g.
+/// to quote the ref into a headway done-comment. Non-agentic sessions have no
+/// identity and get only the configured entries.
+///
+/// The identity variables are inserted last so they win over a same-named
+/// configured entry: a settings file can't make a session misreport itself.
+///
+/// [`event_session_id`]: crate::session::AgenticSessionData::event_session_id
+pub fn session_env(
+    agentium_session_id: Option<&str>,
+    configured: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut env = configured.clone();
+    let Some(agentium_session_id) = agentium_session_id else {
+        return env;
+    };
+    env.insert(
+        "AGENTIUM_SESSION_ID".to_string(),
+        agentium_session_id.to_string(),
+    );
+    env.insert(
+        "AGENTIUM_SESSION".to_string(),
+        agentium_core::wordid::session_ref(agentium_session_id),
+    );
+    env
+}
+
 #[cfg(test)]
 mod tests {
     use super::prepare_prompt_and_images;
@@ -339,6 +378,42 @@ mod tests {
 
     fn img(bytes: &[u8], mime: &str) -> ImageAttachment {
         ImageAttachment::new(bytes.to_vec(), mime)
+    }
+
+    /// The session env carries every configured entry plus the agentium
+    /// identity, and the identity wins over a same-named configured entry.
+    #[test]
+    fn session_env_adds_configured_entries_under_the_identity() {
+        let sid = "4b0c1f55-2f7e-4c47-9d3b-1f2a3b4c5d6e";
+        let configured = BTreeMap::from([
+            (
+                "HEADWAY_COMMENT_NSEC_FILE".to_string(),
+                "/keys/agent".to_string(),
+            ),
+            (
+                "AGENTIUM_SESSION".to_string(),
+                "agentium:spoofed".to_string(),
+            ),
+            ("AGENTIUM_SESSION_ID".to_string(), "spoofed".to_string()),
+        ]);
+
+        let env = session_env(Some(sid), &configured);
+        assert_eq!(env["HEADWAY_COMMENT_NSEC_FILE"], "/keys/agent");
+        assert_eq!(env["AGENTIUM_SESSION_ID"], sid);
+        assert_eq!(
+            env["AGENTIUM_SESSION"],
+            agentium_core::wordid::session_ref(sid)
+        );
+        assert_eq!(env.len(), 3);
+    }
+
+    /// A non-agentic session has no identity to export, so it gets exactly the
+    /// configured entries.
+    #[test]
+    fn session_env_without_identity_is_just_the_configured_entries() {
+        let configured = BTreeMap::from([("FOO".to_string(), "bar".to_string())]);
+        assert_eq!(session_env(None, &configured), configured);
+        assert!(session_env(None, &BTreeMap::new()).is_empty());
     }
 
     #[test]

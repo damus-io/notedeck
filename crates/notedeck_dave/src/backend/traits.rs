@@ -2,7 +2,7 @@ use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
 use claude_agent_sdk_rs::PermissionMode;
 use notedeck::Waker;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -151,11 +151,10 @@ pub trait AiBackend: Send + Sync {
     /// session instead of starting a new conversation.
     ///
     /// `session_id` is the ephemeral in-process routing key (`dave-session-{n}`).
-    /// `agentium_session_id` is the session's *stable* kind-31988 d-tag (the
-    /// [`event_session_id`](crate::session::AgenticSessionData::event_session_id)
-    /// UUID) — the identity `agentium`/`wordid` hashes into the `agentium:` ref.
-    /// Subprocess backends export it so an in-session agent can identify its OWN
-    /// session; it is `None` for non-agentic sessions, which don't have one.
+    /// `session_env` is the environment subprocess backends export into the
+    /// session they spawn: the configured `session_env` plus the session's
+    /// agentium identity, built by [`session_env`](crate::backend::shared::session_env)
+    /// so every backend exports the same thing. Other backends ignore it.
     ///
     /// `permission_mode` is the session's initial permission mode. Subprocess
     /// backends (Claude) must apply it when they first spawn the CLI so the
@@ -174,7 +173,7 @@ pub trait AiBackend: Send + Sync {
         model: Option<String>,
         user_id: String,
         session_id: String,
-        agentium_session_id: Option<String>,
+        session_env: BTreeMap<String, String>,
         cwd: Option<PathBuf>,
         resume_session_id: Option<String>,
         permission_mode: PermissionMode,

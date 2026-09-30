@@ -1626,7 +1626,7 @@ mod tests {
             _model: Option<String>,
             _user_id: String,
             _session_id: String,
-            _agentium_session_id: Option<String>,
+            _session_env: std::collections::BTreeMap<String, String>,
             _cwd: Option<PathBuf>,
             _resume_session_id: Option<String>,
             _permission_mode: claude_agent_sdk_rs::PermissionMode,

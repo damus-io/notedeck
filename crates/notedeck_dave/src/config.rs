@@ -1,6 +1,7 @@
 use crate::backend::BackendType;
 use async_openai::config::OpenAIConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::env;
 
 // The run-config protocol type + event kind now live in `agentium-core`; keep
@@ -128,6 +129,14 @@ pub struct DaveSettings {
     /// Defaulted so settings files written before it existed still load.
     #[serde(default)]
     pub leader_key: LeaderKey,
+    /// Environment variables exported into every agent session this host
+    /// spawns, on every backend (e.g. `HEADWAY_COMMENT_NSEC_FILE`, so agent
+    /// comments sign with the agent's own key in any worktree without touching
+    /// the user's own shells). The session's `AGENTIUM_*` identity variables
+    /// win over a same-named entry (see `backend::shared::session_env`).
+    /// Config-file only for now. Defaulted so older settings files still load.
+    #[serde(default)]
+    pub session_env: BTreeMap<String, String>,
 }
 
 impl Default for DaveSettings {
@@ -138,6 +147,7 @@ impl Default for DaveSettings {
             endpoint: None,
             api_key: None,
             leader_key: LeaderKey::default(),
+            session_env: BTreeMap::new(),
         }
     }
 }
@@ -233,6 +243,7 @@ impl DaveSettings {
             endpoint: provider.default_endpoint().map(|s| s.to_string()),
             api_key: None,
             leader_key: LeaderKey::default(),
+            session_env: BTreeMap::new(),
         }
     }
 
@@ -258,6 +269,7 @@ impl DaveSettings {
                 .or_else(|| provider.default_endpoint().map(|s| s.to_string())),
             api_key,
             leader_key: LeaderKey::default(),
+            session_env: BTreeMap::new(),
         }
     }
 }
@@ -721,5 +733,25 @@ mod tests {
         let settings: DaveSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.leader_key, LeaderKey::default());
         assert_eq!(settings.leader_key.to_string(), "Ctrl+;");
+    }
+
+    /// A `dave_settings.json` written before `session_env` existed still loads,
+    /// with no extra session env, and one that sets it round-trips.
+    #[test]
+    fn settings_without_session_env_still_load() {
+        let json = r#"{"provider":"OpenAI","model":"gpt-4o","endpoint":null,"api_key":null}"#;
+        let settings: DaveSettings = serde_json::from_str(json).unwrap();
+        assert!(settings.session_env.is_empty());
+
+        let json = r#"{"provider":"OpenAI","model":"gpt-4o","endpoint":null,"api_key":null,
+            "session_env":{"HEADWAY_COMMENT_NSEC_FILE":"/keys/agent"}}"#;
+        let settings: DaveSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            settings
+                .session_env
+                .get("HEADWAY_COMMENT_NSEC_FILE")
+                .map(String::as_str),
+            Some("/keys/agent")
+        );
     }
 }

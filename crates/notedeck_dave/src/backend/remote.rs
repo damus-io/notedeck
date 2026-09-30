@@ -2,7 +2,7 @@ use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
 use claude_agent_sdk_rs::PermissionMode;
 use notedeck::Waker;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ impl AiBackend for RemoteOnlyBackend {
         _model: Option<String>,
         _user_id: String,
         _session_id: String,
-        _agentium_session_id: Option<String>,
+        _session_env: BTreeMap<String, String>,
         _cwd: Option<PathBuf>,
         _resume_session_id: Option<String>,
         _permission_mode: PermissionMode,

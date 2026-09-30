@@ -7,7 +7,7 @@ use claude_agent_sdk_rs::PermissionMode;
 use futures::StreamExt;
 use nostrdb::{Ndb, Transaction};
 use notedeck::Waker;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ impl AiBackend for OpenAiBackend {
         model: Option<String>,
         user_id: String,
         _session_id: String,
-        _agentium_session_id: Option<String>,
+        _session_env: BTreeMap<String, String>,
         _cwd: Option<PathBuf>,
         _resume_session_id: Option<String>,
         _permission_mode: PermissionMode,
