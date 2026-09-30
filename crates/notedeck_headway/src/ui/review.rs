@@ -1180,8 +1180,8 @@ fn session_chip_ui(
 }
 
 /// An `agentium:<word-id>` session drawn as its live inline chip through the
-/// registered reference parser (Dave's), or as plain monospace text when no
-/// parser resolves it (Dave isn't loaded, or the session is unknown here).
+/// registered reference parser (Dave's), or as small plain monospace text when
+/// no parser resolves it (Dave isn't loaded, or the session is unknown here).
 fn agentium_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1201,9 +1201,11 @@ fn agentium_chip_ui(
     if !drawn {
         ui.add(
             egui::Label::new(
+                // `family`, not `.monospace()`: that sets the text style too
+                // and would undo `.small()`, drawing the chip at body size.
                 egui::RichText::new(session)
                     .small()
-                    .monospace()
+                    .family(egui::FontFamily::Monospace)
                     .color(theme.text_muted),
             )
             .truncate(),
