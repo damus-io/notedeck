@@ -187,12 +187,14 @@ pub(crate) async fn flush_own_selfshares(
     relay: &mut nostrdb_net::relay::sync::Relay,
     ndb: &Ndb,
     roster: &Roster,
-    author: &Pubkey,
+    me: &Pubkey,
     secret: &[u8; 32],
     db: Option<&str>,
 ) {
     // A board coordinate is `30619:<owner>:<slug>`; ours start with this prefix.
-    let owner_prefix = format!("{}:{}:", event::KIND_BOARD as u64, author.hex());
+    // `me` is the signer, not the `--author` being read: a member's roster also
+    // holds the owner's roots, which must never be re-wrapped from here.
+    let owner_prefix = format!("{}:{}:", event::KIND_BOARD as u64, me.hex());
     let mut flushed = read_flushed_selfshares(db);
     let mut sink = Collect::default();
     let mut newly: Vec<String> = Vec::new();
@@ -206,7 +208,7 @@ pub(crate) async fn flush_own_selfshares(
         if !folds_headway_board(ndb, team) {
             continue;
         }
-        if store::share_board(ndb, secret, author, &team.board_addr, &root, &mut sink) {
+        if store::share_board(ndb, secret, me, &team.board_addr, &root, &mut sink) {
             newly.push(team.team_root.clone());
         }
     }

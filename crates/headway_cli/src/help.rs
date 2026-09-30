@@ -612,7 +612,7 @@ Run `headway <command> --help` for that command's own options and examples.",
             ),
             (
                 "--author <pk>",
-                "Board author to read (defaults to the signer)",
+                "Board owner whose board to read and edit (defaults to the signer). The signer may be a member of it rather than its owner",
             ),
             (
                 "--relay <url>",

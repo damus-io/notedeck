@@ -28,6 +28,7 @@ use headway::event::{self, Container, resolve_card};
 use headway::store;
 use headway::teams;
 
+use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::args::{Cli, Command, Invocation};
@@ -78,6 +79,21 @@ fn cross_board_error(err: store::CrossBoardError) -> String {
     }
 }
 
+/// Refuse a board-creating command (`seed`, `migrate`) when the signer isn't the
+/// board's owner. Both mint a channel from the *signer's* secret at the *owner's*
+/// coordinate, so a member running one against `--author <owner>` would seal a
+/// board under a key the owner never derives — a split no fold can merge back.
+fn require_owner(me: &Pubkey, owner: &Pubkey, cmd: &str) -> Result<()> {
+    if me == owner {
+        return Ok(());
+    }
+    Err(format!(
+        "{cmd} acts on a board you own, but --author names {} — drop --author",
+        owner.hex()
+    )
+    .into())
+}
+
 async fn run() -> Result<()> {
     let cli = match Cli::parse(env::args().skip(1))? {
         Invocation::Run(cli) => *cli,
@@ -99,13 +115,20 @@ async fn run() -> Result<()> {
         _ => {}
     }
 
-    // The author whose board we read/write: an explicit override, else the
-    // signing key's own pubkey.
+    // The board *owner* whose coordinate (`30619:<owner>:<slug>`) we read and
+    // write: an explicit `--author`, else the signing key's own pubkey.
     let author = match (&cli.author, &cli.secret) {
         (Some(pk), _) => *pk,
         (None, Some((_, pk))) => *pk,
         (None, None) => return Err("need --nsec to sign, or --author to read a board".into()),
     };
+    // Who *we* are: the signing key's pubkey, falling back to the owner for a
+    // read-only `--author` run. Distinct from `author` when a member works a
+    // board someone else owns — then the gift-wraps to pull, the key-shares the
+    // roster is built from, and the acting editor are all ours, while the board
+    // coordinate stays the owner's. Conflating the two left a member with "no
+    // board" either way (headway:headway/vacuum-priority-ordinary).
+    let me = cli.secret.as_ref().map_or(author, |(_, pk)| *pk);
 
     let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
 
@@ -143,14 +166,14 @@ async fn run() -> Result<()> {
     // look private, so this CLI would fold it the plaintext way and write
     // plaintext edits no other client can read.
     if let Some(relay) = relay.as_mut() {
-        pull_giftwraps(relay, &ndb, &author).await;
+        pull_giftwraps(relay, &ndb, &me).await;
     }
     // Join every shared board we hold a key for. Registering a root re-peels any
     // envelope that arrived before it, so it is safe for this to run after the sync
     // above rather than before it. The registry is held across both loads below so
     // a root is only ever handed to nostrdb once (see `teams::RootRegistry`).
     let mut root_registry = teams::RootRegistry::default();
-    let roster = Roster::load(&ndb, &author, &mut root_registry);
+    let roster = Roster::load(&ndb, &me, &author, &mut root_registry);
 
     // Sync each joined board's kind-1081 SNS envelopes (see `sync_envelopes`).
     // Runs after `Roster::load` has registered the channel roots, so every pulled
@@ -162,9 +185,12 @@ async fn run() -> Result<()> {
     // Push half of the giftwrap leg: re-publish our own boards' self-shares so a
     // fresh cache / another device can join a board sealed while offline (or by a
     // front end that never fanned its self-share). Needs the signing key — a
-    // self-share is re-wrapped, not forwarded — and a reachable relay.
+    // self-share is re-wrapped, not forwarded — and a reachable relay. Scoped to
+    // boards *we* own (`me`), never the `--author` we are reading: a member's
+    // roster holds the owner's roots too, and re-wrapping those to the owner
+    // under the member's signature is exactly what this must not do.
     if let (Some(relay), Some((secret, _))) = (relay.as_mut(), cli.secret.as_ref()) {
-        flush_own_selfshares(relay, &ndb, &roster, &author, secret, cli.db.as_deref()).await;
+        flush_own_selfshares(relay, &ndb, &roster, &me, secret, cli.db.as_deref()).await;
     }
 
     // Recover an own board named explicitly on the command line that the roster
@@ -183,7 +209,7 @@ async fn run() -> Result<()> {
         && let Some(relay) = relay.as_mut()
         && recover_derived_board(relay, &ndb, &author, secret, &cli.board).await
     {
-        roster = Roster::load(&ndb, &author, &mut root_registry);
+        roster = Roster::load(&ndb, &me, &author, &mut root_registry);
     }
 
     let board = cli.board;
@@ -215,6 +241,7 @@ async fn run() -> Result<()> {
 
         Command::Seed { title } => {
             let secret = secret.ok_or("seed needs --nsec to sign")?;
+            require_owner(&me, &author, "seed")?;
             if load_board(&ndb, &roster, &author, &board).is_some() {
                 return Err(format!("board '{board}' already exists").into());
             }
@@ -257,6 +284,7 @@ async fn run() -> Result<()> {
                 );
             }
             let secret = secret.ok_or("migrate needs --nsec to sign")?;
+            require_owner(&me, &author, "migrate")?;
             if load_board(&ndb, &roster, &author, &board).is_none() {
                 return Err(format!("no board '{board}' to migrate — nothing to seal").into());
             }
@@ -461,7 +489,10 @@ async fn run() -> Result<()> {
                 &ndb,
                 &board,
                 &view,
-                &author,
+                // The acting editor, not the board owner: `apply_outcome` anchors
+                // the edit at the owner's coordinate itself (from `view.author`),
+                // and reads our own replaceable sets (blockers, related) by `me`.
+                &me,
                 &store::Signer::new(&secret, channel.as_ref()),
                 action,
                 &mut sink,

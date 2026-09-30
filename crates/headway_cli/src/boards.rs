@@ -33,10 +33,13 @@ use headway::teams;
 /// rumor on the plaintext leg would leak it in the clear (see
 /// [`plaintext_sync_filter`](crate::sync::plaintext_sync_filter)).
 pub(crate) struct Roster {
-    /// Joined channels, each naming the board coordinate its key unlocks.
+    /// The channels *we* (the signer) hold keys for, each naming the board
+    /// coordinate its key unlocks. Our membership, not the owner's: a member's
+    /// roster lists the owner's boards it was shared, keyed to the owner.
     pub(crate) teams: Vec<teams::Team>,
-    /// Whose boards we address — the owner half of a board coordinate. The CLI
-    /// is single-author (`--author`, else the signing key), so one suffices.
+    /// Whose boards we address — the owner half of a board coordinate
+    /// (`--author`, else the signing key). One suffices because a run works one
+    /// owner's boards; it differs from the signer when we are a member.
     author: Pubkey,
 }
 
@@ -47,8 +50,18 @@ impl Roster {
     /// sealed edits are ingested as envelopes and only become board events once
     /// nostrdb peels them, so an unregistered root means a write we can't even
     /// read back ourselves.
-    pub(crate) fn load(ndb: &Ndb, author: &Pubkey, registry: &mut teams::RootRegistry) -> Self {
-        let teams = teams::teams_from_ndb(ndb, author);
+    ///
+    /// `me` is the signer, whose received key-shares make up the roster; `author`
+    /// is the board owner whose coordinates [`Self::channel`] and friends look up.
+    /// They are the same key on an own board and differ for a member, whose
+    /// key-shares are addressed to it but name the owner's board.
+    pub(crate) fn load(
+        ndb: &Ndb,
+        me: &Pubkey,
+        author: &Pubkey,
+        registry: &mut teams::RootRegistry,
+    ) -> Self {
+        let teams = teams::teams_from_ndb(ndb, me);
         registry.register(ndb, &teams);
         Self {
             teams,

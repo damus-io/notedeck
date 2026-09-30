@@ -77,9 +77,12 @@ fn wait_for_envelope(ndb: &Ndb) {
 
 /// Run the `headway` binary with the shared connection args plus `extra`.
 fn headway(url: &str, db: &str, extra: &[&str]) -> std::process::Output {
-    let mut args = vec!["--nsec", "<nsec>", "--relay", url, "--db", db];
-    let nsec = nsec();
-    args[1] = &nsec;
+    headway_as(&nsec(), url, db, extra)
+}
+
+/// [`headway`], signing as `key` (an nsec or a hex secret) instead of [`SECRET`].
+fn headway_as(key: &str, url: &str, db: &str, extra: &[&str]) -> std::process::Output {
+    let mut args = vec!["--nsec", key, "--relay", url, "--db", db];
     args.extend_from_slice(extra);
     Command::new(env!("CARGO_BIN_EXE_headway"))
         .args(&args)
@@ -887,5 +890,235 @@ fn a_board_whose_selfshare_never_flushed_is_joinable_by_deriving_its_root() {
     assert!(
         !err.contains("by deriving"),
         "an unknown slug must not mint a key-share for a phantom channel:\n{err}"
+    );
+}
+
+/// A second identity's secret, for the member side of a shared board. Any
+/// in-range scalar is a valid secp256k1 key; this one differs from [`SECRET`].
+const MEMBER_SECRET: [u8; 32] = [0x43; 32];
+
+/// Collects the `["EVENT", …]` frames a [`headway::store`] write produces, so a
+/// test can publish them to the relay itself.
+#[derive(Default)]
+struct Frames(Vec<String>);
+
+impl headway::store::Publisher for Frames {
+    fn publish(&mut self, frame: &str) {
+        self.0.push(frame.to_string());
+    }
+}
+
+/// How many kind-1059 gift-wraps addressed (`#p`) to `recipient` the relay's
+/// store holds. A wrap's author is a throwaway key, so the recipient tag is the
+/// only handle on "who was this for".
+fn giftwraps_to(ndb: &Ndb, recipient: &nostrdb_net::Pubkey) -> usize {
+    let txn = Transaction::new(ndb).expect("txn");
+    let filter = Filter::new()
+        .kinds([1059u64])
+        .pubkeys([recipient.bytes()])
+        .build();
+    ndb.query(&txn, &[filter], 500).map_or(0, |r| r.len())
+}
+
+/// How many plaintext board notes (board, issue, placement, comment) `author`
+/// signed that the relay's store holds. For a member of a sealed board it must
+/// be zero: every edit rides up as a kind-1081 envelope signed by the team key.
+fn plaintext_member_notes(ndb: &Ndb, author: &nostrdb_net::Pubkey) -> usize {
+    let txn = Transaction::new(ndb).expect("txn");
+    let filter = Filter::new()
+        .authors([author.bytes()])
+        .kinds([30619u64, 1621, 30620, 1111])
+        .build();
+    ndb.query(&txn, &[filter], 500).map_or(0, |r| r.len())
+}
+
+/// The card titled `title` on a folded board, with the name of its column.
+fn find_titled<'a>(board: &'a Value, title: &str) -> Option<(&'a Value, &'a str)> {
+    board["columns"].as_array()?.iter().find_map(|col| {
+        let card = col["cards"]
+            .as_array()?
+            .iter()
+            .find(|c| c["title"] == title)?;
+        Some((card, col["name"].as_str()?))
+    })
+}
+
+/// Poll `show --json` until `until` holds for the board, signing as `key` and
+/// reading `owner`'s board `slug`. Panics with the last fold on timeout.
+fn show_as_until(
+    key: &str,
+    url: &str,
+    db: &str,
+    owner: &str,
+    slug: &str,
+    until: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..50 {
+        let out = headway_as(
+            key,
+            url,
+            db,
+            &["--author", owner, "--board", slug, "show", "--json"],
+        );
+        if out.status.success()
+            && let Ok(board) = serde_json::from_slice::<Value>(&out.stdout)
+        {
+            if board.is_object() && until(&board) {
+                return board;
+            }
+            last = board;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("board '{slug}' never reached the expected state; last fold: {last:#}");
+}
+
+/// A member folds and edits a sealed board someone else owns, from the CLI.
+///
+/// The owner seals a board and shares its root with the member as a kind-1082
+/// key-share. The member, on a fresh cache with `--author <owner>`, must pull
+/// its *own* gift-wraps, build its roster from key-shares addressed to *it*, and
+/// fold the owner's coordinate — and its edits must fold back on the owner's
+/// side attributed to the member, without leaking plaintext or re-wrapping the
+/// owner's root back to the owner (headway:headway/vacuum-priority-ordinary).
+#[test]
+fn member_folds_and_edits_a_board_shared_by_its_owner() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let relay_store = app_ndb.clone();
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let owner = author();
+    let owner_hex = owner.hex();
+    let member = nostrdb_net::FullKeypair::from_secret_bytes(&MEMBER_SECRET)
+        .expect("member keypair")
+        .pubkey;
+    let member_key = hex::encode(MEMBER_SECRET);
+    let slug = "shared";
+
+    // 1. The owner seals a board and puts a card on it.
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner_db = owner_dir.path().to_str().unwrap();
+    assert!(
+        headway(&url, owner_db, &["--board", slug, "seed"])
+            .status
+            .success(),
+        "owner seed"
+    );
+    show_board_until_cols(&url, owner_db, slug, 5);
+    assert!(
+        headway(
+            &url,
+            owner_db,
+            &["--board", slug, "add", "Owner card", "--col", "Todo"]
+        )
+        .status
+        .success(),
+        "owner add"
+    );
+    show_board_until(&url, owner_db, slug, 1);
+
+    // 2. Share the board's root with the member, the way the owner-side share
+    // path does: a kind-1082 key-share gift-wrapped to the member's pubkey.
+    let share_dir = tempfile::tempdir().expect("share dir");
+    let share_ndb =
+        Ndb::new(share_dir.path().to_str().unwrap(), &test_config()).expect("share ndb");
+    let root = nostrdb_net::sns::derive_board_root(&SECRET, slug);
+    let addr = headway::event::board_address(&owner, slug);
+    let mut frames = Frames::default();
+    assert!(
+        headway::store::share_board(&share_ndb, &SECRET, &member, &addr, &root, &mut frames),
+        "wrap the key-share"
+    );
+    rt.block_on(async {
+        let mut relay = nostrdb_net::relay::sync::Relay::connect(&url)
+            .await
+            .expect("connect");
+        relay.publish(&frames.0).await.expect("publish key-share");
+    });
+
+    // 3. The member, on a fresh cache, folds the owner's board.
+    let member_dir = tempfile::tempdir().expect("member dir");
+    let member_db = member_dir.path().to_str().unwrap();
+    let board = show_as_until(&member_key, &url, member_db, &owner_hex, slug, |b| {
+        find_titled(b, "Owner card").is_some()
+    });
+    let owner_card = find_titled(&board, "Owner card").unwrap().0["id"]
+        .as_str()
+        .expect("owner card id")
+        .to_string();
+
+    // 4. The member adds a card, moves the owner's, and comments on it.
+    let wraps_to_owner = giftwraps_to(&relay_store, &owner);
+    let member_edit = |extra: &[&str]| {
+        let mut args = vec!["--author", owner_hex.as_str(), "--board", slug];
+        args.extend_from_slice(extra);
+        let out = headway_as(&member_key, &url, member_db, &args);
+        assert!(
+            out.status.success(),
+            "member {extra:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !flushed(&out),
+            "a member run must not flush self-shares (it would re-wrap the owner's root):\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    member_edit(&["add", "Member card", "--col", "Todo"]);
+    member_edit(&["move", &owner_card, "--col", "In Progress"]);
+    member_edit(&["comment", &owner_card, "hello from a member"]);
+
+    // 5. The owner folds all three, attributed to the member.
+    let member_hex = member.hex();
+    let mut settled = None;
+    for _ in 0..50 {
+        let out = headway(&url, owner_db, &["--board", slug, "show", "--json"]);
+        if let Ok(b) = serde_json::from_slice::<Value>(&out.stdout)
+            && let Some((card, col)) = find_titled(&b, "Owner card")
+            && col == "In Progress"
+            && card["comments"].as_array().is_some_and(|c| !c.is_empty())
+            && find_titled(&b, "Member card").is_some()
+        {
+            settled = Some(b);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let board = settled.expect("the owner never folded all three of the member's edits");
+    let (member_card, _) = find_titled(&board, "Member card").unwrap();
+    assert_eq!(
+        member_card["author"], member_hex,
+        "the member's card must be attributed to the member"
+    );
+    let (owner_card_view, _) = find_titled(&board, "Owner card").unwrap();
+    let comment = &owner_card_view["comments"][0];
+    assert_eq!(comment["body"], "hello from a member");
+    assert_eq!(
+        comment["author"], member_hex,
+        "the member's comment must be attributed to the member"
+    );
+
+    // 6. Nothing the member wrote reached the relay in the clear, and none of its
+    // runs gift-wrapped anything to the owner.
+    assert_eq!(
+        plaintext_member_notes(&relay_store, &member),
+        0,
+        "a member's edits to a sealed board must travel only as envelopes"
+    );
+    assert_eq!(
+        giftwraps_to(&relay_store, &owner),
+        wraps_to_owner,
+        "a member run must not re-wrap the owner's root to the owner"
     );
 }
