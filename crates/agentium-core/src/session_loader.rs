@@ -11,7 +11,7 @@ use crate::messages::{
 use crate::session::PermissionTracker;
 use crate::session_events::{
     build_session_state_event, decode_permission_response, get_tag_value, is_conversation_role,
-    AI_CONVERSATION_KIND, LIVE_EVENT_SOURCE,
+    is_queued_note, referenced_note_id, AI_CONVERSATION_KIND, DISPATCHED_ROLE, LIVE_EVENT_SOURCE,
 };
 use crate::tools::ToolResponse;
 use nostrdb::{Filter, Ndb, Transaction};
@@ -41,13 +41,17 @@ pub use nostrdb_net::{query_replaceable, query_replaceable_filtered};
 /// ingestion/query order, which differs machine-to-machine (the fresh-machine
 /// backfill regression). Ordering on the note id — intrinsic to the event, not
 /// a stateful counter — is identical everywhere the same event set is loaded.
-/// Field order (millis, then seq, then id) is the comparison order.
+/// Field order (tail, then millis, then seq, then id) is the comparison order.
 ///
 /// This is the single source of truth for conversation ordering: the loader,
 /// the live poll-batch sorter, and out-of-order delivery detection all key off
 /// it, so they can never drift apart.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct EventOrder {
+    /// A queued user note still waiting for its turn: it sorts after every
+    /// note at a real position, and among other such notes by its own time
+    /// (see [`EventOrder::at_tail`]). Always false for a note's own order.
+    tail: bool,
     millis: u64,
     seq: u32,
     id: [u8; 32],
@@ -64,10 +68,18 @@ impl EventOrder {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(u32::MAX);
         EventOrder {
+            tail: false,
             millis,
             seq,
             id: *note.id(),
         }
+    }
+
+    /// This order moved past every real one: where a fold shows a queued user
+    /// note that no dispatch marker has placed yet. Several such notes keep
+    /// their relative order.
+    pub fn at_tail(self) -> Self {
+        EventOrder { tail: true, ..self }
     }
 
     /// The event's wall-clock time in milliseconds since the Unix epoch — its
@@ -86,6 +98,10 @@ pub struct LoadedSession {
     /// delta past a previously-printed order key without re-mapping — the
     /// per-message counterpart to the scalar
     /// [`max_order`](LoadedSession::max_order).
+    ///
+    /// These are display orders, ascending: a queued user note has its dispatch
+    /// marker's order, or [`EventOrder::at_tail`] until it has one (see
+    /// [`display_order`]).
     pub orders: Vec<EventOrder>,
     pub root_note_id: Option<[u8; 32]>,
     pub last_note_id: Option<[u8; 32]>,
@@ -95,6 +111,9 @@ pub struct LoadedSession {
     pub note_ids: HashSet<[u8; 32]>,
     /// Highest [`EventOrder`] among the loaded notes, for seeding the live
     /// poll-merge tail so it knows what's already displayed. `None` when empty.
+    ///
+    /// Always a note's own order, never a tail order: a follower that advanced
+    /// its cursor to a tail order would never see another message.
     pub max_order: Option<EventOrder>,
 }
 
@@ -275,15 +294,29 @@ fn load_session_messages_with_author(
     // sorted, so the last one is the max).
     let max_order = notes.last().map(EventOrder::from_note);
 
+    // Display order: a queued user note shows where its turn began, not where
+    // it was typed (see [`display_order`]). A stable sort on a total order, so
+    // ingestion order still cannot leak through.
+    let dispatched_at = dispatch_markers(&notes);
+    let mut display: Vec<(EventOrder, &nostrdb::Note)> = notes
+        .iter()
+        .map(|note| (display_order(note, &dispatched_at), note))
+        .collect();
+    display.sort_by_key(|(order, _)| *order);
+
     // Second pass: convert to messages via the shared renderer, retaining each
     // rendered message's ordering key alongside it (aligned 1:1 — a note that
     // renders to nothing contributes to neither vector).
     let mut messages = Vec::new();
     let mut orders = Vec::new();
-    for note in &notes {
-        let Some(msg) = render_conversation_note(note, &permissions.responded) else {
+    for (order, note) in display {
+        let Some(mut msg) = render_conversation_note(note, &permissions.responded) else {
             continue;
         };
+        // A marker means the host took the note off the queue.
+        if let Message::User(user) = &mut msg {
+            user.queued &= !dispatched_at.contains_key(note.id());
+        }
         // A later lifecycle note for a subagent already shown updates that row
         // in place (it keeps the spawn's position and order key); a tool result
         // completes its running row, or nests in its subagent's row.
@@ -294,7 +327,7 @@ fn load_session_messages_with_author(
             continue;
         };
         messages.push(msg);
-        orders.push(EventOrder::from_note(note));
+        orders.push(order);
     }
 
     LoadedSession {
@@ -306,6 +339,50 @@ fn load_session_messages_with_author(
         note_ids,
         max_order,
     }
+}
+
+/// The order of each queued user note's dispatch marker, keyed by the user
+/// note's id. `notes` is in [`EventOrder`], so a note dispatched twice keeps
+/// its first marker.
+fn dispatch_markers(notes: &[nostrdb::Note]) -> HashMap<[u8; 32], EventOrder> {
+    let mut dispatched_at = HashMap::new();
+    for note in notes {
+        if get_tag_value(note, "role") != Some(DISPATCHED_ROLE) {
+            continue;
+        }
+        let Some(user_note) = referenced_note_id(note) else {
+            continue;
+        };
+        dispatched_at
+            .entry(*user_note)
+            .or_insert_with(|| EventOrder::from_note(note));
+    }
+    dispatched_at
+}
+
+/// Where a fold shows `note`.
+///
+/// A user message sent while a turn was running waits on the host, trailing
+/// the chat, until that turn ends and the host dispatches it. Its note is
+/// stamped at send time, though, which is mid-turn. So a user note with a
+/// dispatch marker takes the marker's order, and a `queued` one without a
+/// marker yet sorts at the tail. Every other note, a legacy user note
+/// included, keeps its own order.
+fn display_order(
+    note: &nostrdb::Note,
+    dispatched_at: &HashMap<[u8; 32], EventOrder>,
+) -> EventOrder {
+    let own = EventOrder::from_note(note);
+    if get_tag_value(note, "role") != Some("user") {
+        return own;
+    }
+    if let Some(marker) = dispatched_at.get(note.id()) {
+        return *marker;
+    }
+    if is_queued_note(note) {
+        return own.at_tail();
+    }
+    own
 }
 
 /// Wire form of a `tool_result` note's `content`: the one-line human `summary`
@@ -383,7 +460,13 @@ pub fn render_conversation_note(
 ) -> Option<Message> {
     let content = note.content();
     match get_tag_value(note, "role") {
-        Some("user") => Some(Message::User(content.to_string().into())),
+        Some("user") => Some(Message::User(UserMessage {
+            note_id: Some(*note.id()),
+            // As far as this note alone says; the loader clears it when a
+            // dispatch marker exists.
+            queued: is_queued_note(note),
+            ..UserMessage::from(content)
+        })),
         // A Dave host's tool call is a running row its `tool_result` completes
         // (see [`fold_tool`]). Any other tool call — converted from a JSONL
         // transcript, or published before calls carried a tool id — keeps
@@ -2399,7 +2482,7 @@ mod tests {
         let call_tags = LiveEventTags {
             tool_id: Some("t1"),
             tool_name: Some("Bash"),
-            parent_task: None,
+            ..Default::default()
         };
         let events = [
             live_note(
@@ -2448,6 +2531,148 @@ mod tests {
             matches!(&messages[1], Message::ToolRunning(r)
                 if r.tool_use_id == "t1" && r.tool_name == "Bash" && r.summary == "cargo test"),
             "a call without a result is still running: {messages:?}"
+        );
+    }
+
+    /// The rows of a fold as (kind, text), for asserting where user messages
+    /// landed among the assistant's.
+    fn rows(messages: &[Message]) -> Vec<(&'static str, String)> {
+        messages
+            .iter()
+            .map(|m| match m {
+                Message::User(u) => ("user", u.as_str().to_string()),
+                Message::Assistant(a) => ("assistant", a.text().to_string()),
+                other => panic!("unexpected row {other:?}"),
+            })
+            .collect()
+    }
+
+    /// A queued turn as a host publishes it: "first" is dispatched, "second"
+    /// is typed while the reply streams (so it is stamped before the reply
+    /// closes), and, when `dispatched`, the host's marker hands it to the
+    /// backend after the reply, before the answer to it.
+    fn queued_turn(session_id: &str, dispatched: bool) -> Vec<String> {
+        use crate::session_events::{build_live_event, LiveEventTags, ThreadingState};
+
+        let mut threading = ThreadingState::new();
+        let mut note = |role: &str, content: &str, tags: LiveEventTags<'_>| {
+            build_live_event(
+                content,
+                role,
+                session_id,
+                None,
+                tags,
+                &mut threading,
+                &test_secret_key(),
+            )
+            .unwrap()
+        };
+        let first = note("user", "first", LiveEventTags::default());
+        let second = note(
+            "user",
+            "second",
+            LiveEventTags {
+                queued: true,
+                ..Default::default()
+            },
+        );
+        let reply = note("assistant", "reply to first", LiveEventTags::default());
+        let mut events = vec![first, second, reply];
+        if dispatched {
+            let second_id = events[1].note_id;
+            events.push(note(
+                DISPATCHED_ROLE,
+                "",
+                LiveEventTags {
+                    refs: Some(&second_id),
+                    ..Default::default()
+                },
+            ));
+            events.push(note(
+                "assistant",
+                "reply to second",
+                LiveEventTags::default(),
+            ));
+        }
+        events.iter().map(|e| e.to_event_json()).collect()
+    }
+
+    /// A dispatch marker moves its queued user note to where the host
+    /// dispatched it (after the reply it was typed during), in any ingestion
+    /// order, and the note is no longer queued.
+    #[tokio::test]
+    async fn dispatch_marker_places_a_queued_user_note() {
+        let session_id = "queued-dispatched";
+        let messages = load_both_orders(session_id, &queued_turn(session_id, true)).await;
+        assert_eq!(
+            rows(&messages),
+            [
+                ("user", "first".to_string()),
+                ("assistant", "reply to first".to_string()),
+                ("user", "second".to_string()),
+                ("assistant", "reply to second".to_string()),
+            ],
+        );
+        let Message::User(second) = &messages[2] else {
+            unreachable!()
+        };
+        assert!(!second.queued, "a dispatched note is off the queue");
+        assert!(second.note_id.is_some(), "the loader records the note id");
+    }
+
+    /// A queued note with no marker yet waits at the tail, the way the host
+    /// keeps it trailing its chat until the turn ends.
+    #[tokio::test]
+    async fn undispatched_queued_note_sits_at_the_tail() {
+        let session_id = "queued-waiting";
+        let events = queued_turn(session_id, false);
+        let messages = load_both_orders(session_id, &events).await;
+        assert_eq!(
+            rows(&messages),
+            [
+                ("user", "first".to_string()),
+                ("assistant", "reply to first".to_string()),
+                ("user", "second".to_string()),
+            ],
+        );
+        assert!(matches!(&messages[2], Message::User(u) if u.queued));
+
+        // Display orders stay ascending, so a follower can still cut the
+        // suffix past a cursor; the max order is a note's own, never the tail.
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        ingest_all(&ndb, &filter, &events).await;
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+        assert!(loaded.orders.is_sorted(), "display orders ascend");
+        let max = loaded.max_order.unwrap();
+        assert!(
+            loaded.orders[2] > max,
+            "the queued note sorts past every real order"
+        );
+        assert_eq!(max, loaded.orders[1], "max_order is the reply's own order");
+    }
+
+    /// An untagged user note keeps its own order even mid-turn, as every note
+    /// published before the `queued` tag existed does.
+    #[tokio::test]
+    async fn legacy_user_note_keeps_its_own_order() {
+        let sk = test_secret_key();
+        let session_id = "legacy-user";
+        let events = [
+            build_1988_event_json(&sk, session_id, "user", "first", 1000, 0, &[]),
+            build_1988_event_json(&sk, session_id, "user", "second", 1001, 1, &[]),
+            build_1988_event_json(&sk, session_id, "assistant", "reply", 1002, 2, &[]),
+        ];
+        let messages = load_both_orders(session_id, &events).await;
+        assert_eq!(
+            rows(&messages),
+            [
+                ("user", "first".to_string()),
+                ("user", "second".to_string()),
+                ("assistant", "reply".to_string()),
+            ],
         );
     }
 
@@ -2548,6 +2773,7 @@ mod tests {
                 tool_id: Some("g1"),
                 tool_name: Some("Grep"),
                 parent_task: Some("s1"),
+                ..Default::default()
             },
         );
         let orphan = live_note(
@@ -2559,6 +2785,7 @@ mod tests {
                 tool_id: Some("r1"),
                 tool_name: Some("Read"),
                 parent_task: Some("not-shown"),
+                ..Default::default()
             },
         );
         let completed = build_subagent_event(

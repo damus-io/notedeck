@@ -193,13 +193,17 @@ pub(crate) async fn cmd_follow(
         // whose order is past `last_order` (role/tool filtered, but never tailed
         // — `--last` bounds only the initial view), then advance the cursor to
         // the new global max.
+        //
+        // A queued user message still waiting for its turn sorts past every
+        // real order, so it is always in that suffix; it is held back until the
+        // host dispatches it, when it prints once, where it joined the turn.
         {
             let txn = Transaction::new(engine.ndb())?;
             let loaded = load_session_messages_for_author(engine.ndb(), &txn, author, &session_id);
             let start = first_after(&loaded.orders, last_order);
             let fresh: Vec<&Message> = loaded.messages[start..]
                 .iter()
-                .filter(|m| view.keep(m))
+                .filter(|m| view.keep(m) && !matches!(m, Message::User(user) if user.queued))
                 .collect();
             emit_follow_messages(&fresh, color, as_json, &mut printed_any);
             if loaded.max_order.is_some() {

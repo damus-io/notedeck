@@ -357,7 +357,7 @@ pub fn build_events(
                 &LiveEventTags {
                     tool_id,
                     tool_name,
-                    parent_task: None,
+                    ..Default::default()
                 },
                 session_id.as_deref(),
                 None,
@@ -405,7 +405,7 @@ pub fn build_events(
             &LiveEventTags {
                 tool_id: tool_id.as_deref(),
                 tool_name: tool_name.as_deref(),
-                parent_task: None,
+                ..Default::default()
             },
             session_id.as_deref(),
             None,
@@ -598,6 +598,16 @@ fn build_single_event(
         builder = builder.start_tag().tag_str("parent-task").tag_str(task);
     }
 
+    // -- Queued tag (a user note sent while a turn was in flight) --
+    if tags.queued {
+        builder = builder.start_tag().tag_str("queued").tag_str("1");
+    }
+
+    // -- Referenced note (a dispatch marker's user note) --
+    if let Some(id) = tags.refs {
+        builder = builder.start_tag().tag_str("e").tag_id(id);
+    }
+
     // -- Discoverability --
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
 
@@ -624,6 +634,42 @@ pub struct LiveEventTags<'a> {
     /// The subagent task id (`parent-task`) a subagent-internal `tool_result`
     /// ran under, so a fold nests it in that subagent's row.
     pub parent_task: Option<&'a str>,
+    /// A `user` note sent while a turn was in flight (`["queued", "1"]`). It
+    /// waits for the turn to end, so a fold shows it at the tail until a
+    /// [`DISPATCHED_ROLE`] marker places it (see [`is_queued_note`]).
+    pub queued: bool,
+    /// The note this one is about (an unmarked `["e", <id>]`, beside the NIP-10
+    /// `root`/`reply` threading tags): a [`DISPATCHED_ROLE`] marker's user note.
+    pub refs: Option<&'a [u8; 32]>,
+}
+
+/// The role of the marker a host publishes when it hands a queued user note to
+/// the backend. Its content is empty and its [`LiveEventTags::refs`] names the
+/// user note, which a fold then shows at the marker's place in the turn rather
+/// than at its own send time (see [`referenced_note_id`]).
+pub const DISPATCHED_ROLE: &str = "dispatched";
+
+/// Whether a `user` note carries the `queued` tag: it was sent while a turn
+/// was in flight, so it waits at the tail until its [`DISPATCHED_ROLE`] marker.
+pub fn is_queued_note(note: &nostrdb::Note) -> bool {
+    get_tag_value(note, "queued") == Some("1")
+}
+
+/// The note an unmarked `["e", <id>]` tag refers to ([`LiveEventTags::refs`]).
+///
+/// NIP-10 threading tags carry a `root`/`reply` marker in their fourth slot
+/// and are skipped. The id is read with `get_id` because nostrdb stores a
+/// 64-hex tag value as 32 id bytes, which `get_str` does not see.
+pub fn referenced_note_id<'a>(note: &'a nostrdb::Note<'a>) -> Option<&'a [u8; 32]> {
+    note.tags().iter().find_map(|tag| {
+        if tag.count() < 2 || tag.get_str(0) != Some("e") {
+            return None;
+        }
+        if tag.get_str(3).is_some_and(|marker| !marker.is_empty()) {
+            return None;
+        }
+        tag.get_id(1)
+    })
 }
 
 /// Build a kind-1988 event for a live conversation message.

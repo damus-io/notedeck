@@ -42,6 +42,16 @@ pub struct UserMessage {
     /// rather than a user turn: never queued, never dispatched on its own (see
     /// [`Message::is_user_turn`]).
     pub permission_reply: bool,
+    /// The id of the kind-1988 `user` note behind this row, when there is one:
+    /// set by the send that published it, by a host appending a remote user
+    /// note, and by the loader. A host needs it to publish the row's dispatch
+    /// marker.
+    pub note_id: Option<[u8; 32]>,
+    /// Waiting in the queue: sent while a turn was in flight and not yet handed
+    /// to the backend. A host publishes a dispatch marker for such a row when it
+    /// dispatches it, then clears this; the loader sets it for a `queued` note
+    /// that has no marker yet, which the fold shows at the tail.
+    pub queued: bool,
 }
 
 impl UserMessage {
@@ -49,7 +59,7 @@ impl UserMessage {
         Self {
             text: text.into(),
             images,
-            permission_reply: false,
+            ..Default::default()
         }
     }
 
@@ -58,8 +68,8 @@ impl UserMessage {
     pub fn permission_reply(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            images: vec![],
             permission_reply: true,
+            ..Default::default()
         }
     }
 

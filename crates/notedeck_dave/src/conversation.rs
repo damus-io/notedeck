@@ -370,6 +370,9 @@ pub(crate) fn process_conversation_notes<'a>(
     // Indices (into the sorted `notes`) of new displayable remote notes, decided
     // into an append or a rebuild after the side-effect pass below.
     let mut new_display_idxs: Vec<usize> = Vec::new();
+    // Whether a new note moves a queued user message: a dispatch marker, or a
+    // queued note (which sorts at the tail, not at its own order).
+    let mut queue_moved = false;
 
     // Sort this batch by wall-clock time at millisecond resolution, keyed off
     // the same `EventOrder` the loader uses. For remote sessions display order
@@ -397,7 +400,16 @@ pub(crate) fn process_conversation_notes<'a>(
         if !is_remote {
             if role == Some("user") {
                 tracing::info!("received remote user message for local session");
-                session.chat.push(Message::User(content.to_string().into()));
+                // It waits for the running turn like a local send does, so it
+                // gets a dispatch marker too (see `record_dispatch`). A note
+                // its sender tagged queued needs one even if no turn is running
+                // now, or every fold would keep it at the tail.
+                let queued = session.is_dispatched() || session_events::is_queued_note(note);
+                session.chat.push(Message::User(messages::UserMessage {
+                    note_id: Some(note_id),
+                    queued,
+                    ..messages::UserMessage::from(content)
+                }));
                 session.update_title_from_last_message();
                 remote_user_messages.push((session_id, content.to_string()));
             }
@@ -430,6 +442,8 @@ pub(crate) fn process_conversation_notes<'a>(
                 | Some("system")
                 | Some("todo")
         );
+        queue_moved |= role == Some(session_events::DISPATCHED_ROLE)
+            || (role == Some("user") && session_events::is_queued_note(note));
         if displayable {
             let created_at = note.created_at();
             latest_activity = Some(latest_activity.map_or(created_at, |p| p.max(created_at)));
@@ -515,7 +529,20 @@ pub(crate) fn process_conversation_notes<'a>(
     // what's already shown (`tail_order`), append them in order using the same
     // renderer the loader uses — byte-identical to a rebuild, O(batch). Slow
     // path (any note at/before the tail, or an unseeded tail): flag a rebuild.
-    if let (false, Some(agentic)) = (new_display_idxs.is_empty(), &mut session.agentic) {
+    //
+    // A queued user note breaks the fast path's premise: it sorts at the tail
+    // rather than at its own order, and a dispatch marker (which renders
+    // nothing) moves an earlier note. So while either is in the batch, or a
+    // queued row is still waiting at the end of the chat for new notes to sort
+    // before it, rebuild instead.
+    let queue_waiting = !new_display_idxs.is_empty()
+        && session
+            .chat
+            .iter()
+            .any(|m| matches!(m, Message::User(user) if user.queued));
+    if queue_moved || queue_waiting {
+        rebuild_chat = true;
+    } else if let (false, Some(agentic)) = (new_display_idxs.is_empty(), &mut session.agentic) {
         let min_new = session_loader::EventOrder::from_note(&notes[new_display_idxs[0]]);
         let appendable = matches!(agentic.tail_order, Some(tail) if min_new > tail);
         if appendable {
@@ -1274,6 +1301,209 @@ mod tests {
             assistant_texts(&rebuilt.messages),
             "the fast-path append must match a from-scratch rebuild"
         );
+    }
+
+    /// A remote observer follows a queued message through its turn: while a
+    /// `queued` note or a dispatch marker is in the batch, or a queued row is
+    /// still waiting in the chat, the fast path would misplace it, so the batch
+    /// asks for a rebuild. Once the marker has placed it, appends are fast again.
+    #[tokio::test]
+    async fn queued_note_takes_the_rebuild_path_until_dispatched() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let mut threading = ThreadingState::new();
+        let session_id_str = "fast-path-queued";
+        let mut mk = |text: &str, role: &str, tags: LiveEventTags<'_>| {
+            build_live_event(text, role, session_id_str, None, tags, &mut threading, &sk).unwrap()
+        };
+        let first = mk("first", "user", LiveEventTags::default());
+        let queued = LiveEventTags {
+            queued: true,
+            ..Default::default()
+        };
+        let second = mk("second", "user", queued);
+        let reply = mk("reply to first", "assistant", LiveEventTags::default());
+        let marker = mk(
+            "",
+            session_events::DISPATCHED_ROLE,
+            LiveEventTags {
+                refs: Some(&second.note_id),
+                ..Default::default()
+            },
+        );
+        let answer = mk("reply to second", "assistant", LiveEventTags::default());
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        // Ingest one note, hand it to the poll as its own batch, and rebuild
+        // when asked. Returns whether the batch asked.
+        let mut deliver = async |session: &mut session::ChatSession,
+                                 evt: &session_events::BuiltEvent| {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            let batch = vec![ndb.get_note_by_id(&txn, &evt.note_id).unwrap()];
+            let result = process_conversation_notes(batch, session, 1, true, Some(&sk), &ndb);
+            if result.rebuild_chat {
+                rebuild_remote_chat(session, &ndb, &txn, &author);
+            }
+            result.rebuild_chat
+        };
+        let texts = |chat: &[Message]| -> Vec<String> {
+            session_loader::view_signature(chat)
+                .into_iter()
+                .map(|row| format!("{row:?}"))
+                .collect()
+        };
+
+        {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&first.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+        }
+
+        assert!(
+            deliver(&mut session, &second).await,
+            "a queued note rebuilds"
+        );
+        assert!(
+            deliver(&mut session, &reply).await,
+            "a note arriving while a queued row waits rebuilds"
+        );
+        assert_eq!(
+            user_texts_and_queued(&session.chat),
+            [("first", false), ("second", true)],
+            "the reply sorts before the waiting message: {:?}",
+            texts(&session.chat)
+        );
+        assert!(matches!(&session.chat[1], Message::Assistant(_)));
+
+        assert!(deliver(&mut session, &marker).await, "a marker rebuilds");
+        assert_eq!(
+            user_texts_and_queued(&session.chat),
+            [("first", false), ("second", false)],
+        );
+
+        assert!(
+            !deliver(&mut session, &answer).await,
+            "with nothing queued, an in-order note appends"
+        );
+        let txn = Transaction::new(&ndb).unwrap();
+        let rebuilt =
+            session_loader::load_session_messages_for_author(&ndb, &txn, &author, session_id_str);
+        assert_eq!(texts(&session.chat), texts(&rebuilt.messages));
+        assert_eq!(session.chat.len(), 4, "{:?}", texts(&session.chat));
+    }
+
+    /// A remote user message that reaches a host mid-turn queues like a local
+    /// send: the host records its note id, and dispatching it publishes the
+    /// marker that places it for every fold.
+    #[tokio::test]
+    async fn remote_user_message_mid_turn_gets_a_dispatch_marker() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let session_id_str = "host-remote-queued";
+        let mut threading = ThreadingState::new();
+        let remote = build_live_event(
+            "from my phone",
+            "user",
+            session_id_str,
+            None,
+            LiveEventTags::default(),
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+        session.chat.push(Message::User("first".into()));
+        session.mark_dispatched();
+
+        {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&remote.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            let batch = vec![ndb.get_note_by_id(&txn, &remote.note_id).unwrap()];
+            process_conversation_notes(batch, &mut session, 1, false, Some(&sk), &ndb);
+        }
+        let Some(Message::User(user)) = session.chat.last() else {
+            panic!("the remote message is appended: {:?}", session.chat);
+        };
+        assert!(user.queued, "it waits for the running turn");
+        assert_eq!(user.note_id, Some(remote.note_id));
+
+        // The marker is PNS-wrapped, so ndb needs the key to index it.
+        assert!(ndb.add_key(&sk));
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        session.dispatch_state.stream_ended();
+        crate::publish::record_dispatch(&mut session, &ndb, Some(&sk));
+        assert!(matches!(session.chat.last(), Some(Message::User(u)) if !u.queued));
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let markers = ndb
+            .query(
+                &txn,
+                &[nostrdb::Filter::new()
+                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                    .authors([author.bytes()])
+                    .build()],
+                16,
+            )
+            .unwrap()
+            .into_iter()
+            .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+            .filter(|note| {
+                session_events::get_tag_value(note, "role") == Some(session_events::DISPATCHED_ROLE)
+            })
+            .map(|note| session_events::referenced_note_id(&note).copied())
+            .collect::<Vec<_>>();
+        assert_eq!(markers, [Some(remote.note_id)], "one marker, for that note");
+    }
+
+    /// Each user row's text and whether it is still queued.
+    fn user_texts_and_queued(chat: &[Message]) -> Vec<(&str, bool)> {
+        chat.iter()
+            .filter_map(|m| match m {
+                Message::User(user) => Some((user.as_str(), user.queued)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// `system`, `todo` and `error` notes that arrive in order append on the

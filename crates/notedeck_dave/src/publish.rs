@@ -264,11 +264,16 @@ fn ingest_remote_user_message(
 /// the host's own turn via the in-memory threading path ([`ingest_live_event`]).
 /// Shared by the interactive send ([`Dave::handle_user_send`]) and the
 /// programmatic one ([`Dave::add_user_message_for_session`]).
+///
+/// `queued` tags a local session's note as sent while a turn was in flight
+/// (see [`record_dispatch`]). A remote controller send is never tagged: the
+/// host decides whether it queues.
 pub(crate) fn build_user_send_event(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
     secret_key: &[u8; 32],
     text: &str,
+    queued: bool,
 ) -> Option<session_events::BuiltEvent> {
     if session.is_remote() {
         ingest_remote_user_message(session, ndb, secret_key, text)
@@ -279,7 +284,10 @@ pub(crate) fn build_user_send_event(
             secret_key,
             text,
             "user",
-            session_events::LiveEventTags::default(),
+            session_events::LiveEventTags {
+                queued,
+                ..Default::default()
+            },
         )
     }
 }
@@ -289,7 +297,8 @@ pub(crate) fn build_user_send_event(
 ///
 /// Publishes its kind-1988 `user` note when a signing key is available (see
 /// [`build_user_send_event`]), appends it to chat, and retitles the session.
-/// Whether to dispatch it is the caller's call.
+/// Whether to dispatch it is the caller's call. A message sent while a turn is
+/// in flight is queued: it waits at the end of the chat, and its note says so.
 pub(crate) fn record_user_message(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -297,13 +306,60 @@ pub(crate) fn record_user_message(
     text: String,
     images: Vec<ImageAttachment>,
 ) {
-    if let Some(sk) = secret_key {
-        build_user_send_event(session, ndb, sk, &text);
-    }
-    session
-        .chat
-        .push(Message::User(UserMessage::new(text, images)));
+    let queued = session.is_dispatched();
+    let note_id = secret_key
+        .and_then(|sk| build_user_send_event(session, ndb, sk, &text, queued))
+        .map(|event| event.note_id);
+    session.chat.push(Message::User(UserMessage {
+        note_id,
+        queued,
+        ..UserMessage::new(text, images)
+    }));
     session.update_title_from_last_message();
+}
+
+/// Hand a session's trailing user message(s) to the backend: mark them
+/// dispatched, and publish a [`DISPATCHED_ROLE`] marker for each one that was
+/// queued.
+///
+/// A queued message's note is stamped when it was typed, mid-turn, but the
+/// host keeps it at the end of the chat until this moment. The marker records
+/// where it really joined the conversation, so the fold over the notes puts it
+/// in the same place (see `session_loader::display_order`). Every dispatch
+/// goes through here: the send path ([`Dave::send_user_message_for`]) and the
+/// convergence harness.
+///
+/// [`DISPATCHED_ROLE`]: session_events::DISPATCHED_ROLE
+pub(crate) fn record_dispatch(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: Option<&[u8; 32]>,
+) {
+    session.mark_dispatched();
+    let first = session.chat.len() - session.trailing_user_count();
+    for idx in first..session.chat.len() {
+        let Some(Message::User(user)) = session.chat.get_mut(idx) else {
+            continue;
+        };
+        if !user.queued {
+            continue;
+        }
+        user.queued = false;
+        let (Some(note_id), Some(sk)) = (user.note_id, secret_key) else {
+            continue;
+        };
+        ingest_live_event(
+            session,
+            ndb,
+            sk,
+            "",
+            session_events::DISPATCHED_ROLE,
+            session_events::LiveEventTags {
+                refs: Some(&note_id),
+                ..Default::default()
+            },
+        );
+    }
 }
 
 /// Build and locally ingest one permission response through the engine (which

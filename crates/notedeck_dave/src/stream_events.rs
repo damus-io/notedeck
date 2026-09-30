@@ -307,7 +307,7 @@ fn publish_response(
             let tags = LiveEventTags {
                 tool_id: Some(&running.tool_use_id),
                 tool_name: Some(&running.tool_name),
-                parent_task: None,
+                ..Default::default()
             };
             ingest_live_event(session, ndb, sk, &running.summary, "tool_call", tags);
         }
@@ -398,6 +398,7 @@ fn publish_tool_result(
         tool_id: result.tool_use_id.as_deref(),
         tool_name: Some(&result.tool_name),
         parent_task: result.parent_task_id.as_deref(),
+        ..Default::default()
     };
     ingest_live_event(session, ndb, sk, &content, "tool_result", tags);
 }
@@ -774,7 +775,7 @@ pub(crate) fn handle_stream_end(
     // other, so it is published for observers and a restart.
     if session.take_compact_and_proceed() {
         if let Some(sk) = secret_key {
-            build_user_send_event(session, ndb, sk, session::PROCEED_MESSAGE);
+            build_user_send_event(session, ndb, sk, session::PROCEED_MESSAGE, false);
         }
         needs_send.insert(session_id);
     }

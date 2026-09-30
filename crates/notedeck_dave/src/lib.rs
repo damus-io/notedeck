@@ -55,7 +55,7 @@ use notedeck::{
     Waker,
 };
 use pns_runtime::{PnsLocalRuntime, PnsLocalState};
-use publish::{record_user_message, session_state_snapshot};
+use publish::{record_dispatch, record_user_message, session_state_snapshot};
 use restore::PendingMessageLoad;
 use run_configs::kill_process_tree;
 use session_commands::{PendingResumeCommand, PendingSpawnCommand, SpawnIdempotencyRecord};
@@ -1158,7 +1158,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Record how many trailing user messages we're dispatching.
         // DispatchState tracks this for append_token insert position,
         // UI queued indicator, and redispatch-after-stream-end logic.
-        session.mark_dispatched();
+        // Queued ones get a dispatch marker so every fold places them here.
+        let sk = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
+        record_dispatch(session, app_ctx.ndb, sk.as_ref());
 
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
         let session_id = format!("dave-session-{}", session.id);

@@ -21,7 +21,7 @@ use crate::messages::{
     SubagentInfo, SubagentStatus,
 };
 use crate::publish::{
-    publish_auto_accept_response, publish_permission_response, record_user_message,
+    publish_auto_accept_response, publish_permission_response, record_dispatch, record_user_message,
 };
 use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
 use crate::stream_events::{apply_response, handle_stream_end, ApplyCtx};
@@ -128,7 +128,7 @@ impl Host {
                 text.to_string(),
                 Vec::new(),
             ),
-            Step::Dispatch => session.mark_dispatched(),
+            Step::Dispatch => record_dispatch(session, &self.ndb, self.secret_key.as_ref()),
             Step::Backend(res) => {
                 let ctx = ApplyCtx {
                     ndb: &self.ndb,
@@ -540,11 +540,8 @@ async fn allow_always_resolves_pending() {
     assert_host_matches_fold(script).await;
 }
 
-/// G4: answering a question set shows the formatted answers as a user reply
-/// row, on the host and (from the published response) in the fold.
-#[tokio::test]
-async fn question_reply() {
-    let id = uuid::Uuid::new_v4();
+/// The backend asks one `AskUserQuestion` question, under perm id `id`.
+fn ask_question(id: uuid::Uuid) -> Step {
     let questions = serde_json::json!({
         "questions": [{
             "question": "Which approach?",
@@ -555,26 +552,40 @@ async fn question_reply() {
             ],
         }],
     });
+    Step::Permission(PermissionRequest::pending(
+        id,
+        "AskUserQuestion".to_string(),
+        questions,
+    ))
+}
+
+/// The user answers question `id` with its first option, and the host
+/// publishes the response.
+fn answer_question(id: uuid::Uuid) -> Step {
+    Step::Act(Box::new(move |host: &mut Host| {
+        let answers = vec![QuestionAnswer {
+            selected: vec![0],
+            other_text: None,
+        }];
+        let publish = crate::update::handle_question_response(&mut host.sessions, id, answers)
+            .expect("a local question with a published request publishes a response");
+        let sk = host.secret_key.unwrap();
+        let engine = embedded_engine(&host.ndb, &sk).unwrap();
+        let event = publish_permission_response(&engine, &publish).unwrap();
+        host.extra_note_ids.insert(event.note_id);
+    }))
+}
+
+/// G4: answering a question set shows the formatted answers as a user reply
+/// row, on the host and (from the published response) in the fold.
+#[tokio::test]
+async fn question_reply() {
+    let id = uuid::Uuid::new_v4();
     let mut script = Vec::from(user_turn("which way?"));
     script.extend([
-        Step::Permission(PermissionRequest::pending(
-            id,
-            "AskUserQuestion".to_string(),
-            questions,
-        )),
+        ask_question(id),
         Step::Settle,
-        Step::Act(Box::new(move |host: &mut Host| {
-            let answers = vec![QuestionAnswer {
-                selected: vec![0],
-                other_text: None,
-            }];
-            let publish = crate::update::handle_question_response(&mut host.sessions, id, answers)
-                .expect("a local question with a published request publishes a response");
-            let sk = host.secret_key.unwrap();
-            let engine = embedded_engine(&host.ndb, &sk).unwrap();
-            let event = publish_permission_response(&engine, &publish).unwrap();
-            host.extra_note_ids.insert(event.note_id);
-        })),
+        answer_question(id),
         token("going with the fold"),
         Step::StreamEnd,
     ]);
@@ -601,11 +612,10 @@ async fn compact_and_proceed() {
     assert_host_matches_fold(script).await;
 }
 
-/// G5: a message sent mid-turn is stamped at send time, so the fold sorts it
-/// into the middle of the turn while the host keeps it trailing until the
-/// redispatch.
+/// G5: a message sent mid-turn is stamped at send time, but the host keeps it
+/// trailing until the redispatch. Its `queued` tag holds it at the fold's tail
+/// and the dispatch marker then places it where the host did.
 #[tokio::test]
-#[ignore = "converge 5 (headway:dave/output-stairs-twin)"]
 async fn queued_send_redispatch() {
     let mut script = Vec::from(user_turn("first"));
     script.extend([
@@ -618,4 +628,65 @@ async fn queued_send_redispatch() {
         Step::StreamEnd,
     ]);
     assert_host_matches_fold(script).await;
+}
+
+/// G5: a queued message the turn ends without dispatching waits at the end of
+/// the host's chat, and at the fold's tail.
+#[tokio::test]
+async fn queued_send_still_waiting() {
+    let mut script = Vec::from(user_turn("first"));
+    script.extend([
+        token("working on "),
+        Step::Send("second, while you work"),
+        token("the first"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// G5: a message queued before the turn produced anything still trails the
+/// reply on the host, so the fold must hold it back too.
+#[tokio::test]
+async fn queued_send_before_first_token() {
+    let mut script = Vec::from(user_turn("first"));
+    script.extend([
+        Step::Send("second, straight away"),
+        token("the first"),
+        Step::StreamEnd,
+        Step::Dispatch,
+        token("now the second"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// G5 with G4: a question's reply row is the turn's content, so the host puts
+/// it above a message queued before the answer. The fold keeps the queued
+/// message after it too, while it waits and, when `dispatch`, once dispatched.
+fn queued_behind_question_reply(dispatch: bool) -> Vec<Step> {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("which way?"));
+    script.extend([
+        token("let me ask"),
+        ask_question(id),
+        Step::Send("also, hurry"),
+        Step::Settle,
+        answer_question(id),
+        token("going with the fold"),
+        Step::StreamEnd,
+    ]);
+    if dispatch {
+        script.extend([Step::Dispatch, token("hurrying"), Step::StreamEnd]);
+    }
+    script
+}
+
+#[tokio::test]
+async fn queued_send_behind_question_reply_waiting() {
+    assert_host_matches_fold(queued_behind_question_reply(false)).await;
+}
+
+#[tokio::test]
+async fn queued_send_behind_question_reply_dispatched() {
+    assert_host_matches_fold(queued_behind_question_reply(true)).await;
 }
