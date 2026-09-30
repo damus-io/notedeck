@@ -5,6 +5,7 @@
 
 use crate::backend::{AiBackend, BackendType};
 use crate::publish::{ingest_live_event, pns_ingest, wire_file_update, MAX_TOOL_OUTPUT_WIRE_BYTES};
+use crate::session_events::LiveEventTags;
 use crate::{
     backend, get_backend, messages, secret_key_bytes, session, session_events, session_loader,
     Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId, SessionInfo,
@@ -187,55 +188,10 @@ pub(crate) fn apply_response(
         flush_open_assistant(session, ctx.ndb, ctx.secret_key);
     }
 
-    // Determine the live event to publish for this response.
-    // Centralised here so every response type that needs relay
-    // propagation is handled in one place.
-    let live_event: Option<(String, &str, Option<&str>)> = match &res {
-        DaveApiResponse::Failed(err) => Some((err.clone(), "error", None)),
-        DaveApiResponse::ToolResult(result) => {
-            // Encode summary + raw output so a remote observer can
-            // reconstruct the full result, not just the one-line
-            // summary (headway:dave/sting-february-sausage). The
-            // output is capped to a wire budget here (the host keeps
-            // the full copy in memory; the UI truncates for display)
-            // so the PNS-wrapped event stays under relay limits. An
-            // edit's diff rides along too (budget permitting): an
-            // edit the CLI auto-approved has no permission_request
-            // note to rebuild it from. The tool name travels in the
-            // `tool-name` tag below.
-            let capped_output = result
-                .output
-                .as_deref()
-                .map(|o| backend::truncate_output(o, MAX_TOOL_OUTPUT_WIRE_BYTES));
-            let file_update = wire_file_update(
-                result.file_update.as_ref(),
-                capped_output.as_deref().map_or(0, str::len),
-            );
-            Some((
-                session_loader::ToolResultContent::encode(
-                    &result.summary,
-                    capped_output.as_deref(),
-                    file_update,
-                ),
-                "tool_result",
-                Some(result.tool_name.as_str()),
-            ))
-        }
-        DaveApiResponse::CompactionStarted => Some((String::new(), "compaction_started", None)),
-        DaveApiResponse::CompactionComplete(info) => {
-            Some((info.pre_tokens.to_string(), "compaction_complete", None))
-        }
-        // PermissionRequest and the subagent lifecycle
-        // (spawned/completed/failed) have custom event building
-        // (below). Token, ToolCalls, SessionInfo and streamed
-        // SubagentOutput don't publish.
-        _ => None,
-    };
-
-    if let Some((content, role, tool_name)) = live_event {
-        if let Some(sk) = ctx.secret_key {
-            ingest_live_event(session, ctx.ndb, sk, &content, role, None, tool_name);
-        }
+    // Publish the live event for this response. Centralised here so every
+    // response type that needs relay propagation is handled in one place.
+    if let Some(sk) = ctx.secret_key {
+        publish_response(session, &res, ctx.ndb, sk);
     }
 
     // Backend produced real content — transition dispatch
@@ -319,6 +275,100 @@ pub(crate) fn apply_response(
     outcome
 }
 
+/// Publish the live event a backend response carries, if it has one (locally
+/// ingested; the host fans it out).
+///
+/// A running tool publishes a `tool_call` whose content is its plain summary
+/// line, so an older observer that renders `tool_call` as assistant text still
+/// shows something readable. Its `tool_result` carries the same `tool-id`, and
+/// a subagent-internal result its `parent-task`, so the fold can pair the two
+/// into one row and nest the result the way the host does.
+///
+/// PermissionRequest and the subagent lifecycle (spawned/completed/failed)
+/// have their own event builders. Token, ToolCalls, SessionInfo and streamed
+/// SubagentOutput don't publish.
+fn publish_response(
+    session: &mut session::ChatSession,
+    res: &DaveApiResponse,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) {
+    match res {
+        DaveApiResponse::Failed(err) => {
+            ingest_live_event(session, ndb, sk, err, "error", LiveEventTags::default());
+        }
+        DaveApiResponse::ToolRunning(running) => {
+            let tags = LiveEventTags {
+                tool_id: Some(&running.tool_use_id),
+                tool_name: Some(&running.tool_name),
+                parent_task: None,
+            };
+            ingest_live_event(session, ndb, sk, &running.summary, "tool_call", tags);
+        }
+        DaveApiResponse::ToolResult(result) => {
+            publish_tool_result(session, result, ndb, sk);
+        }
+        DaveApiResponse::CompactionStarted => {
+            ingest_live_event(
+                session,
+                ndb,
+                sk,
+                "",
+                "compaction_started",
+                LiveEventTags::default(),
+            );
+        }
+        DaveApiResponse::CompactionComplete(info) => {
+            let content = info.pre_tokens.to_string();
+            ingest_live_event(
+                session,
+                ndb,
+                sk,
+                &content,
+                "compaction_complete",
+                LiveEventTags::default(),
+            );
+        }
+        _ => {}
+    }
+}
+
+/// Publish a finished tool as a `tool_result` live event.
+///
+/// Encodes summary + raw output so a remote observer can reconstruct the full
+/// result, not just the one-line summary (headway:dave/sting-february-sausage).
+/// The output is capped to a wire budget here (the host keeps the full copy in
+/// memory; the UI truncates for display) so the PNS-wrapped event stays under
+/// relay limits. An edit's diff rides along too (budget permitting): an edit
+/// the CLI auto-approved has no permission_request note to rebuild it from.
+/// The tool name, tool use id and parent task travel as tags.
+fn publish_tool_result(
+    session: &mut session::ChatSession,
+    result: &ExecutedTool,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) {
+    let capped_output = result
+        .output
+        .as_deref()
+        .map(|o| backend::truncate_output(o, MAX_TOOL_OUTPUT_WIRE_BYTES));
+    let file_update = wire_file_update(
+        result.file_update.as_ref(),
+        capped_output.as_deref().map_or(0, str::len),
+    );
+    let content = session_loader::ToolResultContent::encode(
+        &result.summary,
+        capped_output.as_deref(),
+        file_update,
+    );
+    let tags = LiveEventTags {
+        tool_id: result.tool_use_id.as_deref(),
+        tool_name: Some(&result.tool_name),
+        parent_task: result.parent_task_id.as_deref(),
+    };
+    ingest_live_event(session, ndb, sk, &content, "tool_result", tags);
+}
+
 /// Whether applying `res` inserts a chat row, ending the open assistant
 /// segment: tokens after it start a new segment below that row.
 ///
@@ -362,7 +412,14 @@ fn flush_open_assistant(
     let Some(sk) = secret_key else {
         return;
     };
-    ingest_live_event(session, ndb, sk, &text, "assistant", None, None);
+    ingest_live_event(
+        session,
+        ndb,
+        sk,
+        &text,
+        "assistant",
+        LiveEventTags::default(),
+    );
 }
 
 /// Handle tool calls from the AI backend.
@@ -648,8 +705,14 @@ pub(crate) fn handle_stream_end(
     session.finalize_last_assistant();
 
     // Stop any tool row still spinning: an interrupted turn can end without a
-    // result for a tool that had already started.
-    session.finalize_running_tools();
+    // result for a tool that had already started. Publish each one's result so
+    // the fold stops its spinner too.
+    let finalized = session.finalize_running_tools();
+    if let Some(sk) = secret_key {
+        for result in &finalized {
+            publish_tool_result(session, result, ndb, sk);
+        }
+    }
 
     session.task_handle = None;
 

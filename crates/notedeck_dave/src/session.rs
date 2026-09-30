@@ -972,25 +972,35 @@ impl ChatSession {
     /// result never arrived (an interrupted turn) would otherwise keep spinning
     /// forever; convert each dangling `Message::ToolRunning` to its terminal
     /// static `ToolResponse` in place and clear the index map.
-    pub fn finalize_running_tools(&mut self) {
+    ///
+    /// Returns the results it made up, in chat order, so the caller can
+    /// publish them: without a `tool_result` note the fold would keep showing
+    /// the tool as running.
+    pub fn finalize_running_tools(&mut self) -> Vec<ExecutedTool> {
         let Some(agentic) = &mut self.agentic else {
-            return;
+            return Vec::new();
         };
         // Collect first: draining the map while indexing `self.chat` would be a
         // double &mut borrow. This runs at the turn boundary, not per frame, so
         // the small allocation is fine.
-        let dangling: Vec<usize> = agentic
+        let mut dangling: Vec<usize> = agentic
             .running_tool_indices
             .drain()
             .map(|(_, i)| i)
             .collect();
+        // The map drains in hash order; publish in the order the rows show.
+        dangling.sort_unstable();
+        let mut finalized = Vec::with_capacity(dangling.len());
         for idx in dangling {
-            if let Some(Message::ToolRunning(running)) = self.chat.get(idx) {
-                let executed = running.to_executed();
-                self.chat[idx] =
-                    Message::ToolResponse(crate::tools::ToolResponse::executed_tool(executed));
-            }
+            let Some(Message::ToolRunning(running)) = self.chat.get(idx) else {
+                continue;
+            };
+            let executed = running.to_executed();
+            self.chat[idx] =
+                Message::ToolResponse(crate::tools::ToolResponse::executed_tool(executed.clone()));
+            finalized.push(executed);
         }
+        finalized
     }
 
     /// Update the session title from the last message (user or assistant)

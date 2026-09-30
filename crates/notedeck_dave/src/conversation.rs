@@ -502,8 +502,7 @@ pub(crate) fn process_conversation_notes<'a>(
                     sk,
                     "Proceed with implementing the plan.",
                     "user",
-                    None,
-                    None,
+                    session_events::LiveEventTags::default(),
                 );
             }
         }
@@ -522,7 +521,8 @@ pub(crate) fn process_conversation_notes<'a>(
                     &notes[i],
                     &agentic.permissions.responded,
                 )
-                .and_then(|msg| session_loader::fold_subagent(&mut session.chat, msg));
+                .and_then(|msg| session_loader::fold_subagent(&mut session.chat, msg))
+                .and_then(|msg| session_loader::fold_tool(&mut session.chat, msg));
                 if let Some(msg) = msg {
                     session.chat.push(msg);
                 }
@@ -730,7 +730,9 @@ mod tests {
     use super::*;
     use crate::config::AiMode;
     use crate::session::SessionSource;
-    use crate::session_events::{build_live_event, build_permission_request_event, ThreadingState};
+    use crate::session_events::{
+        build_live_event, build_permission_request_event, LiveEventTags, ThreadingState,
+    };
     use crate::tests::{test_config, test_secret_key};
     use nostrdb::{IngestMetadata, Ndb, Transaction};
 
@@ -756,8 +758,7 @@ mod tests {
             "user",
             "envelope-fanout-test",
             None,
-            None,
-            None,
+            LiveEventTags::default(),
             &mut threading,
             &sk,
         )
@@ -826,8 +827,7 @@ mod tests {
             "user",
             session_id_str,
             None,
-            None,
-            None,
+            LiveEventTags::default(),
             &mut account_threading,
             &account.secret_key.secret_bytes(),
         )
@@ -837,8 +837,7 @@ mod tests {
             "user",
             session_id_str,
             None,
-            None,
-            None,
+            LiveEventTags::default(),
             &mut other_threading,
             &other_account.secret_key.secret_bytes(),
         )
@@ -911,14 +910,18 @@ mod tests {
         let mut threading = ThreadingState::new();
         let session_id_str = "poll-ordering-test";
 
-        // Build events: tool_call (seq=0), permission_request (seq=1), tool_result (seq=2)
+        // Build events: tool_call (seq=0), permission_request (seq=1), tool_result (seq=2).
+        // The call and result share a tool id, so they fold into one row.
         let tool_call_evt = build_live_event(
             r#"{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}"#,
             "tool_call",
             session_id_str,
             None,
-            Some("toolu_1"),
-            Some("Bash"),
+            LiveEventTags {
+                tool_id: Some("toolu_1"),
+                tool_name: Some("Bash"),
+                ..Default::default()
+            },
             &mut threading,
             &sk,
         )
@@ -940,8 +943,11 @@ mod tests {
             "tool_result",
             session_id_str,
             None,
-            Some("toolu_1"),
-            Some("Bash"),
+            LiveEventTags {
+                tool_id: Some("toolu_1"),
+                tool_name: Some("Bash"),
+                ..Default::default()
+            },
             &mut threading,
             &sk,
         )
@@ -1012,24 +1018,21 @@ mod tests {
             rebuild_remote_chat(&mut session, &ndb, &txn, &author);
         }
 
-        // Assert correct ordering in the rebuilt chat
+        // Assert correct ordering in the rebuilt chat. The tool_result arrived
+        // first but still completes the tool_call's row, in the call's place.
         assert_eq!(
             session.chat.len(),
-            3,
-            "should have 3 chat messages, got {}",
-            session.chat.len()
+            2,
+            "should have 2 chat messages, got {:?}",
+            session.chat
         );
         assert!(
-            matches!(&session.chat[0], Message::Assistant(_)),
-            "chat[0] should be Assistant (tool_call)",
+            matches!(&session.chat[0], Message::ToolResponse(_)),
+            "chat[0] should be the tool_call's row, completed by its tool_result",
         );
         assert!(
             matches!(&session.chat[1], Message::PermissionRequest(_)),
             "chat[1] should be PermissionRequest",
-        );
-        assert!(
-            matches!(&session.chat[2], Message::ToolResponse(_)),
-            "chat[2] should be ToolResponse (tool_result)",
         );
 
         // Verify permission request has correct tool name
@@ -1056,7 +1059,7 @@ mod tests {
         }
         assert_eq!(
             session.chat.len(),
-            3,
+            2,
             "dedup should prevent duplicate messages"
         );
     }
@@ -1090,8 +1093,7 @@ mod tests {
                 "assistant",
                 session_id_str,
                 None,
-                None,
-                None,
+                LiveEventTags::default(),
                 &mut threading,
                 &sk,
             )
@@ -1201,8 +1203,7 @@ mod tests {
                 "assistant",
                 session_id_str,
                 None,
-                None,
-                None,
+                LiveEventTags::default(),
                 &mut threading,
                 &sk,
             )
@@ -1292,8 +1293,7 @@ mod tests {
             "assistant",
             session_id_str,
             None,
-            None,
-            None,
+            LiveEventTags::default(),
             &mut threading,
             &sk,
         )

@@ -198,8 +198,7 @@ pub(crate) fn ingest_live_event(
     secret_key: &[u8; 32],
     content: &str,
     role: &str,
-    tool_id: Option<&str>,
-    tool_name: Option<&str>,
+    tags: session_events::LiveEventTags<'_>,
 ) -> Option<session_events::BuiltEvent> {
     let agentic = session.agentic.as_mut()?;
     let session_id = agentic.event_session_id().to_string();
@@ -210,8 +209,7 @@ pub(crate) fn ingest_live_event(
         role,
         &session_id,
         cwd,
-        tool_id,
-        tool_name,
+        tags,
         &mut agentic.live_threading,
         secret_key,
     ) {
@@ -275,7 +273,14 @@ pub(crate) fn build_user_send_event(
     if session.is_remote() {
         ingest_remote_user_message(session, ndb, secret_key, text)
     } else {
-        ingest_live_event(session, ndb, secret_key, text, "user", None, None)
+        ingest_live_event(
+            session,
+            ndb,
+            secret_key,
+            text,
+            "user",
+            session_events::LiveEventTags::default(),
+        )
     }
 }
 

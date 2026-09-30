@@ -354,8 +354,11 @@ pub fn build_events(
                 role,
                 "claude-code",
                 Some((i, total)),
-                tool_id,
-                tool_name,
+                &LiveEventTags {
+                    tool_id,
+                    tool_name,
+                    parent_task: None,
+                },
                 session_id.as_deref(),
                 None,
                 timestamp,
@@ -399,8 +402,11 @@ pub fn build_events(
             role,
             "claude-code",
             None,
-            tool_id.as_deref(),
-            tool_name.as_deref(),
+            &LiveEventTags {
+                tool_id: tool_id.as_deref(),
+                tool_name: tool_name.as_deref(),
+                parent_task: None,
+            },
             session_id.as_deref(),
             None,
             timestamp,
@@ -492,9 +498,7 @@ fn build_source_data_event(
 /// `split_index`: `Some((i, total))` when this event is part of a split
 /// assistant message.
 ///
-/// `tool_id`: The tool use/result ID for tool_call and tool_result events.
-///
-/// `tool_name`: The tool name (e.g. "Bash", "Read") for tool_call and tool_result events.
+/// `tags`: the optional per-role tags (tool id and name, parent task).
 #[allow(clippy::too_many_arguments)]
 fn build_single_event(
     line: Option<&JsonlLine>,
@@ -502,8 +506,7 @@ fn build_single_event(
     role: &str,
     source: &str,
     split_index: Option<(usize, usize)>,
-    tool_id: Option<&str>,
-    tool_name: Option<&str>,
+    tags: &LiveEventTags<'_>,
     session_id: Option<&str>,
     cwd: Option<&str>,
     timestamp: Option<u64>,
@@ -581,13 +584,18 @@ fn build_single_event(
     }
 
     // -- Tool ID tag --
-    if let Some(tid) = tool_id {
+    if let Some(tid) = tags.tool_id {
         builder = builder.start_tag().tag_str("tool-id").tag_str(tid);
     }
 
     // -- Tool name tag --
-    if let Some(tn) = tool_name {
+    if let Some(tn) = tags.tool_name {
         builder = builder.start_tag().tag_str("tool-name").tag_str(tn);
+    }
+
+    // -- Parent task tag (a subagent-internal tool result) --
+    if let Some(task) = tags.parent_task {
+        builder = builder.start_tag().tag_str("parent-task").tag_str(task);
     }
 
     // -- Discoverability --
@@ -596,20 +604,40 @@ fn build_single_event(
     finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
+/// The `source` tag of the notes [`build_live_event`] builds: a Dave host's
+/// own live events, as opposed to `claude-code` notes converted from a JSONL
+/// transcript.
+pub const LIVE_EVENT_SOURCE: &str = "notedeck-dave";
+
+/// The optional tags a kind-1988 conversation note carries beside its role.
+///
+/// Named rather than positional so a call site says which tag each value is,
+/// and a new tag is a new field rather than another `None` at every caller.
+/// `Default` is a note with none of them (a user or assistant message).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LiveEventTags<'a> {
+    /// The tool use id (`tool-id`) a `tool_call` and its `tool_result` share,
+    /// so a fold can pair them into one row.
+    pub tool_id: Option<&'a str>,
+    /// The tool name (`tool-name`), e.g. `"Bash"` or `"Read"`.
+    pub tool_name: Option<&'a str>,
+    /// The subagent task id (`parent-task`) a subagent-internal `tool_result`
+    /// ran under, so a fold nests it in that subagent's row.
+    pub parent_task: Option<&'a str>,
+}
+
 /// Build a kind-1988 event for a live conversation message.
 ///
 /// Unlike `build_events()` which works from JSONL lines, this builds directly
 /// from role + content strings. No kind-1989 source-data events are created.
 ///
 /// Calls `threading.record()` internally.
-#[allow(clippy::too_many_arguments)]
 pub fn build_live_event(
     content: &str,
     role: &str,
     session_id: &str,
     cwd: Option<&str>,
-    tool_id: Option<&str>,
-    tool_name: Option<&str>,
+    tags: LiveEventTags<'_>,
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
@@ -620,10 +648,9 @@ pub fn build_live_event(
         None,
         content,
         role,
-        "notedeck-dave",
+        LIVE_EVENT_SOURCE,
         None,
-        tool_id,
-        tool_name,
+        &tags,
         Some(session_id),
         cwd,
         Some(now_ms / 1000),
@@ -2131,8 +2158,7 @@ mod tests {
                 role,
                 session_id,
                 None,
-                None,
-                None,
+                LiveEventTags::default(),
                 &mut threading,
                 &sk,
             )

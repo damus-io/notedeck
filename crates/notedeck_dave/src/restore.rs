@@ -1087,7 +1087,7 @@ mod tests {
     use super::*;
     use crate::config::AiMode;
     use crate::pns_runtime::PnsLocalState;
-    use crate::session_events::{build_live_event, ThreadingState};
+    use crate::session_events::{build_live_event, LiveEventTags, ThreadingState};
     use crate::tests::{test_config, test_dave, test_secret_key};
     use crate::SessionManager;
     use nostrdb::{IngestMetadata, Ndb};
@@ -1222,15 +1222,22 @@ mod tests {
 
         // Two conversation messages keyed by the session's d-tag.
         let mut threading = ThreadingState::new();
-        let m1 =
-            build_live_event("hello", "user", sid, None, None, None, &mut threading, &sk).unwrap();
+        let m1 = build_live_event(
+            "hello",
+            "user",
+            sid,
+            None,
+            LiveEventTags::default(),
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
         let m2 = build_live_event(
             "hi there",
             "assistant",
             sid,
             None,
-            None,
-            None,
+            LiveEventTags::default(),
             &mut threading,
             &sk,
         )

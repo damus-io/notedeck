@@ -5,11 +5,11 @@
 //! `Message` variants for populating the chat UI.
 
 use crate::file_update::{FileUpdate, FileUpdateWire};
-use crate::messages::{AssistantMessage, ExecutedTool, Message, PermissionRequest};
+use crate::messages::{AssistantMessage, ExecutedTool, Message, PermissionRequest, RunningTool};
 use crate::session::PermissionTracker;
 use crate::session_events::{
     build_session_state_event, decode_permission_response, get_tag_value, is_conversation_role,
-    AI_CONVERSATION_KIND,
+    AI_CONVERSATION_KIND, LIVE_EVENT_SOURCE,
 };
 use crate::tools::ToolResponse;
 use nostrdb::{Filter, Ndb, Transaction};
@@ -283,8 +283,12 @@ fn load_session_messages_with_author(
             continue;
         };
         // A later lifecycle note for a subagent already shown updates that row
-        // in place (it keeps the spawn's position and order key).
+        // in place (it keeps the spawn's position and order key); a tool result
+        // completes its running row, or nests in its subagent's row.
         let Some(msg) = fold_subagent(&mut messages, msg) else {
+            continue;
+        };
+        let Some(msg) = fold_tool(&mut messages, msg) else {
             continue;
         };
         messages.push(msg);
@@ -378,6 +382,24 @@ pub fn render_conversation_note(
     let content = note.content();
     match get_tag_value(note, "role") {
         Some("user") => Some(Message::User(content.to_string().into())),
+        // A Dave host's tool call is a running row its `tool_result` completes
+        // (see [`fold_tool`]). Any other tool call — converted from a JSONL
+        // transcript, or published before calls carried a tool id — keeps
+        // rendering as assistant text.
+        Some("tool_call") if get_tag_value(note, "source") == Some(LIVE_EVENT_SOURCE) => {
+            let Some(tool_use_id) = get_tag_value(note, "tool-id") else {
+                return Some(Message::Assistant(AssistantMessage::from_text(
+                    content.to_string(),
+                )));
+            };
+            Some(Message::ToolRunning(RunningTool {
+                tool_use_id: tool_use_id.to_string(),
+                tool_name: get_tag_value(note, "tool-name")
+                    .unwrap_or("tool")
+                    .to_string(),
+                summary: content.to_string(),
+            }))
+        }
         Some("assistant") | Some("tool_call") => Some(Message::Assistant(
             AssistantMessage::from_text(content.to_string()),
         )),
@@ -393,9 +415,9 @@ pub fn render_conversation_note(
                     tool_name,
                     summary,
                     output: decoded.output,
-                    parent_task_id: None,
+                    parent_task_id: get_tag_value(note, "parent-task").map(str::to_string),
                     file_update: decoded.file_update.map(FileUpdate::from),
-                    tool_use_id: None,
+                    tool_use_id: get_tag_value(note, "tool-id").map(str::to_string),
                 },
             )))
         }
@@ -597,6 +619,50 @@ pub fn fold_subagent(messages: &mut [Message], msg: Message) -> Option<Message> 
     existing.description = update.description;
     existing.subagent_type = update.subagent_type;
     existing.background = update.background;
+    None
+}
+
+/// Place a rendered `tool_result` the way the host placed it live, returning
+/// `None` when it was folded into an existing row and the message unchanged
+/// (to be appended) otherwise.
+///
+/// Mirrors the host's `fold_tool_result` then `place_tool_result`: a result
+/// with a `parent-task` goes into that subagent's row; failing that, a result
+/// whose `tool-id` matches a still-running row replaces that row in place, so
+/// the tool keeps the position its call took. A result with neither (a legacy
+/// note, an auto-accepted tool with no call, a subagent not shown) is
+/// appended. Shared by the loader and the live remote append path so a
+/// rebuild and an append agree.
+pub fn fold_tool(messages: &mut [Message], msg: Message) -> Option<Message> {
+    let Message::ToolResponse(resp) = &msg else {
+        return Some(msg);
+    };
+    let crate::tools::ToolResponses::ExecutedTool(result) = resp.responses() else {
+        return Some(msg);
+    };
+
+    if let Some(parent) = result.parent_task_id.as_deref() {
+        let subagent = messages.iter_mut().rev().find_map(|m| match m {
+            Message::Subagent(s) if s.task_id == parent => Some(s),
+            _ => None,
+        });
+        if let Some(subagent) = subagent {
+            subagent.tool_results.push(result.clone());
+            return None;
+        }
+    }
+
+    let Some(tool_use_id) = result.tool_use_id.as_deref() else {
+        return Some(msg);
+    };
+    let running = messages
+        .iter_mut()
+        .rev()
+        .find(|m| matches!(m, Message::ToolRunning(running) if running.tool_use_id == tool_use_id));
+    let Some(running) = running else {
+        return Some(msg);
+    };
+    *running = msg;
     None
 }
 
@@ -2263,6 +2329,226 @@ mod tests {
 
     /// A still-running subagent publishes no output (streamed output never goes
     /// on the wire), and a subagent note without a `task-id` renders nothing.
+    /// Build a Dave host's live conversation note, the way the host publishes
+    /// it: through [`build_live_event`](crate::session_events::build_live_event).
+    fn live_note(
+        threading: &mut crate::session_events::ThreadingState,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        tags: crate::session_events::LiveEventTags<'_>,
+    ) -> String {
+        crate::session_events::build_live_event(
+            content,
+            role,
+            session_id,
+            None,
+            tags,
+            threading,
+            &test_secret_key(),
+        )
+        .unwrap()
+        .to_event_json()
+    }
+
+    /// Load `events` ingested in order and in reverse, asserting the two folds
+    /// agree, and return the fold.
+    async fn load_both_orders(session_id: &str, events: &[String]) -> Vec<Message> {
+        let forward = load_events(session_id, events).await;
+        let reversed: Vec<String> = events.iter().rev().cloned().collect();
+        let backward = load_events(session_id, &reversed).await;
+        assert_eq!(
+            view_signature(&forward),
+            view_signature(&backward),
+            "the fold depends on the order the notes were ingested"
+        );
+        forward
+    }
+
+    /// The tool id and summary of a finished tool row.
+    fn executed(msg: &Message) -> (&str, Option<&str>, &str) {
+        let Message::ToolResponse(resp) = msg else {
+            panic!("expected a tool row, got {msg:?}");
+        };
+        let crate::tools::ToolResponses::ExecutedTool(tool) = resp.responses() else {
+            panic!("expected an executed tool, got {resp:?}");
+        };
+        (
+            tool.tool_name.as_str(),
+            tool.tool_use_id.as_deref(),
+            tool.summary.as_str(),
+        )
+    }
+
+    /// A Dave `tool_call` and the `tool_result` sharing its tool id are one
+    /// row: the result replaces the running row where the call put it, in
+    /// either ingestion order.
+    #[tokio::test]
+    async fn tool_call_and_result_pair_into_one_row() {
+        use crate::session_events::{LiveEventTags, ThreadingState};
+
+        let session_id = "tool-pairing";
+        let mut threading = ThreadingState::new();
+        let call_tags = LiveEventTags {
+            tool_id: Some("t1"),
+            tool_name: Some("Bash"),
+            parent_task: None,
+        };
+        let events = [
+            live_note(
+                &mut threading,
+                session_id,
+                "user",
+                "run it",
+                LiveEventTags::default(),
+            ),
+            live_note(
+                &mut threading,
+                session_id,
+                "tool_call",
+                "cargo test",
+                call_tags,
+            ),
+            live_note(
+                &mut threading,
+                session_id,
+                "tool_result",
+                &ToolResultContent::encode("exit 0", Some("ok"), None),
+                call_tags,
+            ),
+            live_note(
+                &mut threading,
+                session_id,
+                "assistant",
+                "tests pass",
+                LiveEventTags::default(),
+            ),
+        ];
+
+        let messages = load_both_orders(session_id, &events).await;
+        assert_eq!(
+            messages.len(),
+            3,
+            "call and result are one row: {messages:?}"
+        );
+        assert!(matches!(messages[0], Message::User(_)));
+        assert_eq!(executed(&messages[1]), ("Bash", Some("t1"), "exit 0"));
+        assert!(matches!(messages[2], Message::Assistant(_)));
+
+        // Without its result the call is a running row.
+        let messages = load_events(session_id, &events[..2]).await;
+        assert!(
+            matches!(&messages[1], Message::ToolRunning(r)
+                if r.tool_use_id == "t1" && r.tool_name == "Bash" && r.summary == "cargo test"),
+            "a call without a result is still running: {messages:?}"
+        );
+    }
+
+    /// A `tool_call` that is not a Dave host's (converted from a JSONL
+    /// transcript) or carries no tool id (published before calls did) keeps
+    /// rendering as assistant text, so old sessions look as they did.
+    #[tokio::test]
+    async fn legacy_tool_call_renders_as_assistant_text() {
+        let sk = test_secret_key();
+        let session_id = "legacy-tool-call";
+        let events = [
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "tool_call",
+                "converted call",
+                1000,
+                0,
+                &[("source", "claude-code"), ("tool-id", "t1")],
+            ),
+            build_1988_event_json(
+                &sk,
+                session_id,
+                "tool_call",
+                "idless call",
+                1001,
+                1,
+                &[("source", LIVE_EVENT_SOURCE)],
+            ),
+            build_1988_event_json(&sk, session_id, "tool_call", "bare call", 1002, 2, &[]),
+        ];
+
+        let messages = load_events(session_id, &events).await;
+        let texts: Vec<&str> = messages
+            .iter()
+            .map(|m| match m {
+                Message::Assistant(a) => a.text(),
+                other => panic!("expected assistant text, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(texts, ["converted call", "idless call", "bare call"]);
+    }
+
+    /// A `tool_result` with a `parent-task` tag nests in that subagent's row,
+    /// the way the host folds it live. One whose subagent isn't shown is
+    /// appended top-level, as the host does too.
+    #[tokio::test]
+    async fn parent_task_result_nests_under_its_subagent() {
+        use crate::messages::SubagentStatus;
+        use crate::session_events::{build_subagent_event, LiveEventTags, ThreadingState};
+
+        let sk = test_secret_key();
+        let session_id = "subagent-tools";
+        let mut threading = ThreadingState::new();
+        let spawned = build_subagent_event(
+            &subagent_info("s1", SubagentStatus::Running, ""),
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap()
+        .to_event_json();
+        let nested = live_note(
+            &mut threading,
+            session_id,
+            "tool_result",
+            &ToolResultContent::encode("3 matches", None, None),
+            LiveEventTags {
+                tool_id: Some("g1"),
+                tool_name: Some("Grep"),
+                parent_task: Some("s1"),
+            },
+        );
+        let orphan = live_note(
+            &mut threading,
+            session_id,
+            "tool_result",
+            &ToolResultContent::encode("src/lib.rs", None, None),
+            LiveEventTags {
+                tool_id: Some("r1"),
+                tool_name: Some("Read"),
+                parent_task: Some("not-shown"),
+            },
+        );
+        let completed = build_subagent_event(
+            &subagent_info("s1", SubagentStatus::Completed, "found it"),
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap()
+        .to_event_json();
+
+        let messages = load_both_orders(session_id, &[spawned, nested, orphan, completed]).await;
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        let Message::Subagent(subagent) = &messages[0] else {
+            panic!("expected the subagent row first, got {:?}", messages[0]);
+        };
+        assert_eq!(subagent.status, SubagentStatus::Completed);
+        let nested: Vec<_> = subagent
+            .tool_results
+            .iter()
+            .map(|t| (t.tool_name.as_str(), t.tool_use_id.as_deref()))
+            .collect();
+        assert_eq!(nested, [("Grep", Some("g1"))]);
+        assert_eq!(executed(&messages[1]), ("Read", Some("r1"), "src/lib.rs"));
+    }
+
     #[test]
     fn running_subagent_note_has_no_output() {
         use crate::messages::SubagentStatus;

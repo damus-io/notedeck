@@ -360,12 +360,23 @@ async fn plain_turn() {
 
 /// G1: text, a tool, then more text is two assistant segments, each published
 /// when it closes so the first sorts ahead of the tool.
-///
-/// The tool carries no id and no running row: pairing those is G2, covered by
-/// `tool_pairing`. Converge 2 (headway:dave/hundred-wave-idea) can restore the
-/// realistic running-row form here.
 #[tokio::test]
 async fn multi_segment_turn() {
+    let mut script = Vec::from(user_turn("look at the file"));
+    script.extend([
+        token("let me read it"),
+        running("t1", "Read", "src/lib.rs"),
+        executed("t1", "Read", "src/lib.rs", None),
+        token("it is short"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// G2: a result with no tool id and no running row (an auto-accepted tool the
+/// backend never announced) is appended where it lands, on both sides.
+#[tokio::test]
+async fn unpaired_tool_result() {
     let mut script = Vec::from(user_turn("look at the file"));
     script.extend([
         token("let me read it"),
@@ -383,10 +394,9 @@ async fn multi_segment_turn() {
     assert_host_matches_fold(script).await;
 }
 
-/// G2: the host upgrades a running tool row in place; the published result
-/// carries no tool id, so the fold cannot pair it.
+/// G2: the host upgrades a running tool row in place; the fold pairs the
+/// `tool_call` and `tool_result` notes by their shared tool id.
 #[tokio::test]
-#[ignore = "converge 2 (headway:dave/hundred-wave-idea)"]
 async fn tool_pairing() {
     let mut script = Vec::from(user_turn("run it"));
     script.extend([
@@ -398,10 +408,9 @@ async fn tool_pairing() {
     assert_host_matches_fold(script).await;
 }
 
-/// G2: a subagent's internal tool result folds into its row on the host but
-/// lands top-level in the fold (no parent-task tag on the wire).
+/// G2: a subagent's internal tool result folds into its row, on the host and
+/// (by its `parent-task` tag) in the fold.
 #[tokio::test]
-#[ignore = "converge 2 (headway:dave/hundred-wave-idea)"]
 async fn subagent_internal_tools() {
     let mut script = Vec::from(user_turn("explore"));
     script.extend([
@@ -426,10 +435,9 @@ async fn subagent_internal_tools() {
     assert_host_matches_fold(script).await;
 }
 
-/// G2: a tool still running when the turn ends is finalized on the host with
-/// no note behind it.
+/// G2: a tool still running when the turn ends is finalized on the host, and
+/// its made-up result is published so the fold stops its spinner too.
 #[tokio::test]
-#[ignore = "converge 2 (headway:dave/hundred-wave-idea)"]
 async fn interrupted_tool() {
     let mut script = Vec::from(user_turn("run the slow thing"));
     script.extend([running("t1", "Bash", "sleep 100"), Step::StreamEnd]);

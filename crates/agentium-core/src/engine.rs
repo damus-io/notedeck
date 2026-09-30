@@ -432,8 +432,7 @@ impl Engine {
             "user",
             session_id,
             cwd.as_deref(),
-            None,
-            None,
+            crate::session_events::LiveEventTags::default(),
             &mut threading,
             &self.seckey(),
         )
@@ -1024,7 +1023,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_api_lists_and_reads_a_session() {
         use crate::session_events::{
-            build_live_event, build_session_state_event, ThreadingState, AI_SESSION_STATE_KIND,
+            build_live_event, build_session_state_event, LiveEventTags, ThreadingState,
+            AI_SESSION_STATE_KIND,
         };
 
         let eng_dir = TempDir::new().expect("tmp dir");
@@ -1059,8 +1059,7 @@ mod tests {
             "user",
             session_id,
             Some("/tmp"),
-            None,
-            None,
+            LiveEventTags::default(),
             &mut threading,
             &TEST_SECKEY,
         )
@@ -1103,7 +1102,7 @@ mod tests {
     /// is decrypted into the db.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn watch_session_wakes_on_new_event() {
-        use crate::session_events::{build_live_event, ThreadingState};
+        use crate::session_events::{build_live_event, LiveEventTags, ThreadingState};
 
         let eng_dir = TempDir::new().expect("tmp dir");
         let engine =
@@ -1119,8 +1118,7 @@ mod tests {
             "user",
             session_id,
             None,
-            None,
-            None,
+            LiveEventTags::default(),
             &mut threading,
             &TEST_SECKEY,
         )
@@ -1139,7 +1137,9 @@ mod tests {
     /// last activity past its state event — the live-dashboard loop, end to end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn watch_activity_feeds_the_session_fold() {
-        use crate::session_events::{build_live_event, build_session_state_event, ThreadingState};
+        use crate::session_events::{
+            build_live_event, build_session_state_event, LiveEventTags, ThreadingState,
+        };
         use crate::session_fold::{reduce_delta, SessionReducer};
 
         let eng_dir = TempDir::new().expect("tmp dir");
@@ -1190,8 +1190,7 @@ mod tests {
             "user",
             session_id,
             None,
-            None,
-            None,
+            LiveEventTags::default(),
             &mut threading,
             &TEST_SECKEY,
         )

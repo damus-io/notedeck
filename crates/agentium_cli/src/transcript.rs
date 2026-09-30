@@ -186,7 +186,10 @@ pub(crate) fn message_role(m: &Message) -> &'static str {
 /// Whether a message is tool-call/result noise that the default view folds
 /// away (and `--tools` keeps).
 fn is_tool_message(m: &Message) -> bool {
-    matches!(m, Message::ToolCalls(_) | Message::ToolResponse(_))
+    matches!(
+        m,
+        Message::ToolCalls(_) | Message::ToolRunning(_) | Message::ToolResponse(_)
+    )
 }
 
 /// Terminal presentation for a message role: a human label and an SGR color.
