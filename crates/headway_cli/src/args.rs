@@ -320,6 +320,15 @@ fn ref_board(sel: &str) -> Option<String> {
 
 pub(crate) struct Cli {
     pub(crate) secret: Option<([u8; 32], Pubkey)>,
+    /// A second key that signs `comment` and nothing else (`--comment-nsec` or
+    /// `$HEADWAY_COMMENT_NSEC`). Everything else, including which boards can be
+    /// read and which channel the comment seals into, stays with [`secret`].
+    /// An agent running as the account's owner uses this to have its comments
+    /// attributed to itself, without holding any board key of its own
+    /// (headway:headway/lava-number-clap).
+    ///
+    /// [`secret`]: Self::secret
+    pub(crate) comment_secret: Option<([u8; 32], Pubkey)>,
     pub(crate) author: Option<Pubkey>,
     pub(crate) relay: String,
     pub(crate) db: Option<String>,
@@ -361,6 +370,7 @@ impl Cli {
         let mut nsec = env::var("HEADWAY_NSEC")
             .ok()
             .or_else(|| nostrdb_net::relay::sync::stored_nsec(APP));
+        let mut comment_nsec = env::var("HEADWAY_COMMENT_NSEC").ok();
         let mut relay = env::var("HEADWAY_RELAY")
             .ok()
             .unwrap_or_else(|| nostrdb_net::relay::sync::DEFAULT_RELAY.to_string());
@@ -412,6 +422,7 @@ impl Cli {
             match arg.as_str() {
                 "-h" | "--help" => want_help = true,
                 "--nsec" => nsec = Some(value("--nsec")?),
+                "--comment-nsec" => comment_nsec = Some(value("--comment-nsec")?),
                 "--relay" => relay = value("--relay")?,
                 "--db" => db = Some(value("--db")?),
                 "--board" => board = Some(value("--board")?),
@@ -554,9 +565,19 @@ impl Cli {
             }
             (_, None) => None,
         };
+        let comment_secret = match (&command, comment_nsec) {
+            (Command::Login { .. } | Command::Logout, _) => None,
+            (_, Some(key)) => {
+                let (sk, pk) = parse_secret_key(&key)
+                    .map_err(|e| format!("--comment-nsec / $HEADWAY_COMMENT_NSEC: {e}"))?;
+                Some((sk, Pubkey::new(*pk.bytes())))
+            }
+            (_, None) => None,
+        };
 
         Ok(Invocation::Run(Box::new(Cli {
             secret,
+            comment_secret,
             author,
             relay,
             db,
@@ -1097,6 +1118,32 @@ mod tests {
 
     /// Input that is neither 64 hex chars nor a valid nsec errors, and the
     /// message names both accepted forms so the fix is obvious.
+    /// `--comment-nsec` takes the same spellings as `--nsec`, is kept apart from
+    /// the signing key, and a malformed one is an error naming the flag.
+    #[test]
+    fn comment_key_parses_beside_the_signing_key() {
+        let hex = hex::encode(TEST_SECRET);
+        let cli = parse(&["--nsec", &test_nsec(), "--comment-nsec", &hex, "show"]);
+        let (signing, _) = cli.secret.expect("signer");
+        let (comment, _) = cli.comment_secret.expect("comment key");
+        assert_eq!(signing, comment, "same key, two spellings");
+        assert!(
+            parse(&["--nsec", &test_nsec(), "show"])
+                .comment_secret
+                .is_none()
+        );
+
+        let err = match Cli::parse(
+            ["--nsec", &test_nsec(), "--comment-nsec", "nope", "show"]
+                .iter()
+                .map(|s| s.to_string()),
+        ) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a malformed comment key must be refused"),
+        };
+        assert!(err.contains("--comment-nsec"), "unexpected error: {err}");
+    }
+
     #[test]
     fn secret_key_rejects_malformed_input() {
         let hex = hex::encode(TEST_SECRET);

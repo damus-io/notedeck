@@ -288,6 +288,7 @@ async fn run() -> Result<()> {
     let dry_run = cli.dry_run;
     let new_channel = cli.new_channel;
     let secret = cli.secret.map(|(s, _)| s);
+    let comment_secret = cli.comment_secret.map(|(s, _)| s);
 
     match cli.command {
         // `--all` fans the render across every board in the cache, ignoring any
@@ -642,6 +643,8 @@ async fn run() -> Result<()> {
 
             let mut sink = Collect::default();
             let channel = roster.channel(&board);
+            let signing_key =
+                signing_key(&action, &secret, comment_secret.as_ref(), &channel, &board)?;
             let store::ApplyOutcome { declined, created } = store::apply_outcome(
                 &ndb,
                 &board,
@@ -650,7 +653,7 @@ async fn run() -> Result<()> {
                 // the edit at the owner's coordinate itself (from `view.author`),
                 // and reads our own replaceable sets (blockers, related) by `me`.
                 &me,
-                &store::Signer::new(&secret, channel.as_ref()),
+                &store::Signer::new(signing_key, channel.as_ref()),
                 action,
                 &mut sink,
             );
@@ -709,6 +712,36 @@ async fn run() -> Result<()> {
 }
 
 /// Print the grouped command list — `headway --help`, or a bare `headway`.
+/// The key that signs `action`: the comment key for a comment when one is set,
+/// the run's signing key for everything else.
+///
+/// A comment signed by another key only shows on a sealed board. The shared fold
+/// takes any rumor sealed into the board's channel, whoever signed it, so the
+/// comment folds and is attributed to the comment key. A plaintext board folds
+/// only its owner's own events ([`event::fold_board`]), so a comment signed by
+/// anyone else would be published and never seen — refused here instead.
+fn signing_key<'a>(
+    action: &store::BoardAction,
+    secret: &'a [u8; 32],
+    comment_secret: Option<&'a [u8; 32]>,
+    channel: &Option<store::SnsChannel>,
+    board: &str,
+) -> Result<&'a [u8; 32]> {
+    let (store::BoardAction::AddComment { .. }, Some(comment_secret)) = (action, comment_secret)
+    else {
+        return Ok(secret);
+    };
+    if channel.is_none() {
+        return Err(format!(
+            "'{board}' is a plaintext board, which shows only its owner's own events, so a \
+             comment signed with --comment-nsec / $HEADWAY_COMMENT_NSEC would never appear. \
+             Unset it to comment as yourself, or seal the board first (`headway migrate`)"
+        )
+        .into());
+    }
+    Ok(comment_secret)
+}
+
 fn print_usage() {
     help::print_usage(nostrdb_net::relay::sync::DEFAULT_RELAY, store::BOARD_ID);
 }

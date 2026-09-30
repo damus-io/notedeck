@@ -1471,3 +1471,151 @@ fn member_resolves_a_shared_board_by_its_slug() {
         "the member's own '{slug}' must win over the boards shared with it: {own:#}"
     );
 }
+
+/// A comment key signs comments and nothing else, and needs no board key.
+///
+/// The owner runs with a second key set as the comment key, the way an agent
+/// running as its user would (headway:headway/lava-number-clap). On a sealed
+/// board the comment folds attributed to that key, sealed into the board's
+/// channel with the owner's access. A card added in the same way is still the
+/// owner's, the comment key is never shared the board, and nothing it signed
+/// reaches the relay as plaintext. On a plaintext board, which folds only its
+/// owner's own events, the comment would never show, so it is refused.
+#[test]
+fn comment_key_signs_comments_on_a_sealed_board_only() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let relay_store = app_ndb.clone();
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let owner = author();
+    let owner_hex = owner.hex();
+    // Any second key: here the member key the share tests use, never shared a board.
+    let agent = nostrdb_net::FullKeypair::from_secret_bytes(&MEMBER_SECRET)
+        .expect("agent keypair")
+        .pubkey;
+    let agent_hex = agent.hex();
+    let agent_key = hex::encode(MEMBER_SECRET);
+    let slug = "sealed";
+
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner_db = owner_dir.path().to_str().unwrap();
+    let with_comment_key = |args: &[&str]| {
+        let mut full = vec!["--comment-nsec", agent_key.as_str()];
+        full.extend_from_slice(args);
+        headway(&url, owner_db, &full)
+    };
+
+    assert!(
+        headway(&url, owner_db, &["--board", slug, "seed"])
+            .status
+            .success(),
+        "owner seed"
+    );
+    show_board_until_cols(&url, owner_db, slug, 5);
+
+    // Adding a card with the comment key set: still the owner's card.
+    let out = with_comment_key(&["--board", slug, "add", "owner card", "--col", "todo"]);
+    assert!(
+        out.status.success(),
+        "add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let board = show_board_until(&url, owner_db, slug, 1);
+    let (card, _) = find_titled(&board, "owner card").expect("card folded");
+    assert_eq!(
+        card["author"], owner_hex,
+        "only comments use the comment key"
+    );
+    let card_id = card["id"].as_str().expect("card id").to_string();
+
+    let out = with_comment_key(&["--board", slug, "comment", &card_id, "hello from the agent"]);
+    assert!(
+        out.status.success(),
+        "comment: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // A fresh cache of the owner's folds the comment from the relay, attributed
+    // to the comment key.
+    let fresh_dir = tempfile::tempdir().expect("fresh dir");
+    let fresh_db = fresh_dir.path().to_str().unwrap();
+    let board = show_as_until(&nsec(), &url, fresh_db, &owner_hex, slug, |b| {
+        find_titled(b, "owner card")
+            .is_some_and(|(c, _)| c["comments"].as_array().is_some_and(|cs| !cs.is_empty()))
+    });
+    let (card, _) = find_titled(&board, "owner card").expect("card folded");
+    let comment = &card["comments"][0];
+    assert_eq!(comment["body"], "hello from the agent");
+    assert_eq!(
+        comment["author"], agent_hex,
+        "the comment is the comment key's"
+    );
+
+    // The comment key holds no board key, and published nothing in the clear.
+    assert_eq!(
+        giftwraps_to(&relay_store, &agent),
+        0,
+        "no key-share to the agent"
+    );
+    assert_eq!(
+        plaintext_member_notes(&relay_store, &agent),
+        0,
+        "the agent's comment leaked as plaintext"
+    );
+
+    // A plaintext board, published the way a pre-SNS client wrote one.
+    let plain_dir = tempfile::tempdir().expect("plain dir");
+    let plain_ndb =
+        Ndb::new(plain_dir.path().to_str().unwrap(), &test_config()).expect("plain ndb");
+    let mut frames = Frames::default();
+    headway::store::seed_board(&plain_ndb, &owner, &SECRET, "plain", "Plain", &mut frames);
+    rt.block_on(async {
+        let mut relay = nostrdb_net::relay::sync::Relay::connect(&url)
+            .await
+            .expect("connect");
+        relay
+            .publish(&frames.0)
+            .await
+            .expect("publish plaintext board");
+    });
+    show_board_until_cols(&url, owner_db, "plain", 5);
+    assert!(
+        headway(
+            &url,
+            owner_db,
+            &["--board", "plain", "add", "plain card", "--col", "todo"]
+        )
+        .status
+        .success(),
+        "add to the plaintext board"
+    );
+    let board = show_board_until(&url, owner_db, "plain", 1);
+    let (card, _) = find_titled(&board, "plain card").expect("plain card folded");
+    let plain_card = card["id"].as_str().expect("card id").to_string();
+
+    let out = with_comment_key(&["--board", "plain", "comment", &plain_card, "unseen"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a comment key on a plaintext board must be refused"
+    );
+    assert!(
+        err.contains("plaintext board"),
+        "unexpected refusal:\n{err}"
+    );
+    assert_eq!(
+        plaintext_member_notes(&relay_store, &agent),
+        0,
+        "the refused comment reached the relay"
+    );
+}

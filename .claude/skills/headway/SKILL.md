@@ -492,6 +492,23 @@ headway --board ios-port add "From a member" --col todo
 - `seed` and `migrate` never resolve to someone else's board: they only act on
   boards you own.
 
+## Commenting as an agent (a separate comment key)
+
+An agent that runs `headway` as its user can sign its **comments** with its own
+key, so they show as the agent's rather than the user's. Everything else (reads,
+adds, moves) stays the user's:
+
+```bash
+HEADWAY_COMMENT_NSEC="$(cat ~/.local/share/jex0/nsec)" \
+  headway comment headway:headway/some-card "…"
+# or per run: headway --comment-nsec <nsec|hex> comment …
+```
+
+The comment is sealed into the board's channel with the user's access, so the
+comment key needs no membership and holds no board key. It only works on
+**sealed** boards: a plaintext board shows just its owner's own events, so the
+CLI refuses rather than publish a comment nobody would see.
+
 ## Typical workflow
 
 Move a card from In Progress to Done:

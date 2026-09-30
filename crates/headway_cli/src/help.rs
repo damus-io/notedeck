@@ -261,7 +261,14 @@ three spellings are equivalent.",
         group: Group::Cards,
         summary: "Comment on a card",
         usage: &["comment <card> <text...>"],
-        details: "The comment body is every remaining positional joined with spaces.",
+        details: "\
+The comment body is every remaining positional joined with spaces.
+
+With --comment-nsec <key> (or $HEADWAY_COMMENT_NSEC) the comment is signed
+by that key instead of yours, so it shows as that key's comment. It is
+still sealed into the board's channel with your access, so the key needs
+no membership. Sealed boards only: a plaintext board shows just its
+owner's events, so this is refused there.",
         options: &[(
             "--reply-to <c>",
             "Thread this reply under another comment on the same card (its id, a prefix, or its word-id)",
@@ -643,6 +650,10 @@ Run `headway <command> --help` for that command's own options and examples.",
             (
                 "--nsec <key>",
                 "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
+            ),
+            (
+                "--comment-nsec <key>",
+                "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too. The comment still seals into the board's channel with your key's access, and only sealed boards show it",
             ),
             (
                 "--author <pk>",
