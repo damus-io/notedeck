@@ -426,6 +426,9 @@ pub(crate) fn process_conversation_notes<'a>(
                 // A later lifecycle note for a subagent already shown folds
                 // into its row on append (see `fold_subagent`).
                 | Some("subagent")
+                | Some("error")
+                | Some("system")
+                | Some("todo")
         );
         if displayable {
             let created_at = note.created_at();
@@ -1269,6 +1272,93 @@ mod tests {
         assert_eq!(
             assistant_texts(&session.chat),
             assistant_texts(&rebuilt.messages),
+            "the fast-path append must match a from-scratch rebuild"
+        );
+    }
+
+    /// `system`, `todo` and `error` notes that arrive in order append on the
+    /// remote fast path (no rebuild) as the same rows a from-scratch rebuild
+    /// shows.
+    #[tokio::test]
+    async fn notice_roles_append_on_the_fast_path() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let mut threading = ThreadingState::new();
+        let session_id_str = "fast-path-notices";
+        let mut mk = |text: &str, role: &str| {
+            build_live_event(
+                text,
+                role,
+                session_id_str,
+                None,
+                LiveEventTags::default(),
+                &mut threading,
+                &sk,
+            )
+            .unwrap()
+        };
+        let first = mk("A", "assistant");
+        let notices = [
+            mk("cwd set", "system"),
+            mk(r#"{"todos":[]}"#, "todo"),
+            mk("rate limited", "error"),
+        ];
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let ingest = |ndb: &Ndb, evt: &session_events::BuiltEvent| {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            sub
+        };
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        {
+            let sub = ingest(&ndb, &first);
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+        }
+
+        {
+            for notice in &notices {
+                let sub = ingest(&ndb, notice);
+                let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+            }
+            let txn = Transaction::new(&ndb).unwrap();
+            let mut batch: Vec<_> = ndb
+                .query(&txn, std::slice::from_ref(&filter), 128)
+                .unwrap()
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .filter(|n| n.content() != "A")
+                .collect();
+            batch.sort_by_key(session_loader::EventOrder::from_note);
+            let result = process_conversation_notes(batch, &mut session, 1, true, Some(&sk), &ndb);
+            assert!(!result.rebuild_chat, "in-order notices must append");
+        }
+
+        assert_eq!(session.chat.len(), 4, "{:?}", session.chat);
+        let txn = Transaction::new(&ndb).unwrap();
+        let rebuilt =
+            session_loader::load_session_messages_for_author(&ndb, &txn, &author, session_id_str);
+        assert_eq!(
+            session_loader::view_signature(&session.chat),
+            session_loader::view_signature(&rebuilt.messages),
             "the fast-path append must match a from-scratch rebuild"
         );
     }

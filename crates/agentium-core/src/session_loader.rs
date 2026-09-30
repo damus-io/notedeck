@@ -463,6 +463,11 @@ pub fn render_conversation_note(
         Some("subagent") => {
             crate::session_events::decode_subagent_note(note).map(Message::Subagent)
         }
+        Some("error") => Some(Message::Error(content.to_string())),
+        Some("system") => Some(Message::System(content.to_string())),
+        // The TodoWrite list as JSON; a note that doesn't parse is skipped
+        // rather than shown as an empty list.
+        Some("todo") => serde_json::from_str(content).ok().map(Message::TodoUpdate),
         // Skip progress, queue-operation, etc.
         _ => None,
     }
@@ -2482,6 +2487,35 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, ["converted call", "idless call", "bare call"]);
+    }
+
+    /// `error`, `system` and `todo` notes render as the rows the host shows for
+    /// them; a `todo` whose content isn't JSON is skipped rather than shown as
+    /// an empty list.
+    #[tokio::test]
+    async fn error_system_and_todo_roles_render() {
+        let sk = test_secret_key();
+        let session_id = "notice-roles";
+        let todos = r#"{"todos":[{"content":"write it","status":"in_progress"}]}"#;
+        let events = [
+            build_1988_event_json(&sk, session_id, "system", "cwd set", 1000, 0, &[]),
+            build_1988_event_json(&sk, session_id, "todo", todos, 1001, 1, &[]),
+            build_1988_event_json(&sk, session_id, "todo", "{not json", 1002, 2, &[]),
+            build_1988_event_json(&sk, session_id, "error", "rate limited", 1003, 3, &[]),
+        ];
+
+        let messages = load_events(session_id, &events).await;
+        assert_eq!(
+            messages.len(),
+            3,
+            "the unparseable todo is skipped: {messages:?}"
+        );
+        assert!(matches!(&messages[0], Message::System(t) if t == "cwd set"));
+        let Message::TodoUpdate(list) = &messages[1] else {
+            panic!("expected a todo row, got {:?}", messages[1]);
+        };
+        assert_eq!(list["todos"][0]["content"], "write it");
+        assert!(matches!(&messages[2], Message::Error(e) if e == "rate limited"));
     }
 
     /// A `tool_result` with a `parent-task` tag nests in that subagent's row,

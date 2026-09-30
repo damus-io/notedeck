@@ -444,9 +444,9 @@ async fn interrupted_tool() {
     assert_host_matches_fold(script).await;
 }
 
-/// G3: a todo list is shown on the host and never published.
+/// G3: a todo list is published as a `todo` note carrying the TodoWrite JSON,
+/// and the fold shows it where the host does.
 #[tokio::test]
-#[ignore = "converge 3 (headway:dave/equip-cycle-size)"]
 async fn todo_update() {
     let mut script = Vec::from(user_turn("plan it"));
     script.extend([
@@ -459,10 +459,9 @@ async fn todo_update() {
     assert_host_matches_fold(script).await;
 }
 
-/// G3: a backend failure is published as an `error` note, but the loader drops
+/// G3: a backend failure is published as an `error` note, and the fold renders
 /// that role.
 #[tokio::test]
-#[ignore = "converge 3 (headway:dave/equip-cycle-size)"]
 async fn failed_error() {
     let mut script = Vec::from(user_turn("do it"));
     script.extend([
@@ -472,10 +471,9 @@ async fn failed_error() {
     assert_host_matches_fold(script).await;
 }
 
-/// G3: a turn with no response shows "No response from backend" on the host
-/// only.
+/// G3: a turn with no response shows "No response from backend", and
+/// publishes it, so the fold shows it too.
 #[tokio::test]
-#[ignore = "converge 3 (headway:dave/equip-cycle-size)"]
 async fn empty_response_error() {
     let mut script = Vec::from(user_turn("anyone there?"));
     script.push(Step::StreamEnd);

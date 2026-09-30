@@ -1503,7 +1503,15 @@ pub fn delete_session(
 
 /// Handle the /cd command if present in input.
 /// Returns Some(Ok(path)) if cd succeeded, Some(Err(())) if cd failed, None if not a cd command.
-pub fn handle_cd_command(session: &mut ChatSession) -> Option<Result<PathBuf, ()>> {
+///
+/// The notice it shows is also published (`role=system` on success,
+/// `role=error` on failure) so observers, `agentium log` and a restart show it
+/// too; see [`push_cd_notice`].
+pub fn handle_cd_command(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &Option<[u8; 32]>,
+) -> Option<Result<PathBuf, ()>> {
     let input = session.input.trim().to_string();
     if !input.starts_with("/cd ") {
         return None;
@@ -1517,17 +1525,49 @@ pub fn handle_cd_command(session: &mut ChatSession) -> Option<Result<PathBuf, ()
         if let Some(agentic) = &mut session.agentic {
             agentic.cwd = path.clone();
         }
-        session.chat.push(Message::System(format!(
-            "Working directory set to: {}",
-            path.display()
-        )));
+        let notice = Message::System(format!("Working directory set to: {}", path.display()));
+        push_cd_notice(session, notice, ndb, secret_key);
         Some(Ok(path))
     } else {
-        session
-            .chat
-            .push(Message::Error(format!("Invalid directory: {}", path_str)));
+        let notice = Message::Error(format!("Invalid directory: {}", path_str));
+        push_cd_notice(session, notice, ndb, secret_key);
         Some(Err(()))
     }
+}
+
+/// Show a `/cd` notice (a `System` or `Error` row) and publish it as a live
+/// event with the matching role.
+///
+/// Only a session this host runs publishes: a remote session's `/cd` changes
+/// nothing on the host that runs it, so telling its other viewers the
+/// directory changed would be false. Chat-mode sessions publish nothing, as
+/// with every other live event.
+fn push_cd_notice(
+    session: &mut ChatSession,
+    notice: Message,
+    ndb: &nostrdb::Ndb,
+    secret_key: &Option<[u8; 32]>,
+) {
+    let wire = match &notice {
+        Message::System(text) => Some(("system", text.clone())),
+        Message::Error(text) => Some(("error", text.clone())),
+        _ => None,
+    };
+    session.chat.push(notice);
+    let (Some((role, text)), Some(sk)) = (wire, secret_key) else {
+        return;
+    };
+    if session.is_remote() {
+        return;
+    }
+    crate::publish::ingest_live_event(
+        session,
+        ndb,
+        sk,
+        &text,
+        role,
+        crate::session_events::LiveEventTags::default(),
+    );
 }
 
 #[cfg(test)]
@@ -2996,5 +3036,47 @@ mod tests {
                 "{label} left the session unable to receive"
             );
         }
+    }
+
+    /// A `/cd` on a session this host runs publishes its notice (`system` on
+    /// success, `error` on failure); a remote session's `/cd` publishes
+    /// nothing, since it changes nothing on the host that runs it.
+    #[test]
+    fn cd_notices_publish_for_local_sessions_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb =
+            nostrdb::Ndb::new(dir.path().to_str().unwrap(), &crate::tests::test_config()).unwrap();
+        let sk = Some(crate::tests::test_secret_key());
+        let cwd = std::env::temp_dir();
+        let published = |s: &ChatSession| s.agentic.as_ref().unwrap().seen_note_ids.len();
+
+        let mut local = ChatSession::new(1, cwd.clone(), AiMode::Agentic, BackendType::Claude);
+        local.input = format!("/cd {}", cwd.display());
+        assert!(matches!(
+            handle_cd_command(&mut local, &ndb, &sk),
+            Some(Ok(_))
+        ));
+        assert!(matches!(local.chat.last(), Some(Message::System(_))));
+        local.input = "/cd /no/such/dir".to_string();
+        assert!(matches!(
+            handle_cd_command(&mut local, &ndb, &sk),
+            Some(Err(()))
+        ));
+        assert!(matches!(local.chat.last(), Some(Message::Error(_))));
+        assert_eq!(published(&local), 2, "both notices are published");
+
+        let mut remote = ChatSession::new(2, cwd.clone(), AiMode::Agentic, BackendType::Claude);
+        remote.source = SessionSource::Remote;
+        remote.input = format!("/cd {}", cwd.display());
+        assert!(matches!(
+            handle_cd_command(&mut remote, &ndb, &sk),
+            Some(Ok(_))
+        ));
+        assert!(matches!(remote.chat.last(), Some(Message::System(_))));
+        assert_eq!(
+            published(&remote),
+            0,
+            "a remote session's /cd is not published"
+        );
     }
 }

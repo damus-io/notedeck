@@ -1099,10 +1099,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext) {
         // Check for /cd command first (agentic only)
+        let sk = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
         let cd_result = self
             .session_manager
             .get_active_mut()
-            .and_then(update::handle_cd_command);
+            .and_then(|session| update::handle_cd_command(session, app_ctx.ndb, &sk));
 
         // If /cd command was processed, add to recent directories
         if let Some(Ok(path)) = cd_result {

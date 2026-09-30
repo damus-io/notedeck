@@ -284,6 +284,9 @@ pub(crate) fn apply_response(
 /// a subagent-internal result its `parent-task`, so the fold can pair the two
 /// into one row and nest the result the way the host does.
 ///
+/// A failure publishes an `error` note and a todo list a `todo` note (see
+/// [`publish_todo`]).
+///
 /// PermissionRequest and the subagent lifecycle (spawned/completed/failed)
 /// have their own event builders. Token, ToolCalls, SessionInfo and streamed
 /// SubagentOutput don't publish.
@@ -329,8 +332,35 @@ fn publish_response(
                 LiveEventTags::default(),
             );
         }
+        DaveApiResponse::TodoUpdate(todos) => {
+            publish_todo(session, todos, ndb, sk);
+        }
         _ => {}
     }
+}
+
+/// Publish a todo list as a `role=todo` live event whose content is the
+/// TodoWrite JSON.
+///
+/// A list over the wire budget is not published at all: cutting JSON short
+/// leaves something the fold can't parse, so observers keep the previous list
+/// instead of a broken one.
+fn publish_todo(
+    session: &mut session::ChatSession,
+    todos: &serde_json::Value,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) {
+    let content = todos.to_string();
+    if content.len() > MAX_TOOL_OUTPUT_WIRE_BYTES {
+        tracing::warn!(
+            "todo list is {} bytes, over the {} byte wire budget; not publishing it",
+            content.len(),
+            MAX_TOOL_OUTPUT_WIRE_BYTES
+        );
+        return;
+    }
+    ingest_live_event(session, ndb, sk, &content, "todo", LiveEventTags::default());
 }
 
 /// Publish a finished tool as a `tool_result` live event.
@@ -719,20 +749,22 @@ pub(crate) fn handle_stream_end(
     // If the backend returned nothing this turn (dispatch_state never left
     // AwaitingResponse and no row was added — a compaction adds one without
     // leaving it), show an error so the user isn't left staring at silence.
+    //
+    // Check redispatch BEFORE adding that error and BEFORE resetting
+    // dispatch_state: the check counts the trailing user run against the
+    // dispatched count, and the error lands between the dispatched message and
+    // any queued one, which would hide the queued one from the count.
+    let redispatch = session.needs_redispatch_after_stream_end();
     if matches!(
         session.dispatch_state,
         session::DispatchState::AwaitingResponse { .. }
     ) && !session.turn_has_content()
     {
         tracing::warn!("Session {}: backend returned empty response", session_id);
-        session
-            .chat
-            .push(Message::Error("No response from backend".into()));
+        publish_error(session, NO_RESPONSE_ERROR, ndb, secret_key);
     }
 
-    // Check redispatch BEFORE resetting dispatch_state — the check
-    // reads the state to distinguish empty responses from new messages.
-    if session.needs_redispatch_after_stream_end() {
+    if redispatch {
         tracing::info!(
             "Session {}: redispatching queued user message after stream end",
             session_id
@@ -755,6 +787,29 @@ pub(crate) fn handle_stream_end(
     if session.take_compact_and_proceed() {
         needs_send.insert(session_id);
     }
+}
+
+/// The error a turn shows when the backend ended it without producing anything.
+const NO_RESPONSE_ERROR: &str = "No response from backend";
+
+/// Show `text` as this turn's error row and publish it as a `role=error` live
+/// event (locally ingested; the host fans it out), so observers and a restart
+/// show it too.
+///
+/// The row goes through [`session::ChatSession::insert_turn_content`], so a
+/// message queued during the turn stays the trailing run and is still
+/// redispatched.
+fn publish_error(
+    session: &mut session::ChatSession,
+    text: &str,
+    ndb: &nostrdb::Ndb,
+    secret_key: &Option<[u8; 32]>,
+) {
+    session.insert_turn_content(Message::Error(text.to_string()));
+    let Some(sk) = secret_key else {
+        return;
+    };
+    ingest_live_event(session, ndb, sk, text, "error", LiveEventTags::default());
 }
 
 /// Dispatch a compact request to the backend for the active session.
@@ -984,6 +1039,49 @@ mod tests {
             f.session.chat.last(),
             Some(Message::Error(e)) if e == "No response from backend"
         ));
+    }
+
+    /// An empty response's error lands between the dispatched message and one
+    /// queued during the turn, and the queued message is still redispatched:
+    /// the redispatch check runs before the error row splits the trailing
+    /// user run.
+    #[test]
+    fn empty_response_error_keeps_queued_message_redispatched() {
+        let mut f = Fixture::new();
+        f.session
+            .chat
+            .push(Message::User("first".to_string().into()));
+        f.session.mark_dispatched();
+        f.session
+            .chat
+            .push(Message::User("queued".to_string().into()));
+
+        let mut needs_send = HashSet::new();
+        handle_stream_end(
+            &mut f.session,
+            1,
+            &f.secret_key,
+            &f.ndb,
+            &mut needs_send,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            needs_send.contains(&1),
+            "the queued message must be redispatched"
+        );
+        let rows: Vec<&str> = f
+            .session
+            .chat
+            .iter()
+            .map(|m| match m {
+                Message::User(u) => u.text.as_str(),
+                Message::Error(e) => e.as_str(),
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(rows, ["first", NO_RESPONSE_ERROR, "queued"]);
+        assert_eq!(f.published(), 1, "the error is published");
     }
 
     /// The host publishes each subagent lifecycle transition as a
