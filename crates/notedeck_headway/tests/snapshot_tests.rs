@@ -3735,9 +3735,10 @@ fn epic_review_queue_with_nothing_under_the_card_does_not_open() {
 /// raises exactly one `AppAction::Open` naming the session, with a
 /// `/code-review` message that names the commit and the card, and Headway
 /// itself pushes no history entry, so the chrome's switch to Dave is the only
-/// one and back returns to the queue. (The Dave leg lives in the chrome behind
-/// its `dave` feature; see `open_note_in_owning_app`.) The header's "Review in
-/// session" button, beside the session chip, raises the same open.
+/// one and back returns to the queue. (The chrome's leg — Dave takes the
+/// open as one history entry, and back returns — is notedeck_chrome's
+/// `open_lands_an_agentium_session_in_dave_and_back_returns`.) The header's
+/// "Review in session" button, beside the session chip, raises the same open.
 #[test]
 fn shift_s_in_the_queue_opens_the_session_asking_for_a_review() {
     use notedeck::{AppAction, AppId, ChromeNavEntry, NavStack};

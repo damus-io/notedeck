@@ -34,12 +34,12 @@ pub(crate) struct PendingMessageLoad {
 /// A request to focus a session raised from elsewhere in the app — a click on
 /// its inline `agentium:` chip, or an open by URI — waiting for the next
 /// [`update`](notedeck::App::update). See [`Dave::open_with_message`].
-pub(crate) struct PendingOpen {
+pub struct PendingOpen {
     /// The kind-31988 session-state note to focus.
-    pub(crate) note: nostrdb_net::NoteId,
+    pub note: nostrdb_net::NoteId,
     /// Text to send into the session once it's focused, as if typed and
     /// submitted (`OpenUri.msg`). `None` for a plain chip click.
-    pub(crate) msg: Option<String>,
+    pub msg: Option<String>,
 }
 
 /// The session a [`PendingOpen`] focused, handed back to

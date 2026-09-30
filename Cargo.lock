@@ -5439,6 +5439,7 @@ dependencies = [
 name = "notedeck_chrome"
 version = "0.11.0-beta.1"
 dependencies = [
+ "agentium-core",
  "android-keyring",
  "bitflags 2.11.0",
  "eframe",

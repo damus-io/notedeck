@@ -72,6 +72,7 @@ pub use agentium_core::messages::{
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use quaternion::Quaternion;
+pub use restore::PendingOpen;
 pub use session::{ChatSession, SessionId, SessionManager};
 pub use session_discovery::{discover_sessions, format_relative_time, ResumableSession};
 pub use tools::{
@@ -639,6 +640,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// [`deliver_open_message`](Self::deliver_open_message).
     pub fn open_with_message(&mut self, note: nostrdb_net::NoteId, msg: Option<String>) {
         self.pending_open = Some(restore::PendingOpen { note, msg });
+    }
+
+    /// The open an [`open_with_message`](Self::open_with_message) left for the
+    /// next [`update`](Self::update), if it hasn't run yet: where a host's open
+    /// by reference landed, for the host's tests to check.
+    pub fn pending_open(&self) -> Option<&PendingOpen> {
+        self.pending_open.as_ref()
     }
 
     /// Fetch the thread from ndb, format it, and create a session with the prompt.

@@ -29,6 +29,15 @@ jobs:
         env:
           CI: true
 
+      # The chrome routes an open by reference, or a click on another app's
+      # inline widget, to the app that owns it — but those apps sit behind
+      # cargo features the workspace run above doesn't turn on, so without
+      # this step that routing is never tested.
+      - name: Run notedeck_chrome Cross-App Tests
+        run: cargo test -p notedeck_chrome --features dave,notebook,headway
+        env:
+          CI: true
+
       - name: Run notedeck_notebook Tests
         run: cargo test -p notedeck_notebook -- --test-threads=1
         env:

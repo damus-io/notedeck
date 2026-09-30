@@ -357,3 +357,132 @@ fn columns_route_to_profile(
         action.process_router_action(&mut col.router, &mut col.sheet_router, ctx.sound);
     }
 }
+
+// Cross-app routing of an open by reference, through a chrome built the way
+// the app builds one (`new_headless`), so the apps that claim a reference are
+// the real ones. Needs the apps compiled in, which `cargo test --workspace`
+// doesn't do; CI runs it with `--features dave,notebook,headway`.
+#[cfg(all(test, feature = "dave", feature = "headway"))]
+mod open_tests {
+    use super::*;
+    use egui_nav::{NavAction, ReturnType};
+    use nostrdb::{Filter, IngestMetadata, NoteBuilder};
+    use nostrdb_net::FullKeypair;
+    use notedeck::{AppId, NavRequest, Notedeck, OpenUri};
+    use notedeck_dave::session_events::AI_SESSION_STATE_KIND;
+
+    /// The session the open names: its kind-31988 d-tag.
+    const SESSION_ID: &str = "chrome-open-test-session";
+
+    /// What the open asks the session, as Headway's `S` does.
+    const MSG: &str = "launch a /code-review for the work done in this session";
+
+    /// Write `SESSION_ID`'s kind-31988 state note, signed by `kp`, and wait
+    /// until it's committed so its `agentium:` reference resolves.
+    async fn ingest_session(ndb: &nostrdb::Ndb, kp: &FullKeypair) -> nostrdb_net::NoteId {
+        let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
+        let sub = ndb.subscribe(&[filter]).expect("subscribe");
+        let note = NoteBuilder::new()
+            .kind(AI_SESSION_STATE_KIND)
+            .content("")
+            .created_at(1_000)
+            .start_tag()
+            .tag_str("d")
+            .tag_str(SESSION_ID)
+            .start_tag()
+            .tag_str("title")
+            .tag_str("Open test")
+            .start_tag()
+            .tag_str("status")
+            .tag_str("working")
+            .sign(&kp.secret_key.secret_bytes())
+            .build()
+            .expect("note");
+        let frame = nostrdb_net::ClientMessage::event(&note)
+            .expect("event")
+            .to_json()
+            .expect("json");
+        ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+            .expect("ingest");
+        ndb.wait_for_notes(sub, 1).await.expect("committed");
+        nostrdb_net::NoteId::new(*note.id())
+    }
+
+    /// An `AppAction::Open` of an `agentium:` reference with a message, raised
+    /// while Headway is in front (as its review queue's `S` raises it): the
+    /// chrome lands it in Dave as ONE global-history entry, Dave holds the
+    /// session and the message for its next update, and one back returns to
+    /// Headway. The Headway side (exactly one open, no history entry of its
+    /// own) is `shift_s_in_the_queue_opens_the_session_asking_for_a_review`.
+    #[tokio::test]
+    async fn open_lands_an_agentium_session_in_dave_and_back_returns() {
+        let dir = tempfile::TempDir::new().expect("tmp dir");
+        let kp = FullKeypair::generate();
+        let args: Vec<String> = [
+            "notedeck-test",
+            "--testrunner",
+            "--nsec",
+            &kp.secret_key.to_secret_hex(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let egui_ctx = egui::Context::default();
+        let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
+        let mut chrome = Chrome::new_headless(&args, &mut notedeck).expect("chrome");
+        let mut ctx = notedeck.app_context();
+        assert_eq!(*ctx.accounts.selected_account_pubkey(), kp.pubkey);
+        let state_note = ingest_session(ctx.ndb, &kp).await;
+
+        let headway = chrome.headway_slot().expect("headway in the roster");
+        chrome.set_active(headway as i32);
+        let before = chrome.global_nav.as_ref().expect("nav").len();
+
+        let open = OpenUri {
+            reference: agentium_core::wordid::session_ref(SESSION_ID),
+            msg: Some(MSG.to_string()),
+        };
+        // In the queue the header has drawn the record's session chip before
+        // `S` can be pressed, and drawing it resolves the reference. That
+        // resolve subscribes Dave's session cache, which seeds on its next
+        // advance (see `RealtimeCache::advance`), so the open's own resolve is
+        // the one that finds the session. Stand in for the chip's frame.
+        let _ = resolve_reference(&mut ctx, &open.reference);
+        let _ = egui_ctx.run(Default::default(), |c| {
+            egui::CentralPanel::default().show(c, |ui| {
+                chrome_handle_app_action(&mut chrome, &mut ctx, AppAction::Open(open.clone()), ui);
+            });
+        });
+
+        let dave = chrome
+            .apps
+            .iter()
+            .position(|app| matches!(app, crate::app::NotedeckApp::Dave(_)))
+            .expect("dave in the roster");
+        let nav = chrome.global_nav.as_ref().expect("nav");
+        assert_eq!(nav.len(), before + 1, "the open is one history entry");
+        assert_eq!(nav.top().app, AppId(dave));
+        assert_eq!(chrome.active, dave as i32);
+
+        let pending = chrome
+            .get_dave_app()
+            .and_then(|dave| dave.pending_open())
+            .expect("Dave holds the open");
+        assert_eq!(pending.note, state_note);
+        assert_eq!(pending.msg.as_deref(), Some(MSG));
+
+        // One back returns to Headway. The pop lands once the slide does,
+        // which `nav_frame` reconciles; drive the same reconcile here.
+        chrome.apply_nav_requests(vec![NavRequest::Back]);
+        chrome
+            .global_nav
+            .as_mut()
+            .expect("nav")
+            .reconcile(NavAction::Returned(ReturnType::Click));
+        chrome.sync_active_from_nav();
+        let nav = chrome.global_nav.as_ref().expect("nav");
+        assert_eq!(nav.top().app, AppId(headway));
+        assert_eq!(chrome.active, headway as i32);
+    }
+}
