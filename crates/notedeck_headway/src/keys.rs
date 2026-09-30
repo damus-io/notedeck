@@ -192,23 +192,56 @@ pub(crate) fn queue_key_hints(state: &BoardUiState) -> Option<&'static [KeyHint]
     state.key_hints_shown().then_some(QUEUE_HINTS)
 }
 
-/// Draw `hints` as a row of keycap groups, each followed by its muted label.
-/// Wraps a whole group at a time on a narrow pane. Walks the static table only.
+/// Width of the keycap for `key`: [`KEYCAP`] square, widened by
+/// [`KEYCAP_PER_CHAR`] for each character past the first.
+fn keycap_width(key: &str) -> f32 {
+    let extra_chars = key.chars().count().saturating_sub(1) as f32;
+    KEYCAP + extra_chars * KEYCAP_PER_CHAR
+}
+
+/// Width `hint`'s group takes in a row: its keycaps and a label `label_width`
+/// wide, with an `item_gap` after each keycap. The measure [`key_hints_ui`]
+/// wraps on; it lays the group out from [`keycap_width`] too, so the two agree.
+fn hint_group_width(hint: &KeyHint, label_width: f32, item_gap: f32) -> f32 {
+    let caps: f32 = hint.keys.iter().map(|key| keycap_width(key)).sum();
+    caps + item_gap * hint.keys.len() as f32 + label_width
+}
+
+/// Draw `hints` as rows of keycap groups, each keycap run followed by its muted
+/// label, [`SPACING_MD`] apart. A group is measured before it is placed and
+/// starts a new row if it won't fit what's left of this one, so a narrow pane
+/// wraps whole groups and never splits a keycap from its label. (egui can't do
+/// this by itself: it places a nested `horizontal` before knowing its width,
+/// so the group would run off the right edge instead.) Walks the static table
+/// and lays each label out once.
 pub(crate) fn key_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, hints: &'static [KeyHint]) {
     ui.horizontal_wrapped(|ui| {
+        let item_gap = ui.spacing().item_spacing.x;
         for (i, hint) in hints.iter().enumerate() {
+            let label =
+                egui::WidgetText::from(egui::RichText::new(hint.label).color(theme.text_muted))
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    );
+            let width = hint_group_width(hint, label.size().x, item_gap);
             if i > 0 {
-                ui.add_space(SPACING_MD);
+                if SPACING_MD + item_gap + width > ui.available_size_before_wrap().x {
+                    ui.end_row();
+                } else {
+                    ui.add_space(SPACING_MD);
+                }
             }
             ui.horizontal(|ui| {
                 for &key in hint.keys {
-                    let extra_chars = key.chars().count().saturating_sub(1) as f32;
                     KeybindHint::new(key)
                         .size(KEYCAP)
-                        .width(KEYCAP + extra_chars * KEYCAP_PER_CHAR)
+                        .width(keycap_width(key))
                         .show(ui);
                 }
-                ui.label(egui::RichText::new(hint.label).color(theme.text_muted));
+                ui.label(label);
             });
         }
     });

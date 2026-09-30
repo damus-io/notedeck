@@ -2429,6 +2429,62 @@ fn review_queue_shows_the_recorded_commit_diff() {
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
     wait_for_label(&mut harness, "send back");
     wait_for_label(&mut harness, "next/prev file");
+    assert_queue_hints_fit(&harness, 1200.0);
+}
+
+/// The queue's key-strip labels, in strip order: what [`assert_queue_hints_fit`]
+/// checks for.
+const QUEUE_HINT_LABELS: [&str; 11] = [
+    "next/prev card",
+    "scroll",
+    "half page",
+    "top/bottom",
+    "next/prev file",
+    "explainer",
+    "open card",
+    "done",
+    "send back",
+    "session/review",
+    "leave",
+];
+
+/// Assert every queue hint label ends inside a `width`-wide screen, so no
+/// group ran past the right edge into the clip, and return how many rows the
+/// strip took.
+fn assert_queue_hints_fit(harness: &Harness<'static, HeadwayTestState>, width: f64) -> usize {
+    let mut rows: Vec<f64> = Vec::new();
+    for label in QUEUE_HINT_LABELS {
+        let bb = harness
+            .get_by_label(label)
+            .bounding_box()
+            .expect("a hint label has a box");
+        assert!(
+            bb.x1 <= width,
+            "hint {label:?} ends at x={} past the {width}px screen",
+            bb.x1
+        );
+        if !rows.iter().any(|y| (y - bb.y0).abs() < 1.0) {
+            rows.push(bb.y0);
+        }
+    }
+    rows.len()
+}
+
+/// On a 600px screen the queue's key strip wraps whole groups onto several
+/// rows: every label, through `leave`, ends inside the screen instead of
+/// running off it.
+#[test]
+fn review_queue_key_hints_wrap_on_a_narrow_pane() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(600.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, "Explainer ↗");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "leave");
+    let rows = assert_queue_hints_fit(&harness, 600.0);
+    assert!(rows >= 2, "the strip wrapped onto {rows} row(s)");
 }
 
 /// Snapshot: the review queue open on the first of two In Review cards — the
