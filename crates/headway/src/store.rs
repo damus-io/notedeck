@@ -1519,8 +1519,8 @@ impl std::error::Error for CrossBoardError {}
 ///   so landing one on a plaintext board resolves on this device and nowhere else.
 /// - A sealed board folds by coordinate ([`event::board_scoped_filters`]), which
 ///   gathers issues by their `a` tag and trusts only rumors sealed under its own
-///   team key ([`event::team_sealed`]) — so an issue created on another board is
-///   invisible to it twice over.
+///   team key or its owner's plaintext ([`event::shared_fold_admits`]) — so an
+///   issue created on another board is invisible to it twice over.
 ///
 /// Channels are per-board by construction (each root derives from the slug), so
 /// in practice this holds only between two plaintext boards, or for a card being
@@ -1538,7 +1538,8 @@ fn target_can_read_card(ndb: &Ndb, target: BoardRef, card: NoteId) -> bool {
     let Some(channel) = target.channel else {
         return !note.is_rumor();
     };
-    if !event::team_sealed(&note, &[*channel.keys.team_keypair.pubkey.bytes()]) {
+    let team = [*channel.keys.team_keypair.pubkey.bytes()];
+    if !event::shared_fold_admits(&note, &target.view.author, &team) {
         return false;
     }
     matches!(

@@ -59,7 +59,7 @@ pub use kinds::{
     KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
     KIND_SEQUENCE, is_addressable,
 };
-pub(crate) use load::team_sealed;
+pub(crate) use load::shared_fold_admits;
 pub use load::{
     board_pref_created_at, board_scoped_filters, card_meta_filter, comment_filter,
     current_blockers, current_related, fold_board, fold_shared_board, headway_filter, load_board,

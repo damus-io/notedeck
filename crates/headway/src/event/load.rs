@@ -278,12 +278,13 @@ pub fn comment_filter(card_ids: &[[u8; 32]]) -> Filter {
 /// commutative and idempotent, folding one filter set after another yields the
 /// same state as a single combined walk.
 ///
-/// Authority follows *team-key possession*: the walk ingests only team-sealed
-/// rumors (see [`team_sealed`]) — those nostrdb unwrapped from a kind-1081
-/// envelope sealed under `team_pubkey`, which only a keyholder can produce — and
-/// the reducer runs in [`Authority::TeamKey`](super::reduce::Authority::TeamKey) mode, so any of them may amend any
-/// card. This drops plaintext notes forged at the coordinate, and is what lets a
-/// non-owner member's edit count. Per-member edit *permissions* (an admin-signed
+/// Authority follows *team-key possession*: the walk ingests team-sealed rumors
+/// (see [`team_sealed`]) — those nostrdb unwrapped from a kind-1081 envelope
+/// sealed under `team_pubkey`, which only a keyholder can produce — plus the
+/// board owner's own *plaintext* cards and overlays (see [`shared_fold_admits`]),
+/// and the reducer runs in [`Authority::TeamKey`](super::reduce::Authority::TeamKey) mode, so any of them may amend any
+/// card. This drops plaintext notes forged at the coordinate by anyone but the
+/// owner, and is what lets a non-owner member's edit count. Per-member edit *permissions* (an admin-signed
 /// roster) are the separate G6 gate, `headway:headway/purchase-arch-since`.
 ///
 /// `team_pubkeys` are the board channel's team public keys
@@ -310,6 +311,7 @@ pub fn fold_shared_board(
     team_pubkeys: &[Pubkey],
 ) -> Option<BoardReducer> {
     let phase_a = board_scoped_filters(board_addr)?;
+    let owner = BoardCoord::parse(board_addr)?.owner;
     let teams: Vec<[u8; 32]> = team_pubkeys.iter().map(|k| *k.bytes()).collect();
     let team = teams.as_slice();
     let mut card_ids: Vec<[u8; 32]> = Vec::new();
@@ -319,7 +321,7 @@ pub fn fold_shared_board(
             &phase_a,
             BoardReducer::team_authored(),
             |mut acc, note| {
-                if !team_sealed(&note, team) {
+                if !shared_fold_admits(&note, &owner, team) {
                     return acc;
                 }
                 if note.kind() == KIND_ISSUE {
@@ -343,7 +345,7 @@ pub fn fold_shared_board(
     let mut record_ids: Vec<[u8; 32]> = Vec::new();
     let acc = ndb
         .fold(txn, &phase_b, acc, |mut acc, note| {
-            if !team_sealed(&note, team) {
+            if !shared_fold_admits(&note, &owner, team) {
                 return acc;
             }
             if note.kind() == KIND_REVIEW {
@@ -363,7 +365,7 @@ pub fn fold_shared_board(
     }
     let phase_c = [comment_filter(&record_ids)];
     ndb.fold(txn, &phase_c, acc, |mut acc, note| {
-        if !team_sealed(&note, team) {
+        if !shared_fold_admits(&note, &owner, team) {
             return acc;
         }
         if let Some(event) = parse(&note) {
@@ -372,6 +374,32 @@ pub fn fold_shared_board(
         acc
     })
     .ok()
+}
+
+/// Whether [`fold_shared_board`] may ingest `note` for the board owned by
+/// `owner`: a rumor sealed under one of `team_pubkeys` ([`team_sealed`]), or a
+/// **plaintext** note the owner signed — anything but a board definition.
+///
+/// Owner plaintext is admitted because it is as authenticated as a sealed rumor
+/// (more: it carries the owner's signature) and the owner may amend anything on
+/// their own board, so [`Authority::TeamKey`](super::reduce::Authority::TeamKey)
+/// stays sound. Without it a card written plaintext at a sealed board's coordinate
+/// — by a front end that hadn't joined the channel yet, or before the board was
+/// sealed and never re-sealed — is on the relay, readable by anyone, and folded
+/// by nobody: 191 such cards were invisible on jb55's `headway` board. Plaintext
+/// from any other key stays out, since anyone can sign a note at the coordinate.
+///
+/// The board *definition* is the exception. A sealed board's definition is
+/// always sealed (born sealed, or promoted in place by a migration), while a
+/// since-retired auto-seed left later plaintext "Headway" definitions at sealed
+/// coordinates; admitting those would let a stale default rename the board and
+/// reset its columns (see
+/// `shared_fold_sees_sealed_definition_behind_a_later_plaintext_one`).
+pub(crate) fn shared_fold_admits(note: &Note, owner: &[u8; 32], team_pubkeys: &[[u8; 32]]) -> bool {
+    if team_sealed(note, team_pubkeys) {
+        return true;
+    }
+    !note.is_rumor() && note.pubkey() == owner && note.kind() != KIND_BOARD
 }
 
 /// Whether `note` is a rumor nostrdb unwrapped from an SNS kind-1081 envelope
@@ -799,6 +827,137 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// A sealed board folds its owner's *plaintext* cards too — issue, placement,
+    /// comment and an edit of a sealed card — while plaintext another key wrote at
+    /// the same coordinate stays out.
+    ///
+    /// Sighted live: 191 cards written plaintext at jb55's sealed `headway` board
+    /// were on the relay (readable by anyone) and folded by no front end, because
+    /// the shared fold took only team-sealed rumors. See [`shared_fold_admits`].
+    #[test]
+    fn shared_fold_admits_owner_plaintext_but_not_a_strangers() {
+        use crate::store::{self, NoPublish, Signer, SnsChannel};
+        use nostrdb::{Ndb, Transaction};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let owner_secret = owner.secret_key.secret_bytes();
+        let stranger_secret = stranger.secret_key.secret_bytes();
+        let addr = board_address(&owner.pubkey, "headway");
+
+        // Distinctive bytes so a stray all-zero root can't accidentally match.
+        let mut root = [0u8; 32];
+        root[0] = 0x11;
+        root[31] = 0x44;
+        let channel = SnsChannel {
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("derive sns keys"),
+        };
+        assert!(ndb.add_team_root(&root));
+
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+        let seal = |b: NoteBuilder| -> NoteId {
+            store::ingest_signed(
+                &ndb,
+                b,
+                &Signer::shared(&owner_secret, &channel),
+                &mut NoPublish,
+            )
+            .expect("sealed ingest")
+        };
+        let plain = |b: NoteBuilder, secret: &[u8; 32]| -> NoteId {
+            store::ingest(&ndb, b, secret, &mut NoPublish).expect("plaintext ingest")
+        };
+
+        // Edits below are stamped after the sealed ones so latest-wins would pick
+        // them — the stranger's newest of all, so only the gate can drop it.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // The sealed board: its definition and one card.
+        seal(build_board("headway", "Team Board", "", &cols));
+        let sealed = seal(build_issue(&addr, "Sealed card", ""));
+        seal(build_placement("headway", &addr, &sealed, "todo", "g"));
+
+        // The owner writes a card in plaintext at the coordinate, places and
+        // comments on it, and renames the sealed card in plaintext.
+        let owned = plain(
+            build_issue(&addr, "Owner plaintext card", ""),
+            &owner_secret,
+        );
+        plain(
+            build_placement("headway", &addr, &owned, "done", "h"),
+            &owner_secret,
+        );
+        plain(
+            build_comment(&owned, &owner.pubkey, None, "owner plaintext comment"),
+            &owner_secret,
+        );
+        plain(
+            build_subject_edit(&sealed, "Sealed card (renamed in plaintext)").created_at(now + 10),
+            &owner_secret,
+        );
+
+        // A stranger forges a card at the owner's coordinate and renames the
+        // owner's sealed card. Neither may count: only a keyholder or the owner can.
+        let forged = plain(build_issue(&addr, "Forged card", ""), &stranger_secret);
+        plain(
+            build_placement("headway", &addr, &forged, "todo", "a"),
+            &stranger_secret,
+        );
+        plain(
+            build_subject_edit(&sealed, "Hijacked").created_at(now + 20),
+            &stranger_secret,
+        );
+
+        let team_pubkey = &channel.keys.team_keypair.pubkey;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let view = loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            // Wait until the stranger's notes are queryable too, so the absence
+            // asserted below is the gate's doing rather than ingest lag.
+            let stranger_landed = ndb.get_note_by_id(&txn, forged.bytes()).is_ok();
+            if stranger_landed
+                && let Some(view) =
+                    load_shared_board(&ndb, &txn, &addr, std::slice::from_ref(team_pubkey))
+                && view.columns[1].cards.len() == 1
+                && view.columns[1].cards[0].comments.len() == 1
+                && view.columns[0].cards[0].title == "Sealed card (renamed in plaintext)"
+            {
+                break view;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the owner's plaintext never folded into the sealed board"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        assert_eq!(view.title, "Team Board");
+        assert_eq!(
+            view.columns[0].cards.len(),
+            1,
+            "the forged card must not fold"
+        );
+        assert_eq!(
+            view.columns[0].cards[0].title,
+            "Sealed card (renamed in plaintext)"
+        );
+        assert_eq!(view.columns[1].cards[0].title, "Owner plaintext card");
+        assert_eq!(
+            view.columns[1].cards[0].comments[0].body,
+            "owner plaintext comment"
+        );
     }
 
     #[test]
