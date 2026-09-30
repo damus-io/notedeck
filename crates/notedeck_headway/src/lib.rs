@@ -20,7 +20,7 @@ mod ui;
 
 use cache::BoardCache;
 pub use nav::{HeadwayRoute, ReviewTarget};
-use nav::{NavReconcile, reconcile_nav};
+use nav::{NavReconcile, SeenCards, reconcile_nav};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
 use ui::{BoardEffect, BoardNav, CardBoardMove, CardBoardOp, board_ui, card_title, empty_state};
 pub use ui::{
@@ -116,6 +116,10 @@ pub struct Headway {
     /// registration by cloning the `Rc`, so a realtime edit folded in by the pump
     /// is immediately visible to an inline chip drawn in another app.
     board_cache: Rc<RefCell<BoardCache>>,
+    /// The cards on the board drawn last frame, diffed against each fold so a
+    /// card that leaves the board takes its history entries with it (see
+    /// [`SeenCards`]).
+    seen_cards: SeenCards,
 }
 
 impl Default for Headway {
@@ -134,6 +138,7 @@ impl Default for Headway {
             keyshare_sub: None,
             pending_selfshares: Vec::new(),
             board_cache: Rc::new(RefCell::new(BoardCache::default())),
+            seen_cards: SeenCards::default(),
         }
     }
 }
@@ -971,6 +976,19 @@ impl Headway {
             return AppResponse::default();
         };
 
+        // A card that has left the board since last frame (archived, deleted,
+        // moved to another board, here or elsewhere) has nothing for its
+        // entries to draw, so they all leave the history in one prune: its
+        // detail, graph and review, back and forward. Raised here, while
+        // Headway renders as the active app, which the chrome tags it with.
+        let departed = self.seen_cards.departed(&view);
+        if !departed.is_empty() {
+            ctx.navigator
+                .remove_active_routes(move |route: &HeadwayRoute| {
+                    route.entry_card().is_some_and(|c| departed.contains(&c))
+                });
+        }
+
         // Header sync indicator: are we reaching a private relay right now?
         let sync = sync_status(ctx);
         let action = board_ui(ui, &theme, ctx, &view, &boards, sync, &mut self.state);
@@ -1028,8 +1046,16 @@ impl Headway {
                 ctx.navigator
                     .push_active_route(HeadwayRoute::review_queue(epic, title))
             }
-            // Leaving a card (close, delete, or a card that vanished), closing the
-            // graph or leaving the queue steps one entry back in the global history.
+            // An entry whose card has left the board is the prune's to remove,
+            // not a back's. The frame that draws it drops the gone card, which
+            // reads as a back, and so would every other frame drawing it before
+            // the prune lands (a slide's). Each back would pop one more entry.
+            Some(NavReconcile::Back)
+                if before
+                    .entry_card()
+                    .is_some_and(|card| view.card(card).is_none()) => {}
+            // Leaving a card (close or delete), closing the graph or leaving the
+            // queue steps one entry back in the global history.
             Some(NavReconcile::Back) => ctx.navigator.back(),
             // Steady frame — nothing moved, so enqueue nothing (this doesn't spin).
             None => {}

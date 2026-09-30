@@ -4567,18 +4567,21 @@ fn a_card_that_has_not_folded_in_keeps_its_route_entry() {
         harness.run_ok();
     }
 
-    let backs = harness
-        .state_mut()
-        .notedeck
-        .app_context()
-        .navigator
-        .take()
+    let requests = harness.state_mut().notedeck.app_context().navigator.take();
+    let backs = requests
         .iter()
         .filter(|req| matches!(req, NavRequest::Back))
         .count();
     assert_eq!(
         backs, 0,
         "a route whose card hasn't folded in must keep its own history entry"
+    );
+    // Nor is it pruned: a card never on the board hasn't left it.
+    assert!(
+        !requests
+            .iter()
+            .any(|req| matches!(req, NavRequest::RemoveActive(_))),
+        "a card that hasn't folded in yet isn't pruned from the history"
     );
 }
 
@@ -4634,8 +4637,9 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
 /// One chrome frame of the global nav loop: draw the stack top through
 /// `render_nav` (its token), pump the harness, then drain the app's queued nav
 /// requests into the stack the way `Chrome::apply_nav_requests` does —
-/// `PushToActive`/`Back` are the only kinds Headway raises. A self-push inherits
-/// the active (top) app's slot. A back lands at once, as the chrome's does
+/// `PushToActive`, `RemoveActive` (a card that left the board) and `Back` are
+/// the only kinds Headway raises. A self-push and a prune inherit the active
+/// (top) app's slot. A back lands at once, as the chrome's does
 /// when its slide ends (the frames in between redraw the outgoing entry).
 /// Shared by the `chrome_nav_loop_*` tests.
 fn chrome_frame(
@@ -4653,6 +4657,9 @@ fn chrome_frame(
     for request in app_ctx.navigator.take() {
         match request {
             NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
+            NavRequest::RemoveActive(is_dead) => {
+                stack.retain_routes(|e| e.app != active || !is_dead(e.token.as_ref()));
+            }
             // `go_back` only flags the slide; `pop` is what its end does.
             NavRequest::Back => {
                 stack.go_back();
@@ -5259,10 +5266,10 @@ fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
 
 /// As [`chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board`], with
 /// the epic's queue reached by a history walk, so the epic's detail never
-/// drew and nothing but `close_queue`'s archived marker says the epic has
-/// left. The queue's card stays, so `q` is what closes it. Without the
-/// marker, the epic's detail entry the back lands on holds the selection as
-/// a card not folded in yet, and never backs on to the board.
+/// drew. The queue's card stays, so `q` is what closes it. The epic's detail
+/// entry under the queue went with the epic, pruned when it left; were it
+/// still there, the back would land on it, and it would hold the selection
+/// as a card not folded in yet and never back on to the board.
 #[test]
 fn chrome_nav_loop_gone_epics_queue_backs_off_its_undrawn_detail() {
     use notedeck::{AppId, ChromeNavEntry};

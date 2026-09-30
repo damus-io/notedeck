@@ -137,9 +137,10 @@ pub(crate) enum ActionView<'a> {
 /// leaves the queue or a plain review pane for the card's detail; `Review`
 /// in the queue only goes back to the newest record, since the queue already
 /// shows the card; `Archive` steps the grid's cursor off the card, steps the
-/// queue on (as `D` does), backs a detail out of it, or backs a plain pane
-/// out to the card's detail, which then leaves too; `Step` walks the grid's
-/// cursor, the queue, or the card's column.
+/// queue on (as `D` does), backs a detail out of it, or leaves a plain pane
+/// where it is until the archive folds in and the app prunes the card's
+/// entries, the pane's and its detail's under it, in one step; `Step` walks
+/// the grid's cursor, the queue, or the card's column.
 pub(crate) fn apply_card_action(
     ctx: &egui::Context,
     view: &BoardView,
@@ -193,7 +194,10 @@ fn archive_card(
     match at {
         ActionView::Grid(filter) => return archive_cursor_card(view, filter, state),
         ActionView::Queue => state.advance_queue(view, now),
-        ActionView::Pane => state.archive_from_pane(card),
+        // The card's entries leave the history once the archive folds in
+        // (`nav::SeenCards`), so the pane doesn't back out itself: a back
+        // here would land on the detail under it, only for that to go too.
+        ActionView::Pane => {}
         ActionView::Detail => state.leave_card(),
     }
     Some(BoardAction::ArchiveCard { card })
@@ -2621,16 +2625,16 @@ diff --git a/b.txt b/b.txt
         assert_eq!(harness.state().state.selected(), None);
     }
 
-    /// `a` in a plain review pane archives its card and backs out to the
-    /// card's detail, not past it: the chrome takes one back a frame, and the
-    /// detail leaves in turn once the archive folds in
-    /// (`chrome_nav_loop_pane_archive_ends_on_the_board`).
+    /// `a` in a plain review pane archives its card and stays put: the app
+    /// prunes the pane's entry and its detail's once the archive folds in
+    /// (notedeck_chrome's `pane_a_ends_on_the_board`), so a back from here
+    /// would only land on a detail about to go.
     #[test]
-    fn a_in_a_plain_pane_backs_out_to_the_detail() {
+    fn a_in_a_plain_pane_archives_and_stays() {
         let mut harness = pane_harness();
         press(&mut harness, Key::A);
         assert_eq!(harness.state().archived, Some(id(5)));
-        assert_eq!(harness.state().state.review_card(), None);
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
         assert_eq!(harness.state().state.selected(), Some(id(5)));
     }
 

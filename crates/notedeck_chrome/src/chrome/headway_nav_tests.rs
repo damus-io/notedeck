@@ -416,20 +416,14 @@ async fn a_finished_epic_queue_says_so_after_the_back_slide() {
 }
 
 /// As [`a_finished_epic_queue_says_so_after_the_back_slide`], with the epic
-/// archived while its queue is open: `D` on the last card closes the queue
-/// onto the grid, by way of the epic's detail entry the back lands on first,
-/// and the grid still says the queue is done once it settles.
-///
-/// Ignored: it fails on a bug outside the notice. The history ends one entry
-/// *below* Headway's board, backed out of Headway altogether. The gone epic's
-/// `Card` entry raises its drop-back on every pass that draws it; the chrome
-/// ignores the ones that arrive mid-slide, but one raised in the pass where
-/// that entry's own back-slide lands is applied after the pop. The hand-rolled
-/// slide model this replaced had nothing beneath the board, so the extra back
-/// was a no-op there. headway:headway/attack-neither-super swaps that drop for
-/// a prune of the card's entries, which a repeat can't overshoot.
+/// archived while its queue is open: the queue carries on over the epic's
+/// subissues, and `D` on the last card closes it onto the grid, which says
+/// the queue is done. The epic's detail entry under the queue left with the
+/// epic, so the back lands on the grid, not on a detail with nothing to draw.
+/// Before, that entry stayed, and its drop-back fired on every pass drawing
+/// it: one raised in the pass its own back-slide landed in popped Headway's
+/// board too.
 #[tokio::test]
-#[ignore = "an extra back pops Headway's board: headway:headway/attack-neither-super"]
 async fn a_gone_epics_finished_queue_says_so_on_the_grid() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = headway_in_chrome(repo.path(), &[(SUBISSUE, "src/sync.rs")]).await;
@@ -558,22 +552,15 @@ async fn pane_n_then_q_lands_on_the_next_cards_detail() {
     about(&harness, NEXT_CARD, CARD);
 }
 
-/// A pane's `a` archives its card and ends on the grid, one card lighter.
-/// Opened with grid `r`, the detail under the pane never drew the card, and
-/// the archive can fold in during the back's slide onto it: the case that
-/// used to strand the grid under a stale detail entry.
-///
-/// Ignored: on the real chrome it ends one entry *below* Headway's board,
-/// backed out of Headway altogether. Likely (from reading, not traced) the
-/// pane's own back and the gone card's drop-back from its detail entry add
-/// up to one back too many once the slides land, as in
-/// [`a_gone_epics_finished_queue_says_so_on_the_grid`].
-/// The hand-rolled chrome model it was first written against popped every
-/// back at once and had nothing beneath the board, so it passed there.
-/// headway:headway/attack-neither-super replaces pane `a`'s back with a
-/// prune of the card's entries.
+/// A pane's `a` archives its card and ends on the grid, one card lighter,
+/// with none of the card's entries left to go forward to. Opened with grid
+/// `r`, the detail under the pane never drew the card: the case that used to
+/// strand the grid under a stale detail entry. The pane stays until the
+/// archive folds in, and then the pane's entry and the detail's go in one
+/// prune. Before, the pane backed out itself, and that back and the gone
+/// card's drop-back from its detail entry added up to one too many, popping
+/// Headway's board.
 #[tokio::test]
-#[ignore = "an extra back pops Headway's board: headway:headway/attack-neither-super"]
 async fn pane_a_ends_on_the_board() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = two_in_review(repo.path()).await;
@@ -588,6 +575,86 @@ async fn pane_a_ends_on_the_board() {
     assert!(
         harness.query_by_label(DETAIL).is_none(),
         "no detail left over the grid"
+    );
+    assert!(
+        !history(&harness).can_go_forward(),
+        "nothing to go forward to"
+    );
+}
+
+/// As [`pane_a_ends_on_the_board`], with the pane opened from the card's
+/// detail ("Review diff"), so the detail did draw the card: `a` still ends
+/// on the grid in one prune, not on the detail the pane was opened from,
+/// which has no card left to show.
+#[tokio::test]
+async fn pane_a_from_the_detail_ends_on_the_board() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+
+    harness.get_by_label(CARD).click();
+    land_on(&mut harness, board + 1, DETAIL);
+    harness.get_by_label(DETAIL).click();
+    land_on(&mut harness, board + 2, "src/a.rs");
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::A);
+    land_on(&mut harness, board, "6 cards · 5 columns");
+    assert!(
+        harness.query_by_label(DETAIL).is_none(),
+        "no detail left over the grid"
+    );
+    assert!(
+        !history(&harness).can_go_forward(),
+        "nothing to go forward to"
+    );
+}
+
+/// A card archived on another device while its review pane is open (grid
+/// `r`, no key pressed here) takes the pane's entry and its detail's with
+/// it: the history ends on the grid. Before, the pane closed onto the
+/// detail entry grid `r` pushed under it, which never drew the card, held
+/// it as one not folded in yet, and left the grid drawn under a stale entry.
+#[tokio::test]
+async fn a_card_archived_elsewhere_leaves_the_history_from_its_pane() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+    cursor_on_first_in_review(&mut harness, board);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::R);
+    land_on(&mut harness, board + 2, "src/a.rs");
+
+    archive_elsewhere(&mut harness, CARD).await;
+    land_on(&mut harness, board, "6 cards · 5 columns");
+    assert!(
+        !history(&harness).can_go_forward(),
+        "nothing to go forward to"
+    );
+}
+
+/// A card archived elsewhere leaves the forward history as well as the
+/// back: after the pane's `q` its review entry waits on the forward stack,
+/// and once the card goes, going forward can't reopen a review of a card
+/// that isn't there.
+#[tokio::test]
+async fn a_card_archived_elsewhere_leaves_the_forward_history_too() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+
+    harness.get_by_label(CARD).click();
+    land_on(&mut harness, board + 1, DETAIL);
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::R);
+    land_on(&mut harness, board + 2, "src/a.rs");
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::Q);
+    land_on(&mut harness, board + 1, DETAIL);
+    assert!(history(&harness).can_go_forward(), "the review is forward");
+
+    archive_elsewhere(&mut harness, CARD).await;
+    land_on(&mut harness, board, "6 cards · 5 columns");
+    assert!(
+        !history(&harness).can_go_forward(),
+        "and gone with its card"
     );
 }
 

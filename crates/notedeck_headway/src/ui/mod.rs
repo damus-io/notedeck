@@ -109,18 +109,6 @@ pub struct BoardUiState {
     /// Which card the detail edit buffers below were seeded from. When this
     /// differs from `selected`, the buffers are refreshed from the board.
     detail_for: Option<NoteId>,
-    /// A card known to have left the board whose detail entry a back is about
-    /// to land on: the one a review pane's `a` archived, which the pane backs
-    /// out to the detail of, or an epic that left under its open review queue
-    /// ([`close_queue`](Self::close_queue)). The selection drops once the card
-    /// is off the board, as it does for a card
-    /// [`detail_for`](Self::detail_for) names. That one alone can't say so
-    /// here: the chrome's back slides, redrawing the pane's entry until it
-    /// lands, and if the archive folds in meanwhile the pane's frame drops the
-    /// selection and clears `detail_for`, so the detail entry the slide lands
-    /// on would hold a card that never comes back. Cleared when the detail
-    /// draws another card.
-    archived: Option<NoteId>,
     /// Edit buffer for the selected card's title.
     detail_title: String,
     /// The board's title value the title buffer was last synced to. While the
@@ -406,10 +394,8 @@ impl BoardUiState {
     ///
     /// An epic that left the board while its queue was open (archived, moved
     /// to another board) has no detail to land on, so its queue leaves as the
-    /// board's does. The back still lands on the epic's detail entry first;
-    /// [`archived`](Self::archived) marks the epic gone there, so that entry
-    /// backs on to the grid rather than holding the selection as a card not
-    /// folded in yet.
+    /// board's does. Its detail entry under the queue went with it, pruned
+    /// when it left (see `nav::SeenCards`), so the back lands on the grid.
     ///
     /// Returns the scope of the view it lands on: the epic's, or the board's
     /// for the board's queue and for an epic's whose epic has gone.
@@ -425,9 +411,8 @@ impl BoardUiState {
             }
             // The board's queue, or an epic's whose epic has gone.
             None => {
-                if let Some(gone) = epic {
+                if epic.is_some() {
                     self.selected = None;
-                    self.archived = Some(gone);
                 }
                 if let Some(card) = card {
                     self.set_cursor(card);
@@ -736,12 +721,10 @@ fn board_pane_ui(
     // diff read Card→Board and emit a `Back` that pops a real global-history entry
     // (see `reconcile_nav`), snapping a just-opened deep link back to the board.
     // Holding it costs nothing — the grid draws underneath, and the detail opens
-    // the frame the card lands.
-    //
-    // A card a review pane's `a` archived has left too, whatever `detail_for`
-    // says: the pane's back slides, and a drop during the slide clears
-    // `detail_for` before the detail's entry lands (see `archived`).
-    let gone = state.detail_for == state.selected || state.archived == state.selected;
+    // the frame the card lands. Either way the history entry that named a card
+    // which left is the app's prune to remove, not this drop's (see
+    // `nav::SeenCards`).
+    let gone = state.detail_for == state.selected;
     if state.selected.is_some() && gone {
         state.selected = None;
         state.detail_for = None;
