@@ -196,7 +196,10 @@ pub fn inline_chip(
     // actually draws it.
     let row_height = ui.text_style_height(&egui::TextStyle::Body);
     let icon_size = (row_height * INLINE_ICON_RATIO).round();
-    let width = frame.total_margin().sum().x + icon_size + SPACING_XS + text_width(ui, text);
+    let width = frame.total_margin().sum().x
+        + icon_size
+        + SPACING_XS
+        + text_width(ui, text, &egui::TextStyle::Body);
     break_row_unless_fits(ui, width);
 
     let response = frame
@@ -233,15 +236,16 @@ pub fn inline_chip(
     }
 }
 
-/// Width `text` occupies in the body font.
+/// Width `text` occupies on one line in `style`'s font.
 ///
 /// Sums glyph advances rather than laying the text out: `Fonts::layout_no_wrap`
 /// needs an owned `String` (galleys are cached by their content), an allocation
 /// every frame for every widget on screen. egui lays proportional text out by
 /// those same advances — it does no kerning — so the sum is the width the galley
-/// would report.
-fn text_width(ui: &egui::Ui, text: &str) -> f32 {
-    let font = egui::TextStyle::Body.resolve(ui.style());
+/// would report. For measuring a row before drawing it, e.g. to give the text
+/// that matters its room before the rest of the row is laid out.
+pub fn text_width(ui: &egui::Ui, text: &str, style: &egui::TextStyle) -> f32 {
+    let font = style.resolve(ui.style());
     ui.fonts(|f| text.chars().map(|c| f.glyph_width(&font, c)).sum())
 }
 

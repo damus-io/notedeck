@@ -88,6 +88,12 @@ pub(super) fn text_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> eg
     tinted_pill(ui, text, theme.text_muted)
 }
 
+/// Width a [`text_pill`] of `text` draws at, measured without drawing it: for a
+/// row that has to know its fixed parts before it lays out the rest.
+pub(super) fn pill_width(ui: &egui::Ui, text: &str) -> f32 {
+    notedeck_ui::text_width(ui, text, &egui::TextStyle::Small) + 2.0 * SPACING_SM
+}
+
 /// A small rounded pill of `color` text, e.g. the review pane's warning-coloured
 /// `patch truncated`: a [`tinted_control`] that only senses hover.
 pub(super) fn tinted_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {

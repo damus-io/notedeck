@@ -977,6 +977,20 @@ fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>,
         .request_repaint_after(std::time::Duration::from_secs_f64(left));
 }
 
+/// Width [`notice_ui`] draws `notice` at in `here` this frame, or zero when it
+/// draws nothing there: for a row that lays out its other parts around it.
+fn notice_width(ui: &egui::Ui, notice: &Option<Notice>, here: NavPos) -> f32 {
+    let Some(Notice { what, at, pos, .. }) = *notice else {
+        return 0.0;
+    };
+    if pos != here || ui.input(|i| i.time) - at >= NOTICE_SECS {
+        return 0.0;
+    }
+    SPACING_SM
+        + notedeck_ui::text_width(ui, what.text(), &egui::TextStyle::Body)
+        + ui.spacing().item_spacing.x
+}
+
 /// The which-key strip of the pane showing over the grid ([`keys::pane_key_hints`]:
 /// the queue's, a plain review pane's or the detail's), while `?` pins it or a
 /// `g` is pending. Reserved from the bottom before the pane lays out, since the

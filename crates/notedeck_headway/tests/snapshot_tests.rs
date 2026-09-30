@@ -2521,6 +2521,128 @@ fn review_queue_shows_the_recorded_commit_diff() {
     assert_queue_hints_fit(&harness, 1200.0);
 }
 
+/// Real-length titles for the two queue cards, about as long as an `autowork`
+/// card's: long enough that the header can't give both the title and the next
+/// card's peek their natural width.
+const LONG_QUEUE_TITLES: [&str; 2] = [
+    "headway: review header — title first, peek takes the leftover of the row",
+    "notedeck_ui: patch file summary as an aligned table with per-file stat bars",
+];
+
+/// A current card's title short enough that the review header has room left
+/// over for the next card's peek, though not its whole title.
+const PEEK_LEFTOVER_TITLE: &str = "headway: review header — title first";
+
+/// [`seed_review_queue`], then retitle its two cards to `titles` and open the
+/// queue on the first.
+fn open_retitled_queue(harness: &mut Harness<'static, HeadwayTestState>, titles: [&str; 2]) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    for (old, title) in QUEUE_CARDS.iter().zip(titles) {
+        let card = harness_card_id(harness, old);
+        apply_demo_action(
+            harness,
+            store::BoardAction::EditTitle {
+                card,
+                title: title.to_string(),
+            },
+        );
+        wait_for_label(harness, title);
+    }
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(harness, "1 / 2");
+    wait_for_any_label(harness, "src/queue.rs");
+    wait_for_label(harness, "local checkout");
+    harness.run_steps(2);
+}
+
+/// The width `text` lays out at on one line in `style`'s font, as the review
+/// header draws it.
+fn text_width(
+    harness: &Harness<'static, HeadwayTestState>,
+    text: &str,
+    style: egui::TextStyle,
+) -> f64 {
+    let font = style.resolve(&harness.ctx.style());
+    let width = harness.ctx.fonts(|f| {
+        f.layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
+            .size()
+            .x
+    });
+    f64::from(width)
+}
+
+/// The review header's title's box and its natural (unelided) width.
+fn header_title(
+    harness: &Harness<'static, HeadwayTestState>,
+    title: &str,
+) -> (egui::accesskit::Rect, f64) {
+    let drawn = harness
+        .get_by_label(title)
+        .bounding_box()
+        .expect("the title has a box");
+    (drawn, text_width(harness, title, egui::TextStyle::Body))
+}
+
+/// The review header gives the current card's title its room before the next
+/// card's peek. With two real-length titles at 1200px the row can't hold
+/// both, so the peek goes ("Next:" with it) and the title takes the room, up
+/// to the session chip: it elides only by what the row's fixed parts leave it
+/// short, not down to the stub it was when the peek took its 40% first.
+#[test]
+fn review_header_drops_the_peek_before_eliding_the_title() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    open_retitled_queue(&mut harness, LONG_QUEUE_TITLES);
+
+    let (title, natural) = header_title(&harness, LONG_QUEUE_TITLES[0]);
+    assert!(harness.query_by_label(LONG_QUEUE_TITLES[1]).is_none());
+    assert!(harness.query_by_label("Next:").is_none());
+    assert!(
+        title.width() > 0.8 * natural,
+        "the title drew {}px of its {natural}px",
+        title.width()
+    );
+    let chip = harness
+        .get_by_label(QUEUE_SESSION)
+        .bounding_box()
+        .expect("the chip has a box");
+    assert!(
+        chip.x0 - title.x1 < 12.0,
+        "the title runs up to the chip ({} → {})",
+        title.x1,
+        chip.x0
+    );
+}
+
+/// With a shorter current title the row has room left over, and the next
+/// card's peek takes it: the title draws in full and the peek after it,
+/// elided to what's left rather than to its 40% of the row.
+#[test]
+fn review_header_peek_takes_the_leftover() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let current = PEEK_LEFTOVER_TITLE;
+    open_retitled_queue(&mut harness, [current, LONG_QUEUE_TITLES[1]]);
+
+    let (title, natural) = header_title(&harness, current);
+    assert!(
+        title.width() + 1.0 >= natural,
+        "the title drew {}px of its {natural}px",
+        title.width()
+    );
+    let peek = harness
+        .get_by_label(LONG_QUEUE_TITLES[1])
+        .bounding_box()
+        .expect("the peek has a box");
+    wait_for_label(&mut harness, "Next:");
+    assert!(peek.x0 >= title.x1, "the peek starts after the title ends");
+    let peek_natural = text_width(&harness, LONG_QUEUE_TITLES[1], egui::TextStyle::Small);
+    assert!(
+        peek.width() + 1.0 < peek_natural,
+        "the peek elides into the leftover ({}px of {peek_natural}px)",
+        peek.width()
+    );
+}
+
 /// The queue's key-strip labels, in strip order: what [`assert_queue_hints_fit`]
 /// checks for.
 const QUEUE_HINT_LABELS: [&str; 13] = [
@@ -2848,6 +2970,25 @@ fn snapshot_headway_review_queue() {
     wait_for_label(&mut harness, "send back");
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_key_hints");
+}
+
+/// Snapshot: the review queue with real-length titles on both cards (see
+/// [`review_header_drops_the_peek_before_eliding_the_title`]): the current card's
+/// title keeps its room, and with none left over the next card's peek goes.
+/// Then a shorter current title (see [`review_header_peek_takes_the_leftover`]),
+/// where the peek draws in what the title leaves.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_queue_long_titles() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    open_retitled_queue(&mut harness, LONG_QUEUE_TITLES);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_queue_long_titles");
+
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    open_retitled_queue(&mut harness, [PEEK_LEFTOVER_TITLE, LONG_QUEUE_TITLES[1]]);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_queue_peek_leftover");
 }
 
 /// Snapshot: an epic's review queue. Both queue cards are made subissues of

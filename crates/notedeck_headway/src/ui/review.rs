@@ -19,8 +19,8 @@ use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::widgets::{
-    ControlSize, MiddleElided, count_badge, detail_heading, secondary_action_button, section_label,
-    text_pill, tinted_control, tinted_pill,
+    ControlSize, MiddleElided, count_badge, detail_heading, pill_width, secondary_action_button,
+    section_label, text_pill, tinted_control, tinted_pill,
 };
 use super::{BoardEffect, BoardUiState, find_card, pane_hints_ui};
 use crate::keys::CardAction;
@@ -58,6 +58,10 @@ pub(crate) struct ReviewUi {
     /// reserved beside the session chip so the title elides short of it. Zero
     /// until it first draws, when [`SESSION_BUTTON_WIDTH_GUESS`] stands in.
     session_button_width: f32,
+    /// How wide the header's session chip drew last frame, held back beside
+    /// the title when the row lays out the peek. Zero until it first draws,
+    /// when [`SESSION_CHIP_MAX_WIDTH`] stands in.
+    session_chip_width: f32,
     /// A scroll the queue's keys asked of the open diff, handed to its
     /// [`GitPatchState`](notedeck_ui::diff::GitPatchState) on the pane's next
     /// pass (and dropped there if the diff hasn't loaded).
@@ -777,8 +781,14 @@ fn start_load(
     loader.start(source, job, app_ctx.waker.clone());
 }
 
-/// Share of the header row the next card's title may take in the queue.
+/// Most of the header row the next card's title may take in the queue. It
+/// only ever gets what the current card's title leaves, so this caps a short
+/// title's row rather than guaranteeing the peek room.
 const PEEK_SHARE: f32 = 0.4;
+
+/// Least room the next card's peek is squeezed into; with less left over it
+/// goes, "Next:" with it, rather than drawing as a stub of an ellipsis.
+const PEEK_MIN_WIDTH: f32 = 120.0;
 
 /// Widest the header's session chip draws; a longer session title ellipsizes.
 const SESSION_CHIP_MAX_WIDTH: f32 = 220.0;
@@ -817,14 +827,19 @@ struct QueueHeader<'a> {
 /// title elided to one line, the record's agentium session chip capped at
 /// [`SESSION_CHIP_MAX_WIDTH`], and a "Review in session" button that does
 /// `S`. Right: in the queue, which epic it walks (if it's an epic's), its
-/// position as a pill and the next card's title as a muted peek (at most
-/// [`PEEK_SHARE`] of the row); a key's short-lived
-/// notice, when it's about `here`; the record's explainer link at the far end. On a narrow screen the
-/// peek goes, the card ref and the button with it, and the chip shrinks to its
-/// status dot.
+/// position as a pill and the next card's title as a muted peek; a key's
+/// short-lived notice, when it's about `here`; the record's explainer link at
+/// the far end. On a narrow screen the peek goes, the card ref and the button
+/// with it, and the chip shrinks to its status dot.
 ///
-/// The right side lays out first, right to left, so the title knows how much
-/// room is left to elide into.
+/// The current card's title comes first: the peek only gets what is left once
+/// the title has its natural width (see [`peek_width`]), and goes when that is
+/// under [`PEEK_MIN_WIDTH`]. The title elides only when it alone overflows.
+///
+/// Laid out in three passes in egui's one: the left's fixed parts, then the
+/// right side right to left, then the title, chip and button in what's left.
+/// The right side measures the title and its own fixed parts before it draws
+/// the peek, since the peek is the first thing it draws.
 ///
 /// Returns the session open the button asked for. The pane raises it as a
 /// [`BoardEffect::Open`], the one way out an `S` takes too.
@@ -846,43 +861,49 @@ fn review_topbar_ui(
     let narrow = notedeck::ui::is_narrow(ui.ctx());
     let mut open = None;
     ui.horizontal(|ui| {
-        let peek_width = ui.available_width() * PEEK_SHARE;
+        let row = ui.available_width();
+        let back = egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
+            .fill(egui::Color32::TRANSPARENT)
+            .frame(false);
+        if ui.add(back).clicked() {
+            review.close();
+        }
+        ui.label(egui::RichText::new("›").color(theme.text_muted));
+        if !narrow {
+            card_ref_ui(ui, theme, &review.card_ref);
+        }
+
+        let session = fields.and_then(|f| f.agentium.as_deref());
+        let gap = ui.spacing().item_spacing.x;
+        // The chip draws up to `chip_cap`; the title holds back what it drew
+        // last frame (and the button's), so a short session title doesn't
+        // cost the row a whole cap's worth.
+        let (chip_cap, chip, button) = if narrow {
+            let dot = ui.text_style_height(&egui::TextStyle::Body);
+            (dot, dot, 0.0)
+        } else {
+            let chip = last_or(review.session_chip_width, SESSION_CHIP_MAX_WIDTH);
+            let button = last_or(review.session_button_width, SESSION_BUTTON_WIDTH_GUESS);
+            (SESSION_CHIP_MAX_WIDTH, chip, button + gap)
+        };
+        let reserve = session.map_or(0.0, |_| chip + gap + button);
+
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(url) = fields.and_then(|f| f.explainer.as_deref()) {
                 explainer_link_ui(ui, theme, url);
             }
             if let Some(queue) = queue {
-                queue_header_ui(ui, theme, queue, (!narrow).then_some(peek_width));
+                let peek = PeekBudget {
+                    row,
+                    title: &card.title,
+                    reserve,
+                    rest: queue_fixed_width(ui, &queue) + super::notice_width(ui, notice, here),
+                };
+                let peek = if narrow { None } else { peek_width(ui, peek) };
+                queue_header_ui(ui, theme, queue, peek);
             }
             super::notice_ui(ui, theme, notice, here);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let back =
-                    egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
-                        .fill(egui::Color32::TRANSPARENT)
-                        .frame(false);
-                if ui.add(back).clicked() {
-                    review.close();
-                }
-                ui.label(egui::RichText::new("›").color(theme.text_muted));
-                if !narrow {
-                    card_ref_ui(ui, theme, &review.card_ref);
-                }
-
-                let session = fields.and_then(|f| f.agentium.as_deref());
-                let chip_width = if narrow {
-                    ui.text_style_height(&egui::TextStyle::Body)
-                } else {
-                    SESSION_CHIP_MAX_WIDTH
-                };
-                let gap = ui.spacing().item_spacing.x;
-                let button = if narrow {
-                    0.0
-                } else if review.session_button_width > 0.0 {
-                    review.session_button_width + gap
-                } else {
-                    SESSION_BUTTON_WIDTH_GUESS + gap
-                };
-                let reserve = session.map_or(0.0, |_| chip_width + gap + button);
                 ui.scope(|ui| {
                     ui.set_max_width((ui.available_width() - reserve).max(0.0));
                     ui.add(egui::Label::new(egui::RichText::new(&card.title).strong()).truncate());
@@ -890,10 +911,11 @@ fn review_topbar_ui(
                 let Some(session) = session else {
                     return;
                 };
-                session_chip_ui(ui, theme, app_ctx, session, chip_width);
+                let drawn = session_chip_ui(ui, theme, app_ctx, session, chip_cap);
                 if narrow {
                     return;
                 }
+                review.session_chip_width = drawn;
                 if review_in_session_button(ui, theme, &mut review.session_button_width) {
                     open = fields
                         .and_then(|f| session_open(f, &review.card_ref, SessionOpen::CodeReview));
@@ -902,6 +924,39 @@ fn review_topbar_ui(
         });
     });
     open
+}
+
+/// `measured`, a width a header part drew at last frame, or `guess` until it
+/// has drawn once.
+fn last_or(measured: f32, guess: f32) -> f32 {
+    if measured > 0.0 { measured } else { guess }
+}
+
+/// What the header's right side knows when it comes to draw the next card's
+/// peek, for [`peek_width`]. Borrowed, so measuring formats nothing.
+struct PeekBudget<'a> {
+    /// The whole header row's width.
+    row: f32,
+    /// The current card's title, which keeps its natural width first.
+    title: &'a str,
+    /// What the title holds back after it for the session chip and button.
+    reserve: f32,
+    /// The right side's other parts still to draw left of the peek: "Next:",
+    /// the position pill, the epic's scope label and any notice.
+    rest: f32,
+}
+
+/// How wide the next card's peek may draw, from where the header's right side
+/// has got to (the left's fixed parts and the explainer link already drawn):
+/// what's left once the title has its natural width and the rest of the row
+/// its parts, capped at [`PEEK_SHARE`] of the row. `None`, dropping the peek,
+/// when that is under [`PEEK_MIN_WIDTH`].
+fn peek_width(ui: &egui::Ui, budget: PeekBudget<'_>) -> Option<f32> {
+    let gap = ui.spacing().item_spacing.x;
+    let title = notedeck_ui::text_width(ui, budget.title, &egui::TextStyle::Body) + gap;
+    let left = ui.available_width() - budget.rest - title - budget.reserve - gap;
+    let width = left.min(budget.row * PEEK_SHARE);
+    (width >= PEEK_MIN_WIDTH).then_some(width)
 }
 
 /// The card's `headway:<board>/<word-id>`, small and muted; a click copies it.
@@ -946,6 +1001,19 @@ fn queue_header_ui(
         )
         .on_hover_text(&scope.title);
     }
+}
+
+/// Width [`queue_header_ui`] draws besides the peek: "Next:", the position
+/// pill and an epic's scope label, each with its gap.
+fn queue_fixed_width(ui: &egui::Ui, queue: &QueueHeader<'_>) -> f32 {
+    let gap = ui.spacing().item_spacing.x;
+    let small = egui::TextStyle::Small;
+    let next = notedeck_ui::text_width(ui, "Next:", &small) + gap;
+    let pill = pill_width(ui, queue.position) + gap;
+    let scope = queue
+        .scope
+        .map_or(0.0, |s| notedeck_ui::text_width(ui, &s.text, &small) + gap);
+    next + pill + scope
 }
 
 /// The header's "Review in session" button (the `S` key): opens the record's
@@ -1156,18 +1224,21 @@ fn explainer_link_ui(ui: &mut egui::Ui, theme: &ColorTheme, url: &str) {
 const EXPLAINER: &str = "Explainer ↗";
 
 /// [`agentium_chip_ui`] no wider than `max_width`: a longer session title
-/// ellipsizes, and its full text shows on hover.
+/// ellipsizes, and its full text shows on hover. Returns the width it drew.
 fn session_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     session: &str,
     max_width: f32,
-) {
+) -> f32 {
     ui.scope(|ui| {
         ui.set_max_width(max_width);
         agentium_chip_ui(ui, theme, app_ctx, session);
-    });
+    })
+    .response
+    .rect
+    .width()
 }
 
 /// An `agentium:<word-id>` session drawn as its live inline chip through the
