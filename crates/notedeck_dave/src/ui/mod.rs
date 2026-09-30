@@ -1353,9 +1353,11 @@ mod tests {
     use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
     use crate::focus_queue::FocusQueue;
+    use crate::session::PermissionMessageState;
     use crate::session::{SessionId, SessionManager};
     use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, NormalMode};
     use crate::ui::AgentScene;
+    use crate::update;
     use egui::{Key, Modifiers};
     use egui_kittest::Harness;
     use notedeck::test_harness::PressKey;
@@ -1441,13 +1443,18 @@ mod tests {
     /// stand-in for the active session's chat input that takes focus when
     /// asked, as `DaveUi::inputbox` does.
     fn normal_mode_frame(ui: &mut egui::Ui, d: &mut Dispatch) {
+        let in_tentative_state = d
+            .session_manager
+            .get_active()
+            .and_then(|s| s.agentic.as_ref())
+            .is_some_and(|a| a.permission_message_state != PermissionMessageState::None);
         let keys = KeyContext {
             ai_mode: AiMode::Agentic,
             sessions_shown: true,
             interruptible: false,
-            has_pending_permission: false,
+            has_pending_permission: update::first_pending_permission(&d.session_manager).is_some(),
             has_pending_question: false,
-            in_tentative_state: false,
+            in_tentative_state,
             overlay_open: false,
             renaming: false,
         };
@@ -1465,6 +1472,60 @@ mod tests {
         if std::mem::take(&mut session.focus_requested) {
             input.request_focus();
         }
+    }
+
+    /// Esc, then `!` on a pending permission: the answer waits for a message,
+    /// so the input takes focus and its letters type (`dd` must not delete
+    /// the session). Esc then cancels the answer.
+    #[test]
+    fn a_tentative_answer_from_normal_mode_takes_its_message_in_the_input() {
+        let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
+        let [first, _] = harness.state().sessions;
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        let agentic = harness
+            .state_mut()
+            .session_manager
+            .get_mut(first)
+            .and_then(|s| s.agentic.as_mut())
+            .unwrap();
+        agentic
+            .permissions
+            .pending
+            .insert(uuid::Uuid::new_v4(), sender);
+        harness.run();
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        harness.press_key_modifiers(Modifiers::NONE, Key::Exclamationmark);
+        harness.run();
+        let tentative = |d: &Dispatch, want: PermissionMessageState| {
+            d.session_manager
+                .get(first)
+                .and_then(|s| s.agentic.as_ref())
+                .is_some_and(|a| a.permission_message_state == want)
+        };
+        assert!(tentative(
+            harness.state(),
+            PermissionMessageState::TentativeAccept
+        ));
+        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id(first)));
+
+        for _ in 0..2 {
+            harness
+                .input_mut()
+                .events
+                .push(egui::Event::Text("d".to_owned()));
+            harness.press_key_modifiers(Modifiers::NONE, Key::D);
+        }
+        assert_eq!(
+            harness.state().session_manager.get(first).unwrap().input,
+            "dd"
+        );
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        assert!(
+            tentative(harness.state(), PermissionMessageState::None),
+            "Esc cancels the answer rather than toggling the side menu"
+        );
     }
 
     #[test]

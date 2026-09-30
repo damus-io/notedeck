@@ -115,10 +115,13 @@ impl KeyAction {
 /// never times out; the which-key strip shows it is on. A key it doesn't know
 /// is swallowed, and a modified key (a Ctrl binding) goes to the regular
 /// bindings, without leaving the mode either way. It ends on `i` / `a` / `q`
-/// (focus back to the input), on `n` / `r` (the picker or rename field takes
-/// the keyboard), when you click into a text field, or when an overlay opens.
-/// Esc cancels a half-typed prefix; at the root it is left for chrome, which
-/// toggles the side menu.
+/// (focus back to the input), on a tentative permission answer (the input
+/// takes its message), on `n` / `r` (the picker or rename field takes the
+/// keyboard), when you click into a text field, or when an overlay opens.
+/// Esc cancels a half-typed prefix; at the root it cancels a waiting
+/// tentative answer, and otherwise is left for chrome, which toggles the side
+/// menu. A held Esc's auto-repeats are swallowed there, so holding it doesn't
+/// flicker the menu.
 ///
 /// `h` / `l` point the motions at the session list or the chat ([`Pane`]):
 /// `j` / `k` walk blocks in the chat and sessions in the list.
@@ -390,11 +393,16 @@ impl NormalMode {
     /// A regular binding ran while normal mode was on: a Ctrl binding, or a
     /// bare key normal mode let through (a permission answer). It stays on,
     /// like vim, unless the binding opened something you type into: those
-    /// leave it the way their normal-mode keys do.
+    /// leave it the way their normal-mode keys do. A tentative permission
+    /// answer (`!`, Shift+2, Shift+3) waits for a message typed into the
+    /// input, so it hands the input focus.
     fn after_modified(&mut self, action: &KeyAction) {
         match action {
             KeyAction::NewAgent | KeyAction::RenameAgent => self.release(),
-            KeyAction::OpenExternalEditor => self.end(),
+            KeyAction::OpenExternalEditor
+            | KeyAction::TentativeAccept
+            | KeyAction::TentativeDeny
+            | KeyAction::TentativeAllowAlways => self.end(),
             _ => {}
         }
     }
@@ -504,8 +512,23 @@ fn owned_bare_key(key: Key) -> bool {
     )
 }
 
-/// Feed this frame's input to normal mode, if it is on.
-fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode) -> NormalStep {
+/// Whether this frame's Esc presses are all auto-repeats of a held Esc.
+fn escape_is_repeat(input: &egui::InputState) -> bool {
+    input.events.iter().all(|event| match event {
+        egui::Event::Key {
+            key: Key::Escape,
+            pressed: true,
+            repeat,
+            ..
+        } => *repeat,
+        _ => true,
+    })
+}
+
+/// Feed this frame's input to normal mode, if it is on. `tentative`: a
+/// tentative permission answer is waiting for its message, and Esc at the
+/// root cancels it.
+fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode, tentative: bool) -> NormalStep {
     let Some(pending) = mode.pending else {
         return NormalStep::FallThrough;
     };
@@ -518,10 +541,16 @@ fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode) -> NormalStep {
         return NormalStep::FallThrough;
     }
 
-    // Esc cancels a half-typed prefix. At the root it's chrome's (the side
-    // menu), and normal mode stays on.
+    // Esc cancels a half-typed prefix. At the root it cancels a tentative
+    // answer (the regular bindings' Esc), or else it's chrome's (the side
+    // menu); normal mode stays on either way.
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
-        if pending == Pending::Root {
+        if pending == Pending::Root && tentative {
+            return NormalStep::FallThrough;
+        }
+        // Chrome toggles its menu on every Esc it sees, auto-repeats
+        // included, so only a fresh press reaches it.
+        if pending == Pending::Root && !ctx.input(escape_is_repeat) {
             return NormalStep::LeaveForChrome;
         }
         ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
@@ -707,8 +736,9 @@ pub fn check_keybindings(
         mode.release();
     }
 
-    // Normal mode reads bare keys, and its Esc outranks every other Esc.
-    match check_normal_mode(ctx, mode) {
+    // Normal mode reads bare keys, and its Esc outranks every other Esc but
+    // a tentative answer's.
+    match check_normal_mode(ctx, mode, is_agentic && in_tentative_state) {
         NormalStep::Consumed(action) => return action,
         NormalStep::LeaveForChrome => return None,
         NormalStep::FallThrough => {}
@@ -1434,10 +1464,17 @@ mod tests {
     /// the input when `check_keybindings` returned, and whether normal mode
     /// is on afterwards.
     fn escape_left_over(keys: KeyContext, presses: &[(Modifiers, Key)]) -> (bool, bool) {
+        key_left_over(keys, presses, Key::Escape)
+    }
+
+    /// [`escape_left_over`] for any `key`: whether the last frame's `key` was
+    /// left for whoever reads keys after the bindings (a question's options,
+    /// chrome), and whether normal mode is on afterwards.
+    fn key_left_over(keys: KeyContext, presses: &[(Modifiers, Key)], key: Key) -> (bool, bool) {
         let mut harness = Harness::new_ui_state(
             move |ui, (mode, left): &mut (NormalMode, bool)| {
                 check(ui.ctx(), mode, keys);
-                *left |= ui.input(|i| i.key_pressed(Key::Escape));
+                *left |= ui.input(|i| i.key_pressed(key));
             },
             (NormalMode::default(), false),
         );
@@ -1464,6 +1501,147 @@ mod tests {
             escape_left_over(FRAME, &[ESC]),
             (false, true),
             "the first Esc is Dave's: it enters normal mode"
+        );
+    }
+
+    #[test]
+    fn escape_cancelling_a_prefix_is_consumed() {
+        assert_eq!(
+            escape_left_over(FRAME, &[ESC, (NONE, Key::Z), ESC]),
+            (false, true),
+            "the Esc only drops the z, so chrome never sees it"
+        );
+    }
+
+    /// A held Esc: one press, then `repeats` more with no key-up between,
+    /// one a frame. Returns whether any Esc was left for chrome, and whether
+    /// normal mode is on. egui marks a press a repeat itself, from whether
+    /// the key is already down, so a key-up (`press_key_modifiers` queues
+    /// one) would make the next press fresh.
+    fn hold_escape(repeats: usize) -> (bool, bool) {
+        let mut harness = Harness::new_ui_state(
+            |ui, (mode, left): &mut (NormalMode, bool)| {
+                check(ui.ctx(), mode, FRAME);
+                *left |= ui.input(|i| i.key_pressed(Key::Escape));
+            },
+            (NormalMode::default(), false),
+        );
+        harness.run();
+        for _ in 0..=repeats {
+            harness.input_mut().events.push(egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: NONE,
+            });
+            harness.step();
+        }
+        (harness.state().1, harness.state().0.is_on())
+    }
+
+    #[test]
+    fn holding_escape_does_not_reach_chrome() {
+        assert_eq!(
+            hold_escape(5),
+            (false, true),
+            "the first press enters normal mode and its repeats are swallowed, \
+             so the side menu doesn't flicker"
+        );
+    }
+
+    #[test]
+    fn a_tentative_answer_ends_normal_mode() {
+        let pending = KeyContext {
+            has_pending_permission: true,
+            ..FRAME
+        };
+        for (press, action) in [
+            ((NONE, Key::Exclamationmark), KeyAction::TentativeAccept),
+            ((SHIFT, Key::Num2), KeyAction::TentativeDeny),
+            ((SHIFT, Key::Num3), KeyAction::TentativeAllowAlways),
+        ] {
+            assert_eq!(
+                detect_sequence_in(pending, &[ESC, press]),
+                Some(action.clone())
+            );
+            assert_eq!(
+                pending_after_in(pending, &[ESC, press]),
+                None,
+                "{action:?}: the input takes the message, so its letters type"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_at_the_root_cancels_a_waiting_tentative_answer() {
+        let mut harness =
+            Harness::new_ui_state(
+                |ui,
+                 (mode, keys, action, left): &mut (
+                    NormalMode,
+                    KeyContext,
+                    Option<KeyAction>,
+                    bool,
+                )| {
+                    *action = check(ui.ctx(), mode, *keys);
+                    *left |= ui.input(|i| i.key_pressed(Key::Escape));
+                },
+                (NormalMode::default(), FRAME, None, false),
+            );
+        harness.run();
+        harness.press_key_modifiers(ESC.0, ESC.1);
+        assert!(harness.state().0.is_on());
+
+        // The answer went tentative some other way (a click) while normal
+        // mode stayed on.
+        harness.state_mut().1 = KeyContext {
+            has_pending_permission: true,
+            in_tentative_state: true,
+            ..FRAME
+        };
+        harness.state_mut().3 = false;
+        harness.press_key_modifiers(ESC.0, ESC.1);
+        assert_eq!(harness.state().2, Some(KeyAction::CancelTentative));
+        assert!(!harness.state().3, "the Esc is not chrome's");
+        assert!(harness.state().0.is_on(), "and normal mode stays on");
+    }
+
+    #[test]
+    fn ctrl_g_and_e_end_normal_mode_for_the_external_editor() {
+        for press in [(Modifiers::CTRL, Key::G), (NONE, Key::E)] {
+            assert_eq!(
+                detect_sequence(&[ESC, press]),
+                Some(KeyAction::OpenExternalEditor),
+            );
+            assert_eq!(pending_after(&[ESC, press]), None, "{press:?}");
+        }
+    }
+
+    #[test]
+    fn bare_keys_the_regular_bindings_own_pass_through_normal_mode() {
+        assert_eq!(
+            detect_sequence(&[ESC, (NONE, Key::Delete)]),
+            Some(KeyAction::DeleteActiveSession),
+        );
+        assert_eq!(
+            pending_after(&[ESC, (NONE, Key::Delete)]),
+            Some(Pending::Root)
+        );
+        assert_eq!(
+            key_left_over(FRAME, &[ESC, (NONE, Key::Enter)], Key::Enter),
+            (true, true),
+            "Enter is left for a question's submit"
+        );
+        let question = KeyContext {
+            has_pending_permission: true,
+            has_pending_question: true,
+            ..FRAME
+        };
+        assert_eq!(
+            key_left_over(question, &[ESC, (NONE, Key::Num4)], Key::Num4),
+            (true, true),
+            "a digit is left for the question's options"
         );
     }
 
