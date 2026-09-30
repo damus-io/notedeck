@@ -542,7 +542,7 @@ impl Cli {
         let secret = match (&command, nsec) {
             (Command::Login { .. } | Command::Logout, _) => None,
             (_, Some(nsec)) => {
-                let (sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec)?;
+                let (sk, pk) = parse_secret_key(&nsec)?;
                 Some((sk, Pubkey::new(*pk.bytes())))
             }
             (_, None) => None,
@@ -766,6 +766,29 @@ fn joined(rest: &[String], idx: usize, cmd: &str) -> Result<String> {
         return Err(format!("`{cmd}` is missing text").into());
     }
     Ok(parts.join(" "))
+}
+
+/// Parse a signing key given as bech32 `nsec1…` or as a 64-char hex secret,
+/// returning the secret bytes and their pubkey. Surrounding whitespace is
+/// trimmed first, so a key file's trailing newline (`--nsec "$(cat key)"`,
+/// or `HEADWAY_NSEC` read from one) doesn't make it unparseable.
+///
+/// Hex is handled here rather than in `nostrdb_net`'s `parse_nsec` so accepting
+/// it stays a CLI concern and needs no fork rev-bump; anything that isn't 64 hex
+/// characters falls through to the bech32 parser.
+fn parse_secret_key(key: &str) -> Result<([u8; 32], nostrdb_net::Pubkey)> {
+    let key = key.trim();
+    let hex_secret = (key.len() == 64)
+        .then(|| hex::decode(key).ok())
+        .flatten()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+    let Some(secret) = hex_secret else {
+        return nostrdb_net::relay::sync::parse_nsec(key)
+            .map_err(|e| format!("{e} (expected an nsec1… or a 64-char hex secret key)").into());
+    };
+    let sk = nostrdb_net::SecretKey::from_slice(&secret)
+        .map_err(|e| format!("invalid hex secret key: {e}"))?;
+    Ok((secret, nostrdb_net::Keypair::from_secret(sk).pubkey))
 }
 
 /// Read a `--desc-file` value into description text: `-` reads stdin (so a long
@@ -1018,6 +1041,70 @@ mod tests {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected an error for {args:?}"),
         }
+    }
+
+    /// A fixed test secret (never a real key), in both accepted spellings.
+    const TEST_SECRET: [u8; 32] = [7u8; 32];
+
+    fn test_nsec() -> String {
+        let hrp = bech32::Hrp::parse("nsec").expect("hrp");
+        bech32::encode::<bech32::Bech32>(hrp, &TEST_SECRET).expect("encode nsec")
+    }
+
+    /// Hex and bech32 spellings of one secret yield the same secret and pubkey,
+    /// and a key file's trailing newline (or surrounding spaces) is ignored.
+    #[test]
+    fn secret_key_accepts_hex_and_nsec() {
+        let from_nsec = parse_secret_key(&test_nsec()).expect("nsec parses");
+        let hex = hex::encode(TEST_SECRET);
+        for spelling in [
+            hex.clone(),
+            format!("{hex}\n"),
+            format!("  {}\n", hex.to_uppercase()),
+        ] {
+            let from_hex = parse_secret_key(&spelling).expect("hex parses");
+            assert_eq!(from_hex.0, from_nsec.0, "{spelling:?}");
+            assert_eq!(from_hex.1.bytes(), from_nsec.1.bytes(), "{spelling:?}");
+        }
+        assert_eq!(from_nsec.0, TEST_SECRET);
+        let nsec_newline = parse_secret_key(&format!("{}\n", test_nsec())).expect("nsec\\n");
+        assert_eq!(nsec_newline.1.bytes(), from_nsec.1.bytes());
+    }
+
+    /// `--nsec <hex>` reaches the same signer as `--nsec <nsec1…>` through the
+    /// full argument parser, not just the helper.
+    #[test]
+    fn nsec_flag_accepts_hex() {
+        let hex = hex::encode(TEST_SECRET);
+        let via_hex = parse(&["--nsec", &hex, "show"]).secret.expect("signer");
+        let via_nsec = parse(&["--nsec", &test_nsec(), "show"])
+            .secret
+            .expect("signer");
+        assert_eq!(via_hex.0, via_nsec.0);
+        assert_eq!(via_hex.1, via_nsec.1);
+    }
+
+    /// Input that is neither 64 hex chars nor a valid nsec errors, and the
+    /// message names both accepted forms so the fix is obvious.
+    #[test]
+    fn secret_key_rejects_malformed_input() {
+        let hex = hex::encode(TEST_SECRET);
+        let bad = [
+            hex[..63].to_string(),
+            format!("{}zz", &hex[..62]),
+            "not a key".to_string(),
+        ];
+        for input in bad {
+            let err = parse_secret_key(&input)
+                .expect_err("should reject")
+                .to_string();
+            assert!(
+                err.contains("nsec1") && err.contains("64-char hex"),
+                "{input:?}: {err}"
+            );
+        }
+        // Well-formed hex that isn't a valid secp256k1 secret (zero) is refused too.
+        assert!(parse_secret_key(&"0".repeat(64)).is_err());
     }
 
     #[test]

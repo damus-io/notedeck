@@ -607,8 +607,8 @@ Run `headway <command> --help` for that command's own options and examples.",
                 ),
             ),
             (
-                "--nsec <nsec>",
-                "Signing key for this run. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
+                "--nsec <key>",
+                "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
             ),
             (
                 "--author <pk>",
