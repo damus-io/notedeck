@@ -690,10 +690,10 @@ fn board_pane_ui(
     // drawn over) that card's detail. A card that has left the board drops back
     // to its detail branch below, which drops it in turn.
     if let Some(card) = state.review.card() {
-        if let Some((_, card)) = find_card(view, card) {
+        if let Some((col, card)) = find_card(view, card) {
             reason_bar_ui(ui, theme, state);
             pane_hints_ui(ui, theme, state);
-            review_pane_ui(ui, theme, app_ctx, view, card, state);
+            review_pane_ui(ui, theme, app_ctx, view, col, card, state);
             return None;
         }
         state.review.close();

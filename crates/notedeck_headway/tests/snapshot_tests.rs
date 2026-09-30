@@ -2223,6 +2223,37 @@ fn review_queue_opens_each_diff_at_the_top() {
     );
 }
 
+/// Behavioural (no lavapipe): the review header shows the current card's
+/// column, live rather than the queue's snapshot. The queue opens on an In
+/// Review card; `D` moves it to Done and steps on, and `p` back to it reads
+/// Done, so a card already ruled on says so.
+#[test]
+fn review_header_shows_the_card_status() {
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    const FILES: [&str; 2] = ["src/queue_one.rs", "src/queue_two.rs"];
+
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &FILES);
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_label(&mut harness, "In Review");
+    assert_labels_gapped(&harness, "In Review", CARDS[0]);
+    assert!(harness.query_by_label("Done").is_none());
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
+    wait_for_card_column(&mut harness, ids[0], "Done");
+    wait_for_label(&mut harness, "2 / 2");
+    wait_for_label(&mut harness, "In Review");
+
+    press_board_keys(&mut harness, &[egui::Key::P]);
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_label(&mut harness, CARDS[0]);
+    wait_for_label(&mut harness, "Done");
+    assert!(harness.query_by_label("In Review").is_none());
+}
+
 /// Assert `right` starts a real gap after `left` ends on the same row. The
 /// harness hands Headway the chrome's zero item gap (see [`render_headway`]),
 /// so this fails if Headway stops owning its own spacing and the two labels
@@ -2585,8 +2616,9 @@ const LONG_QUEUE_TITLES: [&str; 2] = [
 ];
 
 /// A current card's title short enough that the review header has room left
-/// over for the next card's peek, though not its whole title.
-const PEEK_LEFTOVER_TITLE: &str = "headway: review header — title first";
+/// over for the next card's peek (after the card's status, which sits in the
+/// row too), though not its whole title.
+const PEEK_LEFTOVER_TITLE: &str = "headway: review header";
 
 /// [`seed_review_queue`], then retitle its two cards to `titles` and open the
 /// queue on the first.
@@ -2641,9 +2673,10 @@ fn header_title(
 
 /// The review header gives the current card's title its room before the next
 /// card's peek. With two real-length titles at 1200px the row can't hold
-/// both, so the peek goes ("Next:" with it) and the title takes the room, up
-/// to the session chip: it elides only by what the row's fixed parts leave it
-/// short, not down to the stub it was when the peek took its 40% first.
+/// both, so the peek goes ("Next:" with it) and the title takes the room, from
+/// the card's status up to the session chip: it elides only by what the row's
+/// fixed parts leave it short, not down to the stub it was when the peek took
+/// its 40% first.
 #[test]
 fn review_header_drops_the_peek_before_eliding_the_title() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
@@ -2653,9 +2686,19 @@ fn review_header_drops_the_peek_before_eliding_the_title() {
     assert!(harness.query_by_label(LONG_QUEUE_TITLES[1]).is_none());
     assert!(harness.query_by_label("Next:").is_none());
     assert!(
-        title.width() > 0.8 * natural,
+        title.width() > 0.6 * natural,
         "the title drew {}px of its {natural}px",
         title.width()
+    );
+    let status = harness
+        .get_by_label("In Review")
+        .bounding_box()
+        .expect("the status has a box");
+    assert!(
+        title.x0 - status.x1 < 12.0,
+        "the title starts right after the status ({} → {})",
+        status.x1,
+        title.x0
     );
     let chip = harness
         .get_by_label(QUEUE_SESSION)

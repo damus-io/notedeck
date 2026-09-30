@@ -19,8 +19,8 @@ use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::widgets::{
-    ControlSize, MiddleElided, count_badge, detail_heading, pill_width, secondary_action_button,
-    section_label, text_pill, tinted_control, tinted_pill,
+    ControlSize, MiddleElided, StatusIcon, count_badge, detail_heading, pill_width,
+    secondary_action_button, section_label, status_icon_ui, text_pill, tinted_control, tinted_pill,
 };
 use super::{BoardEffect, BoardUiState, find_card, pane_hints_ui};
 use crate::keys::CardAction;
@@ -592,7 +592,7 @@ pub(super) fn review_queue_ui(
 
     pane_hints_ui(ui, theme, state);
 
-    let Some((_, card)) = find_card(view, current) else {
+    let Some((col, card)) = find_card(view, current) else {
         // A card that left the board since the snapshot (archived, moved to
         // another board) keeps its place in the queue, so the position still
         // adds up; there's just nothing to review.
@@ -606,7 +606,7 @@ pub(super) fn review_queue_ui(
             });
         return;
     };
-    review_pane_ui(ui, theme, app_ctx, view, card, state);
+    review_pane_ui(ui, theme, app_ctx, view, col, card, state);
     // The pane's own ← Back closes the review; in the queue that leaves it.
     if state.review.card().is_none() {
         state.close_queue(view);
@@ -651,8 +651,8 @@ fn prefetch(
     start_load(app_ctx, view, &card_ref, Some(record), source, loader);
 }
 
-/// Draw the review pane for `card`: a one-row header (back, card ref, title,
-/// session; the queue's position, its "in <word-id>" epic label when it walks
+/// Draw the review pane for `card`, which sits in `view`'s column `col`: a
+/// one-row header (back, card ref, the card's status, title, session; the queue's position, its "in <word-id>" epic label when it walks
 /// an epic, and its next card when the pane is the queue's; explainer), the
 /// record picker when there are several, the resolve status, and the commit's
 /// diff filling the rest. ← Back closes it, as `q`/`Esc` do
@@ -662,9 +662,14 @@ pub(super) fn review_pane_ui(
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     view: &BoardView,
+    col: usize,
     card: &CardView,
     state: &mut BoardUiState,
 ) {
+    let status = CardStatus {
+        icon: StatusIcon::for_column(col, view.columns.len()),
+        column: &view.columns[col].name,
+    };
     let queue = (state.queue.current() == Some(card.id)).then(|| QueueHeader {
         position: state.queue.position(),
         scope: state.queue.scope_label(),
@@ -729,6 +734,7 @@ pub(super) fn review_pane_ui(
         .show(ui, |ui| {
             let header = ReviewHeader {
                 card,
+                status,
                 record,
                 queue,
             };
@@ -805,11 +811,24 @@ const SESSION_BUTTON_WIDTH_GUESS: f32 = 120.0;
 struct ReviewHeader<'a> {
     /// The card under review.
     card: &'a CardView,
+    /// The column the card is in now.
+    status: CardStatus<'a>,
     /// The record the pane shows, if the card has any.
     record: Option<&'a ReviewView>,
     /// The queue's position and next card, while the pane shows the queue's
     /// current card.
     queue: Option<QueueHeader<'a>>,
+}
+
+/// Where the card under review sits now, for the header: its column's status
+/// circle and name. Read off the live [`BoardView`] each frame, not the
+/// queue's snapshot, so a verdict (`D`, `X`) that moves the card shows here,
+/// and stepping back to a card already ruled on says so.
+struct CardStatus<'a> {
+    /// The column's status circle, as the grid and the detail draw it.
+    icon: StatusIcon,
+    /// The column's name, borrowed from the view.
+    column: &'a str,
 }
 
 /// The queue's part of the review header, while the pane shows the queue's
@@ -824,20 +843,22 @@ struct QueueHeader<'a> {
 }
 
 /// The pane's header, one row. Left: ← Back, the card ref (click copies), the
-/// title elided to one line, the record's agentium session chip capped at
+/// card's status (its column's circle and name), the title elided to one line, the record's agentium session chip capped at
 /// [`SESSION_CHIP_MAX_WIDTH`], and a "Review in session" button that does
 /// `S`. Right: in the queue, which epic it walks (if it's an epic's), its
 /// position as a pill and the next card's title as a muted peek; a key's
 /// short-lived notice, when it's about `here`; the record's explainer link at
 /// the far end. On a narrow screen the peek goes, the card ref and the button
-/// with it, and the chip shrinks to its status dot.
+/// with it, the status keeps its circle but drops the column's name, and the
+/// chip shrinks to its status dot.
 ///
 /// The current card's title comes first: the peek only gets what is left once
 /// the title has its natural width (see [`peek_width`]), and goes when that is
 /// under [`PEEK_MIN_WIDTH`]. The title elides only when it alone overflows.
 ///
-/// Laid out in three passes in egui's one: the left's fixed parts, then the
-/// right side right to left, then the title, chip and button in what's left.
+/// Laid out in three passes in egui's one: the left's fixed parts (the status
+/// among them, so the peek's budget already leaves its room), then the right
+/// side right to left, then the title, chip and button in what's left.
 /// The right side measures the title and its own fixed parts before it draws
 /// the peek, since the peek is the first thing it draws.
 ///
@@ -854,6 +875,7 @@ fn review_topbar_ui(
 ) -> Option<notedeck::OpenUri> {
     let ReviewHeader {
         card,
+        status,
         record,
         queue,
     } = header;
@@ -872,6 +894,7 @@ fn review_topbar_ui(
         if !narrow {
             card_ref_ui(ui, theme, &review.card_ref);
         }
+        card_status_ui(ui, theme, status, narrow);
 
         let session = fields.and_then(|f| f.agentium.as_deref());
         let gap = ui.spacing().item_spacing.x;
@@ -972,6 +995,22 @@ fn card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, card_ref: &str) {
     if ui.add(button).on_hover_text("Click to copy").clicked() {
         ui.ctx().copy_text(card_ref.to_owned());
     }
+}
+
+/// The card's status in the header: its column's circle and, unless `narrow`,
+/// the column's name, small and muted. The circle carries the name on hover.
+fn card_status_ui(ui: &mut egui::Ui, theme: &ColorTheme, status: CardStatus<'_>, narrow: bool) {
+    let size = ui.text_style_height(&egui::TextStyle::Small);
+    let circle = status_icon_ui(ui, theme, status.icon, size);
+    if narrow {
+        circle.on_hover_text(status.column);
+        return;
+    }
+    ui.label(
+        egui::RichText::new(status.column)
+            .small()
+            .color(theme.text_muted),
+    );
 }
 
 /// The queue's side of the header, laid out right to left: the next card's
