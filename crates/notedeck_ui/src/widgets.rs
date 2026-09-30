@@ -240,11 +240,12 @@ pub fn inline_chip(
 ///
 /// Sums glyph advances rather than laying the text out: `Fonts::layout_no_wrap`
 /// needs an owned `String` (galleys are cached by their content), an allocation
-/// every frame for every widget on screen. egui lays proportional text out by
-/// those same advances — it does no kerning — so the sum is the width the galley
-/// would report. For measuring a row before drawing it, e.g. to give the text
-/// that matters its room before the rest of the row is laid out.
-pub fn text_width(ui: &egui::Ui, text: &str, style: &egui::TextStyle) -> f32 {
+/// every frame for every widget on screen. egui lays text out by those advances
+/// plus each glyph pair's kerning (`pair_kerning` in epaint's `text_layout.rs`),
+/// which this leaves out. The sum still matches the galley for the UI font,
+/// Onest, only because it has no legacy `kern` table for egui to read; a font
+/// that has one would measure a little wide here.
+fn text_width(ui: &egui::Ui, text: &str, style: &egui::TextStyle) -> f32 {
     let font = style.resolve(ui.style());
     ui.fonts(|f| text.chars().map(|c| f.glyph_width(&font, c)).sum())
 }

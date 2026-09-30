@@ -682,8 +682,7 @@ fn board_pane_ui(
     // ran in `board_ui`, as the plain pane's and the detail's did).
     if let Some(card) = state.queue.current() {
         reason_bar_ui(ui, theme, state);
-        review_queue_ui(ui, theme, app_ctx, view, card, state);
-        return None;
+        return review_queue_ui(ui, theme, app_ctx, view, card, state);
     }
 
     // A card's review pane takes over the pane the same way, entered from (and
@@ -693,8 +692,7 @@ fn board_pane_ui(
         if let Some((col, card)) = find_card(view, card) {
             reason_bar_ui(ui, theme, state);
             pane_hints_ui(ui, theme, state);
-            review_pane_ui(ui, theme, app_ctx, view, col, card, state);
-            return None;
+            return review_pane_ui(ui, theme, app_ctx, view, col, card, state);
         }
         state.review.close();
     }
@@ -975,20 +973,6 @@ fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>,
     ui.label(egui::RichText::new(shown.text()).color(theme.warning));
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_secs_f64(left));
-}
-
-/// Width [`notice_ui`] draws `notice` at in `here` this frame, or zero when it
-/// draws nothing there: for a row that lays out its other parts around it.
-fn notice_width(ui: &egui::Ui, notice: &Option<Notice>, here: NavPos) -> f32 {
-    let Some(Notice { what, at, pos, .. }) = *notice else {
-        return 0.0;
-    };
-    if pos != here || ui.input(|i| i.time) - at >= NOTICE_SECS {
-        return 0.0;
-    }
-    SPACING_SM
-        + notedeck_ui::text_width(ui, what.text(), &egui::TextStyle::Body)
-        + ui.spacing().item_spacing.x
 }
 
 /// The which-key strip of the pane showing over the grid ([`keys::pane_key_hints`]:

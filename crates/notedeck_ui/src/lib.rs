@@ -37,7 +37,7 @@ pub use profile::{ProfilePic, ProfilePreview};
 pub use username::Username;
 pub use widgets::{
     inline_chip, search_input_box, search_input_frame, side_panel_active_bg, side_panel_icon_tint,
-    text_width, SEARCH_INPUT_HEIGHT,
+    SEARCH_INPUT_HEIGHT,
 };
 
 use egui::{Label, Margin, Pos2, RichText};

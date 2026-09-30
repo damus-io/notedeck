@@ -281,6 +281,12 @@ pub fn copy_to_clipboard_dark_image() -> Image<'static> {
     copy_to_clipboard_image().tint(Color32::BLACK)
 }
 
+/// Claude Code's mark, white on transparent: tint it (Dave tints it
+/// terracotta for its Claude backend).
+pub fn claude_code_image() -> Image<'static> {
+    Image::new(include_image!("../../../assets/icons/claude-code.svg"))
+}
+
 pub fn sparkle_image() -> Image<'static> {
     Image::new(include_image!("../../../assets/icons/sparkle.svg"))
 }

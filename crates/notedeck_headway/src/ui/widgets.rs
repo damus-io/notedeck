@@ -5,7 +5,8 @@
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{
-    BUTTON_SM, PALETTE, RADIUS_MD, RADIUS_PILL, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THIN,
+    BUTTON_SM, PALETTE, RADIUS_MD, RADIUS_PILL, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_MEDIUM,
+    STROKE_THIN,
 };
 
 use crate::event::{self, Priority};
@@ -88,12 +89,6 @@ pub(super) fn text_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> eg
     tinted_pill(ui, text, theme.text_muted)
 }
 
-/// Width a [`text_pill`] of `text` draws at, measured without drawing it: for a
-/// row that has to know its fixed parts before it lays out the rest.
-pub(super) fn pill_width(ui: &egui::Ui, text: &str) -> f32 {
-    notedeck_ui::text_width(ui, text, &egui::TextStyle::Small) + 2.0 * SPACING_SM
-}
-
 /// A small rounded pill of `color` text, e.g. the review pane's warning-coloured
 /// `patch truncated`: a [`tinted_control`] that only senses hover.
 pub(super) fn tinted_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
@@ -166,15 +161,7 @@ pub(super) fn tinted_control(
     if !ui.is_rect_visible(rect) {
         return response;
     }
-    let tint = if !sense.senses_click() {
-        TINT_IDLE
-    } else if response.is_pointer_button_down_on() {
-        TINT_PRESSED
-    } else if response.hovered() {
-        TINT_HOVERED
-    } else {
-        TINT_IDLE
-    };
+    let tint = control_tint(&response, sense);
     ui.painter().rect_filled(
         rect,
         egui::CornerRadius::same(radius as u8),
@@ -182,6 +169,105 @@ pub(super) fn tinted_control(
     );
     let origin = egui::pos2(rect.min.x + pad_x, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(origin, galley, color);
+    response
+}
+
+/// How strongly a control's fill tints its colour: [`TINT_IDLE`] at rest (and
+/// always, for one that only senses hover), deeper while hovered or pressed.
+/// Shared by [`tinted_control`] and [`round_icon_button`], so a pill and an
+/// icon answer the pointer alike.
+fn control_tint(response: &egui::Response, sense: egui::Sense) -> f32 {
+    if !sense.senses_click() {
+        TINT_IDLE
+    } else if response.is_pointer_button_down_on() {
+        TINT_PRESSED
+    } else if response.hovered() {
+        TINT_HOVERED
+    } else {
+        TINT_IDLE
+    }
+}
+
+/// Diameter of a pane's title-row [`round_icon_button`]s (Linear's are about
+/// this size).
+pub(super) const ICON_BUTTON: f32 = 28.0;
+
+/// Diameter of a breadcrumb bar's [`round_icon_button`]s, which sit in a row of
+/// small text.
+pub(super) const ICON_BUTTON_SM: f32 = 20.0;
+
+/// Share of a [`round_icon_button`]'s diameter its face takes.
+const ICON_FACE_SHARE: f32 = 0.5;
+
+/// What a [`round_icon_button`] shows in its circle.
+pub(super) enum IconFace {
+    /// A white-on-transparent image (`notedeck_ui::app_images`), tinted to
+    /// the button's colour.
+    Image(egui::Image<'static>),
+    /// A chevron, painted as two strokes so no font needs to carry it.
+    Chevron(ChevronDir),
+}
+
+/// Which way an [`IconFace::Chevron`] points.
+#[derive(Clone, Copy)]
+pub(super) enum ChevronDir {
+    Up,
+    Down,
+}
+
+/// A small round icon button, Linear-style: a `diameter` circle with a subtle
+/// border, filled with a [`control_tint`] of the muted text colour, and `face`
+/// in its middle. `label` is its accessible name (and what tests find it by);
+/// the caller adds the hover text, which should name the key it shares. Drawn
+/// dimmed and inert in a disabled `ui`.
+pub(super) fn round_icon_button(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    face: IconFace,
+    diameter: f32,
+    label: &'static str,
+) -> egui::Response {
+    let sense = egui::Sense::click();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(diameter, diameter), sense);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let color = if ui.is_enabled() {
+        theme.text_secondary
+    } else {
+        theme.text_muted.gamma_multiply(0.5)
+    };
+    let radius = diameter / 2.0;
+    let painter = ui.painter();
+    painter.circle(
+        rect.center(),
+        radius,
+        theme
+            .text_muted
+            .gamma_multiply(control_tint(&response, sense)),
+        egui::Stroke::new(STROKE_THIN, theme.border_default),
+    );
+    let face_rect =
+        egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(diameter * ICON_FACE_SHARE));
+    match face {
+        IconFace::Image(image) => image.tint(color).paint_at(ui, face_rect),
+        IconFace::Chevron(dir) => {
+            // A V half as tall as it is wide, centred.
+            let half = face_rect.width() / 2.0;
+            let rise = match dir {
+                ChevronDir::Down => half,
+                ChevronDir::Up => -half,
+            };
+            let c = face_rect.center();
+            let stroke = egui::Stroke::new(STROKE_MEDIUM, color);
+            let tip = egui::pos2(c.x, c.y + rise / 2.0);
+            painter.line_segment([egui::pos2(c.x - half, c.y - rise / 2.0), tip], stroke);
+            painter.line_segment([egui::pos2(c.x + half, c.y - rise / 2.0), tip], stroke);
+        }
+    }
     response
 }
 

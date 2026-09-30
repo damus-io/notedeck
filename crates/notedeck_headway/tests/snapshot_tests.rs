@@ -2156,7 +2156,10 @@ fn review_queue_walks_the_in_review_column() {
     wait_for_label(&mut harness, "1 / 3");
     wait_for_label(&mut harness, CARDS[0]);
     wait_for_any_label(&mut harness, FILES[0]);
-    assert_labels_gapped(&harness, "Next:", CARDS[1]);
+    assert!(
+        harness.query_by_label(CARDS[1]).is_none(),
+        "the next card is named on the ↓'s hover, not in the header"
+    );
 
     press_board_keys(&mut harness, &[egui::Key::N, egui::Key::N]);
     wait_for_label(&mut harness, "3 / 3");
@@ -2223,8 +2226,9 @@ fn review_queue_opens_each_diff_at_the_top() {
     );
 }
 
-/// Behavioural (no lavapipe): the review header shows the current card's
-/// column, live rather than the queue's snapshot. The queue opens on an In
+/// Behavioural (no lavapipe): the review header's breadcrumb bar shows the
+/// current card's column, live rather than the queue's snapshot, gapped from
+/// the card ref after it and above the title row. The queue opens on an In
 /// Review card; `D` moves it to Done and steps on, and `p` back to it reads
 /// Done, so a card already ruled on says so.
 #[test]
@@ -2239,7 +2243,14 @@ fn review_header_shows_the_card_status() {
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     wait_for_label(&mut harness, "1 / 2");
     wait_for_label(&mut harness, "In Review");
-    assert_labels_gapped(&harness, "In Review", CARDS[0]);
+    let card_ref = headway::wordid::card_ref(store::BOARD_ID, ids[0].bytes());
+    assert_labels_gapped(&harness, "In Review", &card_ref);
+    let bottom = |label: &str| harness.get_by_label(label).bounding_box().expect("box").y1;
+    let top = |label: &str| harness.get_by_label(label).bounding_box().expect("box").y0;
+    assert!(
+        bottom("In Review") <= top(CARDS[0]),
+        "the status sits in the bar above the title"
+    );
     assert!(harness.query_by_label("Done").is_none());
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
@@ -2257,7 +2268,7 @@ fn review_header_shows_the_card_status() {
 /// Assert `right` starts a real gap after `left` ends on the same row. The
 /// harness hands Headway the chrome's zero item gap (see [`render_headway`]),
 /// so this fails if Headway stops owning its own spacing and the two labels
-/// glue together as "Next:Column reordering".
+/// glue together as "In Reviewheadway:headway/…".
 fn assert_labels_gapped(harness: &Harness<'static, HeadwayTestState>, left: &str, right: &str) {
     let left_box = harness
         .get_by_label(left)
@@ -2581,8 +2592,10 @@ fn open_review_queue(harness: &mut Harness<'static, HeadwayTestState>) {
 /// same fixture, checked for what the snapshot shows. The queue opens on the
 /// first In Review card with its record's commit diff (a modified and an added
 /// file), found in this host's checkout though the record came from another
-/// host; the top bar carries the record's explainer link and session; the bar
-/// peeks at the next card; and `?` pins the queue's key strip.
+/// host; the title row carries the record's actions as icons (copy the ref,
+/// open the session, review in it, the explainer), the byline its session
+/// chip, and the breadcrumb bar ↓/↑ for the queue; and `?` pins the queue's
+/// key strip.
 #[test]
 fn review_queue_shows_the_recorded_commit_diff() {
     let fixture = review_fixture();
@@ -2590,14 +2603,16 @@ fn review_queue_shows_the_recorded_commit_diff() {
     seed_review_queue(&mut harness, &fixture);
     open_review_queue(&mut harness);
 
-    wait_for_label(&mut harness, "Explainer ↗");
+    for icon in HEADER_ICONS {
+        wait_for_label(&mut harness, icon);
+    }
     wait_for_label(&mut harness, QUEUE_SESSION);
     wait_for_label(
         &mut harness,
         &format!("{REVIEW_HOST}:/home/jb55/dev/notedeck"),
     );
-    wait_for_label(&mut harness, "Next:");
-    wait_for_label(&mut harness, QUEUE_CARDS[1]);
+    wait_for_label(&mut harness, "Next card");
+    wait_for_label(&mut harness, "Previous card");
     wait_for_label(&mut harness, "Headway Tester · 1h ago");
     assert!(harness.query_by_label("send back").is_none());
 
@@ -2607,35 +2622,34 @@ fn review_queue_shows_the_recorded_commit_diff() {
     assert_queue_hints_fit(&harness, 1200.0);
 }
 
-/// Real-length titles for the two queue cards, about as long as an `autowork`
-/// card's: long enough that the header can't give both the title and the next
-/// card's peek their natural width.
-const LONG_QUEUE_TITLES: [&str; 2] = [
-    "headway: review header — title first, peek takes the leftover of the row",
-    "notedeck_ui: patch file summary as an aligned table with per-file stat bars",
+/// The review header's title-row icons' accessible names, left to right, for
+/// a record with a session and an explainer.
+const HEADER_ICONS: [&str; 4] = [
+    "Copy card ref",
+    "Open session",
+    "Review in session",
+    "Explainer",
 ];
 
-/// A current card's title short enough that the review header has room left
-/// over for the next card's peek (after the card's status, which sits in the
-/// row too), though not its whole title.
-const PEEK_LEFTOVER_TITLE: &str = "headway: review header";
+/// A real-length title for the current queue card, about as long as an
+/// `autowork` card's (~70 chars): the length the one-row header used to elide.
+const LONG_QUEUE_TITLE: &str =
+    "headway: review header — title first, peek takes the leftover of the row";
 
-/// [`seed_review_queue`], then retitle its two cards to `titles` and open the
-/// queue on the first.
-fn open_retitled_queue(harness: &mut Harness<'static, HeadwayTestState>, titles: [&str; 2]) {
+/// [`seed_review_queue`], then retitle its first card to `title` and open the
+/// queue on it.
+fn open_retitled_queue(harness: &mut Harness<'static, HeadwayTestState>, title: &str) {
     let fixture = review_fixture();
     seed_review_queue(harness, &fixture);
-    for (old, title) in QUEUE_CARDS.iter().zip(titles) {
-        let card = harness_card_id(harness, old);
-        apply_demo_action(
-            harness,
-            store::BoardAction::EditTitle {
-                card,
-                title: title.to_string(),
-            },
-        );
-        wait_for_label(harness, title);
-    }
+    let card = harness_card_id(harness, QUEUE_CARDS[0]);
+    apply_demo_action(
+        harness,
+        store::BoardAction::EditTitle {
+            card,
+            title: title.to_string(),
+        },
+    );
+    wait_for_label(harness, title);
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     wait_for_label(harness, "1 / 2");
     wait_for_any_label(harness, "src/queue.rs");
@@ -2659,86 +2673,133 @@ fn text_width(
     f64::from(width)
 }
 
-/// The review header's title's box and its natural (unelided) width.
-fn header_title(
+/// The box of the node labelled `label`.
+fn label_box(harness: &Harness<'static, HeadwayTestState>, label: &str) -> egui::accesskit::Rect {
+    harness
+        .get_by_label(label)
+        .bounding_box()
+        .unwrap_or_else(|| panic!("{label:?} has a box"))
+}
+
+/// Assert the header's icons all sit inside a `width`-wide screen, right of
+/// `title`'s box and within its first line's height, so none overlaps it.
+fn assert_icons_beside(
     harness: &Harness<'static, HeadwayTestState>,
-    title: &str,
-) -> (egui::accesskit::Rect, f64) {
-    let drawn = harness
-        .get_by_label(title)
-        .bounding_box()
-        .expect("the title has a box");
-    (drawn, text_width(harness, title, egui::TextStyle::Body))
+    title: egui::accesskit::Rect,
+    width: f64,
+) {
+    for icon in HEADER_ICONS {
+        let bb = label_box(harness, icon);
+        assert!(bb.x1 <= width, "{icon:?} ends at {} past {width}px", bb.x1);
+        assert!(
+            bb.x0 >= title.x1,
+            "{icon:?} at x={} overlaps the title ending at {}",
+            bb.x0,
+            title.x1
+        );
+        assert!(
+            bb.y0 >= title.y0 - 1.0 && bb.y0 < title.y1,
+            "{icon:?} is on the title's row"
+        );
+    }
 }
 
-/// The review header gives the current card's title its room before the next
-/// card's peek. With two real-length titles at 1200px the row can't hold
-/// both, so the peek goes ("Next:" with it) and the title takes the room, from
-/// the card's status up to the session chip: it elides only by what the row's
-/// fixed parts leave it short, not down to the stub it was when the peek took
-/// its 40% first.
+/// The title row gives a real-length title its whole natural width at 1200px,
+/// with no ellipsis, and wraps it onto more lines at 700px rather than eliding
+/// it. Either way the icons sit right of it, inside the screen.
 #[test]
-fn review_header_drops_the_peek_before_eliding_the_title() {
+fn review_header_title_wraps_beside_its_icons() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    open_retitled_queue(&mut harness, LONG_QUEUE_TITLES);
-
-    let (title, natural) = header_title(&harness, LONG_QUEUE_TITLES[0]);
-    assert!(harness.query_by_label(LONG_QUEUE_TITLES[1]).is_none());
-    assert!(harness.query_by_label("Next:").is_none());
-    assert!(
-        title.width() > 0.6 * natural,
-        "the title drew {}px of its {natural}px",
-        title.width()
-    );
-    let status = harness
-        .get_by_label("In Review")
-        .bounding_box()
-        .expect("the status has a box");
-    assert!(
-        title.x0 - status.x1 < 12.0,
-        "the title starts right after the status ({} → {})",
-        status.x1,
-        title.x0
-    );
-    let chip = harness
-        .get_by_label(QUEUE_SESSION)
-        .bounding_box()
-        .expect("the chip has a box");
-    assert!(
-        chip.x0 - title.x1 < 12.0,
-        "the title runs up to the chip ({} → {})",
-        title.x1,
-        chip.x0
-    );
-}
-
-/// With a shorter current title the row has room left over, and the next
-/// card's peek takes it: the title draws in full and the peek after it,
-/// elided to what's left rather than to its 40% of the row.
-#[test]
-fn review_header_peek_takes_the_leftover() {
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    let current = PEEK_LEFTOVER_TITLE;
-    open_retitled_queue(&mut harness, [current, LONG_QUEUE_TITLES[1]]);
-
-    let (title, natural) = header_title(&harness, current);
+    open_retitled_queue(&mut harness, LONG_QUEUE_TITLE);
+    let natural = text_width(&harness, LONG_QUEUE_TITLE, egui::TextStyle::Heading);
+    let title = label_box(&harness, LONG_QUEUE_TITLE);
     assert!(
         title.width() + 1.0 >= natural,
         "the title drew {}px of its {natural}px",
         title.width()
     );
-    let peek = harness
-        .get_by_label(LONG_QUEUE_TITLES[1])
-        .bounding_box()
-        .expect("the peek has a box");
-    wait_for_label(&mut harness, "Next:");
-    assert!(peek.x0 >= title.x1, "the peek starts after the title ends");
-    let peek_natural = text_width(&harness, LONG_QUEUE_TITLES[1], egui::TextStyle::Small);
+    let line = title.height();
+    assert_icons_beside(&harness, title, 1200.0);
+
+    harness.set_size(egui::Vec2::new(700.0, 800.0));
+    harness.run_steps(3);
+    let title = label_box(&harness, LONG_QUEUE_TITLE);
     assert!(
-        peek.width() + 1.0 < peek_natural,
-        "the peek elides into the leftover ({}px of {peek_natural}px)",
-        peek.width()
+        title.height() > 1.5 * line,
+        "at 700px the title wraps ({}px tall, one line is {line}px)",
+        title.height()
     );
+    assert!(
+        title.x1 <= 700.0,
+        "the wrapped title stays inside the screen"
+    );
+    assert_icons_beside(&harness, title, 700.0);
+}
+
+/// The breadcrumb bar's ↓ and ↑ step the queue as `n` and `p` do.
+#[test]
+fn review_header_arrows_step_the_queue() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+
+    harness.get_by_label("Next card").click();
+    wait_for_label(&mut harness, "2 / 2");
+    wait_for_label(&mut harness, QUEUE_CARDS[1]);
+    wait_for_any_label(&mut harness, "src/keys.rs");
+
+    harness.get_by_label("Previous card").click();
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_label(&mut harness, QUEUE_CARDS[0]);
+}
+
+/// The URL the app was asked to open in the next few frames, if any.
+fn opened_url(harness: &mut Harness<'static, HeadwayTestState>) -> Option<String> {
+    for _ in 0..4 {
+        harness.step();
+        let opened = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                _ => None,
+            });
+        if opened.is_some() {
+            return opened;
+        }
+    }
+    None
+}
+
+/// The title row's session and explainer icons raise what `s` and `e` do: the
+/// same `AppAction::Open` of the record's session, and the same explainer URL.
+/// (`S` and the review-in-session icon are
+/// [`shift_s_in_the_queue_opens_the_session_asking_for_a_review`]'s.)
+#[test]
+fn review_header_icons_are_their_keys() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, "Open session");
+    raised_opens(&mut harness);
+
+    harness.press_key(egui::Key::S);
+    harness.run_ok();
+    let keyed = raised_opens(&mut harness);
+    assert_eq!(keyed, vec![notedeck::OpenUri::new(QUEUE_SESSION)]);
+    harness.get_by_label("Open session").click();
+    harness.run_ok();
+    assert_eq!(raised_opens(&mut harness), keyed, "the icon is s");
+
+    harness.press_key(egui::Key::E);
+    let keyed = opened_url(&mut harness);
+    assert_eq!(keyed.as_deref(), Some(QUEUE_EXPLAINER));
+    harness.get_by_label("Explainer").click();
+    assert_eq!(opened_url(&mut harness), keyed, "the icon is e");
 }
 
 /// The queue's key-strip labels, in strip order: what [`assert_queue_hints_fit`]
@@ -2790,7 +2851,7 @@ fn review_queue_key_hints_wrap_on_a_narrow_pane() {
     let mut harness = behavioral_harness(egui::Vec2::new(600.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
     open_review_queue(&mut harness);
-    wait_for_label(&mut harness, "Explainer ↗");
+    wait_for_label(&mut harness, "Explainer");
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
     wait_for_label(&mut harness, "leave");
@@ -3051,9 +3112,10 @@ fn the_detail_sidebar_review_block_opens_the_pane() {
 }
 
 /// Snapshot: the review queue open on the first of two In Review cards — the
-/// queue bar with its position and the next card, the record's explainer link
-/// and agentium session, where the commit was found, and its two-file diff.
-/// Then the same with `?` pinning the queue's key strip.
+/// breadcrumb bar with the card's status, its position and ↓/↑, the title row
+/// with the record's icons, where the commit was found with its agentium
+/// session in the byline, and its two-file diff. Then the same with `?`
+/// pinning the queue's key strip.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_review_queue() {
@@ -3070,23 +3132,16 @@ fn snapshot_headway_review_queue() {
     harness.snapshot("headway_review_queue_key_hints");
 }
 
-/// Snapshot: the review queue with real-length titles on both cards (see
-/// [`review_header_drops_the_peek_before_eliding_the_title`]): the current card's
-/// title keeps its room, and with none left over the next card's peek goes.
-/// Then a shorter current title (see [`review_header_peek_takes_the_leftover`]),
-/// where the peek draws in what the title leaves.
+/// Snapshot: the review queue with a real-length current title (see
+/// [`review_header_title_wraps_beside_its_icons`]): at 1200px it draws in
+/// full on the title row, no ellipsis, beside the record's icons.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_review_queue_long_titles() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
-    open_retitled_queue(&mut harness, LONG_QUEUE_TITLES);
+    open_retitled_queue(&mut harness, LONG_QUEUE_TITLE);
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_long_titles");
-
-    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
-    open_retitled_queue(&mut harness, [PEEK_LEFTOVER_TITLE, LONG_QUEUE_TITLES[1]]);
-    harness.run_steps(3);
-    harness.snapshot("headway_review_queue_peek_leftover");
 }
 
 /// Snapshot: an epic's review queue. Both queue cards are made subissues of
@@ -3152,9 +3207,9 @@ fn snapshot_headway_detail_key_hints() {
     harness.snapshot("headway_detail_key_hints");
 }
 
-/// Snapshot: the review queue on a phone-width screen, where the header drops
-/// the next card's peek and shrinks the session chip to its status dot so the
-/// title keeps the room.
+/// Snapshot: the review queue on a phone-width screen, where the breadcrumb
+/// bar drops the card ref and the column's name, and the title wraps beside
+/// its icons.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_review_queue_narrow() {
@@ -4854,7 +4909,7 @@ fn epic_review_queue_with_nothing_under_the_card_does_not_open() {
 /// one and back returns to the queue. (The chrome's leg — Dave takes the
 /// open as one history entry, and back returns — is notedeck_chrome's
 /// `open_lands_an_agentium_session_in_dave_and_back_returns`.) The header's
-/// "Review in session" button, beside the session chip, raises the same open.
+/// "Review in session" icon raises the same open.
 #[test]
 fn shift_s_in_the_queue_opens_the_session_asking_for_a_review() {
     use notedeck::{AppAction, AppId, ChromeNavEntry, NavStack};
@@ -4908,11 +4963,11 @@ fn shift_s_in_the_queue_opens_the_session_asking_for_a_review() {
     assert_eq!(stack.len(), 2, "Headway pushes nothing for the open");
     wait_for_label(&mut harness, "1 / 2");
 
-    // The header button does the same.
+    // The header icon does the same.
     harness.get_by_label("Review in session").click();
     chrome_frame(&mut harness, &mut stack);
     let clicked = opens(&mut harness);
-    assert_eq!(clicked, raised, "the button is S");
+    assert_eq!(clicked, raised, "the icon is S");
 
     // `s` opens the session with no message.
     harness.press_key(egui::Key::S);

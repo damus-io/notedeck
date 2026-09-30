@@ -19,13 +19,15 @@ use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::widgets::{
-    ControlSize, MiddleElided, StatusIcon, count_badge, detail_heading, pill_width,
-    secondary_action_button, section_label, status_icon_ui, text_pill, tinted_control, tinted_pill,
+    ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
+    count_badge, detail_heading, round_icon_button, secondary_action_button, section_label,
+    status_icon_ui, text_pill, tinted_control, tinted_pill,
 };
-use super::{BoardEffect, BoardUiState, find_card, pane_hints_ui};
-use crate::keys::CardAction;
+use super::{BoardUiState, find_card, pane_hints_ui};
+use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::nav::{NavPos, ReviewTarget};
 use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
+use crate::store::BoardAction;
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
 /// its records is picked, and the loader its commits come through.
@@ -54,14 +56,6 @@ pub(crate) struct ReviewUi {
     /// The pane was opened (or moved to another card) since it last drew, so
     /// its trailer search is re-run (see [`ReviewLoader::expire`]).
     reopened: bool,
-    /// How wide the header's "Review in session" button drew last frame,
-    /// reserved beside the session chip so the title elides short of it. Zero
-    /// until it first draws, when [`SESSION_BUTTON_WIDTH_GUESS`] stands in.
-    session_button_width: f32,
-    /// How wide the header's session chip drew last frame, held back beside
-    /// the title when the row lays out the peek. Zero until it first draws,
-    /// when [`SESSION_CHIP_MAX_WIDTH`] stands in.
-    session_chip_width: f32,
     /// A scroll the queue's keys asked of the open diff, handed to its
     /// [`GitPatchState`](notedeck_ui::diff::GitPatchState) on the pane's next
     /// pass (and dropped there if the diff hasn't loaded).
@@ -370,7 +364,7 @@ impl QueueNotice {
     }
 }
 
-/// What `s`/`S` (or the header's "Review in session" button) ask of a
+/// What `s`/`S` (or the header's session icons) ask of a
 /// record's agentium session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionOpen {
@@ -526,6 +520,12 @@ impl ReviewQueue {
         self.cards.get(self.index + 1).copied()
     }
 
+    /// The card before the current one, if the queue is open and has one.
+    pub(crate) fn prev_card(&self) -> Option<NoteId> {
+        self.current()?;
+        self.cards.get(self.index.checked_sub(1)?).copied()
+    }
+
     /// The review target the pane opens on: the current card's newest record.
     pub(crate) fn target(&self) -> Option<ReviewTarget> {
         self.current()
@@ -570,10 +570,11 @@ impl ReviewQueue {
 
 /// Draw the review queue: the which-key strip while it's pinned or a `g` is
 /// pending, and the review pane for the queue's current card in the rest (its
-/// header carries where the pane is in the queue and a peek at the next card,
-/// see [`QueueHeader`]). Starts the next card's load too, so stepping to it is
-/// instant. The queue's keys ([`crate::keys::review_pane_keys`]) have already
-/// run this frame, and any `X` composer is drawn above.
+/// breadcrumb bar carries where the pane is in the queue and the ↓/↑ to step
+/// it, see [`QueueHeader`]). Starts the next card's load too, so stepping to it
+/// is instant. The queue's keys ([`crate::keys::review_pane_keys`]) have
+/// already run this frame, and any `X` composer is drawn above. Returns the
+/// board edit a header click made, as [`review_pane_ui`] does.
 pub(super) fn review_queue_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -581,7 +582,7 @@ pub(super) fn review_queue_ui(
     view: &BoardView,
     current: NoteId,
     state: &mut BoardUiState,
-) {
+) -> Option<BoardAction> {
     // The route seeds this too (see `Headway::render_nav`); seeding it here
     // as well covers a chrome-less embedding and the frame a step lands on.
     state.review.seed(state.queue.target());
@@ -604,13 +605,14 @@ pub(super) fn review_queue_ui(
                         .color(theme.text_muted),
                 );
             });
-        return;
+        return None;
     };
-    review_pane_ui(ui, theme, app_ctx, view, col, card, state);
+    let action = review_pane_ui(ui, theme, app_ctx, view, col, card, state);
     // The pane's own ← Back closes the review; in the queue that leaves it.
     if state.review.card().is_none() {
         state.close_queue(view);
     }
+    action
 }
 
 /// What the review keys ask of the open diff.
@@ -651,12 +653,16 @@ fn prefetch(
     start_load(app_ctx, view, &card_ref, Some(record), source, loader);
 }
 
-/// Draw the review pane for `card`, which sits in `view`'s column `col`: a
-/// one-row header (back, card ref, the card's status, title, session; the queue's position, its "in <word-id>" epic label when it walks
-/// an epic, and its next card when the pane is the queue's; explainer), the
-/// record picker when there are several, the resolve status, and the commit's
-/// diff filling the rest. ← Back closes it, as `q`/`Esc` do
+/// Draw the review pane for `card`, which sits in `view`'s column `col`: the
+/// two-row header ([`review_topbar_ui`]), the record picker when there are
+/// several, the commit line, the resolve status with the record's session,
+/// and the commit's diff filling the rest. ← Back closes it, as `q`/`Esc` do
 /// ([`crate::keys::review_pane_keys`]).
+///
+/// The header's icon clicks raise the [`CardAction`] their key does and are
+/// applied here exactly as the key would be, so a click and a key can't
+/// diverge. Returns the board edit that makes, if any (none of the header's
+/// actions edit the board today).
 pub(super) fn review_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -665,23 +671,28 @@ pub(super) fn review_pane_ui(
     col: usize,
     card: &CardView,
     state: &mut BoardUiState,
-) {
+) -> Option<BoardAction> {
     let status = CardStatus {
         icon: StatusIcon::for_column(col, view.columns.len()),
         column: &view.columns[col].name,
     };
+    let title_of = |c: Option<NoteId>| {
+        c.and_then(|c| find_card(view, c))
+            .map(|(_, c)| c.title.as_str())
+    };
     let queue = (state.queue.current() == Some(card.id)).then(|| QueueHeader {
         position: state.queue.position(),
         scope: state.queue.scope_label(),
-        next: state
-            .queue
-            .next_card()
-            .and_then(|c| find_card(view, c))
-            .map(|(_, c)| c.title.as_str()),
+        next: title_of(state.queue.next_card()),
+        prev: title_of(state.queue.prev_card()),
     });
+    let at = if queue.is_some() {
+        ActionView::Queue
+    } else {
+        ActionView::Pane
+    };
     let here = state.nav_pos();
     let notice = &mut state.notice;
-    let effects = &mut state.effects;
     let review = &mut state.review;
     if review.ref_for != Some(card.id) {
         review.ref_for = Some(card.id);
@@ -729,7 +740,7 @@ pub(super) fn review_pane_ui(
         loaded.patch_state.scroll(request);
     }
 
-    egui::Frame::new()
+    let clicked = egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
             let header = ReviewHeader {
@@ -738,9 +749,7 @@ pub(super) fn review_pane_ui(
                 record,
                 queue,
             };
-            if let Some(open) = review_topbar_ui(ui, theme, app_ctx, header, review, notice, here) {
-                effects.push(BoardEffect::Open(open));
-            }
+            let clicked = review_topbar_ui(ui, theme, header, review, notice, here);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_SM);
@@ -755,8 +764,13 @@ pub(super) fn review_pane_ui(
                 record_summary_ui(ui, theme, &r.fields, &card.title, &mut review.location);
             }
             ui.add_space(SPACING_XS);
-            load_ui(ui, theme, &mut review.loader, source);
-        });
+            let session = record.and_then(|r| r.fields.agentium.as_deref());
+            load_ui(ui, theme, app_ctx, &mut review.loader, source, session);
+            clicked
+        })
+        .inner;
+    let action = clicked?;
+    apply_card_action(ui.ctx(), view, state, card.id, action, at)
 }
 
 /// Start `source`'s load if it hasn't been: the record (or the card's trailer)
@@ -787,23 +801,8 @@ fn start_load(
     loader.start(source, job, app_ctx.waker.clone());
 }
 
-/// Most of the header row the next card's title may take in the queue. It
-/// only ever gets what the current card's title leaves, so this caps a short
-/// title's row rather than guaranteeing the peek room.
-const PEEK_SHARE: f32 = 0.4;
-
-/// Least room the next card's peek is squeezed into; with less left over it
-/// goes, "Next:" with it, rather than drawing as a stub of an ellipsis.
-const PEEK_MIN_WIDTH: f32 = 120.0;
-
-/// Widest the header's session chip draws; a longer session title ellipsizes.
+/// Widest the byline's session chip draws; a longer session title ellipsizes.
 const SESSION_CHIP_MAX_WIDTH: f32 = 220.0;
-
-/// Room the header keeps for its "Review in session" button before the button
-/// has drawn once and measured itself (see [`ReviewUi::session_button_width`]),
-/// so the title doesn't run under it on the pane's first frame. About the
-/// label's width at the default body size.
-const SESSION_BUTTON_WIDTH_GUESS: f32 = 120.0;
 
 /// What the review header draws: the card, the shown record, and the queue's
 /// part while the pane is the queue's. All borrowed, so the header formats
@@ -815,7 +814,7 @@ struct ReviewHeader<'a> {
     status: CardStatus<'a>,
     /// The record the pane shows, if the card has any.
     record: Option<&'a ReviewView>,
-    /// The queue's position and next card, while the pane shows the queue's
+    /// The queue's position and neighbours, while the pane shows the queue's
     /// current card.
     queue: Option<QueueHeader<'a>>,
 }
@@ -838,160 +837,254 @@ struct QueueHeader<'a> {
     position: &'a str,
     /// An epic's queue's `"in <word-id>"`, cached on the [`ReviewQueue`].
     scope: Option<&'a ScopeLabel>,
-    /// The next card's title, if the queue has one.
+    /// The next card's title, if the queue has one: the ↓'s hover.
     next: Option<&'a str>,
+    /// The previous card's title, if the queue has one: the ↑'s hover.
+    prev: Option<&'a str>,
 }
 
-/// The pane's header, one row. Left: ← Back, the card ref (click copies), the
-/// card's status (its column's circle and name), the title elided to one line, the record's agentium session chip capped at
-/// [`SESSION_CHIP_MAX_WIDTH`], and a "Review in session" button that does
-/// `S`. Right: in the queue, which epic it walks (if it's an epic's), its
-/// position as a pill and the next card's title as a muted peek; a key's
-/// short-lived notice, when it's about `here`; the record's explainer link at
-/// the far end. On a narrow screen the peek goes, the card ref and the button
-/// with it, the status keeps its circle but drops the column's name, and the
-/// chip shrinks to its status dot.
+/// The pane's header, Linear-style: a thin breadcrumb bar saying where the
+/// pane is ([`breadcrumb_ui`]), and under it the card's title with the
+/// record's actions as small round icons ([`title_row_ui`]). Two rows, so
+/// nothing has to share its width with the title: it wraps rather than
+/// elides.
 ///
-/// The current card's title comes first: the peek only gets what is left once
-/// the title has its natural width (see [`peek_width`]), and goes when that is
-/// under [`PEEK_MIN_WIDTH`]. The title elides only when it alone overflows.
-///
-/// Laid out in three passes in egui's one: the left's fixed parts (the status
-/// among them, so the peek's budget already leaves its room), then the right
-/// side right to left, then the title, chip and button in what's left.
-/// The right side measures the title and its own fixed parts before it draws
-/// the peek, since the peek is the first thing it draws.
-///
-/// Returns the session open the button asked for. The pane raises it as a
-/// [`BoardEffect::Open`], the one way out an `S` takes too.
+/// Returns the [`CardAction`] a click raised — ↓/↑, the explainer or either
+/// session icon — for the pane to apply as the matching key would. ← Back and
+/// the copy icon act here, as they have no key of their own.
 fn review_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    app_ctx: &mut notedeck::AppContext,
     header: ReviewHeader<'_>,
     review: &mut ReviewUi,
     notice: &mut Option<Notice>,
     here: NavPos,
-) -> Option<notedeck::OpenUri> {
+) -> Option<CardAction> {
     let ReviewHeader {
         card,
         status,
         record,
         queue,
     } = header;
-    let fields = record.map(|r| &r.fields);
+    let stepped = breadcrumb_ui(ui, theme, status, queue, review, notice, here);
+    ui.add_space(SPACING_SM);
+    let acted = title_row_ui(
+        ui,
+        theme,
+        &card.title,
+        record.map(|r| &r.fields),
+        &review.card_ref,
+    );
+    stepped.or(acted)
+}
+
+/// The header's breadcrumb bar, in small muted text. Left: ← Back › the
+/// card's status (its column's circle and name) › the card ref (click copies;
+/// elided when the row runs short). Right: a key's short-lived notice when it
+/// is about `here`, and in the queue which epic it walks (if it's an epic's),
+/// its position as a pill, and ↓/↑ for the next and previous card. A plain
+/// pane has none of the queue's part. On a narrow screen the ref goes and the
+/// status keeps its circle but drops the column's name.
+///
+/// Returns the step ↓ or ↑ asked for.
+fn breadcrumb_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    status: CardStatus<'_>,
+    queue: Option<QueueHeader<'_>>,
+    review: &mut ReviewUi,
+    notice: &mut Option<Notice>,
+    here: NavPos,
+) -> Option<CardAction> {
     let narrow = notedeck::ui::is_narrow(ui.ctx());
-    let mut open = None;
+    let mut stepped = None;
     ui.horizontal(|ui| {
-        let row = ui.available_width();
-        let back = egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
-            .fill(egui::Color32::TRANSPARENT)
-            .frame(false);
+        let back = egui::Button::new(
+            egui::RichText::new("← Back")
+                .small()
+                .color(theme.text_secondary),
+        )
+        .frame(false);
         if ui.add(back).clicked() {
             review.close();
         }
-        ui.label(egui::RichText::new("›").color(theme.text_muted));
-        if !narrow {
-            card_ref_ui(ui, theme, &review.card_ref);
-        }
+        breadcrumb_sep(ui, theme);
         card_status_ui(ui, theme, status, narrow);
 
-        let session = fields.and_then(|f| f.agentium.as_deref());
-        let gap = ui.spacing().item_spacing.x;
-        // The chip draws up to `chip_cap`; the title holds back what it drew
-        // last frame (and the button's), so a short session title doesn't
-        // cost the row a whole cap's worth.
-        let (chip_cap, chip, button) = if narrow {
-            let dot = ui.text_style_height(&egui::TextStyle::Body);
-            (dot, dot, 0.0)
-        } else {
-            let chip = last_or(review.session_chip_width, SESSION_CHIP_MAX_WIDTH);
-            let button = last_or(review.session_button_width, SESSION_BUTTON_WIDTH_GUESS);
-            (SESSION_CHIP_MAX_WIDTH, chip, button + gap)
-        };
-        let reserve = session.map_or(0.0, |_| chip + gap + button);
-
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let Some(url) = fields.and_then(|f| f.explainer.as_deref()) {
-                explainer_link_ui(ui, theme, url);
-            }
             if let Some(queue) = queue {
-                let peek = PeekBudget {
-                    row,
-                    title: &card.title,
-                    reserve,
-                    rest: queue_fixed_width(ui, &queue) + super::notice_width(ui, notice, here),
-                };
-                let peek = if narrow { None } else { peek_width(ui, peek) };
-                queue_header_ui(ui, theme, queue, peek);
+                stepped = queue_nav_ui(ui, theme, queue);
             }
             super::notice_ui(ui, theme, notice, here);
+            if narrow {
+                return;
+            }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.scope(|ui| {
-                    ui.set_max_width((ui.available_width() - reserve).max(0.0));
-                    ui.add(egui::Label::new(egui::RichText::new(&card.title).strong()).truncate());
-                });
-                let Some(session) = session else {
-                    return;
-                };
-                let drawn = session_chip_ui(ui, theme, app_ctx, session, chip_cap);
-                if narrow {
-                    return;
-                }
-                review.session_chip_width = drawn;
-                if review_in_session_button(ui, theme, &mut review.session_button_width) {
-                    open = fields
-                        .and_then(|f| session_open(f, &review.card_ref, SessionOpen::CodeReview));
-                }
+                breadcrumb_sep(ui, theme);
+                card_ref_ui(ui, theme, &review.card_ref);
             });
         });
     });
-    open
+    stepped
 }
 
-/// `measured`, a width a header part drew at last frame, or `guess` until it
-/// has drawn once.
-fn last_or(measured: f32, guess: f32) -> f32 {
-    if measured > 0.0 { measured } else { guess }
+/// The breadcrumb bar's `›` between two of its parts.
+fn breadcrumb_sep(ui: &mut egui::Ui, theme: &ColorTheme) {
+    ui.label(egui::RichText::new("›").small().color(theme.text_muted));
 }
 
-/// What the header's right side knows when it comes to draw the next card's
-/// peek, for [`peek_width`]. Borrowed, so measuring formats nothing.
-struct PeekBudget<'a> {
-    /// The whole header row's width.
-    row: f32,
-    /// The current card's title, which keeps its natural width first.
-    title: &'a str,
-    /// What the title holds back after it for the session chip and button.
-    reserve: f32,
-    /// The right side's other parts still to draw left of the peek: "Next:",
-    /// the position pill, the epic's scope label and any notice.
-    rest: f32,
+/// The queue's end of the breadcrumb bar, laid out right to left: ↑ and ↓
+/// (the `p`/`n` keys, each dimmed at its end of the queue, the card it steps
+/// to named on hover), the position pill, and in an epic's queue which epic
+/// (`in <word-id>`, its title on hover). Returns the step clicked.
+fn queue_nav_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    queue: QueueHeader<'_>,
+) -> Option<CardAction> {
+    let mut stepped = None;
+    let arrows = [
+        (
+            CardStep::Prev,
+            ChevronDir::Up,
+            "Previous card",
+            "Previous",
+            'p',
+            queue.prev,
+        ),
+        (
+            CardStep::Next,
+            ChevronDir::Down,
+            "Next card",
+            "Next",
+            'n',
+            queue.next,
+        ),
+    ];
+    for (step, dir, label, verb, key, to) in arrows {
+        let arrow = ui
+            .add_enabled_ui(to.is_some(), |ui| {
+                round_icon_button(ui, theme, IconFace::Chevron(dir), ICON_BUTTON_SM, label)
+            })
+            .inner;
+        // Formatted only while hovered, so a steady frame formats nothing.
+        let arrow = arrow.on_hover_ui(|ui| {
+            if let Some(title) = to {
+                ui.label(format!("{verb}: {title} ({key})"));
+            }
+        });
+        if arrow.clicked() {
+            stepped = Some(CardAction::Step(step));
+        }
+    }
+    text_pill(ui, theme, queue.position);
+    if let Some(scope) = queue.scope {
+        ui.label(
+            egui::RichText::new(&scope.text)
+                .small()
+                .color(theme.text_muted),
+        )
+        .on_hover_text(&scope.title);
+    }
+    stepped
 }
 
-/// How wide the next card's peek may draw, from where the header's right side
-/// has got to (the left's fixed parts and the explainer link already drawn):
-/// what's left once the title has its natural width and the rest of the row
-/// its parts, capped at [`PEEK_SHARE`] of the row. `None`, dropping the peek,
-/// when that is under [`PEEK_MIN_WIDTH`].
-fn peek_width(ui: &egui::Ui, budget: PeekBudget<'_>) -> Option<f32> {
-    let gap = ui.spacing().item_spacing.x;
-    let title = notedeck_ui::text_width(ui, budget.title, &egui::TextStyle::Body) + gap;
-    let left = ui.available_width() - budget.rest - title - budget.reserve - gap;
-    let width = left.min(budget.row * PEEK_SHARE);
-    (width >= PEEK_MIN_WIDTH).then_some(width)
+/// The header's title row: the card's title as a heading, wrapping onto as
+/// many lines as it takes, and right of it the record's actions as small round
+/// icons — copy the card ref, then, when the record has them, open its session
+/// (`s`), review in its session (`S`) and its explainer (`e`). The icons are a
+/// fixed size, so the title's width is the row less their count's worth.
+///
+/// Returns the [`CardAction`] an icon's key would raise; the copy icon copies
+/// here.
+fn title_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    title: &str,
+    fields: Option<&ReviewFields>,
+    card_ref: &str,
+) -> Option<CardAction> {
+    let session = fields.is_some_and(|f| f.agentium.is_some());
+    let explainer = fields.is_some_and(|f| f.explainer.is_some());
+    let icons = 1 + 2 * usize::from(session) + usize::from(explainer);
+    let mut acted = None;
+    ui.horizontal_top(|ui| {
+        let gap = ui.spacing().item_spacing.x;
+        let width = (ui.available_width() - icons as f32 * (ICON_BUTTON + gap)).max(0.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_max_width(width);
+                let text = egui::RichText::new(title)
+                    .heading()
+                    .strong()
+                    .color(theme.text_primary);
+                ui.add(egui::Label::new(text).wrap());
+            },
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            // Right to left: the explainer ends the row, as `e` ends the keys.
+            let icon = |ui: &mut egui::Ui, image, label, hover: &'static str| {
+                round_icon_button(ui, theme, IconFace::Image(image), ICON_BUTTON, label)
+                    .on_hover_text(hover)
+                    .clicked()
+            };
+            if explainer
+                && icon(
+                    ui,
+                    notedeck_ui::app_images::link_dark_image(),
+                    "Explainer",
+                    "Open the explainer (e)",
+                )
+            {
+                acted = Some(CardAction::Explainer(None));
+            }
+            if session
+                && icon(
+                    ui,
+                    notedeck_ui::app_images::sparkle_image(),
+                    "Review in session",
+                    "Open the session and ask it to /code-review this commit (S)",
+                )
+            {
+                acted = Some(CardAction::Session(SessionOpen::CodeReview));
+            }
+            if session
+                && icon(
+                    ui,
+                    notedeck_ui::app_images::claude_code_image(),
+                    "Open session",
+                    "Open the agentium session (s)",
+                )
+            {
+                acted = Some(CardAction::Session(SessionOpen::Plain));
+            }
+            if icon(
+                ui,
+                notedeck_ui::app_images::copy_to_clipboard_image(),
+                "Copy card ref",
+                "Copy the card ref",
+            ) {
+                ui.ctx().copy_text(card_ref.to_owned());
+            }
+        });
+    });
+    acted
 }
 
-/// The card's `headway:<board>/<word-id>`, small and muted; a click copies it.
-/// A frameless button, not a Label, so a click copies rather than starting a
-/// text selection (as the detail topbar's ref).
+/// The card's `headway:<board>/<word-id>`, small and muted, elided when the
+/// breadcrumb bar runs short; a click copies it. A frameless button, not a
+/// Label, so a click copies rather than starting a text selection (as the
+/// detail topbar's ref).
 fn card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, card_ref: &str) {
     let button = egui::Button::new(
         egui::RichText::new(card_ref)
             .color(theme.text_muted)
             .small(),
     )
-    .frame(false);
+    .frame(false)
+    .truncate();
     if ui.add(button).on_hover_text("Click to copy").clicked() {
         ui.ctx().copy_text(card_ref.to_owned());
     }
@@ -1011,61 +1104,6 @@ fn card_status_ui(ui: &mut egui::Ui, theme: &ColorTheme, status: CardStatus<'_>,
             .small()
             .color(theme.text_muted),
     );
-}
-
-/// The queue's side of the header, laid out right to left: the next card's
-/// title as a muted peek no wider than `peek_width` (none on a narrow screen),
-/// the position pill, and, in an epic's queue, which epic (`in <word-id>`,
-/// its title on hover).
-fn queue_header_ui(
-    ui: &mut egui::Ui,
-    theme: &ColorTheme,
-    queue: QueueHeader<'_>,
-    peek_width: Option<f32>,
-) {
-    if let Some((next, width)) = queue.next.zip(peek_width) {
-        let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
-        ui.scope(|ui| {
-            ui.set_max_width(width);
-            ui.add(egui::Label::new(muted(next)).truncate());
-        });
-        ui.label(muted("Next:"));
-    }
-    text_pill(ui, theme, queue.position);
-    if let Some(scope) = queue.scope {
-        ui.label(
-            egui::RichText::new(&scope.text)
-                .small()
-                .color(theme.text_muted),
-        )
-        .on_hover_text(&scope.title);
-    }
-}
-
-/// Width [`queue_header_ui`] draws besides the peek: "Next:", the position
-/// pill and an epic's scope label, each with its gap.
-fn queue_fixed_width(ui: &egui::Ui, queue: &QueueHeader<'_>) -> f32 {
-    let gap = ui.spacing().item_spacing.x;
-    let small = egui::TextStyle::Small;
-    let next = notedeck_ui::text_width(ui, "Next:", &small) + gap;
-    let pill = pill_width(ui, queue.position) + gap;
-    let scope = queue
-        .scope
-        .map_or(0.0, |s| notedeck_ui::text_width(ui, &s.text, &small) + gap);
-    next + pill + scope
-}
-
-/// The header's "Review in session" button (the `S` key): opens the record's
-/// agentium session asking it for a `/code-review` of its work. Records its
-/// drawn width in `width`, which the header reserves next frame so the title
-/// elides short of it. Returns whether it was clicked.
-fn review_in_session_button(ui: &mut egui::Ui, theme: &ColorTheme, width: &mut f32) -> bool {
-    let text = egui::RichText::new("Review in session").color(theme.accent);
-    let response = ui
-        .add(egui::Button::new(text).frame(false))
-        .on_hover_text("Open the session and ask it to /code-review this commit (S)");
-    *width = response.rect.width();
-    response.clicked()
 }
 
 /// One selectable chip per record, newest first, labelled by short sha, with
@@ -1177,8 +1215,16 @@ fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response 
 /// runs, git's own error (command and stderr, verbatim, so a broken ssh or path
 /// can be fixed by hand) with a retry, or one line above the diff with who
 /// wrote the commit and when, where it came from (the full sentence, with the
-/// repo's path, on hover), and whether its patch was cut short.
-fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, source: ReviewSource) {
+/// repo's path, on hover), the record's agentium `session` as its chip, and
+/// whether its patch was cut short.
+fn load_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    loader: &mut ReviewLoader,
+    source: ReviewSource,
+    session: Option<&str>,
+) {
     let mut retry = false;
     match loader.get_mut(source) {
         None => {}
@@ -1233,6 +1279,10 @@ fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, sou
                          commit carrying the card's Headway trailer.",
                     );
                 }
+                if let Some(session) = session {
+                    ui.label(muted("·"));
+                    wrapped_session_chip_ui(ui, theme, app_ctx, session);
+                }
                 if loaded.commit.truncated {
                     tinted_pill(ui, "patch truncated", theme.warning);
                 }
@@ -1246,38 +1296,44 @@ fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, sou
     }
 }
 
-/// The review pane's frameless "Explainer ↗" link that opens `url` in a new
-/// browser tab.
-fn explainer_link_ui(ui: &mut egui::Ui, theme: &ColorTheme, url: &str) {
-    let text = egui::RichText::new(EXPLAINER).color(theme.accent);
-    if ui
-        .add(egui::Button::new(text).frame(false))
-        .on_hover_text(url)
-        .clicked()
-    {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-    }
-}
-
-/// The explainer link's text.
+/// The detail's explainer links' text.
 const EXPLAINER: &str = "Explainer ↗";
 
 /// [`agentium_chip_ui`] no wider than `max_width`: a longer session title
-/// ellipsizes, and its full text shows on hover. Returns the width it drew.
+/// ellipsizes, and its full text shows on hover.
 fn session_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     session: &str,
     max_width: f32,
-) -> f32 {
+) {
     ui.scope(|ui| {
         ui.set_max_width(max_width);
         agentium_chip_ui(ui, theme, app_ctx, session);
-    })
-    .response
-    .rect
-    .width()
+    });
+}
+
+/// [`session_chip_ui`] in a wrapping row. The chip's scope doesn't wrap by
+/// itself: it would overflow the line (and widen a column, or run off the
+/// screen). So it takes the room left on the line, up to
+/// [`SESSION_CHIP_MAX_WIDTH`], or starts a new line when that's under
+/// [`SESSION_CHIP_MIN_WIDTH`]. (In a wrapping layout `available_width` is a
+/// whole line's.)
+fn wrapped_session_chip_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    session: &str,
+) {
+    if ui.available_size_before_wrap().x < SESSION_CHIP_MIN_WIDTH {
+        ui.end_row();
+    }
+    let width = ui
+        .available_size_before_wrap()
+        .x
+        .min(SESSION_CHIP_MAX_WIDTH);
+    session_chip_ui(ui, theme, app_ctx, session, width);
 }
 
 /// An `agentium:<word-id>` session drawn as its live inline chip through the
@@ -1522,18 +1578,7 @@ fn record_row_ui(
             }
             if let Some(session) = fields.agentium.as_deref() {
                 dot(ui);
-                // The chip's scope doesn't wrap by itself: it would overflow the
-                // line and widen the whole column. So it takes the room left on
-                // the line, or starts a new one when that's too little. (In a
-                // wrapping layout `available_width` is a whole line's.)
-                if ui.available_size_before_wrap().x < SESSION_CHIP_MIN_WIDTH {
-                    ui.end_row();
-                }
-                let width = ui
-                    .available_size_before_wrap()
-                    .x
-                    .min(SESSION_CHIP_MAX_WIDTH);
-                session_chip_ui(ui, theme, app_ctx, session, width);
+                wrapped_session_chip_ui(ui, theme, app_ctx, session);
             }
             if let Some(url) = fields.explainer.as_deref() {
                 dot(ui);
