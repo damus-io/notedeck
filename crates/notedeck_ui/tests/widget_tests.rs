@@ -329,22 +329,49 @@ fn accesskit_toolbar_all_buttons_queryable() {
 // Git patch widget
 // ---------------------------------------------------------------------------
 
+/// Render `patch` at `width` in notedeck's fonts, under a parent with no
+/// horizontal item gap, as the chrome gives every app, and snapshot it as
+/// `name`.
+fn git_patch_snapshot(name: &str, patch: &str, width: f32) {
+    use notedeck_ui::diff::{git_patch_ui, GitPatch, GitPatchState};
+
+    let patch = GitPatch::parse(patch);
+    let state = GitPatchState::new(&patch, &mut notedeck::Localization::default());
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(width, 900.0))
+        .renderer(notedeck::software_renderer())
+        .build_ui_state(
+            |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                git_patch_ui(patch, state, ui)
+            },
+            (patch, state),
+        );
+    notedeck::fonts::setup_fonts(&harness.ctx);
+    harness.run();
+    harness.snapshot(name);
+}
+
 /// The multi-file patch view: summary, file headers, hunk headers and
 /// syntax-highlighted diff rows with their gutters.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_git_patch() {
-    use notedeck_ui::diff::{git_patch_ui, GitPatch, GitPatchState};
+    git_patch_snapshot(
+        "git_patch",
+        include_str!("../src/diff/testdata/multi.patch"),
+        640.0,
+    );
+}
 
-    let patch = GitPatch::parse(include_str!("../src/diff/testdata/multi.patch"));
-    let state = GitPatchState::new(&patch, &mut notedeck::Localization::default());
-    let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(640.0, 900.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui_state(
-            |ui, (patch, state): &mut (GitPatch, GitPatchState)| git_patch_ui(patch, state, ui),
-            (patch, state),
-        );
-    harness.run();
-    harness.snapshot("git_patch");
+/// The patch view too narrow for its paths: each path keeps its file name and
+/// gives up the end of its directory, and the stats stay in their columns.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_git_patch_narrow() {
+    git_patch_snapshot(
+        "git_patch_narrow",
+        include_str!("../src/diff/testdata/nested.patch"),
+        340.0,
+    );
 }

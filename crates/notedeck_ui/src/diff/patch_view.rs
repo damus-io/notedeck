@@ -15,9 +15,10 @@ use super::{
 };
 use egui::emath::GuiRounding;
 use egui::epaint::{mutex::Mutex, TextShape, TextureAtlas};
+use egui::text::{LayoutJob, TextWrapping};
 use egui::text_selection::LabelSelectionState;
 use egui::{
-    Color32, FontId, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder, WidgetInfo,
+    Color32, FontId, Label, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder, WidgetInfo,
     WidgetType,
 };
 use notedeck::{tr, tr_plural, Localization};
@@ -26,6 +27,19 @@ use std::sync::Arc;
 
 /// Files longer than this (in diff lines) start collapsed.
 const COLLAPSE_LINES: usize = 1000;
+
+/// Width of the file table's status column (`A`, `M`, `D`, ...).
+const STATUS_WIDTH: f32 = 22.0;
+/// Gap between the file table's path and stats columns, and between the
+/// stats columns themselves.
+const COLUMN_GAP: f32 = 8.0;
+/// Blocks in a file's add/delete proportion bar.
+const BAR_BLOCKS: usize = 5;
+/// Side of one block of the bar, and the gap between blocks.
+const BAR_BLOCK: f32 = 7.0;
+const BAR_BLOCK_GAP: f32 = 2.0;
+/// Width of the whole bar.
+const BAR_WIDTH: f32 = BAR_BLOCKS as f32 * (BAR_BLOCK + BAR_BLOCK_GAP) - BAR_BLOCK_GAP;
 
 /// A scroll the caller asks for; applied on the next [`git_patch_ui`] pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,13 +65,15 @@ pub enum PatchScroll {
 #[derive(Debug, Clone, Default)]
 pub struct GitPatchState {
     collapsed: Vec<bool>,
-    /// Per file, its `+a −d` counts, formatted once.
-    stats: Vec<String>,
+    /// Per file, what its row in the file table shows besides its name,
+    /// formatted once.
+    rows: Vec<FileRow>,
     /// "N files changed", formatted once.
     summary: String,
-    /// The patch's total `+a` and `−d`, formatted once.
-    total_additions: String,
-    total_deletions: String,
+    /// The patch's totals, formatted once.
+    totals: Stats,
+    /// How wide the stats columns are, so they line up down the table.
+    columns: StatColumns,
     /// "Binary file not shown" and friends, localized once.
     notes: Notes,
     /// The virtual row of each file's header. Recomputed every pass (its
@@ -175,6 +191,99 @@ impl std::fmt::Debug for LineGalleys {
     }
 }
 
+/// A file's row in the file table, less its name (the tail of
+/// [`FilePatch::path`], borrowed when drawn).
+#[derive(Debug, Clone, Default)]
+struct FileRow {
+    /// The muted part before the name: the directory with its trailing `/`,
+    /// after `old → ` for a rename or copy. Empty for a file at the root.
+    dir: String,
+    stats: Stats,
+}
+
+impl FileRow {
+    fn new(file: &FilePatch) -> Self {
+        let (dir, _) = split_path(file.path());
+        let dir = if file.old_path != file.new_path {
+            format!("{} → {dir}", file.old_path)
+        } else {
+            dir.to_owned()
+        };
+        Self {
+            dir,
+            stats: Stats::new(file.additions, file.deletions),
+        }
+    }
+}
+
+/// `+a` and `−d`, each empty when its count is zero, and the counts for the
+/// proportion bar.
+#[derive(Debug, Clone, Default)]
+struct Stats {
+    additions: String,
+    deletions: String,
+    /// Added and deleted line counts.
+    counts: (usize, usize),
+}
+
+impl Stats {
+    fn new(additions: usize, deletions: usize) -> Self {
+        Self {
+            additions: stat_label('+', additions),
+            deletions: stat_label('−', deletions),
+            counts: (additions, deletions),
+        }
+    }
+}
+
+/// The widths of the table's `+a` and `−d` columns: the widest label of each
+/// across the patch (totals included), measured once per font.
+#[derive(Debug, Clone, Default)]
+struct StatColumns {
+    /// The font and scale they were measured in.
+    key: Option<(FontId, f32)>,
+    additions: f32,
+    deletions: f32,
+}
+
+impl StatColumns {
+    /// Measure the labels again if the stat font or scale changed.
+    fn update(&mut self, rows: &[FileRow], totals: &Stats, ui: &Ui) {
+        let key = (stat_font(ui), ui.ctx().pixels_per_point());
+        if self.key.as_ref() == Some(&key) {
+            return;
+        }
+        let widest = |label: fn(&Stats) -> &String| {
+            let stats = rows.iter().map(|r| &r.stats).chain(std::iter::once(totals));
+            ui.fonts(|f| {
+                stats
+                    .map(label)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        f.layout_no_wrap(s.clone(), key.0.clone(), Color32::PLACEHOLDER)
+                            .size()
+                            .x
+                    })
+                    .fold(0.0, f32::max)
+            })
+        };
+        self.additions = widest(|s| &s.additions);
+        self.deletions = widest(|s| &s.deletions);
+        self.key = Some(key);
+    }
+
+    /// The stats block's width: the two columns and the bar, with the gaps
+    /// between them (none for a column no file uses).
+    fn width(&self) -> f32 {
+        [self.additions, self.deletions]
+            .iter()
+            .filter(|&&w| w > 0.0)
+            .map(|w| w + COLUMN_GAP)
+            .sum::<f32>()
+            + BAR_WIDTH
+    }
+}
+
 /// Localized one-line bodies for files without hunks.
 #[derive(Debug, Clone, Default)]
 struct Notes {
@@ -217,13 +326,9 @@ impl GitPatchState {
                 .iter()
                 .map(|f| f.lines.len() > COLLAPSE_LINES)
                 .collect(),
-            stats: files
-                .iter()
-                .map(|f| format!("+{} −{}", f.additions, f.deletions))
-                .collect(),
+            rows: files.iter().map(FileRow::new).collect(),
             summary,
-            total_additions: format!("+{}", patch.additions()),
-            total_deletions: format!("−{}", patch.deletions()),
+            totals: Stats::new(patch.additions(), patch.deletions()),
             notes,
             file_rows: Vec::with_capacity(files.len()),
             ..Default::default()
@@ -414,6 +519,7 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
     }
 
     state.galleys.begin_pass(ui);
+    state.columns.update(&state.rows, &state.totals, ui);
     let row_height = row_height(ui);
     let row_step = row_height + ui.spacing().item_spacing.y;
     let content_rows = state.layout(patch);
@@ -483,28 +589,17 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
     match row {
         Row::Summary => {
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.strong(&state.summary);
-                ui.label(
-                    RichText::new(&state.total_additions)
-                        .monospace()
-                        .color(INSERT_COLOR),
-                );
-                ui.label(
-                    RichText::new(&state.total_deletions)
-                        .monospace()
-                        .color(DELETE_COLOR),
-                );
+                let right = row_right(ui);
+                ui.add_space((right - ui.cursor().left() - state.columns.width()).max(COLUMN_GAP));
+                stats_ui(&state.totals, &state.columns, ui);
             });
         }
         Row::SummaryFile(f) => {
             let file = &patch.files()[f];
-            let row = ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                status_ui(file.status, ui);
-                ui.label(file.path());
-                stat_ui(file, &state.stats[f], ui);
-            });
-            if clickable(row.response, WidgetType::Link, file.path()) {
+            let row = file_row_ui(file, &state.rows[f], &state.columns, None, ui);
+            if clickable(row, WidgetType::Link, file.path()) {
                 state.set_collapsed(f, false);
                 state.scroll(PatchScroll::File(f));
             }
@@ -525,7 +620,8 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 &state.notes.unchanged
             };
             ui.horizontal(|ui| {
-                ui.add_space(8.0);
+                // Under the path column.
+                ui.add_space(ui.spacing().icon_width + STATUS_WIDTH);
                 ui.weak(note);
             });
         }
@@ -618,31 +714,85 @@ fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) {
     }
 }
 
-/// A file's header row: collapse arrow, status, path (old → new for a
-/// rename), counts. Returns whether it was clicked.
+/// A file's header row: collapse arrow, then the same columns as its row in
+/// the summary above, so paths and stats line up between the two. Returns
+/// whether it was clicked.
 fn file_header_ui(patch: &GitPatch, state: &GitPatchState, f: usize, ui: &mut Ui) -> bool {
     let file = &patch.files()[f];
     let openness = if state.is_collapsed(f) { 0.0 } else { 1.0 };
-    let row = ui
-        .horizontal(|ui| {
+    let row = file_row_ui(file, &state.rows[f], &state.columns, Some(openness), ui);
+    clickable(row, WidgetType::Button, file.path())
+}
+
+/// One row of the file table, shared by the summary and the file headers:
+/// a lead column, the status letter, the path — directory muted and cut short
+/// to fit, the name whole — and the stats right-aligned in `columns`. Hovering
+/// a row whose path was cut shows it whole.
+///
+/// `openness` is set for a file header: the row gets the header's opaque
+/// background (so it can be pinned over the rows it scrolls past), its
+/// collapse arrow in the lead column and a strong name. The summary's rows
+/// leave the lead column blank.
+///
+/// Sets its own gaps rather than inheriting the parent's: the chrome gives
+/// apps no horizontal item spacing.
+fn file_row_ui(
+    file: &FilePatch,
+    row: &FileRow,
+    columns: &StatColumns,
+    openness: Option<f32>,
+    ui: &mut Ui,
+) -> egui::Response {
+    let inner = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let height = ui.spacing().interact_size.y;
+        if openness.is_some() {
             let rect = full_row(ui);
             let visuals = ui.visuals();
             ui.painter().rect_filled(rect, 0.0, visuals.panel_fill);
             ui.painter()
                 .rect_filled(rect, 0.0, visuals.extreme_bg_color);
-            let icon = egui::vec2(ui.spacing().icon_width, ui.spacing().interact_size.y);
-            let (_, icon) = ui.allocate_exact_size(icon, Sense::hover());
-            egui::collapsing_header::paint_default_icon(ui, openness, &icon);
-            status_ui(file.status, ui);
-            if file.old_path != file.new_path {
-                ui.label(RichText::new(&file.old_path).weak());
-                ui.label(RichText::new("->").weak());
-            }
-            ui.strong(file.path());
-            stat_ui(file, &state.stats[f], ui);
-        })
-        .response;
-    clickable(row, WidgetType::Button, file.path())
+        }
+        let lead = egui::vec2(ui.spacing().icon_width, height);
+        let (_, lead) = ui.allocate_exact_size(lead, Sense::hover());
+        if let Some(openness) = openness {
+            egui::collapsing_header::paint_default_icon(ui, openness, &lead);
+        }
+        status_ui(file.status, height, ui);
+
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let visuals = ui.visuals();
+        let name_color = if openness.is_some() {
+            visuals.strong_text_color()
+        } else {
+            visuals.text_color()
+        };
+        let dir_color = visuals.weak_text_color();
+        let (_, name) = split_path(file.path());
+        let name = ui.fonts(|f| f.layout_no_wrap(name.to_owned(), body.clone(), name_color));
+        let right = row_right(ui);
+        let room = right - ui.cursor().left() - name.size().x - COLUMN_GAP - columns.width();
+        let mut elided = false;
+        if !row.dir.is_empty() {
+            let mut job = LayoutJob::simple_singleline(row.dir.clone(), body, dir_color);
+            job.wrap = TextWrapping::truncate_at_width(room.max(0.0));
+            let dir = ui.fonts(|f| f.layout_job(job));
+            elided = dir.elided;
+            ui.add(Label::new(dir));
+        }
+        ui.add(Label::new(name));
+        if file.hunks.is_empty() {
+            return elided;
+        }
+        ui.add_space((right - ui.cursor().left() - columns.width()).max(COLUMN_GAP));
+        stats_ui(&row.stats, columns, ui);
+        elided
+    });
+    if inner.inner {
+        inner.response.on_hover_text(file.path())
+    } else {
+        inner.response
+    }
 }
 
 /// Make a whole row clickable, as one accessible widget named `label` (the
@@ -690,6 +840,13 @@ fn sticky_header(
     }
 }
 
+/// Where the file table's rows end: the right edge of the view. Not the
+/// `max_rect`'s, which grows past the view once a wide diff line has been
+/// laid out above, so rows drawn after one would end further right.
+fn row_right(ui: &Ui) -> f32 {
+    ui.max_rect().right().min(ui.clip_rect().right())
+}
+
 /// The rect of the current `horizontal` row, stretched to the full width.
 fn full_row(ui: &Ui) -> Rect {
     let min = ui.max_rect().min;
@@ -699,7 +856,8 @@ fn full_row(ui: &Ui) -> Rect {
     )
 }
 
-fn status_ui(status: FileStatus, ui: &mut Ui) {
+/// The file table's status column: the letter, centred in [`STATUS_WIDTH`].
+fn status_ui(status: FileStatus, height: f32, ui: &mut Ui) {
     let (letter, color) = match status {
         FileStatus::Added => ("A", INSERT_COLOR),
         FileStatus::Deleted => ("D", DELETE_COLOR),
@@ -707,23 +865,112 @@ fn status_ui(status: FileStatus, ui: &mut Ui) {
         FileStatus::Renamed { .. } => ("R", ui.visuals().warn_fg_color),
         FileStatus::Copied { .. } => ("C", ui.visuals().warn_fg_color),
     };
-    ui.label(RichText::new(letter).monospace().strong().color(color));
+    ui.add_sized(
+        [STATUS_WIDTH, height],
+        Label::new(RichText::new(letter).strong().color(color)),
+    );
 }
 
-/// A file's `+a −d`, preformatted in `stats`; nothing for a file without
-/// hunks (binary, pure rename, mode change).
-fn stat_ui(file: &FilePatch, stats: &str, ui: &mut Ui) {
-    if file.hunks.is_empty() {
-        return;
+/// The stats columns: `+a` and `−d`, each right-aligned in its column and
+/// left blank when zero, then the proportion bar.
+fn stats_ui(stats: &Stats, columns: &StatColumns, ui: &mut Ui) {
+    let font = stat_font(ui);
+    let cells = [
+        (&stats.additions, columns.additions, INSERT_COLOR),
+        (&stats.deletions, columns.deletions, DELETE_COLOR),
+    ];
+    for (label, width, color) in cells {
+        if width <= 0.0 {
+            continue;
+        }
+        if label.is_empty() {
+            ui.add_space(width + COLUMN_GAP);
+            continue;
+        }
+        let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font.clone(), color));
+        ui.add_space(width - galley.size().x);
+        ui.add(Label::new(galley));
+        ui.add_space(COLUMN_GAP);
     }
-    let color: Color32 = if file.deletions == 0 {
-        INSERT_COLOR
-    } else if file.additions == 0 {
-        DELETE_COLOR
-    } else {
-        LINE_NUMBER_COLOR
-    };
-    ui.label(RichText::new(stats).monospace().size(11.0).color(color));
+    stat_bar_ui(stats.counts, ui);
+}
+
+/// GitHub's five-block bar: one block per changed line up to
+/// [`BAR_BLOCKS`], green for additions and red for deletions in proportion,
+/// the rest grey. Painted, not laid out, so it costs no text.
+fn stat_bar_ui((additions, deletions): (usize, usize), ui: &mut Ui) {
+    let height = ui.spacing().interact_size.y;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(BAR_WIDTH, height), Sense::hover());
+    let (green, red) = bar_blocks(additions, deletions);
+    let grey = ui.visuals().widgets.inactive.bg_fill;
+    for i in 0..BAR_BLOCKS {
+        let color = if i < green {
+            INSERT_COLOR
+        } else if i < green + red {
+            DELETE_COLOR
+        } else {
+            grey
+        };
+        let x = rect.left() + i as f32 * (BAR_BLOCK + BAR_BLOCK_GAP);
+        let block = Rect::from_min_size(
+            egui::pos2(x, rect.center().y - BAR_BLOCK / 2.0),
+            egui::vec2(BAR_BLOCK, BAR_BLOCK),
+        );
+        ui.painter().rect_filled(block.round_ui(), 1.5, color);
+    }
+}
+
+/// How many of the bar's blocks are green and how many red: one per changed
+/// line up to [`BAR_BLOCKS`], split in proportion (rounded), with at least
+/// one for each side that changed anything.
+fn bar_blocks(additions: usize, deletions: usize) -> (usize, usize) {
+    let total = additions + deletions;
+    let lit = total.min(BAR_BLOCKS);
+    if lit == 0 {
+        return (0, 0);
+    }
+    let mut green = (additions * lit + total / 2) / total;
+    if additions > 0 {
+        green = green.max(1);
+    }
+    if deletions > 0 {
+        green = green.min(lit - 1);
+    }
+    (green, lit - green)
+}
+
+/// The stats' font: the body font, so they sit on the path's baseline. (A
+/// monospace one doesn't, even at the same size: its ascent differs, and the
+/// row centres each label's box, not its baseline.) Each stat is
+/// right-aligned in its column, so the digits needn't be tabular.
+fn stat_font(ui: &Ui) -> FontId {
+    egui::TextStyle::Body.resolve(ui.style())
+}
+
+/// `sign` then `n` with thousands separators (`+1,655`), or nothing for zero.
+fn stat_label(sign: char, n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let digits = n.to_string();
+    let mut label = String::with_capacity(sign.len_utf8() + digits.len() * 4 / 3);
+    label.push(sign);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            label.push(',');
+        }
+        label.push(digit);
+    }
+    label
+}
+
+/// `path` split after its last `/`: the directory (with the slash, or empty)
+/// and the file name.
+fn split_path(path: &str) -> (&str, &str) {
+    match path.rfind('/') {
+        Some(i) => path.split_at(i + 1),
+        None => ("", path),
+    }
 }
 
 #[cfg(test)]
@@ -733,6 +980,7 @@ mod tests {
     use egui_kittest::{kittest::Queryable, Harness};
 
     const MULTI: &str = include_str!("testdata/multi.patch");
+    const NESTED: &str = include_str!("testdata/nested.patch");
 
     /// A patch whose first file is `lines` inserted lines, then a small file.
     fn tall_patch(lines: usize) -> GitPatch {
@@ -747,13 +995,18 @@ mod tests {
     }
 
     fn harness(patch: GitPatch, height: f32) -> Harness<'static, (GitPatch, GitPatchState)> {
+        sized_harness(patch, egui::vec2(800.0, height))
+    }
+
+    fn sized_harness(
+        patch: GitPatch,
+        size: egui::Vec2,
+    ) -> Harness<'static, (GitPatch, GitPatchState)> {
         let state = GitPatchState::new(&patch, &mut Localization::default());
-        Harness::builder()
-            .with_size(egui::vec2(800.0, height))
-            .build_ui_state(
-                |ui, (patch, state)| git_patch_ui(patch, state, ui),
-                (patch, state),
-            )
+        Harness::builder().with_size(size).build_ui_state(
+            |ui, (patch, state)| git_patch_ui(patch, state, ui),
+            (patch, state),
+        )
     }
 
     fn shown(harness: &Harness<'_, (GitPatch, GitPatchState)>, label: &str) -> usize {
@@ -814,6 +1067,79 @@ mod tests {
         assert_eq!(shown(&harness, "+     new();"), 1);
         assert_eq!(shown(&harness, "Binary file not shown"), 1);
         assert_eq!(shown(&harness, "No content changes"), 1);
+
+        // Stats drop a zero side: added file.rs is `+2` alone (in the summary
+        // and its header), gone.txt `−1` alone; the totals keep both.
+        assert_eq!(shown(&harness, "−0"), 0);
+        assert_eq!(shown(&harness, "+0"), 0);
+        assert_eq!(shown(&harness, "+8"), 1);
+        assert_eq!(shown(&harness, "−5"), 1);
+        // The rename's old path leads its muted part, in both rows.
+        assert_eq!(shown(&harness, "old name.txt → "), 2);
+        assert_eq!(shown(&harness, "new name.txt"), 4);
+    }
+
+    #[test]
+    fn narrow_rows_cut_the_directory_and_keep_the_name() {
+        const WIDTH: f32 = 280.0;
+        let mut harness = sized_harness(GitPatch::parse(NESTED), egui::vec2(WIDTH, 600.0));
+        harness.run();
+        // The row widgets carry the whole path.
+        harness.get_by_role_and_label(Role::Link, "crates/notedeck_ui/src/diff/patch_view.rs");
+        harness.get_by_role_and_label(Role::Button, "crates/notedeck_ui/src/diff/patch_view.rs");
+
+        // The labels are named by their whole text even when cut, so check
+        // where they landed: in both rows, directory then name then `+2`, in
+        // order and inside the view, so the directory gave up its end.
+        let spans = |label: &str| -> Vec<(f64, f64)> {
+            harness
+                .query_all_by_label(label)
+                .map(|n| {
+                    let b = n.bounding_box().expect("laid out");
+                    (b.x0, b.x1)
+                })
+                .collect()
+        };
+        let dirs = spans("crates/notedeck_ui/src/diff/");
+        let names = spans("patch_view.rs");
+        let adds = spans("+2");
+        assert_eq!((dirs.len(), names.len(), adds.len()), (2, 2, 2));
+        for ((dir, name), add) in dirs.iter().zip(&names).zip(&adds) {
+            assert!(dir.1 <= name.0 + 0.5, "{dir:?} overlaps {name:?}");
+            assert!(name.1 < add.0, "{name:?} runs into {add:?}");
+            assert!(add.1 <= WIDTH as f64, "{add:?} is past the view");
+        }
+        // A root file has no directory part at all.
+        assert_eq!(harness.query_all_by_label("README.md").count(), 4);
+    }
+
+    #[test]
+    fn stat_labels_group_thousands_and_drop_zero() {
+        assert_eq!(stat_label('+', 0), "");
+        assert_eq!(stat_label('+', 17), "+17");
+        assert_eq!(stat_label('−', 1655), "−1,655");
+        assert_eq!(stat_label('+', 1_234_567), "+1,234,567");
+        assert_eq!(stat_label('+', 100_000), "+100,000");
+    }
+
+    #[test]
+    fn bar_blocks_split_in_proportion() {
+        assert_eq!(bar_blocks(0, 0), (0, 0));
+        // Fewer changed lines than blocks: one block each.
+        assert_eq!(bar_blocks(2, 0), (2, 0));
+        assert_eq!(bar_blocks(1, 1), (1, 1));
+        assert_eq!(bar_blocks(1655, 0), (5, 0));
+        assert_eq!(bar_blocks(0, 40), (0, 5));
+        assert_eq!(bar_blocks(30, 20), (3, 2));
+        // A lopsided change still shows its minority side.
+        assert_eq!(bar_blocks(1000, 1), (4, 1));
+        assert_eq!(bar_blocks(1, 1000), (1, 4));
+    }
+
+    #[test]
+    fn split_path_keeps_the_slash_with_the_directory() {
+        assert_eq!(split_path("a/b/c.rs"), ("a/b/", "c.rs"));
+        assert_eq!(split_path("c.rs"), ("", "c.rs"));
     }
 
     #[test]

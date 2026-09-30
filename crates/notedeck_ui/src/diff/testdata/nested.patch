@@ -1,0 +1,25 @@
+diff --git a/assets/translations/en-US/main.ftl b/assets/translations/en-US/main.ftl
+new file mode 100644
+--- /dev/null
++++ b/assets/translations/en-US/main.ftl
+@@ -0,0 +1,3 @@
++review-queue = Review queue
++review-next = Next
++review-back = Back
+diff --git a/crates/notedeck_ui/src/diff/patch_view.rs b/crates/notedeck_ui/src/diff/patch_view.rs
+--- a/crates/notedeck_ui/src/diff/patch_view.rs
++++ b/crates/notedeck_ui/src/diff/patch_view.rs
+@@ -1,4 +1,5 @@
+ fn row_ui() {
+-    status_ui(file.status, ui);
++    status_ui(file.status, height, ui);
++    stats_ui(&row.stats, columns, ui);
+     ui.label(file.path());
+ }
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,1 @@
+ # notedeck
+-
+-A nostr client.
