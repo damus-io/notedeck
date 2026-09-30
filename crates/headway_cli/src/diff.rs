@@ -112,6 +112,7 @@ mod tests {
                 commit: Some(commit.to_string()),
                 ..Default::default()
             },
+            comments: Vec::new(),
         }
     }
 

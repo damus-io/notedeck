@@ -10,12 +10,12 @@ use super::model::{
 };
 use super::parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
-    IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewEvent, SequenceEvent,
-    SubjectEdit,
+    IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewCommentEvent,
+    ReviewEvent, SequenceEvent, SubjectEdit,
 };
 use super::view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
-    EdgeRef, ReviewView, SubissueView,
+    EdgeRef, ReviewCommentView, ReviewView, SubissueView,
 };
 
 /// Accumulates headway events into the maps needed to resolve effective board
@@ -114,6 +114,11 @@ pub struct BoardReducer {
     /// [`comments`](Self::comments) — every record is kept and grouped onto its
     /// issue at finalize, authorised there like the overlays.
     reviews: HashMap<[u8; 32], ReviewEvent>,
+    /// Inline review comments by comment id, append-only like
+    /// [`comments`](Self::comments). Grouped onto their review record (not the
+    /// card) at finalize, so one that arrives before its record just waits in
+    /// here until the record does.
+    review_comments: HashMap<[u8; 32], ReviewCommentEvent>,
     /// Latest relation per *child* issue — the child's one parent slot.
     /// Latest-authorised-wins like every other overlay; authority needs the
     /// issue maps so it's checked at resolve time, not here.
@@ -237,6 +242,9 @@ impl BoardReducer {
                 // Append-only and immutable: keep the first sighting; later
                 // duplicates of the same id are no-ops.
                 self.comments.entry(c.id).or_insert(c);
+            }
+            HeadwayEvent::ReviewComment(c) => {
+                self.review_comments.entry(c.id).or_insert(c);
             }
             HeadwayEvent::Review(r) => {
                 // Append-only and immutable, deduped by id like a comment; also
@@ -763,17 +771,43 @@ impl BoardReducer {
         // records are append-only, so collapse identical fields here and keep
         // the newest. Any differing field (explainer, host, path) is new
         // information and survives as its own record.
-        let mut seen_fields: HashSet<&ReviewFields> = HashSet::new();
-        let reviews: Vec<ReviewView> = records
-            .into_iter()
-            .filter(|r| seen_fields.insert(&r.fields))
-            .map(|r| ReviewView {
-                id: NoteId::new(r.id),
-                author: r.author,
-                created_at: r.created_at,
-                fields: r.fields.clone(),
-            })
-            .collect();
+        //
+        // A collapsed duplicate may still carry review comments (its id was
+        // shown until the newer copy arrived), so its comments follow it onto
+        // the record that survives.
+        let mut survivors: HashMap<&ReviewFields, usize> = HashMap::new();
+        let mut owner_of: HashMap<[u8; 32], usize> = HashMap::new();
+        let mut reviews: Vec<ReviewView> = Vec::new();
+        for r in records {
+            let at = *survivors.entry(&r.fields).or_insert_with(|| {
+                reviews.push(ReviewView {
+                    id: NoteId::new(r.id),
+                    author: r.author,
+                    created_at: r.created_at,
+                    fields: r.fields.clone(),
+                    comments: Vec::new(),
+                });
+                reviews.len() - 1
+            });
+            owner_of.insert(r.id, at);
+        }
+        for c in self.review_comments.values() {
+            let Some(&at) = owner_of.get(&c.record_id) else {
+                continue;
+            };
+            reviews[at].comments.push(ReviewCommentView {
+                id: NoteId::new(c.id),
+                author: c.author,
+                parent: c.parent_id.map(NoteId::new),
+                location: c.location.clone(),
+                body: c.body.clone(),
+                created_at: c.created_at,
+            });
+        }
+        for r in &mut reviews {
+            r.comments
+                .sort_by(|a, b| (a.created_at, a.id.bytes()).cmp(&(b.created_at, b.id.bytes())));
+        }
 
         // The newest touch wins: creation, the winning amendments, the last
         // comment or the latest review record. Placements deliberately don't
@@ -785,7 +819,15 @@ impl BoardReducer {
             .max(label_set.map_or(0, |l| l.created_at))
             .max(fields_touched)
             .max(comments.last().map_or(0, |c| c.created_at))
-            .max(reviews.first().map_or(0, |r| r.created_at));
+            .max(reviews.first().map_or(0, |r| r.created_at))
+            .max(
+                reviews
+                    .iter()
+                    .filter_map(|r| r.comments.last())
+                    .map(|c| c.created_at)
+                    .max()
+                    .unwrap_or(0),
+            );
 
         // This card as a child: its one relation slot names its parent.
         let parent = self
@@ -1088,9 +1130,9 @@ mod tests {
     use crate::event::build::{
         build_archive_placement, build_blockers, build_board, build_comment, build_cover_note,
         build_field, build_issue, build_labels, build_placement, build_related, build_relation,
-        build_review, build_sequence, build_subject_edit,
+        build_review, build_review_comment, build_sequence, build_subject_edit,
     };
-    use crate::event::model::{ColumnDef, ReviewFields, board_address};
+    use crate::event::model::{ColumnDef, LineSide, ReviewFields, ReviewLocation, board_address};
     use crate::event::parse::parse;
 
     /// Build a full board (board + two issues + placements) and reduce it,
@@ -1743,6 +1785,78 @@ mod tests {
         assert!(card.reviews.is_empty());
         assert_eq!(card.updated_at, 1_000);
         assert_eq!(card.activity.len(), 1, "only the Created row");
+    }
+
+    /// Inline review comments fold onto their review record, oldest first, and
+    /// stay out of the card's own comments; a card comment still lands on the
+    /// card. A review comment that arrives before its record waits for it, and
+    /// one on a record collapsed as a duplicate follows it onto the survivor.
+    #[test]
+    fn reduce_attaches_review_comments_to_their_record() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let sign = |b: NoteBuilder| {
+            let note = b.sign(&owner.secret_key.secret_bytes()).build().unwrap();
+            (NoteId::new(*note.id()), parse(&note).unwrap())
+        };
+        let loc = |start: u32| ReviewLocation {
+            path: "src/lib.rs".into(),
+            commit: "aaaa".into(),
+            start,
+            end: start,
+            side: LineSide::New,
+        };
+
+        let (i1, issue) = sign(build_issue(&addr, "Card", "").created_at(1_000));
+        let fields = review_on("aaaa", "jex0");
+        let (r_old, record_old) = sign(build_review(&i1, &fields).created_at(2_000));
+        let (_, record_new) = sign(build_review(&i1, &fields).created_at(3_000));
+        let (_, second) = sign(
+            build_review_comment(&r_old, &owner.pubkey, None, Some(&loc(9)), "second")
+                .created_at(5_000),
+        );
+        let (_, first) = sign(
+            build_review_comment(&r_old, &owner.pubkey, None, Some(&loc(3)), "first")
+                .created_at(4_000),
+        );
+        let (_, card_comment) =
+            sign(build_comment(&i1, &owner.pubkey, None, "on the card").created_at(1_500));
+
+        // The comments come first: nothing to attach to until the records land.
+        let events = vec![
+            second,
+            first,
+            parse_owned_board(&owner, &cols),
+            issue,
+            sign(build_placement("b1", &addr, &i1, "todo", "m")).1,
+            record_old,
+            record_new,
+            card_comment,
+        ];
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+
+        assert_eq!(card.reviews.len(), 1, "identical records collapse");
+        let bodies: Vec<&str> = card.reviews[0]
+            .comments
+            .iter()
+            .map(|c| c.body.as_str())
+            .collect();
+        assert_eq!(bodies, vec!["first", "second"]);
+        assert_eq!(card.reviews[0].comments[0].location, Some(loc(3)));
+        let card_bodies: Vec<&str> = card.comments.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(card_bodies, vec!["on the card"]);
+        assert_eq!(card.updated_at, 5_000);
+    }
+
+    /// The board definition `owner` signs for a one-board test.
+    fn parse_owned_board(owner: &FullKeypair, cols: &[ColumnDef]) -> HeadwayEvent {
+        let note = build_board("b1", "Board", "", cols)
+            .sign(&owner.secret_key.secret_bytes())
+            .build()
+            .unwrap();
+        parse(&note).unwrap()
     }
 
     /// A relay may hand us the same comment twice; the reducer keeps one.

@@ -9,7 +9,7 @@ use super::kinds::{
     KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
     KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
 };
-use super::model::{BoardCoord, ColumnDef, Field, ReviewFields};
+use super::model::{BoardCoord, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardEvent {
@@ -194,6 +194,25 @@ pub struct CommentEvent {
     pub created_at: u64,
 }
 
+/// An inline review comment (kind 1111 rooted on a kind-1626 review record):
+/// a comment on lines of the record's commit, in gitworkshop's inline-comment
+/// shape. It threads under the record, not the card, and never shows in the
+/// card's own comments. See [`build_review_comment`](super::build_review_comment).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewCommentEvent {
+    pub id: [u8; 32],
+    pub author: [u8; 32],
+    /// The review record this comment threads under — the NIP-22 root `E`.
+    pub record_id: [u8; 32],
+    /// The parent review comment for a threaded reply; `None` for a top-level
+    /// comment, whose parent is the record.
+    pub parent_id: Option<[u8; 32]>,
+    /// The lines it points at; `None` for a comment on the commit as a whole.
+    pub location: Option<ReviewLocation>,
+    pub body: String,
+    pub created_at: u64,
+}
+
 /// A review record (kind 1626) on a card: the structured commit/host/explainer
 /// metadata an agent records when it finishes the card. Append-only like
 /// [`CommentEvent`]. See [`build_review`](super::build_review).
@@ -218,6 +237,7 @@ pub enum HeadwayEvent {
     Field(FieldEdit),
     Cover(CoverNote),
     Comment(CommentEvent),
+    ReviewComment(ReviewCommentEvent),
     Relation(RelationEvent),
     Sequence(SequenceEvent),
     Blockers(BlockerSet),
@@ -234,7 +254,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_PLACEMENT => parse_placement(note).map(HeadwayEvent::Placement),
         KIND_LABEL => parse_label(note),
         KIND_COVER_NOTE => parse_cover(note).map(HeadwayEvent::Cover),
-        KIND_COMMENT => parse_comment(note).map(HeadwayEvent::Comment),
+        KIND_COMMENT => parse_comment(note),
         KIND_RELATION => parse_relation(note).map(HeadwayEvent::Relation),
         KIND_SEQUENCE => parse_sequence(note).map(HeadwayEvent::Sequence),
         KIND_BLOCKERS => parse_blockers(note).map(HeadwayEvent::Blockers),
@@ -414,39 +434,91 @@ fn parse_cover(note: &Note) -> Option<CoverNote> {
     })
 }
 
-/// Parse a NIP-22 comment (kind 1111). The root issue is the uppercase `E`; the
-/// parent is the lowercase `e`, and the lowercase `k` tells us whether that
-/// parent is another comment (a threaded reply) or the issue (a top-level
-/// comment). See [`build_comment`](super::build_comment).
-fn parse_comment(note: &Note) -> Option<CommentEvent> {
-    let mut issue_id = None;
+/// Parse a NIP-22 comment (kind 1111). The root is the uppercase `E`, and the
+/// uppercase `K` says what it is: a review record (1626) makes it an inline
+/// [`ReviewCommentEvent`], anything else (the card's 1621, or no `K` at all) a
+/// card [`CommentEvent`]. The parent is the lowercase `e`, and the lowercase `k`
+/// tells us whether that parent is another comment (a threaded reply) or the
+/// root itself (a top-level comment). See [`build_comment`](super::build_comment)
+/// and [`build_review_comment`](super::build_review_comment).
+fn parse_comment(note: &Note) -> Option<HeadwayEvent> {
+    let mut root = None;
+    let mut root_kind = None;
     let mut parent_e = None;
     let mut parent_kind = None;
+    let mut path = None;
+    let mut commit = None;
+    let mut lines = None;
 
     for tag in note.tags() {
         match tag.get_str(0) {
-            Some("E") => issue_id = tag.get_id(1).copied(),
+            Some("E") => root = tag.get_id(1).copied(),
+            Some("K") => root_kind = tag.get_str(1).and_then(|k| k.parse::<u32>().ok()),
             Some("e") => parent_e = tag.get_id(1).copied(),
-            Some("k") => parent_kind = tag.get_str(1).map(|s| s.to_owned()),
+            Some("k") => parent_kind = tag.get_str(1).and_then(|k| k.parse::<u32>().ok()),
+            Some("f") => path = tag.get_str(1).map(str::to_owned),
+            // A 64-hex (SHA-256) sha packs into an id; re-hex it, as
+            // `parse_review` does.
+            Some("c") => {
+                commit = tag
+                    .get_str(1)
+                    .map(str::to_owned)
+                    .or_else(|| tag.get_id(1).map(hex::encode))
+            }
+            Some("line") => {
+                let side = match tag.get_str(2) {
+                    Some("del") => LineSide::Old,
+                    _ => LineSide::New,
+                };
+                lines = tag
+                    .get_str(1)
+                    .and_then(ReviewLocation::parse_lines)
+                    .map(|(start, end)| (start, end, side));
+            }
             _ => {}
         }
     }
 
     // A reply names another comment as its parent (`k` == 1111); a top-level
-    // comment's parent is the issue itself, so it carries no parent comment.
-    let parent_id = match (parent_kind.as_deref(), parent_e) {
-        (Some(k), Some(e)) if k == KIND_COMMENT.to_string() => Some(e),
+    // comment's parent is the root itself, so it carries no parent comment.
+    let parent_id = match (parent_kind, parent_e) {
+        (Some(KIND_COMMENT), Some(e)) => Some(e),
         _ => None,
     };
+    let root = root?;
 
-    Some(CommentEvent {
+    if root_kind == Some(KIND_REVIEW) {
+        // A location needs all three of its tags; with any missing the comment
+        // is about the commit as a whole.
+        let location = match (path, commit, lines) {
+            (Some(path), Some(commit), Some((start, end, side))) => Some(ReviewLocation {
+                path,
+                commit,
+                start,
+                end,
+                side,
+            }),
+            _ => None,
+        };
+        return Some(HeadwayEvent::ReviewComment(ReviewCommentEvent {
+            id: *note.id(),
+            author: *note.pubkey(),
+            record_id: root,
+            parent_id,
+            location,
+            body: note.content().to_owned(),
+            created_at: note.created_at(),
+        }));
+    }
+
+    Some(HeadwayEvent::Comment(CommentEvent {
         id: *note.id(),
         author: *note.pubkey(),
-        issue_id: issue_id?,
+        issue_id: root,
         parent_id,
         body: note.content().to_owned(),
         created_at: note.created_at(),
-    })
+    }))
 }
 
 /// Parse a review record (kind 1626). The card is the `e` tag (required); every
@@ -606,8 +678,8 @@ pub(crate) mod tests {
 
     use crate::event::build::{
         build_blockers, build_board, build_comment, build_cover_note, build_issue, build_labels,
-        build_placement, build_related, build_relation, build_review, build_sequence,
-        build_subject_edit,
+        build_placement, build_related, build_relation, build_review, build_review_comment,
+        build_sequence, build_subject_edit,
     };
     use crate::event::model::board_address;
 
@@ -731,6 +803,78 @@ pub(crate) mod tests {
         assert_eq!(reply.issue_id, *issue.bytes());
         // …but its parent is the comment it replies to.
         assert_eq!(reply.parent_id, Some(top.id));
+    }
+
+    /// An inline review comment carries gitworkshop's `f`/`c`/`line` tags, and
+    /// its `K 1626` root makes it a review comment on the record, never a card
+    /// comment. An old-side range keeps its `del`; a 64-hex (SHA-256) commit,
+    /// which nostrdb packs into an id, reads back as hex.
+    #[test]
+    fn review_comment_roundtrips_location_and_roots_on_the_record() {
+        let owner = FullKeypair::generate();
+        let issue = note_id(&owner, build_issue("30619:x:b1", "s", "b"));
+        let record = note_id(&owner, build_review(&issue, &full_review()));
+
+        let new_side = ReviewLocation {
+            path: "src/lib.rs".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            start: 42,
+            end: 48,
+            side: LineSide::New,
+        };
+        let HeadwayEvent::ReviewComment(top) = roundtrip(
+            build_review_comment(&record, &owner.pubkey, None, Some(&new_side), "rename this"),
+            &owner,
+        ) else {
+            panic!("review comment");
+        };
+        assert_eq!(top.record_id, *record.bytes());
+        assert_eq!(top.parent_id, None);
+        assert_eq!(top.location.as_ref(), Some(&new_side));
+        assert_eq!(top.body, "rename this");
+
+        let old_side = ReviewLocation {
+            path: "old.rs".into(),
+            commit: "ab".repeat(32),
+            start: 3,
+            end: 3,
+            side: LineSide::Old,
+        };
+        let parent = NoteId::new(top.id);
+        let HeadwayEvent::ReviewComment(reply) = roundtrip(
+            build_review_comment(
+                &record,
+                &owner.pubkey,
+                Some((&parent, &owner.pubkey)),
+                Some(&old_side),
+                "why delete?",
+            ),
+            &owner,
+        ) else {
+            panic!("review comment");
+        };
+        assert_eq!(reply.record_id, *record.bytes());
+        assert_eq!(reply.parent_id, Some(top.id));
+        assert_eq!(reply.location.as_ref(), Some(&old_side));
+
+        // No location: a comment on the commit as a whole.
+        let HeadwayEvent::ReviewComment(whole) = roundtrip(
+            build_review_comment(&record, &owner.pubkey, None, None, "lgtm"),
+            &owner,
+        ) else {
+            panic!("review comment");
+        };
+        assert_eq!(whole.location, None);
+    }
+
+    #[test]
+    fn line_values_parse_single_ranges_and_reject_junk() {
+        assert_eq!(ReviewLocation::parse_lines("42"), Some((42, 42)));
+        assert_eq!(ReviewLocation::parse_lines("42-48"), Some((42, 48)));
+        assert_eq!(ReviewLocation::parse_lines("48-42"), Some((42, 48)));
+        assert_eq!(ReviewLocation::parse_lines("0"), None);
+        assert_eq!(ReviewLocation::parse_lines("a-b"), None);
+        assert_eq!(ReviewLocation::parse_lines(""), None);
     }
 
     /// A review record carrying every field, as `headway review` would write it.

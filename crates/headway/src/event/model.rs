@@ -344,6 +344,58 @@ impl ReviewFields {
     }
 }
 
+/// Which side of a diff a review comment's line numbers count: the new file
+/// (added and context lines) or the old one (deleted lines). gitworkshop's
+/// inline comments spell the old side as a third `del` element on the `line`
+/// tag; the new side has none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LineSide {
+    #[default]
+    New,
+    Old,
+}
+
+/// Where in a commit an inline review comment points, in gitworkshop's tag
+/// shape: `["f", path]`, `["c", commit]` and `["line", "a"|"a-b"(, "del")]`.
+/// Built by [`build_review_comment`](super::build_review_comment) and read back
+/// by the parser, so the tag names live in those two places only.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReviewLocation {
+    /// The file, as the diff names it (the new path, or the old one for a
+    /// deleted file).
+    pub path: String,
+    /// The commit the lines were added or removed in.
+    pub commit: String,
+    /// First and last line (1-based, inclusive) on [`side`](Self::side).
+    pub start: u32,
+    pub end: u32,
+    pub side: LineSide,
+}
+
+impl ReviewLocation {
+    /// The `line` tag's value: `"42"` for one line, `"42-48"` for a range.
+    pub fn line_value(&self) -> String {
+        if self.start == self.end {
+            self.start.to_string()
+        } else {
+            format!("{}-{}", self.start, self.end)
+        }
+    }
+
+    /// Parse a `line` tag's value (`"42"` or `"42-48"`) into first and last
+    /// line, in order. `None` for anything else, a zero line included.
+    pub(super) fn parse_lines(value: &str) -> Option<(u32, u32)> {
+        let (a, b): (u32, u32) = match value.split_once('-') {
+            Some((a, b)) => (a.trim().parse().ok()?, b.trim().parse().ok()?),
+            None => {
+                let n: u32 = value.trim().parse().ok()?;
+                (n, n)
+            }
+        };
+        (a > 0 && b > 0).then(|| (a.min(b), a.max(b)))
+    }
+}
+
 /// The addressable coordinate of a board: `30619:<author-hex>:<board-id>`. Thin
 /// formatting helper; see [`BoardCoord`] for the owner+slug identity type.
 pub fn board_address(author: &Pubkey, board_id: &str) -> String {

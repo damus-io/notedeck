@@ -18,6 +18,7 @@ use notedeck_ui::diff::PatchScroll;
 use std::time::Instant;
 
 use super::card_actions::CardStep;
+use super::review_comments::{DraftComment, ReviewDrafts, comments_ui, location_place};
 use super::widgets::{
     ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
     count_badge, detail_heading, pill_height, round_icon_button, secondary_action_button,
@@ -62,6 +63,8 @@ pub(crate) struct ReviewUi {
     scroll: Option<PatchScroll>,
     /// The loads, cached per record until they go stale.
     loader: ReviewLoader,
+    /// Inline comments written on the diff and not sent yet, per record.
+    pub(super) drafts: ReviewDrafts,
 }
 
 impl ReviewUi {
@@ -122,6 +125,22 @@ impl ReviewUi {
     /// nothing is picked or the card no longer carries the pick.
     pub(crate) fn shown_record<'a>(&self, card: &'a CardView) -> Option<&'a ReviewView> {
         self.shown_index(card).and_then(|i| card.reviews.get(i))
+    }
+
+    /// Whether lines of `card`'s shown record's diff are picked for a
+    /// comment: its diff has loaded and a pick is on it.
+    pub(super) fn has_picked_lines(&self, card: &CardView) -> bool {
+        let Some(record) = self.shown_record(card) else {
+            return false;
+        };
+        let source = ReviewSource::Record {
+            card: card.id,
+            record: record.id,
+        };
+        matches!(
+            self.loader.get(source),
+            Some(ReviewLoad::Ready(loaded)) if loaded.patch_state.selection().is_some()
+        )
     }
 
     /// [`shown_record`](Self::shown_record)'s position in the card's records,
@@ -327,6 +346,10 @@ pub(crate) enum QueueNotice {
     NoSession,
     /// A card action on the queue's card after it left the board.
     CardGone,
+    /// `C` with no comments written on the diff.
+    NoComments,
+    /// `c` with no lines of the diff picked.
+    NoLinesPicked,
 }
 
 /// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
@@ -360,6 +383,8 @@ impl QueueNotice {
             QueueNotice::NoInProgressColumn => "No In Progress column on this board",
             QueueNotice::NoSession => "No agentium session on this record",
             QueueNotice::CardGone => "This card has left the board",
+            QueueNotice::NoComments => "No comments to send",
+            QueueNotice::NoLinesPicked => "Click a line number to pick lines to comment on",
         }
     }
 }
@@ -420,9 +445,56 @@ pub(crate) fn send_back_open(
     open_record_session(fields, Some(msg))
 }
 
+/// The [`AppAction::Open`](notedeck::AppAction::Open) request "Send N
+/// comments" raises beside publishing them: one message into `fields`'
+/// agentium session carrying every comment in `drafts`, in order, each as its
+/// place, the lines it's on quoted as a diff, then what it says:
+///
+/// ```text
+/// Review comments on commit <short sha> (card headway:<board>/<word-id>):
+///
+/// src/lib.rs:42-48
+/// ```diff
+/// +the picked lines
+/// ```
+/// the comment
+/// ```
+///
+/// The lines are quoted though the events only name them, since the session
+/// may have moved on from the commit since. `None` when the record names no
+/// session. Built on send, never per frame.
+pub(crate) fn review_comments_open(
+    fields: &ReviewFields,
+    card_ref: &str,
+    drafts: &[DraftComment],
+) -> Option<notedeck::OpenUri> {
+    use std::fmt::Write;
+
+    fields.agentium.as_ref()?;
+    let commit = drafts
+        .first()
+        .map(|d| d.location.commit.as_str())
+        .or(fields.commit.as_deref());
+    let mut msg = match commit {
+        Some(sha) => format!(
+            "Review comments on commit {} (card {card_ref}):",
+            short_sha(sha)
+        ),
+        None => format!("Review comments (card {card_ref}):"),
+    };
+    for draft in drafts {
+        let _ = write!(
+            msg,
+            "\n\n{}\n```diff\n{}\n```\n{}",
+            draft.place, draft.quote, draft.body
+        );
+    }
+    open_record_session(fields, Some(msg))
+}
+
 /// Open `fields`' agentium session with `msg`, or `None` when the record
-/// names no session. The one place [`session_open`] and [`send_back_open`]
-/// build their request.
+/// names no session. The one place [`session_open`], [`send_back_open`] and
+/// [`review_comments_open`] build their request.
 fn open_record_session(fields: &ReviewFields, msg: Option<String>) -> Option<notedeck::OpenUri> {
     let session = fields.agentium.as_deref()?;
     Some(notedeck::OpenUri {
@@ -801,12 +873,43 @@ pub(super) fn review_pane_ui(
             }
             ui.add_space(SPACING_XS);
             let session = record.and_then(|r| r.fields.agentium.as_deref());
-            load_ui(ui, theme, app_ctx, &mut review.loader, source, session);
+            let comments = Comments {
+                record,
+                drafts: &mut review.drafts,
+            };
+            load_ui(
+                ui,
+                theme,
+                app_ctx,
+                &mut review.loader,
+                source,
+                session,
+                comments,
+            );
             clicked
         })
         .inner;
-    let action = clicked?;
-    apply_card_action(ui.ctx(), view, state, card.id, action, at)
+    match clicked? {
+        TopbarClick::Card(action) => apply_card_action(ui.ctx(), view, state, card.id, action, at),
+        TopbarClick::SendComments => {
+            state.send_review_comments(view, card.id, ui.ctx().input(|i| i.time))
+        }
+    }
+}
+
+/// What a click in the review header asked for: a card action, applied as
+/// its key would be, or sending the diff's comments ([`TopbarClick::SendComments`],
+/// the header twin of `C`).
+enum TopbarClick {
+    Card(CardAction),
+    SendComments,
+}
+
+/// The shown record and the pane's drafts, for [`load_ui`]'s comment
+/// composer above the diff.
+struct Comments<'a> {
+    record: Option<&'a ReviewView>,
+    drafts: &'a mut ReviewDrafts,
 }
 
 /// Start `source`'s load if it hasn't been: the record (or the card's trailer)
@@ -839,6 +942,10 @@ fn start_load(
 
 /// Widest the byline's session chip draws; a longer session title ellipsizes.
 const SESSION_CHIP_MAX_WIDTH: f32 = 220.0;
+
+/// Room the title row keeps for "Send N comments" while the record has
+/// drafts, so the title wraps short of it.
+const SEND_BUTTON_WIDTH: f32 = 150.0;
 
 /// What the review header draws: the card, the shown record, and the queue's
 /// part while the pane is the queue's. All borrowed, so the header formats
@@ -885,9 +992,10 @@ struct QueueHeader<'a> {
 /// nothing has to share its width with the title: it wraps rather than
 /// elides.
 ///
-/// Returns the [`CardAction`] a click raised — ↓/↑, the explainer or either
-/// session icon — for the pane to apply as the matching key would. ← Back and
-/// the copy icon act here, as they have no key of their own.
+/// Returns what a click raised — ↓/↑, the explainer or either session icon as
+/// the [`CardAction`] the pane applies as the matching key would, or "Send N
+/// comments" while the record has drafts. ← Back and the copy icon act here,
+/// as they have no key of their own.
 fn review_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -895,7 +1003,7 @@ fn review_topbar_ui(
     review: &mut ReviewUi,
     notice: &mut Option<Notice>,
     here: NavPos,
-) -> Option<CardAction> {
+) -> Option<TopbarClick> {
     let ReviewHeader {
         card,
         status,
@@ -904,14 +1012,16 @@ fn review_topbar_ui(
     } = header;
     let stepped = breadcrumb_ui(ui, theme, status, queue, review, notice, here);
     ui.add_space(SPACING_SM);
+    let send = record.and_then(|r| review.drafts.send_label(r.id));
     let acted = title_row_ui(
         ui,
         theme,
         &card.title,
         record.map(|r| &r.fields),
+        send,
         &review.card_ref,
     );
-    stepped.or(acted)
+    stepped.map(TopbarClick::Card).or(acted)
 }
 
 /// The header's breadcrumb bar, in small muted text. Left: ← Back › the
@@ -1044,15 +1154,22 @@ fn title_row_ui(
     theme: &ColorTheme,
     title: &str,
     fields: Option<&ReviewFields>,
+    send: Option<&str>,
     card_ref: &str,
-) -> Option<CardAction> {
+) -> Option<TopbarClick> {
     let session = fields.is_some_and(|f| f.agentium.is_some());
     let explainer = fields.is_some_and(|f| f.explainer.is_some());
     let icons = 1 + 2 * usize::from(session) + usize::from(explainer);
     let mut acted = None;
     ui.horizontal_top(|ui| {
         let gap = ui.spacing().item_spacing.x;
-        let width = (ui.available_width() - icons as f32 * (ICON_BUTTON + gap)).max(0.0);
+        let send_width = if send.is_some() {
+            SEND_BUTTON_WIDTH + gap
+        } else {
+            0.0
+        };
+        let width =
+            (ui.available_width() - icons as f32 * (ICON_BUTTON + gap) - send_width).max(0.0);
         ui.allocate_ui_with_layout(
             egui::vec2(width, 0.0),
             egui::Layout::top_down(egui::Align::Min),
@@ -1080,7 +1197,7 @@ fn title_row_ui(
                     "Open the explainer (e)",
                 )
             {
-                acted = Some(CardAction::Explainer(None));
+                acted = Some(TopbarClick::Card(CardAction::Explainer(None)));
             }
             if session
                 && icon(
@@ -1090,7 +1207,9 @@ fn title_row_ui(
                     "Open the session and ask it to /code-review this commit (S)",
                 )
             {
-                acted = Some(CardAction::Session(SessionOpen::CodeReview));
+                acted = Some(TopbarClick::Card(CardAction::Session(
+                    SessionOpen::CodeReview,
+                )));
             }
             if session
                 && icon(
@@ -1100,7 +1219,16 @@ fn title_row_ui(
                     "Open the agentium session (s)",
                 )
             {
-                acted = Some(CardAction::Session(SessionOpen::Plain));
+                acted = Some(TopbarClick::Card(CardAction::Session(SessionOpen::Plain)));
+            }
+            if let Some(send) = send
+                && secondary_action_button(ui, theme, send)
+                    .on_hover_text(
+                        "Post the comments on this commit and send them to its session (C)",
+                    )
+                    .clicked()
+            {
+                acted = Some(TopbarClick::SendComments);
             }
             if icon(
                 ui,
@@ -1258,7 +1386,8 @@ fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response 
 /// can be fixed by hand) with a retry, or one line above the diff with who
 /// wrote the commit and when, where it came from (the full sentence, with the
 /// repo's path, on hover), the record's agentium `session` as its chip, and
-/// whether its patch was cut short.
+/// whether its patch was cut short. Between that line and the diff sit the
+/// comment composer and the record's drafts ([`comments_ui`]).
 fn load_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1266,6 +1395,7 @@ fn load_ui(
     loader: &mut ReviewLoader,
     source: ReviewSource,
     session: Option<&str>,
+    comments: Comments<'_>,
 ) {
     let mut retry = false;
     match loader.get_mut(source) {
@@ -1330,6 +1460,7 @@ fn load_ui(
                 }
             });
             ui.add_space(SPACING_MD);
+            comments_ui(ui, theme, loaded, comments.record, comments.drafts);
             notedeck_ui::diff::git_patch_ui(&loaded.patch, &mut loaded.patch_state, ui);
         }
     }
@@ -1425,6 +1556,49 @@ struct RecordLocation {
     /// The record it was built for.
     record: NoteId,
     text: MiddleElided,
+    /// How many review comments it was built with.
+    comment_count: usize,
+    /// "N review comments", or empty with none.
+    comments_label: String,
+    /// One line per review comment, oldest first: where it points, then
+    /// what it says (its first line).
+    comments: Vec<RecordComment>,
+}
+
+/// One review comment as the detail's Review section lists it, formatted when
+/// the record's comments change.
+struct RecordComment {
+    /// `path:42-48` (`path:old 3-6` for deleted lines), or empty for a
+    /// comment on the commit as a whole.
+    place: String,
+    /// The comment's first line.
+    body: String,
+}
+
+impl RecordLocation {
+    fn new(record: &ReviewView) -> Self {
+        let n = record.comments.len();
+        let comments_label = match n {
+            0 => String::new(),
+            1 => "1 review comment".to_owned(),
+            n => format!("{n} review comments"),
+        };
+        let comments = record
+            .comments
+            .iter()
+            .map(|c| RecordComment {
+                place: c.location.as_ref().map_or_else(String::new, location_place),
+                body: c.body.lines().next().unwrap_or_default().to_owned(),
+            })
+            .collect();
+        Self {
+            record: record.id,
+            text: MiddleElided::new(host_path(&record.fields)),
+            comment_count: n,
+            comments_label,
+            comments,
+        }
+    }
 }
 
 /// The card detail's Review section's slice of [`BoardUiState`]: what its rows
@@ -1456,7 +1630,7 @@ impl ReviewSection {
                 .locations
                 .iter()
                 .zip(reviews)
-                .all(|(l, r)| l.record == r.id);
+                .all(|(l, r)| l.record == r.id && l.comment_count == r.comments.len());
         if self.card == Some(card) && same_records {
             return;
         }
@@ -1464,13 +1638,7 @@ impl ReviewSection {
             self.show_all = false;
         }
         self.card = Some(card);
-        self.locations = reviews
-            .iter()
-            .map(|r| RecordLocation {
-                record: r.id,
-                text: MiddleElided::new(host_path(&r.fields)),
-            })
-            .collect();
+        self.locations = reviews.iter().map(RecordLocation::new).collect();
         self.show_all_label = format!("Show all {}", reviews.len());
         self.count_label = reviews.len().to_string();
         self.records_label = format!("All {} records ›", reviews.len());
@@ -1522,7 +1690,7 @@ pub(super) fn review_section_ui(
         // Only the newest row's parts are what `r` and `e` act on here, so
         // only its hovers name them.
         let keyed = i == 0;
-        if let Some(action) = record_row_ui(ui, theme, app_ctx, r, &mut location.text, keyed) {
+        if let Some(action) = record_row_ui(ui, theme, app_ctx, r, location, keyed) {
             picked = Some(action);
         }
     }
@@ -1568,14 +1736,20 @@ pub(super) fn review_section_ui(
 /// subject is [`CardAction::Review`] of this record, on the explainer
 /// [`CardAction::Explainer`] of it. `keyed` (the newest row) has the sha and
 /// explainer hovers name their keys.
+///
+/// A record with inline review comments gets a third line, "N review
+/// comments", and one line under it per comment: where it points, then what
+/// it says. They're the record's, so they stay out of the card's own
+/// comment thread.
 fn record_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     record: &ReviewView,
-    location: &mut MiddleElided,
+    row: &mut RecordLocation,
     keyed: bool,
 ) -> Option<CardAction> {
+    let location = &mut row.text;
     let fields = &record.fields;
     let mut clicked = false;
     let mut picked = None;
@@ -1630,10 +1804,49 @@ fn record_row_ui(
             }
         });
     });
+    if !row.comments.is_empty() {
+        record_comments_ui(ui, theme, indent, row);
+    }
     if clicked {
         picked = Some(CardAction::Review(Some(record.id)));
     }
     picked
+}
+
+/// A record's inline review comments under its row in the detail's Review
+/// section, indented under the subject: the count, then one small line per
+/// comment, its place in monospace and its first line elided to the row.
+fn record_comments_ui(ui: &mut egui::Ui, theme: &ColorTheme, indent: f32, row: &RecordLocation) {
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+        ui.label(
+            egui::RichText::new(row.comments_label.as_str())
+                .small()
+                .color(theme.text_secondary),
+        );
+    });
+    for comment in &row.comments {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_SM;
+            ui.add_space(indent);
+            if !comment.place.is_empty() {
+                ui.label(
+                    egui::RichText::new(comment.place.as_str())
+                        .small()
+                        .monospace()
+                        .color(theme.text_muted),
+                );
+            }
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(comment.body.as_str())
+                        .small()
+                        .color(theme.text_secondary),
+                )
+                .truncate(),
+            );
+        });
+    }
 }
 
 /// A record's sha pill, the mouse twin of `r` on it, shared by the detail's

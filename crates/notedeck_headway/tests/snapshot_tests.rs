@@ -2845,7 +2845,7 @@ fn review_header_icons_are_their_keys() {
 
 /// The queue's key-strip labels, in strip order: what [`assert_queue_hints_fit`]
 /// checks for.
-const QUEUE_HINT_LABELS: [&str; 13] = [
+const QUEUE_HINT_LABELS: [&str; 15] = [
     "open",
     "explainer",
     "session/review",
@@ -2858,6 +2858,8 @@ const QUEUE_HINT_LABELS: [&str; 13] = [
     "half page",
     "top/bottom",
     "next/prev file",
+    "comment on picked lines",
+    "send comments",
     "leave",
 ];
 
@@ -2922,6 +2924,151 @@ fn raised_opens(harness: &mut Harness<'static, HeadwayTestState>) -> Vec<notedec
             _ => None,
         })
         .collect()
+}
+
+/// The comment posted on the queue card's record before the pane opens, in
+/// [`review_comments_draft_then_send_to_the_session`] and its snapshot.
+const POSTED_COMMENT: &str = "current() and next() could share an index guard";
+
+/// Post [`POSTED_COMMENT`] on new lines 8-10 of `src/queue.rs` (the
+/// `current` fn) in the first queue card's record, as `C` would have.
+fn post_queue_comment(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
+    let card = harness_card_id(harness, QUEUE_CARDS[0]);
+    let record = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+            .expect("folded")
+            .finalize();
+        let view =
+            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+        view.card(card).expect("queue card").reviews[0].id
+    };
+    apply_demo_action(
+        harness,
+        store::BoardAction::AddReviewComments {
+            card,
+            record,
+            comments: vec![store::NewReviewComment {
+                location: event::ReviewLocation {
+                    path: "src/queue.rs".to_string(),
+                    commit: fixture.queue.clone(),
+                    start: 8,
+                    end: 10,
+                    side: event::LineSide::New,
+                },
+                body: POSTED_COMMENT.to_string(),
+            }],
+        },
+    );
+}
+
+/// The `src/keys.rs` hunk header's button in the queue card's diff (a new
+/// 16-line file), which picks the whole hunk.
+fn keys_hunk<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> Node<'h> {
+    harness.get(
+        egui_kittest::kittest::By::new()
+            .role(egui::accesskit::Role::Button)
+            .label("@@ -0,0 +1,16 @@"),
+    )
+}
+
+/// Pick the keys.rs hunk, write `body` in the composer (`c` gives it the
+/// keyboard) and file it with Ctrl+Enter.
+fn draft_on_keys_hunk(harness: &mut Harness<'static, HeadwayTestState>, body: &str) {
+    keys_hunk(harness).click();
+    wait_for_label(harness, "src/keys.rs:1-16");
+    harness.press_key(egui::Key::C);
+    harness.run_ok();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text(body.to_string()));
+    harness.run_ok();
+    harness.press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    wait_for_label(harness, "Send 1 comment");
+}
+
+/// Inline review comments, as a reviewer writes them in the queue: a comment
+/// already posted on the record shows under its lines; `c` with nothing picked
+/// says how to pick; a click on a hunk's header picks it and opens the
+/// composer, where `c` puts the keyboard; Ctrl+Enter files a draft, drawn under
+/// its lines and counted on the header's "Send 1 comment"; a click on a line's
+/// numbers then a shift-click picks a run; and `C` posts the draft on the
+/// record and sends it to the record's session in one message quoting its
+/// lines, after which it comes back from the fold as a posted comment.
+#[test]
+fn review_comments_draft_then_send_to_the_session() {
+    let fixture = review_fixture();
+    // Tall enough that both files' lines are all laid out.
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1400.0));
+    seed_review_queue(&mut harness, &fixture);
+    post_queue_comment(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, POSTED_COMMENT);
+    raised_opens(&mut harness);
+
+    harness.press_key(egui::Key::C);
+    wait_for_label(
+        &mut harness,
+        "Click a line number to pick lines to comment on",
+    );
+
+    draft_on_keys_hunk(&mut harness, "keys want a test");
+    wait_for_label(&mut harness, "Draft: keys want a test");
+    assert!(
+        harness.query_by_label("src/keys.rs:1-16").is_some(),
+        "draft row"
+    );
+
+    // New line 17 is only in queue.rs; the shift-click on its context line 5
+    // stretches the pick up over the added block.
+    harness.get_by_label("       17").click();
+    wait_for_label(&mut harness, "src/queue.rs:17");
+    harness.input_mut().modifiers = egui::Modifiers::SHIFT;
+    harness.get_by_label("   5    5").click();
+    harness.run_ok();
+    harness.input_mut().modifiers = egui::Modifiers::NONE;
+    wait_for_label(&mut harness, "src/queue.rs:5-17");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::C);
+    wait_for_absent(&mut harness, "Send 1 comment");
+    let opens = raised_opens(&mut harness);
+    assert_eq!(opens.len(), 1, "one open for the batch: {opens:?}");
+    assert_eq!(opens[0].reference, QUEUE_SESSION);
+    let msg = opens[0].msg.as_deref().expect("a message");
+    assert!(msg.starts_with("Review comments on commit "), "{msg}");
+    assert!(msg.contains("src/keys.rs:1-16\n```diff\n+/// What a key does in the review queue."));
+    assert!(msg.ends_with("```\nkeys want a test"), "{msg}");
+
+    // Posted: it folds back onto the record and draws as a posted comment.
+    wait_for_label(&mut harness, "keys want a test");
+    assert!(harness.query_by_label("Draft: keys want a test").is_none());
+}
+
+/// Snapshot: the review queue's diff with a comment posted on `src/queue.rs`
+/// drawn under its lines, a draft on the whole `src/keys.rs` hunk marked the
+/// same way in the warning colour (and listed above the diff, counted on the
+/// header's "Send 1 comment"), and the keys.rs hunk picked again with the
+/// composer open over it.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_comments() {
+    let fixture = review_fixture();
+    // Tall enough for both files, so the posted comment shows too.
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1400.0));
+    seed_review_queue(&mut harness, &fixture);
+    post_queue_comment(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, POSTED_COMMENT);
+    draft_on_keys_hunk(&mut harness, "keys want a test");
+    keys_hunk(&harness).click();
+    // The composer, over the pick (its place reads as the draft's does).
+    wait_for_label(&mut harness, "Comment on");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_comments");
 }
 
 /// A review pane opened from a card's detail ("Review diff"), not the queue,

@@ -19,11 +19,12 @@ use egui::epaint::{mutex::Mutex, TextShape, TextureAtlas};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::text_selection::LabelSelectionState;
 use egui::{
-    Color32, FontId, Label, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder, WidgetInfo,
-    WidgetType,
+    Color32, FontId, Galley, Label, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder,
+    WidgetInfo, WidgetType,
 };
 use notedeck::{tr, tr_plural, Localization};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 /// Files longer than this (in diff lines) start collapsed.
@@ -70,6 +71,59 @@ pub enum PatchScroll {
     Pages(f32),
 }
 
+/// Lines picked in a [`git_patch_ui`] for a comment: a run of one file's
+/// lines, inside one hunk. A click on a line's numbers picks it, a shift-click
+/// stretches the pick to it and a click on a hunk's header picks the whole
+/// hunk; the widget only reports it (see [`GitPatchState::selection`]), and
+/// what a comment is, and where it goes, is the caller's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchSelection {
+    pub file: usize,
+    /// Indices into the file's [`lines`](FilePatch::lines), in order.
+    pub lines: Range<usize>,
+}
+
+/// Whether a [`PatchNote`] has been sent yet: a draft is drawn warmer, so the
+/// reviewer can tell what is still theirs to send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchNoteKind {
+    Draft,
+    Posted,
+}
+
+/// A row the caller asks for under a file's lines — a review comment, say —
+/// set with [`GitPatchState::set_notes`]. It takes one row of the diff under
+/// the last of its `lines`, which get a bar in their gutter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchNote {
+    pub file: usize,
+    /// Indices into the file's [`lines`](FilePatch::lines) the note is about.
+    pub lines: Range<usize>,
+    /// What the row says. One line of it shows; hovering shows it all.
+    pub text: String,
+    pub kind: PatchNoteKind,
+}
+
+/// The pick being made: where it started and where it stretches to, both
+/// line indices of `file` inside hunk `hunk`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Selection {
+    file: usize,
+    hunk: usize,
+    anchor: usize,
+    head: usize,
+}
+
+impl Selection {
+    fn lines(&self) -> Range<usize> {
+        self.anchor.min(self.head)..self.anchor.max(self.head) + 1
+    }
+
+    fn contains(&self, file: usize, line: usize) -> bool {
+        self.file == file && self.lines().contains(&line)
+    }
+}
+
 /// View state for one [`GitPatch`]: which files are collapsed, where the view
 /// is, and the labels that don't change per frame. Build it with
 /// [`GitPatchState::new`] when the patch changes, and give each patch its own
@@ -108,6 +162,16 @@ pub struct GitPatchState {
     current_file: Option<usize>,
     /// The diff lines in view, laid out.
     galleys: LineGalleys,
+    /// The lines picked for a comment, if any.
+    selection: Option<Selection>,
+    /// The caller's rows under diff lines, sorted by file and then by the
+    /// line they sit under.
+    line_notes: Vec<PatchNote>,
+    /// Per file, its run of `line_notes`.
+    note_spans: Vec<Range<usize>>,
+    /// What the caller said `line_notes` were built from (see
+    /// [`GitPatchState::set_notes`]); `None` until it sets any.
+    notes_stamp: Option<u64>,
 }
 
 /// Laid-out diff lines, kept across passes so a line is laid out once, when
@@ -123,6 +187,9 @@ struct LineGalleys {
     key: Option<GalleyKey>,
     /// Per `(file, index into its lines)`.
     lines: HashMap<(usize, usize), CachedLine>,
+    /// The caller's note rows, one line each, per index into
+    /// `GitPatchState::line_notes`.
+    notes: HashMap<usize, CachedNote>,
     /// Counts passes, to tell the lines drawn in this one from the rest.
     pass: u64,
 }
@@ -159,12 +226,20 @@ struct CachedLine {
     pass: u64,
 }
 
+#[derive(Clone)]
+struct CachedNote {
+    /// The note's first line, unwrapped; the row clips it at the view's edge.
+    galley: Arc<Galley>,
+    pass: u64,
+}
+
 impl LineGalleys {
     /// Start a pass: drop everything if what it was laid out against changed.
     fn begin_pass(&mut self, ui: &Ui) {
         let key = GalleyKey::of(ui);
         if !self.key.as_ref().is_some_and(|k| k.same_as(&key)) {
             self.lines.clear();
+            self.notes.clear();
             self.key = Some(key);
         }
         self.pass += 1;
@@ -191,10 +266,31 @@ impl LineGalleys {
         Some(galleys)
     }
 
-    /// End a pass: forget the lines it didn't draw.
+    /// Note `n`'s first line, laid out now if it wasn't in view last pass.
+    fn note(&mut self, n: usize, note: &PatchNote, ui: &Ui) -> Arc<Galley> {
+        let pass = self.pass;
+        if let Some(cached) = self.notes.get_mut(&n) {
+            cached.pass = pass;
+            return cached.galley.clone();
+        }
+        let first = note.text.lines().next().unwrap_or_default().to_owned();
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let galley = ui.fonts(|f| f.layout_no_wrap(first, font, ui.visuals().text_color()));
+        self.notes.insert(
+            n,
+            CachedNote {
+                galley: galley.clone(),
+                pass,
+            },
+        );
+        galley
+    }
+
+    /// End a pass: forget the lines and notes it didn't draw.
     fn end_pass(&mut self) {
         let pass = self.pass;
         self.lines.retain(|_, line| line.pass == pass);
+        self.notes.retain(|_, note| note.pass == pass);
     }
 }
 
@@ -385,17 +481,167 @@ impl GitPatchState {
         }
     }
 
+    /// The lines picked for a comment, if any (see [`PatchSelection`]).
+    pub fn selection(&self) -> Option<PatchSelection> {
+        self.selection.map(|s| PatchSelection {
+            file: s.file,
+            lines: s.lines(),
+        })
+    }
+
+    /// Drop the pick, e.g. once a comment on it is written.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Show `notes` under their lines, replacing any set before. `stamp` is
+    /// whatever the caller built them from, handed back by
+    /// [`notes_stamp`](Self::notes_stamp), so it can tell when they're stale
+    /// without rebuilding them every frame. A note on a file the patch
+    /// doesn't have, on no lines, or on a file without hunks is dropped.
+    pub fn set_notes(&mut self, patch: &GitPatch, mut notes: Vec<PatchNote>, stamp: u64) {
+        let files = patch.files();
+        notes.retain(|n| {
+            files.get(n.file).is_some_and(|f| {
+                !f.hunks.is_empty() && !n.lines.is_empty() && n.lines.end <= f.lines.len()
+            })
+        });
+        // Stable, so notes on the same line keep the caller's order.
+        notes.sort_by_key(|n| (n.file, n.lines.end));
+        self.note_spans.clear();
+        for f in 0..files.len() {
+            let start = notes.partition_point(|n| n.file < f);
+            let end = notes.partition_point(|n| n.file <= f);
+            self.note_spans.push(start..end);
+        }
+        self.line_notes = notes;
+        self.notes_stamp = Some(stamp);
+        // Laid out per index, and the indices just changed.
+        self.galleys.notes.clear();
+    }
+
+    /// The `stamp` the notes were last [set](Self::set_notes) with; `None`
+    /// on a fresh state, so a reloaded patch asks for its notes again.
+    pub fn notes_stamp(&self) -> Option<u64> {
+        self.notes_stamp
+    }
+
+    /// File `f`'s notes.
+    fn file_notes(&self, f: usize) -> &[PatchNote] {
+        self.note_spans
+            .get(f)
+            .map_or(&[], |span| &self.line_notes[span.clone()])
+    }
+
+    /// How many of file `f`'s notes sit above line `i`: those under a line
+    /// before it.
+    fn notes_before(&self, f: usize, i: usize) -> usize {
+        self.file_notes(f).partition_point(|n| n.lines.end <= i)
+    }
+
+    /// Rows file `f`'s body takes when expanded: its hunk headers, lines and
+    /// notes.
+    fn body_rows(&self, f: usize, file: &FilePatch) -> usize {
+        if file.hunks.is_empty() {
+            1
+        } else {
+            file.hunks.len() + file.lines.len() + self.file_notes(f).len()
+        }
+    }
+
+    /// Body row (0-based, after the file header) of hunk `h`'s header: every
+    /// hunk before it took one header row plus its lines and their notes.
+    fn hunk_row(&self, f: usize, file: &FilePatch, h: usize) -> usize {
+        let start = file.hunks[h].lines.start;
+        h + start + self.notes_before(f, start)
+    }
+
+    /// Body row of line `i`, which is in hunk `h`.
+    fn line_row(&self, f: usize, h: usize, i: usize) -> usize {
+        h + 1 + i + self.notes_before(f, i)
+    }
+
+    /// The hunk whose rows contain body row `b` (binary search on
+    /// [`hunk_row`](Self::hunk_row), which grows with `h`). `file` must have
+    /// hunks.
+    fn hunk_at(&self, f: usize, file: &FilePatch, b: usize) -> usize {
+        let (mut lo, mut hi) = (0, file.hunks.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.hunk_row(f, file, mid) <= b {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo.saturating_sub(1)
+    }
+
+    /// What body row `b` of hunk `h` shows, past its header: the last line
+    /// at or above it, or one of that line's notes.
+    fn hunk_body_row(&self, f: usize, file: &FilePatch, h: usize, b: usize) -> Row {
+        let lines = file.hunks[h].lines.clone();
+        // The last line whose row is at or above `b`.
+        let (mut lo, mut hi) = (lines.start, lines.end);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.line_row(f, h, mid) <= b {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let i = lo.saturating_sub(1).max(lines.start);
+        let at = self.line_row(f, h, i);
+        if b == at {
+            return Row::Line(f, i);
+        }
+        let note = self.note_spans[f].start + self.notes_before(f, i) + (b - at - 1);
+        Row::Comment(note)
+    }
+
+    /// A click on line `i` of file `f`, in hunk `hunk`: pick it, or with
+    /// `extend` stretch the pick to it when it's in the same hunk. A click on
+    /// the one line already picked drops the pick.
+    fn click_line(&mut self, f: usize, hunk: usize, i: usize, extend: bool) {
+        let fresh = Selection {
+            file: f,
+            hunk,
+            anchor: i,
+            head: i,
+        };
+        self.selection = match self.selection {
+            Some(s) if extend && s.file == f && s.hunk == hunk => Some(Selection { head: i, ..s }),
+            Some(s) if !extend && s.file == f && s.anchor == i && s.head == i => None,
+            _ => Some(fresh),
+        };
+    }
+
+    /// A click on hunk `h`'s header in file `f`: pick all its lines.
+    fn click_hunk(&mut self, patch: &GitPatch, f: usize, h: usize) {
+        let lines = patch.files()[f].hunks[h].lines.clone();
+        if lines.is_empty() {
+            return;
+        }
+        self.selection = Some(Selection {
+            file: f,
+            hunk: h,
+            anchor: lines.start,
+            head: lines.end - 1,
+        });
+    }
+
     /// Lay the rows out for this pass: fill `file_rows` and return the
     /// content's row count. The summary takes the first `1 + files` rows.
     fn layout(&mut self, patch: &GitPatch) -> usize {
         let files = patch.files();
         self.file_rows.clear();
         let mut row = 1 + files.len();
-        for (file, collapsed) in files.iter().zip(&self.collapsed) {
+        for (f, (file, collapsed)) in files.iter().zip(&self.collapsed).enumerate() {
             self.file_rows.push(row);
             row += 1;
             if !collapsed {
-                row += body_rows(file);
+                row += self.body_rows(f, file);
             }
         }
         row
@@ -420,12 +666,11 @@ impl GitPatchState {
             return Row::Note(f);
         }
         let b = body - 1;
-        let h = hunk_at(file, b);
-        let first = hunk_row(file, h);
-        if b == first {
+        let h = self.hunk_at(f, file, b);
+        if b == self.hunk_row(f, file, h) {
             Row::HunkHeader(f, h)
         } else {
-            Row::Line(f, file.hunks[h].lines.start + (b - first - 1))
+            self.hunk_body_row(f, file, h, b)
         }
     }
 
@@ -551,6 +796,8 @@ enum Row {
     HunkHeader(usize, usize),
     /// File, index into its `lines`.
     Line(usize, usize),
+    /// A caller's note, by index into `GitPatchState::line_notes`.
+    Comment(usize),
 }
 
 /// The row at scroll offset `offset`. The half-pixel slack keeps an offset
@@ -569,36 +816,6 @@ const ROW_SLACK: f32 = 0.5;
 struct RowMetrics {
     height: f32,
     step: f32,
-}
-
-/// Rows a file's body takes when expanded.
-fn body_rows(file: &FilePatch) -> usize {
-    if file.hunks.is_empty() {
-        1
-    } else {
-        file.hunks.len() + file.lines.len()
-    }
-}
-
-/// Body row (0-based, after the file header) of hunk `h`'s header: every hunk
-/// before it took one header row plus its lines.
-fn hunk_row(file: &FilePatch, h: usize) -> usize {
-    h + file.hunks[h].lines.start
-}
-
-/// The hunk whose rows contain body row `b` (binary search on [`hunk_row`],
-/// which grows with `h`). `file` must have hunks.
-fn hunk_at(file: &FilePatch, b: usize) -> usize {
-    let (mut lo, mut hi) = (0, file.hunks.len());
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if hunk_row(file, mid) <= b {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo.saturating_sub(1)
 }
 
 /// Draw `patch` with `state`, filling the available space.
@@ -732,7 +949,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
         }
         Row::HunkHeader(f, h) => {
             let header = patch.text(patch.files()[f].hunks[h].header);
-            ui.horizontal(|ui| {
+            let row = ui.horizontal(|ui| {
                 // A band with a rule along its top, and text a step brighter
                 // than the line numbers, so each hunk reads as a section.
                 let rect = full_row(ui);
@@ -750,9 +967,49 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                         .color(visuals.text_color()),
                 );
             });
+            // Takes the whole hunk for a comment.
+            if clickable(row.response, WidgetType::Button, header) {
+                state.click_hunk(patch, f, h);
+            }
+        }
+        Row::Comment(n) => {
+            let galley = state.galleys.note(n, &state.line_notes[n], ui);
+            note_row_ui(&state.line_notes[n], galley, ui);
         }
         Row::Line(f, i) => match state.galleys.get(patch, f, i, ui) {
-            Some(galleys) => diff_line_ui(galleys, ui),
+            Some(galleys) => {
+                let height = ui.spacing().interact_size.y;
+                let min = ui.cursor().min;
+                let row = Rect::from_min_size(
+                    min,
+                    egui::vec2((ui.clip_rect().right() - min.x).max(0.0), height),
+                );
+                let selected = state.selection.is_some_and(|s| s.contains(f, i));
+                if selected {
+                    // Under the diff's own tint and faint, so the picked
+                    // lines still read as added or removed.
+                    let tint = row.expand2(egui::vec2(0.0, ui.spacing().item_spacing.y / 2.0));
+                    let color = ui.visuals().selection.bg_fill.gamma_multiply(SELECTED_TINT);
+                    ui.painter().rect_filled(tint, 0.0, color);
+                }
+                let numbers = diff_line_ui(galleys, ui);
+                // A note's lines get a bar down their left edge.
+                let noted = state
+                    .file_notes(f)
+                    .iter()
+                    .find(|n| n.lines.contains(&i))
+                    .map(|n| n.kind);
+                if let Some(kind) = noted {
+                    let bar = Rect::from_min_size(row.min, egui::vec2(NOTE_BAR, height));
+                    ui.painter()
+                        .rect_filled(bar, 0.0, note_color(kind, ui.visuals()));
+                }
+                if numbers.clicked() {
+                    let extend = ui.input(|input| input.modifiers.shift);
+                    let hunk = hunk_of(&patch.files()[f], i);
+                    state.click_line(f, hunk, i, extend);
+                }
+            }
             None => {
                 let line = &patch.files()[f].lines[i];
                 debug_assert_eq!(line.kind, LineKind::NoNewline);
@@ -782,7 +1039,10 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
 ///
 /// The content is selectable like a label's; the numbers and marker are only
 /// painted, so selecting code picks up neither.
-fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) {
+///
+/// Returns the line numbers' response: a click there picks the line for a
+/// comment (see [`PatchSelection`]).
+fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) -> egui::Response {
     let RowGalleys {
         tag,
         gutter,
@@ -816,8 +1076,10 @@ fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) {
     let marker_rect = centred(marker_x, marker.size());
     let content_rect = centred(content_x, content.size());
 
-    let response = ui.interact(gutter_rect, id.with("gutter"), Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, gutter.text()));
+    let numbers = ui
+        .interact(gutter_rect, id.with("gutter"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    numbers.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, gutter.text()));
     ui.painter()
         .add(TextShape::new(gutter_rect.min, gutter, LINE_NUMBER_COLOR));
     if tag != DiffTag::Equal {
@@ -855,6 +1117,62 @@ fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) {
         ui.painter()
             .add(TextShape::new(content_rect.min, content, color));
     }
+    numbers
+}
+
+/// How much of the selection colour a picked line is tinted with.
+const SELECTED_TINT: f32 = 0.35;
+
+/// Width of the bar down the left edge of a note's lines and its row.
+const NOTE_BAR: f32 = 3.0;
+
+/// The colour a note of `kind` is marked in: a draft warm, so what is still
+/// to send stands out, and a posted one in the selection's colour.
+fn note_color(kind: PatchNoteKind, visuals: &egui::Visuals) -> Color32 {
+    match kind {
+        PatchNoteKind::Draft => visuals.warn_fg_color,
+        PatchNoteKind::Posted => visuals.selection.stroke.color,
+    }
+}
+
+/// A caller's note under its lines: a faint band with the note's bar on the
+/// left, then its first line from `galley`, clipped at the view's edge.
+/// Hovering shows the whole note. Placed without a child `Ui`, as a diff line
+/// is, and laid out once (see [`LineGalleys::note`]).
+fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
+    let height = ui.spacing().interact_size.y;
+    let min = ui.cursor().min;
+    let right = ui.clip_rect().right();
+    let row = Rect::from_min_size(min, egui::vec2((right - min.x).max(0.0), height));
+    let id = ui.advance_cursor_after_rect(row);
+    let visuals = ui.visuals();
+    let accent = note_color(note.kind, visuals);
+    let painter = ui.painter();
+    painter.rect_filled(row, 0.0, visuals.faint_bg_color);
+    painter.rect_filled(
+        Rect::from_min_size(row.min, egui::vec2(NOTE_BAR, height)),
+        0.0,
+        accent,
+    );
+    let text_min = egui::pos2(
+        row.left() + ui.spacing().icon_width + STATUS_WIDTH,
+        row.center().y - galley.size().y / 2.0,
+    );
+    painter
+        .with_clip_rect(row.intersect(ui.clip_rect()))
+        .galley(text_min.round_ui(), galley, visuals.text_color());
+    let response = ui.interact(row, id.with("note"), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &note.text));
+    response.on_hover_ui(|ui| {
+        ui.label(&note.text);
+    });
+}
+
+/// The hunk of `file` that line `i` is in.
+fn hunk_of(file: &FilePatch, i: usize) -> usize {
+    file.hunks
+        .partition_point(|h| h.lines.start <= i)
+        .saturating_sub(1)
 }
 
 /// A file's header row: collapse arrow, then the same columns as its row in
@@ -1119,6 +1437,7 @@ fn split_path(path: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff::{DiffSide, LineSpan};
     use egui::accesskit::Role;
     use egui_kittest::{kittest::Queryable, Harness};
 
@@ -1192,6 +1511,137 @@ mod tests {
         assert_eq!(state.locate(&patch, long + 1), Row::FileHeader(5));
     }
 
+    /// A note takes a row under the last of its lines, after any before it
+    /// on the same line, and the rows after it shift down, across a hunk
+    /// boundary too. Collapsing the file hides its notes with it.
+    #[test]
+    fn notes_take_rows_under_their_lines() {
+        let patch = GitPatch::parse(MULTI);
+        let mut state = GitPatchState::new(&patch, &mut Localization::default());
+        let plain = state.layout(&patch);
+        let note = |lines: Range<usize>, text: &str| PatchNote {
+            file: 4,
+            lines,
+            text: text.to_string(),
+            kind: PatchNoteKind::Posted,
+        };
+        // long.txt: hunk 0 is lines 0..7, hunk 1 lines 7..15. Given out of
+        // order; one on a file that doesn't exist is dropped.
+        let notes = vec![
+            note(7..8, "b"),
+            note(5..7, "a"),
+            note(7..8, "c"),
+            PatchNote {
+                file: 99,
+                ..note(0..1, "gone")
+            },
+        ];
+        state.set_notes(&patch, notes, 7);
+        assert_eq!(state.notes_stamp(), Some(7));
+        let total = state.layout(&patch);
+        assert_eq!(total, plain + 3);
+
+        let rows: Vec<_> = (0..total).map(|r| state.locate(&patch, r)).collect();
+        let long = state.file_rows[4];
+        let texts = |r: Row| match r {
+            Row::Comment(n) => state.line_notes[n].text.as_str(),
+            _ => "",
+        };
+        assert_eq!(rows[long + 8], Row::Line(4, 6));
+        assert_eq!(texts(rows[long + 9]), "a");
+        assert_eq!(rows[long + 10], Row::HunkHeader(4, 1));
+        assert_eq!(rows[long + 11], Row::Line(4, 7));
+        assert_eq!(texts(rows[long + 12]), "b");
+        assert_eq!(texts(rows[long + 13]), "c");
+        assert_eq!(rows[long + 14], Row::Line(4, 8));
+        assert_eq!(*rows.last().unwrap(), Row::Line(7, 3));
+
+        state.set_collapsed(4, true);
+        assert_eq!(state.layout(&patch), plain - 17);
+        assert_eq!(state.locate(&patch, long + 1), Row::FileHeader(5));
+    }
+
+    /// A click picks one line, a shift-click stretches the pick within its
+    /// hunk, a shift-click into another hunk starts over there, a click on
+    /// the one picked line drops it, and a hunk header takes the whole hunk.
+    #[test]
+    fn clicks_pick_lines_within_one_hunk() {
+        let patch = GitPatch::parse(MULTI);
+        let mut state = GitPatchState::new(&patch, &mut Localization::default());
+        let picked = |state: &GitPatchState| state.selection().map(|s| (s.file, s.lines));
+
+        state.click_line(4, 0, 4, false);
+        assert_eq!(picked(&state), Some((4, 4..5)));
+        state.click_line(4, 0, 2, true);
+        assert_eq!(picked(&state), Some((4, 2..5)), "stretched up to line 2");
+        state.click_line(4, 1, 9, true);
+        assert_eq!(picked(&state), Some((4, 9..10)), "another hunk starts over");
+        state.click_line(4, 1, 9, false);
+        assert_eq!(picked(&state), None);
+
+        state.click_hunk(&patch, 4, 1);
+        assert_eq!(picked(&state), Some((4, 7..15)));
+        state.clear_selection();
+        assert_eq!(picked(&state), None);
+    }
+
+    /// Clicking a hunk's header in the drawn patch picks its lines.
+    #[test]
+    fn clicking_a_hunk_header_picks_the_hunk() {
+        let mut harness = harness(GitPatch::parse(MULTI), 1600.0);
+        harness.run();
+        harness
+            .get_by_role_and_label(Role::Button, "@@ -1,3 +1,4 @@")
+            .click();
+        harness.run();
+        let (patch, state) = harness.state();
+        let main = patch.file_named("main.rs").unwrap();
+        let picked = state.selection().unwrap();
+        assert_eq!(picked.file, main);
+        assert_eq!(picked.lines, patch.files()[main].hunks[0].lines);
+    }
+
+    /// A pick's line numbers are the new file's when it has any, else the
+    /// old file's for deletions alone; `lines_in` maps them back.
+    #[test]
+    fn line_spans_name_a_side_and_map_back() {
+        let patch = GitPatch::parse(MULTI);
+        let long = &patch.files()[patch.file_named("long.txt").unwrap()];
+        let new3 = LineSpan {
+            side: DiffSide::New,
+            start: 3,
+            end: 3,
+        };
+        let old3 = LineSpan {
+            side: DiffSide::Old,
+            ..new3
+        };
+        // -line 3 / +LINE 3 together: the new side's 3.
+        assert_eq!(long.line_span(2..4), Some(new3));
+        // The deletion alone: the old side's 3.
+        assert_eq!(long.line_span(2..3), Some(old3));
+        // A context run: new 4-6.
+        assert_eq!(
+            long.line_span(4..7),
+            Some(LineSpan {
+                start: 4,
+                end: 6,
+                ..new3
+            })
+        );
+        assert_eq!(long.lines_in(new3), Some(3..4));
+        assert_eq!(long.lines_in(old3), Some(2..3));
+        assert_eq!(
+            long.lines_in(LineSpan {
+                start: 900,
+                end: 901,
+                ..new3
+            }),
+            None
+        );
+        assert_eq!(long.line_span(3..3), None);
+    }
+
     #[test]
     fn renders_summary_files_hunks_and_markers() {
         // Tall enough for the whole patch.
@@ -1206,7 +1656,10 @@ mod tests {
         assert_eq!(shown(&harness, "main.rs"), 4);
         harness.get_by_role_and_label(Role::Link, "main.rs");
         harness.get_by_role_and_label(Role::Button, "main.rs");
-        assert_eq!(shown(&harness, "@@ -1,3 +1,4 @@"), 1);
+        // The hunk header's text, and the header as the button that picks
+        // the whole hunk.
+        assert_eq!(shown(&harness, "@@ -1,3 +1,4 @@"), 2);
+        harness.get_by_role_and_label(Role::Button, "@@ -1,3 +1,4 @@");
         assert_eq!(shown(&harness, "    new();"), 1);
         assert_eq!(shown(&harness, "Binary file not shown"), 1);
         assert_eq!(shown(&harness, "No content changes"), 1);

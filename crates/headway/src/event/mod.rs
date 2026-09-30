@@ -49,9 +49,11 @@ mod view;
 pub use build::{
     build_archive_placement, build_blockers, build_board, build_board_pref, build_comment,
     build_cover_note, build_field, build_issue, build_labels, build_placement, build_related,
-    build_relation, build_review, build_sequence, build_subject_edit,
+    build_relation, build_review, build_review_comment, build_sequence, build_subject_edit,
 };
-pub use json::{activity_json, board_json, card_json, comment_json, review_json};
+pub use json::{
+    activity_json, board_json, card_json, comment_json, review_comment_json, review_json,
+};
 pub use kinds::{
     HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
     KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
@@ -64,13 +66,13 @@ pub use load::{
     load_board_pref, load_shared_board, reduce_delta,
 };
 pub use model::{
-    BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, Priority, ReviewFields,
-    board_address, column_is_terminal,
+    BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, LineSide, Priority,
+    ReviewFields, ReviewLocation, board_address, column_is_terminal,
 };
 pub use parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
-    IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewEvent, SequenceEvent,
-    SubjectEdit, parse,
+    IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewCommentEvent,
+    ReviewEvent, SequenceEvent, SubjectEdit, parse,
 };
 pub use rank::rank_between;
 pub use reduce::{BoardReducer, reduce};
@@ -81,5 +83,5 @@ pub use resolve::{
 };
 pub use view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
-    EdgeRef, ReviewView, SubissueView,
+    EdgeRef, ReviewCommentView, ReviewView, SubissueView,
 };

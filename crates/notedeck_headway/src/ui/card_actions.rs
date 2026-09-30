@@ -101,7 +101,7 @@ impl BoardUiState {
 
     /// The record of `card` a key acts on: the one the review pane shows, if
     /// it's open on the card, else the newest.
-    fn acted_record<'a>(&self, card: &'a CardView) -> Option<&'a ReviewView> {
+    pub(super) fn acted_record<'a>(&self, card: &'a CardView) -> Option<&'a ReviewView> {
         if self.review.card() == Some(card.id) {
             self.review.shown_record(card)
         } else {

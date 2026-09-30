@@ -3,7 +3,8 @@
 use nostrdb_net::Pubkey;
 
 use super::view::{
-    ActivityKind, ActivityView, BoardView, CardView, CommentView, EdgeRef, ReviewView,
+    ActivityKind, ActivityView, BoardView, CardView, CommentView, EdgeRef, ReviewCommentView,
+    ReviewView,
 };
 
 /// Render `view` as a stable, machine-readable JSON value: a curated schema for
@@ -138,5 +139,33 @@ pub fn review_json(review: &ReviewView) -> serde_json::Value {
     for (name, value) in review.fields.tags() {
         v[name] = serde_json::json!(value);
     }
+    v["comments"] = review
+        .comments
+        .iter()
+        .map(review_comment_json)
+        .collect::<Vec<_>>()
+        .into();
     v
+}
+
+/// Render one inline review comment as JSON: its id, author, parent, body and
+/// timestamp, plus where it points (`path`, `commit`, `line` as on the wire —
+/// `"42"` or `"42-48"` — and `side`, `"new"` or `"old"`), all `null` for a
+/// comment on the commit as a whole. See [`review_json`].
+pub fn review_comment_json(comment: &ReviewCommentView) -> serde_json::Value {
+    let loc = comment.location.as_ref();
+    serde_json::json!({
+        "id": comment.id.hex(),
+        "author": Pubkey::new(comment.author).hex(),
+        "parent": comment.parent.map(|p| p.hex()),
+        "path": loc.map(|l| l.path.as_str()),
+        "commit": loc.map(|l| l.commit.as_str()),
+        "line": loc.map(|l| l.line_value()),
+        "side": loc.map(|l| match l.side {
+            super::LineSide::New => "new",
+            super::LineSide::Old => "old",
+        }),
+        "body": comment.body,
+        "created_at": comment.created_at,
+    })
 }

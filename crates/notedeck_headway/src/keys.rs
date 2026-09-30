@@ -318,6 +318,19 @@ pub(crate) const REVIEW_NAV_HINTS: &[KeyHint] = &[
     },
 ];
 
+/// Commenting on the lines picked in a review pane's diff (a click on a
+/// line's numbers, shift-click for a run, a hunk's header for all of it).
+pub(crate) const REVIEW_COMMENT_HINTS: &[KeyHint] = &[
+    KeyHint {
+        keys: &["c"],
+        label: "comment on picked lines",
+    },
+    KeyHint {
+        keys: &["C"],
+        label: "send comments",
+    },
+];
+
 /// Leaving the review queue, for the grid.
 pub(crate) const QUEUE_EXIT_HINTS: &[KeyHint] = &[KeyHint {
     keys: &["q", "esc"],
@@ -363,10 +376,20 @@ pub(crate) const DETAIL_NAV_HINTS: &[KeyHint] = &[
 pub(crate) const BOARD_STRIP: HintStrip = &[BOARD_NAV_HINTS, CARD_ACTION_HINTS];
 
 /// The review queue's strip.
-pub(crate) const QUEUE_STRIP: HintStrip = &[CARD_ACTION_HINTS, REVIEW_NAV_HINTS, QUEUE_EXIT_HINTS];
+pub(crate) const QUEUE_STRIP: HintStrip = &[
+    CARD_ACTION_HINTS,
+    REVIEW_NAV_HINTS,
+    REVIEW_COMMENT_HINTS,
+    QUEUE_EXIT_HINTS,
+];
 
 /// A plain review pane's strip: the queue's, bar how it's left.
-pub(crate) const PANE_STRIP: HintStrip = &[CARD_ACTION_HINTS, REVIEW_NAV_HINTS, PANE_EXIT_HINTS];
+pub(crate) const PANE_STRIP: HintStrip = &[
+    CARD_ACTION_HINTS,
+    REVIEW_NAV_HINTS,
+    REVIEW_COMMENT_HINTS,
+    PANE_EXIT_HINTS,
+];
 
 /// The card detail's strip.
 pub(crate) const DETAIL_STRIP: HintStrip = &[CARD_ACTION_HINTS, DETAIL_NAV_HINTS];
@@ -629,7 +652,8 @@ pub(crate) enum PaneMode {
 /// A review pane's keys, in the queue or opened from a card: the card
 /// actions, then scrolling the diff by a line (`j`/`k`), a page
 /// (`Space`/`Shift-Space`, `Ctrl-f`/`Ctrl-b`), half a page
-/// (`Ctrl-d`/`Ctrl-u`), to its ends (`gg`/`G`) or by file (`]`/`[`), `?` and
+/// (`Ctrl-d`/`Ctrl-u`), to its ends (`gg`/`G`) or by file (`]`/`[`), `c` to
+/// write a comment on the picked lines and `C` to send the comments, `?` and
 /// `q`/`Esc`. Left alone under the grid's rules, bar its own overlays: a
 /// focused widget, an open popup or menu, or a drag.
 pub(crate) fn review_pane_keys(
@@ -696,6 +720,16 @@ pub(crate) fn review_pane_keys(
                 .pane_chord
                 .begin(PanePending::G, ctx.input(|i| i.time)),
             (Key::G, true) => state.scroll_review(PatchScroll::Bottom),
+            (Key::C, shift) => {
+                if let Some(card) = card.filter(|&c| find_card(view, c).is_some()) {
+                    let now = ctx.input(|i| i.time);
+                    if shift {
+                        action = state.send_review_comments(view, card, now);
+                    } else {
+                        state.focus_review_composer(view, card, now);
+                    }
+                }
+            }
             (Key::CloseBracket, false) => state.scroll_review(PatchScroll::NextFile),
             (Key::OpenBracket, false) => state.scroll_review(PatchScroll::PrevFile),
             (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
@@ -987,6 +1021,9 @@ mod tests {
         /// The last agentium session open a key raised, as the app drains
         /// it ([`BoardUiState::take_effects`]).
         session: Option<notedeck::OpenUri>,
+        /// The `(card, record, comments)` of the last `AddReviewComments`
+        /// the keymap returned.
+        review_comments: Option<(NoteId, NoteId, Vec<crate::store::NewReviewComment>)>,
     }
 
     /// A harness that runs the keymaps over [`grid`] each frame, unfiltered,
@@ -1028,6 +1065,11 @@ mod tests {
                     Some(BoardAction::AddComment { card, body, .. }) => {
                         h.commented = Some((card, body))
                     }
+                    Some(BoardAction::AddReviewComments {
+                        card,
+                        record,
+                        comments,
+                    }) => h.review_comments = Some((card, record, comments)),
                     _ => {}
                 }
                 h.state.reason_test_ui(ui);
@@ -1063,6 +1105,7 @@ mod tests {
                 commented: None,
                 opened: None,
                 session: None,
+                review_comments: None,
             },
         );
         harness.run();
@@ -1634,6 +1677,7 @@ mod tests {
                 agentium: Some(SESSION.to_string()),
                 ..Default::default()
             },
+            comments: Vec::new(),
         }];
         view
     }
@@ -1827,6 +1871,122 @@ mod tests {
                 queue_effects(&harness),
                 before,
                 "keycap {cap:?} ({label}) did nothing"
+            );
+        }
+    }
+
+    /// A two-file commit for the review-comment tests: `src/a.rs` changes a
+    /// line, `b.txt` loses one.
+    const TWO_FILES: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,2 +1,2 @@
+ fn a() {
+-    old();
++    new();
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1,2 +1,1 @@
+-gone
+ kept
+";
+
+    /// Two drafts, on the new side of `src/a.rs` and the old side of
+    /// `b.txt`, in that order.
+    fn two_drafts() -> [crate::ui::DraftComment; 2] {
+        let patch = notedeck_ui::diff::GitPatch::parse(TWO_FILES);
+        let pick = |file, lines| notedeck_ui::diff::PatchSelection { file, lines };
+        let draft = |file, lines, body: &str| {
+            crate::ui::DraftComment::new(&patch, &pick(file, lines), COMMIT, body.to_string())
+                .expect("the pick has numbered lines")
+        };
+        [
+            draft(0, 0..3, "rename it"),
+            draft(1, 0..1, "why drop this?"),
+        ]
+    }
+
+    /// `C` in a review pane posts the shown record's drafts as review
+    /// comments on it, in order, and sends them all to the record's session
+    /// in one message that names each place, quotes its lines and carries
+    /// its comment. The drafts go with the send, so a second `C` only says
+    /// there's nothing left. A record with no session still gets its
+    /// comments, and nothing opens.
+    #[test]
+    fn send_comments_posts_each_and_opens_the_session_once() {
+        for session in [true, false] {
+            let mut harness = pane_harness();
+            if !session {
+                harness.state_mut().view.columns[1].cards[1].reviews[0]
+                    .fields
+                    .agentium = None;
+            }
+            for draft in two_drafts() {
+                harness.state_mut().state.add_review_draft(id(50), draft);
+            }
+            press_with(&mut harness, Modifiers::SHIFT, Key::C);
+
+            let h = harness.state();
+            let (card, record, comments) = h.review_comments.clone().expect("comments posted");
+            assert_eq!((card, record), (id(5), id(50)));
+            let posted: Vec<_> = comments
+                .iter()
+                .map(|c| {
+                    let loc = &c.location;
+                    (
+                        loc.path.as_str(),
+                        loc.line_value(),
+                        loc.side,
+                        c.body.as_str(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                posted,
+                vec![
+                    (
+                        "src/a.rs",
+                        "1-2".to_string(),
+                        headway::event::LineSide::New,
+                        "rename it"
+                    ),
+                    (
+                        "b.txt",
+                        "1".to_string(),
+                        headway::event::LineSide::Old,
+                        "why drop this?"
+                    ),
+                ]
+            );
+            assert!(comments.iter().all(|c| c.location.commit == COMMIT));
+
+            if !session {
+                assert_eq!(h.session, None, "no session, no open");
+                continue;
+            }
+            let open = h.session.clone().expect("one open");
+            assert_eq!(open.reference, SESSION);
+            let card_ref = headway::wordid::card_ref(&h.view.id, id(5).bytes());
+            assert_eq!(
+                open.msg.as_deref(),
+                Some(
+                    format!(
+                        "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
+                         src/a.rs:1-2\n```diff\n fn a() {{\n-    old();\n+    new();\n```\nrename it\n\n\
+                         b.txt:old 1\n```diff\n-gone\n```\nwhy drop this?"
+                    )
+                    .as_str()
+                )
+            );
+
+            harness.state_mut().review_comments = None;
+            press_with(&mut harness, Modifiers::SHIFT, Key::C);
+            assert_eq!(harness.state().review_comments, None);
+            assert_eq!(
+                harness.state().state.notice(),
+                Some(QueueNotice::NoComments)
             );
         }
     }

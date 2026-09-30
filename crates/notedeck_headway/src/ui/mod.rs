@@ -35,6 +35,7 @@ mod grid;
 mod header;
 mod inline;
 mod review;
+mod review_comments;
 mod widgets;
 
 pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
@@ -43,6 +44,8 @@ pub use inline::{board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui}
 
 pub(crate) use card_actions::{CardStep, reason_field_id};
 pub(crate) use filter::{CardFilter, ViewFilter, filter_field_id};
+#[cfg(test)]
+pub(crate) use review_comments::DraftComment;
 
 use archived::archived_sheet_ui;
 use card_actions::{ReasonComposer, reason_bar_ui};

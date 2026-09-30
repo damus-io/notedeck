@@ -13,8 +13,12 @@
 mod patch;
 mod patch_view;
 
-pub use patch::{FilePatch, FileStatus, GitPatch, Hunk, LineKind, PatchLine, Span};
-pub use patch_view::{git_patch_ui, GitPatchState, PatchScroll};
+pub use patch::{
+    DiffSide, FilePatch, FileStatus, GitPatch, Hunk, LineKind, LineSpan, PatchLine, Span,
+};
+pub use patch_view::{
+    git_patch_ui, GitPatchState, PatchNote, PatchNoteKind, PatchScroll, PatchSelection,
+};
 
 use crate::markdown::{tokenize_code, SandCodeTheme};
 use egui::text::LayoutJob;

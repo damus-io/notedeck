@@ -18,7 +18,8 @@ use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
     ReviewFields, board_address, build_archive_placement, build_blockers, build_board,
     build_comment, build_cover_note, build_field, build_issue, build_labels, build_placement,
-    build_related, build_relation, build_review, build_sequence, build_subject_edit, rank_between,
+    build_related, build_relation, build_review, build_review_comment, build_sequence,
+    build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -110,6 +111,14 @@ pub enum BoardAction {
     /// record, so a card collects one per commit and per host. Unknown card ->
     /// no-op.
     AddReview { card: NoteId, review: ReviewFields },
+    /// Post inline review comments on `card`'s review `record` (kind 1111
+    /// rooted on the kind-1626 record, see [`event::build_review_comment`]), one
+    /// event per comment, in order. Unknown card or record -> no-op.
+    AddReviewComments {
+        card: NoteId,
+        record: NoteId,
+        comments: Vec<NewReviewComment>,
+    },
     /// Remove a card from the board (tombstone placement).
     DeleteCard { card: NoteId },
     /// Archive a card: take it off the board but keep it recoverable, recording
@@ -134,6 +143,14 @@ pub enum BoardAction {
     /// Rename the board itself: republish its definition with a new display
     /// `title`, preserving the slug, columns, and description.
     RenameBoard { title: String },
+}
+
+/// One inline review comment for [`BoardAction::AddReviewComments`]: the lines
+/// it points at and what it says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewReviewComment {
+    pub location: event::ReviewLocation,
+    pub body: String,
 }
 
 /// A sink for events that have been ingested locally and should also be fanned
@@ -625,10 +642,11 @@ pub fn preview_migration(ndb: &Ndb, author: &Pubkey, board_id: &str) -> Migratio
     }
 }
 
-/// Every existing note belonging to the board at `board_addr` to re-seal — both fold phases: the board definition,
-/// issues and placements ([`event::board_scoped_filters`]), plus each card's
+/// Every existing note belonging to the board at `board_addr` to re-seal — every fold phase: the board definition,
+/// issues and placements ([`event::board_scoped_filters`]), each card's
 /// metadata overlays and comments keyed by card id ([`event::card_meta_filter`] +
-/// [`event::comment_filter`]). Deduped by note id (a comment can match more than one
+/// [`event::comment_filter`]), and the review records' inline comments keyed by
+/// record id. Deduped by note id (a comment can match more than one
 /// phase-B filter). Used by [`migrate_board_to_sns`]; not filtered by `team_sealed`
 /// because on a plaintext board none are sealed yet.
 fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<BoardNote> {
@@ -665,7 +683,30 @@ fn collect_board_notes(ndb: &Ndb, board_addr: &str) -> Vec<BoardNote> {
             event::card_meta_filter(&card_ids),
             event::comment_filter(&card_ids),
         ];
+        let mut record_ids: Vec<[u8; 32]> = Vec::new();
         if let Ok(results) = ndb.query(&txn, &phase_b, 5000) {
+            for res in results {
+                if res.note.kind() == event::KIND_REVIEW {
+                    record_ids.push(*res.note.id());
+                }
+                if seen.insert(*res.note.id())
+                    && let Ok(json) = res.note.json()
+                {
+                    out.push(BoardNote {
+                        json,
+                        created_at: res.note.created_at(),
+                        sealed: res.note.is_rumor(),
+                    });
+                }
+            }
+        }
+
+        // The records' inline review comments root on the record, not the
+        // card, so only the record ids reach them (`fold_shared_board`'s
+        // phase C).
+        if !record_ids.is_empty()
+            && let Ok(results) = ndb.query(&txn, &[event::comment_filter(&record_ids)], 5000)
+        {
             for res in results {
                 if seen.insert(*res.note.id())
                     && let Ok(json) = res.note.json()
@@ -1285,6 +1326,35 @@ fn apply_edit(
                 signer,
                 publisher,
             );
+        }
+        BoardAction::AddReviewComments {
+            card,
+            record,
+            comments,
+        } => {
+            let c = find_card_any(view, card)?;
+            let r = c.reviews.iter().find(|r| r.id == record)?;
+            let record_author = Pubkey::new(r.author);
+            // A record's comments fold oldest-first (id as tiebreaker), so a
+            // batch posted in one second would order at random. Stamp each
+            // strictly past the one before, like `AddComment`.
+            let mut latest = r.comments.last().map_or(0, |c| c.created_at);
+            for comment in &comments {
+                latest = next_after(latest);
+                ingest_signed(
+                    ndb,
+                    build_review_comment(
+                        &record,
+                        &record_author,
+                        None,
+                        Some(&comment.location),
+                        &comment.body,
+                    )
+                    .created_at(latest),
+                    signer,
+                    publisher,
+                );
+            }
         }
         BoardAction::DeleteCard { card } => {
             // build_placement needs a rank; reuse the card's current one (or a
@@ -3767,6 +3837,94 @@ mod tests {
         let reviews = &view.card(card).unwrap().reviews;
         let commits: Vec<_> = reviews.iter().map(|r| r.fields.commit.as_deref()).collect();
         assert_eq!(commits, vec![Some("bbbb"), Some("aaaa")]);
+    }
+
+    /// Inline review comments written through [`apply`] on a *sealed* board
+    /// fold back through `fold_shared_board`'s phase C: they root on the review
+    /// record, which the card ids can't reach. A batch lands on the record in
+    /// the order it was sent, not on the card's own comments.
+    #[tokio::test]
+    async fn add_review_comments_on_a_sealed_board_fold_onto_the_record() {
+        let t = TestNdb::new();
+        let ch = test_channel("src", &t.secret());
+        seed_via(&t, "src", Some(&ch));
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns.len() == 5).await;
+        let secret = t.secret();
+        let signer = Signer::new(&secret, Some(&ch.channel));
+        let apply = |view: &BoardView, action| {
+            super::apply(
+                &t.ndb,
+                "src",
+                view,
+                &t.kp.pubkey,
+                &signer,
+                action,
+                &mut NoPublish,
+            )
+        };
+
+        apply(
+            &view,
+            BoardAction::AddCard {
+                col: 0,
+                title: "Reviewed".to_string(),
+                description: String::new(),
+                labels: vec![],
+                parent: None,
+            },
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns[0].cards.len() == 1).await;
+        let card = view.columns[0].cards[0].id;
+        apply(
+            &view,
+            BoardAction::AddReview {
+                card,
+                review: ReviewFields {
+                    commit: Some("aaaa".to_string()),
+                    ..Default::default()
+                },
+            },
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| {
+            v.card(card).is_some_and(|c| !c.reviews.is_empty())
+        })
+        .await;
+        let record = view.card(card).unwrap().reviews[0].id;
+
+        let comment = |path: &str, body: &str| NewReviewComment {
+            location: event::ReviewLocation {
+                path: path.to_string(),
+                commit: "aaaa".to_string(),
+                start: 1,
+                end: 2,
+                side: event::LineSide::New,
+            },
+            body: body.to_string(),
+        };
+        apply(
+            &view,
+            BoardAction::AddReviewComments {
+                card,
+                record,
+                comments: vec![comment("b.rs", "one"), comment("a.rs", "two")],
+            },
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| {
+            v.card(card)
+                .is_some_and(|c| c.reviews.first().is_some_and(|r| r.comments.len() == 2))
+        })
+        .await;
+        let card = view.card(card).unwrap();
+        let got: Vec<(&str, &str)> = card.reviews[0]
+            .comments
+            .iter()
+            .map(|c| (c.location.as_ref().unwrap().path.as_str(), c.body.as_str()))
+            .collect();
+        assert_eq!(got, vec![("b.rs", "one"), ("a.rs", "two")]);
+        assert!(
+            card.comments.is_empty(),
+            "review comments stay off the card"
+        );
     }
 
     /// [`apply_outcome`] reports the id an `AddCard` minted, on a *sealed* board

@@ -236,7 +236,9 @@ pub fn card_meta_filter(card_ids: &[[u8; 32]]) -> Filter {
 
 /// The comment half of the shared-board card-anchored fan-out: a filter for every
 /// member's comments (kind 1111) on the given cards, keyed by the NIP-22 root `E`
-/// tag rather than the parent `e` tag.
+/// tag rather than the parent `e` tag. The same filter over review-record ids
+/// gathers the records' inline review comments, whose root `E` is the record
+/// ([`build_review_comment`](super::build_review_comment)).
 ///
 /// Every comment — top-level *and* threaded reply — carries the uppercase root
 /// `E` = the issue id ([`build_comment`](super::build_comment)), whereas the lowercase parent `e` is the
@@ -338,7 +340,29 @@ pub fn fold_shared_board(
     }
 
     let phase_b = [card_meta_filter(&card_ids), comment_filter(&card_ids)];
-    ndb.fold(txn, &phase_b, acc, |mut acc, note| {
+    let mut record_ids: Vec<[u8; 32]> = Vec::new();
+    let acc = ndb
+        .fold(txn, &phase_b, acc, |mut acc, note| {
+            if !team_sealed(&note, team) {
+                return acc;
+            }
+            if note.kind() == KIND_REVIEW {
+                record_ids.push(*note.id());
+            }
+            if let Some(event) = parse(&note) {
+                acc.ingest(event);
+            }
+            acc
+        })
+        .ok()?;
+
+    // Phase C: inline review comments root on a review record, not the card,
+    // so the card ids above can't reach them; the records phase B found can.
+    if record_ids.is_empty() {
+        return Some(acc);
+    }
+    let phase_c = [comment_filter(&record_ids)];
+    ndb.fold(txn, &phase_c, acc, |mut acc, note| {
         if !team_sealed(&note, team) {
             return acc;
         }

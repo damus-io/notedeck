@@ -9,7 +9,7 @@ use super::kinds::{
     KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
     KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
 };
-use super::model::{COL_ARCHIVED, ColumnDef, Field, ReviewFields};
+use super::model::{COL_ARCHIVED, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation};
 use super::parse::Container;
 
 fn base<'a>(kind: u32, content: &'a str) -> NoteBuilder<'a> {
@@ -342,4 +342,72 @@ pub fn build_comment<'a>(
         .start_tag()
         .tag_str("p")
         .tag_id(parent_author.bytes())
+}
+
+/// Build an inline review comment (kind 1111) on a review `record` (kind 1626,
+/// authored by `record_author`), in gitworkshop's inline-comment shape.
+///
+/// The same NIP-22 comment as [`build_comment`], rooted on the record instead
+/// of the card: root `E`/`K 1626`/`P` = the record, parent `e`/`k`/`p` = the
+/// record for a top-level comment or `reply_to` (another review comment) for a
+/// reply. The `K` is what tells the two threads apart on read. A review comment
+/// answers one commit, and the record is what pins it.
+///
+/// `location`, when set, adds gitworkshop's `f` (file), `c` (commit) and
+/// `line` (`"a"` or `"a-b"`, plus `"del"` for old-side lines) tags. There is no
+/// `q` repo coordinate: boards don't name a kind-30617 repo.
+pub fn build_review_comment<'a>(
+    record: &NoteId,
+    record_author: &Pubkey,
+    reply_to: Option<(&NoteId, &Pubkey)>,
+    location: Option<&ReviewLocation>,
+    body: &'a str,
+) -> NoteBuilder<'a> {
+    let mut b = base(KIND_COMMENT, body)
+        .start_tag()
+        .tag_str("E")
+        .tag_id(record.bytes())
+        .tag_str("")
+        .tag_id(record_author.bytes())
+        .start_tag()
+        .tag_str("K")
+        .tag_str(&KIND_REVIEW.to_string())
+        .start_tag()
+        .tag_str("P")
+        .tag_id(record_author.bytes());
+
+    let (parent_id, parent_author, parent_kind) = match reply_to {
+        Some((cid, cauthor)) => (cid, cauthor, KIND_COMMENT),
+        None => (record, record_author, KIND_REVIEW),
+    };
+    b = b
+        .start_tag()
+        .tag_str("e")
+        .tag_id(parent_id.bytes())
+        .tag_str("")
+        .tag_id(parent_author.bytes())
+        .start_tag()
+        .tag_str("k")
+        .tag_str(&parent_kind.to_string())
+        .start_tag()
+        .tag_str("p")
+        .tag_id(parent_author.bytes());
+
+    let Some(loc) = location else {
+        return b;
+    };
+    b = b
+        .start_tag()
+        .tag_str("f")
+        .tag_str(&loc.path)
+        .start_tag()
+        .tag_str("c")
+        .tag_str(&loc.commit)
+        .start_tag()
+        .tag_str("line")
+        .tag_str(&loc.line_value());
+    if loc.side == LineSide::Old {
+        b = b.tag_str("del");
+    }
+    b
 }

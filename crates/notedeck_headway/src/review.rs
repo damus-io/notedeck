@@ -336,6 +336,11 @@ impl ReviewLoader {
     }
 
     /// `source`'s load, if it has been started.
+    pub(crate) fn get(&self, source: ReviewSource) -> Option<&ReviewLoad> {
+        self.loads.get(&source).map(|c| &c.load)
+    }
+
+    /// `source`'s load, if it has been started, to change.
     pub(crate) fn get_mut(&mut self, source: ReviewSource) -> Option<&mut ReviewLoad> {
         self.loads.get_mut(&source).map(|c| &mut c.load)
     }

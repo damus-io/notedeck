@@ -3,7 +3,7 @@
 
 use nostrdb_net::NoteId;
 
-use super::model::{Date, Field, Priority, ReviewFields, column_is_terminal};
+use super::model::{Date, Field, Priority, ReviewFields, ReviewLocation, column_is_terminal};
 
 /// A comment on a card, resolved off its issue. Comments are append-only (no
 /// latest-wins overlay), so this is simply the parsed event in render form.
@@ -27,6 +27,25 @@ pub struct ReviewView {
     pub author: [u8; 32],
     pub created_at: u64,
     pub fields: ReviewFields,
+    /// The inline review comments on this record's commit, oldest first. They
+    /// thread under the record, so they never show in the card's
+    /// [`comments`](CardView::comments).
+    pub comments: Vec<ReviewCommentView>,
+}
+
+/// An inline review comment on a record's commit
+/// ([`ReviewCommentEvent`](super::ReviewCommentEvent) in render form).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewCommentView {
+    pub id: NoteId,
+    pub author: [u8; 32],
+    /// The parent review comment for a threaded reply; `None` for a top-level
+    /// one.
+    pub parent: Option<NoteId>,
+    /// The lines it points at; `None` for a comment on the commit as a whole.
+    pub location: Option<ReviewLocation>,
+    pub body: String,
+    pub created_at: u64,
 }
 
 /// One entry of a card's derived activity timeline: who did what, when. Folded

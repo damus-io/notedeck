@@ -167,6 +167,12 @@ impl GitPatch {
         self.deletions
     }
 
+    /// The index of the file named `path` (by the path it shows, see
+    /// [`FilePatch::path`]), if the patch has one.
+    pub fn file_named(&self, path: &str) -> Option<usize> {
+        self.files.iter().position(|f| f.path() == path)
+    }
+
     /// The text a [`Span`] refers to.
     pub fn text(&self, span: Span) -> &str {
         &self.text[span.range()]
@@ -199,6 +205,57 @@ impl FilePatch {
     pub fn hunk_lines(&self, hunk: &Hunk) -> &[PatchLine] {
         &self.lines[hunk.lines.clone()]
     }
+
+    /// The line numbers `lines` (indices into [`Self::lines`]) cover: the new
+    /// file's, when any of them is in it (an added or context line), else the
+    /// old file's, for a run of deletions only. `None` when they cover no
+    /// numbered line (an empty range, or only a no-newline marker).
+    pub fn line_span(&self, lines: Range<usize>) -> Option<LineSpan> {
+        let picked = self.lines.get(lines)?;
+        let span = |side, no: fn(&PatchLine) -> Option<u32>| {
+            let mut numbers = picked.iter().filter_map(no);
+            let first = numbers.next()?;
+            let (start, end) = numbers.fold((first, first), |(a, b), n| (a.min(n), b.max(n)));
+            Some(LineSpan { side, start, end })
+        };
+        span(DiffSide::New, |l| l.new_no).or_else(|| span(DiffSide::Old, |l| l.old_no))
+    }
+
+    /// The inverse of [`Self::line_span`]: the run of line indices whose
+    /// numbers on `span`'s side fall in it, first to last. The old side takes
+    /// only deleted lines, as [`Self::line_span`] only names it for those.
+    /// `None` when no line matches (the span points outside this diff).
+    pub fn lines_in(&self, span: LineSpan) -> Option<Range<usize>> {
+        let hit = |l: &PatchLine| {
+            let no = match span.side {
+                DiffSide::New => l.new_no,
+                DiffSide::Old if l.kind == LineKind::Delete => l.old_no,
+                DiffSide::Old => None,
+            };
+            no.is_some_and(|n| (span.start..=span.end).contains(&n))
+        };
+        let first = self.lines.iter().position(hit)?;
+        let last = self.lines.iter().rposition(hit)?;
+        Some(first..last + 1)
+    }
+}
+
+/// Which file of a diff a line number counts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiffSide {
+    /// The file after the change: added and context lines.
+    New,
+    /// The file before it: deleted lines.
+    Old,
+}
+
+/// A run of line numbers (1-based, inclusive) in one side of a file's diff:
+/// what a comment on some of its lines points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LineSpan {
+    pub side: DiffSide,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// Where the parser is inside the current file.
