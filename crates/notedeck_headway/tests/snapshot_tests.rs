@@ -2934,18 +2934,18 @@ const POSTED_COMMENT: &str = "current() and next() could share an index guard";
 /// `current` fn) in the first queue card's record, as `C` would have.
 fn post_queue_comment(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
     let card = harness_card_id(harness, QUEUE_CARDS[0]);
-    let record = {
-        let state = harness.state_mut();
-        let author = state.account.pubkey;
-        let app_ctx = state.notedeck.app_context();
-        let txn = Transaction::new(app_ctx.ndb).expect("txn");
-        let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
-            .expect("folded")
-            .finalize();
-        let view =
-            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
-        view.card(card).expect("queue card").reviews[0].id
-    };
+    // The seeded record lands on the async writer thread like any edit, so
+    // wait for it to fold rather than reading the board once.
+    let record = std::cell::Cell::new(None);
+    wait_for_demo(harness, "the queue card's review record", |view| {
+        record.set(
+            view.card(card)
+                .and_then(|c| c.reviews.first())
+                .map(|r| r.id),
+        );
+        record.get().is_some()
+    });
+    let record = record.get().expect("folded record");
     apply_demo_action(
         harness,
         store::BoardAction::AddReviewComments {
@@ -5205,9 +5205,16 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
     stack.go_to_route(1);
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(stack.len(), 1, "the empty queue backs off onto the board");
+    // The notice first: it's up for NOTICE_SECS of egui time, which the
+    // harness's steps advance, so waiting on anything else first could let
+    // it lapse. The archives have folded, so the grid's count is already
+    // drawn beside it.
     chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "4 cards · 5 columns");
     wait_for_label(&mut harness, "Nothing in review");
+    assert!(
+        harness.query_by_label("4 cards · 5 columns").is_some(),
+        "the notice is on the grid"
+    );
 }
 
 /// An epic archived while its review queue is open: `q` can't land on the
@@ -5232,7 +5239,13 @@ fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
     harness.get_by_label("Review 1").click();
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(stack.len(), 3, "the button opens the epic's queue");
+    // The epic's, not the board's: both would read "1 / 1" here.
     assert!(top_route(&stack).is_some_and(|r| r.is_review_queue()));
+    assert_eq!(
+        top_route(&stack).and_then(|r| r.selected_card()),
+        Some(epic),
+        "the queue is scoped to the epic"
+    );
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 1");
 
@@ -5244,6 +5257,44 @@ fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
     chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "5 cards · 5 columns");
+    assert!(harness.query_by_label("← Back").is_none());
+}
+
+/// As [`chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board`], with
+/// the epic's queue reached by a history walk, so the epic's detail never
+/// drew and nothing but `close_queue`'s archived marker says the epic has
+/// left. The queue's card stays, so `q` is what closes it. Without the
+/// marker, the epic's detail entry the back lands on holds the selection as
+/// a card not folded in yet, and never backs on to the board.
+#[test]
+fn chrome_nav_loop_gone_epics_queue_backs_off_its_undrawn_detail() {
+    use notedeck::{AppId, ChromeNavEntry};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    const CARDS: [&str; 1] = ["Column reordering"];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_in_review(&mut harness, repo.path(), &CARDS, &["src/one.rs"]);
+    let epic = parent_under_demo_epic(&mut harness, &CARDS);
+    let mut stack = chrome_stack_at_board(&mut harness);
+
+    for route in [
+        HeadwayRoute::card(epic, None),
+        HeadwayRoute::review_queue(Some(epic), None),
+    ] {
+        stack.route_to(ChromeNavEntry::new(AppId(0), Rc::new(route)));
+    }
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 1");
+    wait_for_label(&mut harness, CARDS[0]);
+
+    archive_demo_cards(&mut harness, &[epic]);
+
+    harness.press_key(egui::Key::Q);
+    chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "6 cards · 5 columns");
     assert!(harness.query_by_label("← Back").is_none());
 }
 

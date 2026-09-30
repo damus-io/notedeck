@@ -1571,6 +1571,32 @@ mod tests {
         assert_eq!(harness.state().state.selected(), Some(id(1)));
     }
 
+    /// `q` on an epic's queue selects the epic whatever the selection was
+    /// by then (a route reseed can leave it on nothing, or on another card),
+    /// so it lands on the epic's detail. Nothing inside a queue moves the
+    /// selection, so the tests that open the queue from the epic's detail
+    /// can't tell this apart from leaving the selection alone.
+    #[test]
+    fn q_on_an_epic_queue_selects_the_epic_whatever_was_selected() {
+        for reseeded in [None, Some(id(5))] {
+            let mut harness = keys_harness(None);
+            harness.state_mut().view = epic_board();
+            harness.state_mut().state.set_selected(Some(id(1)));
+            harness.run();
+            press_with(&mut harness, Modifiers::SHIFT, Key::R);
+            assert!(harness.state().state.queue_open());
+
+            harness.state_mut().state.set_selected(reseeded);
+            press(&mut harness, Key::Q);
+            assert!(!harness.state().state.queue_open());
+            assert_eq!(
+                harness.state().state.selected(),
+                Some(id(1)),
+                "reseeded to {reseeded:?}"
+            );
+        }
+    }
+
     /// An epic queue's `D` on its last card closes it back onto the epic's
     /// detail with the done notice, as the board's queue closes onto the grid.
     #[test]
