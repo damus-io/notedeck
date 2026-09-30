@@ -136,9 +136,10 @@ pub(super) fn pill_height(ui: &egui::Ui) -> f32 {
 /// - **The fill is a tint of the text's own `color`**, never a neutral grey
 ///   under coloured text (which muddied it), so a control is one hue; a
 ///   clickable one deepens the tint on hover and press.
-/// - **One geometry**: a pill or a button size, the text's row centred in it
-///   and its advance (not its ink) setting the width, so two shas of the same
-///   length make the same width of pill and the text after them lines up.
+/// - **One geometry**: a pill or a button size, the text centred in it (see
+///   [`text_center_y`]) and its advance (not its ink) setting the width, so
+///   two shas of the same length make the same width of pill and the text
+///   after them lines up.
 pub(super) fn tinted_control(
     ui: &mut egui::Ui,
     text: egui::RichText,
@@ -173,9 +174,29 @@ pub(super) fn tinted_control(
         egui::CornerRadius::same(radius as u8),
         color.gamma_multiply(tint),
     );
-    let origin = egui::pos2(rect.min.x + pad_x, rect.center().y - galley.size().y / 2.0);
+    let origin = egui::pos2(rect.min.x + pad_x, rect.center().y - text_center_y(&galley));
     ui.painter().galley(origin, galley, color);
     response
+}
+
+/// Where a [`tinted_control`] puts its middle, down from the top of `galley`.
+///
+/// Proportional text is centred by its row, so a pill's baseline doesn't move
+/// with what it says ("patch truncated" and "1 / 2" sit alike). Monospace text
+/// is centred by its ink instead. Inconsolata's row keeps more room under the
+/// baseline than a sha's hex digits use, since they have no descenders, so
+/// centring the row leaves a sha about 1.5px high in its pill.
+fn text_center_y(galley: &egui::Galley) -> f32 {
+    let monospace = galley
+        .job
+        .sections
+        .iter()
+        .all(|s| s.format.font_id.family == egui::FontFamily::Monospace);
+    if monospace && !galley.is_empty() {
+        galley.mesh_bounds.center().y
+    } else {
+        galley.size().y / 2.0
+    }
 }
 
 /// How strongly a control's fill tints its colour: [`TINT_IDLE`] at rest (and
@@ -727,5 +748,80 @@ mod tests {
 
         assert_eq!(elide_middle(path, 0.0, chars), "…");
         assert_eq!(elide_middle("", -1.0, chars), "");
+    }
+
+    /// Where a [`tinted_control`] painted its fill and its text, read back from
+    /// the frame's shapes.
+    struct PaintedPill {
+        fill: egui::Rect,
+        text_pos: egui::Pos2,
+        galley: std::sync::Arc<egui::Galley>,
+    }
+
+    /// Lay out one hover-only pill of `text` with notedeck's fonts and return
+    /// what it painted. Picks the pill's fill out by its tint, since the
+    /// harness's panel paints a rect of its own.
+    fn paint_pill(text: egui::RichText) -> PaintedPill {
+        let mut harness = egui_kittest::Harness::new_ui(move |ui| {
+            tinted_control(
+                ui,
+                text.clone(),
+                egui::Color32::WHITE,
+                ControlSize::Pill,
+                egui::Sense::hover(),
+            );
+        });
+        notedeck::fonts::setup_fonts(&harness.ctx);
+        harness.run();
+        let tint = egui::Color32::WHITE.gamma_multiply(TINT_IDLE);
+        let mut fill = None;
+        let mut painted_text = None;
+        for clipped in &harness.output().shapes {
+            match &clipped.shape {
+                egui::Shape::Rect(r) if r.fill == tint => fill = Some(r.rect),
+                egui::Shape::Text(t) => painted_text = Some((t.pos, t.galley.clone())),
+                _ => {}
+            }
+        }
+        let (text_pos, galley) = painted_text.expect("the pill painted no text");
+        PaintedPill {
+            fill: fill.expect("the pill painted no fill"),
+            text_pos,
+            galley,
+        }
+    }
+
+    /// A sha pill's hex digits sit in the middle of the pill. Centring
+    /// Inconsolata's row instead would leave them high, because the row keeps
+    /// room for descenders hex never uses. Proportional pills keep centring
+    /// their row, so their baseline doesn't move with their text.
+    #[test]
+    fn a_sha_pill_centres_its_digits_and_a_text_pill_its_row() {
+        let mono_size = notedeck::fonts::desktop_font_size(&notedeck::NotedeckTextStyle::Monospace);
+        let sha = paint_pill(
+            egui::RichText::new("a78a2bc806e8")
+                .monospace()
+                .size(mono_size),
+        );
+        let ink_center = sha.text_pos.y + sha.galley.mesh_bounds.center().y;
+        let row_center = sha.text_pos.y + sha.galley.size().y / 2.0;
+        assert!(
+            (ink_center - sha.fill.center().y).abs() < 0.5,
+            "sha ink centre {ink_center} vs pill centre {}",
+            sha.fill.center().y
+        );
+        assert!(
+            (row_center - ink_center).abs() >= 1.0,
+            "the sha's row and ink centres are {row_center} and {ink_center}: \
+             too close for this test to tell the two rules apart"
+        );
+
+        let count = paint_pill(egui::RichText::new("1 / 2").small());
+        let row_center = count.text_pos.y + count.galley.size().y / 2.0;
+        assert!(
+            (row_center - count.fill.center().y).abs() < 0.5,
+            "count row centre {row_center} vs pill centre {}",
+            count.fill.center().y
+        );
     }
 }
