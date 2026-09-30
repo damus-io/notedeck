@@ -875,6 +875,7 @@ fn detail_subissues_section_ui(
     state: &mut BoardUiState,
     outcome: &mut DetailOutcome,
 ) {
+    use std::fmt::Write;
     ui.horizontal(|ui| {
         detail_heading(ui, theme, "Sub-issues");
         if !ctx.subissues.is_empty() {
@@ -887,14 +888,18 @@ fn detail_subissues_section_ui(
                 StatusIcon::Started(done as f32 / ctx.subissues.len() as f32),
                 12.0,
             );
-            ui.label(
-                egui::RichText::new(format!("{done}/{}", ctx.subissues.len()))
-                    .small()
-                    .color(theme.text_muted),
-            );
+            let count =
+                state
+                    .subissue_count
+                    .text((done, ctx.subissues.len()), |s, (done, total)| {
+                        let _ = write!(s, "{done}/{total}");
+                    });
+            ui.label(egui::RichText::new(count).small().color(theme.text_muted));
         }
         if ctx.in_review_under > 0 {
-            let text = state.subtree_review.text(ctx.in_review_under);
+            let text = state.subtree_review.text(ctx.in_review_under, |s, n| {
+                let _ = write!(s, "Review {n}");
+            });
             let button = egui::Button::new(egui::RichText::new(text).small().color(theme.accent))
                 .frame(false);
             if ui

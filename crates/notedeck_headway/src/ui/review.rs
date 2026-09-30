@@ -261,31 +261,6 @@ fn descends_from(view: &BoardView, mut parent: Option<NoteId>, epic: NoteId) -> 
     false
 }
 
-/// The label of the detail's "Review N" button (the Sub-issues header's twin
-/// of `R`), formatted only when N changes. That saves the formatting, not the
-/// allocation: egui's `RichText::new` still copies the text into a `String`
-/// every frame.
-#[derive(Default)]
-pub(crate) struct SubtreeReviewLabel {
-    /// The N [`text`](Self::text) was formatted for.
-    count: Option<usize>,
-    /// `"Review N"`.
-    text: String,
-}
-
-impl SubtreeReviewLabel {
-    /// `"Review {count}"`, reformatted only when `count` moved.
-    pub(crate) fn text(&mut self, count: usize) -> &str {
-        use std::fmt::Write;
-        if self.count != Some(count) {
-            self.count = Some(count);
-            self.text.clear();
-            let _ = write!(self.text, "Review {count}");
-        }
-        &self.text
-    }
-}
-
 /// What the review queue walks: the board's In Review column (`R` on the
 /// grid), or one epic's In Review descendants (`R` on its detail).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

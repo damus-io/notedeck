@@ -53,10 +53,8 @@ use filter::filter_ref_jump;
 use graph::graph_view_ui;
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
-use review::{
-    NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, SubtreeReviewLabel, review_pane_ui,
-    review_queue_ui,
-};
+use review::{NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, review_pane_ui, review_queue_ui};
+use widgets::KeyedText;
 
 pub(crate) use review::{Notice, QueueNotice, QueueScope, SessionOpen};
 
@@ -220,8 +218,11 @@ pub struct BoardUiState {
     /// epic's In Review descendants) and which card the review pane shows.
     /// While it's open the pane shows its card.
     queue: ReviewQueue,
-    /// The detail Sub-issues header's "Review N" label.
-    subtree_review: SubtreeReviewLabel,
+    /// The detail Sub-issues header's `"done/total"` count, keyed by
+    /// `(done, total)`.
+    subissue_count: KeyedText<(usize, usize)>,
+    /// The detail Sub-issues header's "Review N" label, keyed by N.
+    subtree_review: KeyedText<usize>,
     /// A short-lived message, when it went up and in which view: an `R` that
     /// found nothing in review, a verdict that finished the queue, a key in
     /// any view with nothing to act on. Drawn in its view's header for

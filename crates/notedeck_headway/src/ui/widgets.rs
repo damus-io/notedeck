@@ -277,6 +277,30 @@ pub(super) fn round_icon_button(
     response
 }
 
+/// A label's text, formatted from a small key and reformatted only when the
+/// key changes — the detail Sub-issues header's `"3/7"` count and `"Review
+/// N"` button. That saves the formatting, not the allocation: egui's
+/// `RichText::new` still copies the text into a `String` every frame.
+#[derive(Default)]
+pub(super) struct KeyedText<K> {
+    /// The key [`text`](Self::text) was formatted for.
+    key: Option<K>,
+    text: String,
+}
+
+impl<K: Copy + PartialEq> KeyedText<K> {
+    /// The text for `key`: `format` writes it into the cleared buffer when
+    /// `key` differs from the last call's, else the last text comes back as is.
+    pub(super) fn text(&mut self, key: K, format: impl FnOnce(&mut String, K)) -> &str {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.text.clear();
+            format(&mut self.text, key);
+        }
+        &self.text
+    }
+}
+
 /// A one-line label of small text cut in its middle to fit a width —
 /// `monad:/home/jb…/notedeck-headway` — with the full text on hover. It
 /// re-elides only when the width it's given changes, so a steady frame formats
@@ -661,6 +685,31 @@ mod tests {
     /// One unit of width per character.
     fn chars(s: &str) -> f32 {
         s.chars().count() as f32
+    }
+
+    /// A [`KeyedText`] formats on its first call and whenever the key moves,
+    /// and hands back the cached text, unformatted, while the key holds.
+    #[test]
+    fn keyed_text_reformats_only_when_the_key_changes() {
+        use std::fmt::Write;
+        let mut label = KeyedText::<(usize, usize)>::default();
+        let mut formats = 0;
+        let mut text = |label: &mut KeyedText<(usize, usize)>, key| {
+            label
+                .text(key, |s, (done, total)| {
+                    formats += 1;
+                    let _ = write!(s, "{done}/{total}");
+                })
+                .to_owned()
+        };
+
+        assert_eq!(text(&mut label, (3, 7)), "3/7");
+        assert_eq!(text(&mut label, (3, 7)), "3/7");
+        assert_eq!(text(&mut label, (3, 7)), "3/7");
+        assert_eq!(text(&mut label, (4, 7)), "4/7");
+        assert_eq!(text(&mut label, (4, 8)), "4/8");
+        assert_eq!(text(&mut label, (4, 8)), "4/8");
+        assert_eq!(formats, 3);
     }
 
     /// Text that fits comes back whole; longer text keeps as many characters
