@@ -77,6 +77,18 @@ CLI and the pane. It is blocking, so the pane runs it off the UI thread.
 with id `in-review`, else one named In Review). The card list is fixed when the
 queue opens, and the whole walk is one global-nav history entry.
 
+`R` on a card's detail opens the queue over **that card's subtree** instead:
+every sub-issue, at any depth, sitting in In Review, in the card's work-order
+(`headway::traversal::work_order`, the order `headway next` and autowork walk
+it), so an epic's queue replays its chain card by card. The Sub-issues header
+offers the same as a "Review N" button when N of them are in review. The
+queue's header names the epic (`in <word-id>`, its title on hover) beside the
+position; with nothing in review under the card it says "Nothing in review
+under this card" and opens nothing, rather than falling back to the board's
+queue. Its history entry carries the epic
+(`HeadwayRoute::ReviewQueue { epic }`), so back lands on the epic's detail and
+forward reopens the same epic's queue where it was left.
+
 The queue takes the same keys as every other view, from one table: the card
 actions (`Enter`/`o`, `e`, `s`/`S`, `r`, `a`, `D`, `X`, `n`/`p`) and a review
 pane's navigation (`j`/`k`, `Space`/`Shift-Space` and `Ctrl-f`/`Ctrl-b` a
@@ -86,7 +98,9 @@ page, `Ctrl-d`/`Ctrl-u` half a page, `gg`/`G`, `]`/`[`). See
 - `n` / `p` step through the queue's cards, stopping at the ends.
 - A verdict steps it on: `D` (Done), `X` (reason, then In Progress) and `a`
   (archive). A verdict on the last card closes the queue ("Review queue done").
-- `q` / `Esc` leave for the grid, with the cursor on the card last shown.
+- `q` / `Esc` leave for the grid, with the cursor on the card last shown; an
+  epic's queue leaves for the epic's detail. So does a verdict on its last
+  card.
 
 A review pane opened from a card's "Review diff" instead of the queue takes the
 same keys; there `n`/`p` open the neighbouring card's review in its column and

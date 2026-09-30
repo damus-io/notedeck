@@ -748,7 +748,8 @@ impl App for Headway {
     /// also seeded as the selected card underneath, so a back off the graph lands
     /// on its detail), [`Review`](HeadwayRoute::Review) ⇒ that card's review pane on
     /// the record the entry carries, [`ReviewQueue`](HeadwayRoute::ReviewQueue) ⇒
-    /// the review queue where it was left, [`Board`](HeadwayRoute::Board) or any unrecognized token (the
+    /// the review queue over the entry's scope where it was left (an epic's
+    /// with the epic selected underneath), [`Board`](HeadwayRoute::Board) or any unrecognized token (the
     /// `()` a plain app-switch entry carries) ⇒ the board grid — so the nav stack,
     /// not stale view-state, decides which screen shows. A global back/forward/jump
     /// is honored here before the board draws.
@@ -768,11 +769,14 @@ impl App for Headway {
             .set_selected(route.and_then(|r| r.selected_card()));
         self.state
             .set_graph_epic(route.and_then(|r| r.graph_epic()));
-        // The queue route names no card: while it's open the review pane shows
-        // the queue's current card, so seed that rather than closing the pane
-        // (which would read as a re-open every frame).
+        // The queue route names no card to review (an epic's names the epic,
+        // seeded as the selection above): while it's open the review pane
+        // shows the queue's current card, so seed that rather than closing the
+        // pane (which would read as a re-open every frame). The route's scope
+        // decides which queue: back/forward onto an epic's entry reopens that
+        // epic's, not the board's.
         self.state
-            .set_queue_open(route.is_some_and(HeadwayRoute::is_review_queue));
+            .set_queue_open(route.and_then(HeadwayRoute::queue_scope));
         let review = route
             .and_then(|r| r.review_target())
             .or_else(|| self.state.queue_review());
@@ -1000,11 +1004,15 @@ impl Headway {
             Some(NavReconcile::PushReview(card)) => ctx.navigator.push_active_route(
                 HeadwayRoute::review(card, self.state.review_record(), card_title(&view, card)),
             ),
-            // Opening the review queue from the grid pushes its one entry; the
-            // steps through it are view state under that entry, so a single
-            // global-back leaves the whole queue.
-            Some(NavReconcile::PushQueue) => {
-                ctx.navigator.push_active_route(HeadwayRoute::ReviewQueue)
+            // Opening the review queue — from the grid, or an epic's from its
+            // detail — pushes its one entry; the steps through it are view
+            // state under that entry, so a single global-back leaves the whole
+            // queue (for the epic's detail, when it's an epic's).
+            Some(NavReconcile::PushQueue(scope)) => {
+                let epic = scope.epic();
+                let title = epic.and_then(|e| view.card(e)).map(|c| c.title.as_str());
+                ctx.navigator
+                    .push_active_route(HeadwayRoute::review_queue(epic, title))
             }
             // Leaving a card (close, delete, or a card that vanished), closing the
             // graph or leaving the queue steps one entry back in the global history.

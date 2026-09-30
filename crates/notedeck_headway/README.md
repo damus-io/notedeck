@@ -351,8 +351,8 @@ detail or a review pane backs out to the grid.
 | `H` / `L`, `J` / `K`    | move the card across / reorder it |                       |                 |
 | `c`                     | new card                    |                             |                 |
 | `/`                     | filter                      |                             |                 |
-| `R`                     | review queue over In Review |                             |                 |
-| `q` / `Esc`             | (`Esc` clears the cursor)   | queue: leave for the grid; plain: back to the card | back to the grid |
+| `R`                     | review queue over In Review |                             | review queue over the card's In Review sub-issues, at any depth |
+| `q` / `Esc`             | (`Esc` clears the cursor)   | queue: leave for the grid (an epic's queue: for the epic's detail); plain: back to the card | back to the grid |
 
 The review queue itself is in [docs/review-queue.md](docs/review-queue.md#queue-keys).
 

@@ -11,7 +11,7 @@ use notedeck::tokens::{
 use notedeck_ui::diff::PatchScroll;
 
 use super::card_actions::detail_scroll_ui;
-use super::review::review_section_ui;
+use super::review::{QueueScope, epic_review_count, review_section_ui};
 use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
     priority_label, secondary_action_button, section_label, status_icon_ui,
@@ -157,6 +157,7 @@ pub(super) fn card_detail_pane_ui(
                 on_board: find_card(view, s.id).is_some(),
             })
             .collect(),
+        in_review_under: epic_review_count(view, card_id),
         blocked_by: card
             .blocked_by
             .iter()
@@ -244,7 +245,8 @@ pub(super) fn card_detail_pane_ui(
             }
         });
 
-    resolve_detail_outcome(state, action, view, &ctx, outcome);
+    let now = ui.ctx().input(|i| i.time);
+    resolve_detail_outcome(state, action, view, &ctx, outcome, now);
 }
 
 /// The full-pane detail top bar, a Linear-style breadcrumb: a back affordance,
@@ -330,6 +332,9 @@ struct DetailCtx<'a> {
     parent: Option<DetailParent>,
     /// The card's subissues, precomputed for the checklist rows.
     subissues: Vec<DetailSubissue>,
+    /// How many of the card's descendants, at any depth, sit in In Review:
+    /// what the Sub-issues header's "Review N" button (`R`) would queue.
+    in_review_under: usize,
     /// Cards this one is *blocked by*, precomputed for the "Blocked by" section
     /// (editable: each row unblocks, the context menu adds).
     blocked_by: Vec<DetailEdge>,
@@ -428,6 +433,9 @@ enum DetailOutcome {
     OpenCard(NoteId),
     /// Commit the "add subissue" field: create a card parented to this one.
     AddSubissue,
+    /// Open a review queue over the card's In Review descendants (the
+    /// Sub-issues header's "Review N", as `R`).
+    ReviewQueue,
     /// Reorder a subissue: place `child` in the work-order gap between two
     /// siblings (`after`/`before`, either `None` at an end). The parent is the
     /// detail card; the fractional rank is computed on resolve.
@@ -859,6 +867,18 @@ fn detail_subissues_section_ui(
                     .small()
                     .color(theme.text_muted),
             );
+        }
+        if ctx.in_review_under > 0 {
+            let text = state.subtree_review.text(ctx.in_review_under);
+            let button = egui::Button::new(egui::RichText::new(text).small().color(theme.accent))
+                .frame(false);
+            if ui
+                .add(button)
+                .on_hover_text("Walk the sub-issues in review, at any depth, in a review queue (R)")
+                .clicked()
+            {
+                *outcome = DetailOutcome::ReviewQueue;
+            }
         }
     });
     ui.add_space(SPACING_XS);
@@ -1729,6 +1749,7 @@ fn resolve_detail_outcome(
     view: &BoardView,
     ctx: &DetailCtx,
     outcome: DetailOutcome,
+    now: f64,
 ) {
     // Removing a card from the board also dismisses its (now stale) sheet.
     let mut close = || {
@@ -1803,6 +1824,9 @@ fn resolve_detail_outcome(
             // Swap the detail to the other card; the edit buffers reseed next
             // frame because `detail_for` no longer matches the selection.
             state.selected = Some(id);
+        }
+        DetailOutcome::ReviewQueue => {
+            state.open_review_queue(view, QueueScope::Epic(ctx.card_id), now)
         }
         DetailOutcome::AddSubissue => {
             let title = state.new_subissue.trim().to_string();

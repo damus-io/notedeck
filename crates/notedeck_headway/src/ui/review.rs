@@ -1,7 +1,7 @@
 //! The review pane — a card's review records and the commit diff they name,
 //! full-pane like the dependency graph — the Review section of the card detail
 //! that opens it, and the review queue that walks the pane over the board's In
-//! Review column.
+//! Review column, or over one epic's In Review descendants.
 //!
 //! The pane is "render the review for card X": which card and record are open
 //! live in [`ReviewUi`], seeded from the [`Review`](crate::HeadwayRoute::Review)
@@ -185,12 +185,124 @@ pub(crate) fn in_review_cards(view: &BoardView) -> Vec<NoteId> {
     })
 }
 
+/// The ids of `epic`'s In Review descendants, at any depth, in the epic's
+/// [`work_order`](headway::traversal::work_order): the order autowork walks
+/// them, so an epic's queue replays its chain card by card. Archived cards,
+/// and whatever hangs off them, are left out, as `work_order` leaves them out.
+/// Empty when the board has no In Review column.
+pub(crate) fn epic_review_cards(view: &BoardView, epic: NoteId) -> Vec<NoteId> {
+    let Some(col) = IN_REVIEW.index(view) else {
+        return Vec::new();
+    };
+    let in_review = &view.columns[col].cards;
+    let container = headway::event::Container::Card(*epic.bytes());
+    headway::traversal::work_order(view, &container)
+        .into_iter()
+        .filter(|c| c.id != epic && in_review.iter().any(|r| r.id == c.id))
+        .map(|c| c.id)
+        .collect()
+}
+
+/// How many of `epic`'s descendants sit in In Review: the length of
+/// [`epic_review_cards`], counted without allocating, for the detail's
+/// "Review N" button, which draws every frame. Walks up from each In Review
+/// card rather than down from the epic, through parents that are live on the
+/// board (so an archived link cuts the chain, as it does in `work_order`),
+/// giving up after [`MAX_EPIC_DEPTH`] steps so a parent cycle can't spin.
+pub(crate) fn epic_review_count(view: &BoardView, epic: NoteId) -> usize {
+    let Some(col) = IN_REVIEW.index(view) else {
+        return 0;
+    };
+    view.columns[col]
+        .cards
+        .iter()
+        .filter(|card| descends_from(view, card.parent, epic))
+        .count()
+}
+
+/// How deep [`epic_review_count`] climbs looking for the epic.
+const MAX_EPIC_DEPTH: usize = 64;
+
+/// Whether the chain of live parents starting at `parent` reaches `epic`.
+fn descends_from(view: &BoardView, mut parent: Option<NoteId>, epic: NoteId) -> bool {
+    for _ in 0..MAX_EPIC_DEPTH {
+        let Some(id) = parent else {
+            return false;
+        };
+        if id == epic {
+            return true;
+        }
+        parent = view.card(id).and_then(|c| c.parent);
+    }
+    false
+}
+
+/// The label of the detail's "Review N" button (the Sub-issues header's twin
+/// of `R`), formatted when N changes rather than every frame.
+#[derive(Default)]
+pub(crate) struct SubtreeReviewLabel {
+    /// The N [`text`](Self::text) was formatted for.
+    count: Option<usize>,
+    /// `"Review N"`.
+    text: String,
+}
+
+impl SubtreeReviewLabel {
+    /// `"Review {count}"`, reformatted only when `count` moved.
+    pub(crate) fn text(&mut self, count: usize) -> &str {
+        use std::fmt::Write;
+        if self.count != Some(count) {
+            self.count = Some(count);
+            self.text.clear();
+            let _ = write!(self.text, "Review {count}");
+        }
+        &self.text
+    }
+}
+
+/// What the review queue walks: the board's In Review column (`R` on the
+/// grid), or one epic's In Review descendants (`R` on its detail).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum QueueScope {
+    /// The whole In Review column, in column order.
+    #[default]
+    Board,
+    /// The In Review cards under this card, in its work-order.
+    Epic(NoteId),
+}
+
+impl QueueScope {
+    /// The scope a [`ReviewQueue`](crate::HeadwayRoute::ReviewQueue) route's
+    /// `epic` names.
+    pub(crate) fn of(epic: Option<NoteId>) -> Self {
+        epic.map_or(QueueScope::Board, QueueScope::Epic)
+    }
+
+    /// The epic, for an epic's queue.
+    pub(crate) fn epic(self) -> Option<NoteId> {
+        match self {
+            QueueScope::Board => None,
+            QueueScope::Epic(epic) => Some(epic),
+        }
+    }
+
+    /// The queue's snapshot for this scope, taken now.
+    pub(crate) fn snapshot(self, view: &BoardView) -> Vec<NoteId> {
+        match self {
+            QueueScope::Board => in_review_cards(view),
+            QueueScope::Epic(epic) => epic_review_cards(view, epic),
+        }
+    }
+}
+
 /// A short-lived message in the board header or the queue bar, for a key that
 /// had nothing to act on. Shown for [`NOTICE_SECS`] seconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QueueNotice {
     /// `R` found the In Review column empty.
     NothingInReview,
+    /// `R` on a card's detail found none of its descendants in review.
+    NothingInReviewUnder,
     /// A verdict on the queue's last card closed it.
     QueueDone,
     /// `e` on a card whose record has no explainer.
@@ -208,6 +320,7 @@ impl QueueNotice {
     pub(crate) fn text(self) -> &'static str {
         match self {
             QueueNotice::NothingInReview => "Nothing in review",
+            QueueNotice::NothingInReviewUnder => "Nothing in review under this card",
             QueueNotice::QueueDone => "Review queue done",
             QueueNotice::NoExplainer => "No explainer on this record",
             QueueNotice::NoDoneColumn => "No Done column on this board",
@@ -259,8 +372,8 @@ pub(crate) fn session_open(
     })
 }
 
-/// The review queue: a snapshot of the board's In Review cards, taken when `R`
-/// opens it, and which of them the review pane shows.
+/// The review queue: a snapshot of the In Review cards its [`QueueScope`]
+/// covers, taken when `R` opens it, and which of them the review pane shows.
 ///
 /// A snapshot so that a verdict moving a card out of In Review doesn't
 /// reshuffle what's left under the reviewer. It outlives the queue closing, so
@@ -268,7 +381,10 @@ pub(crate) fn session_open(
 /// the next `R` takes a fresh one.
 #[derive(Default)]
 pub(crate) struct ReviewQueue {
-    /// The In Review cards, in column order, when the queue opened.
+    /// What the snapshot covers: the board, or one epic's subtree.
+    scope: QueueScope,
+    /// The scope's In Review cards when the queue opened, in column order
+    /// (the board) or work-order (an epic).
     cards: Vec<NoteId>,
     /// The position in [`cards`](Self::cards) the pane shows.
     index: usize,
@@ -277,19 +393,52 @@ pub(crate) struct ReviewQueue {
     open: bool,
     /// `"3 / 12"`, formatted when the position changes rather than every frame.
     position: String,
+    /// For an epic's queue, `"in <word-id>"`, and the epic's title for its
+    /// hover: formatted when the queue opens.
+    scope_label: Option<ScopeLabel>,
+}
+
+/// The header's name for an epic's queue, formatted once when it opens.
+pub(crate) struct ScopeLabel {
+    /// `"in <word-id>"`.
+    pub(crate) text: String,
+    /// The epic's title, shown on hover.
+    pub(crate) title: String,
 }
 
 impl ReviewQueue {
-    /// Open the queue over `cards` at its first card. Returns `false`, leaving
-    /// the queue closed and its previous snapshot alone, when there are none.
-    pub(crate) fn start(&mut self, cards: Vec<NoteId>) -> bool {
+    /// Open the queue over `scope`'s snapshot `cards` at its first card.
+    /// Returns `false`, leaving the queue closed and its previous snapshot
+    /// alone, when there are none. The header's name for an epic's scope is
+    /// formatted here from `view`.
+    pub(crate) fn start(
+        &mut self,
+        view: &BoardView,
+        scope: QueueScope,
+        cards: Vec<NoteId>,
+    ) -> bool {
         if cards.is_empty() {
             return false;
         }
+        self.scope = scope;
+        self.scope_label = scope.epic().map(|epic| ScopeLabel {
+            text: format!("in {}", headway::wordid::encode(epic.bytes())),
+            title: find_card(view, epic).map_or_else(String::new, |(_, c)| c.title.clone()),
+        });
         self.cards = cards;
         self.open = true;
         self.go_to(0);
         true
+    }
+
+    /// What the queue walks.
+    pub(crate) fn scope(&self) -> QueueScope {
+        self.scope
+    }
+
+    /// The header's name for an epic's queue; `None` for the board's.
+    pub(crate) fn scope_label(&self) -> Option<&ScopeLabel> {
+        self.scope_label.as_ref()
     }
 
     /// Whether the queue is showing.
@@ -297,11 +446,30 @@ impl ReviewQueue {
         self.open
     }
 
-    /// Seed whether the queue shows from the nav route. There's nothing to show
-    /// without a snapshot, so a queue entry reached before any `R` (none can be,
-    /// today) draws the board.
-    pub(crate) fn set_open(&mut self, open: bool) {
-        self.open = open && !self.cards.is_empty();
+    /// Seed whether the queue shows, and over what, from the nav route. The
+    /// same scope as the snapshot reopens it where it was left. Another scope
+    /// (back/forward from an epic's queue onto the board's, or the reverse)
+    /// drops the snapshot and stays open without one, for
+    /// [`needs_snapshot`](Self::needs_snapshot) to retake it against the
+    /// board this frame.
+    pub(crate) fn set_open(&mut self, scope: Option<QueueScope>) {
+        let Some(scope) = scope else {
+            self.open = false;
+            return;
+        };
+        if scope != self.scope {
+            self.scope = scope;
+            self.scope_label = None;
+            self.cards.clear();
+            self.index = 0;
+        }
+        self.open = true;
+    }
+
+    /// Whether the queue is open without a snapshot, because
+    /// [`set_open`](Self::set_open) was handed a scope other than its own.
+    pub(crate) fn needs_snapshot(&self) -> bool {
+        self.open && self.cards.is_empty()
     }
 
     /// The card the pane shows, while the queue is open.
@@ -458,6 +626,7 @@ pub(super) fn review_pane_ui(
 ) {
     let queue = (state.queue.current() == Some(card.id)).then(|| QueueHeader {
         position: state.queue.position(),
+        scope: state.queue.scope_label(),
         next: state
             .queue
             .next_card()
@@ -573,6 +742,8 @@ const SESSION_CHIP_MAX_WIDTH: f32 = 220.0;
 struct QueueHeader<'a> {
     /// `"3 / 12"`, cached on the [`ReviewQueue`].
     position: &'a str,
+    /// An epic's queue's `"in <word-id>"`, cached on the [`ReviewQueue`].
+    scope: Option<&'a ScopeLabel>,
     /// The next card's title, if the queue has one.
     next: Option<&'a str>,
 }
@@ -580,8 +751,9 @@ struct QueueHeader<'a> {
 /// The pane's header, one row. Left: ← Back, the card ref (click copies), the
 /// title elided to one line, the record's agentium session chip capped at
 /// [`SESSION_CHIP_MAX_WIDTH`], and a "Review in session" button that does
-/// `S`. Right: in the queue, its position as a pill and the next card's title
-/// as a muted peek (at most [`PEEK_SHARE`] of the row); a key's short-lived
+/// `S`. Right: in the queue, which epic it walks (if it's an epic's), its
+/// position as a pill and the next card's title as a muted peek (at most
+/// [`PEEK_SHARE`] of the row); a key's short-lived
 /// notice; the record's explainer link at the far end. On a narrow screen the
 /// peek goes, the card ref and the button with it, and the chip shrinks to its
 /// status dot.
@@ -676,7 +848,8 @@ fn card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, card_ref: &str) {
 
 /// The queue's side of the header, laid out right to left: the next card's
 /// title as a muted peek no wider than `peek_width` (none on a narrow screen),
-/// then the position pill, then any notice.
+/// the position pill, and, in an epic's queue, which epic (`in <word-id>`,
+/// its title on hover).
 fn queue_header_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -692,6 +865,14 @@ fn queue_header_ui(
         ui.label(muted("Next:"));
     }
     text_pill(ui, theme, queue.position);
+    if let Some(scope) = queue.scope {
+        ui.label(
+            egui::RichText::new(&scope.text)
+                .small()
+                .color(theme.text_muted),
+        )
+        .on_hover_text(&scope.title);
+    }
 }
 
 /// The header's "Review in session" button (the `S` key): opens the record's
@@ -1172,6 +1353,7 @@ fn record_row_ui(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::tests::link;
     use headway::event::ColumnView;
 
     /// A column with id `id`, name `name` and one bare card per id in `cards`.
@@ -1227,11 +1409,12 @@ mod tests {
     #[test]
     fn queue_steps_within_its_snapshot() {
         let ids: Vec<NoteId> = (1..=3).map(|i| NoteId::new([i; 32])).collect();
+        let view = board(vec![]);
         let mut queue = ReviewQueue::default();
-        assert!(!queue.start(vec![]));
+        assert!(!queue.start(&view, QueueScope::Board, vec![]));
         assert!(!queue.is_open());
 
-        assert!(queue.start(ids.clone()));
+        assert!(queue.start(&view, QueueScope::Board, ids.clone()));
         assert_eq!((queue.current(), queue.position()), (Some(ids[0]), "1 / 3"));
         assert_eq!(queue.next_card(), Some(ids[1]));
         queue.step(CardStep::Prev);
@@ -1255,22 +1438,81 @@ mod tests {
         // Closing keeps the place; the route reopening it lands back there.
         assert_eq!(queue.close(), Some(ids[1]));
         assert_eq!((queue.current(), queue.target()), (None, None));
-        queue.set_open(true);
+        queue.set_open(Some(QueueScope::Board));
         assert_eq!(queue.current(), Some(ids[1]));
 
         // A failed start leaves the last snapshot alone.
         queue.close();
-        assert!(!queue.start(vec![]));
-        queue.set_open(true);
+        assert!(!queue.start(&view, QueueScope::Board, vec![]));
+        queue.set_open(Some(QueueScope::Board));
         assert_eq!(queue.current(), Some(ids[1]));
     }
 
-    /// With no snapshot, a route asking for the queue can't open it.
+    /// A route asking for the queue over a scope it holds no snapshot of
+    /// (none yet, or another scope's) opens it empty, asking for one to be
+    /// taken against the board; its own scope reopens where it was.
     #[test]
-    fn queue_route_without_a_snapshot_stays_closed() {
+    fn queue_route_of_another_scope_asks_for_a_snapshot() {
+        let epic = NoteId::new([9; 32]);
+        let ids: Vec<NoteId> = (1..=2).map(|i| NoteId::new([i; 32])).collect();
+        let view = board(vec![]);
         let mut queue = ReviewQueue::default();
-        queue.set_open(true);
+        queue.set_open(Some(QueueScope::Board));
+        assert!(queue.needs_snapshot());
+        assert_eq!(queue.current(), None);
+
+        assert!(queue.start(&view, QueueScope::Epic(epic), ids.clone()));
+        queue.step(CardStep::Next);
+        queue.close();
+        queue.set_open(Some(QueueScope::Epic(epic)));
+        assert!(!queue.needs_snapshot());
+        assert_eq!(queue.current(), Some(ids[1]));
+
+        queue.set_open(Some(QueueScope::Board));
+        assert!(queue.needs_snapshot());
+        assert_eq!(queue.scope(), QueueScope::Board);
+        assert!(queue.scope_label().is_none());
+        queue.set_open(None);
         assert!(!queue.is_open());
+    }
+
+    /// An epic's queue walks its In Review descendants at every depth, in the
+    /// epic's work-order rather than column order, and leaves out the rest:
+    /// In Review cards outside the epic, and a card under an archived link
+    /// (off the board, so `work_order` doesn't descend into it). The
+    /// allocation-free count agrees.
+    #[test]
+    fn epic_review_cards_walk_the_subtree_in_work_order() {
+        let id = |i: u8| NoteId::new([i; 32]);
+        let (epic, sub_epic, a, b, done, outside, archived, orphan) =
+            (id(1), id(2), id(3), id(4), id(5), id(6), id(7), id(8));
+        let mut view = board(vec![
+            column("todo", "Todo", &[epic, sub_epic]),
+            column("in-review", "In Review", &[outside, a, b, orphan]),
+            column("done", "Done", &[done]),
+        ]);
+        // epic ─┬─ sub_epic ─┬─ b        (in review)
+        //       │            └─ done
+        //       ├─ a                     (in review)
+        //       └─ archived ── orphan    (in review, under an archived link)
+        link(&mut view, epic, sub_epic);
+        link(&mut view, epic, a);
+        link(&mut view, sub_epic, b);
+        link(&mut view, sub_epic, done);
+        link(&mut view, epic, archived);
+        link(&mut view, archived, orphan);
+        view.columns[1].cards[3].parent = Some(archived);
+
+        assert_eq!(epic_review_cards(&view, epic), vec![b, a]);
+        assert_eq!(epic_review_count(&view, epic), 2);
+        assert_eq!(epic_review_cards(&view, sub_epic), vec![b]);
+        assert_eq!(epic_review_count(&view, sub_epic), 1);
+        assert!(epic_review_cards(&view, a).is_empty());
+        assert_eq!(epic_review_count(&view, a), 0);
+
+        let no_column = board(vec![column("todo", "Todo", &[epic, a])]);
+        assert!(epic_review_cards(&no_column, epic).is_empty());
+        assert_eq!(epic_review_count(&no_column, epic), 0);
     }
 
     /// Opening the pane, or moving it to another card, flags a re-open once;

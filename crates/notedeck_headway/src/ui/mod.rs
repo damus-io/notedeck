@@ -52,11 +52,11 @@ use graph::graph_view_ui;
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
 use review::{
-    NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, in_review_cards, review_pane_ui,
+    NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, SubtreeReviewLabel, review_pane_ui,
     review_queue_ui,
 };
 
-pub(crate) use review::{QueueNotice, SessionOpen};
+pub(crate) use review::{QueueNotice, QueueScope, SessionOpen};
 
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
@@ -202,9 +202,12 @@ pub struct BoardUiState {
     /// The card detail's Review section: its rows' elided locations and
     /// whether every record shows.
     review_section: ReviewSection,
-    /// The review queue (`R`): its snapshot of the In Review column and which
-    /// card the review pane shows. While it's open the pane shows its card.
+    /// The review queue (`R`): its snapshot of the In Review column (or an
+    /// epic's In Review descendants) and which card the review pane shows.
+    /// While it's open the pane shows its card.
     queue: ReviewQueue,
+    /// The detail Sub-issues header's "Review N" label.
+    subtree_review: SubtreeReviewLabel,
     /// A short-lived message and when (egui time) it went up: an `R` that
     /// found nothing in review, a verdict that finished the queue, a queue key
     /// with nothing to act on. Drawn in the header, or the queue's bar while
@@ -309,18 +312,20 @@ impl BoardUiState {
         NavPos::of(
             self.selected,
             self.graph_epic,
-            self.queue.is_open(),
+            self.queue.is_open().then(|| self.queue.scope()),
             self.review.card(),
         )
     }
 
-    /// Seed whether the review queue shows from the chrome global-history route
-    /// this frame renders, the queue counterpart to
-    /// [`set_graph_epic`](Self::set_graph_epic). The queue's snapshot and
-    /// position are left alone, so back/forward onto its entry reopens it where
-    /// it was left.
-    pub fn set_queue_open(&mut self, open: bool) {
-        self.queue.set_open(open);
+    /// Seed whether the review queue shows, and over what, from the chrome
+    /// global-history route this frame renders, the queue
+    /// counterpart to [`set_graph_epic`](Self::set_graph_epic). The queue's
+    /// snapshot and position are left alone when the scope is the one it was
+    /// taken for, so back/forward onto its entry reopens it where it was left;
+    /// another scope's entry retakes the snapshot (see
+    /// [`ReviewQueue::set_open`]).
+    pub(crate) fn set_queue_open(&mut self, scope: Option<QueueScope>) {
+        self.queue.set_open(scope);
     }
 
     /// The review the open queue shows (its current card, newest record), or
@@ -330,15 +335,36 @@ impl BoardUiState {
         self.queue.target()
     }
 
-    /// Open the review queue over the board's In Review column, snapshotted
-    /// now. With nothing in review the queue stays shut and the header says so
-    /// for a few seconds instead (`now` is egui time).
-    pub(crate) fn open_review_queue(&mut self, view: &BoardView, now: f64) {
-        if self.queue.start(in_review_cards(view)) {
+    /// Open the review queue over `scope` — the board's In Review column, or
+    /// an epic's In Review descendants — snapshotted now. With nothing in
+    /// review the queue stays shut and the header says so for a few seconds
+    /// instead (`now` is egui time); an epic's empty queue says so of the
+    /// epic, and doesn't fall back to the board's.
+    pub(crate) fn open_review_queue(&mut self, view: &BoardView, scope: QueueScope, now: f64) {
+        if self.queue.start(view, scope, scope.snapshot(view)) {
             self.notice = None;
             self.review.seed(self.queue.target());
-        } else {
-            self.set_notice(QueueNotice::NothingInReview, now);
+            return;
+        }
+        let notice = match scope {
+            QueueScope::Board => QueueNotice::NothingInReview,
+            QueueScope::Epic(_) => QueueNotice::NothingInReviewUnder,
+        };
+        self.set_notice(notice, now);
+    }
+
+    /// Retake the queue's snapshot when a back/forward landed on a queue entry
+    /// of another scope than the one it holds (see
+    /// [`ReviewQueue::set_open`]). With nothing left in review there the queue
+    /// closes, which the app's nav diff turns into a back off the entry.
+    /// Runs before the frame's keys.
+    pub(crate) fn refresh_queue(&mut self, view: &BoardView, now: f64) {
+        if !self.queue.needs_snapshot() {
+            return;
+        }
+        self.open_review_queue(view, self.queue.scope(), now);
+        if self.queue.needs_snapshot() {
+            self.close_queue();
         }
     }
 
@@ -348,12 +374,21 @@ impl BoardUiState {
         self.review.seed(self.queue.target());
     }
 
-    /// Leave the review queue for the board grid, with the grid's cursor on the
-    /// card the queue last showed. A notice about the queue's card (no
+    /// Leave the review queue: the board's for the grid, with the grid's
+    /// cursor on the card the queue last showed; an epic's for the epic's
+    /// detail it was opened from. A notice about the queue's card (no
     /// explainer) and an open `X` composer go with it.
     pub(crate) fn close_queue(&mut self) {
-        if let Some(card) = self.queue.close() {
-            self.set_cursor(card);
+        let card = self.queue.close();
+        match self.queue.scope() {
+            QueueScope::Board => {
+                if let Some(card) = card {
+                    self.set_cursor(card);
+                }
+            }
+            // An `r` inside the queue may have pointed the selection at the
+            // queue's card; the epic is what the queue was opened from.
+            QueueScope::Epic(epic) => self.selected = Some(epic),
         }
         self.review.close();
         self.pane_chord.clear();
@@ -549,6 +584,7 @@ pub fn board_ui(
     // verdict on the queue's last card, Enter onto the card) has the view it
     // lands on draw this same frame rather than a blank one. (The grid's run
     // as it lays out, in `board_pane_ui`.)
+    state.refresh_queue(view, ui.ctx().input(|i| i.time));
     let keyed = keys::pane_keys(ui.ctx(), view, state);
     if keyed.is_some() {
         // The next card, and an `X`'s follow-up move, want a frame.
@@ -910,6 +946,26 @@ pub(crate) fn card_title(view: &BoardView, card: NoteId) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Make `child` a subissue of `parent` on `view`, last in its work-order.
+    /// Shared with [`crate::keys`]'s and the review queue's tests.
+    pub(crate) fn link(view: &mut BoardView, parent: NoteId, child: NoteId) {
+        for card in view.columns.iter_mut().flat_map(|c| c.cards.iter_mut()) {
+            if card.id == child {
+                card.parent = Some(parent);
+            }
+            if card.id == parent {
+                card.subissues.push(headway::event::SubissueView {
+                    id: child,
+                    title: String::new(),
+                    column: None,
+                    done: false,
+                    archived: false,
+                    seq: None,
+                });
+            }
+        }
+    }
 
     /// A bare card with a zero id and the given text, for tests that only care
     /// about its searchable fields. Shared with [`crate::cursor`]'s tests.

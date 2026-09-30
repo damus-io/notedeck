@@ -2626,6 +2626,34 @@ fn snapshot_headway_review_queue() {
     harness.snapshot("headway_review_queue_key_hints");
 }
 
+/// Snapshot: an epic's review queue. Both queue cards are made subissues of
+/// the demo epic, whose detail then offers "Review 2" in its Sub-issues
+/// header; clicking it opens the queue over them, its header naming the epic
+/// (`in <word-id>`) beside the position.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_queue_epic() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    let epic = parent_under_demo_epic(&mut harness, &QUEUE_CARDS);
+    harness.get_by_label(DEMO_EPIC).simulate_click();
+    wait_for_label(&mut harness, "Review 2");
+    harness.run_steps(3);
+    harness.snapshot("headway_detail_epic_review");
+
+    harness.get_by_label("Review 2").click();
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_label(
+        &mut harness,
+        &format!("in {}", headway::wordid::encode(epic.bytes())),
+    );
+    wait_for_any_label(&mut harness, "src/queue.rs");
+    wait_for_label(&mut harness, "local checkout");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_queue_epic");
+}
+
 /// Snapshot: a plain review pane (opened from a card's "Review diff") with `?`
 /// pinning its key strip: the queue's strip, bar `q` going back to the card.
 #[test]
@@ -3458,6 +3486,146 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
     wait_for_label(&mut harness, "2 / 2");
     wait_for_label(&mut harness, CARDS[1]);
     assert_eq!(stack.len(), 2, "reopening the queue pushes nothing");
+}
+
+/// The demo board's epic: "Sync cards across relays" and "Scaffold the
+/// Headway app crate" are its subissues.
+const DEMO_EPIC: &str = "Define nostr event model for boards";
+
+/// Make each of the demo cards titled `children` a subissue of [`DEMO_EPIC`].
+/// Returns the epic's id. The relations fold in asynchronously; wait on
+/// something they show (the detail's "Review N").
+fn parent_under_demo_epic(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    children: &[&str],
+) -> NoteId {
+    let epic = harness_card_id(harness, DEMO_EPIC);
+    for child in children {
+        let card = harness_card_id(harness, child);
+        apply_demo_action(
+            harness,
+            store::BoardAction::SetParent {
+                card,
+                parent: Some(epic),
+            },
+        );
+    }
+    epic
+}
+
+/// Full chrome round-trip for an epic's review queue (behavioural, no
+/// lavapipe): `R` on the epic's detail pushes one queue entry that seeds the
+/// epic underneath and walks only its In Review descendants ("Inline card
+/// creation", also In Review, is outside it, so the queue is `1 / 2`, not
+/// `1 / 3`), naming the epic in its header. A chrome back lands on the epic's
+/// detail, a forward reopens the same epic's queue where it was left, and `q`
+/// leaves it for the epic's detail as one back.
+#[test]
+fn chrome_nav_loop_epic_review_queue() {
+    use notedeck::{AppId, ChromeNavEntry, NavStack};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    const CARDS: [&str; 3] = [
+        "Inline card creation",
+        "Sync cards across relays",
+        "Column reordering",
+    ];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_in_review(
+        &mut harness,
+        repo.path(),
+        &CARDS,
+        &["src/one.rs", "src/two.rs", "src/three.rs"],
+    );
+    let epic = parent_under_demo_epic(&mut harness, &[CARDS[2]]);
+    let scope_label = format!("in {}", headway::wordid::encode(epic.bytes()));
+
+    let mut stack: NavStack<ChromeNavEntry> =
+        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    chrome_frame(&mut harness, &mut stack);
+    harness.get_by_label(DEMO_EPIC).simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "Review 2");
+    assert_eq!(stack.len(), 2);
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 3, "opening the epic's queue pushes one entry");
+    let route = stack.top().token.downcast_ref::<HeadwayRoute>();
+    assert!(route.is_some_and(HeadwayRoute::is_review_queue));
+    assert_eq!(route.and_then(|r| r.selected_card()), Some(epic));
+    assert_eq!(
+        route.and_then(|r| r.title()),
+        Some(format!("Review queue: {DEMO_EPIC}").as_str())
+    );
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_label(&mut harness, &scope_label);
+
+    harness.press_key(egui::Key::N);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "2 / 2");
+    harness.press_key(egui::Key::N);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "2 / 2");
+    assert!(
+        harness.query_by_label(CARDS[0]).is_none(),
+        "the In Review card outside the epic isn't in its queue"
+    );
+    assert_eq!(stack.len(), 3, "stepping the queue pushes nothing");
+
+    // Back lands on the epic's detail, not the grid.
+    stack.go_to_route(1);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "Review 2");
+    wait_for_absent(&mut harness, "2 / 2");
+    assert!(harness.query_by_label("7 cards · 5 columns").is_none());
+
+    // Forward reopens the epic's queue where it was left.
+    assert!(stack.go_forward());
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "2 / 2");
+    wait_for_label(&mut harness, &scope_label);
+    assert_eq!(stack.len(), 3, "reopening the queue pushes nothing");
+
+    // `q` leaves it for the epic's detail, as one back. (The chrome's back
+    // animates, so the stack's top only changes once it lands; drive the
+    // frame by hand and read the request instead.)
+    harness.press_key(egui::Key::Q);
+    harness.run_ok();
+    assert_eq!(
+        queue_pushes_and_last_back(&mut harness),
+        (0, true),
+        "q is one back, no new entry"
+    );
+    stack.go_to_route(1);
+    chrome_frame(&mut harness, &mut stack);
+    let route = stack.top().token.downcast_ref::<HeadwayRoute>();
+    assert_eq!(route.and_then(|r| r.selected_card()), Some(epic));
+    wait_for_label(&mut harness, "Review 2");
+}
+
+/// Behavioural (no lavapipe): `R` on a card's detail with nothing in review
+/// under it says so and opens nothing, even with In Review cards elsewhere.
+#[test]
+fn epic_review_queue_with_nothing_under_the_card_does_not_open() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_in_review(
+        &mut harness,
+        repo.path(),
+        &["Inline card creation"],
+        &["src/one.rs"],
+    );
+    harness.get_by_label(DEMO_EPIC).simulate_click();
+    wait_for_label(&mut harness, "← Back");
+    assert!(harness.query_by_label("Review 1").is_none());
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(&mut harness, "Nothing in review under this card");
+    assert_eq!(queue_pushes_and_last_back(&mut harness).0, 0);
 }
 
 /// `S` in the review queue leaves for the record's agentium session: the app

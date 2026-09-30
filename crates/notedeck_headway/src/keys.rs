@@ -17,7 +17,9 @@
 //!   scrolls), `gg`/`G` first/last, `Ctrl-d`/`Ctrl-u` half a page, `]`/`[` the
 //!   next/previous file of a diff, `q`/`Esc` back out, `?` the which-key strip.
 //!   The grid adds `h`/`l` across columns, `H`/`L`/`J`/`K` to move the cursor
-//!   card, `c` to create a card, `/` to filter and `R` for the review queue.
+//!   card, `c` to create a card, `/` to filter and `R` for the review queue
+//!   over In Review; the detail's `R` opens the queue over the card's own In
+//!   Review descendants.
 //!
 //! The chord mechanics (reading the press, timing out a pending `g`, swallowing
 //! handled keys) are [`notedeck_ui::chord`]'s; the grid math is
@@ -39,7 +41,8 @@ use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
-    BoardUiState, CardStep, SessionOpen, ViewFilter, filter_field_id, find_card, reason_field_id,
+    BoardUiState, CardStep, QueueScope, SessionOpen, ViewFilter, filter_field_id, find_card,
+    reason_field_id,
 };
 
 /// Chord steps the board grid can be waiting on.
@@ -317,7 +320,8 @@ pub(crate) const PANE_EXIT_HINTS: &[KeyHint] = &[KeyHint {
     label: "back to card",
 }];
 
-/// Scrolling the card detail, and leaving it for the grid.
+/// Scrolling the card detail, reviewing what's under it, and leaving it for
+/// the grid.
 pub(crate) const DETAIL_NAV_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["j", "k"],
@@ -334,6 +338,10 @@ pub(crate) const DETAIL_NAV_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["gg", "G"],
         label: "top/bottom",
+    },
+    KeyHint {
+        keys: &["R"],
+        label: "review queue here",
     },
     KeyHint {
         keys: &["q", "esc"],
@@ -547,7 +555,9 @@ pub(crate) fn board_keys(
             (Key::K, true) => {
                 action = move_card(view, filter, state, CardMove::Within(Vertical::Up))
             }
-            (Key::R, true) => state.open_review_queue(view, ctx.input(|i| i.time)),
+            (Key::R, true) => {
+                state.open_review_queue(view, QueueScope::Board, ctx.input(|i| i.time))
+            }
             _ => return None,
         }
     }
@@ -682,10 +692,11 @@ pub(crate) fn review_pane_keys(
 
 /// The card detail's keys: the card actions, then scrolling it by a line
 /// (`j`/`k`), a page (`Space`/`Shift-Space`, `Ctrl-f`/`Ctrl-b`), half a page
-/// (`Ctrl-d`/`Ctrl-u`) or to its ends (`gg`/`G`), `?`
-/// and `q` back to the grid (the detail's `Esc` is its own). Left alone while
-/// a widget has the keyboard — the comment composer, the title, description
-/// and label editors — or a popup, menu or drag does.
+/// (`Ctrl-d`/`Ctrl-u`) or to its ends (`gg`/`G`), `R` for a review queue over
+/// the card's In Review descendants, `?` and `q` back to the grid (the
+/// detail's `Esc` is its own). Left alone while a widget has the keyboard —
+/// the comment composer, the title, description and label editors — or a
+/// popup, menu or drag does.
 pub(crate) fn detail_keys(
     ctx: &egui::Context,
     view: &BoardView,
@@ -730,6 +741,9 @@ pub(crate) fn detail_keys(
                 .begin(PanePending::G, ctx.input(|i| i.time)),
             (Key::G, true) => state.scroll_detail(PatchScroll::Bottom),
             (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
+            (Key::R, true) => {
+                state.open_review_queue(view, QueueScope::Epic(card), ctx.input(|i| i.time))
+            }
             (Key::Q, false) => state.leave_card(),
             _ => return None,
         }
@@ -1416,6 +1430,78 @@ mod tests {
         assert!(!harness.state().esc_left, "Esc consumed");
     }
 
+    /// [`review_board`] with card 1 an epic over 6 then 2, and 2 a sub-epic
+    /// over 4: its In Review descendants are 6 and 4, in that work-order,
+    /// while 5 is In Review outside it.
+    fn epic_board() -> BoardView {
+        use crate::ui::tests::link;
+        let mut view = review_board();
+        link(&mut view, id(1), id(6));
+        link(&mut view, id(1), id(2));
+        link(&mut view, id(2), id(4));
+        view
+    }
+
+    /// `R` on an epic's detail walks only its In Review descendants, at any
+    /// depth, in its work-order (not column order); `n`/`p` stay inside
+    /// that set; `q` lands back on the epic's detail, not the grid.
+    #[test]
+    fn shift_r_on_an_epic_walks_its_in_review_subtree() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = epic_board();
+        harness.state_mut().state.set_selected(Some(id(1)));
+        harness.run();
+
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        let reviewing = |h: &Harness<'static, KeysHarness>| h.state().state.review_card();
+        assert!(harness.state().state.queue_open());
+        assert_eq!(reviewing(&harness), Some(id(6)));
+        press(&mut harness, Key::N);
+        assert_eq!(reviewing(&harness), Some(id(4)));
+        press(&mut harness, Key::N);
+        assert_eq!(reviewing(&harness), Some(id(4)), "5 is outside the epic");
+        press(&mut harness, Key::P);
+        assert_eq!(reviewing(&harness), Some(id(6)));
+
+        press(&mut harness, Key::Q);
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(reviewing(&harness), None);
+        assert_eq!(harness.state().state.selected(), Some(id(1)));
+    }
+
+    /// An epic queue's `D` on its last card closes it back onto the epic's
+    /// detail with the done notice, as the board's queue closes onto the grid.
+    #[test]
+    fn an_epic_queue_drains_back_to_the_epic() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = epic_board();
+        harness.state_mut().state.set_selected(Some(id(1)));
+        harness.run();
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        press(&mut harness, Key::N);
+
+        press_with(&mut harness, Modifiers::SHIFT, Key::D);
+        assert_eq!(harness.state().moved.map(|m| m.0), Some(id(4)));
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.selected(), Some(id(1)));
+        assert_eq!(harness.state().state.notice(), Some(QueueNotice::QueueDone));
+    }
+
+    /// `R` on a card with nothing in review under it opens nothing, says so
+    /// of the card, and doesn't fall back to the board's queue (card 5 is
+    /// itself In Review, and 4 and 6 beside it).
+    #[test]
+    fn shift_r_on_a_card_with_nothing_under_it_says_so() {
+        let mut harness = detail_harness(None);
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.selected(), Some(id(5)));
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NothingInReviewUnder)
+        );
+    }
+
     /// A 3×3 board shaped for the review queue: `In Progress` holds 1–3,
     /// `In Review` 4–6 and `Done` 7–9. Card 5 carries a review record with an
     /// explainer, a commit and the agentium session [`SESSION`] that made it.
@@ -1821,7 +1907,10 @@ mod tests {
 
             // Back onto the queue's entry reopens it on the same card.
             harness.state_mut().state.set_selected(None);
-            harness.state_mut().state.set_queue_open(true);
+            harness
+                .state_mut()
+                .state
+                .set_queue_open(Some(QueueScope::Board));
             assert_eq!(
                 harness.state().state.queue_review().map(|t| t.card),
                 Some(id(5))
