@@ -225,7 +225,8 @@ pub struct BoardUiState {
     /// `card_actions_mean_the_same_in_every_view` test compares across views.
     #[cfg(test)]
     pub(crate) last_card_action: Option<(keys::CardAction, NoteId)>,
-    /// An agentium session a card key (`s`/`S`) asked to open this frame.
+    /// An agentium session a card key (`s`/`S`), or the review header's
+    /// "Review in session" button, asked to open this frame.
     /// The keys run without an [`AppContext`](notedeck::AppContext), so
     /// [`board_ui`] takes it ([`take_open`](Self::take_open)) and raises it as
     /// an [`AppAction::Open`](notedeck::AppAction::Open).
@@ -592,7 +593,7 @@ pub fn board_ui(
         ui.ctx().request_repaint();
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
-    // `s`/`S` leave for the card's session.
+    // `s`/`S`, and the review header's button, leave for the card's session.
     if let Some(open) = state.take_open() {
         app_ctx.app_actions.push(notedeck::AppAction::Open(open));
     }

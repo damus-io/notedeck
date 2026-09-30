@@ -55,7 +55,8 @@ pub(crate) struct ReviewUi {
     /// its trailer search is re-run (see [`ReviewLoader::expire`]).
     reopened: bool,
     /// How wide the header's "Review in session" button drew last frame,
-    /// reserved beside the session chip so the title elides short of it.
+    /// reserved beside the session chip so the title elides short of it. Zero
+    /// until it first draws, when [`SESSION_BUTTON_WIDTH_GUESS`] stands in.
     session_button_width: f32,
     /// A scroll the queue's keys asked of the open diff, handed to its
     /// [`GitPatchState`](notedeck_ui::diff::GitPatchState) on the pane's next
@@ -650,6 +651,7 @@ pub(super) fn review_pane_ui(
             .map(|(_, c)| c.title.as_str()),
     });
     let notice = &mut state.notice;
+    let open = &mut state.open;
     let review = &mut state.review;
     if review.ref_for != Some(card.id) {
         review.ref_for = Some(card.id);
@@ -700,7 +702,14 @@ pub(super) fn review_pane_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            review_topbar_ui(ui, theme, app_ctx, card, record, review, queue, notice);
+            let header = ReviewHeader {
+                card,
+                record,
+                queue,
+            };
+            if let Some(asked) = review_topbar_ui(ui, theme, app_ctx, header, review, notice) {
+                *open = Some(asked);
+            }
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_SM);
@@ -753,6 +762,25 @@ const PEEK_SHARE: f32 = 0.4;
 /// Widest the header's session chip draws; a longer session title ellipsizes.
 const SESSION_CHIP_MAX_WIDTH: f32 = 220.0;
 
+/// Room the header keeps for its "Review in session" button before the button
+/// has drawn once and measured itself (see [`ReviewUi::session_button_width`]),
+/// so the title doesn't run under it on the pane's first frame. About the
+/// label's width at the default body size.
+const SESSION_BUTTON_WIDTH_GUESS: f32 = 120.0;
+
+/// What the review header draws: the card, the shown record, and the queue's
+/// part while the pane is the queue's. All borrowed, so the header formats
+/// nothing.
+struct ReviewHeader<'a> {
+    /// The card under review.
+    card: &'a CardView,
+    /// The record the pane shows, if the card has any.
+    record: Option<&'a ReviewView>,
+    /// The queue's position and next card, while the pane shows the queue's
+    /// current card.
+    queue: Option<QueueHeader<'a>>,
+}
+
 /// The queue's part of the review header, while the pane shows the queue's
 /// current card. Everything is borrowed, so the header formats nothing.
 struct QueueHeader<'a> {
@@ -776,19 +804,26 @@ struct QueueHeader<'a> {
 ///
 /// The right side lays out first, right to left, so the title knows how much
 /// room is left to elide into.
-#[allow(clippy::too_many_arguments)]
+///
+/// Returns the session open the button asked for. The pane leaves it in
+/// [`BoardUiState::open`] for [`super::board_ui`] to raise, the one way out
+/// an `S` takes too.
 fn review_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
-    card: &CardView,
-    record: Option<&ReviewView>,
+    header: ReviewHeader<'_>,
     review: &mut ReviewUi,
-    queue: Option<QueueHeader<'_>>,
     notice: &mut Option<Notice>,
-) {
+) -> Option<notedeck::OpenUri> {
+    let ReviewHeader {
+        card,
+        record,
+        queue,
+    } = header;
     let fields = record.map(|r| &r.fields);
     let narrow = notedeck::ui::is_narrow(ui.ctx());
+    let mut open = None;
     ui.horizontal(|ui| {
         let peek_width = ui.available_width() * PEEK_SHARE;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -821,8 +856,10 @@ fn review_topbar_ui(
                 let gap = ui.spacing().item_spacing.x;
                 let button = if narrow {
                     0.0
-                } else {
+                } else if review.session_button_width > 0.0 {
                     review.session_button_width + gap
+                } else {
+                    SESSION_BUTTON_WIDTH_GUESS + gap
                 };
                 let reserve = session.map_or(0.0, |_| chip_width + gap + button);
                 ui.scope(|ui| {
@@ -836,15 +873,14 @@ fn review_topbar_ui(
                 if narrow {
                     return;
                 }
-                if review_in_session_button(ui, theme, &mut review.session_button_width)
-                    && let Some(open) = fields
-                        .and_then(|f| session_open(f, &review.card_ref, SessionOpen::CodeReview))
-                {
-                    app_ctx.app_actions.push(notedeck::AppAction::Open(open));
+                if review_in_session_button(ui, theme, &mut review.session_button_width) {
+                    open = fields
+                        .and_then(|f| session_open(f, &review.card_ref, SessionOpen::CodeReview));
                 }
             });
         });
     });
+    open
 }
 
 /// The card's `headway:<board>/<word-id>`, small and muted; a click copies it.
