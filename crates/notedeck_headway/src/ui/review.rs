@@ -19,8 +19,8 @@ use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::widgets::{
-    MiddleElided, count_badge, detail_heading, ink_pill, secondary_action_button, section_label,
-    text_pill, tinted_pill,
+    ControlSize, MiddleElided, count_badge, detail_heading, secondary_action_button, section_label,
+    text_pill, tinted_control, tinted_pill,
 };
 use super::{BoardEffect, BoardUiState, find_card, pane_hints_ui};
 use crate::keys::CardAction;
@@ -1056,15 +1056,14 @@ fn elided_location_ui(
 /// A commit's short sha as an accent monospace pill, for the caller to give a
 /// hover text and a click: the pane copies the sha, the detail's Review
 /// section opens the pane on the record.
-///
-/// The pill wears its own text's hue, a soft accent tint, rather than a
-/// neutral grey fill, which muddied the purple sha; and it's an [`ink_pill`],
-/// so the monospace sha sits in its middle instead of riding high.
 fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response {
-    let text = egui::RichText::new(short_sha(sha))
-        .monospace()
-        .color(theme.accent);
-    ink_pill(ui, text, theme.accent.gamma_multiply(0.22))
+    tinted_control(
+        ui,
+        egui::RichText::new(short_sha(sha)).monospace(),
+        theme.accent,
+        ControlSize::Pill,
+        egui::Sense::click(),
+    )
 }
 
 /// The load's status and, once it's in, the diff: a spinner while the worker
@@ -1128,7 +1127,7 @@ fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, sou
                     );
                 }
                 if loaded.commit.truncated {
-                    tinted_pill(ui, theme, "patch truncated", theme.warning);
+                    tinted_pill(ui, "patch truncated", theme.warning);
                 }
             });
             ui.add_space(SPACING_MD);

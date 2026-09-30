@@ -85,65 +85,97 @@ pub(super) fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
 
 /// A small rounded pill of muted text, e.g. the review queue's `3 / 12`.
 pub(super) fn text_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> egui::Response {
-    tinted_pill(ui, theme, text, theme.text_muted)
+    tinted_pill(ui, text, theme.text_muted)
 }
 
 /// A small rounded pill of `color` text, e.g. the review pane's warning-coloured
-/// `patch truncated`.
-pub(super) fn tinted_pill(
-    ui: &mut egui::Ui,
-    theme: &ColorTheme,
-    text: &str,
-    color: egui::Color32,
-) -> egui::Response {
-    egui::Frame::new()
-        .fill(theme.surface_elevated)
-        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
-        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).small().color(color));
-        })
-        .response
+/// `patch truncated`: a [`tinted_control`] that only senses hover.
+pub(super) fn tinted_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+    tinted_control(
+        ui,
+        egui::RichText::new(text).small(),
+        color,
+        ControlSize::Pill,
+        egui::Sense::hover(),
+    )
 }
 
-/// A clickable pill of one line of `text`, filled with `fill` (stronger while
-/// hovered), whose box is centred on the text's *ink* rather than its row.
+/// How big a [`tinted_control`] draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ControlSize {
+    /// Inline with text: [`PILL_PAD_Y`] above and below the text row,
+    /// [`SPACING_SM`] either side, fully rounded.
+    Pill,
+    /// A pane's action: [`BUTTON_SM`] tall, [`SPACING_MD`] either side,
+    /// [`RADIUS_MD`] corners.
+    Button,
+}
+
+/// Fill strength of a [`tinted_control`], as a fraction of its text colour.
+const TINT_IDLE: f32 = 0.18;
+/// ...while the pointer is over a clickable one.
+const TINT_HOVERED: f32 = 0.28;
+/// ...while it's held down.
+const TINT_PRESSED: f32 = 0.36;
+
+/// Room above and below the text row in a [`ControlSize::Pill`]. The row
+/// already carries the font's own ascent and descent, so a little is enough.
+const PILL_PAD_Y: f32 = 3.0;
+
+/// The one way headway draws a filled chip or button around a line of text —
+/// the sha pill, the queue's `1 / 2`, count badges, "patch truncated", "±
+/// Review diff". Two rules make them read as one family:
 ///
-/// egui sizes a font's rows for the tallest face in its fallback stack, and
-/// notedeck's monospace family falls back to DejaVu, Noto Emoji and Noto CJK,
-/// so Inconsolata's glyphs ride in the top of a row much taller than they are.
-/// A [`egui::Button`] centres that row, which leaves a mono label sitting high
-/// in its pill. Centring on [`egui::Galley::mesh_bounds`] (the glyphs' own
-/// box) puts equal room above and below what the eye actually sees.
-pub(super) fn ink_pill(
+/// - **The fill is a tint of the text's own `color`**, never a neutral grey
+///   under coloured text (which muddied it), so a control is one hue; a
+///   clickable one deepens the tint on hover and press.
+/// - **One geometry**: a pill or a button size, the text's row centred in it
+///   and its advance (not its ink) setting the width, so two shas of the same
+///   length make the same width of pill and the text after them lines up.
+pub(super) fn tinted_control(
     ui: &mut egui::Ui,
     text: egui::RichText,
-    fill: egui::Color32,
+    color: egui::Color32,
+    size: ControlSize,
+    sense: egui::Sense,
 ) -> egui::Response {
-    let galley = egui::WidgetText::from(text).into_galley(
+    let galley = egui::WidgetText::from(text.color(color)).into_galley(
         ui,
         Some(egui::TextWrapMode::Extend),
         f32::INFINITY,
         egui::TextStyle::Button,
     );
-    let ink = galley.mesh_bounds;
-    let pad = egui::vec2(SPACING_SM, SPACING_XS);
-    let (rect, response) = ui.allocate_exact_size(ink.size() + 2.0 * pad, egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), galley.text())
-    });
-    if ui.is_rect_visible(rect) {
-        let fill = if response.hovered() {
-            fill.gamma_multiply(1.6)
-        } else {
-            fill
-        };
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(RADIUS_PILL as u8), fill);
-        let origin = rect.center() - ink.center().to_vec2();
-        ui.painter()
-            .galley(origin, galley, ui.visuals().text_color());
+    let (pad_x, height, radius) = match size {
+        ControlSize::Pill => (SPACING_SM, galley.size().y + 2.0 * PILL_PAD_Y, RADIUS_PILL),
+        ControlSize::Button => (SPACING_MD, BUTTON_SM.max(galley.size().y), RADIUS_MD),
+    };
+    let desired = egui::vec2(galley.size().x + 2.0 * pad_x, height);
+    let (rect, response) = ui.allocate_exact_size(desired, sense);
+    let kind = if sense.senses_click() {
+        egui::WidgetType::Button
+    } else {
+        egui::WidgetType::Label
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(kind, ui.is_enabled(), galley.text()));
+    if !ui.is_rect_visible(rect) {
+        return response;
     }
+    let tint = if !sense.senses_click() {
+        TINT_IDLE
+    } else if response.is_pointer_button_down_on() {
+        TINT_PRESSED
+    } else if response.hovered() {
+        TINT_HOVERED
+    } else {
+        TINT_IDLE
+    };
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(radius as u8),
+        color.gamma_multiply(tint),
+    );
+    let origin = egui::pos2(rect.min.x + pad_x, rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(origin, galley, color);
     response
 }
 
@@ -249,9 +281,8 @@ pub(super) fn detail_heading(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) 
 
 /// A secondary button for a pane's action — "± Review diff" in the detail's
 /// Review section, "☍ View dependency graph" under an epic's sub-issues — so
-/// both read as the same kind of button: accent text (one leading glyph, one
-/// space, the label) on the elevated surface, with a thin border, a
-/// [`BUTTON_SM`] height and the card corner radius.
+/// both read as the same kind of button: an accent [`tinted_control`] (one
+/// leading glyph, one space, the label), [`BUTTON_SM`] tall.
 ///
 /// The leading glyph must be one the loaded fonts carry (`tests/glyphs.rs`
 /// checks every non-ASCII character in headway's string literals); "⧉", the
@@ -261,16 +292,13 @@ pub(super) fn secondary_action_button(
     theme: &ColorTheme,
     text: &str,
 ) -> egui::Response {
-    let button = egui::Button::new(egui::RichText::new(text).color(theme.accent))
-        .fill(theme.surface_elevated)
-        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
-        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
-        .min_size(egui::vec2(0.0, BUTTON_SM));
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(SPACING_MD, SPACING_XS);
-        ui.add(button)
-    })
-    .inner
+    tinted_control(
+        ui,
+        egui::RichText::new(text),
+        theme.accent,
+        ControlSize::Button,
+        egui::Sense::click(),
+    )
 }
 
 /// Which Linear-style status circle to paint for a column or subissue.
