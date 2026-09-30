@@ -3,7 +3,7 @@ use super::block_nav::BlockNav;
 use super::chord_hints;
 use super::diff;
 use super::git_status_ui;
-use super::keybindings::ChordView;
+use super::keybindings::NormalView;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::run_ui;
@@ -104,8 +104,8 @@ pub struct DaveUi<'a> {
     running_config_ids: Option<&'a std::collections::HashSet<String>>,
     /// Pending image attachments staged for the next send
     pending_images: Option<&'a mut Vec<ImageAttachment>>,
-    /// How far into a normal-mode chord the keyboard is, for the which-key strip.
-    chord: Option<ChordView>,
+    /// Normal mode and how far into a chord it is, for the which-key strip.
+    normal_mode: Option<NormalView>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -265,13 +265,13 @@ impl<'a> DaveUi<'a> {
             run_configs: &[],
             running_config_ids: None,
             pending_images: None,
-            chord: None,
+            normal_mode: None,
         }
     }
 
     /// Show the which-key strip while normal mode is on.
-    pub fn chord(mut self, chord: Option<ChordView>) -> Self {
-        self.chord = chord;
+    pub fn normal_mode(mut self, normal_mode: Option<NormalView>) -> Self {
+        self.normal_mode = normal_mode;
         self
     }
 
@@ -485,11 +485,11 @@ impl<'a> DaveUi<'a> {
                         .show(ui, |ui| self.inputbox(app_ctx, ui))
                         .inner;
 
-                    // Which-key strip: what the pending chord accepts next,
-                    // just above the input the chord took focus from.
-                    if let Some(chord) = self.chord {
+                    // Which-key strip: what normal mode accepts next, just
+                    // above the input it took focus from.
+                    if let Some(normal_mode) = self.normal_mode {
                         let w = ui.available_width();
-                        let h = chord_hints::strip_height(ui, chord);
+                        let h = chord_hints::strip_height(ui, normal_mode);
                         ui.allocate_ui(egui::vec2(w, h), |ui| {
                             egui::Frame::new()
                                 .outer_margin(egui::Margin {
@@ -499,7 +499,7 @@ impl<'a> DaveUi<'a> {
                                     bottom: 0,
                                 })
                                 .show(ui, |ui| {
-                                    chord_hints::chord_hints_ui(ui, app_ctx.i18n, chord)
+                                    chord_hints::chord_hints_ui(ui, app_ctx.i18n, normal_mode)
                                 });
                         });
                     }
@@ -1674,7 +1674,7 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        // Remote sessions can be interrupted too: the Stop button / chord `s`
+        // Remote sessions can be interrupted too: the Stop button / normal `s`
         // publishes an interrupt command the host applies to its backend.
         let show_stop = self.flags.contains(DaveUiFlags::IsWorking);
 
@@ -2131,7 +2131,7 @@ struct Disclosure {
 /// colour at full strength swallows these rows — their text is deliberately
 /// drawn at 40-60% alpha — so it goes on as a tint: unmistakable as the cursor,
 /// still readable as a row. The session list washes its row the same way while
-/// a chord walks it.
+/// normal mode walks it.
 pub(crate) fn block_cursor_fill(ui: &egui::Ui) -> egui::Color32 {
     ui.visuals().selection.bg_fill.gamma_multiply(0.35)
 }

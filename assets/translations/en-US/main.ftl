@@ -106,8 +106,8 @@ Ask_b7f4 = Ask
 # Placeholder text for Dave AI input field
 Ask_dave_anything_33d1 = Ask dave anything...
 
-# Dave which-key tooltip: point the chord's motions back at the chat
-Back_to_the_chat_ea20 = Back to the chat
+# Dave which-key tooltip: point normal mode's motions back at the chat
+Back_to_the_chat_5877 = Back to the chat
 
 # Profile banner URL field label
 Banner_52ef = Banner
@@ -472,8 +472,8 @@ Login_now___let_s_do_this_5630 = Login now — let's do this!
 # Label for max hashtags per note, others settings section
 Max_hashtags_per_note_90e5 = Max hashtags per note:
 
-# Dave which-key tooltip: drop the block cursor and end the chord
-Leave_block_navigation_9a63 = Leave block navigation
+# Dave which-key tooltip: drop the block cursor and leave normal mode
+Leave_block_navigation_4bcb = Leave block navigation
 
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = Max websocket connections:
@@ -826,8 +826,8 @@ Send_1ea4 = Send
 # Settings section for environment variables exported into agent sessions
 Session_environment_0dda = Session environment
 
-# Dave which-key tooltip: point the chord's motions at the session list
-Session_list_32f0 = Session list
+# Dave which-key tooltip: point normal mode's motions at the session list
+Session_list_d548 = Session list
 
 # Button to go to the settings view
 Settings_4d83 = Settings

@@ -3,7 +3,7 @@
 //! second row at its root.
 
 use super::keybind_hint::KeybindHint;
-use super::keybindings::{ChordHint, ChordView, KeyAction};
+use super::keybindings::{ChordHint, KeyAction, NormalView};
 use egui::{Align, Layout};
 use notedeck::{tr, Localization};
 
@@ -15,8 +15,8 @@ const KEYCAP_PER_CHAR: f32 = 8.0;
 
 /// Height the strip reserves in the bottom-up input stack: a row of keycaps,
 /// plus a second for the session keys while normal mode's root offers them.
-pub fn strip_height(ui: &egui::Ui, chord: ChordView) -> f32 {
-    let rows = if chord.session_keys().is_empty() {
+pub fn strip_height(ui: &egui::Ui, view: NormalView) -> f32 {
+    let rows = if view.session_keys().is_empty() {
         1.0
     } else {
         2.0
@@ -24,18 +24,18 @@ pub fn strip_height(ui: &egui::Ui, chord: ChordView) -> f32 {
     rows * KEYCAP + (rows - 1.0) * ui.spacing().item_spacing.y + notedeck::tokens::SPACING_XS
 }
 
-/// Draw the keycaps `chord` accepts, grouped and left-aligned: the pane's own
+/// Draw the keycaps `view` accepts, grouped and left-aligned: the pane's own
 /// keys, then the session keys on a row beneath them. Keys that do nothing
 /// this frame (`h` with no session list) are left out.
 ///
 /// Runs every frame normal mode is on, so it only walks the static hint
 /// tables; the one allocation, a keycap's tooltip, happens on hover.
-pub fn chord_hints_ui(ui: &mut egui::Ui, i18n: &mut Localization, chord: ChordView) {
+pub fn chord_hints_ui(ui: &mut egui::Ui, i18n: &mut Localization, view: NormalView) {
     ui.vertical(|ui| {
-        hint_row_ui(ui, i18n, chord, chord.hints());
-        let session_keys = chord.session_keys();
+        hint_row_ui(ui, i18n, view, view.hints());
+        let session_keys = view.session_keys();
         if !session_keys.is_empty() {
-            hint_row_ui(ui, i18n, chord, session_keys);
+            hint_row_ui(ui, i18n, view, session_keys);
         }
     });
 }
@@ -44,20 +44,20 @@ pub fn chord_hints_ui(ui: &mut egui::Ui, i18n: &mut Localization, chord: ChordVi
 fn hint_row_ui(
     ui: &mut egui::Ui,
     i18n: &mut Localization,
-    chord: ChordView,
+    view: NormalView,
     groups: &'static [&'static [ChordHint]],
 ) {
     let size = egui::vec2(ui.available_width(), KEYCAP);
     ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
         let mut first_group = true;
         for group in groups {
-            if !group.iter().any(|hint| chord.offers(&hint.action)) {
+            if !group.iter().any(|hint| view.offers(&hint.action)) {
                 continue;
             }
             if !std::mem::take(&mut first_group) {
                 ui.add_space(notedeck::tokens::SPACING_MD);
             }
-            for hint in group.iter().filter(|hint| chord.offers(&hint.action)) {
+            for hint in group.iter().filter(|hint| view.offers(&hint.action)) {
                 let extra_chars = hint.keys.chars().count().saturating_sub(1) as f32;
                 KeybindHint::new(hint.keys)
                     .size(KEYCAP)
@@ -73,7 +73,7 @@ fn hint_row_ui(
     });
 }
 
-/// What a chord command does, for its keycap's tooltip.
+/// What a normal-mode command does, for its keycap's tooltip.
 fn describe(i18n: &mut Localization, action: &KeyAction) -> Option<String> {
     Some(match action {
         KeyAction::BlockCursorDown => tr!(
@@ -124,7 +124,7 @@ fn describe(i18n: &mut Localization, action: &KeyAction) -> Option<String> {
         KeyAction::BlockCursorClear => tr!(
             i18n,
             "Leave block navigation",
-            "Dave which-key tooltip: drop the block cursor and end the chord"
+            "Dave which-key tooltip: drop the block cursor and leave normal mode"
         ),
         KeyAction::InsertMode => tr!(
             i18n,
@@ -134,12 +134,12 @@ fn describe(i18n: &mut Localization, action: &KeyAction) -> Option<String> {
         KeyAction::FocusSessionsPane => tr!(
             i18n,
             "Session list",
-            "Dave which-key tooltip: point the chord's motions at the session list"
+            "Dave which-key tooltip: point normal mode's motions at the session list"
         ),
         KeyAction::FocusChatPane => tr!(
             i18n,
             "Back to the chat",
-            "Dave which-key tooltip: point the chord's motions back at the chat"
+            "Dave which-key tooltip: point normal mode's motions back at the chat"
         ),
         KeyAction::SessionPaneNext => tr!(
             i18n,
@@ -217,13 +217,13 @@ mod tests {
     use egui::Vec2;
     use egui_kittest::Harness;
 
-    /// The chord states' strips, one per row: the root, `z`, `g` and `d` in
+    /// Normal mode's strips, one per state and row: the root, `z`, `g` and `d` in
     /// the chat, then the root and `g` in the session list, then the root in a
     /// narrow chat session (no `h`, no agentic keys).
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_chord_hint_strips() {
-        let view = |pane, pending| ChordView {
+        let view = |pane, pending| NormalView {
             pending,
             pane,
             sessions_shown: true,
@@ -237,7 +237,7 @@ mod tests {
             view(Pane::Chat, Pending::D),
             view(Pane::Sessions, Pending::Root),
             view(Pane::Sessions, Pending::G),
-            ChordView {
+            NormalView {
                 sessions_shown: false,
                 agentic: false,
                 ..view(Pane::Chat, Pending::Root)
@@ -248,10 +248,10 @@ mod tests {
             .renderer(notedeck::software_renderer())
             .build_ui_state(
                 |ui, i18n: &mut Localization| {
-                    for chord in strips {
-                        let height = strip_height(ui, chord);
+                    for view in strips {
+                        let height = strip_height(ui, view);
                         ui.allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
-                            chord_hints_ui(ui, i18n, chord);
+                            chord_hints_ui(ui, i18n, view);
                         });
                         ui.add_space(notedeck::tokens::SPACING_SM);
                     }

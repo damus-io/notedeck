@@ -501,12 +501,12 @@ impl Dave {
             .get_active()
             .map(|s| s.ai_mode)
             .unwrap_or(self.ai_mode);
-        // The chord's `h` needs the session list on screen: the desktop layout,
+        // Normal mode's `h` needs the session list on screen: the desktop layout,
         // with no overlay covering it.
         let sessions_shown = !is_narrow(egui_ctx)
             && !self.show_scene
             && matches!(self.active_overlay, DaveOverlay::None);
-        // The chord's `s` needs a running turn to stop.
+        // Normal mode's `s` needs a running turn to stop.
         let interruptible = self
             .session_manager
             .get_active()
@@ -527,7 +527,7 @@ impl Dave {
         if let Some(key_action) = check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
             self.handle_key_action(key_action, egui_ctx);
         }
-        ui::settle_chord_focus(&mut self.normal_mode, &mut self.session_manager);
+        ui::settle_normal_mode_focus(&mut self.normal_mode, &mut self.session_manager);
     }
 
     /// Handle a keybinding action

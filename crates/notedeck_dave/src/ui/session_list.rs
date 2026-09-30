@@ -718,7 +718,7 @@ pub(crate) fn truncate_host_and_path(
 }
 
 /// Fill a session row's background: the active row, a hovered row, and on top
-/// of the active row the chord cursor's wash while a chord walks the list.
+/// of the active row the chord cursor's wash while normal mode walks the list.
 fn paint_row_background(
     ui: &mut egui::Ui,
     rect: egui::Rect,

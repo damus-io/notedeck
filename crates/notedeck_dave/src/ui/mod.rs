@@ -50,7 +50,7 @@ use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
 use crate::session::{ChatSession, PermissionMessageState, SessionId, SessionManager};
-use crate::ui::keybindings::{ChordView, KeyAction, NormalMode, Pane};
+use crate::ui::keybindings::{KeyAction, NormalMode, NormalView, Pane};
 use crate::update;
 use crate::update::InputFocus;
 use crate::DaveOverlay;
@@ -73,7 +73,7 @@ fn build_dave_ui<'a>(
     session: &'a mut ChatSession,
     model_config: &ModelConfig,
     auto_steal_focus: bool,
-    chord: Option<ChordView>,
+    normal_mode: Option<NormalView>,
     run_configs: &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
 ) -> DaveUi<'a> {
@@ -108,7 +108,7 @@ fn build_dave_ui<'a>(
     .has_pending_permission(has_pending_permission)
     .permission_mode(permission_mode)
     .auto_steal_focus(auto_steal_focus)
-    .chord(chord)
+    .normal_mode(normal_mode)
     .is_remote(is_remote)
     .dispatch_state(session.dispatch_state)
     .turn_has_content(turn_has_content)
@@ -499,7 +499,7 @@ pub fn scene_ui(
     focus_queue: &mut FocusQueue,
     model_config: &ModelConfig,
     auto_steal_focus: bool,
-    chord: Option<ChordView>,
+    normal_mode: Option<NormalView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     app_ctx: &mut notedeck::AppContext,
@@ -560,7 +560,7 @@ pub fn scene_ui(
                                     session,
                                     model_config,
                                     auto_steal_focus,
-                                    chord,
+                                    normal_mode,
                                     run_configs,
                                     running_sessions,
                                 )
@@ -618,7 +618,7 @@ pub fn desktop_ui(
     collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
     auto_steal_focus: bool,
-    chord: Option<ChordView>,
+    normal_mode: Option<NormalView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     app_ctx: &mut notedeck::AppContext,
@@ -687,7 +687,7 @@ pub fn desktop_ui(
                         ui.separator();
                     }
                     SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held)
-                        .chord_cursor(chord.is_some_and(|chord| chord.pane == Pane::Sessions))
+                        .chord_cursor(normal_mode.is_some_and(|view| view.pane == Pane::Sessions))
                         .ui(ui)
                 })
                 .inner
@@ -716,7 +716,7 @@ pub fn desktop_ui(
                     session,
                     model_config,
                     auto_steal_focus,
-                    chord,
+                    normal_mode,
                     run_configs,
                     running_sessions,
                 )
@@ -738,7 +738,7 @@ pub fn narrow_ui(
     collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
     auto_steal_focus: bool,
-    chord: Option<ChordView>,
+    normal_mode: Option<NormalView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     show_session_list: bool,
@@ -762,7 +762,7 @@ pub fn narrow_ui(
             session,
             model_config,
             auto_steal_focus,
-            chord,
+            normal_mode,
             run_configs,
             running_sessions,
         )
@@ -925,9 +925,9 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         // The session-list motions of normal mode: the same moves as
-        // Ctrl+J / Ctrl+K, minus the focus grab, since the chord still holds
+        // Ctrl+J / Ctrl+K, minus the focus grab, since normal mode still holds
         // the keyboard. It hands focus to the new session's input when it ends
-        // (`settle_chord_focus`).
+        // (`settle_normal_mode_focus`).
         KeyAction::SessionPaneNext => {
             update::cycle_next_agent(
                 session_manager,
@@ -1072,15 +1072,18 @@ pub fn handle_key_action(
 /// focus-queue jump, cycling the permission mode) is dropped: focusing the
 /// input mid-mode would put it back under the bare keys, and the input is
 /// focused anyway when normal mode ends — whichever session is active then.
-pub fn settle_chord_focus(chord: &mut NormalMode, session_manager: &mut SessionManager) {
-    if chord.view().is_some() {
+pub fn settle_normal_mode_focus(
+    normal_mode: &mut NormalMode,
+    session_manager: &mut SessionManager,
+) {
+    if normal_mode.view().is_some() {
         if let Some(session) = session_manager.get_active_mut() {
             session.focus_requested = false;
         }
         return;
     }
 
-    if !chord.take_input_focus() {
+    if !normal_mode.take_input_focus() {
         return;
     }
     if let Some(id) = session_manager.active_id() {
@@ -1344,7 +1347,7 @@ pub fn handle_ui_action(
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch_open_terminal, handle_key_action, settle_chord_focus};
+    use super::{dispatch_open_terminal, handle_key_action, settle_normal_mode_focus};
     use crate::backend::RemoteOnlyBackend;
     use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
@@ -1365,7 +1368,7 @@ mod tests {
         scene: AgentScene,
         focus_queue: FocusQueue,
         collapse_state: CollapseState,
-        chord: NormalMode,
+        normal_mode: NormalMode,
         sessions: [SessionId; 2],
     }
 
@@ -1389,7 +1392,7 @@ mod tests {
                 scene: AgentScene::new(),
                 focus_queue: FocusQueue::new(),
                 collapse_state: CollapseState::new(),
-                chord: NormalMode::default(),
+                normal_mode: NormalMode::default(),
                 sessions,
             }
         }
@@ -1424,10 +1427,10 @@ mod tests {
         assert!(!d.focus_requested(first));
         assert!(
             !d.focus_requested(second),
-            "the chord still holds the keyboard"
+            "normal mode still holds the keyboard"
         );
 
-        // Ctrl+J, the same move outside a chord, does take focus.
+        // Ctrl+J, the same move outside normal mode, does take focus.
         d.dispatch(KeyAction::NextAgent, &egui::Context::default());
         assert_eq!(d.session_manager.active_id(), Some(first));
         assert!(d.focus_requested(first));
@@ -1436,7 +1439,7 @@ mod tests {
     /// Dave's frame, cut down: the keybindings and their dispatch, then a
     /// stand-in for the active session's chat input that takes focus when
     /// asked, as `DaveUi::inputbox` does.
-    fn chord_frame(ui: &mut egui::Ui, d: &mut Dispatch) {
+    fn normal_mode_frame(ui: &mut egui::Ui, d: &mut Dispatch) {
         let keys = KeyContext {
             ai_mode: AiMode::Agentic,
             sessions_shown: true,
@@ -1447,10 +1450,10 @@ mod tests {
             overlay_open: false,
             renaming: false,
         };
-        if let Some(action) = check_keybindings(ui.ctx(), &mut d.chord, keys) {
+        if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
             d.dispatch(action, ui.ctx());
         }
-        settle_chord_focus(&mut d.chord, &mut d.session_manager);
+        settle_normal_mode_focus(&mut d.normal_mode, &mut d.session_manager);
 
         let Some(session) = d.session_manager.get_active_mut() else {
             return;
@@ -1467,8 +1470,8 @@ mod tests {
     }
 
     #[test]
-    fn a_chord_that_switched_sessions_hands_focus_to_the_new_input() {
-        let mut harness = Harness::new_ui_state(chord_frame, Dispatch::new());
+    fn leaving_normal_mode_after_a_session_switch_focuses_the_new_input() {
+        let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
         let [first, second] = harness.state().sessions;
         let input = |id: SessionId| egui::Id::unique(("dave_input", id));
         harness.ctx.memory_mut(|m| m.request_focus(input(first)));
@@ -1481,7 +1484,7 @@ mod tests {
         assert_eq!(
             harness.ctx.memory(|m| m.focused()),
             None,
-            "mid-chord, the new session's input stays unfocused"
+            "in normal mode, the new session's input stays unfocused"
         );
 
         harness.press_key_modifiers(Modifiers::NONE, Key::I);
@@ -1493,7 +1496,7 @@ mod tests {
     /// normal mode has nothing to hand back: `i` focuses the active input.
     #[test]
     fn escape_then_i_puts_focus_back_on_the_input() {
-        let mut harness = Harness::new_ui_state(chord_frame, Dispatch::new());
+        let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
         let [first, _] = harness.state().sessions;
         let input = egui::Id::unique(("dave_input", first));
         harness.ctx.memory_mut(|m| m.request_focus(input));
@@ -1508,8 +1511,8 @@ mod tests {
     }
 
     #[test]
-    fn a_focus_request_mid_chord_waits_for_the_chord_to_end() {
-        let mut harness = Harness::new_ui_state(chord_frame, Dispatch::new());
+    fn a_focus_request_in_normal_mode_waits_for_it_to_end() {
+        let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
         let [first, second] = harness.state().sessions;
         harness.run();
 
