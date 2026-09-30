@@ -58,6 +58,15 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy
 
+  patch-check:
+    name: Check [patch.crates-io] is applied
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fail on unused patches and a non-fork android winit
+        run: ./scripts/check-patches
+
   android:
     name: Check (android)
     runs-on: ubuntu-22.04

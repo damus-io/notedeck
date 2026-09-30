@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Fail if a [patch.crates-io] entry in Cargo.toml is silently not applied.
+#
+# Cargo only applies a patch whose version satisfies what the dependents
+# require. Otherwise it prints `warning: patch `<crate>` was not used in the
+# crate graph`, records it under [[patch.unused]] in Cargo.lock and resolves
+# crates.io instead. Nothing fails: the build just loses the fork. For winit
+# that silently drops the Android IME and inset patches, so the android build
+# keeps compiling without them. Cargo has no flag to deny this warning, so we
+# look for it ourselves.
+#
+# Resolution covers every target at once, so one `cargo metadata` sees the
+# android-only part of the graph too.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+fail=0
+
+# `cargo metadata` prints the warning while resolving. --locked keeps CI from
+# rewriting Cargo.lock; a stale lock fails here too, which is also worth a stop.
+if ! out=$(cargo metadata --format-version 1 --locked 2>&1 >/dev/null); then
+    echo "$out"
+    echo "FAIL: cargo metadata --locked failed"
+    exit 1
+fi
+if grep -iE 'patch `[^`]+` was not used' <<<"$out"; then
+    fail=1
+fi
+
+# The same fact as it lands in the lockfile, in case the warning's wording
+# changes in a future cargo.
+if grep -A3 -F '[[patch.unused]]' Cargo.lock; then
+    fail=1
+fi
+
+# The patch that matters most can also disappear by being deleted, which no
+# warning catches. Android must build against the damus-io winit fork.
+# Read stdout only: cargo's stderr (the unused-patch warning, lock waits)
+# can itself mention the fork's URL.
+if ! winit=$(cargo tree --quiet --locked -i winit --target aarch64-linux-android \
+        -e normal --depth 0 2>/dev/null); then
+    echo "FAIL: cargo tree -i winit --target aarch64-linux-android failed"
+    exit 1
+fi
+if ! grep -qF 'github.com/damus-io/winit' <<<"$winit"; then
+    echo "$winit"
+    echo "FAIL: android resolves winit from '$winit', not the damus-io/winit fork"
+    fail=1
+fi
+
+if [ "$fail" -eq 1 ]; then
+    echo ""
+    echo "A [patch.crates-io] entry in Cargo.toml is not being applied. Point it at"
+    echo "a rev whose version satisfies what its dependents require, then run"
+    echo "\`cargo update -p <crate>\` so Cargo.lock drops [[patch.unused]]."
+    exit 1
+fi
+echo "ok: every [patch.crates-io] entry is used, android winit is the damus-io fork"

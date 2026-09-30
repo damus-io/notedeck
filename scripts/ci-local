@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the standard local CI checks: changelog, lint, test, android
+# Run the standard local CI checks: changelog, lint, patch-check, test, android
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -17,7 +17,7 @@ if [[ -z "${CARGO_BUILD_JOBS:-}" ]]; then
     export RUST_TEST_THREADS="$jobs_limit"
 fi
 
-jobs="changelog-check lint linux-test android"
+jobs="changelog-check lint patch-check linux-test android"
 # snapshot tests require lavapipe (software Vulkan), Linux only
 if [ "$(uname -s)" = "Linux" ]; then
     jobs="$jobs snapshot-test"
