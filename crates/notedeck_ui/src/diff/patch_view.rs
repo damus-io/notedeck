@@ -99,6 +99,11 @@ pub struct GitPatchState {
     /// Scroll offset and view height from the last pass.
     offset: f32,
     viewport_height: f32,
+    /// Whether `offset` and `viewport_height` come from a pass yet. A new
+    /// state reads 0 for both while egui may hold another offset for its
+    /// salt (a reloaded diff reopens where it was left), so a request made
+    /// before the first pass waits for it rather than being measured from 0.
+    synced: bool,
     /// The file whose row is at the top of the view, if any.
     current_file: Option<usize>,
     /// The diff lines in view, laid out.
@@ -488,8 +493,13 @@ impl GitPatchState {
     }
 
     /// Turn the pending request into a target offset. Runs after
-    /// [`Self::layout`], against this pass's rows.
+    /// [`Self::layout`], against this pass's rows. Before the first pass the
+    /// request is kept: every request is measured from the view (its offset,
+    /// its height, the file at its top), which isn't known yet.
     fn take_target(&mut self, content_rows: usize, rows: RowMetrics) -> Option<f32> {
+        if !self.synced {
+            return None;
+        }
         let row_step = rows.step;
         let total_rows = content_rows + self.padding_rows(row_step);
         let request = self.pending.take()?;
@@ -600,6 +610,9 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
         *state = GitPatchState {
             id_salt: state.id_salt,
             pending: state.pending,
+            offset: state.offset,
+            viewport_height: state.viewport_height,
+            synced: state.synced,
             ..GitPatchState::new(patch, &mut Localization::default())
         };
     }
@@ -660,6 +673,7 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
     state.galleys.end_pass();
     state.offset = out.state.offset.y;
     state.viewport_height = out.inner_rect.height();
+    state.synced = true;
     let top_row = row_at(state.offset, row_step);
     state.current_file = state.file_at(top_row);
     if state.pending.is_some() {
@@ -1379,17 +1393,12 @@ mod tests {
 
     /// A patch swapped in where another was scrolled opens at the top when
     /// each has its own salt, and swapping the first back returns to where it
-    /// was left. With the shared default salt the new patch inherits the old
-    /// one's offset from egui's memory: the review queue's "next card opens
-    /// halfway down its diff".
+    /// was left, not to where the second was scrolled. With one shared salt
+    /// the new patch would inherit the old one's offset from egui's memory:
+    /// the review queue's "next card opens halfway down its diff".
     #[test]
     fn a_salted_patch_keeps_its_own_scroll() {
-        let salted = |salt: &str| {
-            let patch = tall_patch(600);
-            let state = GitPatchState::new(&patch, &mut Localization::default()).with_id_salt(salt);
-            (patch, state)
-        };
-        let (patch, state) = salted("first");
+        let (patch, state) = salted_tall_patch("first");
         let mut harness = Harness::builder()
             .with_size(egui::vec2(800.0, 400.0))
             .build_ui_state(
@@ -1402,32 +1411,62 @@ mod tests {
         let scrolled = harness.state().1.offset;
         assert!(scrolled > 0.0, "the first patch scrolled");
 
-        let first = std::mem::replace(harness.state_mut(), salted("second"));
+        let first = std::mem::replace(harness.state_mut(), salted_tall_patch("second"));
         harness.run();
         assert_eq!(
             harness.state().1.offset,
             0.0,
             "a new patch opens at the top"
         );
+        harness.state_mut().1.scroll(PatchScroll::Pages(1.0));
+        harness.run();
+        let second = harness.state().1.offset;
+        assert!(
+            second > 0.0 && second != scrolled,
+            "the second scrolled elsewhere"
+        );
 
         *harness.state_mut() = first;
         harness.run();
         assert_eq!(harness.state().1.offset, scrolled, "back where it was left");
+    }
 
-        // The default salt is shared, so an unsalted patch in the same place
-        // picks up whatever offset the last unsalted one left.
-        let unsalted = || {
-            let patch = tall_patch(600);
-            let state = GitPatchState::new(&patch, &mut Localization::default());
-            (patch, state)
-        };
-        *harness.state_mut() = unsalted();
+    /// A state rebuilt for a patch egui already scrolled (a reloaded diff
+    /// under the same salt) measures a request made before its first pass
+    /// from where the view really is, not from its own zeroed offset.
+    #[test]
+    fn a_rebuilt_state_scrolls_from_the_real_offset() {
+        let (patch, state) = salted_tall_patch("reloaded");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 400.0))
+            .build_ui_state(
+                |ui, (patch, state): &mut (GitPatch, GitPatchState)| git_patch_ui(patch, state, ui),
+                (patch, state),
+            );
         harness.run();
+        harness.state_mut().1.scroll(PatchScroll::Rows(1));
+        harness.run();
+        let step = harness.state().1.offset;
         harness.state_mut().1.scroll(PatchScroll::Pages(2.0));
         harness.run();
-        *harness.state_mut() = unsalted();
+        let scrolled = harness.state().1.offset;
+        assert!(scrolled > 3.0 * step, "paged well past three rows");
+
+        *harness.state_mut() = salted_tall_patch("reloaded");
+        harness.state_mut().1.scroll(PatchScroll::Rows(3));
         harness.run();
-        assert_eq!(harness.state().1.offset, scrolled, "the shared salt leaks");
+        assert_eq!(
+            harness.state().1.offset,
+            scrolled + 3.0 * step,
+            "three rows on from where the view was"
+        );
+    }
+
+    /// A 600-line patch and a fresh state for it, salted with `salt`.
+    fn salted_tall_patch(salt: &str) -> (GitPatch, GitPatchState) {
+        let patch = tall_patch(600);
+        let state = GitPatchState::new(&patch, &mut Localization::default()).with_id_salt(salt);
+        (patch, state)
     }
 
     /// In the widget, pages move by whole rows: a page down lands on a row

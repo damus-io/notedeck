@@ -376,10 +376,12 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
 /// UI thread, so the byline's relative date reads the thread's frozen clock
 /// in tests.
 ///
-/// The diff's scroll is salted with `source`: the pane draws every card's
-/// diff at the same place, so with one shared salt the next card in the queue
-/// would open at the last one's offset. Per source, a new card opens at the
-/// top and stepping back to one returns to where it was left.
+/// The diff's scroll is salted with `source` and the commit's sha: the pane
+/// draws every card's diff at the same place, so with one shared salt the next
+/// card in the queue would open at the last one's offset. Per diff, a new card
+/// opens at the top and stepping back to one returns to where it was left. The
+/// sha is in the salt because a trailer search can land on a different commit
+/// under the same source (a rebase, then a re-open), and that is a new diff.
 fn loaded(fetched: Fetched, source: ReviewSource, i18n: &mut Localization) -> LoadedReview {
     let Fetched {
         resolved,
@@ -391,7 +393,7 @@ fn loaded(fetched: Fetched, source: ReviewSource, i18n: &mut Localization) -> Lo
         source_hover: resolved.to_string(),
         by_trailer: resolved.how == Found::ByTrailer,
         byline: Byline::of(&commit),
-        patch_state: GitPatchState::new(&patch, i18n).with_id_salt(source),
+        patch_state: GitPatchState::new(&patch, i18n).with_id_salt((source, &commit.sha)),
         commit,
         patch,
     }
