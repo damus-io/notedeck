@@ -372,8 +372,9 @@ pub(crate) struct Notice {
     /// The view it went up in.
     pub(crate) pos: NavPos,
     /// The last egui pass that drew its view, or `None` until the first
-    /// [`retire_stale_notice`](BoardUiState::retire_stale_notice) after it
-    /// went up, which counts the pass it went up in.
+    /// [`retire_stale_notice`](BoardUiState::retire_stale_notice) or
+    /// [`notice_ui`](super::notice_ui) after it went up, which counts the
+    /// pass it went up in.
     pub(crate) seen: Option<u64>,
 }
 

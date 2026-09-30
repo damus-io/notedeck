@@ -377,7 +377,9 @@ impl BoardUiState {
     /// says why. The notice goes up after the close, so it belongs to the view
     /// the back lands on rather than the entry it leaves (which
     /// [`retire_stale_notice`](Self::retire_stale_notice) would take it down
-    /// with). Runs before the frame's keys.
+    /// with), and it's worded for that view: an epic that has left the board
+    /// lands its queue on the grid, where "Nothing in review under this card"
+    /// would be about a card that isn't there. Runs before the frame's keys.
     pub(crate) fn refresh_queue(&mut self, view: &BoardView, now: f64) {
         if !self.queue.needs_snapshot() {
             return;
@@ -386,8 +388,8 @@ impl BoardUiState {
         if self.snapshot_queue(view, scope) {
             return;
         }
-        self.close_queue(view);
-        self.set_notice(scope.empty_notice(), now);
+        let landed = self.close_queue(view);
+        self.set_notice(landed.empty_notice(), now);
     }
 
     /// Step the review queue one card `step`'s way, pointing the pane at it.
@@ -407,13 +409,19 @@ impl BoardUiState {
     /// [`archived`](Self::archived) marks the epic gone there, so that entry
     /// backs on to the grid rather than holding the selection as a card not
     /// folded in yet.
-    pub(crate) fn close_queue(&mut self, view: &BoardView) {
+    ///
+    /// Returns the scope of the view it lands on: the epic's, or the board's
+    /// for the board's queue and for an epic's whose epic has gone.
+    pub(crate) fn close_queue(&mut self, view: &BoardView) -> QueueScope {
         let card = self.queue.close();
         let epic = self.queue.scope().epic();
-        match epic.filter(|&epic| find_card(view, epic).is_some()) {
+        let landed = match epic.filter(|&epic| find_card(view, epic).is_some()) {
             // The epic is what the queue was opened from, and stays selected
             // underneath it.
-            Some(epic) => self.selected = Some(epic),
+            Some(epic) => {
+                self.selected = Some(epic);
+                QueueScope::Epic(epic)
+            }
             // The board's queue, or an epic's whose epic has gone.
             None => {
                 if let Some(gone) = epic {
@@ -423,12 +431,14 @@ impl BoardUiState {
                 if let Some(card) = card {
                     self.set_cursor(card);
                 }
+                QueueScope::Board
             }
-        }
+        };
         self.review.close();
         self.pane_chord.clear();
         self.reason = None;
         self.notice = None;
+        landed
     }
 
     /// Whether the review queue is showing.
@@ -957,24 +967,27 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
 /// when it's about `here`, the view drawing. Another view leaves it alone: a
 /// nav slide draws two views in one pass, and the notice belongs to one of
 /// them. Schedules the frame that takes it down.
+///
+/// Drawing it counts its pass as one its view was seen in
+/// ([`BoardUiState::retire_stale_notice`]). The retire's own look runs before
+/// the pane, which can still leave the view it saw: a gone epic's queue
+/// closes onto the grid, but the back lands on the epic's detail entry first,
+/// and only the pane drops that selection. The grid is the notice's view, and
+/// without this that pass wouldn't count, so the next would take it down.
 fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>, here: NavPos) {
-    let Some(Notice {
-        what: shown,
-        at,
-        pos,
-        ..
-    }) = *notice
-    else {
+    let Some(up) = notice else {
         return;
     };
-    if pos != here {
+    if up.pos != here {
         return;
     }
-    let left = NOTICE_SECS - (ui.input(|i| i.time) - at);
+    let left = NOTICE_SECS - (ui.input(|i| i.time) - up.at);
     if left <= 0.0 {
         *notice = None;
         return;
     }
+    up.seen = Some(ui.ctx().cumulative_pass_nr());
+    let shown = up.what;
     ui.add_space(SPACING_SM);
     ui.label(egui::RichText::new(shown.text()).color(theme.warning));
     ui.ctx()

@@ -747,7 +747,9 @@ pub(crate) fn review_pane_keys(
             (Key::OpenBracket, false) => state.scroll_review(PatchScroll::PrevFile),
             (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
             (Key::Q, false) | (Key::Escape, _) => match (mode, card) {
-                (PaneMode::Queue, _) => state.close_queue(view),
+                (PaneMode::Queue, _) => {
+                    state.close_queue(view);
+                }
                 (PaneMode::Plain, Some(card)) => state.back_to_detail(card),
                 (PaneMode::Plain, None) => {}
             },
@@ -1658,6 +1660,29 @@ mod tests {
         state.set_queue_open(Some(QueueScope::Board));
         harness.run();
         assert!(!harness.state().state.queue_open());
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NothingInReview)
+        );
+    }
+
+    /// As [`a_queue_route_of_another_scope_retakes_the_snapshot`], for an
+    /// epic's queue entry whose epic has left the board: it closes onto the
+    /// grid, and says so in the grid's words, not of a card that isn't there.
+    #[test]
+    fn a_gone_epics_empty_queue_says_so_in_the_grids_words() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = epic_board();
+        let view = &mut harness.state_mut().view;
+        view.columns[0].cards.retain(|c| c.id != id(1));
+        view.columns[1].cards.clear();
+
+        let state = &mut harness.state_mut().state;
+        state.set_selected(Some(id(1)));
+        state.set_queue_open(Some(QueueScope::Epic(id(1))));
+        harness.run();
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.selected(), None);
         assert_eq!(
             harness.state().state.notice(),
             Some(QueueNotice::NothingInReview)

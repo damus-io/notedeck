@@ -4410,6 +4410,68 @@ fn a_finished_epic_queue_says_so_after_the_back_slide() {
     );
 }
 
+/// As [`a_finished_epic_queue_says_so_after_the_back_slide`], with the epic
+/// archived while its queue is open: `D` on the last card closes the queue
+/// onto the grid, by way of the epic's detail entry the back lands on first,
+/// and the grid still says the queue is done once it settles. Before, that
+/// entry's pass drew the grid only after the pass had been checked for the
+/// notice's view (the gone epic's selection drops as the pane draws), so the
+/// next pass took the notice down.
+#[test]
+fn a_gone_epics_finished_queue_says_so_on_the_grid() {
+    const SUBISSUE: &str = "Sync cards across relays";
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = slide_harness();
+    seed_in_review(&mut harness, repo.path(), &[SUBISSUE], &["src/sync.rs"]);
+    let epic = harness_card_id(&mut harness, DEMO_EPIC);
+
+    harness.get_by_label(DEMO_EPIC).simulate_click();
+    settle_slides(&mut harness, 2);
+    wait_for_label(&mut harness, "← Back");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    settle_slides(&mut harness, 3);
+    wait_for_label(&mut harness, "1 / 1");
+
+    archive_demo_cards(&mut harness, &[epic]);
+    wait_until_off_the_board(&mut harness, epic);
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
+    settle_slides(&mut harness, 1);
+    wait_for_label(&mut harness, "6 cards · 5 columns");
+    assert!(
+        harness.query_by_label("Review queue done").is_some(),
+        "the grid says the queue is done"
+    );
+}
+
+/// Pump frames until `card` has folded off the demo board's columns, or
+/// panic after a deadline: for a change no view on screen shows.
+fn wait_until_off_the_board(harness: &mut Harness<'static, HeadwayTestState>, card: NoteId) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+            .expect("folded")
+            .finalize();
+        let view =
+            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+        if !view
+            .columns
+            .iter()
+            .flat_map(|c| &c.cards)
+            .any(|c| c.id == card)
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{card:?} never left the board");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// Behavioural (no lavapipe), under the chrome's slides: a notice is about
 /// the view it went up in. `s` on a sessionless record in a plain review pane
 /// says so there, and it's gone from the detail Esc backs out to, and from the

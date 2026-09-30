@@ -90,7 +90,9 @@ impl BoardUiState {
     /// lands on, and for the length of that back the outgoing queue entry is
     /// the top, drawing too. So the notice goes only once a whole pass has
     /// gone by without its view, and meanwhile it draws only in its own
-    /// ([`super::notice_ui`]).
+    /// ([`super::notice_ui`]). A pass is counted here when the view is the
+    /// notice's before the pane draws, and by `notice_ui` when it draws the
+    /// notice, which catches a pane that leaves its view as it draws.
     pub(crate) fn retire_stale_notice(&mut self, pass: u64) {
         let here = self.nav_pos();
         let Some(notice) = &mut self.notice else {
