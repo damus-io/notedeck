@@ -24,10 +24,12 @@
 //! The chord mechanics (reading the press, timing out a pending `g`, swallowing
 //! handled keys) are [`notedeck_ui::chord`]'s; the grid math is
 //! [`crate::cursor`]'s. This module is only the mapping between them, plus the
-//! which-key strips ([`key_hints_ui`]) that document it. The keymaps run once
-//! per frame from [`crate::ui::board_ui`], before anything lays out, so they
-//! allocate nothing of their own (bar what a key sends: the comment and
-//! session message an `X` posts, a session open).
+//! which-key strips ([`key_hints_ui`]) that document it. Each view's keys
+//! have one owner, which runs once per frame before any of that view's
+//! widgets lay out: [`pane_keys`], from [`crate::ui::board_ui`], for whatever
+//! shows over the grid, and [`board_keys`], from the grid's own pane as it
+//! starts. They allocate nothing of their own (bar what a key sends: the
+//! comment and session message an `X` posts, a session open).
 
 use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
@@ -41,8 +43,8 @@ use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
-    BoardUiState, CardStep, QueueNotice, QueueScope, SessionOpen, ViewFilter, filter_field_id,
-    find_card, reason_field_id,
+    BoardUiState, CardStep, DetailScroll, QueueNotice, QueueScope, SessionOpen, ViewFilter,
+    filter_field_id, find_card, reason_field_id,
 };
 
 /// Chord steps the board grid can be waiting on.
@@ -65,7 +67,8 @@ pub(crate) enum PanePending {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CardAction {
     /// `Enter`/`o`: open the card's detail. The detail itself has nothing to
-    /// open; a plain review pane backs out to it.
+    /// open, so its strip leaves the key out ([`DETAIL_ACTION_HINTS`]); a
+    /// plain review pane backs out to it.
     Open,
     /// `e`: open the explainer of the card's record. `None` (the key) is the
     /// record a review pane shows, else the newest; a click on one record's
@@ -343,8 +346,18 @@ pub(crate) const PANE_EXIT_HINTS: &[KeyHint] = &[KeyHint {
     label: "back to card",
 }];
 
+/// The card actions the detail offers: all of [`CARD_ACTION_HINTS`] bar the
+/// first, `open`, which it has nothing for (the card is open). The key still
+/// maps to [`CardAction::Open`] there, so a card action means the same in
+/// every view; the strip just doesn't advertise a no-op.
+pub(crate) const DETAIL_ACTION_HINTS: &[KeyHint] = match CARD_ACTION_HINTS.split_first() {
+    Some((_open, rest)) => rest,
+    None => &[],
+};
+
 /// Scrolling the card detail, reviewing what's under it, and leaving it for
-/// the grid.
+/// the grid. Every key here, and in [`DETAIL_ACTION_HINTS`], is replayed
+/// through [`detail_keys`] by the `every_detail_hint_does_what_it_says` test.
 pub(crate) const DETAIL_NAV_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["j", "k"],
@@ -392,7 +405,7 @@ pub(crate) const PANE_STRIP: HintStrip = &[
 ];
 
 /// The card detail's strip.
-pub(crate) const DETAIL_STRIP: HintStrip = &[CARD_ACTION_HINTS, DETAIL_NAV_HINTS];
+pub(crate) const DETAIL_STRIP: HintStrip = &[DETAIL_ACTION_HINTS, DETAIL_NAV_HINTS];
 
 /// The grid's strip while a `g` is pending: only the key that completes it.
 const G_STRIP: HintStrip = &[&[KeyHint {
@@ -750,10 +763,15 @@ pub(crate) fn review_pane_keys(
 /// The card detail's keys: the card actions, then scrolling it by a line
 /// (`j`/`k`), a page (`Space`/`Shift-Space`, `Ctrl-f`/`Ctrl-b`), half a page
 /// (`Ctrl-d`/`Ctrl-u`) or to its ends (`gg`/`G`), `R` for a review queue over
-/// the card's In Review descendants, `?` and `q` back to the grid (the
-/// detail's `Esc` is its own). Left alone while a widget has the keyboard —
-/// the comment composer, the title, description and label editors — or a
-/// popup, menu or drag does.
+/// the card's In Review descendants, `?` and `q`/`Esc` back to the grid.
+/// Left alone while a widget has the keyboard — the comment composer, the
+/// title, description and label editors — or a popup, menu or drag does.
+///
+/// An `Esc` pressed in one of those editors only leaves the editor: egui
+/// drops the field's focus before this runs, so it's told apart by the focus
+/// the last pass ended with ([`BoardUiState::esc_left_a_field`]) and
+/// swallowed, and the field commits its edit as the detail lays out. The
+/// next `Esc` leaves the card.
 pub(crate) fn detail_keys(
     ctx: &egui::Context,
     view: &BoardView,
@@ -769,7 +787,7 @@ pub(crate) fn detail_keys(
     let press = ctx.input(chord::first_key_press)?;
     if let Some(pages) = page_scroll(press) {
         state.pane_chord.clear();
-        state.scroll_detail(PatchScroll::Pages(pages));
+        state.scroll_detail(DetailScroll::Pages(pages));
         chord::swallow_key_events(ctx);
         return None;
     }
@@ -777,10 +795,14 @@ pub(crate) fn detail_keys(
         state.pane_chord.clear();
         return None;
     }
+    if press.key == Key::Escape && state.esc_left_a_field(ctx) {
+        chord::swallow_key_events(ctx);
+        return None;
+    }
     if pending.is_some() {
         state.pane_chord.clear();
         if is_key(press, Key::G) {
-            state.scroll_detail(PatchScroll::Top);
+            state.scroll_detail(DetailScroll::Top);
         }
         chord::swallow_key_events(ctx);
         return None;
@@ -791,17 +813,17 @@ pub(crate) fn detail_keys(
         action = apply_card_action(ctx, view, state, card, card_action, ActionView::Detail);
     } else {
         match (press.key, press.modifiers.shift) {
-            (Key::J, false) => state.scroll_detail(PatchScroll::Rows(1)),
-            (Key::K, false) => state.scroll_detail(PatchScroll::Rows(-1)),
+            (Key::J, false) => state.scroll_detail(DetailScroll::Rows(1)),
+            (Key::K, false) => state.scroll_detail(DetailScroll::Rows(-1)),
             (Key::G, false) => state
                 .pane_chord
                 .begin(PanePending::G, ctx.input(|i| i.time)),
-            (Key::G, true) => state.scroll_detail(PatchScroll::Bottom),
+            (Key::G, true) => state.scroll_detail(DetailScroll::Bottom),
             (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
             (Key::R, true) => {
                 state.open_review_queue(view, QueueScope::Epic(card), ctx.input(|i| i.time))
             }
-            (Key::Q, false) => state.leave_card(),
+            (Key::Q, false) | (Key::Escape, _) => state.leave_card(),
             _ => return None,
         }
     }
@@ -811,7 +833,7 @@ pub(crate) fn detail_keys(
 
 /// The page scroll a press asks for, in pages (negative scrolls up): a whole
 /// page for `Space`/`Shift-Space` and vi's `Ctrl-f`/`Ctrl-b`, which lands
-/// exactly (see [`PatchScroll::Pages`]), half of one for vi's
+/// exactly in a diff (see [`PatchScroll::Pages`]), half of one for vi's
 /// `Ctrl-d`/`Ctrl-u`. Safe to take: chrome's only Ctrl binding is Ctrl+Tab,
 /// and these views put no focus on a button a Space would press.
 fn page_scroll(press: KeyPress) -> Option<f32> {
@@ -1085,6 +1107,8 @@ mod tests {
                 if let Some(field) = h.field {
                     ui.add(egui::TextEdit::singleline(&mut h.text).id(field));
                 }
+                // As the detail's pass ends, after its fields laid out.
+                h.state.latch_detail_focus(ui.ctx());
                 let hints = if pane(&h.state) {
                     pane_key_hints(&h.state)
                 } else {
@@ -1783,16 +1807,18 @@ mod tests {
         }
     }
 
-    /// Everything a queue key can visibly do, for
-    /// [`every_queue_hint_does_what_it_says`] to compare before and after.
+    /// Everything a key over the grid (the queue's, a review pane's, the
+    /// detail's) can visibly do, for the `every_*_hint_does_what_it_says`
+    /// tests to compare before and after.
     #[derive(Debug, PartialEq)]
-    struct QueueEffects {
+    struct PaneEffects {
         open: bool,
         card: Option<NoteId>,
         /// The record the pane has picked (`None` is the newest).
         record: Option<NoteId>,
         selected: Option<NoteId>,
         scroll: Option<PatchScroll>,
+        detail_scroll: Option<DetailScroll>,
         moved: Option<(NoteId, usize, usize)>,
         archived: Option<NoteId>,
         commented: Option<(NoteId, String)>,
@@ -1803,14 +1829,15 @@ mod tests {
         hints: bool,
     }
 
-    fn queue_effects(harness: &Harness<'static, KeysHarness>) -> QueueEffects {
+    fn pane_effects(harness: &Harness<'static, KeysHarness>) -> PaneEffects {
         let h = harness.state();
-        QueueEffects {
+        PaneEffects {
             open: h.state.queue_open(),
             card: h.state.review_card(),
             record: h.state.review_record(),
             selected: h.state.selected(),
             scroll: h.state.review_scroll(),
+            detail_scroll: h.state.detail_scroll(),
             moved: h.moved,
             archived: h.archived,
             commented: h.commented.clone(),
@@ -1837,12 +1864,12 @@ mod tests {
                     record: Some(id(99)),
                 }));
             }
-            let before = queue_effects(&harness);
+            let before = pane_effects(&harness);
             for (modifiers, key) in keycap_presses(cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
-                queue_effects(&harness),
+                pane_effects(&harness),
                 before,
                 "keycap {cap:?} ({label}) did nothing"
             );
@@ -1863,16 +1890,81 @@ mod tests {
                     record: Some(id(99)),
                 }));
             }
-            let before = queue_effects(&harness);
+            let before = pane_effects(&harness);
             for (modifiers, key) in keycap_presses(cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
-                queue_effects(&harness),
+                pane_effects(&harness),
                 before,
                 "keycap {cap:?} ({label}) did nothing"
             );
         }
+    }
+
+    /// Replay every keycap in [`DETAIL_STRIP`] on card 5's detail, as
+    /// [`every_queue_hint_does_what_it_says`] does in the queue. `R` finds
+    /// nothing in review under card 5, and says so.
+    #[test]
+    fn every_detail_hint_does_what_it_says() {
+        for (cap, label) in strip_keycaps(DETAIL_STRIP).chain([("?", "hints")]) {
+            let mut harness = detail_harness(None);
+            let before = pane_effects(&harness);
+            for (modifiers, key) in keycap_presses(cap) {
+                press_with(&mut harness, modifiers, key);
+            }
+            assert_ne!(
+                pane_effects(&harness),
+                before,
+                "keycap {cap:?} ({label}) did nothing"
+            );
+        }
+    }
+
+    /// The detail's strip leaves out `open`, the one card action it has no
+    /// use for, and only that.
+    #[test]
+    fn the_detail_strip_drops_only_open() {
+        let detail: Vec<_> = strip_keycaps(&[DETAIL_ACTION_HINTS]).collect();
+        let all: Vec<_> = strip_keycaps(&[CARD_ACTION_HINTS]).collect();
+        let (dropped, kept): (Vec<_>, Vec<_>) = all.into_iter().partition(|(cap, _)| {
+            let [(modifiers, key)] = keycap_presses(cap)[..] else {
+                panic!("card action {cap:?} is one press");
+            };
+            card_action(KeyPress { key, modifiers }) == Some(CardAction::Open)
+        });
+        assert_eq!(detail, kept);
+        assert_eq!(dropped, vec![("\u{21B5}", "open"), ("o", "open")]);
+    }
+
+    /// Esc backs the detail out to the grid, eaten on the way so chrome
+    /// doesn't see it, as `q` does.
+    #[test]
+    fn esc_leaves_the_detail() {
+        let mut harness = detail_harness(None);
+        press(&mut harness, Key::Escape);
+        assert_eq!(harness.state().state.selected(), None);
+        assert!(!harness.state().esc_left, "Esc consumed");
+    }
+
+    /// An Esc in one of the detail's fields only leaves the field, so the
+    /// field is still there to commit its edit; the next Esc leaves the card.
+    #[test]
+    fn esc_in_a_detail_field_only_leaves_the_field() {
+        let field = egui::Id::new("keys_test_detail_field");
+        let mut harness = detail_harness(Some(field));
+        harness.ctx.memory_mut(|m| m.request_focus(field));
+        harness.run();
+        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(field));
+
+        press(&mut harness, Key::Escape);
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None, "field left");
+        assert_eq!(harness.state().state.selected(), Some(id(5)), "card kept");
+        assert!(!harness.state().esc_left, "Esc consumed");
+
+        press(&mut harness, Key::Escape);
+        assert_eq!(harness.state().state.selected(), None);
+        assert!(!harness.state().esc_left, "Esc consumed");
     }
 
     /// A two-file commit for the review-comment tests: `src/a.rs` changes a
@@ -2464,7 +2556,7 @@ diff --git a/b.txt b/b.txt
         press(&mut harness, Key::J);
         assert_eq!(
             harness.state().state.detail_scroll(),
-            Some(PatchScroll::Rows(1))
+            Some(DetailScroll::Rows(1))
         );
         press(&mut harness, Key::N);
         assert_eq!(harness.state().state.selected(), Some(id(6)));

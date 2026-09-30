@@ -18,7 +18,6 @@ use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM};
 use notedeck_ui::chord::ChordState;
-use notedeck_ui::diff::PatchScroll;
 
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView};
@@ -42,7 +41,7 @@ pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
 pub use header::SyncStatus;
 pub use inline::{board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
-pub(crate) use card_actions::{CardStep, reason_field_id};
+pub(crate) use card_actions::{CardStep, DetailScroll, reason_field_id};
 pub(crate) use filter::{CardFilter, ViewFilter, filter_field_id};
 #[cfg(test)]
 pub(crate) use review_comments::DraftComment;
@@ -224,9 +223,9 @@ pub struct BoardUiState {
     /// The detail Sub-issues header's "Review N" label.
     subtree_review: SubtreeReviewLabel,
     /// A short-lived message, when it went up and in which view: an `R` that
-    /// found nothing in review, a verdict that finished the queue, a queue key
-    /// with nothing to act on. Drawn in its view's header, or the queue's bar
-    /// while it's open, for [`NOTICE_SECS`] seconds, or until its view is left.
+    /// found nothing in review, a verdict that finished the queue, a key in
+    /// any view with nothing to act on. Drawn in its view's header for
+    /// [`NOTICE_SECS`] seconds, or until its view is left.
     notice: Option<Notice>,
     /// A board edit left for the next frame, because a frame applies one: the
     /// move behind an `X` verdict's comment.
@@ -236,7 +235,11 @@ pub struct BoardUiState {
     /// it takes Enter and Esc unless another widget has the keyboard.
     reason: Option<ReasonComposer>,
     /// A scroll the detail's keys asked of it, applied on its next pass.
-    detail_scroll: Option<PatchScroll>,
+    detail_scroll: Option<DetailScroll>,
+    /// The egui pass at whose end a widget in the detail held the keyboard,
+    /// if the last detail pass ended that way: what tells the detail's Esc
+    /// that it only unfocused a field ([`BoardUiState::esc_left_a_field`]).
+    detail_focus_pass: Option<u64>,
     /// The last card action a keymap applied, and to which card: what the
     /// `card_actions_mean_the_same_in_every_view` test compares across views.
     #[cfg(test)]
@@ -749,7 +752,7 @@ fn board_pane_ui(
     // reaches here — the graph, the review panes and the detail returned above
     // and have their own keys —
     // and it runs before any grid widget lays out, so a key it handles is
-    // swallowed before a field that `a` or `/` focuses could type it. The keys
+    // swallowed before a field that `c` or `/` focuses could type it. The keys
     // stand down during a drag, but should a key action and a drop below ever
     // land in one frame, the drop overwrites it.
     let mut action: Option<BoardAction> = keys::board_keys(ui.ctx(), view, &view_filter, state);

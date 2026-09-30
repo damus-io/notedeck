@@ -3737,26 +3737,7 @@ fn snapshot_headway_detail_review_sidebar() {
             reply_to: None,
         },
     );
-    let deadline = Instant::now() + SETTLE_TIMEOUT;
-    loop {
-        let folded = {
-            let state = harness.state_mut();
-            let author = state.account.pubkey;
-            let app_ctx = state.notedeck.app_context();
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
-                .expect("folded")
-                .finalize();
-            headway::event::find_board(&boards, &author, store::BOARD_ID)
-                .and_then(|view| view.card(card))
-                .is_some_and(|c| !c.comments.is_empty())
-        };
-        if folded {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the comment never folded");
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    wait_for_card_comments(&mut harness, card, 1);
     harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
     wait_for_label(&mut harness, "All 4 records ›");
     harness.run_steps(3);
@@ -3765,8 +3746,104 @@ fn snapshot_headway_detail_review_sidebar() {
     harness.snapshot("headway_detail_review_sidebar");
 }
 
+/// Behavioural (no lavapipe): the detail's scroll keys move what's drawn, not
+/// just the request they leave. On a short window a long comment thread
+/// pushes the comment composer below the fold; `G` brings it up into view and
+/// `gg` puts it back where it was.
+#[test]
+fn g_and_gg_scroll_the_detail() {
+    const CARD: &str = "Define nostr event model for boards";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 400.0));
+    let card = harness_card_id(&mut harness, CARD);
+    apply_demo_action(
+        &mut harness,
+        store::BoardAction::AddComment {
+            card,
+            body: SIDEBAR_THREAD.to_string(),
+            reply_to: None,
+        },
+    );
+    wait_for_card_comments(&mut harness, card, 1);
+    harness.get_by_label(CARD).simulate_click();
+    wait_for_label(&mut harness, "← Back");
+    harness.run_steps(3);
+
+    let composer_top = |harness: &Harness<'static, HeadwayTestState>| {
+        harness
+            .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+            .last()
+            .and_then(|node| node.bounding_box())
+            .map(|bb| bb.y0)
+            .expect("the comment composer")
+    };
+    let window = 400.0;
+    let before = composer_top(&harness);
+    assert!(
+        before > window,
+        "the composer starts below the fold: {before}"
+    );
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::G);
+    harness.run_steps(3);
+    let bottom = composer_top(&harness);
+    assert!(
+        bottom < window,
+        "G scrolls the composer into view: {before} -> {bottom}"
+    );
+
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::G]);
+    harness.run_steps(3);
+    let top = composer_top(&harness);
+    assert!(
+        (top - before).abs() < 1.0,
+        "gg scrolls back to the top: {before} -> {bottom} -> {top}"
+    );
+}
+
+/// Behavioural (no lavapipe): Esc in the detail's title editor only leaves
+/// the editor, which commits the edit; the detail stays open, and the next
+/// Esc backs out to the grid.
+#[test]
+fn esc_in_the_title_editor_commits_and_keeps_the_detail() {
+    const CARD: &str = "Define nostr event model for boards";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let card = harness_card_id(&mut harness, CARD);
+    harness.get_by_label(CARD).simulate_click();
+    wait_for_label(&mut harness, "← Back");
+
+    harness.get_by_label(CARD).simulate_click();
+    harness.run_ok();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" v2");
+    harness.run_ok();
+    press_board_keys(&mut harness, &[egui::Key::Escape]);
+
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let title = demo_card_title(state.notedeck.app_context().ndb, &author, card);
+        if title != CARD {
+            assert!(title.contains("v2"), "the typed edit landed: {title:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the title edit never committed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        harness.query_by_label("← Back").is_some(),
+        "the first Esc kept the detail open"
+    );
+
+    press_board_keys(&mut harness, &[egui::Key::Escape]);
+    wait_for_label(&mut harness, "7 cards · 5 columns");
+}
+
 /// A comment long enough to scroll the detail's main column past its Review
-/// section, for [`snapshot_headway_detail_review_sidebar`].
+/// section, for [`snapshot_headway_detail_review_sidebar`] and
+/// [`g_and_gg_scroll_the_detail`].
 const SIDEBAR_THREAD: &str = "Picked this up: the reorder keys go on the column header.
 
 First pass drags fine but loses the order on reload.
@@ -3913,6 +3990,35 @@ fn demo_card_comments(ndb: &Ndb, author: &Pubkey, card: NoteId) -> usize {
     let boards = reducer.finalize();
     let view = headway::event::find_board(&boards, author, store::BOARD_ID).expect("demo board");
     view.card(card).expect("the card").comments.len()
+}
+
+/// The demo board's `card`, folded fresh off the db.
+fn demo_card_title(ndb: &Ndb, author: &Pubkey, card: NoteId) -> String {
+    let txn = Transaction::new(ndb).expect("txn");
+    let reducer = headway::event::fold_board(ndb, &txn, author).expect("demo board folded");
+    let boards = reducer.finalize();
+    let view = headway::event::find_board(&boards, author, store::BOARD_ID).expect("demo board");
+    view.card(card).expect("the card").title.clone()
+}
+
+/// Pump frames until the demo board's `card` has folded in `count` comments,
+/// or panic after a deadline. Comments land on the async writer thread.
+fn wait_for_card_comments(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    card: NoteId,
+    count: usize,
+) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        if demo_card_comments(state.notedeck.app_context().ndb, &author, card) >= count {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the comments never folded");
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Pump frames until `card` has been ingested into the column named `column`,

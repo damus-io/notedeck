@@ -8,9 +8,8 @@ use notedeck::ColorTheme;
 use notedeck::tokens::{
     RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THIN,
 };
-use notedeck_ui::diff::PatchScroll;
 
-use super::card_actions::detail_scroll_ui;
+use super::card_actions::{DetailScroll, detail_scroll_ui};
 use super::review::{QueueScope, epic_review_count, review_section_ui, review_sidebar_ui};
 use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
@@ -58,7 +57,8 @@ struct SubissueDropGap {
 /// it) with the card's properties (status, labels, actions) in a fixed right
 /// sidebar on wide panes, stacked inline on narrow ones. Edits are emitted as
 /// [`BoardAction`]s (title/description commit on focus loss); dismissing
-/// (back / ✕ / Escape) clears the selection.
+/// (back / ✕) clears the selection. Its keys, `Esc` among them, are
+/// [`crate::keys::detail_keys`]'s, read before this lays out.
 pub(super) fn card_detail_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -121,6 +121,7 @@ pub(super) fn card_detail_pane_ui(
 
     let ctx = DetailCtx {
         card_id,
+        scroll: state.detail_scroll.take(),
         reviews: &card.reviews,
         terminal: view.columns[current_col].terminal,
         card_ref: headway::wordid::card_ref(&view.id, card_id.bytes()),
@@ -172,20 +173,7 @@ pub(super) fn card_detail_pane_ui(
         blocks: card.blocks.iter().map(|e| detail_edge(view, e)).collect(),
     };
 
-    // Escape backs out to the board (as `q` does, `crate::keys::detail_keys`).
-    // Consume it so it doesn't also fall through to Chrome's Escape handler,
-    // which would toggle the side menu.
-    let mut outcome = if ui
-        .ctx()
-        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-    {
-        DetailOutcome::Close
-    } else {
-        DetailOutcome::None
-    };
-    // A scroll the detail's keys asked for, applied at the end of whichever
-    // scroll area the layout below draws.
-    let scroll = state.detail_scroll.take();
+    let mut outcome = DetailOutcome::None;
     pane_hints_ui(ui, theme, state);
     let here = state.nav_pos();
 
@@ -218,7 +206,6 @@ pub(super) fn card_detail_pane_ui(
                                 state,
                                 action,
                                 &mut outcome,
-                                scroll,
                             );
                         },
                     );
@@ -247,12 +234,18 @@ pub(super) fn card_detail_pane_ui(
                         ui.separator();
                         ui.add_space(SPACING_MD);
                         detail_comments_ui(ui, theme, app_ctx, &ctx, state, &mut outcome);
-                        detail_scroll_ui(ui, scroll, top);
+                        detail_scroll_ui(ui, ctx.scroll, top);
                     });
             }
         });
 
     resolve_detail_outcome(ui.ctx(), state, action, view, &ctx, outcome);
+    state.latch_detail_focus(ui.ctx());
+    // An Esc the detail keys left alone went to a popup, menu or drag, which
+    // closed on it as it laid out above. It stops here, so it doesn't also
+    // reach chrome's fallback Esc (the side menu).
+    ui.ctx()
+        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
 }
 
 /// The full-pane detail top bar, a Linear-style breadcrumb: a back affordance,
@@ -309,6 +302,9 @@ fn detail_pane_topbar_ui(
 /// `BoardView` so the sheet body doesn't borrow it while we also mutate `state`.
 struct DetailCtx<'a> {
     card_id: NoteId,
+    /// A scroll the detail's keys asked for, applied at the end of whichever
+    /// scroll area the layout draws ([`detail_scroll_ui`]).
+    scroll: Option<DetailScroll>,
     /// The card's review records, newest first — borrowed off the frame's view,
     /// which outlives the pane, rather than cloned every frame.
     reviews: &'a [ReviewView],
@@ -422,7 +418,7 @@ struct DetailSubissue {
 enum DetailOutcome {
     #[default]
     None,
-    /// Dismiss the detail pane (back, ✕, or Escape).
+    /// Dismiss the detail pane (back or ✕).
     Close,
     Delete,
     Archive,
@@ -494,8 +490,8 @@ pub(super) fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
 
 /// The wide layout's scrolling main column: the card body with the activity
 /// thread beneath it, width-capped so it reads like a document while the
-/// properties sidebar sits fixed to its right. Takes the detail keys' `scroll`.
-#[allow(clippy::too_many_arguments)]
+/// properties sidebar sits fixed to its right, applying the detail keys'
+/// scroll ([`DetailCtx::scroll`]).
 fn detail_main_column_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -504,7 +500,6 @@ fn detail_main_column_ui(
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
     outcome: &mut DetailOutcome,
-    scroll: Option<PatchScroll>,
 ) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, true])
@@ -516,7 +511,7 @@ fn detail_main_column_ui(
             ui.separator();
             ui.add_space(SPACING_MD);
             detail_comments_ui(ui, theme, app_ctx, ctx, state, outcome);
-            detail_scroll_ui(ui, scroll, top);
+            detail_scroll_ui(ui, ctx.scroll, top);
         });
 }
 

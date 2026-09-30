@@ -326,8 +326,10 @@ impl QueueScope {
     }
 }
 
-/// A short-lived message in the board header or the queue bar, for a key that
-/// had nothing to act on. Shown for [`NOTICE_SECS`] seconds.
+/// A short-lived message in the header of the view a key was pressed in —
+/// the grid, the queue, a review pane or the detail — for a key that had
+/// nothing to act on, or a queue that ran out. Shown for [`NOTICE_SECS`]
+/// seconds. (Named for the queue, whose keys raised the first ones.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QueueNotice {
     /// `R` found the In Review column empty.

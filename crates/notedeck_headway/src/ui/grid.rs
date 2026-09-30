@@ -667,7 +667,7 @@ fn add_card_ui(
         let refocusing = state.focus_edit;
         if refocusing {
             edit_response.request_focus();
-            // The `a` key can open it at the foot of a long or off-screen
+            // The `c` key can open it at the foot of a long or off-screen
             // column; bring it into view (a no-op when it already is).
             edit_response.scroll_to_me(None);
             state.focus_edit = false;

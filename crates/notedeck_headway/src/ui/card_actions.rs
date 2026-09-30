@@ -9,7 +9,6 @@ use headway::event::{BoardView, CardView, ReviewView};
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::SPACING_LG;
-use notedeck_ui::diff::PatchScroll;
 
 use super::review::{
     DONE, IN_PROGRESS, Notice, QueueNotice, SessionOpen, send_back_open, session_open,
@@ -48,6 +47,23 @@ pub(crate) struct ReasonComposer {
 /// How many body-text lines a detail `j`/`k` scrolls: a mouse-wheel notch's
 /// worth, since a single line crawls through a long thread.
 const DETAIL_LINES_PER_KEY: f32 = 3.0;
+
+/// A scroll the detail's keys ask of it, applied by [`detail_scroll_ui`] on
+/// its next pass. The detail's own, rather than the diff's
+/// [`PatchScroll`](notedeck_ui::diff::PatchScroll): it has no files to step
+/// through, and its rows aren't a diff's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum DetailScroll {
+    /// By this many `j`/`k` steps of [`DETAIL_LINES_PER_KEY`] body lines
+    /// (negative scrolls up).
+    Rows(i32),
+    /// By this share of the view's height (negative scrolls up).
+    Pages(f32),
+    /// To the top of the detail (`gg`).
+    Top,
+    /// To the bottom of the detail (`G`).
+    Bottom,
+}
 
 impl BoardUiState {
     /// Put up `notice` for [`super::NOTICE_SECS`] from `now` (egui time), in
@@ -236,14 +252,33 @@ impl BoardUiState {
     }
 
     /// Ask the detail to scroll; applied on its next pass.
-    pub(crate) fn scroll_detail(&mut self, request: PatchScroll) {
+    pub(crate) fn scroll_detail(&mut self, request: DetailScroll) {
         self.detail_scroll = Some(request);
     }
 
     /// The scroll the detail keys left for the detail's next pass.
     #[cfg(test)]
-    pub(crate) fn detail_scroll(&self) -> Option<PatchScroll> {
+    pub(crate) fn detail_scroll(&self) -> Option<DetailScroll> {
         self.detail_scroll
+    }
+
+    /// Note, as a detail pass ends, whether a widget in it holds the
+    /// keyboard (the title or description editor, a composer), for
+    /// [`esc_left_a_field`](Self::esc_left_a_field) to read next pass.
+    pub(crate) fn latch_detail_focus(&mut self, ctx: &egui::Context) {
+        self.detail_focus_pass = ctx
+            .memory(|m| m.focused().is_some())
+            .then(|| ctx.cumulative_pass_nr());
+    }
+
+    /// Whether a widget held the keyboard as the last pass ended, so this
+    /// pass's Esc is one egui has already spent: it drops a text field's focus
+    /// on Esc as the pass begins, before any keymap reads the press. The detail
+    /// keys then only swallow it, and the field commits its edit as it lays
+    /// out, rather than the detail closing over an uncommitted edit.
+    pub(crate) fn esc_left_a_field(&self, ctx: &egui::Context) -> bool {
+        self.detail_focus_pass
+            .is_some_and(|pass| pass + 1 == ctx.cumulative_pass_nr())
     }
 
     /// `D`: move `card` to the end of the Done column. On the queue's current
@@ -469,28 +504,27 @@ fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut Reas
 /// nested in the content: a line (`j`/`k`, [`DETAIL_LINES_PER_KEY`] body
 /// lines) or a fraction of the view by delta, the top or bottom by scrolling
 /// to the content's first or last point (`top` is where the content started).
-pub(super) fn detail_scroll_ui(ui: &mut egui::Ui, scroll: Option<PatchScroll>, top: egui::Pos2) {
+pub(super) fn detail_scroll_ui(ui: &mut egui::Ui, scroll: Option<DetailScroll>, top: egui::Pos2) {
     let Some(scroll) = scroll else {
         return;
     };
     // `scroll_with_delta` moves the content: a negative delta scrolls down.
     let down = match scroll {
-        PatchScroll::Rows(rows) => {
+        DetailScroll::Rows(rows) => {
             rows as f32 * DETAIL_LINES_PER_KEY * ui.text_style_height(&egui::TextStyle::Body)
         }
-        PatchScroll::Pages(pages) => pages * ui.clip_rect().height(),
-        PatchScroll::Top => {
+        DetailScroll::Pages(pages) => pages * ui.clip_rect().height(),
+        DetailScroll::Top => {
             ui.scroll_to_rect(
                 egui::Rect::from_min_size(top, egui::Vec2::ZERO),
                 Some(egui::Align::TOP),
             );
             return;
         }
-        PatchScroll::Bottom => {
+        DetailScroll::Bottom => {
             ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
             return;
         }
-        PatchScroll::File(_) | PatchScroll::NextFile | PatchScroll::PrevFile => return,
     };
     ui.scroll_with_delta(egui::vec2(0.0, -down));
 }
