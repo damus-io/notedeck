@@ -2094,15 +2094,28 @@ fn seed_in_review(
     titles: &[&str],
     files: &[&str],
 ) -> Vec<NoteId> {
+    seed_in_review_with(harness, dir, titles, files, |_| {
+        "fn queued() {}\n".to_string()
+    })
+}
+
+/// [`seed_in_review`], with card `n`'s commit writing `body(n)` to its file.
+fn seed_in_review_with(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    dir: &std::path::Path,
+    titles: &[&str],
+    files: &[&str],
+    body: impl Fn(usize) -> String,
+) -> Vec<NoteId> {
     fixture_git(dir, &["init", "-q", "-b", "review-branch"]);
     let ids: Vec<NoteId> = titles
         .iter()
         .map(|title| harness_card_id(harness, title))
         .collect();
-    for ((&card, title), file) in ids.iter().zip(titles).zip(files) {
+    for (n, ((&card, title), file)) in ids.iter().zip(titles).zip(files).enumerate() {
         move_to_in_review(harness, card);
         let subject = format!("queue: {title}");
-        let sha = fixture_commit(dir, file, "fn queued() {}\n", &subject);
+        let sha = fixture_commit(dir, file, &body(n), &subject);
         apply_demo_action(
             harness,
             store::BoardAction::AddReview {
@@ -2166,6 +2179,48 @@ fn review_queue_walks_the_in_review_column() {
     let (pushes, last_back) = queue_pushes_and_last_back(&mut harness);
     assert_eq!(pushes, 1, "stepping the queue pushes nothing more");
     assert!(last_back, "leaving the queue is one back");
+}
+
+/// Behavioural (no lavapipe): each card's diff in the queue scrolls on its own.
+/// Page down the first card's long diff and `D` it: the next card's diff opens
+/// at its top, not at the offset the last one was left at (every card's diff
+/// draws in the same place, so one shared scroll id carried it over). `p` back
+/// to the first card returns to where it was left.
+#[test]
+fn review_queue_opens_each_diff_at_the_top() {
+    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
+    const FILES: [&str; 2] = ["src/queue_one.rs", "src/queue_two.rs"];
+    const NAMES: [&str; 2] = ["one", "two"];
+    // A diff line's label: its content, as the diff draws it.
+    let line = |n: usize, i: usize| format!("fn {}_{i}() {{}}", NAMES[n]);
+
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review_with(&mut harness, repo.path(), &CARDS, &FILES, |n| {
+        (1..=300).map(|i| line(n, i) + "\n").collect()
+    });
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_label(&mut harness, &line(0, 1));
+
+    press_board_keys(&mut harness, &[egui::Key::Space; 3]);
+    wait_for_absent(&mut harness, &line(0, 1));
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
+    wait_for_card_column(&mut harness, ids[0], "Done");
+    wait_for_label(&mut harness, "2 / 2");
+    wait_for_any_label(&mut harness, FILES[1]);
+    wait_for_label(&mut harness, &line(1, 1));
+
+    press_board_keys(&mut harness, &[egui::Key::P]);
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_any_label(&mut harness, FILES[0]);
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label(&line(0, 1)).is_none(),
+        "back on the first card, its diff is still paged down"
+    );
 }
 
 /// Assert `right` starts a real gap after `left` ends on the same row. The

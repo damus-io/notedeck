@@ -72,9 +72,14 @@ pub enum PatchScroll {
 
 /// View state for one [`GitPatch`]: which files are collapsed, where the view
 /// is, and the labels that don't change per frame. Build it with
-/// [`GitPatchState::new`] when the patch changes.
+/// [`GitPatchState::new`] when the patch changes, and give each patch its own
+/// [`with_id_salt`](Self::with_id_salt) when one view shows several in turn.
 #[derive(Debug, Clone, Default)]
 pub struct GitPatchState {
+    /// The scroll area's id salt. egui keeps a scroll area's offset in its
+    /// memory under the area's id, not here, so two patches drawn at the same
+    /// place with the same salt share one offset. `None` is `"git_patch"`.
+    id_salt: Option<egui::Id>,
     collapsed: Vec<bool>,
     /// Per file, what its row in the file table shows besides its name,
     /// formatted once.
@@ -341,6 +346,16 @@ impl GitPatchState {
         }
     }
 
+    /// Salt this patch's scroll area with `salt`, so its offset is its own.
+    /// A view that swaps one patch for another in the same place (a review
+    /// queue stepping cards) passes something that names the patch: a new
+    /// one then opens at the top, and going back to one returns to where it
+    /// was left. Without it every patch there shares one offset.
+    pub fn with_id_salt(mut self, salt: impl std::hash::Hash) -> Self {
+        self.id_salt = Some(egui::Id::new(salt));
+        self
+    }
+
     /// Ask for a scroll on the next pass. A later request replaces an earlier
     /// one that hasn't been applied yet.
     pub fn scroll(&mut self, request: PatchScroll) {
@@ -583,6 +598,7 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
         // The caller swapped the patch without new state. Recover rather than
         // index out of bounds; the labels fall back to the source strings.
         *state = GitPatchState {
+            id_salt: state.id_salt,
             pending: state.pending,
             ..GitPatchState::new(patch, &mut Localization::default())
         };
@@ -600,8 +616,9 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
     let target = state.take_target(content_rows, rows);
     let total_rows = content_rows + state.padding_rows(row_step);
 
+    let id_salt = state.id_salt.unwrap_or_else(|| egui::Id::new("git_patch"));
     let mut area = ScrollArea::both()
-        .id_salt("git_patch")
+        .id_salt(id_salt)
         .auto_shrink([false, false]);
     if let Some(y) = target {
         area = area.vertical_scroll_offset(y);
@@ -1358,6 +1375,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A patch swapped in where another was scrolled opens at the top when
+    /// each has its own salt, and swapping the first back returns to where it
+    /// was left. With the shared default salt the new patch inherits the old
+    /// one's offset from egui's memory: the review queue's "next card opens
+    /// halfway down its diff".
+    #[test]
+    fn a_salted_patch_keeps_its_own_scroll() {
+        let salted = |salt: &str| {
+            let patch = tall_patch(600);
+            let state = GitPatchState::new(&patch, &mut Localization::default()).with_id_salt(salt);
+            (patch, state)
+        };
+        let (patch, state) = salted("first");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 400.0))
+            .build_ui_state(
+                |ui, (patch, state): &mut (GitPatch, GitPatchState)| git_patch_ui(patch, state, ui),
+                (patch, state),
+            );
+        harness.run();
+        harness.state_mut().1.scroll(PatchScroll::Pages(2.0));
+        harness.run();
+        let scrolled = harness.state().1.offset;
+        assert!(scrolled > 0.0, "the first patch scrolled");
+
+        let first = std::mem::replace(harness.state_mut(), salted("second"));
+        harness.run();
+        assert_eq!(
+            harness.state().1.offset,
+            0.0,
+            "a new patch opens at the top"
+        );
+
+        *harness.state_mut() = first;
+        harness.run();
+        assert_eq!(harness.state().1.offset, scrolled, "back where it was left");
+
+        // The default salt is shared, so an unsalted patch in the same place
+        // picks up whatever offset the last unsalted one left.
+        let unsalted = || {
+            let patch = tall_patch(600);
+            let state = GitPatchState::new(&patch, &mut Localization::default());
+            (patch, state)
+        };
+        *harness.state_mut() = unsalted();
+        harness.run();
+        harness.state_mut().1.scroll(PatchScroll::Pages(2.0));
+        harness.run();
+        *harness.state_mut() = unsalted();
+        harness.run();
+        assert_eq!(harness.state().1.offset, scrolled, "the shared salt leaks");
     }
 
     /// In the widget, pages move by whole rows: a page down lands on a row

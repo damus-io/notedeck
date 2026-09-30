@@ -322,7 +322,7 @@ impl ReviewLoader {
     pub(crate) fn poll(&mut self, i18n: &mut Localization) {
         while let Ok((source, result)) = self.rx.try_recv() {
             let load = match result {
-                Ok(fetched) => ReviewLoad::Ready(Box::new(loaded(fetched, i18n))),
+                Ok(fetched) => ReviewLoad::Ready(Box::new(loaded(fetched, source, i18n))),
                 Err(e) => ReviewLoad::Failed(e),
             };
             self.loads.insert(
@@ -375,7 +375,12 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
 /// A worker's result, with the view state for its diff attached. Runs on the
 /// UI thread, so the byline's relative date reads the thread's frozen clock
 /// in tests.
-fn loaded(fetched: Fetched, i18n: &mut Localization) -> LoadedReview {
+///
+/// The diff's scroll is salted with `source`: the pane draws every card's
+/// diff at the same place, so with one shared salt the next card in the queue
+/// would open at the last one's offset. Per source, a new card opens at the
+/// top and stepping back to one returns to where it was left.
+fn loaded(fetched: Fetched, source: ReviewSource, i18n: &mut Localization) -> LoadedReview {
     let Fetched {
         resolved,
         commit,
@@ -386,7 +391,7 @@ fn loaded(fetched: Fetched, i18n: &mut Localization) -> LoadedReview {
         source_hover: resolved.to_string(),
         by_trailer: resolved.how == Found::ByTrailer,
         byline: Byline::of(&commit),
-        patch_state: GitPatchState::new(&patch, i18n),
+        patch_state: GitPatchState::new(&patch, i18n).with_id_salt(source),
         commit,
         patch,
     }
