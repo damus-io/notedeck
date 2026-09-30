@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "android-activity"
 version = "0.6.1"
-source = "git+https://github.com/damus-io/android-activity?rev=7e0ca4c25f7c2baa04f1b1ae80300a39d4b73c98#7e0ca4c25f7c2baa04f1b1ae80300a39d4b73c98"
+source = "git+https://github.com/damus-io/android-activity?rev=642d4b05836f6cc12c3bd775bcf0d1b467e2014d#642d4b05836f6cc12c3bd775bcf0d1b467e2014d"
 dependencies = [
  "android-properties",
  "bitflags 2.13.2",
@@ -2545,7 +2545,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/damus-io/winit?rev=906e8cfdc48288385bd029befae7bead50e58bde#906e8cfdc48288385bd029befae7bead50e58bde"
+source = "git+https://github.com/damus-io/winit?rev=151a75954fe210a1792eb71a36f9bdae59cc6f4b#151a75954fe210a1792eb71a36f9bdae59cc6f4b"
 
 [[package]]
 name = "dunce"
@@ -2562,7 +2562,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "ecolor"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "bytemuck",
  "emath",
@@ -2572,7 +2572,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2608,7 +2608,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "accesskit",
  "ahash",
@@ -2630,7 +2630,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2649,7 +2649,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "accesskit_winit",
  "arboard",
@@ -2670,7 +2670,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "ahash",
  "egui",
@@ -2688,7 +2688,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "bytemuck",
  "egui",
@@ -2701,7 +2701,7 @@ dependencies = [
 [[package]]
 name = "egui_kittest"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "dify",
  "eframe",
@@ -2732,7 +2732,7 @@ dependencies = [
 [[package]]
 name = "egui_system_fonts"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "epaint",
  "fontique",
@@ -2808,7 +2808,7 @@ dependencies = [
 [[package]]
 name = "emath"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "bytemuck",
  "serde",
@@ -2980,7 +2980,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -3006,7 +3006,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.36.2"
-source = "git+https://github.com/damus-io/egui?rev=ca9c65661acb79580fe90b43a83057764085508b#ca9c65661acb79580fe90b43a83057764085508b"
+source = "git+https://github.com/damus-io/egui?rev=2d82834f693869c17f20422e57f625ab64f46cec#2d82834f693869c17f20422e57f625ab64f46cec"
 
 [[package]]
 name = "equator"
@@ -3554,8 +3554,8 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
+ "windows-link 0.1.3",
+ "windows-result 0.3.4",
 ]
 
 [[package]]
@@ -11562,7 +11562,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/damus-io/winit?rev=906e8cfdc48288385bd029befae7bead50e58bde#906e8cfdc48288385bd029befae7bead50e58bde"
+source = "git+https://github.com/damus-io/winit?rev=151a75954fe210a1792eb71a36f9bdae59cc6f4b#151a75954fe210a1792eb71a36f9bdae59cc6f4b"
 dependencies = [
  "ahash",
  "android-activity",

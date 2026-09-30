@@ -274,7 +274,12 @@ pub struct MentionSelectedResponse {
 }
 
 impl MentionSelectedResponse {
-    pub fn process(&self, ctx: &egui::Context, text_edit_output: &TextEditOutput, text: &str) {
+    /// Put the cursor after the selected mention and keep the focus on the edit.
+    ///
+    /// The mention changed the text after [`TextEdit`] was shown, so on Android the soft keyboard
+    /// still holds the old text. The edit sends it the new text and this cursor at the start of
+    /// its next pass, before it reads the keyboard's states, which all predate the mention.
+    pub fn process(&self, ctx: &egui::Context, text_edit_output: &TextEditOutput) {
         let text_edit_id = text_edit_output.response.id;
         let Some(mut before_state) = TextEdit::load_state(ctx, text_edit_id) else {
             return;
@@ -289,25 +294,7 @@ impl MentionSelectedResponse {
         ctx.memory_mut(|mem| mem.request_focus(text_edit_id));
 
         TextEdit::store_state(ctx, text_edit_id, before_state);
-
-        sync_text_input_state_after_external_edit(ctx, text, self.next_cursor_index);
     }
-}
-
-/// Synchronizes the platform text input state after text changes outside [`TextEdit`].
-fn sync_text_input_state_after_external_edit(ctx: &egui::Context, text: &str, cursor_index: usize) {
-    let cursor = egui::TextSpan {
-        start: cursor_index,
-        end: cursor_index,
-    };
-
-    ctx.output_mut(|output| {
-        output.text_input_state = Some(egui::TextInputState {
-            text: text.to_owned(),
-            selection: cursor,
-            compose_region: None,
-        });
-    });
 }
 
 impl PostBuffer {
@@ -978,25 +965,30 @@ mod tests {
         assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
     }
 
+    /// Selecting a mention leaves the cursor after it, which is what the edit sends the Android
+    /// soft keyboard with the new text on its next pass.
     #[test]
-    fn mention_selection_updates_text_input_state() {
+    fn mention_selection_puts_the_cursor_after_the_mention() {
+        let ctx = egui::Context::default();
         let mut buffer = PostBuffer::default();
         buffer.insert_text("@jb", CharIndex(0));
 
-        let mut full_output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+        let mut text_edit_id = None;
+        let mut full_output = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 let text_edit_output = egui::TextEdit::multiline(&mut buffer)
                     .id_salt("post-buffer-android-ime-regression")
                     .show(ui);
+                text_edit_id = Some(text_edit_output.response.id);
 
                 let selection = buffer
                     .select_mention_and_replace_name(0, "jb55", JB55())
                     .unwrap();
-                selection.process(ui.ctx(), &text_edit_output, buffer.as_str());
+                selection.process(ui.ctx(), &text_edit_output);
             });
         });
 
-        // Only the platform output is inspected; drop the font atlas upload.
+        // Only the stored edit state is inspected; drop the font atlas upload.
         full_output.textures_delta.clear();
 
         assert_eq!(buffer.as_str(), "@jb55 ");
@@ -1005,16 +997,12 @@ mod tests {
         assert_eq!(mention.bounds(), 0..5);
         assert_eq!(mention.mention_type, MentionType::Finalized(JB55()));
 
-        let text_input_state = full_output
-            .platform_output
-            .text_input_state
-            .expect("mention selection should update platform text input state");
-        assert_eq!(text_input_state.text, "@jb55 ");
-        assert_eq!(
-            text_input_state.selection,
-            egui::TextSpan { start: 6, end: 6 }
-        );
-        assert_eq!(text_input_state.compose_region, None);
+        let text_edit_id = text_edit_id.unwrap();
+        let cursor = TextEdit::load_state(&ctx, text_edit_id)
+            .and_then(|state| state.cursor.char_range())
+            .expect("the mention selection should store a cursor");
+        assert_eq!(cursor, CCursorRange::one(CCursor::new(6)));
+        assert!(ctx.memory(|mem| mem.has_focus(text_edit_id)));
     }
 
     #[test]
