@@ -524,6 +524,11 @@ impl Dave {
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
+            overlay_open: !matches!(self.active_overlay, DaveOverlay::None),
+            renaming: egui_ctx.memory(|m| {
+                let id = ui::session_list::rename_edit_id();
+                m.has_focus(id) || m.had_focus_last_frame(id)
+            }),
         };
         if let Some(key_action) = check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
             self.handle_key_action(key_action, egui_ctx);

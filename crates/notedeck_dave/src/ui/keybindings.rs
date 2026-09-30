@@ -85,6 +85,8 @@ pub enum KeyAction {
     SessionPaneFirst,
     /// Switch to the last session in the list (<leader> h G)
     SessionPaneLast,
+    /// Leave normal mode for the chat input (`i` / `a`)
+    InsertMode,
 }
 
 impl KeyAction {
@@ -155,29 +157,34 @@ impl Leader {
     }
 }
 
-/// Progress through a multi-key chord opened by the leader key.
+/// Dave's vim-style normal mode, and how far into a chord it is.
 ///
 /// Owned by [`Dave`](crate::Dave) and passed `&mut` into [`check_keybindings`]
-/// each frame. While a chord is pending the chat input's focus is set aside, so
-/// the bare keys that follow (`j`, `z`, `g`, …) are read as commands rather than
-/// typed; when the chord ends, focus goes back to whatever held it.
+/// each frame. Insert mode is the default: the chat input has focus and you
+/// type. Esc (or the leader, until it retires) enters normal mode, which sets
+/// the input's focus aside so bare keys (`j`, `z`, `g`, …) are read as
+/// commands rather than typed.
 ///
-/// A chord is a latch: it stays open after a command so motions repeat —
-/// `<leader> j j j za` — and ends only on Esc, `q`, a key it does not know, or
-/// a modified key. It never times out, so pausing to read a block does not drop
-/// you back into the input mid-stride; the which-key strip shows it is open.
+/// Normal mode stays on after a command so motions repeat — `j j j za` — and
+/// never times out; the which-key strip shows it is on. A key it doesn't know
+/// is swallowed, and a modified key (a Ctrl binding) goes to the regular
+/// bindings, without leaving the mode either way. It ends on `i` / `a` / `q`
+/// (focus back to the input), on `n` / `r` (the picker or rename field takes
+/// the keyboard), when you click into a text field, or when an overlay opens.
+/// Esc cancels a half-typed prefix; at the root it is left for chrome, which
+/// toggles the side menu.
 ///
-/// `h` / `l` point the chord at the session list or the chat ([`Pane`]), and
-/// the motions follow: `j` / `k` walk blocks in the chat and sessions in the
-/// list.
+/// `h` / `l` point the motions at the session list or the chat ([`Pane`]):
+/// `j` / `k` walk blocks in the chat and sessions in the list.
 #[derive(Default)]
 pub struct NormalMode {
     pending: Option<Pending>,
-    /// Which pane the motions move through. Back to [`Pane::Chat`] on every
-    /// leader.
+    /// Which pane the motions move through. Back to [`Pane::Chat`] each time
+    /// normal mode is entered.
     pane: Pane,
-    /// Whatever held keyboard focus when the leader fired, handed back when the
-    /// chord ends.
+    /// Whatever held keyboard focus when normal mode was entered, handed back
+    /// when it ends. Usually `None` after Esc: egui drops a text field's focus
+    /// on Esc before Dave sees the key, so the active input is focused instead.
     restore_focus: Option<egui::Id>,
     /// Whether the session list is on screen, as of the last frame. `h` is a
     /// no-op without it.
@@ -187,20 +194,20 @@ pub struct NormalMode {
     /// Whether the active session has a running turn to stop, as of the last
     /// frame.
     interruptible: bool,
-    /// When the chord ends, focus the active session's input instead of
-    /// `restore_focus`: the chord switched sessions, or an action asked for
-    /// the input while the chord held the keyboard.
+    /// When normal mode ends, focus the active session's input instead of
+    /// `restore_focus`: it switched sessions, or an action asked for the input
+    /// while normal mode held the keyboard.
     focus_input_on_end: bool,
-    /// The chord ended with `focus_input_on_end` set; taken by
+    /// Normal mode ended wanting the active input focused; taken by
     /// [`Self::take_input_focus`].
     input_focus_due: bool,
 }
 
-/// How far into a chord we are. Read by the which-key strip through
+/// How far into a chord normal mode is. Read by the which-key strip through
 /// [`NormalMode::view`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pending {
-    /// The leader fired; waiting for a command or a prefix.
+    /// Normal mode's root: waiting for a command or a prefix.
     Leader,
     /// `<leader> z`: waiting for `a` / `o` / `c` / `R` / `M`.
     LeaderZ,
@@ -285,6 +292,12 @@ const SESSION_VIEW: &[ChordHint] = &[
 /// Turn keys, from either pane.
 const SESSION_TURN: &[ChordHint] = &[hint("s", KeyAction::Interrupt)];
 
+/// Back to insert mode, from either pane.
+const INSERT: &[ChordHint] = &[
+    hint("i", KeyAction::InsertMode),
+    hint("a", KeyAction::InsertMode),
+];
+
 /// Focus-queue keys, from either pane (vim's quickfix `]q` / `[q`).
 const FOCUS_QUEUE: &[ChordHint] = &[
     hint("]q", KeyAction::FocusQueueNext),
@@ -305,7 +318,12 @@ const CHAT_LEADER_HINTS: &[&[ChordHint]] = &[
         hint("zM", KeyAction::BlockCollapseAll),
     ],
     &[hint("h", KeyAction::FocusSessionsPane)],
-    &[hint("q", KeyAction::BlockCursorClear)],
+    // Both leave normal mode, so they share a group.
+    &[
+        hint("q", KeyAction::BlockCursorClear),
+        hint("i", KeyAction::InsertMode),
+        hint("a", KeyAction::InsertMode),
+    ],
 ];
 
 /// The keycap for Enter.
@@ -318,6 +336,7 @@ const SESSIONS_LEADER_HINTS: &[&[ChordHint]] = &[
         hint("l", KeyAction::FocusChatPane),
         hint(ENTER, KeyAction::FocusChatPane),
     ],
+    INSERT,
 ];
 
 /// What `<leader>` accepts in either pane besides the pane's own keys: the
@@ -395,13 +414,16 @@ impl ChordView {
     }
 }
 
-/// What the chord machine made of this frame's input.
+/// What normal mode made of this frame's input.
 enum ChordStep {
-    /// No chord is pending (or it just ended on a modified key): the regular
-    /// bindings should look at this frame.
+    /// Normal mode is off, or this frame's key is a modified one or a bare key
+    /// the regular bindings own: they should look at this frame.
     FallThrough,
-    /// The chord owned this frame's keys, and maybe produced an action.
+    /// Normal mode owned this frame's keys, and maybe produced an action.
     Consumed(Option<KeyAction>),
+    /// Esc at normal mode's root: nothing in Dave touches it, so it reaches
+    /// chrome's fallback (the side menu) and normal mode stays on.
+    LeaveForChrome,
 }
 
 impl NormalMode {
@@ -433,6 +455,18 @@ impl NormalMode {
         self.focus_input_on_end = true;
     }
 
+    /// A Ctrl binding ran while normal mode was on. It stays on, like vim,
+    /// unless the binding opened something you type into: those leave it the
+    /// way their chord keys do.
+    fn after_modified(&mut self, action: &KeyAction, ctx: &egui::Context) {
+        match action {
+            KeyAction::NewAgent | KeyAction::RenameAgent => self.release(),
+            KeyAction::OpenExternalEditor => self.end(ctx),
+            action if action.changes_session() => self.focus_input_on_end = true,
+            _ => {}
+        }
+    }
+
     /// Record what this frame offers the chord. With the session list off
     /// screen (a narrow layout, the scene view) it falls back to the chat.
     fn observe(&mut self, sessions_shown: bool, agentic: bool, interruptible: bool) {
@@ -444,7 +478,12 @@ impl NormalMode {
         }
     }
 
-    /// Open a chord: set the focused widget aside so bare keys reach us.
+    /// Whether normal mode is on.
+    fn is_on(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Enter normal mode: set the focused widget aside so bare keys reach us.
     fn open(&mut self, ctx: &egui::Context) {
         self.restore_focus = ctx.memory_mut(|m| {
             let focused = m.focused();
@@ -458,21 +497,22 @@ impl NormalMode {
         self.pending = Some(Pending::Leader);
     }
 
-    /// End the chord and give focus back to whatever held it before, or to
-    /// the active session's input if the chord moved between sessions.
+    /// Back to insert mode: give focus back to whatever held it before, or to
+    /// the active session's input if nothing did (Esc had already dropped it)
+    /// or normal mode moved between sessions.
     fn end(&mut self, ctx: &egui::Context) {
         self.pending = None;
         let restore = self.restore_focus.take();
-        if std::mem::take(&mut self.focus_input_on_end) {
-            self.input_focus_due = true;
-        } else if let Some(id) = restore {
-            ctx.memory_mut(|m| m.request_focus(id));
+        let focus_input = std::mem::take(&mut self.focus_input_on_end);
+        match restore {
+            Some(id) if !focus_input => ctx.memory_mut(|m| m.request_focus(id)),
+            _ => self.input_focus_due = true,
         }
     }
 
-    /// End the chord and leave focus alone: the action opens something that
-    /// takes typing (a rename field, the new-agent picker) and claims focus
-    /// itself.
+    /// Leave normal mode and leave focus alone: the action opens something
+    /// that takes typing (a rename field, the new-agent picker) and claims
+    /// focus itself, or the user clicked into a text field.
     fn release(&mut self) {
         self.pending = None;
         self.restore_focus = None;
@@ -495,7 +535,8 @@ enum Then {
 struct KeyPress {
     key: Key,
     shift: bool,
-    /// Ctrl / Alt / Cmd held — never part of a chord, so it ends one.
+    /// Ctrl / Alt / Cmd held — never part of a chord, so the regular
+    /// bindings get it.
     modified: bool,
 }
 
@@ -517,15 +558,51 @@ fn first_key_press(input: &egui::InputState) -> Option<KeyPress> {
     })
 }
 
-/// Feed this frame's input to a pending chord.
+/// Bare keys Dave already reads while the chat input is unfocused, which is
+/// all of normal mode: the permission answers (`1` / `2` / `3`, `!`), a
+/// question's options (`1`-`9`, Enter) and delete-session. Normal mode lets
+/// them through rather than swallowing them as unknown.
+fn owned_bare_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::Num0
+            | Key::Num1
+            | Key::Num2
+            | Key::Num3
+            | Key::Num4
+            | Key::Num5
+            | Key::Num6
+            | Key::Num7
+            | Key::Num8
+            | Key::Num9
+            | Key::Exclamationmark
+            | Key::Enter
+            | Key::Delete
+    )
+}
+
+/// Feed this frame's input to normal mode, if it is on.
 fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
     let Some(pending) = chord.pending else {
         return ChordStep::FallThrough;
     };
 
-    // Esc cancels the chord and nothing else.
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-        chord.end(ctx);
+    // Normal mode set focus aside and holds focus requests until it ends, so
+    // a focused widget means the user clicked into a text field: they are
+    // typing now.
+    if ctx.memory(|m| m.focused()).is_some() {
+        chord.release();
+        return ChordStep::FallThrough;
+    }
+
+    // Esc cancels a half-typed prefix. At the root it's chrome's (the side
+    // menu), and normal mode stays on.
+    if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if pending == Pending::Leader {
+            return ChordStep::LeaveForChrome;
+        }
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+        chord.pending = Some(Pending::Leader);
         return ChordStep::Consumed(None);
     }
 
@@ -533,19 +610,11 @@ fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
         return ChordStep::Consumed(None);
     };
 
-    // A modified key is somebody else's binding (a Ctrl alias, the leader
-    // again): end the chord and let the regular ladder have it.
+    // A modified key is somebody else's binding (a Ctrl alias): the regular
+    // ladder has it, and normal mode stays on.
     if press.modified {
-        chord.end(ctx);
         return ChordStep::FallThrough;
     }
-
-    // Swallow this frame's keys and text so a bare key never leaks into the
-    // input, the permission bindings, or Delete-to-delete-session.
-    ctx.input_mut(|i| {
-        i.events
-            .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)))
-    });
 
     use KeyAction as A;
     use Then::{Continue, End, Release};
@@ -591,6 +660,9 @@ fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
             (Continue(Pending::Leader), Some(A::BlockToggle))
         }
         (Pane::Chat, Pending::Leader, Key::Q, false) => (End, Some(A::BlockCursorClear)),
+
+        // Back to insert mode, from either pane.
+        (_, Pending::Leader, Key::I | Key::A, false) => (End, Some(A::InsertMode)),
         (_, Pending::LeaderZ, Key::A, false) => (Continue(Pending::Leader), Some(A::BlockToggle)),
         (_, Pending::LeaderZ, Key::O, false) => (Continue(Pending::Leader), Some(A::BlockOpen)),
         (_, Pending::LeaderZ, Key::C, false) => (Continue(Pending::Leader), Some(A::BlockClose)),
@@ -627,9 +699,22 @@ fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
             (Continue(Pending::Leader), Some(A::FocusQueuePrev))
         }
 
-        // Anything else cancels the chord; the stray key is dropped.
-        _ => (End, None),
+        // Keys the regular bindings read while the input is unfocused.
+        (_, _, key, _) if owned_bare_key(key) => {
+            chord.pending = Some(Pending::Leader);
+            return ChordStep::FallThrough;
+        }
+
+        // Anything else is swallowed, and drops a half-typed prefix.
+        _ => (Continue(Pending::Leader), None),
     };
+
+    // Swallow this frame's keys and text so a bare key never leaks into the
+    // input or anything else reading keys.
+    ctx.input_mut(|i| {
+        i.events
+            .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)))
+    });
 
     // A key that does nothing here (`h` with no session list, `v` in a chat
     // session) is swallowed and the chord carries on.
@@ -671,6 +756,12 @@ pub struct KeyContext {
     pub has_pending_question: bool,
     /// A tentative accept/deny is waiting for its message; Esc cancels it.
     pub in_tentative_state: bool,
+    /// An overlay (settings, a picker) covers the chat. It owns Esc, and
+    /// normal mode, whose keys are the chat's, ends.
+    pub overlay_open: bool,
+    /// The inline session rename field has, or just lost, focus: its Esc
+    /// cancels the rename rather than entering normal mode.
+    pub renaming: bool,
 }
 
 /// Check for keybinding actions.
@@ -678,9 +769,10 @@ pub struct KeyContext {
 /// Exception: 1/2 for permission responses work without Ctrl but only when no text input has focus.
 /// In Chat mode, agentic-specific keybindings (scene view, plan mode, focus queue) are disabled.
 ///
-/// `chord` carries a leader chord across frames: while one is pending it owns
-/// the keyboard (see [`NormalMode`]). `keys` is what the frame offers the
-/// bindings (see [`KeyContext`]).
+/// `chord` carries normal mode across frames: while it is on it owns the bare
+/// keys (see [`NormalMode`]). Esc enters it from insert mode unless Esc is
+/// someone else's. `keys` is what the frame offers the bindings (see
+/// [`KeyContext`]).
 pub fn check_keybindings(
     ctx: &egui::Context,
     chord: &mut NormalMode,
@@ -691,16 +783,24 @@ pub fn check_keybindings(
         ai_mode,
         sessions_shown,
         interruptible,
-        has_pending_permission,
-        has_pending_question,
         in_tentative_state,
+        overlay_open,
+        renaming,
+        ..
     } = keys;
     let is_agentic = ai_mode == AiMode::Agentic;
     chord.observe(sessions_shown, is_agentic, interruptible);
 
-    // A pending chord reads bare keys, and its Esc outranks every other Esc.
-    if let ChordStep::Consumed(action) = check_chord(ctx, chord) {
-        return action;
+    // An overlay is modal: normal mode's keys are the chat's.
+    if overlay_open && chord.is_on() {
+        chord.release();
+    }
+
+    // Normal mode reads bare keys, and its Esc outranks every other Esc.
+    match check_chord(ctx, chord) {
+        ChordStep::Consumed(action) => return action,
+        ChordStep::LeaveForChrome => return None,
+        ChordStep::FallThrough => {}
     }
 
     // Escape in tentative state cancels the tentative mode (agentic only)
@@ -711,14 +811,47 @@ pub fn check_keybindings(
         return Some(KeyAction::CancelTentative);
     }
 
-    let ctrl = egui::Modifiers::CTRL;
-    let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
-
-    // The leader opens a chord; the keys that follow land next frame.
-    if ctx.input(|i| leader.pressed(i)) {
+    // Esc in insert mode enters normal mode, unless an overlay or the rename
+    // field owns it. The keys that follow land next frame.
+    if !chord.is_on()
+        && !overlay_open
+        && !renaming
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
+    {
         chord.open(ctx);
         return None;
     }
+
+    // The leader enters normal mode too; pressed while it is on, it does
+    // nothing.
+    if ctx.input(|i| leader.pressed(i)) {
+        if !chord.is_on() {
+            chord.open(ctx);
+        }
+        return None;
+    }
+
+    let action = check_regular_bindings(ctx, keys);
+    if let Some(action) = &action {
+        if chord.is_on() {
+            chord.after_modified(action, ctx);
+        }
+    }
+    action
+}
+
+/// The Ctrl ladder, and the bare keys Dave reads while the chat input is
+/// unfocused.
+fn check_regular_bindings(ctx: &egui::Context, keys: KeyContext) -> Option<KeyAction> {
+    let KeyContext {
+        ai_mode,
+        has_pending_permission,
+        has_pending_question,
+        ..
+    } = keys;
+    let is_agentic = ai_mode == AiMode::Agentic;
+    let ctrl = egui::Modifiers::CTRL;
+    let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
 
     // Ctrl+J / Ctrl+K for cycling through agents/chats.
     // Previously Ctrl+Tab / Ctrl+Shift+Tab, but the chrome now consumes those
@@ -936,6 +1069,8 @@ mod tests {
         has_pending_permission: false,
         has_pending_question: false,
         in_tentative_state: false,
+        overlay_open: false,
+        renaming: false,
     };
 
     /// `check_keybindings` as these tests drive it.
@@ -1006,6 +1141,7 @@ mod tests {
     }
 
     const LEADER: (Modifiers, Key) = (Leader::DEFAULT.modifiers, Leader::DEFAULT.key);
+    const ESC: (Modifiers, Key) = (Modifiers::NONE, Key::Escape);
     const NONE: Modifiers = Modifiers::NONE;
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const CTRL_SHIFT: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
@@ -1060,7 +1196,17 @@ mod tests {
             "a finished command drops back to the leader, so the strip stays up"
         );
         assert_eq!(pending_after(&[LEADER, (NONE, Key::Q)]), None);
-        assert_eq!(pending_after(&[LEADER, (NONE, Key::X)]), None);
+        assert_eq!(pending_after(&[LEADER, (NONE, Key::I)]), None);
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::X)]),
+            Some(Pending::Leader),
+            "an unknown key is swallowed and normal mode stays on"
+        );
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::Z), (NONE, Key::X)]),
+            Some(Pending::Leader),
+            "and drops a half-typed prefix"
+        );
     }
 
     /// The which-key strip must never advertise a key the chord would reject,
@@ -1150,21 +1296,15 @@ mod tests {
     }
 
     #[test]
-    fn every_leader_starts_in_the_chat() {
+    fn every_entry_starts_in_the_chat() {
         assert_eq!(
-            detect_sequence(&[
-                LEADER,
-                (NONE, Key::H),
-                (NONE, Key::Escape),
-                LEADER,
-                (NONE, Key::J)
-            ]),
+            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::I), ESC, (NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
         assert_eq!(
             detect_sequence(&[LEADER, (NONE, Key::H), LEADER, (NONE, Key::J)]),
-            Some(KeyAction::BlockCursorDown),
-            "the leader mid-chord starts a fresh one",
+            Some(KeyAction::SessionPaneNext),
+            "the leader in normal mode does nothing, so the pane stays",
         );
     }
 
@@ -1208,11 +1348,6 @@ mod tests {
     }
 
     #[test]
-    fn escape_with_a_chord_pending_only_cancels_the_chord() {
-        assert_eq!(detect_sequence(&[LEADER, (NONE, Key::Escape)]), None);
-    }
-
-    #[test]
     fn leader_s_stops_the_running_turn_from_either_pane() {
         assert_eq!(
             detect_sequence(&[LEADER, (NONE, Key::S)]),
@@ -1244,42 +1379,43 @@ mod tests {
     }
 
     #[test]
-    fn escape_with_no_chord_does_not_interrupt() {
+    fn escape_enters_normal_mode_and_does_not_interrupt() {
         assert_eq!(detect(NONE, Key::Escape), None);
+        assert_eq!(pending_after(&[ESC]), Some(Pending::Leader));
     }
 
     #[test]
     fn escape_in_the_tentative_state_still_cancels_it() {
-        let mut harness = Harness::new_ui_state(
-            |ui, action: &mut Option<KeyAction>| {
-                let mut chord = NormalMode::default();
-                let keys = KeyContext {
-                    has_pending_permission: true,
-                    in_tentative_state: true,
-                    ..FRAME
-                };
-                if let Some(a) = check_keybindings(ui.ctx(), &mut chord, keys) {
-                    *action = Some(a);
-                }
-            },
-            None,
+        let tentative = KeyContext {
+            has_pending_permission: true,
+            in_tentative_state: true,
+            ..FRAME
+        };
+        assert_eq!(
+            detect_sequence_in(tentative, &[ESC]),
+            Some(KeyAction::CancelTentative)
         );
-        harness.run();
-        harness.press_key_modifiers(NONE, Key::Escape);
-        assert_eq!(harness.state(), &Some(KeyAction::CancelTentative));
+        assert_eq!(
+            pending_after_in(tentative, &[ESC]),
+            None,
+            "and does not enter normal mode"
+        );
     }
 
     #[test]
-    fn a_cancelled_chord_stops_reading_bare_keys() {
-        assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::Escape), (NONE, Key::J)]),
-            None,
-        );
-        assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::X), (NONE, Key::J)]),
-            None,
-            "an unknown key cancels the chord too",
-        );
+    fn insert_mode_stops_reading_bare_keys() {
+        for insert in [Key::I, Key::A] {
+            assert_eq!(
+                detect_sequence(&[ESC, (NONE, insert)]),
+                Some(KeyAction::InsertMode),
+            );
+            assert_eq!(
+                detect_sequence(&[ESC, (NONE, insert), (NONE, Key::J)]),
+                Some(KeyAction::InsertMode),
+                "{insert:?}: j after it is not a motion",
+            );
+            assert_eq!(pending_after(&[ESC, (NONE, insert), (NONE, Key::J)]), None);
+        }
     }
 
     #[test]
@@ -1317,28 +1453,39 @@ mod tests {
         assert_eq!(detect(NONE, Key::J), None);
     }
 
-    #[test]
-    fn the_chord_hands_focus_back_when_it_ends() {
-        let input_id = egui::Id::unique("chat_input");
-        // A real text field: egui drops focus from an id no widget claims.
+    /// A real keypress carries its text alongside the key event.
+    fn type_key<S>(harness: &mut Harness<'_, S>, key: Key, text: &str) {
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text(text.to_owned()));
+        harness.press_key_modifiers(NONE, key);
+    }
+
+    /// A frame with the keybindings in front of a real text field, which
+    /// starts out focused like the chat input: egui drops focus from an id
+    /// no widget claims.
+    fn input_harness(
+        input_id: egui::Id,
+        keys: KeyContext,
+    ) -> Harness<'static, (NormalMode, String)> {
         let mut harness = Harness::new_ui_state(
-            |ui, (chord, text): &mut (NormalMode, String)| {
-                check(ui.ctx(), chord, FRAME);
+            move |ui, (chord, text): &mut (NormalMode, String)| {
+                check(ui.ctx(), chord, keys);
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
             },
             (NormalMode::default(), String::new()),
         );
-        // A real keypress carries its text alongside the key event.
-        let type_key = |harness: &mut Harness<'_, (NormalMode, String)>, key: Key, text: &str| {
-            harness
-                .input_mut()
-                .events
-                .push(egui::Event::Text(text.to_owned()));
-            harness.press_key_modifiers(NONE, key);
-        };
         harness.ctx.memory_mut(|m| m.request_focus(input_id));
         harness.run();
+        harness
+    }
+
+    #[test]
+    fn normal_mode_hands_focus_back_on_i() {
+        let input_id = egui::Id::unique("chat_input");
+        let mut harness = input_harness(input_id, FRAME);
 
         harness.press_key_modifiers(LEADER.0, LEADER.1);
         assert_eq!(
@@ -1348,35 +1495,194 @@ mod tests {
         );
 
         type_key(&mut harness, Key::J, "j");
-        assert_eq!(harness.state().1, "", "a chord key is a command, not text");
+        assert_eq!(
+            harness.state().1,
+            "",
+            "a normal-mode key is a command, not text"
+        );
 
-        // An unknown key ends the chord and hands focus back in the same frame,
-        // so its own text must not follow the focus into the input.
-        type_key(&mut harness, Key::X, "x");
+        type_key(&mut harness, Key::W, "w");
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+        assert_eq!(harness.state().1, "", "an unknown key is swallowed");
+        assert!(harness.state().0.is_on(), "and normal mode stays on");
+
+        // `i` ends normal mode and hands focus back in the same frame, so its
+        // own text must not follow the focus into the input.
+        type_key(&mut harness, Key::I, "i");
         assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id));
-        assert_eq!(harness.state().1, "", "the cancelling key is dropped");
+        assert_eq!(harness.state().1, "", "the i is a command");
 
         type_key(&mut harness, Key::H, "h");
-        assert_eq!(harness.state().1, "h", "typing resumes after the chord");
+        assert_eq!(harness.state().1, "h", "typing resumes in insert mode");
     }
 
     #[test]
-    fn escape_ends_the_chord_and_hands_focus_back() {
+    fn escape_from_the_input_enters_normal_mode() {
         let input_id = egui::Id::unique("chat_input");
+        let mut harness = input_harness(input_id, FRAME);
+
+        type_key(&mut harness, Key::Escape, "");
+        assert!(harness.state().0.is_on());
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+
+        type_key(&mut harness, Key::J, "j");
+        assert_eq!(
+            harness.state().1,
+            "",
+            "j moves the cursor instead of typing"
+        );
+    }
+
+    #[test]
+    fn escape_j_moves_the_cursor_down() {
+        assert_eq!(
+            detect_sequence(&[ESC, (NONE, Key::J)]),
+            Some(KeyAction::BlockCursorDown),
+        );
+    }
+
+    #[test]
+    fn escape_cancels_a_prefix_and_stays_in_normal_mode() {
+        assert_eq!(
+            pending_after(&[ESC, (NONE, Key::Z), ESC]),
+            Some(Pending::Leader)
+        );
+        assert_eq!(
+            detect_sequence(&[ESC, (NONE, Key::Z), ESC, (NONE, Key::J)]),
+            Some(KeyAction::BlockCursorDown),
+        );
+    }
+
+    /// Press `presses` and report whether the last frame's Esc was still in
+    /// the input when `check_keybindings` returned, and whether normal mode
+    /// is on afterwards.
+    fn escape_left_over(keys: KeyContext, presses: &[(Modifiers, Key)]) -> (bool, bool) {
         let mut harness = Harness::new_ui_state(
-            |ui, (chord, text): &mut (NormalMode, String)| {
+            move |ui, (chord, left): &mut (NormalMode, bool)| {
+                check(ui.ctx(), chord, keys);
+                *left |= ui.input(|i| i.key_pressed(Key::Escape));
+            },
+            (NormalMode::default(), false),
+        );
+        harness.run();
+        let Some((last, earlier)) = presses.split_last() else {
+            panic!("no presses");
+        };
+        for (modifiers, key) in earlier {
+            harness.press_key_modifiers(*modifiers, *key);
+        }
+        harness.state_mut().1 = false;
+        harness.press_key_modifiers(last.0, last.1);
+        (harness.state().1, harness.state().0.is_on())
+    }
+
+    #[test]
+    fn escape_at_the_root_is_left_for_chrome() {
+        assert_eq!(
+            escape_left_over(FRAME, &[ESC, ESC]),
+            (true, true),
+            "the second Esc is chrome's (the side menu), and normal mode stays on"
+        );
+        assert_eq!(
+            escape_left_over(FRAME, &[ESC]),
+            (false, true),
+            "the first Esc is Dave's: it enters normal mode"
+        );
+    }
+
+    #[test]
+    fn escape_under_an_overlay_is_the_overlays() {
+        let overlay = KeyContext {
+            overlay_open: true,
+            ..FRAME
+        };
+        assert_eq!(escape_left_over(overlay, &[ESC]), (true, false));
+        assert_eq!(
+            escape_left_over(overlay, &[LEADER, ESC]),
+            (true, false),
+            "an overlay ends normal mode, and its Esc stays the overlay's"
+        );
+    }
+
+    #[test]
+    fn escape_while_renaming_cancels_the_rename() {
+        let renaming = KeyContext {
+            renaming: true,
+            ..FRAME
+        };
+        assert_eq!(escape_left_over(renaming, &[ESC]), (true, false));
+    }
+
+    #[test]
+    fn ctrl_keys_work_without_leaving_normal_mode() {
+        let ctrl_j = (Modifiers::CTRL, Key::J);
+        assert_eq!(detect_sequence(&[ESC, ctrl_j]), Some(KeyAction::NextAgent));
+        assert_eq!(pending_after(&[ESC, ctrl_j]), Some(Pending::Leader));
+        assert_eq!(
+            detect_sequence(&[ESC, ctrl_j, (NONE, Key::J)]),
+            Some(KeyAction::BlockCursorDown),
+        );
+    }
+
+    #[test]
+    fn ctrl_keys_that_take_typing_leave_normal_mode() {
+        assert_eq!(
+            detect_sequence(&[ESC, (Modifiers::CTRL, Key::T)]),
+            Some(KeyAction::NewAgent)
+        );
+        assert_eq!(pending_after(&[ESC, (Modifiers::CTRL, Key::T)]), None);
+        assert_eq!(pending_after(&[ESC, (CTRL_SHIFT, Key::R)]), None);
+    }
+
+    #[test]
+    fn permission_keys_reach_the_permission_bindings_in_normal_mode() {
+        let pending = KeyContext {
+            has_pending_permission: true,
+            ..FRAME
+        };
+        assert_eq!(
+            detect_sequence_in(pending, &[ESC, (NONE, Key::Num1)]),
+            Some(KeyAction::AcceptPermission),
+        );
+        assert_eq!(
+            pending_after_in(pending, &[ESC, (NONE, Key::Num1)]),
+            Some(Pending::Leader),
+        );
+    }
+
+    #[test]
+    fn clicking_into_a_text_field_leaves_normal_mode() {
+        let input_id = egui::Id::unique("chat_input");
+        let other_id = egui::Id::unique("some_other_field");
+        let mut harness = Harness::new_ui_state(
+            move |ui, (chord, text, other): &mut (NormalMode, String, String)| {
                 check(ui.ctx(), chord, FRAME);
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
+                ui.add(egui::TextEdit::singleline(other).id(other_id))
+                    .accessible_name("other field");
             },
-            (NormalMode::default(), String::new()),
+            (NormalMode::default(), String::new(), String::new()),
         );
         harness.ctx.memory_mut(|m| m.request_focus(input_id));
         harness.run();
 
-        harness.press_key_modifiers(LEADER.0, LEADER.1);
-        harness.press_key_modifiers(NONE, Key::Escape);
-        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id));
+        type_key(&mut harness, Key::Escape, "");
+        assert!(harness.state().0.is_on());
+
+        // A click into the other field focuses it.
+        harness.ctx.memory_mut(|m| m.request_focus(other_id));
+        harness.run();
+        assert!(!harness.state().0.is_on(), "normal mode ends");
+        assert_eq!(
+            harness.ctx.memory(|m| m.focused()),
+            Some(other_id),
+            "without handing focus back to the input"
+        );
+        assert!(!harness.state_mut().0.take_input_focus());
+
+        type_key(&mut harness, Key::J, "j");
+        assert_eq!(harness.state().2, "j", "typing lands in the clicked field");
     }
 
     #[test]

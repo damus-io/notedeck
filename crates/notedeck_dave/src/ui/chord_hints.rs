@@ -1,6 +1,6 @@
-//! The which-key strip: while a leader chord is pending, a row of keycaps
-//! above the chat input shows what the chord will accept next, with the
-//! leader's session keys on a second row.
+//! The which-key strip: while normal mode is on, a row of keycaps above the
+//! chat input shows what it will accept next, with the session keys on a
+//! second row at its root.
 
 use super::keybind_hint::KeybindHint;
 use super::keybindings::{ChordHint, ChordView, KeyAction};
@@ -14,7 +14,7 @@ const KEYCAP: f32 = 18.0;
 const KEYCAP_PER_CHAR: f32 = 8.0;
 
 /// Height the strip reserves in the bottom-up input stack: a row of keycaps,
-/// plus a second for the session keys while the leader offers them.
+/// plus a second for the session keys while normal mode's root offers them.
 pub fn strip_height(ui: &egui::Ui, chord: ChordView) -> f32 {
     let rows = if chord.session_keys().is_empty() {
         1.0
@@ -28,7 +28,7 @@ pub fn strip_height(ui: &egui::Ui, chord: ChordView) -> f32 {
 /// keys, then the session keys on a row beneath them. Keys that do nothing
 /// this frame (`h` with no session list) are left out.
 ///
-/// Runs every frame a chord is pending, so it only walks the static hint
+/// Runs every frame normal mode is on, so it only walks the static hint
 /// tables; the one allocation, a keycap's tooltip, happens on hover.
 pub fn chord_hints_ui(ui: &mut egui::Ui, i18n: &mut Localization, chord: ChordView) {
     ui.vertical(|ui| {
@@ -125,6 +125,11 @@ fn describe(i18n: &mut Localization, action: &KeyAction) -> Option<String> {
             i18n,
             "Leave block navigation",
             "Dave which-key tooltip: drop the block cursor and end the chord"
+        ),
+        KeyAction::InsertMode => tr!(
+            i18n,
+            "Insert: type a message",
+            "Dave which-key tooltip: leave normal mode and focus the chat input"
         ),
         KeyAction::FocusSessionsPane => tr!(
             i18n,

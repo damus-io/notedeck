@@ -588,6 +588,12 @@ enum RenameOutcome {
     Cancelled,
 }
 
+/// The inline session rename field's id. Keybindings check it so Esc cancels
+/// the rename instead of entering normal mode.
+pub(crate) fn rename_edit_id() -> egui::Id {
+    egui::Id::unique("session_rename_edit")
+}
+
 fn inline_rename_ui(
     ui: &mut egui::Ui,
     response: &egui::Response,
@@ -601,6 +607,7 @@ fn inline_rename_ui(
             ui.set_width(edit_rect.width());
             ui.add(
                 egui::TextEdit::singleline(buf)
+                    .id(rename_edit_id())
                     .font(egui::FontId::proportional(14.0))
                     .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2))),
             )

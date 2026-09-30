@@ -409,6 +409,9 @@ Image_cache_size_3004 = Image cache size:
 # Title for individual user column
 Individual_b776 = Individual
 
+# Dave which-key tooltip: leave normal mode and focus the chat input
+Insert__type_a_message_bd45 = Insert: type a message
+
 # Error message for invalid zap amount
 Invalid_amount_6630 = Invalid amount
 

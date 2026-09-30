@@ -409,6 +409,9 @@ Image_cache_size_3004 = {"["}Ímàgé çàçhé sízé:{"]"}
 # Title for individual user column
 Individual_b776 = {"["}Íñdívídúàl{"]"}
 
+# Dave which-key tooltip: leave normal mode and focus the chat input
+Insert__type_a_message_bd45 = {"["}Íñsért: typé à méssàgé{"]"}
+
 # Error message for invalid zap amount
 Invalid_amount_6630 = {"["}Íñvàlíd àmóúñt{"]"}
 

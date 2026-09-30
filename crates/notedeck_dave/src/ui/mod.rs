@@ -969,8 +969,11 @@ pub fn handle_key_action(
             );
             KeyActionResult::None
         }
-        // The pane lives on the chord; there is nothing to dispatch.
-        KeyAction::FocusSessionsPane | KeyAction::FocusChatPane => KeyActionResult::None,
+        // The pane and the mode live on NormalMode; there is nothing to
+        // dispatch.
+        KeyAction::FocusSessionsPane | KeyAction::FocusChatPane | KeyAction::InsertMode => {
+            KeyActionResult::None
+        }
         KeyAction::NewAgent => KeyActionResult::NewAgent,
         KeyAction::CloneAgent => KeyActionResult::CloneAgent,
         // The same path as the Stop button's `DaveAction::Interrupt`.
@@ -1446,6 +1449,8 @@ mod tests {
             has_pending_permission: false,
             has_pending_question: false,
             in_tentative_state: false,
+            overlay_open: false,
+            renaming: false,
         };
         if let Some(action) = check_keybindings(ui.ctx(), &mut d.chord, keys) {
             d.dispatch(action, ui.ctx());
@@ -1485,9 +1490,27 @@ mod tests {
             "mid-chord, the new session's input stays unfocused"
         );
 
-        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        harness.press_key_modifiers(Modifiers::NONE, Key::I);
         harness.run();
         assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input(second)));
+    }
+
+    /// egui drops the input's focus on Esc before Dave reads the key, so
+    /// normal mode has nothing to hand back: `i` focuses the active input.
+    #[test]
+    fn escape_then_i_puts_focus_back_on_the_input() {
+        let mut harness = Harness::new_ui_state(chord_frame, Dispatch::new());
+        let [first, _] = harness.state().sessions;
+        let input = egui::Id::unique(("dave_input", first));
+        harness.ctx.memory_mut(|m| m.request_focus(input));
+        harness.run();
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::I);
+        harness.run();
+        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input));
     }
 
     #[test]
@@ -1509,7 +1532,7 @@ mod tests {
         assert_eq!(harness.ctx.memory(|m| m.focused()), None);
         assert!(!harness.state().focus_requested(first));
 
-        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        harness.press_key_modifiers(Modifiers::NONE, Key::I);
         harness.run();
         assert_eq!(
             harness.ctx.memory(|m| m.focused()),

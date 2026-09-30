@@ -230,8 +230,8 @@ pub struct Dave {
     auto_steal: focus_queue::AutoStealState,
     /// The session ID to return to after processing all NeedsInput items
     home_session: Option<SessionId>,
-    /// Normal mode: the leader chord and whatever is pending in it, carried
-    /// across frames.
+    /// Vim-style normal mode (Esc enters it) and any chord pending in it,
+    /// carried across frames.
     normal_mode: ui::keybindings::NormalMode,
     /// `settings.leader_key` resolved to an egui key, refreshed whenever the
     /// settings change so the per-frame keybinding pass never parses it.

@@ -2855,6 +2855,8 @@ mod tests {
                     has_pending_permission: false,
                     has_pending_question: false,
                     in_tentative_state: false,
+                    overlay_open: false,
+                    renaming: false,
                 };
                 if let Some(a) = check_keybindings(ui.ctx(), chord, keys) {
                     *action = Some(a);
