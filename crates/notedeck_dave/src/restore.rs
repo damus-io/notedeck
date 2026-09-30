@@ -31,28 +31,106 @@ pub(crate) struct PendingMessageLoad {
     claude_session_id: String,
 }
 
+/// A request to focus a session raised from elsewhere in the app — a click on
+/// its inline `agentium:` chip, or an open by URI — waiting for the next
+/// [`update`](notedeck::App::update). See [`Dave::open_with_message`].
+pub(crate) struct PendingOpen {
+    /// The kind-31988 session-state note to focus.
+    pub(crate) note: nostrdb_net::NoteId,
+    /// Text to send into the session once it's focused, as if typed and
+    /// submitted (`OpenUri.msg`). `None` for a plain chip click.
+    pub(crate) msg: Option<String>,
+}
+
+/// The session a [`PendingOpen`] focused, handed back to
+/// [`update`](notedeck::App::update) so it can deliver the request's message
+/// (see [`Dave::deliver_open_message`]).
+pub(crate) struct OpenedSession {
+    /// The focused session.
+    pub(crate) session: SessionId,
+    /// Whether it was already materialized when the open landed. A session that
+    /// was only just reopened from its tombstone, or is still a "Connecting…"
+    /// placeholder for a remote resume, isn't ready to take a message yet.
+    pub(crate) was_live: bool,
+    /// The request's message, if it carried one.
+    pub(crate) msg: Option<String>,
+}
+
+/// What [`Dave::focus_session_note`] did with a session-state note.
+enum FocusOutcome {
+    /// It focused this session.
+    Focused {
+        /// The focused session.
+        session: SessionId,
+        /// See [`OpenedSession::was_live`].
+        was_live: bool,
+    },
+    /// No read transaction this frame; try again next frame.
+    Retry,
+    /// The note doesn't resolve to a session we can open.
+    Unresolved,
+}
+
+/// Where [`Dave::deliver_open_message`] puts an open request's message.
+#[derive(Debug, PartialEq, Eq)]
+enum OpenMessageDelivery {
+    /// Submit it, exactly as the input box's Enter does.
+    Send,
+    /// Leave it in the session's input draft, for this reason, so nothing is
+    /// lost when the session can't take input yet.
+    Draft(&'static str),
+}
+
 impl Dave {
     /// Act on a pending [`open`](Self::open): resolve the clicked kind-31988 note to
     /// one of this account's sessions (by its `claude_session_id` d-tag) and switch
-    /// to it, revealing the chat.
+    /// to it, revealing the chat. Returns the focused session, with the request's
+    /// message, for [`deliver_open_message`](Self::deliver_open_message).
+    ///
+    /// The request is consumed exactly once: it is put back only when no read
+    /// transaction could be opened this frame, and an unresolvable note drops it
+    /// (logging any message it carried) rather than retrying forever.
+    pub(crate) fn process_pending_open(&mut self, ndb: &nostrdb::Ndb) -> Option<OpenedSession> {
+        let pending = self.pending_open.take()?;
+        match self.focus_session_note(ndb, pending.note) {
+            FocusOutcome::Focused { session, was_live } => Some(OpenedSession {
+                session,
+                was_live,
+                msg: pending.msg,
+            }),
+            FocusOutcome::Retry => {
+                self.pending_open = Some(pending);
+                None
+            }
+            FocusOutcome::Unresolved => {
+                if pending.msg.is_some() {
+                    tracing::warn!(
+                        "open: {} isn't a session we can open; dropping its message",
+                        pending.note.hex()
+                    );
+                }
+                None
+            }
+        }
+    }
+
+    /// Focus the session whose kind-31988 state note is `note_id`.
     ///
     /// A materialized session is simply focused. A session that *isn't*
     /// materialized — a soft-deleted (tombstoned) session, or one not yet restored
     /// — is [reopened](Self::reopen_session): clicking a deleted `agentium:` chip
     /// revives and resumes a session we own (or surfaces history for a remote one)
-    /// rather than doing nothing. A note that isn't a session state at all drops
-    /// the request rather than retrying forever.
-    pub(crate) fn process_pending_open(&mut self, ndb: &nostrdb::Ndb) {
-        let Some(note_id) = self.pending_open.take() else {
-            return;
-        };
+    /// rather than doing nothing.
+    fn focus_session_note(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        note_id: nostrdb_net::NoteId,
+    ) -> FocusOutcome {
         // The session's stable event id (the kind-31988 `d` tag), if this note is a
         // session-state event. Scope the read txn so it drops before reopen below.
         let event_id: Option<String> = {
             let Ok(txn) = Transaction::new(ndb) else {
-                // Couldn't open a read txn this frame; retry next frame.
-                self.pending_open = Some(note_id);
-                return;
+                return FocusOutcome::Retry;
             };
             ndb.get_note_by_id(&txn, note_id.bytes())
                 .ok()
@@ -60,22 +138,26 @@ impl Dave {
         };
         let Some(event_id) = event_id else {
             // Not a session-state note we can route to.
-            return;
+            return FocusOutcome::Unresolved;
         };
 
         // Already materialized — just focus it.
         if let Some(session_id) = self.session_id_for_event_id(&event_id) {
-            if self.session_manager.switch_to(session_id) {
-                // Reveal the chat: clear any overlay (directory/session picker) and
-                // the mobile session-list drawer, and stop auto-steal fighting the
-                // switch — dequeue this session's own entry and anchor auto-steal
-                // here so it doesn't immediately yank onto a *different* session.
-                self.active_overlay = DaveOverlay::None;
-                self.show_session_list = false;
-                self.focus_queue.dequeue(session_id);
-                self.anchor_focus(session_id);
+            if !self.session_manager.switch_to(session_id) {
+                return FocusOutcome::Unresolved;
             }
-            return;
+            // Reveal the chat: clear any overlay (directory/session picker) and
+            // the mobile session-list drawer, and stop auto-steal fighting the
+            // switch — dequeue this session's own entry and anchor auto-steal
+            // here so it doesn't immediately yank onto a *different* session.
+            self.active_overlay = DaveOverlay::None;
+            self.show_session_list = false;
+            self.focus_queue.dequeue(session_id);
+            self.anchor_focus(session_id);
+            return FocusOutcome::Focused {
+                session: session_id,
+                was_live: true,
+            };
         }
 
         // Already awaiting a remote resume for this session — focus the existing
@@ -87,13 +169,16 @@ impl Dave {
             self.active_overlay = DaveOverlay::None;
             self.show_session_list = false;
             self.anchor_focus(placeholder_id);
-            return;
+            return FocusOutcome::Focused {
+                session: placeholder_id,
+                was_live: false,
+            };
         }
 
         // Not materialized: a soft-deleted (or not-yet-restored) session. Reopen
         // it instead of dropping the click — the deleted-chip resume affordance.
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
-            return;
+            return FocusOutcome::Unresolved;
         };
 
         // Resolve the target session's state (across live + tombstoned) so we can
@@ -102,9 +187,7 @@ impl Dave {
         // it), so we publish a resume command asking its own host to reopen it.
         let state = {
             let Ok(txn) = Transaction::new(ndb) else {
-                // Couldn't open a read txn this frame; retry next frame.
-                self.pending_open = Some(note_id);
-                return;
+                return FocusOutcome::Retry;
             };
             let live = session_loader::load_session_states_for_author(ndb, &txn, &account);
             let deleted =
@@ -114,7 +197,7 @@ impl Dave {
                 .cloned()
         };
         let Some(state) = state else {
-            return;
+            return FocusOutcome::Unresolved;
         };
 
         if !state.hostname.is_empty() && state.hostname != self.hostname {
@@ -124,15 +207,78 @@ impl Dave {
             // over the shared subscription and upgrades the placeholder in place.
             self.queue_resume_command(&state);
             self.show_session_list = false;
-            return;
+            return match self.pending_placeholder_for(None, &event_id) {
+                Some(placeholder_id) => FocusOutcome::Focused {
+                    session: placeholder_id,
+                    was_live: false,
+                },
+                None => FocusOutcome::Unresolved,
+            };
         }
 
         // Local session: revive + resume it in place.
-        if let Some(session_id) = self.reopen_session(ndb, account, &event_id) {
-            self.active_overlay = DaveOverlay::None;
-            self.show_session_list = false;
-            self.focus_queue.dequeue(session_id);
+        let Some(session_id) = self.reopen_session(ndb, account, &event_id) else {
+            return FocusOutcome::Unresolved;
+        };
+        self.active_overlay = DaveOverlay::None;
+        self.show_session_list = false;
+        self.focus_queue.dequeue(session_id);
+        FocusOutcome::Focused {
+            session: session_id,
+            was_live: false,
         }
+    }
+
+    /// Deliver an open request's message into the session it focused: submit it
+    /// through the same path as the input box's Enter
+    /// ([`add_user_message_for_session`](Self::add_user_message_for_session) then
+    /// [`send_user_message_for`](Self::send_user_message_for)), so a local session
+    /// dispatches it to its backend and a remote one publishes it to its host.
+    ///
+    /// A session that can't take input yet (see
+    /// [`open_message_delivery`](Self::open_message_delivery)) gets the message in
+    /// its input draft instead, so it is never lost silently.
+    pub(crate) fn deliver_open_message(&mut self, opened: OpenedSession, app_ctx: &AppContext) {
+        let Some(msg) = opened.msg else {
+            return;
+        };
+        let sid = opened.session;
+        match self.open_message_delivery(sid, opened.was_live) {
+            OpenMessageDelivery::Send => {
+                if self.add_user_message_for_session(sid, app_ctx, msg, Vec::new()) {
+                    self.send_user_message_for(sid, app_ctx, app_ctx.waker);
+                }
+            }
+            OpenMessageDelivery::Draft(reason) => {
+                let Some(session) = self.session_manager.get_mut(sid) else {
+                    tracing::warn!("open: session {sid} vanished; dropping its message");
+                    return;
+                };
+                tracing::info!("open: {reason}; leaving the message in the draft");
+                if !session.input.is_empty() {
+                    session.input.push_str("\n\n");
+                }
+                session.input.push_str(&msg);
+            }
+        }
+    }
+
+    /// Whether session `sid`, just focused by an open request, can take that
+    /// request's message now or should get it in its draft.
+    fn open_message_delivery(&self, sid: SessionId, was_live: bool) -> OpenMessageDelivery {
+        if !was_live {
+            return OpenMessageDelivery::Draft("the session is still being reopened");
+        }
+        let Some(session) = self.session_manager.get(sid) else {
+            return OpenMessageDelivery::Draft("the session is gone");
+        };
+        if session.pending_created_at.is_some() {
+            return OpenMessageDelivery::Draft("the session is still connecting");
+        }
+        if !session.is_remote() && !self.backends.contains_key(&session.backend_type) {
+            return OpenMessageDelivery::Draft("no local backend runs this session");
+        }
+        OpenMessageDelivery::Send
     }
 
     /// The pending placeholder a just-discovered kind-31988 state should upgrade
@@ -1316,7 +1462,7 @@ mod tests {
 
         // Click the remote chip: a resume command is queued for its host, and a
         // "Connecting…" placeholder stands in until the owning host revives it.
-        dave.pending_open = Some(nostrdb_net::NoteId::new(remote_tomb.note_id));
+        dave.open(nostrdb_net::NoteId::new(remote_tomb.note_id));
         dave.process_pending_open(&ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
@@ -1363,7 +1509,7 @@ mod tests {
         // Re-clicking the same deleted chip before the host answers focuses the
         // existing placeholder instead of queuing a second command / stranding a
         // duplicate placeholder.
-        dave.pending_open = Some(nostrdb_net::NoteId::new(remote_tomb.note_id));
+        dave.open(nostrdb_net::NoteId::new(remote_tomb.note_id));
         dave.process_pending_open(&ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
@@ -1386,7 +1532,7 @@ mod tests {
 
         // Click the local chip: it is revived in place (materialized, dirty) with
         // no additional resume command emitted.
-        dave.pending_open = Some(nostrdb_net::NoteId::new(local_tomb.note_id));
+        dave.open(nostrdb_net::NoteId::new(local_tomb.note_id));
         dave.process_pending_open(&ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
@@ -1460,5 +1606,254 @@ mod tests {
             .unwrap()
             .pending_created_at = None;
         assert_eq!(dave.pending_placeholder_for(None, "sess-D"), None);
+    }
+
+    // =========================================================================
+    // Open with a message (OpenUri `msg`)
+    // =========================================================================
+
+    /// A backend that records how many turns it was asked to dispatch and never
+    /// streams anything back.
+    struct CountingBackend {
+        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::backend::AiBackend for CountingBackend {
+        fn stream_request(
+            &self,
+            _messages: Vec<crate::Message>,
+            _tools: std::sync::Arc<std::collections::HashMap<String, crate::tools::Tool>>,
+            _model: Option<String>,
+            _user_id: String,
+            _session_id: String,
+            _agentium_session_id: Option<String>,
+            _cwd: Option<PathBuf>,
+            _resume_session_id: Option<String>,
+            _permission_mode: claude_agent_sdk_rs::PermissionMode,
+            _waker: Waker,
+        ) -> (
+            Option<std::sync::mpsc::Receiver<crate::DaveApiResponse>>,
+            Option<tokio::task::JoinHandle<()>>,
+        ) {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (None, None)
+        }
+
+        fn cleanup_session(&self, _session_id: String) {}
+
+        fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
+
+        fn set_permission_mode(
+            &self,
+            _session_id: String,
+            _mode: claude_agent_sdk_rs::PermissionMode,
+            _waker: Waker,
+        ) {
+        }
+    }
+
+    /// Replace `dave`'s backends with one [`CountingBackend`] serving Claude
+    /// sessions, returning its dispatch counter.
+    fn install_counting_backend(dave: &mut Dave) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        dave.backends.clear();
+        dave.backends.insert(
+            BackendType::Claude,
+            Box::new(CountingBackend {
+                requests: requests.clone(),
+            }),
+        );
+        requests
+    }
+
+    /// A notedeck host whose selected account signs with `sk`, so the send path
+    /// (which needs a full `AppContext`) runs exactly as in the app.
+    fn test_host(dir: &std::path::Path, sk: &[u8; 32]) -> notedeck::Notedeck {
+        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+        let mut host = notedeck::Notedeck::init(&egui::Context::default(), dir, &args);
+        let full = nostrdb_net::FullKeypair::from_secret_bytes(sk).unwrap();
+        {
+            let mut app_ctx = host.app_context();
+            let _ = app_ctx
+                .accounts
+                .add_account(nostrdb_net::Keypair::from_secret(full.secret_key.clone()));
+            app_ctx.select_account(&full.pubkey);
+        }
+        host
+    }
+
+    /// Ingest `event` into `ndb` and wait until it is queryable.
+    async fn ingest(ndb: &Ndb, event: &session_events::BuiltEvent) {
+        let filter = nostrdb::Filter::new().build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        ndb.wait_for_notes(sub, 1).await.unwrap();
+    }
+
+    /// A kind-31988 state for session `sid` on `host`, with `status`.
+    fn state_event(
+        sid: &str,
+        host: &str,
+        status: &str,
+        sk: &[u8; 32],
+    ) -> session_events::BuiltEvent {
+        session_events::build_session_state_event(
+            sid,
+            "Open Me",
+            None,
+            "/tmp/proj",
+            status,
+            None,
+            host,
+            "/home/dev",
+            "claude",
+            "default",
+            Some("cli-abc"),
+            None,
+            None,
+            None,
+            1_000,
+            sk,
+        )
+        .unwrap()
+    }
+
+    /// The texts of `dave`'s session `sid`'s user messages.
+    fn user_texts(dave: &Dave, sid: SessionId) -> Vec<String> {
+        dave.session_manager
+            .get(sid)
+            .unwrap()
+            .chat
+            .iter()
+            .filter_map(|m| match m {
+                crate::Message::User(u) => Some(u.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Opening a live local session with a message sends it, once, through the
+    /// same path as the input box's Enter: one user message in the chat, one
+    /// backend dispatch, an empty draft — and a later frame sends nothing more.
+    #[tokio::test]
+    async fn open_with_message_sends_into_a_live_session_once() {
+        let sk = test_secret_key();
+        let base_dir = TempDir::new().unwrap();
+        let mut dave = test_dave(&DataPath::new(base_dir.path()));
+        let requests = install_counting_backend(&mut dave);
+        let sid = dave.session_manager.new_session(
+            PathBuf::from("/tmp/proj"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let event_sid = dave
+            .session_manager
+            .get(sid)
+            .unwrap()
+            .agentic
+            .as_ref()
+            .unwrap()
+            .event_session_id()
+            .to_owned();
+
+        let host_dir = TempDir::new().unwrap();
+        let mut host = test_host(host_dir.path(), &sk);
+        let app_ctx = host.app_context();
+        let state = state_event(&event_sid, &dave.hostname.clone(), "idle", &sk);
+        ingest(app_ctx.ndb, &state).await;
+
+        let msg = "launch a /code-review for the work done in this session";
+        dave.open_with_message(nostrdb_net::NoteId::new(state.note_id), Some(msg.into()));
+        for _frame in 0..2 {
+            if let Some(opened) = dave.process_pending_open(app_ctx.ndb) {
+                dave.deliver_open_message(opened, &app_ctx);
+            }
+        }
+
+        assert_eq!(dave.session_manager.active_id(), Some(sid), "focused");
+        assert_eq!(
+            user_texts(&dave, sid),
+            vec![msg.to_owned()],
+            "one user message"
+        );
+        assert_eq!(
+            requests.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "dispatched to the backend exactly once"
+        );
+        assert!(dave.session_manager.get(sid).unwrap().input.is_empty());
+    }
+
+    /// Opening a deleted (tombstoned) session with a message revives it but
+    /// can't send yet: the message lands in its input draft, beside what the
+    /// user had there, and nothing is dispatched.
+    #[tokio::test]
+    async fn open_with_message_drafts_into_a_deleted_session() {
+        let sk = test_secret_key();
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let base_dir = TempDir::new().unwrap();
+        let mut dave = test_dave(&DataPath::new(base_dir.path()));
+        let requests = install_counting_backend(&mut dave);
+        dave.pns_local_state = Some(PnsLocalState {
+            account,
+            has_secret_key: true,
+        });
+
+        let host_dir = TempDir::new().unwrap();
+        let mut host = test_host(host_dir.path(), &sk);
+        let app_ctx = host.app_context();
+        let tomb = state_event("dead-sess", &dave.hostname.clone(), "deleted", &sk);
+        ingest(app_ctx.ndb, &tomb).await;
+
+        let msg = "launch a /code-review";
+        dave.open_with_message(nostrdb_net::NoteId::new(tomb.note_id), Some(msg.into()));
+        let opened = dave
+            .process_pending_open(app_ctx.ndb)
+            .expect("the tombstone is reopened");
+        assert!(!opened.was_live, "a reopened session isn't live yet");
+        let sid = opened.session;
+        dave.deliver_open_message(opened, &app_ctx);
+
+        let session = dave.session_manager.get(sid).unwrap();
+        assert_eq!(session.input, msg, "the message waits in the draft");
+        assert!(user_texts(&dave, sid).is_empty(), "nothing was sent");
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// A live local session no backend on this device runs can't take the
+    /// message either; it goes to the draft rather than a dispatch that would
+    /// silently do nothing.
+    #[test]
+    fn open_message_drafts_when_no_backend_runs_the_session() {
+        let base_dir = TempDir::new().unwrap();
+        let mut dave = test_dave(&DataPath::new(base_dir.path()));
+        install_counting_backend(&mut dave);
+        let claude = dave.session_manager.new_session(
+            PathBuf::from("/tmp/proj"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let codex = dave.session_manager.new_session(
+            PathBuf::from("/tmp/proj"),
+            AiMode::Agentic,
+            BackendType::Codex,
+        );
+
+        assert_eq!(
+            dave.open_message_delivery(claude, true),
+            OpenMessageDelivery::Send
+        );
+        assert!(matches!(
+            dave.open_message_delivery(codex, true),
+            OpenMessageDelivery::Draft(_)
+        ));
+        assert!(matches!(
+            dave.open_message_delivery(claude, false),
+            OpenMessageDelivery::Draft(_)
+        ));
     }
 }

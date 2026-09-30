@@ -166,6 +166,10 @@ fn resolve_reference(ctx: &mut AppContext, reference: &str) -> Option<nostrdb_ne
 /// a notebook node in Notebook, a headway board/issue in Headway — the way a
 /// click on its inline widget does. Returns `false`, doing nothing, when no
 /// such app claims it, so the caller hands it to the Columns timeline.
+///
+/// `msg` is an [`OpenUri`](notedeck::OpenUri) message: Dave sends it into the
+/// opened session ([`Dave::open_with_message`](notedeck_dave::Dave::open_with_message)).
+/// The other apps take no message, so it's logged and dropped there.
 #[cfg_attr(
     not(any(feature = "dave", feature = "notebook", feature = "headway")),
     allow(unused_variables)
@@ -174,14 +178,22 @@ fn open_note_in_owning_app(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     note_id: nostrdb_net::NoteId,
+    msg: Option<String>,
 ) -> bool {
     #[cfg(feature = "dave")]
     if is_agentium_note(ctx, note_id) {
         chrome.switch_to_dave();
         if let Some(dave) = chrome.get_dave_app() {
-            dave.open(note_id);
+            dave.open_with_message(note_id, msg);
         }
         return true;
+    }
+
+    if msg.is_some() {
+        tracing::warn!(
+            "open: {} isn't an agentium session; dropping its message",
+            note_id.hex()
+        );
     }
 
     #[cfg(feature = "notebook")]
@@ -219,8 +231,11 @@ pub(super) fn chrome_handle_app_action(
                 return;
             };
             // Route it as the click on its inline chip would be, so an open by
-            // reference and an open by click can never land differently.
-            // `open.msg` is dropped here: no app consumes it yet.
+            // reference and an open by click can never land differently — except
+            // that the owning app also gets the message (Dave sends it).
+            if open_note_in_owning_app(chrome, ctx, note_id, open.msg) {
+                return;
+            }
             let click = notedeck::NoteAction::note(note_id);
             chrome_handle_app_action(chrome, ctx, AppAction::Note(click), ui);
         }
@@ -241,7 +256,7 @@ pub(super) fn chrome_handle_app_action(
             // A click on another app's inline widget opens in that app rather than
             // the timeline (see `open_note_in_owning_app`).
             if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
-                if open_note_in_owning_app(chrome, ctx, *note_id) {
+                if open_note_in_owning_app(chrome, ctx, *note_id, None) {
                     return;
                 }
             }

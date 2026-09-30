@@ -24,7 +24,8 @@ pub struct OpenUri {
     pub reference: String,
     /// A message to hand the opened entity, e.g. a prompt to send into an
     /// agentium session. The shell carries it through [`AppAction::Open`](crate::AppAction::Open)
-    /// but no app consumes it yet, so today it is dropped after the open.
+    /// to the owning app: Dave sends it into the opened session as a user
+    /// message; apps that take no message log and drop it.
     pub msg: Option<String>,
 }
 

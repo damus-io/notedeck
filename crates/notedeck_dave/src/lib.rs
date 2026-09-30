@@ -232,10 +232,11 @@ pub struct Dave {
     /// settings change so the per-frame keybinding pass never parses it.
     leader: ui::keybindings::Leader,
     /// A kind-31988 session-state note to focus, raised when its inline
-    /// `agentium:` chip is clicked in another app (a note, a Dave chat). Resolved
-    /// to a session and switched to on the next [`update`](Self::update), then
-    /// cleared. See [`Self::open`] / [`Self::process_pending_open`].
-    pending_open: Option<nostrdb_net::NoteId>,
+    /// `agentium:` chip is clicked in another app (a note, a Dave chat) or it is
+    /// opened by URI, with any message to send into it. Resolved to a session and
+    /// switched to on the next [`update`](Self::update), then cleared. See
+    /// [`Self::open_with_message`] / [`Self::process_pending_open`].
+    pending_open: Option<restore::PendingOpen>,
     /// Directory picker for selecting working directory when creating sessions
     directory_picker: DirectoryPicker,
     /// Session picker for resuming existing Claude sessions
@@ -627,7 +628,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// session-state event; the switch happens on the next
     /// [`update`](Self::update) (see [`process_pending_open`](Self::process_pending_open)).
     pub fn open(&mut self, note: nostrdb_net::NoteId) {
-        self.pending_open = Some(note);
+        self.open_with_message(note, None);
+    }
+
+    /// [`open`](Self::open) a session and, once it is focused, send `msg` into it
+    /// as a user message — as if typed into its input box and submitted. This is
+    /// how an `OpenUri` like `agentium:<word-id>?msg=…` lands. A session that
+    /// can't take input yet (it is being reopened from a tombstone, or no local
+    /// backend runs it) gets `msg` in its input draft instead; see
+    /// [`deliver_open_message`](Self::deliver_open_message).
+    pub fn open_with_message(&mut self, note: nostrdb_net::NoteId, msg: Option<String>) {
+        self.pending_open = Some(restore::PendingOpen { note, msg });
     }
 
     /// Fetch the thread from ndb, format it, and create a session with the prompt.
@@ -1036,9 +1047,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Record a user-authored message in the target session.
     ///
-    /// This uses the same message construction path as the live UI send flow:
-    /// create a live user event when possible, append `Message::User` to chat,
-    /// and update the session title.
+    /// This is the one user-send path — the input box's Enter
+    /// ([`handle_user_send`](Self::handle_user_send)), spawn commands' first
+    /// prompts and opened-by-URI messages all go through it: create a live user
+    /// event when possible, append `Message::User` to chat, and update the
+    /// session title.
     ///
     /// Returns `true` when the caller should dispatch this session to the
     /// backend immediately.
@@ -1053,6 +1066,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return false;
         };
 
+        // Generate the kind-1988 `user` event (remote sends route through the
+        // engine, local sends archive the host turn in-place).
         if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
             build_user_send_event(session, app_ctx.ndb, &sk, &user_text);
         }
@@ -1062,10 +1077,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .push(Message::User(UserMessage::new(user_text, images)));
         session.update_title_from_last_message();
 
+        // Remote sessions: the event above publishes it to the host; there's no
+        // local backend to send it to.
         if session.is_remote() {
             return false;
         }
 
+        // Already dispatched (waiting for or receiving a response): queue it in
+        // chat; needs_redispatch_after_stream_end() dispatches it when the
+        // current turn finishes.
         if session.is_dispatched() {
             tracing::info!("message queued, will dispatch after current turn");
             return false;
@@ -1104,45 +1124,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
-        // Normal message handling
-        if let Some(session) = self.session_manager.get_active_mut() {
-            let user_text = session.input.clone();
-            session.input.clear();
-
-            // Generate the kind-1988 `user` event (remote sends route through
-            // the engine, local sends archive the host turn in-place).
-            if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-                build_user_send_event(session, app_ctx.ndb, &sk, &user_text);
-            }
-
-            let images = std::mem::take(&mut session.pending_images);
-            session
-                .chat
-                .push(Message::User(UserMessage::new(user_text, images)));
-            session.update_title_from_last_message();
-
-            // Remote sessions: publish user message to relay but don't send to local backend
-            if session.is_remote() {
-                return;
-            }
-
-            // If already dispatched (waiting for or receiving response), queue
-            // the message in chat without dispatching.
-            // needs_redispatch_after_stream_end() will dispatch it when the
-            // current turn finishes.
-            if session.is_dispatched() {
-                tracing::info!("message queued, will dispatch after current turn");
-                return;
-            }
-        }
-        self.send_user_message(app_ctx, app_ctx.waker);
-    }
-
-    fn send_user_message(&mut self, app_ctx: &AppContext, waker: &Waker) {
-        let Some(active_id) = self.session_manager.active_id() else {
+        // Normal message handling: the draft becomes a user message. This is the
+        // same path an opened-by-URI message takes (`deliver_open_message`).
+        let Some(sid) = self.session_manager.active_id() else {
             return;
         };
-        self.send_user_message_for(active_id, app_ctx, waker);
+        let Some(session) = self.session_manager.get_mut(sid) else {
+            return;
+        };
+        let user_text = std::mem::take(&mut session.input);
+        let images = std::mem::take(&mut session.pending_images);
+        if self.add_user_message_for_session(sid, app_ctx, user_text, images) {
+            self.send_user_message_for(sid, app_ctx, app_ctx.waker);
+        }
     }
 
     /// Send a message for a specific session by ID
@@ -1250,8 +1244,11 @@ impl notedeck::App for Dave {
         self.session_restore_loader
             .start(waker.clone(), ctx.ndb.clone());
 
-        // Focus a session whose inline chip was clicked in another app.
-        self.process_pending_open(ctx.ndb);
+        // Focus a session whose inline chip was clicked (or that was opened by
+        // URI) in another app, then send it the open's message, if any.
+        if let Some(opened) = self.process_pending_open(ctx.ndb) {
+            self.deliver_open_message(opened, ctx);
+        }
         self.ensure_pns_local_state(ctx);
         // The account's inbound PNS 1080 sync (and its settle signal, read via
         // `ctx.private_sync_settled`) is now owned by the notedeck host, running
