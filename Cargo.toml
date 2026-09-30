@@ -183,16 +183,16 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "a40b75fd1919ab359117d1c4e29306fb70ad1943" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "a40b75fd1919ab359117d1c4e29306fb70ad1943" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "a40b75fd1919ab359117d1c4e29306fb70ad1943" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "a40b75fd1919ab359117d1c4e29306fb70ad1943" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "a40b75fd1919ab359117d1c4e29306fb70ad1943" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "a40b75fd1919ab359117d1c4e29306fb70ad1943" }
-egui_kittest = { git = "https://github.com/damus-io/egui", rev = "a40b75fd1919ab359117d1c4e29306fb70ad1943" }
+egui = { git = "https://github.com/damus-io/egui", rev = "3489fe576ebaf136a6535c949f741d52745b2366" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "3489fe576ebaf136a6535c949f741d52745b2366" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "3489fe576ebaf136a6535c949f741d52745b2366" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "3489fe576ebaf136a6535c949f741d52745b2366" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "3489fe576ebaf136a6535c949f741d52745b2366" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "3489fe576ebaf136a6535c949f741d52745b2366" }
+egui_kittest = { git = "https://github.com/damus-io/egui", rev = "3489fe576ebaf136a6535c949f741d52745b2366" }
 puffin = { git = "https://github.com/EmbarkStudios/puffin", package = "puffin", rev = "4bdd85760c895623b08f236c23cf54bbaaafd91b" }
 puffin_egui = { git = "https://github.com/EmbarkStudios/puffin", package = "puffin_egui", rev = "4bdd85760c895623b08f236c23cf54bbaaafd91b" }
-winit = { git = "https://github.com/damus-io/winit", rev = "dffef5714d89dad525cee778530468dfb0f84350" }
+winit = { git = "https://github.com/damus-io/winit", rev = "906e8cfdc48288385bd029befae7bead50e58bde" }
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
 #android-activity = { git = "https://github.com/damus-io/android-activity", rev = "f56c974aa5182d5fbd361879f5899eb8f11a37ec" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }
