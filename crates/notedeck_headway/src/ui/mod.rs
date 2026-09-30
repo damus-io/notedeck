@@ -216,8 +216,9 @@ pub struct BoardUiState {
     /// A board edit left for the next frame, because a frame applies one: the
     /// move behind an `X` verdict's comment.
     follow_up: Option<BoardAction>,
-    /// The `X` composer, while it's open, in whichever view `X` was pressed.
-    /// It owns the keyboard: every keymap stands down bar its Enter and Esc.
+    /// The `X` composer, while it's open, in the view `X` was pressed in; it
+    /// closes when that view goes. Every keymap stands down while it's open;
+    /// it takes Enter and Esc unless another widget has the keyboard.
     reason: Option<ReasonComposer>,
     /// A scroll the detail's keys asked of it, applied on its next pass.
     detail_scroll: Option<PatchScroll>,
@@ -597,6 +598,9 @@ pub fn board_ui(
     // lands on draw this same frame rather than a blank one. (The grid's run
     // as it lays out, in `board_pane_ui`.)
     state.refresh_queue(view, ui.ctx().input(|i| i.time));
+    // A route reseed or last frame's click may have left the `X` composer's
+    // view; it closes before its keys could take this frame's Enter.
+    state.retire_stale_reason();
     let keyed = keys::pane_keys(ui.ctx(), view, state);
     state.retire_stale_notice();
     if keyed.is_some() {
@@ -636,12 +640,14 @@ fn board_pane_ui(
         state.graph_connecting = None;
     }
 
-    // An `X`'s reason, above whichever view it was asked in.
-    reason_bar_ui(ui, theme, state);
+    // Each view draws an open `X` composer's bar across its top: here, after
+    // the pane keys that may have opened it; the grid's after its own keys.
+    // (A composer only stays open in the view it was asked in.)
 
     // The review queue draws the review pane over its current card (its keys
     // ran in `board_ui`, as the plain pane's and the detail's did).
     if let Some(card) = state.queue.current() {
+        reason_bar_ui(ui, theme, state);
         review_queue_ui(ui, theme, app_ctx, view, card, state);
         return None;
     }
@@ -651,6 +657,7 @@ fn board_pane_ui(
     // to its detail branch below, which drops it in turn.
     if let Some(card) = state.review.card() {
         if let Some((_, card)) = find_card(view, card) {
+            reason_bar_ui(ui, theme, state);
             pane_hints_ui(ui, theme, state);
             review_pane_ui(ui, theme, app_ctx, view, card, state);
             return None;
@@ -667,6 +674,7 @@ fn board_pane_ui(
         .is_some_and(|id| find_card(view, id).is_some())
     {
         let mut action: Option<BoardAction> = None;
+        reason_bar_ui(ui, theme, state);
         card_detail_pane_ui(ui, theme, app_ctx, view, state, &mut action);
         return action;
     }
@@ -705,6 +713,8 @@ fn board_pane_ui(
     // stand down during a drag, but should a key action and a drop below ever
     // land in one frame, the drop overwrites it.
     let mut action: Option<BoardAction> = keys::board_keys(ui.ctx(), view, &view_filter, state);
+    // Drawn after the keys, so a grid `X` shows its composer this frame.
+    reason_bar_ui(ui, theme, state);
     // The card a click landed on this frame; opens the detail view next frame.
     let mut clicked: Option<NoteId> = None;
 

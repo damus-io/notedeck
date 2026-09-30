@@ -571,7 +571,7 @@ pub(crate) fn board_keys(
 }
 
 /// The keys of whatever shows over the grid: the `X` composer's
-/// ([`reason_keys`]) while it's open, whatever view it's in; else the review
+/// ([`reason_keys`]) while it's open, in the view it was asked in; else the review
 /// pane's in the queue or opened from a card ([`review_pane_keys`]); else the
 /// open detail's ([`detail_keys`]). Nothing for the grid (its keys are
 /// [`board_keys`], run as it lays out) or the dependency graph.
@@ -776,12 +776,17 @@ fn page_scroll(press: KeyPress) -> Option<f32> {
 
 /// The `X` composer's keys: Enter posts the reason (an empty one does
 /// nothing), Esc cancels. Both are consumed before the field sees them, and
-/// the field's focus goes with the composer.
+/// the field's focus goes with the composer. While another widget has the
+/// keyboard they're left to it ([`BoardUiState::reason_keys_live`]); the
+/// view's own keys stay down either way.
 fn reason_keys(
     ctx: &egui::Context,
     view: &BoardView,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
+    if !state.reason_keys_live(ctx.memory(|m| m.focused())) {
+        return None;
+    }
     let action = if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
         state.cancel_reject();
         None
@@ -976,6 +981,7 @@ mod tests {
                     s.queue_open() || s.review_card().is_some() || s.selected().is_some()
                 };
                 let showed_pane = pane(&h.state);
+                h.state.retire_stale_reason();
                 let keyed = pane_keys(ui.ctx(), &h.view, &mut h.state);
                 h.state.retire_stale_notice();
                 let action = if showed_pane || keyed.is_some() {
@@ -1873,6 +1879,71 @@ mod tests {
             (None, None)
         );
         assert!(!harness.state().esc_left, "Esc consumed");
+    }
+
+    /// The composer closes with the view `X` was pressed in, however it's
+    /// left — a click onto another card, the detail's `q` or ✕, a back the
+    /// route seeded — so an Enter there can't send the first card back.
+    #[test]
+    fn the_reason_composer_closes_with_its_view() {
+        /// A way out of the detail, as a click or a seeded route leaves it.
+        type Leave = fn(&mut BoardUiState);
+        let leaves: [(&str, Leave); 3] = [
+            ("another card", |s| s.set_selected(Some(id(6)))),
+            ("the grid", |s| s.leave_card()),
+            ("the graph", |s| s.set_graph_epic(Some(id(5)))),
+        ];
+        for (name, leave) in leaves {
+            let mut harness = detail_harness(None);
+            press_with(&mut harness, Modifiers::SHIFT, Key::X);
+            harness.run();
+            assert!(harness.state().state.rejecting(), "{name}");
+            harness
+                .input_mut()
+                .events
+                .push(egui::Event::Text("flaky".to_string()));
+            harness.step();
+
+            leave(&mut harness.state_mut().state);
+            press(&mut harness, Key::Enter);
+            assert!(!harness.state().state.rejecting(), "{name}");
+            assert_eq!(harness.state().commented, None, "{name}");
+            harness.step();
+            assert_eq!(harness.state().moved, None, "{name}");
+        }
+    }
+
+    /// While another field has the keyboard, the composer leaves Enter and
+    /// Esc to it; once nothing does, they're the composer's again.
+    #[test]
+    fn the_reason_composer_leaves_enter_to_a_focused_field() {
+        let comment = egui::Id::new("comment");
+        let mut harness = detail_harness(Some(comment));
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
+        harness.run();
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("flaky".to_string()));
+        harness.step();
+
+        harness.ctx.memory_mut(|m| m.request_focus(comment));
+        harness.step();
+        press(&mut harness, Key::Enter);
+        assert_eq!(harness.state().commented, None, "nothing posted");
+        assert!(harness.state().state.rejecting());
+        // A single-line field gives its focus up on its Enter: it got it.
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None, "field's Enter");
+
+        press(&mut harness, Key::Escape);
+        assert!(
+            !harness.state().state.rejecting(),
+            "Esc with nothing focused"
+        );
+        assert!(
+            harness.state().state.selected().is_some(),
+            "still in the detail"
+        );
     }
 
     /// `e` opens the shown record's explainer; on a card without one it only

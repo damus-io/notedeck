@@ -2608,6 +2608,118 @@ fn the_detail_takes_the_card_actions() {
     assert_eq!(composer.value().as_deref(), Some("s"));
 }
 
+/// An `X` composer closes with the detail it was opened in. Before, it
+/// stayed open over the next card's detail and took the Enter typed into that
+/// card's comment box, posting the reason on the first card and sending it
+/// back. Now the Enter is the comment box's newline, and the first card keeps
+/// its column and its thread.
+#[test]
+fn the_reason_composer_does_not_follow_you_to_another_card() {
+    const FIRST: &str = "Define nostr event model for boards";
+    const SECOND: &str = "Sync cards across relays";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let first = harness_card_id(&mut harness, FIRST);
+    let (column, comments) = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        (
+            demo_card_column(app_ctx.ndb, &author, first),
+            demo_card_comments(app_ctx.ndb, &author, first),
+        )
+    };
+
+    harness.get_by_label(FIRST).simulate_click();
+    wait_for_label(&mut harness, "← Back");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
+    wait_for_label(&mut harness, "Send back");
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("flaky".to_string()));
+    harness.run_ok();
+
+    harness.get_by_label("← Back").click();
+    harness.run_ok();
+    harness.get_by_label(SECOND).simulate_click();
+    wait_for_label(&mut harness, "← Back");
+    harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .last()
+        .expect("the comment composer")
+        .simulate_click();
+    harness.run_ok();
+    type_key(&mut harness, egui::Key::H, "hi");
+    harness.press_key(egui::Key::Enter);
+    harness.run_ok();
+
+    let composer = harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .find(|n| n.is_focused())
+        .expect("the focused comment composer");
+    assert_eq!(
+        composer.value().as_deref(),
+        Some("hi\n"),
+        "Enter is its own"
+    );
+    assert!(
+        harness.query_by_label("Send back").is_none(),
+        "composer closed"
+    );
+    // A send-back lands through the async writer: give it the time it would
+    // take before checking it never came.
+    let settle = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settle {
+        harness.run_ok();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let app_ctx = state.notedeck.app_context();
+    assert_eq!(
+        demo_card_column(app_ctx.ndb, &author, first),
+        column,
+        "not sent back"
+    );
+    assert_eq!(
+        demo_card_comments(app_ctx.ndb, &author, first),
+        comments,
+        "no review: comment"
+    );
+}
+
+/// A grid `X` shows its composer on the frame of the press, focused and
+/// without the X typed into it: the grid's keys run before the bar draws.
+#[test]
+fn a_grid_x_shows_its_composer_at_once() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    // One pass a frame, so a discard's second pass can't draw the bar late
+    // and hide the order this checks.
+    harness
+        .ctx
+        .options_mut(|o| o.max_passes = std::num::NonZeroUsize::MIN);
+    press_board_keys(&mut harness, &[egui::Key::J]);
+    // The key-down and its character straight into the input: `press_key*`
+    // queues a release too, and `step` would run a frame for each.
+    harness.input_mut().events.extend([
+        egui::Event::Key {
+            key: egui::Key::X,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        },
+        egui::Event::Text("X".to_string()),
+    ]);
+    harness.step();
+    assert!(
+        harness.query_by_label("Send back").is_some(),
+        "the bar draws on the press's frame"
+    );
+    harness.run_ok();
+    assert_eq!(focused_text_input(&harness).value().as_deref(), Some(""));
+}
+
 /// The detail's sidebar keeps the newest review in reach under the thread:
 /// its sha, "Review in session" and "Explainer ↗". Clicking "Review in
 /// session" raises exactly one `AppAction::Open` for the record's session,
@@ -3053,6 +3165,15 @@ fn demo_card_column(ndb: &Ndb, author: &Pubkey, card: NoteId) -> String {
         .unwrap_or_else(|| panic!("card {card:?} is on no column"))
         .name
         .clone()
+}
+
+/// How many comments the demo board's `card` has.
+fn demo_card_comments(ndb: &Ndb, author: &Pubkey, card: NoteId) -> usize {
+    let txn = Transaction::new(ndb).expect("txn");
+    let reducer = headway::event::fold_board(ndb, &txn, author).expect("demo board folded");
+    let boards = reducer.finalize();
+    let view = headway::event::find_board(&boards, author, store::BOARD_ID).expect("demo board");
+    view.card(card).expect("the card").comments.len()
 }
 
 /// Pump frames until `card` has been ingested into the column named `column`,

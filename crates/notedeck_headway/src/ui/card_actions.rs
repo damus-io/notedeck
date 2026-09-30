@@ -13,6 +13,7 @@ use notedeck_ui::diff::PatchScroll;
 
 use super::review::{DONE, IN_PROGRESS, Notice, QueueNotice, SessionOpen, session_open};
 use super::{BoardEffect, BoardUiState, find_card};
+use crate::nav::NavPos;
 use crate::store::BoardAction;
 
 /// Which way `n`/`p` step from the current card.
@@ -25,12 +26,19 @@ pub(crate) enum CardStep {
 }
 
 /// The `X` composer: the one-line reason a send-back posts as a `review:`
-/// comment, and the card it sends back.
+/// comment, the card it sends back, and the view it was asked in, which it
+/// closes with ([`BoardUiState::retire_stale_reason`]).
 pub(crate) struct ReasonComposer {
     /// The card being sent back, fixed when `X` opened the composer.
     card: NoteId,
+    /// The card's title as `X` found it, so the bar can name the card
+    /// without a lookup or a copy each frame.
+    title: String,
+    /// The view `X` was pressed in.
+    pos: NavPos,
     text: String,
-    /// Grab focus on the composer's next layout (the frame after `X`).
+    /// Grab focus on the composer's next layout. Until it lands, the
+    /// composer's Enter and Esc are its own ([`BoardUiState::reason_keys_live`]).
     focus: bool,
 }
 
@@ -207,18 +215,42 @@ impl BoardUiState {
     /// `X`: open the reason composer for `card`. Nothing opens on a board it
     /// couldn't be sent back on.
     pub(crate) fn start_reject(&mut self, view: &BoardView, card: NoteId, now: f64) {
-        if find_card(view, card).is_none() {
+        let Some((_, found)) = find_card(view, card) else {
             return;
-        }
+        };
         if IN_PROGRESS.index(view).is_none() {
             self.set_notice(QueueNotice::NoInProgressColumn, now);
             return;
         }
         self.reason = Some(ReasonComposer {
             card,
+            title: found.title.clone(),
+            pos: self.nav_pos(),
             text: String::new(),
             focus: true,
         });
+    }
+
+    /// Close an `X` composer whose view has gone: a click onto another card,
+    /// the detail's ✕, the graph, or a global back/forward the route seeded.
+    /// [`super::board_ui`] runs it before the frame's pane keys, so a stale
+    /// composer never takes their Enter.
+    pub(crate) fn retire_stale_reason(&mut self) {
+        let pos = self.nav_pos();
+        if self.reason.as_ref().is_some_and(|r| r.pos != pos) {
+            self.reason = None;
+        }
+    }
+
+    /// Whether the `X` composer's Enter and Esc are its own this frame: its
+    /// field has the keyboard, or is about to take it (the frame `X` opened
+    /// it), or nothing else does. While another widget has focus — a comment
+    /// box, a title editor — they're that widget's.
+    pub(crate) fn reason_keys_live(&self, focused: Option<egui::Id>) -> bool {
+        let Some(composer) = &self.reason else {
+            return false;
+        };
+        composer.focus || focused.is_none_or(|id| id == reason_field_id())
     }
 
     /// Enter in the reason composer: post the reason as a `review:` comment
@@ -319,7 +351,7 @@ pub(crate) fn reason_field_id() -> egui::Id {
     egui::Id::new("headway-review-reason")
 }
 
-/// The `X` composer across the top of whichever view is showing, while it's
+/// The `X` composer across the top of the view it was asked in, while it's
 /// open. Its Enter and Esc are read before anything lays out
 /// ([`crate::keys::pane_keys`]), so the field only has to take the text and
 /// its focus.
@@ -337,10 +369,18 @@ pub(super) fn reason_bar_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut B
         .show(ui, |ui| reason_composer_ui(ui, theme, composer));
 }
 
-/// The `X` composer's one-line reason field.
+/// Share of the composer's row the card's title may take; the rest is the
+/// reason field's.
+const TITLE_SHARE: f32 = 0.4;
+
+/// The `X` composer's one-line reason field, after the card it sends back.
 fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut ReasonComposer) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Send back:").color(theme.destructive));
+        ui.label(egui::RichText::new("Send back").color(theme.destructive));
+        ui.scope(|ui| {
+            ui.set_max_width(ui.available_width() * TITLE_SHARE);
+            ui.add(egui::Label::new(egui::RichText::new(&composer.title).strong()).truncate());
+        });
         let field = egui::TextEdit::singleline(&mut composer.text)
             .id(reason_field_id())
             .desired_width(f32::INFINITY)
