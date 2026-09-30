@@ -134,7 +134,8 @@ pub struct DaveSettings {
     /// comments sign with the agent's own key in any worktree without touching
     /// the user's own shells). The session's `AGENTIUM_*` identity variables
     /// win over a same-named entry (see `backend::shared::session_env`).
-    /// Config-file only for now. Defaulted so older settings files still load.
+    /// Edited in the settings panel's "Session environment" section. Defaulted
+    /// so older settings files still load.
     #[serde(default)]
     pub session_env: BTreeMap<String, String>,
 }

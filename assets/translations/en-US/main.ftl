@@ -67,6 +67,9 @@ Add_private_relay_de9d = Add private relay
 # Button label to add a relay
 Add_relay_269d = Add relay
 
+# Button that adds a session environment variable row
+Add_variable_aa62 = + Add variable
+
 # Button label to add a wallet
 Add_Wallet_d1be = Add Wallet
 
@@ -84,6 +87,9 @@ Algorithmic_feeds_to_aid_in_note_discovery_d344 = Algorithmic feeds to aid in no
 
 # Filter label for all notes view
 All_8729 = All
+
+# Session environment row repeating an earlier variable name
+Already_set_above__This_row_won_t_be_saved_4f69 = Already set above. This row won't be saved.
 
 # Label for zap amount input field
 Amount_70f0 = Amount
@@ -334,6 +340,9 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 # Hint under the leader key button while it waits for a key
 Esc_cancels_80f8 = Esc cancels.
 
+# Hint under the session environment settings heading
+Exported_into_every_agent_session_this_host_starts__e_g__HEADWAY_COMMENT_NSEC_FILE_pointing_at_an_agent_key_file__Applies_to_sessions_started_after_saving__Dave_s_own_AGENTIUM_SESSION_variables_always_win_3ac3 = Exported into every agent session this host starts, e.g. HEADWAY_COMMENT_NSEC_FILE pointing at an agent key file. Applies to sessions started after saving. Dave's own AGENTIUM_SESSION variables always win.
+
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = Extreme
 
@@ -502,6 +511,9 @@ Mute_User_d94a = Mute User
 # Title for the user's deck
 My_Deck_4ac5 = My Deck
 
+# Placeholder for a session environment variable's name
+NAME_3e25 = NAME
+
 # reaction from user to a note you were tagged in
 name___privately_reacted_to_a_note_you_were_tagged_in_4b62 = {$name} {$privately}reacted to a note you were tagged in
 
@@ -525,6 +537,12 @@ name__zapped_your_note_45d1 = {$name} zapped your note
 
 # Button to go to a WASM app
 name_as_str_c366 = name.as_str()
+
+# Session environment row whose variable name is invalid
+Names_can_t_contain_spaces_or____This_row_won_t_be_saved_09bc = Names can't contain spaces or =. This row won't be saved.
+
+# Session environment row with a value but no variable name
+Needs_a_name__This_row_won_t_be_saved_e7b0 = Needs a name. This row won't be saved.
 
 # Dave which-key tooltip: start a new agent session
 New_agent_c761 = New agent
@@ -706,6 +724,9 @@ Relays_9d89 = Relays
 # Label for relay transport settings section
 Relays_ab62 = Relays
 
+# Tooltip on the button that removes a session environment variable
+Remove_variable_625d = Remove variable
+
 # Dave which-key tooltip: rename the active session
 Rename_session_cb48 = Rename session
 
@@ -813,6 +834,9 @@ Select_All_a319 = Select All
 
 # Button label to send a zap
 Send_1ea4 = Send
+
+# Settings section for environment variables exported into agent sessions
+Session_environment_0dda = Session environment
 
 # Dave which-key tooltip: point the chord's motions at the session list
 Session_list_32f0 = Session list
@@ -945,6 +969,9 @@ username___at___domain___will_be_used_for_identification_a4fd = "{$username}" at
 
 # Profile username field label
 Username_daa7 = Username
+
+# Placeholder for a session environment variable's value
+value_af08 = value
 
 # Switch active user to this profile
 View_as_092c = View as

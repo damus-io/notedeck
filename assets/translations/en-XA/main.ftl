@@ -67,6 +67,9 @@ Add_private_relay_de9d = {"["}Àdd prívàté rélày{"]"}
 # Button label to add a relay
 Add_relay_269d = {"["}Àdd rélày{"]"}
 
+# Button that adds a session environment variable row
+Add_variable_aa62 = {"["}+ Àdd vàríàblé{"]"}
+
 # Button label to add a wallet
 Add_Wallet_d1be = {"["}Àdd Wàllét{"]"}
 
@@ -84,6 +87,9 @@ Algorithmic_feeds_to_aid_in_note_discovery_d344 = {"["}Àlgóríthmíç fééds 
 
 # Filter label for all notes view
 All_8729 = {"["}Àll{"]"}
+
+# Session environment row repeating an earlier variable name
+Already_set_above__This_row_won_t_be_saved_4f69 = {"["}Àlréàdy sét àbóvé. Thís rów wóñ't bé sàvéd.{"]"}
 
 # Label for zap amount input field
 Amount_70f0 = {"["}Àmóúñt{"]"}
@@ -334,6 +340,9 @@ Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__ns
 # Hint under the leader key button while it waits for a key
 Esc_cancels_80f8 = {"["}Ésç çàñçéls.{"]"}
 
+# Hint under the session environment settings heading
+Exported_into_every_agent_session_this_host_starts__e_g__HEADWAY_COMMENT_NSEC_FILE_pointing_at_an_agent_key_file__Applies_to_sessions_started_after_saving__Dave_s_own_AGENTIUM_SESSION_variables_always_win_3ac3 = {"["}Éxpórtéd íñtó évéry àgéñt séssíóñ thís hóst stàrts, é.g. HÉÀDWÀY_ÇÓMMÉÑT_ÑSÉÇ_FÍLÉ póíñtíñg àt àñ àgéñt kéy fílé. Àpplíés tó séssíóñs stàrtéd àftér sàvíñg. Dàvé's ówñ ÀGÉÑTÍÚM_SÉSSÍÓÑ vàríàblés àlwàys wíñ.{"]"}
+
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = {"["}Éxtrémé{"]"}
 
@@ -502,6 +511,9 @@ Mute_User_d94a = {"["}Múté Úsér{"]"}
 # Title for the user's deck
 My_Deck_4ac5 = {"["}My Déçk{"]"}
 
+# Placeholder for a session environment variable's name
+NAME_3e25 = {"["}ÑÀMÉ{"]"}
+
 # reaction from user to a note you were tagged in
 name___privately_reacted_to_a_note_you_were_tagged_in_4b62 = {"["}{$name} {$privately}réàçtéd tó à ñóté yóú wéré tàggéd íñ{"]"}
 
@@ -525,6 +537,12 @@ name__zapped_your_note_45d1 = {"["}{$name} zàppéd yóúr ñóté{"]"}
 
 # Button to go to a WASM app
 name_as_str_c366 = {"["}ñàmé.às_str(){"]"}
+
+# Session environment row whose variable name is invalid
+Names_can_t_contain_spaces_or____This_row_won_t_be_saved_09bc = {"["}Ñàmés çàñ't çóñtàíñ spàçés ór =. Thís rów wóñ't bé sàvéd.{"]"}
+
+# Session environment row with a value but no variable name
+Needs_a_name__This_row_won_t_be_saved_e7b0 = {"["}Ñééds à ñàmé. Thís rów wóñ't bé sàvéd.{"]"}
 
 # Dave which-key tooltip: start a new agent session
 New_agent_c761 = {"["}Ñéw àgéñt{"]"}
@@ -706,6 +724,9 @@ Relays_9d89 = {"["}Rélàys{"]"}
 # Label for relay transport settings section
 Relays_ab62 = {"["}Rélàys{"]"}
 
+# Tooltip on the button that removes a session environment variable
+Remove_variable_625d = {"["}Rémóvé vàríàblé{"]"}
+
 # Dave which-key tooltip: rename the active session
 Rename_session_cb48 = {"["}Réñàmé séssíóñ{"]"}
 
@@ -813,6 +834,9 @@ Select_All_a319 = {"["}Séléçt Àll{"]"}
 
 # Button label to send a zap
 Send_1ea4 = {"["}Séñd{"]"}
+
+# Settings section for environment variables exported into agent sessions
+Session_environment_0dda = {"["}Séssíóñ éñvíróñméñt{"]"}
 
 # Dave which-key tooltip: point the chord's motions at the session list
 Session_list_32f0 = {"["}Séssíóñ líst{"]"}
@@ -945,6 +969,9 @@ username___at___domain___will_be_used_for_identification_a4fd = {"["}"{$username
 
 # Profile username field label
 Username_daa7 = {"["}Úsérñàmé{"]"}
+
+# Placeholder for a session environment variable's value
+value_af08 = {"["}vàlúé{"]"}
 
 # Switch active user to this profile
 View_as_092c = {"["}Víéw às{"]"}
