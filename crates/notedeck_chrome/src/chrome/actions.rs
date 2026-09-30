@@ -458,8 +458,8 @@ fn columns_route_to_profile(
 
 // Cross-app routing of an open by reference, through a chrome built the way
 // the app builds one (`new_headless`), so the apps that claim a reference are
-// the real ones. Needs the apps compiled in, which `cargo test --workspace`
-// doesn't do; CI runs it with `--features dave,notebook,headway`.
+// the real ones. Needs the apps compiled in: CI's main workspace test run
+// turns every app feature on, so it runs there.
 #[cfg(all(test, feature = "dave", feature = "headway"))]
 mod open_tests {
     use super::*;

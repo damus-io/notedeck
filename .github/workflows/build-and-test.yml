@@ -24,17 +24,13 @@ jobs:
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
 
+      # Every app feature is on, so the chrome is built and tested with the
+      # apps it ships with and its cross-app routing (an open by reference, a
+      # click on another app's inline widget) is covered. The profiling and
+      # tooling features (tracy, puffin, memory, auto-update, snapshot-testing)
+      # stay off: they change how the binary is instrumented, not what it does.
       - name: Run Tests (Native Only)
-        run: cargo test --workspace --exclude notedeck_columns --exclude notedeck_dave --exclude notedeck_messages --exclude notedeck_notebook
-        env:
-          CI: true
-
-      # The chrome routes an open by reference, or a click on another app's
-      # inline widget, to the app that owns it — but those apps sit behind
-      # cargo features the workspace run above doesn't turn on, so without
-      # this step that routing is never tested.
-      - name: Run notedeck_chrome Cross-App Tests
-        run: cargo test -p notedeck_chrome --features dave,notebook,headway
+        run: cargo test --workspace --exclude notedeck_columns --exclude notedeck_dave --exclude notedeck_messages --exclude notedeck_notebook --features dave,messages,notebook,headway,nostrverse,clndash,dashboard,horizon,wasm
         env:
           CI: true
 
