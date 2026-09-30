@@ -440,10 +440,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
         let kp = FullKeypair::generate();
-        let mut cache = PayCache::default();
+        let cache = PayCache::default();
         let maybe_invoice = rt.block_on(async {
             fetch_invoice_promise(
-                &mut cache,
+                &cache,
                 crate::zaps::ZapAddress::Lud16("jb55@sendsats.lol".to_owned()),
                 1000,
                 FullKeypair::generate().secret_key.to_secret_bytes(),
@@ -487,10 +487,10 @@ mod tests {
 
         let kp = FullKeypair::generate();
 
-        let mut cache = PayCache::default();
+        let cache = PayCache::default();
         let maybe_invoice = rt.block_on(async {
             fetch_invoice_promise(
-                &mut cache,
+                &cache,
                 crate::zaps::ZapAddress::Lud06(lnurl.to_owned()),
                 1000,
                 kp.secret_key.to_secret_bytes(),

@@ -125,7 +125,7 @@ impl NoteContextSelection {
                         txn,
                         &mut remote.publisher(),
                         kp,
-                        &muted,
+                        muted,
                         &target,
                     );
                 } else {
@@ -134,7 +134,7 @@ impl NoteContextSelection {
                         txn,
                         &mut remote.publisher(),
                         kp,
-                        &muted,
+                        muted,
                         &target,
                     );
                 }
