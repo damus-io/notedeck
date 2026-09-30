@@ -134,9 +134,15 @@ impl<R: Clone> NavStack<R> {
     /// [`go_back`](Self::go_back) this runs no transition — it lands instantly —
     /// so it suits a history dropdown that jumps several steps at once. An
     /// out-of-range or already-current `index` is a no-op.
-    pub fn go_to_route(&mut self, index: usize) {
+    ///
+    /// Returns the popped routes, topmost first, for the caller to clean up as
+    /// it cleans up a route popped by a completed back: every one of them was
+    /// popped, overlay routes included, even though only the non-overlay ones
+    /// are kept for redo.
+    pub fn go_to_route(&mut self, index: usize) -> Vec<R> {
+        let mut popped = Vec::new();
         if index + 1 >= self.routes.len() {
-            return;
+            return popped;
         }
         // Clear any in-flight transition: this is an instant jump, not an
         // animated step.
@@ -144,7 +150,13 @@ impl<R: Clone> NavStack<R> {
         self.navigating = false;
         // `pop` records each popped route on the forward stack, so redo still
         // works after a multi-step jump back.
-        while self.routes.len() > index + 1 && self.pop().is_some() {}
+        while self.routes.len() > index + 1 {
+            let Some(route) = self.pop() else {
+                break;
+            };
+            popped.push(route);
+        }
+        popped
     }
 
     /// True if a [`go_back`](Self::go_back) can make progress: there is a route
@@ -472,6 +484,28 @@ pub struct NavFrameResponse<R, A> {
     pub can_take_drag_from: Vec<egui::Id>,
     /// The stack event produced by reconciling egui-nav's transition, if any.
     pub event: Option<NavStackEvent<R>>,
+    /// True while egui-nav is still moving the routes: a forward slide, a back
+    /// slide, a drag, or a released drag springing back. egui-nav indexes the
+    /// stack's routes through all of these, but a **drag**-back sets neither
+    /// of the stack's [`navigating`](NavStack::navigating) /
+    /// [`returning`](NavStack::returning) flags, so an owner that must not
+    /// remove routes mid-transition reads this as well as those.
+    pub in_flight: bool,
+}
+
+/// True for an egui-nav action that leaves the transition still moving, so
+/// the next frame indexes the same routes again: everything but the two
+/// landings, [`NavAction::Returned`] and [`NavAction::Navigated`].
+fn nav_action_in_flight(action: Option<NavAction>) -> bool {
+    matches!(
+        action,
+        Some(
+            NavAction::Navigating
+                | NavAction::Returning(_)
+                | NavAction::Dragging
+                | NavAction::Resetting
+        )
+    )
 }
 
 /// Render `stack` through [`egui_nav::Nav`] and reconcile the resulting
@@ -516,6 +550,7 @@ where
         .animate_transitions(animate)
         .show_mut(ui, render);
 
+    let in_flight = nav_action_in_flight(action);
     let event = action.and_then(|action| stack.reconcile(action));
 
     NavFrameResponse {
@@ -523,6 +558,7 @@ where
         title_response,
         can_take_drag_from,
         event,
+        in_flight,
     }
 }
 
@@ -609,7 +645,7 @@ impl<R> DragResponse<R> {
 
 #[cfg(test)]
 mod nav_stack_tests {
-    use super::{NavStack, NavStackEvent};
+    use super::{nav_action_in_flight, NavStack, NavStackEvent};
     use crate::route::ReplacementType;
     use egui_nav::{NavAction, ReturnType};
 
@@ -703,8 +739,9 @@ mod nav_stack_tests {
         stack.route_to(4);
         assert_eq!(stack.routes(), &vec![1, 2, 3, 4]);
 
-        // jump straight back to the root, skipping the intermediate routes
-        stack.go_to_route(0);
+        // jump straight back to the root, skipping the intermediate routes,
+        // and hand back every one of them for cleanup, topmost first
+        assert_eq!(stack.go_to_route(0), vec![4, 3, 2]);
         assert_eq!(stack.routes(), &vec![1]);
         assert!(!stack.returning());
         assert!(!stack.navigating());
@@ -724,12 +761,12 @@ mod nav_stack_tests {
         stack.route_to(2);
 
         // index of the current top: nothing to do
-        stack.go_to_route(1);
+        assert!(stack.go_to_route(1).is_empty());
         assert_eq!(stack.routes(), &vec![1, 2]);
         assert!(!stack.can_go_forward());
 
         // past the end: also a no-op
-        stack.go_to_route(9);
+        assert!(stack.go_to_route(9).is_empty());
         assert_eq!(stack.routes(), &vec![1, 2]);
     }
 
@@ -1006,6 +1043,28 @@ mod nav_stack_tests {
         ] {
             assert!(stack.reconcile(action).is_none());
             assert_eq!(stack.routes(), &before);
+        }
+    }
+
+    #[test]
+    fn only_the_two_landings_leave_a_transition_at_rest() {
+        // A drag-back sets neither stack flag, so these are what tells an
+        // owner the routes are still being drawn mid-move.
+        for action in [
+            NavAction::Navigating,
+            NavAction::Returning(ReturnType::Drag),
+            NavAction::Returning(ReturnType::Click),
+            NavAction::Dragging,
+            NavAction::Resetting,
+        ] {
+            assert!(nav_action_in_flight(Some(action)), "{action:?}");
+        }
+        for action in [
+            None,
+            Some(NavAction::Navigated),
+            Some(NavAction::Returned(ReturnType::Drag)),
+        ] {
+            assert!(!nav_action_in_flight(action), "{action:?}");
         }
     }
 }

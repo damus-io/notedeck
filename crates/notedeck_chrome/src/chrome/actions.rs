@@ -627,7 +627,8 @@ mod open_tests {
 
         // One back returns to Headway. The pop lands once the slide does,
         // which `nav_frame` reconciles; drive the same reconcile here.
-        chrome.apply_nav_requests(vec![NavRequest::Back]);
+        let removed = chrome.apply_nav_requests(vec![NavRequest::Back]);
+        assert!(removed.is_empty(), "a back pops later, in nav_frame");
         chrome
             .global_nav
             .as_mut()

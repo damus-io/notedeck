@@ -226,7 +226,7 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
             }
         });
     if let Some(index) = jump_to {
-        chrome.global_go_to(index);
+        chrome.global_go_to(ctx, index);
     }
 
     ui.add_space(4.0);
