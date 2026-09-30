@@ -2808,32 +2808,22 @@ fn a_grid_x_shows_its_composer_at_once() {
 }
 
 /// The detail's sidebar keeps the newest review in reach under the thread:
-/// its sha, "Review in session" and "Explainer ↗". Clicking "Review in
-/// session" raises exactly one `AppAction::Open` for the record's session,
-/// asking it to `/code-review` the commit, as `S` does; "All 4 records ›"
-/// opens the review pane, as `r` does.
+/// its sha, its session and "Explainer ↗", with no "Review in session" link
+/// (that stays the review pane's). "All 4 records ›" opens the review pane,
+/// as `r` does.
 #[test]
-fn the_detail_sidebar_review_block_opens_the_session_and_the_pane() {
+fn the_detail_sidebar_review_block_opens_the_pane() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
     seed_detail_reviews(&mut harness);
     harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
     let newest = DETAIL_RECORDS[3].0;
     wait_for_label(&mut harness, "All 4 records ›");
-    // The newest record is in the body's Review section and the sidebar.
+    // The newest record, its session and its explainer are in the body's
+    // Review section and the sidebar; one older shown row has an explainer.
     assert_eq!(harness.get_all_by_label(&newest[..12]).count(), 2);
-    // Only the sidebar has the link; the body's rows each carry an explainer.
-    assert_eq!(harness.get_all_by_label("Review in session").count(), 1);
+    assert_eq!(harness.get_all_by_label(QUEUE_SESSION).count(), 2);
     assert_eq!(harness.get_all_by_label("Explainer ↗").count(), 3);
-    raised_opens(&mut harness);
-
-    harness.get_by_label("Review in session").click();
-    harness.run_ok();
-    let raised = raised_opens(&mut harness);
-    assert_eq!(raised.len(), 1, "one open: {raised:?}");
-    assert_eq!(raised[0].reference, QUEUE_SESSION);
-    let msg = raised[0].msg.as_deref().expect("a /code-review message");
-    assert!(msg.starts_with("launch a /code-review"), "{msg}");
-    assert!(msg.contains(&format!("commit {}", &newest[..12])), "{msg}");
+    assert!(harness.query_by_label("Review in session").is_none());
 
     harness.get_by_label("All 4 records ›").click();
     wait_for_absent(&mut harness, "± Review diff");
@@ -3077,15 +3067,15 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
     harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
     let second_sha = &DETAIL_RECORDS[2].0[..12];
     wait_for_label(&mut harness, second_sha);
-    wait_for_label(&mut harness, "Review in session");
+    wait_for_label(&mut harness, "All 4 records ›");
 
     // Its explainer: the body's link on the line under its sha (the sidebar's
-    // is right of the body, under "Review in session").
+    // is right of the body, in the column of "All 4 records ›").
     let sha_top = label_top(&harness, second_sha).expect("second row's sha");
     let sidebar_left = harness
-        .get_by_label("Review in session")
+        .get_by_label("All 4 records ›")
         .bounding_box()
-        .expect("sidebar link")
+        .expect("sidebar records line")
         .x0;
     harness
         .get_all_by_label("Explainer ↗")
@@ -3142,7 +3132,7 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
 /// click in the frame that commits it. egui drops the editor's focus on the
 /// press and fires the click on the release, so a quick click (here, press and
 /// release in one frame) makes one detail pass carry both the edit and the
-/// sidebar's `CardAction::Session`, which returns no board edit and used to
+/// sidebar's `CardAction::Review`, which returns no board edit and used to
 /// overwrite the edit with nothing.
 ///
 /// The sidebar, not a body Review row: the body's rows sit under the editor,
@@ -3155,7 +3145,7 @@ fn a_detail_review_click_keeps_a_same_frame_description_edit() {
     seed_detail_reviews(&mut harness);
     let card = harness_card_id(&mut harness, DETAIL_REVIEW_CARD);
     harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
-    wait_for_label(&mut harness, "Review in session");
+    wait_for_label(&mut harness, "All 4 records ›");
 
     harness.get_by_label("Add description…").click();
     harness.run_ok();
@@ -3165,15 +3155,14 @@ fn a_detail_review_click_keeps_a_same_frame_description_edit() {
         .expect("the focused description editor")
         .type_text(EDITED);
     harness.run_ok();
-    raised_opens(&mut harness);
 
     // One frame takes the press and the release: the editor commits on the
     // press and the sidebar's click fires on the release. Raw input, since
     // kittest's own click runs a frame per event.
     let link = harness
-        .get_by_label("Review in session")
+        .get_by_label("All 4 records ›")
         .bounding_box()
-        .expect("the sidebar link");
+        .expect("the sidebar records line");
     let pos = egui::pos2(
         ((link.x0 + link.x1) / 2.0) as f32,
         ((link.y0 + link.y1) / 2.0) as f32,
@@ -3193,10 +3182,9 @@ fn a_detail_review_click_keeps_a_same_frame_description_edit() {
     }
     harness.run_ok();
 
-    // The click still took: it raised the session open.
-    let raised = raised_opens(&mut harness);
-    assert_eq!(raised.len(), 1, "one open: {raised:?}");
-    assert_eq!(raised[0].reference, QUEUE_SESSION);
+    // The click still took: the review pane replaced the detail.
+    assert!(harness.query_by_label("± Review diff").is_none());
+    assert!(harness.query_by_label("All 4 records ›").is_none());
 
     // And the edit was published: the folded card carries it.
     let deadline = Instant::now() + SETTLE_TIMEOUT;

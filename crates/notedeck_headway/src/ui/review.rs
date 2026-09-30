@@ -1478,14 +1478,13 @@ fn record_explainer_ui(
 }
 
 /// The card detail sidebar's Review block: the newest record's sha pill and
-/// subject, its agentium session chip, a "Review in session" link and its
-/// explainer, and, with several records, an "All N records ›" line into the
-/// pane. On a wide pane the sidebar stays put beside the scrolling thread, so
+/// subject, its agentium session chip, its explainer, and, with several
+/// records, an "All N records ›" line into the pane. On a wide pane the sidebar stays put beside the scrolling thread, so
 /// the review is a click away however far down the comments someone has read.
 ///
 /// Each affordance is the mouse twin of a detail key, and its hover names the
-/// key: the sha and the records line are `r`, the link is `S` (`s` opens the
-/// session plain), the explainer is `e`. A click comes back as that key's
+/// key: the sha and the records line are `r`, the explainer is `e`. (The
+/// session chip opens its session itself; `s`/`S` stay keys only.) A click comes back as that key's
 /// [`CardAction`] for the detail to apply through
 /// [`crate::keys::apply_card_action`], the path the keys take, so a click and
 /// its key can't drift apart. Draws nothing for a card with no records.
@@ -1531,30 +1530,11 @@ pub(super) fn review_sidebar_ui(
         session_chip_ui(ui, theme, app_ctx, session, width);
     }
 
-    let explainer = fields.explainer.as_deref();
-    if session.is_some() || explainer.is_some() {
+    if let Some(url) = fields.explainer.as_deref() {
         ui.add_space(SPACING_XS);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = SPACING_XS;
-            if session.is_some()
-                && sidebar_link(ui, theme, "Review in session")
-                    .on_hover_text(
-                        "Open the session and ask it to /code-review this commit (S; s opens it)",
-                    )
-                    .clicked()
-            {
-                picked = Some(CardAction::Session(SessionOpen::CodeReview));
-            }
-            let Some(url) = explainer else {
-                return;
-            };
-            if session.is_some() {
-                ui.label(egui::RichText::new("·").small().color(theme.text_muted));
-            }
-            if record_explainer_ui(ui, theme, url, true).clicked() {
-                picked = Some(CardAction::Explainer(None));
-            }
-        });
+        if record_explainer_ui(ui, theme, url, true).clicked() {
+            picked = Some(CardAction::Explainer(None));
+        }
     }
 
     if reviews.len() > 1 {
