@@ -4433,7 +4433,6 @@ fn a_gone_epics_finished_queue_says_so_on_the_grid() {
     wait_for_label(&mut harness, "1 / 1");
 
     archive_demo_cards(&mut harness, &[epic]);
-    wait_until_off_the_board(&mut harness, epic);
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
     settle_slides(&mut harness, 1);
@@ -4444,9 +4443,15 @@ fn a_gone_epics_finished_queue_says_so_on_the_grid() {
     );
 }
 
-/// Pump frames until `card` has folded off the demo board's columns, or
-/// panic after a deadline: for a change no view on screen shows.
-fn wait_until_off_the_board(harness: &mut Harness<'static, HeadwayTestState>, card: NoteId) {
+/// Pump frames until the demo board, folded fresh off the db, passes `done`,
+/// or panic after a deadline naming `what`. Board edits land on the async
+/// writer thread, so a helper that applies one waits here before returning:
+/// a caller then waits on its UI only when that's what it's testing.
+fn wait_for_demo(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    what: &str,
+    done: impl Fn(&headway::event::BoardView) -> bool,
+) {
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.run_ok();
@@ -4459,15 +4464,10 @@ fn wait_until_off_the_board(harness: &mut Harness<'static, HeadwayTestState>, ca
             .finalize();
         let view =
             headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
-        if !view
-            .columns
-            .iter()
-            .flat_map(|c| &c.cards)
-            .any(|c| c.id == card)
-        {
+        if done(view) {
             return;
         }
-        assert!(Instant::now() < deadline, "{card:?} never left the board");
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(25));
     }
 }
@@ -5012,16 +5012,18 @@ fn chrome_nav_loop_detail_step_backs_to_the_previous_card() {
 /// Headway app crate" are its subissues.
 const DEMO_EPIC: &str = "Define nostr event model for boards";
 
-/// Make each of the demo cards titled `children` a subissue of [`DEMO_EPIC`].
-/// Returns the epic's id. The relations fold in asynchronously; wait on
-/// something they show (the detail's "Review N").
+/// Make each of the demo cards titled `children` a subissue of [`DEMO_EPIC`],
+/// and wait for every relation to fold in. Returns the epic's id.
 fn parent_under_demo_epic(
     harness: &mut Harness<'static, HeadwayTestState>,
     children: &[&str],
 ) -> NoteId {
     let epic = harness_card_id(harness, DEMO_EPIC);
-    for child in children {
-        let card = harness_card_id(harness, child);
+    let cards: Vec<NoteId> = children
+        .iter()
+        .map(|child| harness_card_id(harness, child))
+        .collect();
+    for &card in &cards {
         apply_demo_action(
             harness,
             store::BoardAction::SetParent {
@@ -5030,6 +5032,11 @@ fn parent_under_demo_epic(
             },
         );
     }
+    wait_for_demo(harness, "the subissues to fold under the epic", |view| {
+        cards
+            .iter()
+            .all(|&card| view.card(card).is_some_and(|c| c.parent == Some(epic)))
+    });
     epic
 }
 
@@ -5130,11 +5137,15 @@ fn chrome_nav_loop_epic_review_queue() {
     wait_for_label(&mut harness, "Review 2");
 }
 
-/// Archive the demo cards `cards` off the board.
+/// Archive the demo cards `cards` off the board, and wait for every archive
+/// to fold in.
 fn archive_demo_cards(harness: &mut Harness<'static, HeadwayTestState>, cards: &[NoteId]) {
     for &card in cards {
         apply_demo_action(harness, store::BoardAction::ArchiveCard { card });
     }
+    wait_for_demo(harness, "the archived cards to leave the board", |view| {
+        cards.iter().all(|&card| view.card(card).is_none())
+    });
 }
 
 /// A back onto a queue entry of another scope than the one the queue holds
@@ -5163,14 +5174,6 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
     );
     let epic = parent_under_demo_epic(&mut harness, &[CARDS[2]]);
     let mut stack = chrome_stack_at_board(&mut harness);
-    // The epic's detail says when the relation has folded in.
-    harness.get_by_label(DEMO_EPIC).simulate_click();
-    chrome_frame(&mut harness, &mut stack);
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "Review 2");
-    stack.go_to_route(0);
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "7 cards · 5 columns");
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     chrome_frame(&mut harness, &mut stack);
@@ -5233,8 +5236,7 @@ fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 1");
 
-    // The queue's card goes too, so the pane says when the archives have
-    // folded in.
+    // The queue's card goes too, so the pane says it has gone.
     archive_demo_cards(&mut harness, &[epic, ids[0]]);
     wait_for_label(&mut harness, "This card is no longer on the board.");
 
