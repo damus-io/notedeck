@@ -1331,6 +1331,13 @@ impl notedeck::App for Dave {
             }
         }
 
+        // Say so when a session at rest is held off its reconcile by a note
+        // that never indexed; the reconcile itself waits silently.
+        reconcile::warn_stalled_reconciles(
+            self.session_manager.iter_mut(),
+            std::time::Instant::now(),
+        );
+
         for (sid, _msg) in remote_user_msgs {
             let should_dispatch = self
                 .session_manager

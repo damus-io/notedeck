@@ -618,6 +618,10 @@ pub(crate) fn process_conversation_notes<'a>(
 /// can hold a note stored since; folding that one would mark it seen before
 /// the poll processed it, and a remote user message would show without ever
 /// being dispatched. It comes through the next poll instead.
+///
+/// The fold is O(session) and runs on the UI thread: once per turn for a local
+/// session, and on each out-of-order batch for a remote one.
+#[profiling::function]
 pub(crate) fn rebuild_chat_from_fold(
     session: &mut session::ChatSession,
     ndb: &nostrdb::Ndb,
@@ -648,7 +652,9 @@ pub(crate) fn rebuild_chat_from_fold(
 ///   skipped rather than left out of the next rebuild;
 /// - the fast-path tail is seeded from the fold's highest order, so notes
 ///   that sort after it append instead of forcing another rebuild (a real
-///   order, never the display order of a waiting message);
+///   order, never the display order of a waiting message). A background
+///   restore, whose fold may predate notes the poll already dropped, clears it
+///   again (see `Dave::drain_session_restore`);
 /// - subagent rows are re-indexed, since a background subagent outlives its
 ///   turn and finds its row through that index;
 /// - in-memory permission decisions the fold can't know yet are laid over

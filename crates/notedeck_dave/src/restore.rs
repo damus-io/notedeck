@@ -428,7 +428,7 @@ impl Dave {
                     first_created.get_or_insert(dave_sid);
 
                     if let Some(session) = self.session_manager.get_mut(dave_sid) {
-                        hydrate_session_from_state(session, &state, *loaded, &self.hostname);
+                        hydrate_restored_session(session, &state, *loaded, &self.hostname);
                     }
                     created_any = true;
                 }
@@ -979,6 +979,27 @@ fn is_session_remote(hostname: &str, cwd: &str, local_hostname: &str) -> bool {
         || (hostname.is_empty() && !std::path::PathBuf::from(cwd).exists())
 }
 
+/// Hydrate a session the background restore worker loaded.
+///
+/// The worker read its history from an ndb snapshot taken before the session
+/// existed here, and the conversation poll drops a note for a session that
+/// doesn't exist yet. A note stored after that snapshot and polled before
+/// this runs is in neither, so the fold is missing it. The fast-path tail is
+/// left unset, so the session's next note rebuilds from ndb, which holds it,
+/// rather than appending after the gap. The rest of the hydration stands,
+/// subagent rows included.
+fn hydrate_restored_session(
+    session: &mut ChatSession,
+    state: &session_loader::SessionState,
+    loaded: session_loader::LoadedSession,
+    local_hostname: &str,
+) {
+    hydrate_session_from_state(session, state, loaded, local_hostname);
+    if let Some(agentic) = &mut session.agentic {
+        agentic.tail_order = None;
+    }
+}
+
 /// Hydrate an already-created session from its persisted kind-31988
 /// [`SessionState`](session_loader::SessionState) and loaded kind-1988 history.
 ///
@@ -989,6 +1010,12 @@ fn is_session_remote(hostname: &str, cwd: &str, local_hostname: &str) -> bool {
 /// repointed at the d-tag so future state events keep the same `agentium:` ref
 /// (and, for a tombstoned session, a later active publish revives it) — and its
 /// **history** present (chat, threading seed, permission state, dedup set).
+///
+/// The history goes in with [`apply_loaded_chat`](crate::conversation::apply_loaded_chat),
+/// the same install a rebuild does, so a hydrated session also gets its
+/// fast-path tail seeded from the fold and its subagent rows indexed (a
+/// background subagent outlives the host's restart, and its completion finds
+/// its row that way).
 ///
 /// The caller owns session *creation* (`new_resumed_session`) and any
 /// path-specific setup (placeholder upgrade, title) done before calling this.
@@ -1279,6 +1306,101 @@ mod tests {
             panic!("the subagent row moved");
         };
         assert_eq!(info.status, SubagentStatus::Completed);
+    }
+
+    /// A background restore folds an older snapshot than the poll has seen: a
+    /// note stored after the worker's read and polled before the session
+    /// existed is in neither. The session's next note must rebuild from ndb,
+    /// which has it, rather than append after the gap.
+    #[tokio::test]
+    async fn background_restore_rebuilds_past_a_dropped_note() {
+        use crate::Message;
+
+        let sk = test_secret_key();
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let sid = "restored-gap";
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let mut threading = ThreadingState::new();
+        let mut reply = |content: &str| {
+            build_live_event(
+                content,
+                "assistant",
+                sid,
+                None,
+                LiveEventTags::default(),
+                &mut threading,
+                &sk,
+            )
+            .unwrap()
+        };
+        let (a, b, c) = (reply("A"), reply("B"), reply("C"));
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let ingest = |ev: &session_events::BuiltEvent| {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+            sub
+        };
+
+        // The worker reads its snapshot while only A is stored.
+        let sub = ingest(&a);
+        ndb.wait_for_notes(sub, 1).await.unwrap();
+        let loaded = {
+            let txn = Transaction::new(&ndb).unwrap();
+            session_loader::load_session_messages_for_author(&ndb, &txn, &account, sid)
+        };
+
+        // B is stored and polled before the session exists, so it's dropped.
+        let sub = ingest(&b);
+        ndb.wait_for_notes(sub, 1).await.unwrap();
+
+        let mut manager = SessionManager::new();
+        let id = manager.new_resumed_session(
+            PathBuf::from("/tmp/proj"),
+            String::new(),
+            "placeholder".to_string(),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let session = manager.get_mut(id).unwrap();
+        // Hosted elsewhere, so this is a remote session: its chat is the fold.
+        hydrate_restored_session(session, &hydrate_test_state(sid, None), loaded, "here");
+        assert!(session.is_remote());
+        assert_eq!(session.agentic.as_ref().unwrap().tail_order, None);
+
+        // C comes through the poll after the session exists.
+        let sub = ingest(&c);
+        let keys = ndb.wait_for_notes(sub, 1).await.unwrap();
+        let txn = Transaction::new(&ndb).unwrap();
+        let batch = vec![ndb.get_note_by_key(&txn, keys[0]).unwrap()];
+        let result = crate::conversation::process_conversation_notes(
+            batch,
+            session,
+            id,
+            true,
+            Some(&sk),
+            &ndb,
+        );
+        assert!(result.rebuild_chat, "an unseeded tail forces a rebuild");
+        drop(txn);
+
+        let txn = Transaction::new(&ndb).unwrap();
+        crate::conversation::rebuild_chat_from_fold(session, &ndb, &txn, &account);
+        let texts: Vec<&str> = session
+            .chat
+            .iter()
+            .filter_map(|m| match m {
+                Message::Assistant(msg) => Some(msg.text()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["A", "B", "C"], "the dropped note is folded back in");
     }
 
     /// Reopening a soft-deleted session materializes it from ndb with its

@@ -26,12 +26,19 @@ use agentium_core::messages::PermissionRequest;
 use agentium_core::session_loader::{view_signature, RowSig};
 use nostrdb::Transaction;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// How long a session may sit at rest behind a note nostrdb hasn't handed
+/// back before [`warn_stalled_reconciles`] says so. A note indexes within
+/// milliseconds, so one still missing after this won't index at all.
+const UNINDEXED_STALL_AFTER: Duration = Duration::from_secs(10);
 
 /// What [`maybe_reconcile_at_rest`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ReconcileOutcome {
     /// The session isn't ready: not at rest, a note it published isn't indexed
-    /// yet, or its chat gained no row since the last reconcile.
+    /// yet, or its chat gained no row since the last reconcile (a note it
+    /// published, or a remote user message).
     NotReady,
     /// The chat was swapped for the fold and showed the same rows.
     Converged,
@@ -65,7 +72,11 @@ pub(crate) struct Drift {
 ///
 /// A note that never indexes keeps the session waiting, so it keeps its live
 /// chat rather than lose the row. Today that is any note whose inner event is
-/// over 32KB: nostrdb's NIP-44 unpad rejects it.
+/// over 32KB: nostrdb's NIP-44 unpad rejects it. [`warn_stalled_reconciles`]
+/// logs a session stuck that way.
+///
+/// The fold is O(session) and runs on the UI thread, once per turn.
+#[profiling::function]
 pub(crate) fn maybe_reconcile_at_rest(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -102,6 +113,100 @@ pub(crate) fn maybe_reconcile_at_rest(
         "host view drifted from fold"
     );
     ReconcileOutcome::Drifted(drift)
+}
+
+/// Warn once for each local session held off its reconcile by a note that
+/// never indexed: at rest, with a note it published still missing from
+/// nostrdb after [`UNINDEXED_STALL_AFTER`].
+///
+/// [`maybe_reconcile_at_rest`] waits for such a note silently, and only runs
+/// when a poll or a turn end calls it, so nothing else would notice. Run once
+/// a frame; a session with every note indexed costs one emptiness check.
+pub(crate) fn warn_stalled_reconciles<'a>(
+    sessions: impl Iterator<Item = &'a mut ChatSession>,
+    now: Instant,
+) {
+    for session in sessions {
+        let at_rest = session.at_rest();
+        let Some(agentic) = &mut session.agentic else {
+            continue;
+        };
+        if !at_rest {
+            continue;
+        }
+        let Some(stall) = agentic.unindexed_self_notes.take_stall(now) else {
+            continue;
+        };
+        tracing::warn!(
+            session = session.id,
+            unindexed = stall.count,
+            oldest_secs = stall.oldest_age.as_secs(),
+            "session at rest can't reconcile: a note it published never indexed"
+        );
+    }
+}
+
+/// Kind-1988 notes a host published for a session that nostrdb has not
+/// handed back through the conversation subscription yet, each with when it
+/// was published.
+///
+/// The reconcile at rest waits for this to empty, since a fold taken earlier
+/// would be missing rows the host is showing. The publish times are what let
+/// [`warn_stalled_reconciles`] tell a note on its way from one that never
+/// arrives.
+#[derive(Debug, Default)]
+pub(crate) struct UnindexedNotes {
+    published: HashMap<[u8; 32], Instant>,
+    /// The stall warning fired for the notes held now. Cleared once they have
+    /// all indexed, so a later stall warns again.
+    stall_warned: bool,
+}
+
+/// What [`UnindexedNotes::take_stall`] reports.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Stall {
+    /// Notes still unindexed.
+    pub count: usize,
+    /// How long ago the oldest of them was published.
+    pub oldest_age: Duration,
+}
+
+impl UnindexedNotes {
+    /// Hold a note just published at `now` until nostrdb hands it back.
+    pub fn insert(&mut self, note_id: [u8; 32], now: Instant) {
+        self.published.insert(note_id, now);
+    }
+
+    /// Release a note nostrdb has handed back.
+    pub fn remove(&mut self, note_id: &[u8; 32]) {
+        self.published.remove(note_id);
+        if self.published.is_empty() {
+            self.stall_warned = false;
+        }
+    }
+
+    /// Every note published has been handed back.
+    pub fn is_empty(&self) -> bool {
+        self.published.is_empty()
+    }
+
+    /// The held notes, once the oldest has waited [`UNINDEXED_STALL_AFTER`].
+    /// Reported once, until they have all indexed.
+    pub fn take_stall(&mut self, now: Instant) -> Option<Stall> {
+        if self.stall_warned {
+            return None;
+        }
+        let oldest = self.published.values().min()?;
+        let oldest_age = now.saturating_duration_since(*oldest);
+        if oldest_age < UNINDEXED_STALL_AFTER {
+            return None;
+        }
+        self.stall_warned = true;
+        Some(Stall {
+            count: self.published.len(),
+            oldest_age,
+        })
+    }
 }
 
 /// The first index where two views differ, including one running longer.
@@ -141,7 +246,8 @@ struct LocalOverlay {
 
 impl LocalOverlay {
     /// Move the detail out of the chat being replaced. It runs once per turn,
-    /// at rest, and moves rather than clones.
+    /// at rest, and moves each row's detail rather than cloning it; only a
+    /// tool's id is cloned, to key it by.
     fn take(chat: Vec<Message>) -> Self {
         let mut overlay = LocalOverlay::default();
         for message in chat {
@@ -234,5 +340,51 @@ impl LocalOverlay {
         if tool.file_update.is_none() {
             tool.file_update = host.file_update;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A note still unindexed past the threshold is reported once, with the
+    /// count and the oldest's age, and a later stall reports again once every
+    /// note has indexed in between.
+    #[test]
+    fn unindexed_stall_reports_once_per_stall() {
+        let start = Instant::now();
+        let mut notes = UnindexedNotes::default();
+        notes.insert([1; 32], start);
+        notes.insert([2; 32], start + Duration::from_secs(4));
+
+        let early = start + UNINDEXED_STALL_AFTER - Duration::from_millis(1);
+        assert_eq!(notes.take_stall(early), None, "not stuck yet");
+
+        let late = start + UNINDEXED_STALL_AFTER + Duration::from_secs(1);
+        assert_eq!(
+            notes.take_stall(late),
+            Some(Stall {
+                count: 2,
+                oldest_age: UNINDEXED_STALL_AFTER + Duration::from_secs(1),
+            })
+        );
+        assert_eq!(notes.take_stall(late), None, "reported once");
+
+        // One indexing leaves the stall standing, still reported.
+        notes.remove(&[2; 32]);
+        assert_eq!(notes.take_stall(late), None);
+
+        // Once all have indexed, the next stall is a new one.
+        notes.remove(&[1; 32]);
+        assert!(notes.is_empty());
+        notes.insert([3; 32], late);
+        let later = late + UNINDEXED_STALL_AFTER;
+        assert_eq!(
+            notes.take_stall(later),
+            Some(Stall {
+                count: 1,
+                oldest_age: UNINDEXED_STALL_AFTER,
+            })
+        );
     }
 }

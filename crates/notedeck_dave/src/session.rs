@@ -255,10 +255,11 @@ pub struct AgenticSessionData {
     /// drained as each note arrives (`process_conversation_notes`). The chat
     /// is only rebuilt from the fold while this is empty: a fold taken earlier
     /// would be missing rows the host is showing.
-    pub unindexed_self_notes: HashSet<[u8; 32]>,
-    /// The chat gained a row since it last matched the fold (the host
-    /// published a note, or a remote user message arrived), so the next
-    /// reconcile at rest has work to do (see `reconcile.rs`).
+    pub unindexed_self_notes: crate::reconcile::UnindexedNotes,
+    /// The chat gained a row since it last matched the fold, so the next
+    /// reconcile at rest has work to do (see `reconcile.rs`). Set by a note
+    /// the host published ([`record_self_note`](Self::record_self_note)) and
+    /// by a remote user message appended to a local session.
     pub fold_dirty: bool,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
@@ -303,7 +304,7 @@ impl AgenticSessionData {
             seen_note_ids: HashSet::new(),
             seen_through: None,
             tail_order: None,
-            unindexed_self_notes: HashSet::new(),
+            unindexed_self_notes: Default::default(),
             fold_dirty: false,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
@@ -365,17 +366,22 @@ impl AgenticSessionData {
     /// session's chat no longer matches the fold until it does.
     pub fn record_self_note(&mut self, note_id: [u8; 32]) {
         self.seen_note_ids.insert(note_id);
-        self.unindexed_self_notes.insert(note_id);
+        self.unindexed_self_notes
+            .insert(note_id, std::time::Instant::now());
         self.fold_dirty = true;
     }
 
     /// Point `subagent_indices` at the subagent rows of a chat that was just
     /// replaced, and forget every running tool.
     ///
-    /// A rebuilt chat has new row positions. A background subagent keeps
-    /// running after its turn ends, and its completion finds its row through
-    /// this map. A running tool never outlives its turn, and a chat is only
-    /// rebuilt at rest, so no running row is left to track.
+    /// Runs on every install of a fold (`apply_loaded_chat`): a local
+    /// session's reconcile at rest, a remote session's rebuild, which can land
+    /// mid-turn, and restore. A rebuilt chat has new row positions. A
+    /// background subagent keeps running after its turn ends, and its
+    /// completion finds its row through this map. `running_tool_indices` only
+    /// tracks a local session's live stream: its chat is rebuilt only at rest,
+    /// when no tool is running, and a remote session's rows come from notes,
+    /// so no running row is left to track.
     pub fn reindex_rows(&mut self, chat: &[Message]) {
         self.subagent_indices.clear();
         self.running_tool_indices.clear();
