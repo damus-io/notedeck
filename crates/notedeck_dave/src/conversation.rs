@@ -420,14 +420,16 @@ pub(crate) fn process_conversation_notes<'a>(
         if !is_remote {
             if role == Some("user") {
                 tracing::info!("received remote user message for local session");
-                // It waits for the running turn like a local send does, so it
-                // gets a dispatch marker too (see `record_dispatch`). A note
-                // its sender tagged queued needs one even if no turn is running
-                // now, or every fold would keep it at the tail.
-                let queued = session.is_dispatched() || session_events::is_queued_note(note);
+                // The host shows it below everything it has so far, but its
+                // note is stamped by the sender's clock, when it was typed: a
+                // phone's message typed while the reply was still streaming,
+                // or sent from a clock running ahead, would fold elsewhere. So
+                // it is always queued, and its dispatch marker places it where
+                // the host does (see `record_dispatch`), whether it waits for
+                // a running turn or is dispatched straight away.
                 session.chat.push(Message::User(messages::UserMessage {
                     note_id: Some(note_id),
-                    queued,
+                    queued: true,
                     ..messages::UserMessage::from(content)
                 }));
                 // Appended where it arrived; the reconcile at rest moves it to

@@ -75,6 +75,9 @@ enum Step {
     Settle,
     /// Anything else the host does between responses (a UI action, a grant).
     Act(Box<dyn FnOnce(&mut Host)>),
+    /// A note another device published reaches the host: it is stored, then
+    /// the conversation poll hands it over.
+    Deliver(BuiltEvent),
 }
 
 /// The host side of a scenario: one agentic session, its ndb and signing key.
@@ -172,7 +175,9 @@ impl Host {
                 &mut HashSet::new(),
             ),
             Step::Act(act) => act(self),
-            Step::Settle => unreachable!("settling is async; `drive` awaits it"),
+            Step::Settle | Step::Deliver(_) => {
+                unreachable!("settling and delivery are async; `drive` awaits them")
+            }
         }
     }
 
@@ -181,6 +186,10 @@ impl Host {
         for step in script {
             match step {
                 Step::Settle => self.settle().await,
+                Step::Deliver(note) => {
+                    self.store_remote(&note).await;
+                    self.poll_note(&note.note_id);
+                }
                 step => self.apply(step),
             }
         }
@@ -239,21 +248,6 @@ impl Host {
         );
         drop(txn);
         maybe_reconcile_at_rest(session, &self.ndb, &author)
-    }
-
-    /// A user message another device (a phone, the `agentium` CLI) sends to
-    /// the session: stamped now, stored whenever the scenario says.
-    fn remote_user_note(&self, text: &str) -> BuiltEvent {
-        build_live_event(
-            text,
-            "user",
-            SESSION,
-            None,
-            LiveEventTags::default(),
-            &mut ThreadingState::new(),
-            &self.secret_key.unwrap(),
-        )
-        .unwrap()
     }
 
     /// Store a note another device published, and wait until it is indexed.
@@ -432,6 +426,21 @@ async fn assert_host_matches_fold_then(script: Vec<Step>, after_poll: ReconcileO
         fold,
         "after the reconcile the host's chat is the fold"
     );
+}
+
+/// A user message another device (a phone, the `agentium` CLI) sends to the
+/// session: stamped now, stored whenever the scenario says.
+fn remote_user_note(text: &str) -> BuiltEvent {
+    build_live_event(
+        text,
+        "user",
+        SESSION,
+        None,
+        LiveEventTags::default(),
+        &mut ThreadingState::new(),
+        &test_secret_key(),
+    )
+    .unwrap()
 }
 
 /// The steps that open every turn: a user message, dispatched.
@@ -810,6 +819,50 @@ async fn queued_send_behind_question_reply_dispatched() {
     assert_host_matches_fold(queued_behind_question_reply(true)).await;
 }
 
+/// A queued message can still be waiting once the session is idle: a restart
+/// restores it at the tail, or its dispatch found no backend. A message sent
+/// then is not queued, but the host dispatches it behind the waiting one. The
+/// waiting one's marker places it at the dispatch, so the new one needs a
+/// marker too, or the fold puts it first.
+#[tokio::test]
+async fn send_behind_a_message_still_waiting() {
+    let mut script = Vec::from(user_turn("first"));
+    script.extend([
+        token("working on "),
+        Step::Send("second, while you work"),
+        token("the first"),
+        Step::StreamEnd,
+        Step::Send("hello?"),
+        Step::Dispatch,
+        token("both, then"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A phone's message typed while the host was still replying, which reaches
+/// the host after the turn ended. The host shows it below the reply and
+/// dispatches it straight away, so its dispatch marker must place it there:
+/// by when it was typed, the fold would put it above the reply.
+#[tokio::test]
+async fn late_remote_message_after_the_reply() {
+    let typed = remote_user_note("sent from the phone");
+    // Strictly before the host's first row, so the fold can't tie-break it
+    // after them.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([
+        token("hi"),
+        Step::StreamEnd,
+        Step::Deliver(typed),
+        Step::Dispatch,
+        token("got your message"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
 /// Drive `script` through a fresh host and wait for its notes to be indexed.
 async fn driven(script: Vec<Step>) -> Host {
     let mut host = Host::new();
@@ -954,7 +1007,7 @@ async fn reconcile_keeps_background_subagent_live() {
 #[tokio::test]
 async fn late_remote_message_still_dispatches() {
     let mut host = Host::new();
-    let typed = host.remote_user_note("sent from the phone");
+    let typed = remote_user_note("sent from the phone");
     // Strictly before the host's first row, so the fold can't tie-break it
     // after them.
     tokio::time::sleep(Duration::from_millis(2)).await;
@@ -989,7 +1042,7 @@ async fn note_stored_after_the_poll_waits_for_the_next_one() {
     script.extend([token("hi"), Step::StreamEnd]);
     let mut host = driven(script).await;
 
-    let phone = host.remote_user_note("sent from the phone");
+    let phone = remote_user_note("sent from the phone");
     host.store_remote(&phone).await;
     assert_eq!(
         host.poll_and_reconcile(),

@@ -329,15 +329,19 @@ pub(crate) fn record_user_message(
 }
 
 /// Hand a session's trailing user message(s) to the backend: mark them
-/// dispatched, and publish a [`DISPATCHED_ROLE`] marker for each one that was
-/// queued.
+/// dispatched, and publish a [`DISPATCHED_ROLE`] marker for the first queued
+/// one and every one after it.
 ///
 /// A queued message's note is stamped when it was typed, mid-turn, but the
 /// host keeps it at the end of the chat until this moment. The marker records
 /// where it really joined the conversation, so the fold over the notes puts it
-/// in the same place (see `session_loader::display_order`). Every dispatch
-/// goes through here: the send path ([`Dave::send_user_message_for`]) and the
-/// convergence harness.
+/// in the same place (see `session_loader::display_order`). A message behind
+/// it in the run needs a marker too even if it was not queued (sent once the
+/// session was idle, with the queued one still waiting): by its own stamp it
+/// would sort before the marker, above the message the host shows first.
+///
+/// Every dispatch goes through here: the send path
+/// ([`Dave::send_user_message_for`]) and the convergence harness.
 ///
 /// [`DISPATCHED_ROLE`]: session_events::DISPATCHED_ROLE
 pub(crate) fn record_dispatch(
@@ -347,11 +351,13 @@ pub(crate) fn record_dispatch(
 ) {
     session.mark_dispatched();
     let first = session.chat.len() - session.trailing_user_count();
+    let mut marking = false;
     for idx in first..session.chat.len() {
         let Some(Message::User(user)) = session.chat.get_mut(idx) else {
             continue;
         };
-        if !user.queued {
+        marking |= user.queued;
+        if !marking {
             continue;
         }
         user.queued = false;
