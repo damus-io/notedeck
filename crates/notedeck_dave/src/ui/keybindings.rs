@@ -26,7 +26,8 @@ pub enum KeyAction {
     PreviousAgent,
     /// Spawn a new agent (Ctrl+T)
     NewAgent,
-    /// Interrupt/stop the current AI operation
+    /// Stop the active session's running turn (`s` in the chord), the same
+    /// thing the Stop button does
     Interrupt,
     /// Toggle between scene view and classic view
     ToggleView,
@@ -183,6 +184,9 @@ pub struct ChordState {
     sessions_shown: bool,
     /// Whether the active session is agentic, as of the last frame.
     agentic: bool,
+    /// Whether the active session has a running turn to stop, as of the last
+    /// frame.
+    interruptible: bool,
     /// When the chord ends, focus the active session's input instead of
     /// `restore_focus`: the chord switched sessions, or an action asked for
     /// the input while the chord held the keyboard.
@@ -230,6 +234,8 @@ pub struct ChordView {
     pub sessions_shown: bool,
     /// The agentic-only keys (`c`, `v`, `m`, `]q`, `[q`) apply.
     pub agentic: bool,
+    /// `s` has a running turn to stop.
+    pub interruptible: bool,
 }
 
 /// One continuation a pending chord accepts, as the which-key strip shows it.
@@ -276,6 +282,9 @@ const SESSION_VIEW: &[ChordHint] = &[
     hint("e", KeyAction::OpenExternalEditor),
 ];
 
+/// Turn keys, from either pane.
+const SESSION_TURN: &[ChordHint] = &[hint("s", KeyAction::Interrupt)];
+
 /// Focus-queue keys, from either pane (vim's quickfix `]q` / `[q`).
 const FOCUS_QUEUE: &[ChordHint] = &[
     hint("]q", KeyAction::FocusQueueNext),
@@ -313,7 +322,7 @@ const SESSIONS_LEADER_HINTS: &[&[ChordHint]] = &[
 
 /// What `<leader>` accepts in either pane besides the pane's own keys: the
 /// strip gives them a row of their own.
-const SESSION_KEYS: &[&[ChordHint]] = &[SESSION_LIFECYCLE, SESSION_VIEW, FOCUS_QUEUE];
+const SESSION_KEYS: &[&[ChordHint]] = &[SESSION_LIFECYCLE, SESSION_VIEW, SESSION_TURN, FOCUS_QUEUE];
 
 /// What `<leader> z` accepts.
 const LEADER_Z_HINTS: &[&[ChordHint]] = &[
@@ -373,12 +382,13 @@ impl ChordView {
     }
 
     /// Whether `action` does anything this frame: `h` needs the session list
-    /// on screen, and the agentic-only keys need an agentic session. A key
-    /// that doesn't is swallowed without ending the chord, and the strip
-    /// leaves it out.
+    /// on screen, `s` a running turn, and the agentic-only keys an agentic
+    /// session. A key that doesn't is swallowed without ending the chord, and
+    /// the strip leaves it out.
     pub fn offers(self, action: &KeyAction) -> bool {
         match action {
             KeyAction::FocusSessionsPane => self.sessions_shown,
+            KeyAction::Interrupt => self.interruptible,
             action if action.agentic_only() => self.agentic,
             _ => true,
         }
@@ -407,6 +417,7 @@ impl ChordState {
             pane: self.pane,
             sessions_shown: self.sessions_shown,
             agentic: self.agentic,
+            interruptible: self.interruptible,
         }
     }
 
@@ -424,9 +435,10 @@ impl ChordState {
 
     /// Record what this frame offers the chord. With the session list off
     /// screen (a narrow layout, the scene view) it falls back to the chat.
-    fn observe(&mut self, sessions_shown: bool, agentic: bool) {
+    fn observe(&mut self, sessions_shown: bool, agentic: bool, interruptible: bool) {
         self.sessions_shown = sessions_shown;
         self.agentic = agentic;
+        self.interruptible = interruptible;
         if !sessions_shown {
             self.pane = Pane::Chat;
         }
@@ -511,7 +523,7 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
         return ChordStep::FallThrough;
     };
 
-    // Esc cancels the chord and nothing else: it must not also interrupt.
+    // Esc cancels the chord and nothing else.
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
         chord.end(ctx);
         return ChordStep::Consumed(None);
@@ -601,6 +613,7 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
             (Continue(Pending::Leader), Some(A::CyclePermissionMode))
         }
         (_, Pending::Leader, Key::E, false) => (End, Some(A::OpenExternalEditor)),
+        (_, Pending::Leader, Key::S, false) => (Continue(Pending::Leader), Some(A::Interrupt)),
         (_, Pending::Leader, Key::CloseBracket, false) => {
             (Continue(Pending::LeaderCloseBracket), None)
         }
@@ -644,21 +657,23 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
 /// In Chat mode, agentic-specific keybindings (scene view, plan mode, focus queue) are disabled.
 ///
 /// `chord` carries a leader chord across frames: while one is pending it owns
-/// the keyboard (see [`ChordState`]). `leader` is the key that opens one, and
-/// `sessions_shown` says whether the session list is on screen for its `h`.
+/// the keyboard (see [`ChordState`]). `leader` is the key that opens one,
+/// `sessions_shown` says whether the session list is on screen for its `h`, and
+/// `interruptible` whether the active session has a running turn for its `s`.
 #[allow(clippy::too_many_arguments)]
 pub fn check_keybindings(
     ctx: &egui::Context,
     chord: &mut ChordState,
     leader: Leader,
     sessions_shown: bool,
+    interruptible: bool,
     has_pending_permission: bool,
     has_pending_question: bool,
     in_tentative_state: bool,
     ai_mode: AiMode,
 ) -> Option<KeyAction> {
     let is_agentic = ai_mode == AiMode::Agentic;
-    chord.observe(sessions_shown, is_agentic);
+    chord.observe(sessions_shown, is_agentic, interruptible);
 
     // A pending chord reads bare keys, and its Esc outranks every other Esc.
     if let ChordStep::Consumed(action) = check_chord(ctx, chord) {
@@ -671,11 +686,6 @@ pub fn check_keybindings(
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
     {
         return Some(KeyAction::CancelTentative);
-    }
-
-    // Escape otherwise works to interrupt AI (even when text input has focus)
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-        return Some(KeyAction::Interrupt);
     }
 
     let ctrl = egui::Modifiers::CTRL;
@@ -893,19 +903,31 @@ mod tests {
         detect_sequence_with(Leader::DEFAULT, presses)
     }
 
-    /// `check_keybindings` as these tests drive it: agentic, with no pending
-    /// prompts.
-    fn check(
-        ctx: &egui::Context,
-        chord: &mut ChordState,
+    /// What a frame offers the keybindings, beyond the keys: which leader is
+    /// bound, and what the chord's `h` and `s` have to act on.
+    #[derive(Clone, Copy)]
+    struct Frame {
         leader: Leader,
         sessions_shown: bool,
-    ) -> Option<KeyAction> {
+        interruptible: bool,
+    }
+
+    /// The session list on screen and a turn running: every chord key applies.
+    const FRAME: Frame = Frame {
+        leader: Leader::DEFAULT,
+        sessions_shown: true,
+        interruptible: true,
+    };
+
+    /// `check_keybindings` as these tests drive it: agentic, with no pending
+    /// prompts.
+    fn check(ctx: &egui::Context, chord: &mut ChordState, frame: Frame) -> Option<KeyAction> {
         check_keybindings(
             ctx,
             chord,
-            leader,
-            sessions_shown,
+            frame.leader,
+            frame.sessions_shown,
+            frame.interruptible,
             false,
             false,
             false,
@@ -915,21 +937,17 @@ mod tests {
 
     /// [`detect_sequence`] with `leader` bound in place of the default.
     fn detect_sequence_with(leader: Leader, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
-        detect_sequence_in(leader, true, presses)
+        detect_sequence_in(Frame { leader, ..FRAME }, presses)
     }
 
-    /// [`detect_sequence`] with the session list on screen or not.
-    fn detect_sequence_in(
-        leader: Leader,
-        sessions_shown: bool,
-        presses: &[(Modifiers, Key)],
-    ) -> Option<KeyAction> {
+    /// [`detect_sequence`] in `frame`.
+    fn detect_sequence_in(frame: Frame, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
         // Accumulate: `press_key_modifiers` runs the key-down frame internally
         // and then a key-up frame, so we must not clobber the detection with the
         // later (keys-released) frame's `None`.
         let mut harness = Harness::new_ui_state(
             |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
-                if let Some(a) = check(ui.ctx(), chord, leader, sessions_shown) {
+                if let Some(a) = check(ui.ctx(), chord, frame) {
                     *action = Some(a);
                 }
             },
@@ -945,9 +963,14 @@ mod tests {
     /// Press each `(modifiers, key)` in turn and return how far into a chord
     /// that leaves us: what the which-key strip is handed next frame.
     fn pending_after(presses: &[(Modifiers, Key)]) -> Option<Pending> {
+        pending_after_in(FRAME, presses)
+    }
+
+    /// [`pending_after`] in `frame`.
+    fn pending_after_in(frame: Frame, presses: &[(Modifiers, Key)]) -> Option<Pending> {
         let mut harness = Harness::new_ui_state(
             |ui, chord: &mut ChordState| {
-                check(ui.ctx(), chord, Leader::DEFAULT, true);
+                check(ui.ctx(), chord, frame);
             },
             ChordState::default(),
         );
@@ -1081,6 +1104,7 @@ mod tests {
                 pane,
                 sessions_shown: true,
                 agentic: true,
+                interruptible: true,
             };
             assert_eq!(pending_after(prefix), Some(pending), "{pane:?} {prefix:?}");
             let groups = view.hints().iter().chain(view.session_keys());
@@ -1152,7 +1176,13 @@ mod tests {
     fn h_without_a_session_list_does_nothing() {
         let presses = [LEADER, (NONE, Key::H), (NONE, Key::J)];
         assert_eq!(
-            detect_sequence_in(Leader::DEFAULT, false, &presses),
+            detect_sequence_in(
+                Frame {
+                    sessions_shown: false,
+                    ..FRAME
+                },
+                &presses
+            ),
             Some(KeyAction::BlockCursorDown),
             "h is swallowed, the chord stays open and in the chat",
         );
@@ -1175,8 +1205,65 @@ mod tests {
     }
 
     #[test]
-    fn escape_with_no_chord_still_interrupts() {
-        assert_eq!(detect(NONE, Key::Escape), Some(KeyAction::Interrupt));
+    fn leader_s_stops_the_running_turn_from_either_pane() {
+        assert_eq!(
+            detect_sequence(&[LEADER, (NONE, Key::S)]),
+            Some(KeyAction::Interrupt),
+        );
+        assert_eq!(
+            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::S)]),
+            Some(KeyAction::Interrupt),
+        );
+        assert_eq!(
+            pending_after(&[LEADER, (NONE, Key::S)]),
+            Some(Pending::Leader),
+            "s keeps the chord open, like the other session keys",
+        );
+    }
+
+    #[test]
+    fn leader_s_with_nothing_running_is_swallowed() {
+        let idle = Frame {
+            interruptible: false,
+            ..FRAME
+        };
+        assert_eq!(detect_sequence_in(idle, &[LEADER, (NONE, Key::S)]), None);
+        assert_eq!(
+            pending_after_in(idle, &[LEADER, (NONE, Key::S)]),
+            Some(Pending::Leader),
+            "the chord stays open",
+        );
+    }
+
+    #[test]
+    fn escape_with_no_chord_does_not_interrupt() {
+        assert_eq!(detect(NONE, Key::Escape), None);
+    }
+
+    #[test]
+    fn escape_in_the_tentative_state_still_cancels_it() {
+        let mut harness = Harness::new_ui_state(
+            |ui, action: &mut Option<KeyAction>| {
+                let mut chord = ChordState::default();
+                if let Some(a) = check_keybindings(
+                    ui.ctx(),
+                    &mut chord,
+                    Leader::DEFAULT,
+                    true,
+                    true,
+                    true,
+                    false,
+                    true,
+                    AiMode::Agentic,
+                ) {
+                    *action = Some(a);
+                }
+            },
+            None,
+        );
+        harness.run();
+        harness.press_key_modifiers(NONE, Key::Escape);
+        assert_eq!(harness.state(), &Some(KeyAction::CancelTentative));
     }
 
     #[test]
@@ -1194,10 +1281,9 @@ mod tests {
 
     #[test]
     fn a_chord_stays_open_while_idle() {
-        let leader = Leader::DEFAULT;
         let mut harness = Harness::new_ui_state(
             |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
-                if let Some(a) = check(ui.ctx(), chord, leader, true) {
+                if let Some(a) = check(ui.ctx(), chord, FRAME) {
                     *action = Some(a);
                 }
             },
@@ -1234,7 +1320,7 @@ mod tests {
         // A real text field: egui drops focus from an id no widget claims.
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
-                check(ui.ctx(), chord, Leader::DEFAULT, true);
+                check(ui.ctx(), chord, FRAME);
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
             },
@@ -1276,7 +1362,7 @@ mod tests {
         let input_id = egui::Id::unique("chat_input");
         let mut harness = Harness::new_ui_state(
             |ui, (chord, text): &mut (ChordState, String)| {
-                check(ui.ctx(), chord, Leader::DEFAULT, true);
+                check(ui.ctx(), chord, FRAME);
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
             },

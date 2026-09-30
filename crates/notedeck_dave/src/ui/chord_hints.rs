@@ -223,6 +223,7 @@ mod tests {
             pane,
             sessions_shown: true,
             agentic: true,
+            interruptible: true,
         };
         let strips = [
             view(Pane::Chat, Pending::Leader),

@@ -72,7 +72,6 @@ pub fn own_item_spacing(ui: &mut egui::Ui) {
 fn build_dave_ui<'a>(
     session: &'a mut ChatSession,
     model_config: &ModelConfig,
-    is_interrupt_pending: bool,
     auto_steal_focus: bool,
     chord: Option<ChordView>,
     run_configs: &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
@@ -106,7 +105,6 @@ fn build_dave_ui<'a>(
     )
     .is_working(is_working)
     .is_connecting(is_connecting)
-    .interrupt_pending(is_interrupt_pending)
     .has_pending_permission(has_pending_permission)
     .permission_mode(permission_mode)
     .auto_steal_focus(auto_steal_focus)
@@ -500,7 +498,6 @@ pub fn scene_ui(
     scene: &mut AgentScene,
     focus_queue: &mut FocusQueue,
     model_config: &ModelConfig,
-    is_interrupt_pending: bool,
     auto_steal_focus: bool,
     chord: Option<ChordView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
@@ -562,7 +559,6 @@ pub fn scene_ui(
                                 let response = build_dave_ui(
                                     session,
                                     model_config,
-                                    is_interrupt_pending,
                                     auto_steal_focus,
                                     chord,
                                     run_configs,
@@ -621,7 +617,6 @@ pub fn desktop_ui(
     focus_queue: &FocusQueue,
     collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
-    is_interrupt_pending: bool,
     auto_steal_focus: bool,
     chord: Option<ChordView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
@@ -720,7 +715,6 @@ pub fn desktop_ui(
                 build_dave_ui(
                     session,
                     model_config,
-                    is_interrupt_pending,
                     auto_steal_focus,
                     chord,
                     run_configs,
@@ -743,7 +737,6 @@ pub fn narrow_ui(
     focus_queue: &FocusQueue,
     collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
-    is_interrupt_pending: bool,
     auto_steal_focus: bool,
     chord: Option<ChordView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
@@ -768,7 +761,6 @@ pub fn narrow_ui(
         let response = build_dave_ui(
             session,
             model_config,
-            is_interrupt_pending,
             auto_steal_focus,
             chord,
             run_configs,
@@ -787,7 +779,6 @@ pub fn narrow_ui(
 pub enum KeyActionResult {
     None,
     ToggleView,
-    HandleInterrupt,
     CloneAgent,
     NewAgent,
     DeleteSession(SessionId),
@@ -797,6 +788,8 @@ pub enum KeyActionResult {
     PublishPermissionResponse(update::PermissionPublish),
     /// Permission mode command needs relay publishing (observer → host).
     PublishModeCommand(update::ModeCommandPublish),
+    /// Interrupt command needs relay publishing (observer → host).
+    PublishInterruptCommand(update::InterruptPublish),
 }
 
 /// Run a block-cursor action against the active chat's [`BlockNav`].
@@ -980,7 +973,11 @@ pub fn handle_key_action(
         KeyAction::FocusSessionsPane | KeyAction::FocusChatPane => KeyActionResult::None,
         KeyAction::NewAgent => KeyActionResult::NewAgent,
         KeyAction::CloneAgent => KeyActionResult::CloneAgent,
-        KeyAction::Interrupt => KeyActionResult::HandleInterrupt,
+        // The same path as the Stop button's `DaveAction::Interrupt`.
+        KeyAction::Interrupt => match update::execute_interrupt(session_manager, backend, ctx) {
+            Some(cmd) => KeyActionResult::PublishInterruptCommand(cmd),
+            None => KeyActionResult::None,
+        },
         KeyAction::ToggleView => KeyActionResult::ToggleView,
         KeyAction::CyclePermissionMode => {
             let publish = update::cycle_permission_mode(session_manager, backend, ctx);
@@ -1446,6 +1443,7 @@ mod tests {
             &mut d.chord,
             Leader::DEFAULT,
             true,
+            false,
             false,
             false,
             false,

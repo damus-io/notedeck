@@ -15,10 +15,6 @@ use crate::session::{ChatSession, EditorJob, PermissionMessageState, SessionId, 
 use crate::ui::{AgentScene, DirectoryPicker};
 use claude_agent_sdk_rs::PermissionMode;
 use std::path::PathBuf;
-use std::time::Instant;
-
-/// Timeout for confirming interrupt (in seconds)
-pub const INTERRUPT_CONFIRM_TIMEOUT_SECS: f32 = 1.5;
 
 // =============================================================================
 // Interrupt Handling
@@ -35,19 +31,11 @@ pub struct InterruptPublish {
     pub session_id: String,
 }
 
-/// The result of an interrupt request: the new double-Escape confirmation state
-/// plus, when the interrupt fired against a remote session, the command to
-/// publish to its host.
-pub struct InterruptOutcome {
-    pub pending_since: Option<Instant>,
-    pub publish: Option<InterruptPublish>,
-}
-
-/// Whether the active session has an in-flight turn that Escape can interrupt.
+/// Whether a session has an in-flight turn to stop, so the chord offers `s`.
 ///
 /// Local sessions stream tokens into `incoming_tokens`; remote sessions have no
 /// local stream, so their liveness comes from the host's status (`Working`).
-fn session_is_interruptible(session: &ChatSession) -> bool {
+pub(crate) fn session_is_interruptible(session: &ChatSession) -> bool {
     if session.is_remote() {
         session.status() == AgentStatus::Working
     } else {
@@ -64,59 +52,10 @@ fn remote_interrupt_publish(session: &ChatSession) -> Option<InterruptPublish> {
     Some(InterruptPublish { session_id })
 }
 
-/// Handle an interrupt request - requires double-Escape to confirm.
-///
-/// Returns the new confirmation state and, for a confirmed interrupt on a remote
-/// session, the [`InterruptPublish`] the caller must forward to the host. A local
-/// session is interrupted directly on its backend and yields no publish.
-pub fn handle_interrupt_request(
-    session_manager: &SessionManager,
-    backend: &dyn AiBackend,
-    pending_since: Option<Instant>,
-    ctx: &egui::Context,
-) -> InterruptOutcome {
-    // Only allow interrupt if there's an active AI operation
-    let has_active_operation = session_manager
-        .get_active()
-        .map(session_is_interruptible)
-        .unwrap_or(false);
-
-    if !has_active_operation {
-        return InterruptOutcome {
-            pending_since: None,
-            publish: None,
-        };
-    }
-
-    let now = Instant::now();
-
-    let Some(pending) = pending_since else {
-        // First Escape press — arm the confirmation window.
-        return InterruptOutcome {
-            pending_since: Some(now),
-            publish: None,
-        };
-    };
-
-    if now.duration_since(pending).as_secs_f32() >= INTERRUPT_CONFIRM_TIMEOUT_SECS {
-        // Timeout expired, treat as new first press.
-        return InterruptOutcome {
-            pending_since: Some(now),
-            publish: None,
-        };
-    }
-
-    // Second Escape within timeout — confirm, then take the one interrupt path.
-    InterruptOutcome {
-        pending_since: None,
-        publish: execute_interrupt(session_manager, backend, ctx),
-    }
-}
-
 /// Execute the actual interrupt on the active session.
 ///
-/// The single place both interrupt gestures land — the Stop button directly, and
-/// Escape once its double-press is confirmed — so the two cannot drift apart.
+/// The single place both interrupt gestures land — the Stop button and `s` in
+/// the chord — so the two cannot drift apart.
 ///
 /// Interrupting asks the backend to abort the in-flight turn and does nothing
 /// else. In particular it must NOT tear down local session state: on a
@@ -164,14 +103,6 @@ pub fn exit_tool_call(
             reason: crate::messages::DEFAULT_EXIT_REASON.into(),
         },
     )
-}
-
-/// Check if interrupt confirmation has timed out.
-/// Returns None if timed out, otherwise returns the original value.
-pub fn check_interrupt_timeout(pending_since: Option<Instant>) -> Option<Instant> {
-    pending_since.filter(|pending| {
-        Instant::now().duration_since(*pending).as_secs_f32() < INTERRUPT_CONFIRM_TIMEOUT_SECS
-    })
 }
 
 // =============================================================================
@@ -2656,7 +2587,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Interrupt: Escape and the Stop button must be the same thing
+    // Interrupt: the chord's `s` and the Stop button must be the same thing
     // =========================================================================
 
     /// A fake backend with Claude's persistent-stream semantics — the property
@@ -2823,60 +2754,6 @@ mod tests {
         );
     }
 
-    /// Escape (confirmed) and the Stop button must leave a session in the same
-    /// state. They are the same gesture; only the confirmation differs, and the
-    /// confirmation gates *whether* the interrupt fires, never *what* it does.
-    #[test]
-    fn esc_and_stop_interrupts_leave_the_same_state() {
-        let ctx = egui::Context::default();
-
-        // Stop button.
-        let (stop_backend, _stop_tx) = PersistentStreamFake::new();
-        let mut stop_sm = SessionManager::new();
-        let stop_id = session_mid_turn(&mut stop_sm, &stop_backend);
-        execute_interrupt(&stop_sm, &stop_backend, &ctx);
-
-        // Escape, confirmed by a second press inside the window.
-        let (esc_backend, _esc_tx) = PersistentStreamFake::new();
-        let mut esc_sm = SessionManager::new();
-        let esc_id = session_mid_turn(&mut esc_sm, &esc_backend);
-        let first = handle_interrupt_request(&esc_sm, &esc_backend, None, &ctx);
-        assert!(
-            first.pending_since.is_some(),
-            "the first Escape only arms the confirmation"
-        );
-        assert_eq!(
-            esc_backend.interrupt_count(),
-            0,
-            "the first Escape must not interrupt"
-        );
-        let second = handle_interrupt_request(&esc_sm, &esc_backend, first.pending_since, &ctx);
-        assert!(second.pending_since.is_none(), "confirmation is consumed");
-
-        assert_eq!(
-            esc_backend.interrupt_count(),
-            stop_backend.interrupt_count()
-        );
-        let esc = esc_sm.get(esc_id).expect("session");
-        let stop = stop_sm.get(stop_id).expect("session");
-        // Agreeing is not enough — they must agree on the *correct* behaviour,
-        // or converging the two paths onto the broken one would satisfy this.
-        assert!(
-            esc.incoming_tokens.is_some() && stop.incoming_tokens.is_some(),
-            "Escape and Stop must agree about the session's stream, and keep it"
-        );
-        assert_eq!(
-            esc.has_pending_permissions(),
-            stop.has_pending_permissions(),
-            "Escape and Stop must agree about pending permissions"
-        );
-        assert_eq!(
-            esc.status(),
-            stop.status(),
-            "Escape and Stop must agree about status"
-        );
-    }
-
     /// An interrupt must not silently drop the tool permission the user is
     /// being asked about. Dropping the pending oneshot answers the CLI's
     /// `can_use_tool` RPC with a cancellation while the request row in chat
@@ -2925,11 +2802,10 @@ mod tests {
     // The two gestures, driven through the real widgets
     // =========================================================================
     //
-    // The tests above start at `execute_interrupt` / `handle_interrupt_request`
-    // and so take the wiring on faith. These drive the actual Stop button and
-    // the actual Escape key through an egui harness, so "Escape and Stop are
-    // the same thing" is asserted over the whole path a user travels rather
-    // than from the seam inward.
+    // The tests above start at `execute_interrupt` and so take the wiring on
+    // faith. These drive the actual Stop button and the actual chord keys
+    // through an egui harness, so "`s` and Stop are the same thing" is asserted
+    // over the whole path a user travels rather than from the seam inward.
 
     /// Click the real Stop button in a real `InputboxLayout` and return the
     /// action it raises.
@@ -2960,16 +2836,20 @@ mod tests {
         harness.state_mut().take()
     }
 
-    /// Press Escape in a real egui frame and return the keybinding it triggers.
-    fn press_escape() -> Option<crate::ui::keybindings::KeyAction> {
+    /// Type the leader then `s` in a real egui frame, with a turn running, and
+    /// return the keybinding it triggers.
+    fn press_leader_s() -> Option<crate::ui::keybindings::KeyAction> {
+        use crate::ui::keybindings::{check_keybindings, ChordState, KeyAction, Leader};
+
         let mut harness = egui_kittest::Harness::new_ui_state(
-            |ui, action: &mut Option<crate::ui::keybindings::KeyAction>| {
+            |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
                 // Accumulate: `press_key` runs a key-down frame and then a
                 // key-up frame, whose `None` would otherwise clobber the hit.
-                if let Some(a) = crate::ui::keybindings::check_keybindings(
+                if let Some(a) = check_keybindings(
                     ui.ctx(),
-                    &mut crate::ui::keybindings::ChordState::default(),
-                    crate::ui::keybindings::Leader::DEFAULT,
+                    chord,
+                    Leader::DEFAULT,
+                    true,
                     true,
                     false,
                     false,
@@ -2979,20 +2859,22 @@ mod tests {
                     *action = Some(a);
                 }
             },
-            None,
+            (ChordState::default(), None),
         );
         harness.run();
-        harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::Escape);
-        harness.state().clone()
+        harness.press_key_modifiers(egui::Modifiers::CTRL, egui::Key::Semicolon);
+        harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::S);
+        harness.state().1.clone()
     }
 
     /// Both gestures reach the interrupt, and both leave the session usable.
     ///
     /// End-to-end over the real widgets: a click on the rendered Stop button
-    /// and a real Escape keypress each arrive at the shared interrupt path, and
-    /// the session still owns a live stream afterwards either way.
+    /// and a real `<leader> s` each arrive at the shared interrupt path through
+    /// their own dispatch, and the session still owns a live stream afterwards
+    /// either way.
     #[test]
-    fn stop_button_and_escape_key_both_interrupt_without_breaking_the_session() {
+    fn stop_button_and_chord_s_both_interrupt_without_breaking_the_session() {
         let ctx = egui::Context::default();
 
         // --- Stop button: click the real widget, follow the action it raises.
@@ -3017,28 +2899,56 @@ mod tests {
         );
         assert_eq!(stop_backend.interrupt_count(), 1, "Stop aborted the turn");
 
-        // --- Escape: press the real key, follow the keybinding it triggers.
-        let key_action = press_escape();
+        // --- `<leader> s`: type the real keys, follow the keybinding.
+        let key_action = press_leader_s();
         assert!(
             matches!(
                 key_action,
                 Some(crate::ui::keybindings::KeyAction::Interrupt)
             ),
-            "Escape must trigger Interrupt, got {key_action:?}"
+            "<leader> s must trigger Interrupt, got {key_action:?}"
         );
 
-        let (esc_backend, esc_tx) = PersistentStreamFake::new();
-        let mut esc_sm = SessionManager::new();
-        let esc_id = session_mid_turn(&mut esc_sm, &esc_backend);
-        let first = handle_interrupt_request(&esc_sm, &esc_backend, None, &ctx);
-        let second = handle_interrupt_request(&esc_sm, &esc_backend, first.pending_since, &ctx);
-        assert!(second.pending_since.is_none(), "confirmation is consumed");
-        assert_eq!(esc_backend.interrupt_count(), 1, "Escape aborted the turn");
+        let (s_backend, s_tx) = PersistentStreamFake::new();
+        let mut s_sm = SessionManager::new();
+        let s_id = session_mid_turn(&mut s_sm, &s_backend);
+        let mut scene = AgentScene::new();
+        let mut focus_queue = FocusQueue::new();
+        let collapse_state = crate::collapse_state::CollapseState::new();
+        let mut home_session = None;
+        crate::ui::handle_key_action(
+            key_action.expect("<leader> s raised an action"),
+            &mut s_sm,
+            &mut scene,
+            &mut focus_queue,
+            &collapse_state,
+            &s_backend,
+            false,
+            false,
+            &mut home_session,
+            &ctx,
+        );
+        assert_eq!(
+            s_backend.interrupt_count(),
+            1,
+            "<leader> s aborted the turn"
+        );
 
-        // --- Both sessions are still reachable by their actor.
+        // --- Both sessions are still reachable by their actor, and agree.
+        let (stop, s) = (stop_sm.get(stop_id).unwrap(), s_sm.get(s_id).unwrap());
+        assert_eq!(
+            stop.has_pending_permissions(),
+            s.has_pending_permissions(),
+            "Stop and s must agree about pending permissions"
+        );
+        assert_eq!(
+            stop.status(),
+            s.status(),
+            "Stop and s must agree about status"
+        );
         for (label, sm, id, tx) in [
             ("Stop", &stop_sm, stop_id, &stop_tx),
-            ("Escape", &esc_sm, esc_id, &esc_tx),
+            ("<leader> s", &s_sm, s_id, &s_tx),
         ] {
             let session = sm.get(id).expect("session");
             let recvr = session

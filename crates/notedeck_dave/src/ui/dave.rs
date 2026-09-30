@@ -45,7 +45,6 @@ bitflags! {
         const Trial            = 1 << 0;
         const Compact          = 1 << 1;
         const IsWorking        = 1 << 2;
-        const InterruptPending = 1 << 3;
         const HasPendingPerm   = 1 << 4;
         const IsCompacting     = 1 << 5;
         const AutoStealFocus   = 1 << 6;
@@ -330,11 +329,6 @@ impl<'a> DaveUi<'a> {
     /// the queued indicator stays correct through a tool-using turn.
     pub fn turn_has_content(mut self, val: bool) -> Self {
         self.turn_has_content = val;
-        self
-    }
-
-    pub fn interrupt_pending(mut self, val: bool) -> Self {
-        self.flags.set(DaveUiFlags::InterruptPending, val);
         self
     }
 
@@ -1680,14 +1674,12 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        // Remote sessions can be interrupted too: the Stop button / Esc publishes
-        // an interrupt command the host applies to its backend.
+        // Remote sessions can be interrupted too: the Stop button / chord `s`
+        // publishes an interrupt command the host applies to its backend.
         let show_stop = self.flags.contains(DaveUiFlags::IsWorking);
-        let show_esc_hint = show_stop && self.flags.contains(DaveUiFlags::InterruptPending);
 
         let layout = InputboxLayout::new(self.input, i18n)
             .show_stop(show_stop)
-            .show_esc_hint(show_esc_hint)
             .id(egui::Id::unique(("dave_input", self.session_id)));
 
         let result = layout.show(ui);
@@ -1884,7 +1876,6 @@ pub struct InputboxLayout<'a> {
     pub stop_label: String,
     pub hint_text: String,
     pub show_stop: bool,
-    pub show_esc_hint: bool,
     pub id: Option<egui::Id>,
 }
 
@@ -1900,7 +1891,6 @@ impl<'a> InputboxLayout<'a> {
                 "Placeholder text for Dave AI input field"
             ),
             show_stop: false,
-            show_esc_hint: false,
             id: None,
         }
     }
@@ -1912,18 +1902,12 @@ impl<'a> InputboxLayout<'a> {
             stop_label: "Stop".to_string(),
             hint_text: "Ask dave anything...".to_string(),
             show_stop: false,
-            show_esc_hint: false,
             id: None,
         }
     }
 
     pub fn show_stop(mut self, show: bool) -> Self {
         self.show_stop = show;
-        self
-    }
-
-    pub fn show_esc_hint(mut self, show: bool) -> Self {
-        self.show_esc_hint = show;
         self
     }
 
@@ -1946,19 +1930,10 @@ impl<'a> InputboxLayout<'a> {
                         .add(egui::Button::new(&self.ask_label).min_size(button_size))
                         .clicked();
 
-                    let mut stop_clicked = false;
-                    if self.show_stop {
-                        stop_clicked = ui
+                    let stop_clicked = self.show_stop
+                        && ui
                             .add(egui::Button::new(&self.stop_label).min_size(button_size))
                             .clicked();
-
-                        if self.show_esc_hint {
-                            ui.label(
-                                egui::RichText::new("Press Esc again to stop")
-                                    .color(ui.visuals().warn_fg_color),
-                            );
-                        }
-                    }
 
                     let text_response = egui::ScrollArea::vertical()
                         .max_height(ui.available_height())

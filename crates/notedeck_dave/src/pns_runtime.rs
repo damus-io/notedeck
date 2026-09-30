@@ -27,7 +27,6 @@ pub(crate) struct PnsLocalRuntime {
     show_session_list: bool,
     scene: AgentScene,
     show_scene: bool,
-    interrupt_pending_since: Option<std::time::Instant>,
     focus_queue: FocusQueue,
     auto_steal: focus_queue::AutoStealState,
     home_session: Option<SessionId>,
@@ -68,7 +67,6 @@ impl PnsLocalRuntime {
             show_session_list: false,
             scene: AgentScene::new(),
             show_scene: false,
-            interrupt_pending_since: None,
             focus_queue: FocusQueue::new(),
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
@@ -198,7 +196,6 @@ impl Dave {
             show_session_list: self.show_session_list,
             scene: std::mem::take(&mut self.scene),
             show_scene: self.show_scene,
-            interrupt_pending_since: self.interrupt_pending_since.take(),
             focus_queue: std::mem::take(&mut self.focus_queue),
             auto_steal: self.auto_steal,
             home_session: self.home_session.take(),
@@ -250,7 +247,6 @@ impl Dave {
         self.show_session_list = runtime.show_session_list;
         self.scene = runtime.scene;
         self.show_scene = runtime.show_scene;
-        self.interrupt_pending_since = runtime.interrupt_pending_since;
         self.focus_queue = runtime.focus_queue;
         self.auto_steal = runtime.auto_steal;
         self.home_session = runtime.home_session;

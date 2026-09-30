@@ -65,7 +65,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::string::ToString;
 use std::sync::Arc;
-use std::time::Instant;
 use stream_events::{
     dispatch_compact_for_session, dispatch_turn, DispatchCtx, ProcessEventsResult,
 };
@@ -221,8 +220,6 @@ pub struct Dave {
     scene: AgentScene,
     /// Whether to show scene view (vs classic chat view)
     show_scene: bool,
-    /// Tracks when first Escape was pressed for interrupt confirmation
-    interrupt_pending_since: Option<Instant>,
     /// Focus queue for agents needing attention
     focus_queue: FocusQueue,
     /// Tracks which host/cwd folders are collapsed in the session list
@@ -534,7 +531,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             settings_panel: DaveSettingsPanel::new(),
             scene: AgentScene::new(),
             show_scene: false, // Default to list view
-            interrupt_pending_since: None,
             focus_queue: FocusQueue::new(),
             collapse_state,
             collapse_serializer,
@@ -1314,9 +1310,6 @@ impl notedeck::App for Dave {
 
         self.process_archive_conversion(ctx);
         self.poll_pending_message_load(ctx.ndb);
-
-        // Check if interrupt confirmation has timed out
-        self.check_interrupt_timeout();
 
         // Process incoming AI responses for all sessions. Every event these
         // handlers build is ingested locally into nostrdb; the host's

@@ -246,13 +246,11 @@ impl Dave {
 
     /// Scene view with RTS-style agent visualization and chat side panel
     fn scene_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        let is_interrupt_pending = self.is_interrupt_pending();
         let (dave_response, view_action) = ui::scene_ui(
             &mut self.session_manager,
             &mut self.scene,
             &mut self.focus_queue,
             &self.model_config,
-            is_interrupt_pending,
             self.auto_steal.is_enabled(),
             self.chord.view(),
             &self.run_configs,
@@ -290,13 +288,11 @@ impl Dave {
 
     /// Desktop layout with sidebar for session list
     fn desktop_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        let is_interrupt_pending = self.is_interrupt_pending();
         let (chat_response, session_action, toggle_scene) = ui::desktop_ui(
             &mut self.session_manager,
             &self.focus_queue,
             &self.collapse_state,
             &self.model_config,
-            is_interrupt_pending,
             self.auto_steal.is_enabled(),
             self.chord.view(),
             &self.run_configs,
@@ -384,13 +380,11 @@ impl Dave {
 
     /// Narrow/mobile layout - shows either session list or chat
     fn narrow_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        let is_interrupt_pending = self.is_interrupt_pending();
         let (dave_response, session_action) = ui::narrow_ui(
             &mut self.session_manager,
             &self.focus_queue,
             &self.collapse_state,
             &self.model_config,
-            is_interrupt_pending,
             self.auto_steal.is_enabled(),
             self.chord.view(),
             &self.run_configs,
@@ -481,36 +475,6 @@ impl Dave {
         dave_response
     }
 
-    /// Handle an interrupt request - requires double-Escape to confirm
-    fn handle_interrupt_request(&mut self, ctx: &egui::Context) {
-        let bt = self
-            .session_manager
-            .get_active()
-            .map(|s| s.backend_type)
-            .unwrap_or(BackendType::Remote);
-        let outcome = update::handle_interrupt_request(
-            &self.session_manager,
-            get_backend(&self.backends, bt),
-            self.interrupt_pending_since,
-            ctx,
-        );
-        self.interrupt_pending_since = outcome.pending_since;
-        if let Some(publish) = outcome.publish {
-            self.pending_interrupt_commands.push(publish);
-        }
-    }
-
-    /// Check if interrupt confirmation has timed out and clear it
-    pub(crate) fn check_interrupt_timeout(&mut self) {
-        self.interrupt_pending_since =
-            update::check_interrupt_timeout(self.interrupt_pending_since);
-    }
-
-    /// Returns true if an interrupt is pending confirmation
-    pub fn is_interrupt_pending(&self) -> bool {
-        self.interrupt_pending_since.is_some()
-    }
-
     /// Get the first pending permission request ID for the active session
     fn first_pending_permission(&self) -> Option<uuid::Uuid> {
         update::first_pending_permission(&self.session_manager)
@@ -547,11 +511,17 @@ impl Dave {
         let sessions_shown = !is_narrow(egui_ctx)
             && !self.show_scene
             && matches!(self.active_overlay, DaveOverlay::None);
+        // The chord's `s` needs a running turn to stop.
+        let interruptible = self
+            .session_manager
+            .get_active()
+            .is_some_and(update::session_is_interruptible);
         if let Some(key_action) = check_keybindings(
             egui_ctx,
             &mut self.chord,
             self.leader,
             sessions_shown,
+            interruptible,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
@@ -584,8 +554,8 @@ impl Dave {
             KeyActionResult::ToggleView => {
                 self.show_scene = !self.show_scene;
             }
-            KeyActionResult::HandleInterrupt => {
-                self.handle_interrupt_request(egui_ctx);
+            KeyActionResult::PublishInterruptCommand(cmd) => {
+                self.pending_interrupt_commands.push(cmd);
             }
             KeyActionResult::CloneAgent => {
                 self.clone_active_agent();
