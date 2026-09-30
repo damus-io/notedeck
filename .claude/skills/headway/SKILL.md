@@ -499,10 +499,17 @@ key, so they show as the agent's rather than the user's. Everything else (reads,
 adds, moves) stays the user's:
 
 ```bash
-HEADWAY_COMMENT_NSEC="$(cat ~/.local/share/jex0/nsec)" \
+HEADWAY_COMMENT_NSEC_FILE=~/.local/share/jex0/nsec \
   headway comment headway:headway/some-card "…"
-# or per run: headway --comment-nsec <nsec|hex> comment …
+# or inline: HEADWAY_COMMENT_NSEC=<nsec|hex>, or per run: --comment-nsec <nsec|hex>
 ```
+
+Precedence is `--comment-nsec` > `$HEADWAY_COMMENT_NSEC` >
+`$HEADWAY_COMMENT_NSEC_FILE`. The file holds the key as nsec or hex (a trailing
+newline is fine); if it can't be read the command fails rather than quietly
+signing as the user. Dave sessions usually have `HEADWAY_COMMENT_NSEC_FILE`
+already set through `session_env` in `dave_settings.json`, so a plain
+`headway comment` signs as the agent.
 
 The comment is sealed into the board's channel with the user's access, so the
 comment key needs no membership and holds no board key. It only works on

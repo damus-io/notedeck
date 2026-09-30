@@ -3,6 +3,7 @@
 //! card refs name.
 
 use std::env;
+use std::ffi::OsString;
 
 use nostrdb_net::Pubkey;
 
@@ -320,8 +321,9 @@ fn ref_board(sel: &str) -> Option<String> {
 
 pub(crate) struct Cli {
     pub(crate) secret: Option<([u8; 32], Pubkey)>,
-    /// A second key that signs `comment` and nothing else (`--comment-nsec` or
-    /// `$HEADWAY_COMMENT_NSEC`). Everything else, including which boards can be
+    /// A second key that signs `comment` and nothing else (`--comment-nsec`,
+    /// `$HEADWAY_COMMENT_NSEC`, or the file `$HEADWAY_COMMENT_NSEC_FILE` names;
+    /// see [`comment_key_text`]). Everything else, including which boards can be
     /// read and which channel the comment seals into, stays with [`secret`].
     /// An agent running as the account's owner uses this to have its comments
     /// attributed to itself, without holding any board key of its own
@@ -370,6 +372,9 @@ impl Cli {
         let mut nsec = env::var("HEADWAY_NSEC")
             .ok()
             .or_else(|| nostrdb_net::relay::sync::stored_nsec(APP));
+        // `--comment-nsec` (set below) overrides `HEADWAY_COMMENT_NSEC`, which
+        // overrides the key file `HEADWAY_COMMENT_NSEC_FILE` names (read only
+        // when neither is set, in `comment_key_text`).
         let mut comment_nsec = env::var("HEADWAY_COMMENT_NSEC").ok();
         let mut relay = env::var("HEADWAY_RELAY")
             .ok()
@@ -565,14 +570,19 @@ impl Cli {
             }
             (_, None) => None,
         };
-        let comment_secret = match (&command, comment_nsec) {
-            (Command::Login { .. } | Command::Logout, _) => None,
-            (_, Some(key)) => {
-                let (sk, pk) = parse_secret_key(&key)
-                    .map_err(|e| format!("--comment-nsec / $HEADWAY_COMMENT_NSEC: {e}"))?;
-                Some((sk, Pubkey::new(*pk.bytes())))
-            }
-            (_, None) => None,
+        let comment_secret = match &command {
+            Command::Login { .. } | Command::Logout => None,
+            _ => match comment_key_text(comment_nsec, env::var_os(COMMENT_NSEC_FILE_VAR))? {
+                Some(key) => {
+                    let (sk, pk) = parse_secret_key(&key).map_err(|e| {
+                        format!(
+                            "--comment-nsec / $HEADWAY_COMMENT_NSEC / ${COMMENT_NSEC_FILE_VAR}: {e}"
+                        )
+                    })?;
+                    Some((sk, Pubkey::new(*pk.bytes())))
+                }
+                None => None,
+            },
         };
 
         Ok(Invocation::Run(Box::new(Cli {
@@ -821,6 +831,33 @@ fn parse_secret_key(key: &str) -> Result<([u8; 32], nostrdb_net::Pubkey)> {
     let sk = nostrdb_net::SecretKey::from_slice(&secret)
         .map_err(|e| format!("invalid hex secret key: {e}"))?;
     Ok((secret, nostrdb_net::Keypair::from_secret(sk).pubkey))
+}
+
+/// The environment variable naming a file that holds the comment key.
+const COMMENT_NSEC_FILE_VAR: &str = "HEADWAY_COMMENT_NSEC_FILE";
+
+/// The comment key's text, before parsing: `inline` (`--comment-nsec`, else
+/// `$HEADWAY_COMMENT_NSEC`) when set, else the contents of the file `key_file`
+/// (`$HEADWAY_COMMENT_NSEC_FILE`) names, else `None`.
+///
+/// The file is only read when nothing inline is set. A file that can't be read
+/// is an error naming the variable and the path rather than a silent `None`:
+/// falling back would sign the comment as the account, which is the one thing
+/// setting the variable was meant to prevent.
+fn comment_key_text(inline: Option<String>, key_file: Option<OsString>) -> Result<Option<String>> {
+    if inline.is_some() {
+        return Ok(inline);
+    }
+    let Some(path) = key_file else {
+        return Ok(None);
+    };
+    std::fs::read_to_string(&path).map(Some).map_err(|e| {
+        format!(
+            "${COMMENT_NSEC_FILE_VAR}: can't read {}: {e}",
+            path.to_string_lossy()
+        )
+        .into()
+    })
 }
 
 /// Read a `--desc-file` value into description text: `-` reads stdin (so a long
@@ -1116,8 +1153,6 @@ mod tests {
         assert_eq!(via_hex.1, via_nsec.1);
     }
 
-    /// Input that is neither 64 hex chars nor a valid nsec errors, and the
-    /// message names both accepted forms so the fix is obvious.
     /// `--comment-nsec` takes the same spellings as `--nsec`, is kept apart from
     /// the signing key, and a malformed one is an error naming the flag.
     #[test]
@@ -1144,6 +1179,49 @@ mod tests {
         assert!(err.contains("--comment-nsec"), "unexpected error: {err}");
     }
 
+    /// A key file named by `$HEADWAY_COMMENT_NSEC_FILE` yields the same key as
+    /// the inline spelling, trailing newline and all.
+    #[test]
+    fn comment_key_file_matches_inline_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nsec");
+        let hex = hex::encode(TEST_SECRET);
+        std::fs::write(&path, format!("{hex}\n")).expect("write key file");
+
+        let from_file = comment_key_text(None, Some(path.into_os_string()))
+            .expect("readable key file")
+            .expect("a key");
+        let (file_sk, file_pk) = parse_secret_key(&from_file).expect("file key parses");
+        let (inline_sk, inline_pk) = parse_secret_key(&test_nsec()).expect("inline key parses");
+        assert_eq!(file_sk, inline_sk);
+        assert_eq!(file_pk.bytes(), inline_pk.bytes());
+    }
+
+    /// An inline key (`--comment-nsec` or `$HEADWAY_COMMENT_NSEC`) wins over the
+    /// key file, which isn't even read then, and with neither there is no key.
+    #[test]
+    fn comment_key_inline_beats_key_file() {
+        let missing = OsString::from("/nonexistent/headway-comment-nsec");
+        let inline = comment_key_text(Some("inline".to_string()), Some(missing))
+            .expect("the file is never read");
+        assert_eq!(inline.as_deref(), Some("inline"));
+        assert!(comment_key_text(None, None).expect("no key").is_none());
+    }
+
+    /// A key file that can't be read is an error naming the variable and the
+    /// path, never a quiet fallback to signing as the account.
+    #[test]
+    fn comment_key_missing_file_names_the_variable() {
+        let path = "/nonexistent/headway-comment-nsec";
+        let err = comment_key_text(None, Some(OsString::from(path)))
+            .expect_err("a missing key file must be refused")
+            .to_string();
+        assert!(err.contains(COMMENT_NSEC_FILE_VAR), "{err}");
+        assert!(err.contains(path), "{err}");
+    }
+
+    /// Input that is neither 64 hex chars nor a valid nsec errors, and the
+    /// message names both accepted forms so the fix is obvious.
     #[test]
     fn secret_key_rejects_malformed_input() {
         let hex = hex::encode(TEST_SECRET);

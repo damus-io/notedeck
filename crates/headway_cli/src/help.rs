@@ -264,11 +264,12 @@ three spellings are equivalent.",
         details: "\
 The comment body is every remaining positional joined with spaces.
 
-With --comment-nsec <key> (or $HEADWAY_COMMENT_NSEC) the comment is signed
-by that key instead of yours, so it shows as that key's comment. It is
-still sealed into the board's channel with your access, so the key needs
-no membership. Sealed boards only: a plaintext board shows just its
-owner's events, so this is refused there.",
+With --comment-nsec <key> (or $HEADWAY_COMMENT_NSEC, or a key file named
+by $HEADWAY_COMMENT_NSEC_FILE, in that order) the comment is signed by that
+key instead of yours, so it shows as that key's comment. It is still sealed
+into the board's channel with your access, so the key needs no membership.
+Sealed boards only: a plaintext board shows just its owner's events, so
+this is refused there.",
         options: &[(
             "--reply-to <c>",
             "Thread this reply under another comment on the same card (its id, a prefix, or its word-id)",
@@ -653,7 +654,7 @@ Run `headway <command> --help` for that command's own options and examples.",
             ),
             (
                 "--comment-nsec <key>",
-                "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too. The comment still seals into the board's channel with your key's access, and only sealed boards show it",
+                "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too, and so does $HEADWAY_COMMENT_NSEC_FILE naming a file that holds it (read only when neither is set; an unreadable file is an error). The comment still seals into the board's channel with your key's access, and only sealed boards show it",
             ),
             (
                 "--author <pk>",

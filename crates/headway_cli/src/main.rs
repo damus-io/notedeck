@@ -734,7 +734,7 @@ fn signing_key<'a>(
     if channel.is_none() {
         return Err(format!(
             "'{board}' is a plaintext board, which shows only its owner's own events, so a \
-             comment signed with --comment-nsec / $HEADWAY_COMMENT_NSEC would never appear. \
+             comment signed with --comment-nsec / $HEADWAY_COMMENT_NSEC(_FILE) would never appear. \
              Unset it to comment as yourself, or seal the board first (`headway migrate`)"
         )
         .into());
