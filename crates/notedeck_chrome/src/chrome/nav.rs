@@ -212,6 +212,7 @@ mod global_nav_tests {
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
             global_nav: Some(seed_global_nav()),
+            pending_open: None,
         }
     }
 

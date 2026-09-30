@@ -214,6 +214,101 @@ fn open_note_in_owning_app(
     false
 }
 
+/// How long an unresolved [`AppAction::Open`] is retried before it's given up,
+/// in egui time. Long enough to cover a reference cache seeding on the frame
+/// after the one that subscribed it (the common case, one frame) and a note
+/// that's still a moment away from ingesting; short enough that a press that
+/// did nothing is reported while the user still remembers pressing it.
+const OPEN_RETRY_WINDOW_SECS: f64 = 2.0;
+
+/// Resolves tried before an unresolved open may be given up, however much egui
+/// time has passed. Guards the window against one slow frame (a big fold, a
+/// debugger pause) eating it whole before the retry that would have hit.
+const OPEN_MIN_ATTEMPTS: u32 = 3;
+
+/// The repaint an unresolved open schedules between retries, so it retries
+/// without waiting for unrelated input yet doesn't spin the render loop flat
+/// out for the whole window.
+const OPEN_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// An [`AppAction::Open`] whose reference didn't resolve when it was raised,
+/// held on [`Chrome`] and retried by [`retry_pending_open`] each frame.
+///
+/// A miss on the first try is usually a matter of timing, not a bad reference.
+/// Dave's `agentium:` parser resolves through a
+/// [`RealtimeCache`](notedeck::RealtimeCache), which subscribes on its first
+/// read for an author and only seeds on the next (see its `advance`), so the
+/// first open of a session nothing has drawn a chip for yet always misses.
+/// Dropping that open would silently lose the press — and its message, which
+/// is text the user wrote.
+pub(super) struct PendingOpen {
+    open: notedeck::OpenUri,
+    /// Resolves tried so far, the one at raise time included.
+    attempts: u32,
+    /// The egui time after which, with [`OPEN_MIN_ATTEMPTS`] tried, it's
+    /// given up.
+    give_up_at: f64,
+}
+
+impl PendingOpen {
+    /// Hold `open`, whose first resolve just missed.
+    fn new(open: notedeck::OpenUri, egui_ctx: &egui::Context) -> Self {
+        Self {
+            open,
+            attempts: 1,
+            give_up_at: egui_ctx.input(|i| i.time) + OPEN_RETRY_WINDOW_SECS,
+        }
+    }
+}
+
+/// Retry the held [`PendingOpen`], if any: route it once its reference
+/// resolves, give it up (with a warning) once its window has passed, and
+/// otherwise keep holding it and schedule the next retry. Does nothing, and
+/// allocates nothing, when no open is held.
+#[profiling::function]
+pub(super) fn retry_pending_open(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    let Some(mut pending) = chrome.pending_open.take() else {
+        return;
+    };
+    pending.attempts += 1;
+
+    if let Some(note_id) = resolve_reference(ctx, &pending.open.reference) {
+        route_open(chrome, ctx, note_id, pending.open.msg, ui);
+        return;
+    }
+
+    let now = ui.input(|i| i.time);
+    if pending.attempts >= OPEN_MIN_ATTEMPTS && now >= pending.give_up_at {
+        tracing::warn!(
+            "open: no registered parser resolves {:?} (gave up after {} tries)",
+            pending.open.reference,
+            pending.attempts
+        );
+        return;
+    }
+
+    chrome.pending_open = Some(pending);
+    ui.ctx().request_repaint_after(OPEN_RETRY_INTERVAL);
+}
+
+/// Route an open whose reference resolved to `note_id` as the click on its
+/// inline chip would be, so an open by reference and an open by click can
+/// never land differently — except that the owning app also gets the message
+/// (Dave sends it).
+fn route_open(
+    chrome: &mut Chrome,
+    ctx: &mut AppContext,
+    note_id: nostrdb_net::NoteId,
+    msg: Option<String>,
+    ui: &mut egui::Ui,
+) {
+    if open_note_in_owning_app(chrome, ctx, note_id, msg) {
+        return;
+    }
+    let click = notedeck::NoteAction::note(note_id);
+    chrome_handle_app_action(chrome, ctx, AppAction::Note(click), ui);
+}
+
 pub(super) fn chrome_handle_app_action(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
@@ -227,17 +322,20 @@ pub(super) fn chrome_handle_app_action(
 
         AppAction::Open(open) => {
             let Some(note_id) = resolve_reference(ctx, &open.reference) else {
-                tracing::warn!("open: no registered parser resolves {:?}", open.reference);
+                // Often just not resolvable *yet* (see `PendingOpen`): hold it
+                // and retry on the next frames rather than dropping it.
+                if let Some(dropped) = chrome.pending_open.take() {
+                    tracing::debug!(
+                        "open: {:?} replaces the still-unresolved {:?}",
+                        open.reference,
+                        dropped.open.reference
+                    );
+                }
+                chrome.pending_open = Some(PendingOpen::new(open, ui.ctx()));
+                ui.ctx().request_repaint_after(OPEN_RETRY_INTERVAL);
                 return;
             };
-            // Route it as the click on its inline chip would be, so an open by
-            // reference and an open by click can never land differently — except
-            // that the owning app also gets the message (Dave sends it).
-            if open_note_in_owning_app(chrome, ctx, note_id, open.msg) {
-                return;
-            }
-            let click = notedeck::NoteAction::note(note_id);
-            chrome_handle_app_action(chrome, ctx, AppAction::Note(click), ui);
+            route_open(chrome, ctx, note_id, open.msg, ui);
         }
 
         AppAction::Note(note_action) => {
@@ -408,29 +506,73 @@ mod open_tests {
         nostrdb_net::NoteId::new(*note.id())
     }
 
-    /// An `AppAction::Open` of an `agentium:` reference with a message, raised
-    /// while Headway is in front (as its review queue's `S` raises it): the
-    /// chrome lands it in Dave as ONE global-history entry, Dave holds the
-    /// session and the message for its next update, and one back returns to
-    /// Headway. The Headway side (exactly one open, no history entry of its
-    /// own) is `shift_s_in_the_queue_opens_the_session_asking_for_a_review`.
-    #[tokio::test]
-    async fn open_lands_an_agentium_session_in_dave_and_back_returns() {
-        let dir = tempfile::TempDir::new().expect("tmp dir");
-        let kp = FullKeypair::generate();
-        let args: Vec<String> = [
-            "notedeck-test",
-            "--testrunner",
-            "--nsec",
-            &kp.secret_key.to_secret_hex(),
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    /// Run one egui frame at `time` (egui seconds) with a `ui` under a
+    /// central panel, as the chrome's app route has one.
+    fn frame_at(egui_ctx: &egui::Context, time: f64, mut f: impl FnMut(&mut egui::Ui)) {
+        let input = egui::RawInput {
+            time: Some(time),
+            ..Default::default()
+        };
+        let _ = egui_ctx.run(input, |c| {
+            egui::CentralPanel::default().show(c, |ui| f(ui));
+        });
+    }
 
-        let egui_ctx = egui::Context::default();
-        let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
-        let mut chrome = Chrome::new_headless(&args, &mut notedeck).expect("chrome");
+    /// A chrome built the way the app builds one, with a fresh account.
+    struct OpenFixture {
+        _dir: tempfile::TempDir,
+        kp: FullKeypair,
+        egui_ctx: egui::Context,
+        notedeck: Notedeck,
+        chrome: Chrome,
+    }
+
+    impl OpenFixture {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().expect("tmp dir");
+            let kp = FullKeypair::generate();
+            let args: Vec<String> = [
+                "notedeck-test",
+                "--testrunner",
+                "--nsec",
+                &kp.secret_key.to_secret_hex(),
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+            let egui_ctx = egui::Context::default();
+            let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
+            let chrome = Chrome::new_headless(&args, &mut notedeck).expect("chrome");
+            Self {
+                _dir: dir,
+                kp,
+                egui_ctx,
+                notedeck,
+                chrome,
+            }
+        }
+    }
+
+    /// An `AppAction::Open` of an `agentium:` reference with a message, raised
+    /// while Headway is in front (as its review queue's `S` raises it) for a
+    /// session nothing has resolved yet — no chip for it drawn, so Dave's
+    /// session cache has only just subscribed and the open's own resolve
+    /// misses (see `RealtimeCache::advance`). The chrome holds it rather than
+    /// dropping it, and the next frame's retry lands it in Dave as ONE
+    /// global-history entry, Dave holds the session and the message for its
+    /// next update, and one back returns to Headway. The Headway side (exactly
+    /// one open, no history entry of its own) is
+    /// `shift_s_in_the_queue_opens_the_session_asking_for_a_review`.
+    #[tokio::test]
+    async fn a_cold_open_is_held_until_it_resolves_then_lands_in_dave() {
+        let OpenFixture {
+            _dir,
+            kp,
+            egui_ctx,
+            mut notedeck,
+            mut chrome,
+        } = OpenFixture::new();
         let mut ctx = notedeck.app_context();
         assert_eq!(*ctx.accounts.selected_account_pubkey(), kp.pubkey);
         let state_note = ingest_session(ctx.ndb, &kp).await;
@@ -443,17 +585,20 @@ mod open_tests {
             reference: agentium_core::wordid::session_ref(SESSION_ID),
             msg: Some(MSG.to_string()),
         };
-        // In the queue the header has drawn the record's session chip before
-        // `S` can be pressed, and drawing it resolves the reference. That
-        // resolve subscribes Dave's session cache, which seeds on its next
-        // advance (see `RealtimeCache::advance`), so the open's own resolve is
-        // the one that finds the session. Stand in for the chip's frame.
-        let _ = resolve_reference(&mut ctx, &open.reference);
-        let _ = egui_ctx.run(Default::default(), |c| {
-            egui::CentralPanel::default().show(c, |ui| {
-                chrome_handle_app_action(&mut chrome, &mut ctx, AppAction::Open(open.clone()), ui);
-            });
+        frame_at(&egui_ctx, 0.0, |ui| {
+            chrome_handle_app_action(&mut chrome, &mut ctx, AppAction::Open(open.clone()), ui);
         });
+
+        // The cold resolve missed: held, nothing routed yet.
+        assert!(chrome.pending_open.is_some(), "the unresolved open is held");
+        assert_eq!(chrome.global_nav.as_ref().expect("nav").len(), before);
+        assert_eq!(chrome.active, headway as i32);
+
+        // The next frame's retry finds the seeded session and routes it.
+        frame_at(&egui_ctx, 1.0 / 60.0, |ui| {
+            retry_pending_open(&mut chrome, &mut ctx, ui);
+        });
+        assert!(chrome.pending_open.is_none(), "the resolved open is let go");
 
         let dave = chrome
             .apps
@@ -472,6 +617,12 @@ mod open_tests {
         assert_eq!(pending.note, state_note);
         assert_eq!(pending.msg.as_deref(), Some(MSG));
 
+        // Later retries have nothing to do: still exactly one entry.
+        frame_at(&egui_ctx, 2.0 / 60.0, |ui| {
+            retry_pending_open(&mut chrome, &mut ctx, ui);
+        });
+        assert_eq!(chrome.global_nav.as_ref().expect("nav").len(), before + 1);
+
         // One back returns to Headway. The pop lands once the slide does,
         // which `nav_frame` reconciles; drive the same reconcile here.
         chrome.apply_nav_requests(vec![NavRequest::Back]);
@@ -483,6 +634,70 @@ mod open_tests {
         chrome.sync_active_from_nav();
         let nav = chrome.global_nav.as_ref().expect("nav");
         assert_eq!(nav.top().app, AppId(headway));
+        assert_eq!(chrome.active, headway as i32);
+    }
+
+    /// An open whose reference never resolves is retried through its window
+    /// and then given up: nothing is pushed, the active app doesn't change.
+    /// Both halves of the bound hold — neither the minimum tries alone nor
+    /// the elapsed time alone lets it go.
+    #[tokio::test]
+    async fn an_open_that_never_resolves_is_given_up_and_pushes_nothing() {
+        let OpenFixture {
+            _dir,
+            egui_ctx,
+            mut notedeck,
+            mut chrome,
+            ..
+        } = OpenFixture::new();
+        let mut ctx = notedeck.app_context();
+
+        let headway = chrome.headway_slot().expect("headway in the roster");
+        chrome.set_active(headway as i32);
+        let before = chrome.global_nav.as_ref().expect("nav").len();
+
+        let open = OpenUri {
+            reference: agentium_core::wordid::session_ref("no-such-session-anywhere"),
+            msg: Some(MSG.to_string()),
+        };
+        let raise_at = |chrome: &mut Chrome, ctx: &mut AppContext, t: f64| {
+            frame_at(&egui_ctx, t, |ui| {
+                chrome_handle_app_action(chrome, ctx, AppAction::Open(open.clone()), ui);
+            });
+            assert!(chrome.pending_open.is_some(), "the unresolved open is held");
+        };
+        let retry_at = |chrome: &mut Chrome, ctx: &mut AppContext, t: f64| {
+            frame_at(&egui_ctx, t, |ui| retry_pending_open(chrome, ctx, ui));
+        };
+
+        // Enough tries, but inside the window: still held.
+        raise_at(&mut chrome, &mut ctx, 0.0);
+        for i in 1..OPEN_MIN_ATTEMPTS {
+            retry_at(&mut chrome, &mut ctx, f64::from(i) / 60.0);
+        }
+        assert!(
+            chrome.pending_open.is_some(),
+            "tries alone don't give it up"
+        );
+        // Past the window too: given up.
+        retry_at(&mut chrome, &mut ctx, OPEN_RETRY_WINDOW_SECS + 0.1);
+        assert!(chrome.pending_open.is_none(), "given up");
+
+        // Past the window on the very next frame (one slow frame), but short
+        // of the minimum tries: still held, until the tries are spent too.
+        let t = 100.0;
+        raise_at(&mut chrome, &mut ctx, t);
+        let late = t + OPEN_RETRY_WINDOW_SECS + 1.0;
+        for _ in 2..OPEN_MIN_ATTEMPTS {
+            retry_at(&mut chrome, &mut ctx, late);
+            assert!(
+                chrome.pending_open.is_some(),
+                "one slow frame doesn't give it up"
+            );
+        }
+        retry_at(&mut chrome, &mut ctx, late);
+        assert!(chrome.pending_open.is_none(), "given up");
+        assert_eq!(chrome.global_nav.as_ref().expect("nav").len(), before);
         assert_eq!(chrome.active, headway as i32);
     }
 }

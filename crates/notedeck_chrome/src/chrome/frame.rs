@@ -2,7 +2,7 @@
 //! that renders the active app, with the desktop tab strip above it and the
 //! mobile toolbar and soft-keyboard inset below.
 
-use super::actions::chrome_handle_app_action;
+use super::actions::{chrome_handle_app_action, retry_pending_open};
 use super::header::chrome_app_tabs;
 use super::keyboard::{keyboard_visibility, virtual_keyboard_ui};
 use super::sidebar::{milestone_name, topdown_sidebar, SidebarOptions};
@@ -151,6 +151,11 @@ impl Chrome {
                 if let Some((app, token)) = popped {
                     self.apps[app.slot()].cleanup_nav(app_ctx, &token);
                 }
+
+                // Retry an open raised on an earlier frame whose reference
+                // hadn't resolved yet, before this frame's actions so a newer
+                // unresolved open replaces it rather than the other way round.
+                retry_pending_open(self, app_ctx, ui);
 
                 // Route the bubbled app action.
                 if let Some(action) = app_action {

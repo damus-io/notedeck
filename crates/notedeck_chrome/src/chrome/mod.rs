@@ -41,6 +41,7 @@ mod toolbar;
 mod update;
 
 pub use actions::ChromePanelAction;
+use actions::PendingOpen;
 use keyboard::AnimState;
 use nav::seed_global_nav;
 #[cfg(feature = "auto-update")]
@@ -93,6 +94,11 @@ pub struct Chrome {
     /// practice — the `Option` only lets the field be built before the first
     /// route is known.
     global_nav: Option<NavStack<ChromeNavEntry>>,
+
+    /// An [`AppAction::Open`](notedeck::AppAction::Open) whose reference didn't
+    /// resolve on the frame it was raised, retried on the frames after it (see
+    /// [`PendingOpen`]). At most one: a newer unresolved open replaces it.
+    pending_open: Option<PendingOpen>,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -210,6 +216,7 @@ impl Chrome {
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
             global_nav: Some(seed_global_nav()),
+            pending_open: None,
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 app_ref.app_ctx.path,
@@ -319,6 +326,7 @@ impl Chrome {
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
             global_nav: Some(seed_global_nav()),
+            pending_open: None,
             updater: notedeck::updater::Updater::new(
                 ctx.path,
                 &ctx.ndb,
