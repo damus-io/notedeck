@@ -318,6 +318,35 @@ fn draw_resolved_reference(
     render_context: notedeck::RenderContext,
     before_draw: impl FnOnce(&mut Ui),
 ) -> bool {
+    let Some(drawn) = resolve_and_draw(
+        ui,
+        ctx,
+        txn,
+        parser_id,
+        matched,
+        render_context,
+        before_draw,
+    ) else {
+        return false;
+    };
+    if let Some(action) = drawn.action {
+        ctx.app_actions.push(action);
+    }
+    true
+}
+
+/// [`draw_resolved_reference`] minus the push: the renderer's response, its
+/// action (if any) still in it for the caller to handle, or `None` without
+/// running `before_draw` when nothing was drawn.
+fn resolve_and_draw(
+    ui: &mut Ui,
+    ctx: &mut NoteContext,
+    txn: &Transaction,
+    parser_id: &str,
+    matched: &str,
+    render_context: notedeck::RenderContext,
+    before_draw: impl FnOnce(&mut Ui),
+) -> Option<notedeck::KindRenderResponse> {
     // `ndb` and `registries` are shared `&'d` references; copy them out so the
     // note, parser, and renderer borrowed from them outlive the `&mut ctx`
     // reborrow the kind renderer takes below (the same copy-out pattern
@@ -328,37 +357,24 @@ fn draw_resolved_reference(
     // one open while it walks the note's blocks.
     let ndb = ctx.ndb;
     let registries = ctx.registries;
-    let Some(parser) = registries.reference_parsers.get(parser_id) else {
-        return false;
-    };
+    let parser = registries.reference_parsers.get(parser_id)?;
     let resolve_ctx = notedeck::ReferenceResolveCtx {
         ndb,
         txn,
         selected_account: Some(*ctx.accounts.selected_account_pubkey()),
     };
-    let Some(resolved) = parser.resolve(matched, &resolve_ctx) else {
-        return false;
-    };
-    let Ok(note) = ndb.get_note_by_id(txn, resolved.note_id.bytes()) else {
-        return false;
-    };
+    let resolved = parser.resolve(matched, &resolve_ctx)?;
+    let note = ndb.get_note_by_id(txn, resolved.note_id.bytes()).ok()?;
     // TODO: per-kind default renderer id from settings (see "Settings UI" card).
-    let Some(renderer) = registries.kind_renderers.default_for(note.kind(), None) else {
-        return false;
-    };
-    // Committed to drawing. The renderer mut-borrows `ctx`, so scope it and pull
-    // the owned action out before pushing onto `ctx.app_actions`.
+    let renderer = registries.kind_renderers.default_for(note.kind(), None)?;
+    // Committed to drawing.
     before_draw(ui);
     let req = notedeck::KindRenderRequest {
         txn,
         note: &note,
         context: render_context,
     };
-    let action = renderer.render(ui, ctx, &req).action;
-    if let Some(action) = action {
-        ctx.app_actions.push(action);
-    }
-    true
+    Some(renderer.render(ui, ctx, &req))
 }
 
 /// Resolve a whole `scheme:token` reference string (e.g. `nostr:naddr1…`) and
@@ -389,6 +405,35 @@ pub fn render_reference(
         return false;
     };
     draw_resolved_reference(
+        ui,
+        note,
+        txn,
+        m.parser,
+        &reference[m.range],
+        render_context,
+        |_| {},
+    )
+}
+
+/// [`render_reference`] for a caller that handles the click itself: the
+/// renderer's response, with the action it raised (a click on the widget
+/// asking to open its entity) left in it rather than pushed onto
+/// [`app_actions`](notedeck::AppContext::app_actions), or `None` when
+/// `reference` doesn't resolve or its kind has no renderer.
+///
+/// For a surface that means something of its own by the click (Headway opens
+/// a review record's agentium session through its card actions) while keeping
+/// the registered renderer's look.
+pub fn reference_ui(
+    ui: &mut Ui,
+    note: &mut NoteContext,
+    txn: &Transaction,
+    reference: &str,
+    render_context: notedeck::RenderContext,
+) -> Option<notedeck::KindRenderResponse> {
+    let reference = reference.trim();
+    let m = note.registries.reference_parsers.find_next(reference)?;
+    resolve_and_draw(
         ui,
         note,
         txn,

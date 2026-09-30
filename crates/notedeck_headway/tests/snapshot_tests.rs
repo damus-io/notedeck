@@ -3454,13 +3454,21 @@ const DETAIL_RECORDS: [(&str, &str, Option<&str>, Option<&str>); 4] = [
 /// newest's, so a click on it can be told from `e`, which opens the newest's.
 const DETAIL_OLDER_EXPLAINER: &str = "https://claude.ai/artifact/column-slide-explainer";
 
-/// Record [`DETAIL_RECORDS`] on [`DETAIL_REVIEW_CARD`], oldest first, each
-/// from [`REVIEW_HOST`] with a deep checkout path. Waits for each to fold before
-/// adding the next, so `AddReview` stamps it past the last and the order is
-/// the listed one.
+/// Record [`DETAIL_RECORDS`] on [`DETAIL_REVIEW_CARD`] ([`seed_records`]).
 fn seed_detail_reviews(harness: &mut Harness<'static, HeadwayTestState>) {
+    seed_records(harness, &DETAIL_RECORDS);
+}
+
+/// Record `records` (shaped as [`DETAIL_RECORDS`]) on [`DETAIL_REVIEW_CARD`],
+/// oldest first, each from [`REVIEW_HOST`] with a deep checkout path. Waits
+/// for each to fold before adding the next, so `AddReview` stamps it past the
+/// last and the order is the listed one.
+fn seed_records(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    records: &[(&str, &str, Option<&str>, Option<&str>)],
+) {
     let card = harness_card_id(harness, DETAIL_REVIEW_CARD);
-    for (i, (sha, subject, session, explainer)) in DETAIL_RECORDS.iter().enumerate() {
+    for (i, (sha, subject, session, explainer)) in records.iter().enumerate() {
         apply_demo_action(
             harness,
             store::BoardAction::AddReview {
@@ -3614,6 +3622,147 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
         reviews[0].review_target().map(|t| t.record),
         Some(Some(second)),
         "the pane opens on the clicked record, not the newest"
+    );
+}
+
+/// Stands in for Dave's `agentium:` reference parser, which the harness
+/// doesn't load: each session it knows resolves to its kind-1 note, drawn by
+/// [`StubSessionRenderer`].
+struct StubSessionParser {
+    sessions: Vec<(&'static str, NoteId)>,
+}
+
+impl notedeck::ReferenceParser for StubSessionParser {
+    fn id(&self) -> &'static str {
+        "agentium"
+    }
+
+    fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
+        let start = text.find("agentium:")?;
+        let len = text[start..]
+            .find(char::is_whitespace)
+            .unwrap_or(text.len() - start);
+        Some(start..start + len)
+    }
+
+    fn resolve(
+        &self,
+        matched: &str,
+        _ctx: &notedeck::ReferenceResolveCtx,
+    ) -> Option<notedeck::ResolvedRef> {
+        self.sessions
+            .iter()
+            .find(|(session, _)| *session == matched)
+            .map(|(_, note)| notedeck::ResolvedRef::note(*note))
+    }
+}
+
+/// Stands in for Dave's session chip: the note's content as a label that, on
+/// a click, raises what Dave's does ([`notedeck::open_on_click`]).
+struct StubSessionRenderer;
+
+impl notedeck::KindRenderer for StubSessionRenderer {
+    fn id(&self) -> &'static str {
+        "test.session"
+    }
+
+    fn name(&self) -> &'static str {
+        "Test session"
+    }
+
+    fn kinds(&self) -> &'static [u32] {
+        &[1]
+    }
+
+    fn render(
+        &self,
+        ui: &mut egui::Ui,
+        _note_context: &mut notedeck::NoteContext,
+        req: &notedeck::KindRenderRequest,
+    ) -> notedeck::KindRenderResponse {
+        let response = ui.label(req.note.content());
+        notedeck::open_on_click(ui, response, req.note)
+    }
+}
+
+/// Behavioural (no lavapipe): a session chip in the detail's Review section
+/// opens its own record's session the way `s` does, as one
+/// `AppAction::Open` of it and not also the chip renderer's own open. The
+/// second row's chip opens the older record's session, not the newest's
+/// that `s` would; the sidebar's opens the newest's.
+#[test]
+fn a_detail_session_chip_click_opens_its_records_session() {
+    const OLDER_SESSION: &str = "agentium:older-session-chip";
+    const OLDER_CHIP: &str = "Older session chip";
+    const NEWEST_CHIP: &str = "Newest session chip";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    {
+        let state = harness.state_mut();
+        let secret = state.account.secret_key.secret_bytes();
+        let ndb = state.notedeck.app_context().ndb.clone();
+        let (older, _) = ingest_kind1(&ndb, OLDER_CHIP, &secret);
+        let (newest, _) = ingest_kind1(&ndb, NEWEST_CHIP, &secret);
+        state
+            .notedeck
+            .register_kind_renderer(Box::new(StubSessionRenderer));
+        state
+            .notedeck
+            .register_reference_parser(Box::new(StubSessionParser {
+                sessions: vec![(OLDER_SESSION, older), (QUEUE_SESSION, newest)],
+            }));
+    }
+    let mut records = DETAIL_RECORDS;
+    records[2].2 = Some(OLDER_SESSION);
+    seed_records(&mut harness, &records);
+
+    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    wait_for_label(&mut harness, OLDER_CHIP);
+    wait_for_label(&mut harness, "All 4 records ›");
+    harness
+        .state_mut()
+        .notedeck
+        .app_context()
+        .app_actions
+        .take();
+
+    let raised = |harness: &mut Harness<'static, HeadwayTestState>| {
+        harness.run_ok();
+        let actions = harness
+            .state_mut()
+            .notedeck
+            .app_context()
+            .app_actions
+            .take();
+        actions
+            .into_iter()
+            .map(|action| match action {
+                notedeck::AppAction::Open(open) => Ok(open),
+                notedeck::AppAction::Note(_) => Err("AppAction::Note"),
+                notedeck::AppAction::ToggleChrome => Err("AppAction::ToggleChrome"),
+            })
+            .collect::<Vec<_>>()
+    };
+    harness.get_by_label(OLDER_CHIP).click();
+    assert_eq!(
+        raised(&mut harness),
+        vec![Ok(notedeck::OpenUri::new(OLDER_SESSION))],
+        "the row's chip opens its record's session, once"
+    );
+
+    let sidebar_left = harness
+        .get_by_label("All 4 records ›")
+        .bounding_box()
+        .expect("sidebar records line")
+        .x0;
+    harness
+        .get_all_by_label(NEWEST_CHIP)
+        .find(|node| node.bounding_box().is_some_and(|bb| bb.x0 >= sidebar_left))
+        .expect("the sidebar's chip")
+        .click();
+    assert_eq!(
+        raised(&mut harness),
+        vec![Ok(notedeck::OpenUri::new(QUEUE_SESSION))],
+        "the sidebar's chip opens the newest record's session, once"
     );
 }
 

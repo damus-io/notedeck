@@ -859,7 +859,7 @@ pub(super) fn review_pane_ui(
                 record,
                 drafts: &mut review.drafts,
             };
-            load_ui(
+            let chip = load_ui(
                 ui,
                 theme,
                 app_ctx,
@@ -868,7 +868,11 @@ pub(super) fn review_pane_ui(
                 session,
                 comments,
             );
-            clicked
+            let chip = chip.then_some(TopbarClick::Card(CardAction::Session(
+                SessionOpen::Plain,
+                None,
+            )));
+            clicked.or(chip)
         })
         .inner;
     match clicked? {
@@ -1191,6 +1195,7 @@ fn title_row_ui(
             {
                 acted = Some(TopbarClick::Card(CardAction::Session(
                     SessionOpen::CodeReview,
+                    None,
                 )));
             }
             if session
@@ -1201,7 +1206,10 @@ fn title_row_ui(
                     "Open the agentium session (s)",
                 )
             {
-                acted = Some(TopbarClick::Card(CardAction::Session(SessionOpen::Plain)));
+                acted = Some(TopbarClick::Card(CardAction::Session(
+                    SessionOpen::Plain,
+                    None,
+                )));
             }
             if let Some(send) = send
                 && secondary_action_button(ui, theme, send)
@@ -1369,7 +1377,8 @@ fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response 
 /// wrote the commit and when, where it came from (the full sentence, with the
 /// repo's path, on hover), the record's agentium `session` as its chip, and
 /// whether its patch was cut short. Between that line and the diff sit the
-/// comment composer and the record's drafts ([`comments_ui`]).
+/// comment composer and the record's drafts ([`comments_ui`]). `true` when
+/// the session chip was clicked, for the pane to raise as `s`.
 fn load_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1378,8 +1387,9 @@ fn load_ui(
     source: ReviewSource,
     session: Option<&str>,
     comments: Comments<'_>,
-) {
+) -> bool {
     let mut retry = false;
+    let mut chip = false;
     match loader.get_mut(source) {
         None => {}
         Some(ReviewLoad::Pending { note }) => {
@@ -1435,7 +1445,7 @@ fn load_ui(
                 }
                 if let Some(session) = session {
                     ui.label(muted("·"));
-                    wrapped_session_chip_ui(ui, theme, app_ctx, session);
+                    chip = wrapped_session_chip_ui(ui, theme, app_ctx, session);
                 }
                 if loaded.commit.truncated {
                     tinted_pill(ui, "patch truncated", theme.warning);
@@ -1449,6 +1459,7 @@ fn load_ui(
     if retry {
         loader.retry(source);
     }
+    chip
 }
 
 /// The loaded diff, with `record`'s posted comments drawn whole under their
@@ -1483,18 +1494,19 @@ fn patch_ui(
 const EXPLAINER: &str = "Explainer ↗";
 
 /// [`agentium_chip_ui`] no wider than `max_width`: a longer session title
-/// ellipsizes, and its full text shows on hover.
+/// ellipsizes, and its full text shows on hover. `true` when it was clicked.
 fn session_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     session: &str,
     max_width: f32,
-) {
+) -> bool {
     ui.scope(|ui| {
         ui.set_max_width(max_width);
-        agentium_chip_ui(ui, theme, app_ctx, session);
-    });
+        agentium_chip_ui(ui, theme, app_ctx, session)
+    })
+    .inner
 }
 
 /// [`session_chip_ui`] in a wrapping row. The chip's scope doesn't wrap by
@@ -1508,7 +1520,7 @@ fn wrapped_session_chip_ui(
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     session: &str,
-) {
+) -> bool {
     if ui.available_size_before_wrap().x < SESSION_CHIP_MIN_WIDTH {
         ui.end_row();
     }
@@ -1516,41 +1528,51 @@ fn wrapped_session_chip_ui(
         .available_size_before_wrap()
         .x
         .min(SESSION_CHIP_MAX_WIDTH);
-    session_chip_ui(ui, theme, app_ctx, session, width);
+    session_chip_ui(ui, theme, app_ctx, session, width)
 }
 
 /// An `agentium:<word-id>` session drawn as its live inline chip through the
 /// registered reference parser (Dave's), or as small plain monospace text when
 /// no parser resolves it (Dave isn't loaded, or the session is unknown here).
+///
+/// `true` when the chip was clicked. The click is Headway's, not the
+/// renderer's: the caller raises it as [`CardAction::Session`] of the chip's
+/// record, the path `s` takes, and the action the renderer raised (Dave's own
+/// open of the session note) is dropped so one click opens the session once.
 fn agentium_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     session: &str,
-) {
+) -> bool {
     let mut note_ctx = app_ctx.note_context();
-    let drawn = nostrdb::Transaction::new(note_ctx.ndb).is_ok_and(|txn| {
-        notedeck_ui::markdown::render_reference(
-            ui,
-            &mut note_ctx,
-            &txn,
-            session,
-            notedeck::RenderContext::Inline,
-        )
-    });
-    if !drawn {
-        ui.add(
-            egui::Label::new(
-                // `family`, not `.monospace()`: that sets the text style too
-                // and would undo `.small()`, drawing the chip at body size.
-                egui::RichText::new(session)
-                    .small()
-                    .family(egui::FontFamily::Monospace)
-                    .color(theme.text_muted),
+    let drawn = nostrdb::Transaction::new(note_ctx.ndb)
+        .ok()
+        .and_then(|txn| {
+            notedeck_ui::markdown::reference_ui(
+                ui,
+                &mut note_ctx,
+                &txn,
+                session,
+                notedeck::RenderContext::Inline,
             )
-            .truncate(),
-        );
+        });
+    if let Some(drawn) = drawn {
+        // The renderer raises its action on a click, so that's the click.
+        return drawn.action.is_some();
     }
+    ui.add(
+        egui::Label::new(
+            // `family`, not `.monospace()`: that sets the text style too
+            // and would undo `.small()`, drawing the chip at body size.
+            egui::RichText::new(session)
+                .small()
+                .family(egui::FontFamily::Monospace)
+                .color(theme.text_muted),
+        )
+        .truncate(),
+    );
+    false
 }
 
 /// The least room a record's session chip is squeezed into before it moves to
@@ -1737,9 +1759,10 @@ pub(super) fn review_section_ui(
 /// under the subject in small muted text, where it was made — `location`
 /// (`host:path`, elided in its middle), `⎇ branch` — its agentium session chip
 /// and its explainer link, `·` between those it has. A click on the sha or the
-/// subject is [`CardAction::Review`] of this record, on the explainer
-/// [`CardAction::Explainer`] of it. `keyed` (the newest row) has the sha and
-/// explainer hovers name their keys.
+/// subject is [`CardAction::Review`] of this record, on its session chip
+/// [`CardAction::Session`] of it, on the explainer [`CardAction::Explainer`]
+/// of it. `keyed` (the newest row) has the sha and explainer hovers name
+/// their keys.
 ///
 /// A record with inline review comments gets a third line, "N review
 /// comments", and under it each comment: where it points, then the comment
@@ -1800,7 +1823,9 @@ fn record_row_ui(
             }
             if let Some(session) = fields.agentium.as_deref() {
                 dot(ui);
-                wrapped_session_chip_ui(ui, theme, app_ctx, session);
+                if wrapped_session_chip_ui(ui, theme, app_ctx, session) {
+                    picked = Some(CardAction::Session(SessionOpen::Plain, Some(record.id)));
+                }
             }
             if let Some(url) = fields.explainer.as_deref() {
                 dot(ui);
@@ -1902,9 +1927,9 @@ fn record_explainer_ui(
 /// the review is a click away however far down the comments someone has read.
 ///
 /// Each affordance is the mouse twin of a detail key, and its hover names the
-/// key: the sha and the records line are `r`, the explainer is `e`. (The
-/// session chip opens its session itself; `s`/`S` stay keys only.) A click comes back as that key's
-/// [`CardAction`] for the detail to apply through
+/// key: the sha and the records line are `r`, the explainer is `e`. The
+/// session chip is `s`, though its hover is the chip's own. A click comes
+/// back as that key's [`CardAction`] for the detail to apply through
 /// [`crate::keys::apply_card_action`], the path the keys take, so a click and
 /// its key can't drift apart. Draws nothing for a card with no records.
 pub(super) fn review_sidebar_ui(
@@ -1946,7 +1971,9 @@ pub(super) fn review_sidebar_ui(
     if let Some(session) = session {
         ui.add_space(SPACING_XS);
         let width = ui.available_width().min(SESSION_CHIP_MAX_WIDTH);
-        session_chip_ui(ui, theme, app_ctx, session, width);
+        if session_chip_ui(ui, theme, app_ctx, session, width) {
+            picked = Some(CardAction::Session(SessionOpen::Plain, None));
+        }
     }
 
     if let Some(url) = fields.explainer.as_deref() {

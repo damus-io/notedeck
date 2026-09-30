@@ -74,9 +74,11 @@ pub(crate) enum CardAction {
     /// record a review pane shows, else the newest; a click on one record's
     /// link in the detail's Review section names it.
     Explainer(Option<NoteId>),
-    /// `s`/`S`: open the record's agentium session, `S` asking it for a
-    /// `/code-review` of its work.
-    Session(SessionOpen),
+    /// `s`/`S`: open the agentium session of the card's record, `S` asking
+    /// it for a `/code-review` of its work. `None` (the key) is the record a
+    /// review pane shows, else the newest; a click on one record's session
+    /// chip in the detail's Review section names it.
+    Session(SessionOpen, Option<NoteId>),
     /// `r`: open the review pane on the card's newest record (`None`, the
     /// key), or on the record a click in the detail's Review section names.
     Review(Option<NoteId>),
@@ -101,8 +103,8 @@ pub(crate) fn card_action(press: KeyPress) -> Option<CardAction> {
     Some(match (press.key, press.modifiers.shift) {
         (Key::Enter, _) | (Key::O, false) => CardAction::Open,
         (Key::E, false) => CardAction::Explainer(None),
-        (Key::S, false) => CardAction::Session(SessionOpen::Plain),
-        (Key::S, true) => CardAction::Session(SessionOpen::CodeReview),
+        (Key::S, false) => CardAction::Session(SessionOpen::Plain, None),
+        (Key::S, true) => CardAction::Session(SessionOpen::CodeReview, None),
         (Key::R, false) => CardAction::Review(None),
         (Key::A, false) => CardAction::Archive,
         (Key::D, true) => CardAction::Done,
@@ -159,7 +161,7 @@ pub(crate) fn apply_card_action(
             ActionView::Detail => {}
         },
         CardAction::Explainer(record) => state.open_explainer(ctx, view, card, record),
-        CardAction::Session(how) => state.open_card_session(view, card, how, now),
+        CardAction::Session(how, record) => state.open_card_session(view, card, how, record, now),
         CardAction::Review(record) => match at {
             ActionView::Queue => state.newest_record(card),
             ActionView::Grid(_) | ActionView::Pane | ActionView::Detail => {

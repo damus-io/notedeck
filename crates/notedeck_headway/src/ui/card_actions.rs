@@ -127,6 +127,21 @@ impl BoardUiState {
         }
     }
 
+    /// `card`'s `record`, or for `None` (a key) the [`acted_record`]: what
+    /// a card action that takes a record acts on.
+    ///
+    /// [`acted_record`]: Self::acted_record
+    fn card_record<'a>(
+        &self,
+        card: &'a CardView,
+        record: Option<NoteId>,
+    ) -> Option<&'a ReviewView> {
+        match record {
+            Some(record) => card.reviews.iter().find(|r| r.id == record),
+            None => self.acted_record(card),
+        }
+    }
+
     /// `e`: open the explainer of `card`'s `record` in a browser tab, or say
     /// there's none. `None` (the key) is the [`acted_record`]; a click on a
     /// record's own link in the detail's Review section names that record.
@@ -140,10 +155,7 @@ impl BoardUiState {
         record: Option<NoteId>,
     ) {
         let url = find_card(view, card)
-            .and_then(|(_, card)| match record {
-                Some(record) => card.reviews.iter().find(|r| r.id == record),
-                None => self.acted_record(card),
-            })
+            .and_then(|(_, card)| self.card_record(card, record))
             .and_then(|r| r.fields.explainer.as_deref());
         match url {
             Some(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
@@ -151,9 +163,11 @@ impl BoardUiState {
         }
     }
 
-    /// `s`/`S`: ask the app to open the agentium session of `card`'s record
-    /// ([`acted_record`]) as `how` says, as a [`BoardEffect::Open`]. A record
-    /// with no session only says so.
+    /// `s`/`S`: ask the app to open the agentium session of `card`'s `record`
+    /// as `how` says, as a [`BoardEffect::Open`]. `None` (the key) is the
+    /// [`acted_record`]; a click on a record's session chip in the detail's
+    /// Review section names that record. A record with no session only says
+    /// so.
     ///
     /// [`acted_record`]: Self::acted_record
     pub(crate) fn open_card_session(
@@ -161,6 +175,7 @@ impl BoardUiState {
         view: &BoardView,
         card: NoteId,
         how: SessionOpen,
+        record: Option<NoteId>,
         now: f64,
     ) {
         let Some((_, card)) = find_card(view, card) else {
@@ -168,7 +183,7 @@ impl BoardUiState {
         };
         let card_ref = headway::wordid::card_ref(&view.id, card.id.bytes());
         let open = self
-            .acted_record(card)
+            .card_record(card, record)
             .and_then(|r| session_open(&r.fields, &card_ref, how));
         match open {
             Some(open) => self.raise(BoardEffect::Open(open)),
