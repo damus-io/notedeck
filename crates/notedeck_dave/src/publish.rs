@@ -352,8 +352,8 @@ pub(crate) fn record_user_message(
 /// session was idle, with the queued one still waiting): by its own stamp it
 /// would sort before the marker, above the message the host shows first.
 ///
-/// Every dispatch goes through here: the send path
-/// ([`Dave::send_user_message_for`]) and the convergence harness.
+/// Every dispatch goes through here, by way of
+/// [`dispatch_turn`](crate::stream_events::dispatch_turn).
 ///
 /// [`DISPATCHED_ROLE`]: session_events::DISPATCHED_ROLE
 pub(crate) fn record_dispatch(

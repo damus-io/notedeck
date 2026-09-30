@@ -1,14 +1,16 @@
 //! Handlers for the events an AI backend streams into a session: tool
 //! calls and results, permission requests, subagents, compaction, usage and
-//! stream end, plus the compact dispatches the compact-and-proceed flow
-//! drives. [`Dave::process_events`] drains every session's stream through them.
+//! stream end, plus the dispatches that start a turn: a user turn's and the
+//! compact the compact-and-proceed flow drives. [`Dave::process_events`] drains
+//! every session's stream through them.
 
 use crate::backend::{AiBackend, BackendType};
 use crate::publish::{
     build_user_send_event, ingest_live_event, ingest_live_event_within, pns_ingest,
-    publish_auto_accept_response, publish_permission_request,
+    publish_auto_accept_response, publish_permission_request, record_dispatch,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
+use crate::tools::Tool;
 use crate::{
     backend, get_backend, messages, reconcile, secret_key_bytes, session, session_events,
     session_loader, Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId,
@@ -16,7 +18,8 @@ use crate::{
 };
 use nostrdb::Transaction;
 use notedeck::{AppContext, Waker};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Result from processing incoming AI backend tokens for all sessions.
 pub(crate) struct ProcessEventsResult {
@@ -904,6 +907,83 @@ pub(crate) fn dispatch_compact_for_session(
             agentic.compact_intent = Some(session::CompactIntent::ProceedAfterCompaction);
         }
     }
+}
+
+/// What starting a turn takes from outside the session: where its dispatch
+/// markers go, and what the backend is handed alongside the chat.
+pub(crate) struct DispatchCtx<'a> {
+    pub(crate) ndb: &'a nostrdb::Ndb,
+    /// Signs the dispatch markers; `None` publishes none.
+    pub(crate) secret_key: Option<&'a [u8; 32]>,
+    /// The account's hashed id, which backends pass to the provider.
+    pub(crate) user_id: String,
+    pub(crate) tools: Arc<HashMap<String, Tool>>,
+    /// The configured extra environment for subprocess backends; the
+    /// session's agentium identity is layered over it
+    /// ([`session_env`](crate::backend::shared::session_env)).
+    pub(crate) session_env: &'a BTreeMap<String, String>,
+    pub(crate) waker: &'a Waker,
+}
+
+/// Start a turn: hand `session`'s trailing user message(s) to `backend`.
+///
+/// Marks them dispatched and publishes their dispatch markers
+/// ([`record_dispatch`]), so every fold places a queued message where the
+/// host dispatched it, then starts the backend's stream over the chat.
+///
+/// [`Dave::send_user_message_for`] picks the backend and calls this; the
+/// convergence harness dispatches through it too, so a dispatch that stopped
+/// publishing its markers fails the queued scenarios there.
+pub(crate) fn dispatch_turn(
+    session: &mut session::ChatSession,
+    backend: &dyn AiBackend,
+    ctx: &DispatchCtx<'_>,
+) {
+    record_dispatch(session, ctx.ndb, ctx.secret_key);
+
+    let session_id = format!("dave-session-{}", session.id);
+    // The stable kind-31988 d-tag (UUID), distinct from the ephemeral
+    // `dave-session-{n}` routing key above, goes into the session env as the
+    // agentium identity so an in-session agent reads its OWN ref. Only
+    // agentic sessions have one.
+    let agentium_session_id = session.agentic.as_ref().map(|a| a.event_session_id());
+    let session_env = crate::backend::shared::session_env(agentium_session_id, ctx.session_env);
+    let messages = session.chat.clone();
+    let cwd = session.agentic.as_ref().map(|a| a.cwd.clone());
+    let resume_session_id = session
+        .agentic
+        .as_ref()
+        .and_then(|a| a.cli_resume_id().map(|s| s.to_string()));
+    // The session's initial permission mode, so a subprocess backend spawns
+    // its CLI in the mode the UI already shows (e.g. Auto) rather than
+    // Default. Only the turn that creates the session actor consumes it;
+    // later changes go through backend.set_permission_mode. Non-agentic
+    // sessions have no mode and fall back to Default.
+    let permission_mode = session
+        .agentic
+        .as_ref()
+        .map(|a| a.permission_mode)
+        .unwrap_or(claude_agent_sdk_rs::PermissionMode::Default);
+    let model_name = session.details.resolve_model();
+    // `rx` is `None` for persistent-stream backends on subsequent turns — the
+    // session already owns a long-lived channel we must keep, so only replace
+    // `incoming_tokens` when a new receiver was minted.
+    let (rx, task_handle) = backend.stream_request(
+        messages,
+        ctx.tools.clone(),
+        model_name,
+        ctx.user_id.clone(),
+        session_id,
+        session_env,
+        cwd,
+        resume_session_id,
+        permission_mode,
+        ctx.waker.clone(),
+    );
+    if let Some(rx) = rx {
+        session.incoming_tokens = Some(rx);
+    }
+    session.task_handle = task_handle;
 }
 
 #[cfg(test)]

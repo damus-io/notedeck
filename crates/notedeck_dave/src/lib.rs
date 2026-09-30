@@ -56,7 +56,7 @@ use notedeck::{
     Waker,
 };
 use pns_runtime::{PnsLocalRuntime, PnsLocalState};
-use publish::{record_dispatch, record_user_message, session_state_snapshot};
+use publish::{record_user_message, session_state_snapshot};
 use restore::PendingMessageLoad;
 use run_configs::kill_process_tree;
 use session_commands::{PendingResumeCommand, PendingSpawnCommand, SpawnIdempotencyRecord};
@@ -65,7 +65,9 @@ use std::path::PathBuf;
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
-use stream_events::{dispatch_compact_for_session, ProcessEventsResult};
+use stream_events::{
+    dispatch_compact_for_session, dispatch_turn, DispatchCtx, ProcessEventsResult,
+};
 
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
@@ -1156,61 +1158,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        // Record how many trailing user messages we're dispatching.
-        // DispatchState tracks this for append_token insert position,
-        // UI queued indicator, and redispatch-after-stream-end logic.
-        // Queued ones get a dispatch marker so every fold places them here.
-        let sk = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
-        record_dispatch(session, app_ctx.ndb, sk.as_ref());
-
-        let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
-        let session_id = format!("dave-session-{}", session.id);
-        // The stable kind-31988 d-tag (UUID), distinct from the ephemeral
-        // `dave-session-{n}` routing key above, goes into the session env as the
-        // agentium identity so an in-session agent reads its OWN ref. Only
-        // agentic sessions have one.
-        let agentium_session_id = session.agentic.as_ref().map(|a| a.event_session_id());
-        let session_env =
-            backend::shared::session_env(agentium_session_id, &self.settings.session_env);
-        let messages = session.chat.clone();
-        let cwd = session.agentic.as_ref().map(|a| a.cwd.clone());
-        let resume_session_id = session
-            .agentic
-            .as_ref()
-            .and_then(|a| a.cli_resume_id().map(|s| s.to_string()));
-        // The session's initial permission mode, so a subprocess backend spawns
-        // its CLI in the mode the UI already shows (e.g. Auto) rather than
-        // Default. Only the turn that creates the session actor consumes it;
-        // later changes go through backend.set_permission_mode. Non-agentic
-        // sessions have no mode and fall back to Default.
-        let permission_mode = session
-            .agentic
-            .as_ref()
-            .map(|a| a.permission_mode)
-            .unwrap_or(claude_agent_sdk_rs::PermissionMode::Default);
-        let backend_type = session.backend_type;
-        let tools = self.tools.clone();
-        let model_name = session.details.resolve_model();
-        // Use backend to stream request. `rx` is `None` for persistent-stream
-        // backends on subsequent turns — the session already owns a long-lived
-        // channel we must keep, so only replace `incoming_tokens` when a new
-        // receiver was minted.
-        let (rx, task_handle) = get_backend(&self.backends, backend_type).stream_request(
-            messages,
-            tools,
-            model_name,
-            user_id,
-            session_id,
-            session_env,
-            cwd,
-            resume_session_id,
-            permission_mode,
-            waker.clone(),
+        let account = app_ctx.accounts.get_selected_account();
+        let sk = secret_key_bytes(account.keypair());
+        let ctx = DispatchCtx {
+            ndb: app_ctx.ndb,
+            secret_key: sk.as_ref(),
+            user_id: calculate_user_id(account.keypair()),
+            tools: self.tools.clone(),
+            session_env: &self.settings.session_env,
+            waker,
+        };
+        dispatch_turn(
+            session,
+            get_backend(&self.backends, session.backend_type),
+            &ctx,
         );
-        if let Some(rx) = rx {
-            session.incoming_tokens = Some(rx);
-        }
-        session.task_handle = task_handle;
     }
 }
 

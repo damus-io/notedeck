@@ -6,7 +6,7 @@
 //! notes ([`load_session_messages_for_author`]); the host builds its live chat
 //! straight from the backend stream instead. Each test here drives a scripted
 //! backend stream through the host's real code path ([`apply_response`],
-//! [`handle_stream_end`], the user-send funnel), waits for every note the host
+//! [`handle_stream_end`], the user-send funnel, [`dispatch_turn`]), waits for every note the host
 //! published to land in ndb, then asserts that the host's chat and the fold
 //! have the same [`view_signature`] — and that the fold is the same again when
 //! those notes are backfilled into a fresh ndb in reverse order.
@@ -19,7 +19,7 @@
 //! A scenario that fails today is `#[ignore]`d with the converge card that
 //! fixes it; that card un-ignores it.
 
-use crate::backend::BackendType;
+use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
 use crate::conversation::{process_conversation_notes, ProcessedNotes};
 use crate::messages::{
@@ -27,25 +27,29 @@ use crate::messages::{
     SubagentInfo, SubagentStatus,
 };
 use crate::publish::{
-    pns_ingest, publish_auto_accept_response, publish_user_permission_response, record_dispatch,
-    record_user_message,
+    pns_ingest, publish_auto_accept_response, publish_user_permission_response, record_user_message,
 };
 use crate::reconcile::{maybe_reconcile_at_rest, Drift, ReconcileOutcome};
 use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
-use crate::stream_events::{apply_response, handle_stream_end, ApplyCtx};
+use crate::stream_events::{
+    apply_response, dispatch_turn, handle_stream_end, ApplyCtx, DispatchCtx,
+};
 use crate::tests::{test_config, test_secret_key};
-use crate::tools::ToolResponses;
+use crate::tools::{Tool, ToolResponses};
 use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
 use agentium_core::session_events::{
     build_live_event, BuiltEvent, LiveEventTags, ThreadingState, AI_CONVERSATION_KIND,
-    MAX_WIRE_EVENT_BYTES,
+    DISPATCHED_ROLE, MAX_WIRE_EVENT_BYTES,
 };
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
 };
+use claude_agent_sdk_rs::PermissionMode;
 use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
-use std::collections::HashSet;
+use notedeck::Waker;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -61,7 +65,8 @@ const INGEST_TIMEOUT: Duration = Duration::from_secs(10);
 enum Step {
     /// The user sends a message (the interactive/programmatic send funnel).
     Send(&'static str),
-    /// The host dispatches the trailing user message(s) to the backend.
+    /// The host dispatches the trailing user message(s) to the backend, the
+    /// way the send path does ([`dispatch_turn`]).
     Dispatch,
     /// The backend streams a response.
     Backend(DaveApiResponse),
@@ -79,6 +84,10 @@ enum Step {
     /// A note another device published reaches the host: it is stored, then
     /// the conversation poll hands it over.
     Deliver(BuiltEvent),
+    /// A checkpoint mid-script: once everything published so far is indexed,
+    /// the host's chat and the fold agree, in either ingestion order. Named
+    /// for the failure message.
+    AssertConverged(&'static str),
 }
 
 /// The host side of a scenario: one agentic session, its ndb and signing key.
@@ -139,7 +148,19 @@ impl Host {
                 text.to_string(),
                 Vec::new(),
             ),
-            Step::Dispatch => record_dispatch(session, &self.ndb, self.secret_key.as_ref()),
+            Step::Dispatch => {
+                let waker = Waker::noop();
+                let session_env = BTreeMap::new();
+                let ctx = DispatchCtx {
+                    ndb: &self.ndb,
+                    secret_key: self.secret_key.as_ref(),
+                    user_id: String::new(),
+                    tools: Arc::default(),
+                    session_env: &session_env,
+                    waker: &waker,
+                };
+                dispatch_turn(session, &ScriptBackend, &ctx);
+            }
             Step::Backend(res) => {
                 let ctx = ApplyCtx {
                     ndb: &self.ndb,
@@ -176,8 +197,8 @@ impl Host {
                 &mut HashSet::new(),
             ),
             Step::Act(act) => act(self),
-            Step::Settle | Step::Deliver(_) => {
-                unreachable!("settling and delivery are async; `drive` awaits them")
+            Step::Settle | Step::Deliver(_) | Step::AssertConverged(_) => {
+                unreachable!("settling, delivery and checkpoints are async; `drive` awaits them")
             }
         }
     }
@@ -191,6 +212,9 @@ impl Host {
                     self.store_remote(&note).await;
                     self.poll_note(&note.note_id);
                 }
+                Step::AssertConverged(at) => {
+                    self.assert_converged(at).await;
+                }
                 step => self.apply(step),
             }
         }
@@ -200,6 +224,44 @@ impl Host {
     async fn settle(&mut self) {
         let ids = self.published_note_ids();
         self.indexed.wait_for(&self.ndb, &ids).await;
+    }
+
+    /// Wait for everything published so far to be indexed, then assert the
+    /// host's chat, the fold over its notes and the fold after a reversed
+    /// backfill all agree. `at` names the checkpoint in a failure. Returns
+    /// the fold.
+    async fn assert_converged(&mut self, at: &str) -> Vec<RowSig> {
+        self.settle().await;
+        let ids = self.published_note_ids();
+        let sk = self.secret_key.unwrap();
+
+        let host_view = view_signature(&self.session().chat);
+        let fold = fold_signature(&self.ndb, &sk);
+        assert_eq!(
+            host_view, fold,
+            "{at}: the host's chat and the fold over its notes disagree"
+        );
+
+        let backfilled = reversed_backfill_signature(&self.ndb, &sk, &ids).await;
+        assert_eq!(
+            fold, backfilled,
+            "{at}: the fold depends on the order the notes were ingested"
+        );
+        fold
+    }
+
+    /// How many dispatch markers the host has published.
+    fn dispatch_marker_count(&mut self) -> usize {
+        let ids = self.published_note_ids();
+        let txn = Transaction::new(&self.ndb).unwrap();
+        ids.iter()
+            .filter(|id| {
+                let note = self.ndb.get_note_by_id(&txn, id).unwrap();
+                note.tags().into_iter().any(|tag| {
+                    tag.get_str(0) == Some("role") && tag.get_str(1) == Some(DISPATCHED_ROLE)
+                })
+            })
+            .count()
     }
 
     /// Every note id the host published for this session. Each publish
@@ -278,6 +340,37 @@ impl Host {
             &self.ndb,
         )
     }
+}
+
+/// The backend a script plays: its responses arrive as [`Step::Backend`], so
+/// starting a turn hands back no stream of its own.
+struct ScriptBackend;
+
+impl AiBackend for ScriptBackend {
+    fn stream_request(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Arc<HashMap<String, Tool>>,
+        _model: Option<String>,
+        _user_id: String,
+        _session_id: String,
+        _session_env: BTreeMap<String, String>,
+        _cwd: Option<PathBuf>,
+        _resume_session_id: Option<String>,
+        _permission_mode: PermissionMode,
+        _waker: Waker,
+    ) -> (
+        Option<mpsc::Receiver<DaveApiResponse>>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) {
+        (None, None)
+    }
+
+    fn cleanup_session(&self, _session_id: String) {}
+
+    fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
+
+    fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _waker: Waker) {}
 }
 
 /// Counts the scenario session's conversation notes as they commit to an ndb.
@@ -394,23 +487,7 @@ async fn assert_waiting_host_matches_fold(script: Vec<Step>) {
 async fn assert_host_matches_fold_then(script: Vec<Step>, after_poll: ReconcileOutcome) {
     let mut host = Host::new();
     host.drive(script).await;
-    host.settle().await;
-
-    let ids = host.published_note_ids();
-    let sk = host.secret_key.unwrap();
-
-    let host_view = view_signature(&host.session().chat);
-    let fold = fold_signature(&host.ndb, &sk);
-    assert_eq!(
-        host_view, fold,
-        "the host's chat and the fold over its notes disagree"
-    );
-
-    let backfilled = reversed_backfill_signature(&host.ndb, &sk, &ids).await;
-    assert_eq!(
-        fold, backfilled,
-        "the fold depends on the order the notes were ingested"
-    );
+    let fold = host.assert_converged("at the end").await;
 
     assert_eq!(
         host.reconcile_now(),
@@ -791,8 +868,9 @@ async fn queued_send_before_first_token() {
 
 /// G5 with G4: a question's reply row is the turn's content, so the host puts
 /// it above a message queued before the answer. The fold keeps the queued
-/// message after it too, while it waits and, when `dispatch`, once dispatched.
-fn queued_behind_question_reply(dispatch: bool) -> Vec<Step> {
+/// message after it too, while it waits and once dispatched.
+#[tokio::test]
+async fn queued_send_behind_question_reply() {
     let id = uuid::Uuid::new_v4();
     let mut script = Vec::from(user_turn("which way?"));
     script.extend([
@@ -803,21 +881,73 @@ fn queued_behind_question_reply(dispatch: bool) -> Vec<Step> {
         answer_question(id),
         token("going with the fold"),
         Step::StreamEnd,
+        Step::AssertConverged("while the queued message waits"),
+        Step::Dispatch,
+        token("hurrying"),
+        Step::StreamEnd,
     ]);
-    if dispatch {
-        script.extend([Step::Dispatch, token("hurrying"), Step::StreamEnd]);
-    }
-    script
+    assert_host_matches_fold(script).await;
 }
 
+/// G5: two messages queued in one turn wait at the tail in the order they
+/// were typed, and keep it once dispatched together.
 #[tokio::test]
-async fn queued_send_behind_question_reply_waiting() {
-    assert_waiting_host_matches_fold(queued_behind_question_reply(false)).await;
+async fn two_queued_in_one_turn() {
+    let mut script = Vec::from(user_turn("first"));
+    script.extend([
+        token("working on "),
+        Step::Send("second"),
+        Step::Send("third"),
+        token("the first"),
+        Step::StreamEnd,
+        Step::AssertConverged("while both wait"),
+        Step::Dispatch,
+        token("the second and third"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
 }
 
+/// G3 with G5: a message queued during a turn the backend answers with
+/// nothing. The error row lands above it, and it is redispatched on its own.
 #[tokio::test]
-async fn queued_send_behind_question_reply_dispatched() {
-    assert_host_matches_fold(queued_behind_question_reply(true)).await;
+async fn queued_send_after_an_empty_response() {
+    let mut script = Vec::from(user_turn("anyone there?"));
+    script.extend([
+        Step::Send("hello?"),
+        Step::StreamEnd,
+        Step::AssertConverged("while the queued message waits"),
+        Step::Dispatch,
+        token("here now"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A run dispatched a second time before the backend answers: the first
+/// dispatch took the message off the queue, so the second publishes no
+/// marker of its own and the message stays where the first put it.
+#[tokio::test]
+async fn queued_run_dispatched_twice() {
+    let mut script = Vec::from(user_turn("first"));
+    script.extend([
+        token("working on "),
+        Step::Send("second, while you work"),
+        token("the first"),
+        Step::StreamEnd,
+        Step::Dispatch,
+        Step::Dispatch,
+        token("now the second"),
+        Step::StreamEnd,
+    ]);
+    let mut host = Host::new();
+    host.drive(script).await;
+    host.assert_converged("after both dispatches").await;
+    assert_eq!(
+        host.dispatch_marker_count(),
+        1,
+        "one marker for the one queued message"
+    );
 }
 
 /// A queued message can still be waiting once the session is idle: a restart

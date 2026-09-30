@@ -618,8 +618,14 @@ pub enum RowSig {
     System(String),
     /// An `Error` row's text.
     Error(String),
-    /// A user message's text. Images are not on the wire, so they are dropped.
-    User(String),
+    /// A user message. Images are not on the wire, so they are dropped.
+    User {
+        text: String,
+        /// Still waiting for dispatch: shown at the tail with the queued
+        /// indicator. A host that dispatched a message without clearing this,
+        /// or without the marker that clears it in the fold, disagrees here.
+        queued: bool,
+    },
     /// An assistant segment's text, trimmed: the host accumulates raw tokens,
     /// whose leading and trailing whitespace a viewer never sees.
     Assistant(String),
@@ -677,7 +683,10 @@ fn row_signature(message: &Message) -> RowSig {
     match message {
         Message::System(text) => RowSig::System(text.clone()),
         Message::Error(text) => RowSig::Error(text.clone()),
-        Message::User(user) => RowSig::User(user.as_str().to_string()),
+        Message::User(user) => RowSig::User {
+            text: user.as_str().to_string(),
+            queued: user.queued,
+        },
         Message::Assistant(msg) => RowSig::Assistant(msg.text().trim().to_string()),
         Message::ToolCalls(calls) => RowSig::ToolCalls(calls.len()),
         Message::ToolRunning(running) => RowSig::ToolRunning {
@@ -2647,6 +2656,66 @@ mod tests {
         };
         assert!(!second.queued, "a dispatched note is off the queue");
         assert!(second.note_id.is_some(), "the loader records the note id");
+    }
+
+    /// A note with two dispatch markers (a host redispatching it before its
+    /// first marker reached it, say after a restart) stays where the first one
+    /// put it, in any ingestion order.
+    #[tokio::test]
+    async fn a_note_dispatched_twice_keeps_its_first_marker() {
+        use crate::session_events::{build_live_event, LiveEventTags, ThreadingState};
+
+        let session_id = "queued-dispatched-twice";
+        let mut threading = ThreadingState::new();
+        let mut note = |role: &str, content: &str, tags: LiveEventTags<'_>| {
+            build_live_event(
+                content,
+                role,
+                session_id,
+                None,
+                tags,
+                &mut threading,
+                &test_secret_key(),
+            )
+            .unwrap()
+        };
+        let first = note("user", "first", LiveEventTags::default());
+        let second = note(
+            "user",
+            "second",
+            LiveEventTags {
+                queued: true,
+                ..Default::default()
+            },
+        );
+        let marker = || LiveEventTags {
+            refs: Some(&second.note_id),
+            ..Default::default()
+        };
+        let events = [
+            note("assistant", "reply to first", LiveEventTags::default()),
+            note(DISPATCHED_ROLE, "", marker()),
+            note("assistant", "reply to second", LiveEventTags::default()),
+            note(DISPATCHED_ROLE, "", marker()),
+            note("assistant", "and again", LiveEventTags::default()),
+        ];
+        let events: Vec<String> = [&first, &second]
+            .into_iter()
+            .chain(&events)
+            .map(|e| e.to_event_json())
+            .collect();
+
+        let messages = load_both_orders(session_id, &events).await;
+        assert_eq!(
+            rows(&messages),
+            [
+                ("user", "first".to_string()),
+                ("assistant", "reply to first".to_string()),
+                ("user", "second".to_string()),
+                ("assistant", "reply to second".to_string()),
+                ("assistant", "and again".to_string()),
+            ],
+        );
     }
 
     /// A queued note with no marker yet waits at the tail, the way the host
