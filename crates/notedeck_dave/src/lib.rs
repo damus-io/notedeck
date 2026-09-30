@@ -230,8 +230,9 @@ pub struct Dave {
     auto_steal: focus_queue::AutoStealState,
     /// The session ID to return to after processing all NeedsInput items
     home_session: Option<SessionId>,
-    /// Progress through a leader-key chord, carried across frames.
-    chord: ui::keybindings::ChordState,
+    /// Normal mode: the leader chord and whatever is pending in it, carried
+    /// across frames.
+    normal_mode: ui::keybindings::NormalMode,
     /// `settings.leader_key` resolved to an egui key, refreshed whenever the
     /// settings change so the per-frame keybinding pass never parses it.
     leader: ui::keybindings::Leader,
@@ -536,7 +537,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             collapse_serializer,
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
-            chord: ui::keybindings::ChordState::default(),
+            normal_mode: ui::keybindings::NormalMode::default(),
             leader,
             pending_open: None,
             directory_picker,

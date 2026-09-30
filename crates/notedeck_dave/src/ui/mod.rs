@@ -50,7 +50,7 @@ use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
 use crate::session::{ChatSession, PermissionMessageState, SessionId, SessionManager};
-use crate::ui::keybindings::{ChordState, ChordView, KeyAction, Pane};
+use crate::ui::keybindings::{ChordView, KeyAction, NormalMode, Pane};
 use crate::update;
 use crate::update::InputFocus;
 use crate::DaveOverlay;
@@ -1071,7 +1071,7 @@ pub fn handle_key_action(
 /// When a chord that switched sessions ends, focus goes to the active
 /// session's input rather than the id the chord saved, which was the old
 /// session's input and no longer renders.
-pub fn settle_chord_focus(chord: &mut ChordState, session_manager: &mut SessionManager) {
+pub fn settle_chord_focus(chord: &mut NormalMode, session_manager: &mut SessionManager) {
     if chord.view().is_some() {
         if let Some(session) = session_manager.get_active_mut() {
             if std::mem::take(&mut session.focus_requested) {
@@ -1351,7 +1351,7 @@ mod tests {
     use crate::config::AiMode;
     use crate::focus_queue::FocusQueue;
     use crate::session::{SessionId, SessionManager};
-    use crate::ui::keybindings::{check_keybindings, ChordState, KeyAction, Leader};
+    use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, Leader, NormalMode};
     use crate::ui::AgentScene;
     use egui::{Key, Modifiers};
     use egui_kittest::Harness;
@@ -1366,7 +1366,7 @@ mod tests {
         scene: AgentScene,
         focus_queue: FocusQueue,
         collapse_state: CollapseState,
-        chord: ChordState,
+        chord: NormalMode,
         sessions: [SessionId; 2],
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
                 scene: AgentScene::new(),
                 focus_queue: FocusQueue::new(),
                 collapse_state: CollapseState::new(),
-                chord: ChordState::default(),
+                chord: NormalMode::default(),
                 sessions,
             }
         }
@@ -1438,17 +1438,16 @@ mod tests {
     /// stand-in for the active session's chat input that takes focus when
     /// asked, as `DaveUi::inputbox` does.
     fn chord_frame(ui: &mut egui::Ui, d: &mut Dispatch) {
-        if let Some(action) = check_keybindings(
-            ui.ctx(),
-            &mut d.chord,
-            Leader::DEFAULT,
-            true,
-            false,
-            false,
-            false,
-            false,
-            AiMode::Agentic,
-        ) {
+        let keys = KeyContext {
+            leader: Leader::DEFAULT,
+            ai_mode: AiMode::Agentic,
+            sessions_shown: true,
+            interruptible: false,
+            has_pending_permission: false,
+            has_pending_question: false,
+            in_tentative_state: false,
+        };
+        if let Some(action) = check_keybindings(ui.ctx(), &mut d.chord, keys) {
             d.dispatch(action, ui.ctx());
         }
         settle_chord_focus(&mut d.chord, &mut d.session_manager);

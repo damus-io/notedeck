@@ -2839,27 +2839,28 @@ mod tests {
     /// Type the leader then `s` in a real egui frame, with a turn running, and
     /// return the keybinding it triggers.
     fn press_leader_s() -> Option<crate::ui::keybindings::KeyAction> {
-        use crate::ui::keybindings::{check_keybindings, ChordState, KeyAction, Leader};
+        use crate::ui::keybindings::{
+            check_keybindings, KeyAction, KeyContext, Leader, NormalMode,
+        };
 
         let mut harness = egui_kittest::Harness::new_ui_state(
-            |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
+            |ui, (chord, action): &mut (NormalMode, Option<KeyAction>)| {
                 // Accumulate: `press_key` runs a key-down frame and then a
                 // key-up frame, whose `None` would otherwise clobber the hit.
-                if let Some(a) = check_keybindings(
-                    ui.ctx(),
-                    chord,
-                    Leader::DEFAULT,
-                    true,
-                    true,
-                    false,
-                    false,
-                    false,
-                    AiMode::Agentic,
-                ) {
+                let keys = KeyContext {
+                    leader: Leader::DEFAULT,
+                    ai_mode: AiMode::Agentic,
+                    sessions_shown: true,
+                    interruptible: true,
+                    has_pending_permission: false,
+                    has_pending_question: false,
+                    in_tentative_state: false,
+                };
+                if let Some(a) = check_keybindings(ui.ctx(), chord, keys) {
                     *action = Some(a);
                 }
             },
-            (ChordState::default(), None),
+            (NormalMode::default(), None),
         );
         harness.run();
         harness.press_key_modifiers(egui::Modifiers::CTRL, egui::Key::Semicolon);

@@ -171,7 +171,7 @@ impl Leader {
 /// the motions follow: `j` / `k` walk blocks in the chat and sessions in the
 /// list.
 #[derive(Default)]
-pub struct ChordState {
+pub struct NormalMode {
     pending: Option<Pending>,
     /// Which pane the motions move through. Back to [`Pane::Chat`] on every
     /// leader.
@@ -197,7 +197,7 @@ pub struct ChordState {
 }
 
 /// How far into a chord we are. Read by the which-key strip through
-/// [`ChordState::view`].
+/// [`NormalMode::view`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pending {
     /// The leader fired; waiting for a command or a prefix.
@@ -404,7 +404,7 @@ enum ChordStep {
     Consumed(Option<KeyAction>),
 }
 
-impl ChordState {
+impl NormalMode {
     /// The pending chord as the UI sees it, or `None` when no chord is pending.
     pub fn view(&self) -> Option<ChordView> {
         self.pending.map(|pending| self.view_at(pending))
@@ -486,7 +486,7 @@ enum Then {
     Continue(Pending),
     /// End, handing focus back.
     End,
-    /// End without touching focus (see [`ChordState::release`]).
+    /// End without touching focus (see [`NormalMode::release`]).
     Release,
 }
 
@@ -518,7 +518,7 @@ fn first_key_press(input: &egui::InputState) -> Option<KeyPress> {
 }
 
 /// Feed this frame's input to a pending chord.
-fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
+fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
     let Some(pending) = chord.pending else {
         return ChordStep::FallThrough;
     };
@@ -651,27 +651,50 @@ fn check_chord(ctx: &egui::Context, chord: &mut ChordState) -> ChordStep {
     ChordStep::Consumed(action)
 }
 
+/// What a frame offers the keybindings besides the keys themselves, gathered
+/// by `Dave::process_keybindings` from the active session and the layout.
+#[derive(Clone, Copy, Debug)]
+pub struct KeyContext {
+    /// The key that opens a chord.
+    pub leader: Leader,
+    /// The active session's mode; agentic-only bindings need
+    /// [`AiMode::Agentic`].
+    pub ai_mode: AiMode,
+    /// The session list is on screen, for the chord's `h`.
+    pub sessions_shown: bool,
+    /// The active session has a running turn, for the chord's `s`.
+    pub interruptible: bool,
+    /// A permission request is waiting, for the bare `1` / `2` / `3` keys.
+    pub has_pending_permission: bool,
+    /// The waiting request is a question set, which takes the number keys
+    /// itself.
+    pub has_pending_question: bool,
+    /// A tentative accept/deny is waiting for its message; Esc cancels it.
+    pub in_tentative_state: bool,
+}
+
 /// Check for keybinding actions.
 /// Most keybindings use Ctrl modifier to avoid conflicts with text input.
 /// Exception: 1/2 for permission responses work without Ctrl but only when no text input has focus.
 /// In Chat mode, agentic-specific keybindings (scene view, plan mode, focus queue) are disabled.
 ///
 /// `chord` carries a leader chord across frames: while one is pending it owns
-/// the keyboard (see [`ChordState`]). `leader` is the key that opens one,
-/// `sessions_shown` says whether the session list is on screen for its `h`, and
-/// `interruptible` whether the active session has a running turn for its `s`.
-#[allow(clippy::too_many_arguments)]
+/// the keyboard (see [`NormalMode`]). `keys` is what the frame offers the
+/// bindings (see [`KeyContext`]).
 pub fn check_keybindings(
     ctx: &egui::Context,
-    chord: &mut ChordState,
-    leader: Leader,
-    sessions_shown: bool,
-    interruptible: bool,
-    has_pending_permission: bool,
-    has_pending_question: bool,
-    in_tentative_state: bool,
-    ai_mode: AiMode,
+    chord: &mut NormalMode,
+    keys: KeyContext,
 ) -> Option<KeyAction> {
+    let KeyContext {
+        leader,
+        ai_mode,
+        sessions_shown,
+        interruptible,
+        has_pending_permission,
+        has_pending_question,
+        in_tentative_state,
+    } = keys;
     let is_agentic = ai_mode == AiMode::Agentic;
     chord.observe(sessions_shown, is_agentic, interruptible);
 
@@ -896,62 +919,47 @@ mod tests {
         detect_sequence(&[(modifiers, key)])
     }
 
-    /// Press each `(modifiers, key)` in turn, threading one [`ChordState`]
+    /// Press each `(modifiers, key)` in turn, threading one [`NormalMode`]
     /// through every frame the way `Dave` does, and return the last action
     /// `check_keybindings` detected along the way.
     fn detect_sequence(presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
         detect_sequence_with(Leader::DEFAULT, presses)
     }
 
-    /// What a frame offers the keybindings, beyond the keys: which leader is
-    /// bound, and what the chord's `h` and `s` have to act on.
-    #[derive(Clone, Copy)]
-    struct Frame {
-        leader: Leader,
-        sessions_shown: bool,
-        interruptible: bool,
-    }
-
-    /// The session list on screen and a turn running: every chord key applies.
-    const FRAME: Frame = Frame {
+    /// The session list on screen and a turn running, agentic, with no
+    /// pending prompts: every chord key applies.
+    const FRAME: KeyContext = KeyContext {
         leader: Leader::DEFAULT,
+        ai_mode: AiMode::Agentic,
         sessions_shown: true,
         interruptible: true,
+        has_pending_permission: false,
+        has_pending_question: false,
+        in_tentative_state: false,
     };
 
-    /// `check_keybindings` as these tests drive it: agentic, with no pending
-    /// prompts.
-    fn check(ctx: &egui::Context, chord: &mut ChordState, frame: Frame) -> Option<KeyAction> {
-        check_keybindings(
-            ctx,
-            chord,
-            frame.leader,
-            frame.sessions_shown,
-            frame.interruptible,
-            false,
-            false,
-            false,
-            AiMode::Agentic,
-        )
+    /// `check_keybindings` as these tests drive it.
+    fn check(ctx: &egui::Context, chord: &mut NormalMode, keys: KeyContext) -> Option<KeyAction> {
+        check_keybindings(ctx, chord, keys)
     }
 
     /// [`detect_sequence`] with `leader` bound in place of the default.
     fn detect_sequence_with(leader: Leader, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
-        detect_sequence_in(Frame { leader, ..FRAME }, presses)
+        detect_sequence_in(KeyContext { leader, ..FRAME }, presses)
     }
 
     /// [`detect_sequence`] in `frame`.
-    fn detect_sequence_in(frame: Frame, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
+    fn detect_sequence_in(frame: KeyContext, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
         // Accumulate: `press_key_modifiers` runs the key-down frame internally
         // and then a key-up frame, so we must not clobber the detection with the
         // later (keys-released) frame's `None`.
         let mut harness = Harness::new_ui_state(
-            |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
+            |ui, (chord, action): &mut (NormalMode, Option<KeyAction>)| {
                 if let Some(a) = check(ui.ctx(), chord, frame) {
                     *action = Some(a);
                 }
             },
-            (ChordState::default(), None),
+            (NormalMode::default(), None),
         );
         harness.run();
         for (modifiers, key) in presses {
@@ -967,12 +975,12 @@ mod tests {
     }
 
     /// [`pending_after`] in `frame`.
-    fn pending_after_in(frame: Frame, presses: &[(Modifiers, Key)]) -> Option<Pending> {
+    fn pending_after_in(frame: KeyContext, presses: &[(Modifiers, Key)]) -> Option<Pending> {
         let mut harness = Harness::new_ui_state(
-            |ui, chord: &mut ChordState| {
+            |ui, chord: &mut NormalMode| {
                 check(ui.ctx(), chord, frame);
             },
-            ChordState::default(),
+            NormalMode::default(),
         );
         harness.run();
         for (modifiers, key) in presses {
@@ -1177,7 +1185,7 @@ mod tests {
         let presses = [LEADER, (NONE, Key::H), (NONE, Key::J)];
         assert_eq!(
             detect_sequence_in(
-                Frame {
+                KeyContext {
                     sessions_shown: false,
                     ..FRAME
                 },
@@ -1223,7 +1231,7 @@ mod tests {
 
     #[test]
     fn leader_s_with_nothing_running_is_swallowed() {
-        let idle = Frame {
+        let idle = KeyContext {
             interruptible: false,
             ..FRAME
         };
@@ -1244,18 +1252,13 @@ mod tests {
     fn escape_in_the_tentative_state_still_cancels_it() {
         let mut harness = Harness::new_ui_state(
             |ui, action: &mut Option<KeyAction>| {
-                let mut chord = ChordState::default();
-                if let Some(a) = check_keybindings(
-                    ui.ctx(),
-                    &mut chord,
-                    Leader::DEFAULT,
-                    true,
-                    true,
-                    true,
-                    false,
-                    true,
-                    AiMode::Agentic,
-                ) {
+                let mut chord = NormalMode::default();
+                let keys = KeyContext {
+                    has_pending_permission: true,
+                    in_tentative_state: true,
+                    ..FRAME
+                };
+                if let Some(a) = check_keybindings(ui.ctx(), &mut chord, keys) {
                     *action = Some(a);
                 }
             },
@@ -1282,12 +1285,12 @@ mod tests {
     #[test]
     fn a_chord_stays_open_while_idle() {
         let mut harness = Harness::new_ui_state(
-            |ui, (chord, action): &mut (ChordState, Option<KeyAction>)| {
+            |ui, (chord, action): &mut (NormalMode, Option<KeyAction>)| {
                 if let Some(a) = check(ui.ctx(), chord, FRAME) {
                     *action = Some(a);
                 }
             },
-            (ChordState::default(), None),
+            (NormalMode::default(), None),
         );
         harness.run();
         harness.press_key_modifiers(LEADER.0, LEADER.1);
@@ -1319,15 +1322,15 @@ mod tests {
         let input_id = egui::Id::unique("chat_input");
         // A real text field: egui drops focus from an id no widget claims.
         let mut harness = Harness::new_ui_state(
-            |ui, (chord, text): &mut (ChordState, String)| {
+            |ui, (chord, text): &mut (NormalMode, String)| {
                 check(ui.ctx(), chord, FRAME);
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
             },
-            (ChordState::default(), String::new()),
+            (NormalMode::default(), String::new()),
         );
         // A real keypress carries its text alongside the key event.
-        let type_key = |harness: &mut Harness<'_, (ChordState, String)>, key: Key, text: &str| {
+        let type_key = |harness: &mut Harness<'_, (NormalMode, String)>, key: Key, text: &str| {
             harness
                 .input_mut()
                 .events
@@ -1361,12 +1364,12 @@ mod tests {
     fn escape_ends_the_chord_and_hands_focus_back() {
         let input_id = egui::Id::unique("chat_input");
         let mut harness = Harness::new_ui_state(
-            |ui, (chord, text): &mut (ChordState, String)| {
+            |ui, (chord, text): &mut (NormalMode, String)| {
                 check(ui.ctx(), chord, FRAME);
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
             },
-            (ChordState::default(), String::new()),
+            (NormalMode::default(), String::new()),
         );
         harness.ctx.memory_mut(|m| m.request_focus(input_id));
         harness.run();

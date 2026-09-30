@@ -2,7 +2,7 @@
 //! dispatch of the UI and keybinding actions they return.
 
 use crate::backend::{BackendType, Model};
-use crate::ui::keybindings::KeyAction;
+use crate::ui::keybindings::{KeyAction, KeyContext};
 use crate::{
     check_keybindings, focus_queue, get_backend, secret_key_bytes, ui, update, worktree, Dave,
     DaveAction, DaveOverlay, DaveResponse, KeyActionResult, OverlayResult, PendingWorktreeRemoval,
@@ -252,7 +252,7 @@ impl Dave {
             &mut self.focus_queue,
             &self.model_config,
             self.auto_steal.is_enabled(),
-            self.chord.view(),
+            self.normal_mode.view(),
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -294,7 +294,7 @@ impl Dave {
             &self.collapse_state,
             &self.model_config,
             self.auto_steal.is_enabled(),
-            self.chord.view(),
+            self.normal_mode.view(),
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -386,7 +386,7 @@ impl Dave {
             &self.collapse_state,
             &self.model_config,
             self.auto_steal.is_enabled(),
-            self.chord.view(),
+            self.normal_mode.view(),
             &self.run_configs,
             &self.running_session_ids,
             self.show_session_list,
@@ -516,20 +516,19 @@ impl Dave {
             .session_manager
             .get_active()
             .is_some_and(update::session_is_interruptible);
-        if let Some(key_action) = check_keybindings(
-            egui_ctx,
-            &mut self.chord,
-            self.leader,
+        let keys = KeyContext {
+            leader: self.leader,
+            ai_mode: active_ai_mode,
             sessions_shown,
             interruptible,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
-            active_ai_mode,
-        ) {
+        };
+        if let Some(key_action) = check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
             self.handle_key_action(key_action, egui_ctx);
         }
-        ui::settle_chord_focus(&mut self.chord, &mut self.session_manager);
+        ui::settle_chord_focus(&mut self.normal_mode, &mut self.session_manager);
     }
 
     /// Handle a keybinding action
