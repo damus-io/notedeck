@@ -11,7 +11,7 @@ use notedeck::ColorTheme;
 use notedeck::tokens::SPACING_LG;
 use notedeck_ui::diff::PatchScroll;
 
-use super::review::{DONE, IN_PROGRESS, QueueNotice, SessionOpen, session_open};
+use super::review::{DONE, IN_PROGRESS, Notice, QueueNotice, SessionOpen, session_open};
 use super::{BoardUiState, find_card};
 use crate::store::BoardAction;
 
@@ -39,15 +39,30 @@ pub(crate) struct ReasonComposer {
 const DETAIL_LINES_PER_KEY: f32 = 3.0;
 
 impl BoardUiState {
-    /// Put up `notice` for [`super::NOTICE_SECS`] from `now` (egui time).
+    /// Put up `notice` for [`super::NOTICE_SECS`] from `now` (egui time), in
+    /// the view showing now.
     pub(crate) fn set_notice(&mut self, notice: QueueNotice, now: f64) {
-        self.notice = Some((notice, now));
+        self.notice = Some(Notice {
+            what: notice,
+            at: now,
+            pos: self.nav_pos(),
+        });
+    }
+
+    /// Take down a notice whose view has been left — by a key, a click, or a
+    /// global back/forward the route seeded — so it doesn't show in the one
+    /// landed on. [`super::board_ui`] runs it after the frame's pane keys.
+    pub(crate) fn retire_stale_notice(&mut self) {
+        let pos = self.nav_pos();
+        if self.notice.is_some_and(|n| n.pos != pos) {
+            self.notice = None;
+        }
     }
 
     /// The notice showing, if any.
     #[cfg(test)]
     pub(crate) fn notice(&self) -> Option<QueueNotice> {
-        self.notice.map(|(n, _)| n)
+        self.notice.map(|n| n.what)
     }
 
     /// The record of `card` a key acts on: the one the review pane shows, if

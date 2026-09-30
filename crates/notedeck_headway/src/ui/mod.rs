@@ -56,7 +56,7 @@ use review::{
     review_queue_ui,
 };
 
-pub(crate) use review::{QueueNotice, QueueScope, SessionOpen};
+pub(crate) use review::{Notice, QueueNotice, QueueScope, SessionOpen};
 
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
@@ -208,11 +208,11 @@ pub struct BoardUiState {
     queue: ReviewQueue,
     /// The detail Sub-issues header's "Review N" label.
     subtree_review: SubtreeReviewLabel,
-    /// A short-lived message and when (egui time) it went up: an `R` that
+    /// A short-lived message, when it went up and in which view: an `R` that
     /// found nothing in review, a verdict that finished the queue, a queue key
     /// with nothing to act on. Drawn in the header, or the queue's bar while
-    /// it's open, for [`NOTICE_SECS`] seconds.
-    notice: Option<(QueueNotice, f64)>,
+    /// it's open, for [`NOTICE_SECS`] seconds, or until its view is left.
+    notice: Option<Notice>,
     /// A board edit left for the next frame, because a frame applies one: the
     /// move behind an `X` verdict's comment.
     follow_up: Option<BoardAction>,
@@ -586,6 +586,7 @@ pub fn board_ui(
     // as it lays out, in `board_pane_ui`.)
     state.refresh_queue(view, ui.ctx().input(|i| i.time));
     let keyed = keys::pane_keys(ui.ctx(), view, state);
+    state.retire_stale_notice();
     if keyed.is_some() {
         // The next card, and an `X`'s follow-up move, want a frame.
         ui.ctx().request_repaint();
@@ -892,8 +893,11 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
 
 /// The [`QueueNotice`] showing, for [`NOTICE_SECS`] seconds after it went up.
 /// Schedules the frame that takes it down.
-fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<(QueueNotice, f64)>) {
-    let Some((shown, at)) = *notice else {
+fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>) {
+    let Some(Notice {
+        what: shown, at, ..
+    }) = *notice
+    else {
         return;
     };
     let left = NOTICE_SECS - (ui.input(|i| i.time) - at);

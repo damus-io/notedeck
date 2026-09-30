@@ -977,6 +977,7 @@ mod tests {
                 };
                 let showed_pane = pane(&h.state);
                 let keyed = pane_keys(ui.ctx(), &h.view, &mut h.state);
+                h.state.retire_stale_notice();
                 let action = if showed_pane || keyed.is_some() {
                     keyed
                 } else {
@@ -1958,6 +1959,23 @@ mod tests {
         press_with(&mut harness, Modifiers::SHIFT, Key::S);
         assert_eq!(harness.state().session, None);
         assert_eq!(harness.state().state.notice(), Some(QueueNotice::NoSession));
+    }
+
+    /// A notice is about the view it went up in: `s` on a sessionless record
+    /// in a plain review pane says so there, and it's gone once Esc has backed
+    /// out to the card's detail, rather than following on to the grid.
+    #[test]
+    fn a_pane_notice_comes_down_with_the_pane() {
+        let mut harness = pane_harness();
+        press(&mut harness, Key::N);
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
+        press(&mut harness, Key::S);
+        assert_eq!(harness.state().state.notice(), Some(QueueNotice::NoSession));
+
+        press(&mut harness, Key::Escape);
+        assert_eq!(harness.state().state.review_card(), None);
+        assert_eq!(harness.state().state.selected(), Some(id(6)));
+        assert_eq!(harness.state().state.notice(), None);
     }
 
     /// A plain review pane reads like the queue — `j`, `G` and `]` scroll its

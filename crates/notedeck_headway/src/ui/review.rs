@@ -24,7 +24,7 @@ use super::widgets::{
 };
 use super::{BoardUiState, find_card, pane_hints_ui};
 use crate::keys::CardAction;
-use crate::nav::ReviewTarget;
+use crate::nav::{NavPos, ReviewTarget};
 use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
@@ -315,6 +315,20 @@ pub(crate) enum QueueNotice {
     NoInProgressColumn,
     /// `s`/`S` on a card whose record names no agentium session.
     NoSession,
+}
+
+/// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
+/// It's about that view, so it comes down when the view changes (see
+/// [`BoardUiState::retire_stale_notice`]) rather than following the user two
+/// screens away from its cause.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Notice {
+    /// The message.
+    pub(crate) what: QueueNotice,
+    /// When it went up, in egui time; it shows for [`NOTICE_SECS`] from here.
+    pub(crate) at: f64,
+    /// The view it went up in.
+    pub(crate) pos: NavPos,
 }
 
 impl QueueNotice {
@@ -771,7 +785,7 @@ fn review_topbar_ui(
     record: Option<&ReviewView>,
     review: &mut ReviewUi,
     queue: Option<QueueHeader<'_>>,
-    notice: &mut Option<(QueueNotice, f64)>,
+    notice: &mut Option<Notice>,
 ) {
     let fields = record.map(|r| &r.fields);
     let narrow = notedeck::ui::is_narrow(ui.ctx());

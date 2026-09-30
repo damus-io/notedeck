@@ -262,7 +262,7 @@ fn detail_pane_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     ctx: &DetailCtx,
-    notice: &mut Option<(super::QueueNotice, f64)>,
+    notice: &mut Option<super::Notice>,
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
