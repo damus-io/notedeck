@@ -115,7 +115,7 @@ fn trailing_user_messages(messages: &[Message]) -> Vec<&UserMessage> {
     messages
         .iter()
         .rev()
-        .take_while(|m| matches!(m, Message::User(_)))
+        .take_while(|m| m.is_user_turn())
         .filter_map(|m| match m {
             Message::User(msg) => Some(msg),
             _ => None,

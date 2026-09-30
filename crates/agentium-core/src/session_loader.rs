@@ -5,7 +5,9 @@
 //! `Message` variants for populating the chat UI.
 
 use crate::file_update::{FileUpdate, FileUpdateWire};
-use crate::messages::{AssistantMessage, ExecutedTool, Message, PermissionRequest, RunningTool};
+use crate::messages::{
+    AssistantMessage, ExecutedTool, Message, PermissionRequest, RunningTool, UserMessage,
+};
 use crate::session::PermissionTracker;
 use crate::session_events::{
     build_session_state_event, decode_permission_response, get_tag_value, is_conversation_role,
@@ -450,7 +452,7 @@ pub fn render_conversation_note(
             // here — `permission_reply_message` drops empty/placeholder reasons.
             let decoded = crate::session_events::decode_permission_response(content);
             crate::messages::permission_reply_message(decoded.message.as_deref())
-                .map(|reply| Message::User(reply.into()))
+                .map(|reply| Message::User(UserMessage::permission_reply(reply)))
         }
         Some("compaction_complete") => {
             let pre_tokens = content.parse::<u64>().unwrap_or(0);

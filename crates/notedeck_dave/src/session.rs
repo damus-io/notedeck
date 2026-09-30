@@ -146,6 +146,9 @@ pub fn friendly_model_name(model: &str) -> &str {
     model
 }
 
+/// The user turn compact-and-proceed sends once compaction completes.
+pub const PROCEED_MESSAGE: &str = "Proceed with implementing the plan.";
+
 /// Unified compaction intent — replaces the old `CompactAndProceedState`
 /// enum *and* the separate `is_compacting: bool` field.
 ///
@@ -487,7 +490,7 @@ fn turn_content_boundary(
 ) -> usize {
     let after_content = chat
         .iter()
-        .rposition(|m| !matches!(m, Message::User(_)))
+        .rposition(|m| !m.is_user_turn())
         .map(|i| i + 1)
         .unwrap_or(0);
     let skip = if turn_has_content {
@@ -803,13 +806,14 @@ impl ChatSession {
 
     /// Auto-resolve any pending local permissions that now match the
     /// runtime allowlist (e.g. after the user clicked "Allow Always"
-    /// and the allowlist was updated).  Returns the number resolved.
-    pub fn auto_resolve_runtime_allowed(&mut self) -> usize {
+    /// and the allowlist was updated). Returns the perm ids resolved, whose
+    /// auto-accept responses the caller publishes.
+    pub fn auto_resolve_runtime_allowed(&mut self) -> Vec<uuid::Uuid> {
         let Some(agentic) = &self.agentic else {
-            return 0;
+            return Vec::new();
         };
         if agentic.permissions.pending.is_empty() {
-            return 0;
+            return Vec::new();
         }
 
         // Collect IDs of pending permissions whose tool matches the allowlist
@@ -830,7 +834,7 @@ impl ChatSession {
             .collect();
 
         if to_resolve.is_empty() {
-            return 0;
+            return to_resolve;
         }
 
         // The allowlist accepted these without a user click, so flag them as
@@ -856,7 +860,7 @@ impl ChatSession {
             );
         }
 
-        to_resolve.len()
+        to_resolve
     }
 
     /// Check if session is in plan mode
@@ -1125,6 +1129,16 @@ pub struct EditorJob {
     pub temp_path: PathBuf,
     /// Session ID that initiated the editor
     pub session_id: SessionId,
+}
+
+/// A pending permission the runtime allowlist resolved without a user click
+/// (see [`SessionManager::update_all_statuses`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoResolved {
+    /// The session the request belongs to.
+    pub session: SessionId,
+    /// The resolved request's perm id.
+    pub perm_id: uuid::Uuid,
 }
 
 /// Manages multiple chat sessions
@@ -1407,12 +1421,20 @@ impl SessionManager {
     /// Update status for all sessions.
     ///
     /// First drains any pending permissions that now match the runtime
-    /// allowlist (e.g. after "Allow Always"), then derives status.
-    pub fn update_all_statuses(&mut self) {
+    /// allowlist (e.g. after "Allow Always"), then derives status. Returns
+    /// the permissions it resolved, whose auto-accept responses the caller
+    /// publishes.
+    pub fn update_all_statuses(&mut self) -> Vec<AutoResolved> {
+        let mut resolved = Vec::new();
         for session in self.sessions.values_mut() {
-            session.auto_resolve_runtime_allowed();
+            let perm_ids = session.auto_resolve_runtime_allowed();
+            resolved.extend(perm_ids.into_iter().map(|perm_id| AutoResolved {
+                session: session.id,
+                perm_id,
+            }));
             session.update_status();
         }
+        resolved
     }
 
     /// Get the first session that needs attention (NeedsInput status)
@@ -1694,7 +1716,7 @@ impl ChatSession {
         let mut appended = false;
         for m in self.chat.iter_mut().rev() {
             match m {
-                Message::User(_) => continue, // skip queued user messages
+                _ if m.is_user_turn() => continue, // skip queued user messages
                 Message::Assistant(msg) if msg.is_streaming() => {
                     msg.push_token(token);
                     appended = true;
@@ -1794,7 +1816,7 @@ impl ChatSession {
     /// Whether the session has an unanswered user message at the end of the
     /// chat that needs to be dispatched to the backend.
     pub fn has_pending_user_message(&self) -> bool {
-        matches!(self.chat.last(), Some(Message::User(_)))
+        self.chat.last().is_some_and(Message::is_user_turn)
     }
 
     /// Whether a newly arrived remote user message should be dispatched to
@@ -1852,7 +1874,7 @@ impl ChatSession {
         self.chat
             .iter()
             .rev()
-            .take_while(|m| matches!(m, Message::User(_)))
+            .take_while(|m| m.is_user_turn())
             .count()
     }
 
@@ -1877,7 +1899,8 @@ impl ChatSession {
     }
 
     /// If "Compact & Approve" has reached ReadyToProceed, consume the state,
-    /// push a "Proceed" user message, and return true.
+    /// push a [`PROCEED_MESSAGE`] user message, and return true. The caller
+    /// publishes it.
     ///
     /// Called from:
     /// - Local sessions: at stream-end in process_events()
@@ -1893,8 +1916,7 @@ impl ChatSession {
         }
 
         self.agentic.as_mut().unwrap().compact_intent = None;
-        self.chat
-            .push(Message::User("Proceed with implementing the plan.".into()));
+        self.chat.push(Message::User(PROCEED_MESSAGE.into()));
         true
     }
 }
@@ -2645,6 +2667,45 @@ mod tests {
         assert!(
             prompt.contains("also check the tests"),
             "queued prompt was lost; got {prompt:?}"
+        );
+    }
+
+    /// A permission reply row is the turn's content, not a queued message: the
+    /// model's next text lands below it, a message queued after it is still
+    /// the only thing redispatched, and a turn that ends on it redispatches
+    /// nothing (its text already reached the model with the response).
+    #[test]
+    fn permission_reply_row_is_turn_content_not_queued() {
+        use crate::messages::{PermissionRequest, UserMessage};
+
+        let mut session = test_session();
+        session.chat.push(Message::User("which way?".into()));
+        let _tx = make_streaming(&mut session);
+        session.insert_turn_content(Message::PermissionRequest(PermissionRequest::pending(
+            Uuid::new_v4(),
+            "AskUserQuestion".to_string(),
+            serde_json::json!({}),
+        )));
+        session.insert_turn_content(Message::User(UserMessage::permission_reply(
+            "Approach: Fold",
+        )));
+        assert!(
+            !session.needs_redispatch_after_stream_end(),
+            "a turn ending on a reply row must not redispatch it"
+        );
+
+        session.append_token("going with the fold");
+        assert!(
+            matches!(session.chat.last(), Some(Message::Assistant(_))),
+            "the model's text lands below the reply row"
+        );
+
+        session.chat.push(Message::User("and then?".into()));
+        session.finalize_last_assistant();
+        assert!(session.needs_redispatch_after_stream_end());
+        assert_eq!(
+            crate::backend::shared::get_pending_user_messages(&session.chat),
+            "and then?"
         );
     }
 

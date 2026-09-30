@@ -4,7 +4,10 @@
 //! drives. [`Dave::process_events`] drains every session's stream through them.
 
 use crate::backend::{AiBackend, BackendType};
-use crate::publish::{ingest_live_event, pns_ingest, wire_file_update, MAX_TOOL_OUTPUT_WIRE_BYTES};
+use crate::publish::{
+    build_user_send_event, ingest_live_event, pns_ingest, publish_auto_accept_response,
+    publish_permission_request, wire_file_update, MAX_TOOL_OUTPUT_WIRE_BYTES,
+};
 use crate::session_events::LiveEventTags;
 use crate::{
     backend, get_backend, messages, secret_key_bytes, session, session_events, session_loader,
@@ -517,47 +520,31 @@ fn handle_permission_request(
         pending.request.tool_input
     );
 
-    // Check runtime allowlist — auto-accept and show as already-allowed in chat
-    if let Some(agentic) = &session.agentic {
-        if agentic.should_runtime_allow(&pending.request.tool_name, &pending.request.tool_input) {
-            tracing::info!(
-                "runtime allow: auto-accepting '{}' for this session",
-                pending.request.tool_name,
-            );
-            let _ = pending
-                .response_tx
-                .send(PermissionResponse::Allow { message: None });
-            let request = pending.request.auto_accept();
-            session.insert_turn_content(Message::PermissionRequest(request));
-            return;
-        }
+    // Publish the request (perm-id, tool-name tags) for remote clients — an
+    // auto-accepted one too, so the fold shows the same resolved row the host
+    // does.
+    if let Some(sk) = secret_key {
+        publish_permission_request(session, &pending.request, ndb, sk);
     }
 
-    // Build and publish a proper permission request event
-    // with perm-id, tool-name tags for remote clients
-    if let Some(sk) = secret_key {
-        if let Some(agentic) = &mut session.agentic {
-            let sid = agentic.event_session_id().to_string();
-            match session_events::build_permission_request_event(
-                &pending.request.id,
-                &pending.request.tool_name,
-                &pending.request.tool_input,
-                &sid,
-                &mut agentic.live_threading,
-                sk,
-            ) {
-                Ok(evt) => {
-                    pns_ingest(ndb, &evt.note_json, sk);
-                    agentic
-                        .permissions
-                        .request_note_ids
-                        .insert(pending.request.id, evt.note_id);
-                }
-                Err(e) => {
-                    tracing::warn!("failed to build permission request event: {}", e);
-                }
-            }
+    // Check runtime allowlist — auto-accept, publish the auto response, and
+    // show as already-allowed in chat
+    if session.agentic.as_ref().is_some_and(|agentic| {
+        agentic.should_runtime_allow(&pending.request.tool_name, &pending.request.tool_input)
+    }) {
+        tracing::info!(
+            "runtime allow: auto-accepting '{}' for this session",
+            pending.request.tool_name,
+        );
+        let _ = pending
+            .response_tx
+            .send(PermissionResponse::Allow { message: None });
+        if let Some(sk) = secret_key {
+            publish_auto_accept_response(session, pending.request.id, ndb, sk);
         }
+        let request = pending.request.auto_accept();
+        session.insert_turn_content(Message::PermissionRequest(request));
+        return;
     }
 
     // Store the response sender for later (agentic only)
@@ -783,8 +770,12 @@ pub(crate) fn handle_stream_end(
     }
 
     // After compact & approve: compaction must have completed
-    // (ReadyToProceed) before we send "Proceed".
+    // (ReadyToProceed) before we send "Proceed". It is a user turn like any
+    // other, so it is published for observers and a restart.
     if session.take_compact_and_proceed() {
+        if let Some(sk) = secret_key {
+            build_user_send_event(session, ndb, sk, session::PROCEED_MESSAGE);
+        }
         needs_send.insert(session_id);
     }
 }

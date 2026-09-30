@@ -36,6 +36,12 @@ impl ImageAttachment {
 pub struct UserMessage {
     pub text: String,
     pub images: Vec<ImageAttachment>,
+    /// The reply text a permission response carried (an approve/deny message,
+    /// or a question set's formatted answers), shown inline as a user bubble.
+    /// It reached the model with the response, so it is the turn's content
+    /// rather than a user turn: never queued, never dispatched on its own (see
+    /// [`Message::is_user_turn`]).
+    pub permission_reply: bool,
 }
 
 impl UserMessage {
@@ -43,6 +49,17 @@ impl UserMessage {
         Self {
             text: text.into(),
             images,
+            permission_reply: false,
+        }
+    }
+
+    /// The inline row for a permission response's reply text (see
+    /// [`permission_reply_message`]).
+    pub fn permission_reply(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: vec![],
+            permission_reply: true,
         }
     }
 
@@ -53,19 +70,13 @@ impl UserMessage {
 
 impl From<String> for UserMessage {
     fn from(s: String) -> Self {
-        Self {
-            text: s,
-            images: vec![],
-        }
+        Self::new(s, vec![])
     }
 }
 
 impl From<&str> for UserMessage {
     fn from(s: &str) -> Self {
-        Self {
-            text: s.to_owned(),
-            images: vec![],
-        }
+        Self::new(s, vec![])
     }
 }
 
@@ -1000,6 +1011,14 @@ pub enum DaveApiResponse {
 impl Message {
     pub fn tool_error(id: String, msg: String) -> Self {
         Self::ToolResponse(ToolResponse::error(id, msg))
+    }
+
+    /// Whether this is a user turn: a message the user sent, which the host
+    /// dispatches and which counts as queued while it trails a turn in flight.
+    /// A permission reply row ([`UserMessage::permission_reply`]) is a user
+    /// bubble but not a turn.
+    pub fn is_user_turn(&self) -> bool {
+        matches!(self, Message::User(user) if !user.permission_reply)
     }
 
     /// A lossy, role-tagged JSON view of this message for machine consumers

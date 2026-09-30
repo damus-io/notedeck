@@ -503,7 +503,7 @@ pub(crate) fn process_conversation_notes<'a>(
                     session,
                     ndb,
                     sk,
-                    "Proceed with implementing the plan.",
+                    session::PROCEED_MESSAGE,
                     "user",
                     session_events::LiveEventTags::default(),
                 );

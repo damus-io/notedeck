@@ -1449,8 +1449,10 @@ impl notedeck::App for Dave {
             }
         }
 
-        // Update all session statuses after processing events
-        self.session_manager.update_all_statuses();
+        // Update all session statuses after processing events, publishing the
+        // responses of any permissions the runtime allowlist just resolved
+        let auto_resolved = self.session_manager.update_all_statuses();
+        self.publish_auto_resolved(ctx, &auto_resolved);
 
         // Publish kind-31988 state events for sessions whose status changed
         self.publish_dirty_session_states(ctx);

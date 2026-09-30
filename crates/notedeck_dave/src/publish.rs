@@ -339,6 +339,89 @@ pub(crate) fn publish_permission_response(
     }
 }
 
+/// Ingest an event this host built for one of its own sessions, marking it seen
+/// so its echo back from the relay isn't processed again. Returns the note id,
+/// or `None` after logging a build failure.
+fn ingest_session_event(
+    agentic: &mut session::AgenticSessionData,
+    result: Result<session_events::BuiltEvent, session_events::EventBuildError>,
+    event_desc: &str,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) -> Option<[u8; 32]> {
+    match result {
+        Ok(evt) => {
+            agentic.seen_note_ids.insert(evt.note_id);
+            pns_ingest(ndb, &evt.note_json, sk);
+            Some(evt.note_id)
+        }
+        Err(e) => {
+            tracing::warn!("failed to build {}: {}", event_desc, e);
+            None
+        }
+    }
+}
+
+/// Publish a local session's `permission_request` note and record its note id
+/// under the request's perm id, which a later response links to.
+pub(crate) fn publish_permission_request(
+    session: &mut ChatSession,
+    request: &crate::messages::PermissionRequest,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) -> Option<[u8; 32]> {
+    let agentic = session.agentic.as_mut()?;
+    let sid = agentic.event_session_id().to_string();
+    let built = session_events::build_permission_request_event(
+        &request.id,
+        &request.tool_name,
+        &request.tool_input,
+        &sid,
+        &mut agentic.live_threading,
+        sk,
+    );
+    let note_id = ingest_session_event(agentic, built, "permission request event", ndb, sk)?;
+    agentic
+        .permissions
+        .request_note_ids
+        .insert(request.id, note_id);
+    Some(note_id)
+}
+
+/// Publish the `permission_response{auto}` a local session's runtime allowlist
+/// gave a request without a user click, so observers, a restart and the CLI
+/// show it resolved (and auto-accepted) rather than pending.
+///
+/// Mirrors the remote auto-accept in `conversation.rs`. Skipped when the
+/// request itself was never published: there is no note to answer.
+pub(crate) fn publish_auto_accept_response(
+    session: &mut ChatSession,
+    perm_id: uuid::Uuid,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) {
+    let Some(agentic) = session.agentic.as_mut() else {
+        return;
+    };
+    let Some(request_note_id) = agentic.permissions.request_note_ids.get(&perm_id).copied() else {
+        tracing::warn!("auto-accepted {perm_id} has no published request; not publishing");
+        return;
+    };
+    let sid = agentic.event_session_id().to_string();
+    let built = session_events::build_permission_response_event(
+        &perm_id,
+        &request_note_id,
+        true,
+        None,
+        false,
+        true,
+        &sid,
+        &mut agentic.live_threading,
+        sk,
+    );
+    ingest_session_event(agentic, built, "auto-accept response event", ndb, sk);
+}
+
 impl Dave {
     /// Publish kind-31988 state events for sessions whose status changed.
     pub(crate) fn publish_dirty_session_states(&mut self, ctx: &mut AppContext<'_>) {
@@ -432,6 +515,30 @@ impl Dave {
                 ctx.ndb,
                 &sk,
             );
+        }
+    }
+
+    /// Publish the auto-accept responses for permissions the runtime allowlist
+    /// resolved this frame (see [`SessionManager::update_all_statuses`]), so
+    /// observers stop showing them pending.
+    ///
+    /// [`SessionManager::update_all_statuses`]: session::SessionManager::update_all_statuses
+    pub(crate) fn publish_auto_resolved(
+        &mut self,
+        ctx: &AppContext<'_>,
+        resolved: &[session::AutoResolved],
+    ) {
+        if resolved.is_empty() {
+            return;
+        }
+        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
+            return;
+        };
+        for auto in resolved {
+            let Some(session) = self.session_manager.get_mut(auto.session) else {
+                continue;
+            };
+            publish_auto_accept_response(session, auto.perm_id, ctx.ndb, &sk);
         }
     }
 

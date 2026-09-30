@@ -388,6 +388,34 @@ pub struct PermissionPublish {
     pub cancel_turn: bool,
 }
 
+/// Surface the reply text a permission response carries inline as a user
+/// message, so there's a visible record of what was said, matching the
+/// note-render path that reconstructs it on reload / for a remote observer (see
+/// `session_loader::render_conversation_note`). `permission_reply_message`
+/// drops empty and canned-placeholder reasons so a plain allow/deny adds no
+/// bubble. Shared by the plain permission and question-set answer paths.
+///
+/// The reply is this turn's content, not a queued message: it goes in through
+/// [`ChatSession::insert_turn_content`], so the model's next text lands below
+/// it (as in the fold, where the response note sorts before that text) and a
+/// message queued during the turn stays the trailing run.
+///
+/// Only a local session pushes. A local host never renders its own
+/// `permission_response` note live (`process_conversation_notes` takes the
+/// `!is_remote` early-return), so it needs the push. A remote issuer, however,
+/// gets the reply appended when the echoed-back note ingests via
+/// `process_conversation_notes`; pushing here too would render it twice.
+fn push_local_permission_reply(session: &mut ChatSession, message: Option<&str>) {
+    if session.is_remote() {
+        return;
+    }
+    if let Some(reply) = crate::messages::permission_reply_message(message) {
+        session.insert_turn_content(Message::User(
+            crate::messages::UserMessage::permission_reply(reply),
+        ));
+    }
+}
+
 /// Handle a permission response (from UI button or keybinding).
 pub fn handle_permission_response(
     session_manager: &mut SessionManager,
@@ -430,23 +458,7 @@ pub fn handle_permission_response(
         }
     };
 
-    // Surface the user's approve/deny reply text inline as a user message so
-    // there's a visible record of what was said, matching the note-render path
-    // that reconstructs it on reload / for a remote observer (see
-    // `session_loader::render_conversation_note`). `permission_reply_message`
-    // drops empty and canned-placeholder reasons so a plain allow/deny adds no
-    // bubble.
-    //
-    // Gate this optimistic push on `!is_remote`. A local host never renders its
-    // own `permission_response` note live (`process_conversation_notes` takes
-    // the `!is_remote` early-return), so it needs the push. A remote issuer,
-    // however, gets the reply appended when the echoed-back note ingests via
-    // `process_conversation_notes`; pushing here too would render it twice.
-    if !is_remote {
-        if let Some(reply) = crate::messages::permission_reply_message(message.as_deref()) {
-            session.chat.push(Message::User(reply.into()));
-        }
-    }
+    push_local_permission_reply(session, message.as_deref());
 
     // Clear permission message state (agentic only)
     if let Some(agentic) = &mut session.agentic {
@@ -561,6 +573,10 @@ pub fn handle_question_response(
             .collect();
         AnswerSummary { entries }
     });
+
+    // The response note carries the formatted answers as its message, and the
+    // fold renders that as a user reply row; show the same row here.
+    push_local_permission_reply(session, Some(&formatted_response));
 
     // Clean up transient answer state
     if let Some(agentic) = &mut session.agentic {

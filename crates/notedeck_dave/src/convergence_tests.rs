@@ -20,7 +20,9 @@ use crate::messages::{
     CompactionInfo, PendingPermission, PermissionRequest, QuestionAnswer, RunningTool,
     SubagentInfo, SubagentStatus,
 };
-use crate::publish::{publish_permission_response, record_user_message};
+use crate::publish::{
+    publish_auto_accept_response, publish_permission_response, record_user_message,
+};
 use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
 use crate::stream_events::{apply_response, handle_stream_end, ApplyCtx};
 use crate::tests::{test_config, test_secret_key};
@@ -480,10 +482,9 @@ async fn empty_response_error() {
     assert_host_matches_fold(script).await;
 }
 
-/// G4: a tool on the runtime allowlist is auto-accepted before anything is
-/// published, so the fold never sees the request.
+/// G4: a tool on the runtime allowlist is auto-accepted; the host publishes
+/// the request and an `auto` response, so the fold shows the same resolved row.
 #[tokio::test]
-#[ignore = "converge 4 (headway:dave/submit-wear-catch)"]
 async fn allowlist_auto_accept() {
     let input = serde_json::json!({ "command": "ls -la" });
     let grant = input.clone();
@@ -506,10 +507,42 @@ async fn allowlist_auto_accept() {
     assert_host_matches_fold(script).await;
 }
 
-/// G4: answering a question set shows a different reply row on the host than
-/// the fold renders from the published response.
+/// G4: a pending request that a later "Allow Always" covers is resolved by
+/// the per-frame status pass, which hands back what it resolved so the host
+/// publishes an `auto` response and the fold stops showing it pending.
 #[tokio::test]
-#[ignore = "converge 4 (headway:dave/submit-wear-catch)"]
+async fn allow_always_resolves_pending() {
+    let input = serde_json::json!({ "command": "cargo build" });
+    let grant = input.clone();
+    let mut script = Vec::from(user_turn("build it"));
+    script.extend([
+        Step::Permission(PermissionRequest::pending(
+            uuid::Uuid::new_v4(),
+            "Bash".to_string(),
+            input,
+        )),
+        Step::Act(Box::new(move |host: &mut Host| {
+            let agentic = host.session().agentic.as_mut().unwrap();
+            agentic.add_runtime_allow("Bash", &grant);
+            let resolved = host.sessions.update_all_statuses();
+            assert_eq!(resolved.len(), 1, "the grant covers the pending request");
+            let sk = host.secret_key.unwrap();
+            for auto in resolved {
+                let session = host.sessions.get_mut(auto.session).unwrap();
+                publish_auto_accept_response(session, auto.perm_id, &host.ndb, &sk);
+            }
+        })),
+        running("t1", "Bash", "cargo build"),
+        executed("t1", "Bash", "exit 0", None),
+        token("built"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// G4: answering a question set shows the formatted answers as a user reply
+/// row, on the host and (from the published response) in the fold.
+#[tokio::test]
 async fn question_reply() {
     let id = uuid::Uuid::new_v4();
     let questions = serde_json::json!({
@@ -548,10 +581,9 @@ async fn question_reply() {
     assert_host_matches_fold(script).await;
 }
 
-/// G6: compact-and-proceed pushes a local "Proceed…" user message that is
-/// never published.
+/// G6: compact-and-proceed's local "Proceed…" user message is published, so
+/// the fold shows it too.
 #[tokio::test]
-#[ignore = "converge 4 (headway:dave/submit-wear-catch)"]
 async fn compact_and_proceed() {
     let mut script = Vec::from(user_turn("approve the plan"));
     script.extend([
