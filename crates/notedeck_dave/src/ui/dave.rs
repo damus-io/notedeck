@@ -1680,7 +1680,7 @@ impl<'a> DaveUi<'a> {
 
         let layout = InputboxLayout::new(self.input, i18n)
             .show_stop(show_stop)
-            .id(egui::Id::unique(("dave_input", self.session_id)));
+            .id(input_id(self.session_id));
 
         let result = layout.show(ui);
 
@@ -1975,6 +1975,12 @@ impl<'a> InputboxLayout<'a> {
 }
 
 /// Dave-specific input context menu that prefers image paste before text paste.
+/// The chat input's widget id for `session_id`. Each session has its own
+/// input, so focus follows the session that owns it.
+pub(crate) fn input_id(session_id: SessionId) -> egui::Id {
+    egui::Id::unique(("dave_input", session_id))
+}
+
 fn dave_input_context(
     ui: &mut egui::Ui,
     response: &egui::Response,

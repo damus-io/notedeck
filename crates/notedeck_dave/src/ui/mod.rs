@@ -1347,6 +1347,7 @@ pub fn handle_ui_action(
 
 #[cfg(test)]
 mod tests {
+    use super::dave::input_id;
     use super::{dispatch_open_terminal, handle_key_action, settle_normal_mode_focus};
     use crate::backend::RemoteOnlyBackend;
     use crate::collapse_state::CollapseState;
@@ -1459,10 +1460,7 @@ mod tests {
             return;
         };
         let input = ui
-            .add(
-                egui::TextEdit::singleline(&mut session.input)
-                    .id(egui::Id::unique(("dave_input", session.id))),
-            )
+            .add(egui::TextEdit::singleline(&mut session.input).id(input_id(session.id)))
             .accessible_name("test field");
         if std::mem::take(&mut session.focus_requested) {
             input.request_focus();
@@ -1473,8 +1471,7 @@ mod tests {
     fn leaving_normal_mode_after_a_session_switch_focuses_the_new_input() {
         let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
         let [first, second] = harness.state().sessions;
-        let input = |id: SessionId| egui::Id::unique(("dave_input", id));
-        harness.ctx.memory_mut(|m| m.request_focus(input(first)));
+        harness.ctx.memory_mut(|m| m.request_focus(input_id(first)));
         harness.run();
 
         harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
@@ -1489,7 +1486,7 @@ mod tests {
 
         harness.press_key_modifiers(Modifiers::NONE, Key::I);
         harness.run();
-        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input(second)));
+        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id(second)));
     }
 
     /// egui drops the input's focus on Esc before Dave reads the key, so
@@ -1498,7 +1495,7 @@ mod tests {
     fn escape_then_i_puts_focus_back_on_the_input() {
         let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
         let [first, _] = harness.state().sessions;
-        let input = egui::Id::unique(("dave_input", first));
+        let input = input_id(first);
         harness.ctx.memory_mut(|m| m.request_focus(input));
         harness.run();
 
@@ -1530,10 +1527,7 @@ mod tests {
 
         harness.press_key_modifiers(Modifiers::NONE, Key::I);
         harness.run();
-        assert_eq!(
-            harness.ctx.memory(|m| m.focused()),
-            Some(egui::Id::unique(("dave_input", second)))
-        );
+        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id(second)));
     }
 
     #[test]
