@@ -28,7 +28,7 @@ use crate::messages::{
 };
 use crate::publish::{
     pns_ingest, publish_auto_accept_response, publish_user_permission_response, record_dispatch,
-    record_user_message, MAX_TOOL_OUTPUT_WIRE_BYTES,
+    record_user_message,
 };
 use crate::reconcile::{maybe_reconcile_at_rest, Drift, ReconcileOutcome};
 use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
@@ -38,6 +38,7 @@ use crate::tools::ToolResponses;
 use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
 use agentium_core::session_events::{
     build_live_event, BuiltEvent, LiveEventTags, ThreadingState, AI_CONVERSATION_KIND,
+    MAX_WIRE_EVENT_BYTES,
 };
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
@@ -874,17 +875,12 @@ async fn driven(script: Vec<Step>) -> Host {
 /// An edit's diff past the wire budget is dropped from its `tool_result`
 /// note, so the fold shows the tool without it. The host keeps its diff
 /// through the reconcile.
-///
-/// Capped *output* can't be tested the same way yet: a capped 40KB copy makes
-/// an inner event over 32KB, which nostrdb's NIP-44 unpad rejects (its
-/// `calc_padded_len` overflows a `uint16_t` past 32768), so that note never
-/// indexes and the session never reconciles.
 #[tokio::test]
 async fn reconcile_keeps_dropped_diff() {
     let edit = crate::file_update::FileUpdate::new(
         "big.rs".to_string(),
         crate::file_update::FileUpdateType::Write {
-            content: "x".repeat(MAX_TOOL_OUTPUT_WIRE_BYTES + 1),
+            content: "x".repeat(MAX_WIRE_EVENT_BYTES + 1),
         },
     );
     let mut script = Vec::from(user_turn("write the file"));
@@ -922,6 +918,77 @@ async fn reconcile_keeps_dropped_diff() {
 
     assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
     assert!(has_diff(&host.session().chat), "the host kept its diff");
+}
+
+/// Tool output too big for the wire is published as a copy cut to fit, which
+/// the fold shows; the host keeps the whole output through the reconcile.
+///
+/// The output is quote- and newline-heavy, so the note's escaping costs far
+/// more than the output's raw bytes. That it indexes at all is the budget
+/// holding: the pinned nostrdb rejects NIP-44 plaintexts of 32769 to 57344
+/// bytes, so a note budgeted by raw output bytes would never come back and
+/// `settle` would time out.
+#[tokio::test]
+async fn reconcile_keeps_capped_tool_output() {
+    let output: String = (0..)
+        .map(|i| format!("line \"{i}\"\n"))
+        .take_while({
+            let mut len = 0;
+            move |line| {
+                len += line.len();
+                len <= 2 * MAX_WIRE_EVENT_BYTES
+            }
+        })
+        .collect();
+    let mut script = Vec::from(user_turn("print a lot"));
+    script.extend([
+        running("t1", "Bash", "yes"),
+        Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
+            tool_name: "Bash".to_string(),
+            summary: "yes".to_string(),
+            output: Some(output.clone()),
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: Some("t1".to_string()),
+        })),
+        Step::StreamEnd,
+    ]);
+    let mut host = driven(script).await;
+
+    let tool_output = |chat: &[Message]| {
+        chat.iter()
+            .find_map(|message| match message {
+                Message::ToolResponse(resp) => match resp.responses() {
+                    ToolResponses::ExecutedTool(tool) => tool.output.clone(),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("the turn has a tool row with output")
+    };
+    let author = host.author();
+    let folded = {
+        let txn = Transaction::new(&host.ndb).unwrap();
+        tool_output(&load_session_messages_for_author(&host.ndb, &txn, &author, SESSION).messages)
+    };
+    assert!(folded.len() < output.len(), "the wire carries a cut copy");
+    assert!(
+        folded.len() > MAX_WIRE_EVENT_BYTES / 4,
+        "the cut copy is as big as the budget allows, not a stub: {} bytes",
+        folded.len()
+    );
+    let tail = folded.trim_start_matches("...\n");
+    assert!(
+        output.ends_with(tail),
+        "the cut copy keeps the output's tail"
+    );
+
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    assert_eq!(
+        tool_output(&host.session().chat),
+        output,
+        "the host kept its whole output"
+    );
 }
 
 /// A row the host shows but never published is drift: the reconcile reports

@@ -34,9 +34,8 @@ use uuid::Uuid;
 
 /// Display cap for a tool's raw output block, in bytes. The model keeps the full
 /// output; this only bounds how much [`DaveUi::tool_output_ui`] renders so a
-/// long build log can't dominate the transcript. Larger than the wire cap
-/// (`MAX_TOOL_OUTPUT_WIRE_BYTES`) is pointless — a remote session never receives
-/// more than the wire carries — so they match.
+/// long build log can't dominate the transcript. A remote session shows less:
+/// its copy is cut so the whole note fits `MAX_WIRE_EVENT_BYTES`.
 const MAX_TOOL_OUTPUT_DISPLAY_BYTES: usize = 40_000;
 
 bitflags! {

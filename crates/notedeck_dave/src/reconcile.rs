@@ -232,8 +232,8 @@ fn first_drift(host: &[RowSig], fold: &[RowSig]) -> Option<Drift> {
 #[derive(Default)]
 struct LocalOverlay {
     /// Finished tools by `tool_use_id`, top-level and subagent-internal. The
-    /// wire copy's output and diff are capped to the relay budget
-    /// (`MAX_TOOL_OUTPUT_WIRE_BYTES`).
+    /// wire copy's output is cut, and its diff dropped, to fit the wire
+    /// budget (`MAX_WIRE_EVENT_BYTES`).
     tools: HashMap<String, ExecutedTool>,
     /// Permission requests by perm id. The wire copy's tool input is
     /// truncated, and a question set's answer summary isn't sent.

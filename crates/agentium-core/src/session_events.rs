@@ -63,6 +63,59 @@ impl BuiltEvent {
     }
 }
 
+/// The most a wire note's event JSON may be, in bytes.
+///
+/// It is the plaintext a PNS envelope encrypts with NIP-44. nostrdb's C
+/// `unpad` did its padding arithmetic in 16 bits until 38c407f1b073 ("nip44:
+/// pad plaintexts over 32KB the way the spec does"), so it rejects NIP-44
+/// plaintexts of 32769 to 57344 bytes. Such a note reaches no device still on
+/// that nostrdb, the host that wrote it included: it never indexes, so no
+/// observer, restart or CLI sees it, and the host's session never reconciles.
+/// Keep every note within this until every device has the fix.
+///
+/// It bounds the built note, not the payload in it. A payload is JSON-escaped
+/// into the note's content and then again into the note, so a newline in tool
+/// output costs three bytes here and a quote four.
+pub const MAX_WIRE_EVENT_BYTES: usize = 32 * 1024;
+
+/// Build a note whose payload is cut to the largest cap in `0..=max_cap` that
+/// keeps it within [`MAX_WIRE_EVENT_BYTES`], or `None` when not even `build(0)`
+/// fits.
+///
+/// `build(cap)` builds the note with its payload cut to `cap` bytes, and the
+/// note must not shrink as `cap` grows. `max_cap` is tried first, so a note
+/// that fits whole costs one build; otherwise the cap is binary-searched,
+/// about fifteen builds. Escaping never makes a payload shorter, so a caller
+/// passes at most `payload.len().min(MAX_WIRE_EVENT_BYTES)`.
+#[profiling::function]
+pub fn build_within_wire_budget(
+    max_cap: usize,
+    mut build: impl FnMut(usize) -> Result<BuiltEvent, EventBuildError>,
+) -> Result<Option<BuiltEvent>, EventBuildError> {
+    let fits = |event: &BuiltEvent| event.note_json.len() <= MAX_WIRE_EVENT_BYTES;
+
+    let whole = build(max_cap)?;
+    if fits(&whole) {
+        return Ok(Some(whole));
+    }
+
+    // Every cap below `fit_below` fits and none from `too_big` up does, so the
+    // answer is `fit_below - 1` once they meet.
+    let (mut fit_below, mut too_big) = (0, max_cap);
+    let mut best = None;
+    while fit_below < too_big {
+        let cap = fit_below + (too_big - fit_below) / 2;
+        let event = build(cap)?;
+        if fits(&event) {
+            best = Some(event);
+            fit_below = cap + 1;
+        } else {
+            too_big = cap;
+        }
+    }
+    Ok(best)
+}
+
 /// Wrap an inner event in a kind-1080 PNS envelope for relay publishing.
 ///
 /// The encrypt + sign-1080 construction lives in [`nostrdb_net::pns::wrap`]; this
@@ -437,6 +490,9 @@ pub fn build_events(
 pub enum EventBuildError {
     Build(String),
     Serialize(String),
+    /// Even with its payload cut to nothing, the note is over
+    /// [`MAX_WIRE_EVENT_BYTES`].
+    OverWireBudget,
 }
 
 impl std::fmt::Display for EventBuildError {
@@ -444,6 +500,10 @@ impl std::fmt::Display for EventBuildError {
         match self {
             EventBuildError::Build(e) => write!(f, "failed to build note: {}", e),
             EventBuildError::Serialize(e) => write!(f, "failed to serialize event: {}", e),
+            EventBuildError::OverWireBudget => write!(
+                f,
+                "note is over the {MAX_WIRE_EVENT_BYTES} byte wire budget with its payload cut"
+            ),
         }
     }
 }
@@ -687,39 +747,86 @@ pub fn build_live_event(
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
+    let event = live_event_at(
+        content,
+        role,
+        session_id,
+        cwd,
+        &tags,
+        threading,
+        secret_key,
+        now_millis(),
+    )?;
+    threading.record(None, event.note_id, true);
+    Ok(event)
+}
+
+/// [`build_live_event`] for a note whose payload can be cut to fit the wire:
+/// `content(cap)` is the content with its payload cut to `cap` bytes, and the
+/// note keeps the largest cap that fits (see [`build_within_wire_budget`]).
+///
+/// `None`, with nothing recorded, when not even `content(0)` fits.
+#[allow(clippy::too_many_arguments)]
+pub fn build_live_event_within(
+    max_cap: usize,
+    content: impl Fn(usize) -> String,
+    role: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    tags: LiveEventTags<'_>,
+    threading: &mut ThreadingState,
+    secret_key: &[u8; 32],
+) -> Result<Option<BuiltEvent>, EventBuildError> {
+    // Every attempt shares one instant, so the kept note's time is the call's.
+    let now_ms = now_millis();
+    let event = build_within_wire_budget(max_cap, |cap| {
+        live_event_at(
+            &content(cap),
+            role,
+            session_id,
+            cwd,
+            &tags,
+            threading,
+            secret_key,
+            now_ms,
+        )
+    })?;
+    if let Some(event) = &event {
+        threading.record(None, event.note_id, true);
+    }
+    Ok(event)
+}
+
+/// A live conversation note stamped at `now_ms`, without recording it in
+/// `threading`.
+#[allow(clippy::too_many_arguments)]
+fn live_event_at(
+    content: &str,
+    role: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    tags: &LiveEventTags<'_>,
+    threading: &ThreadingState,
+    secret_key: &[u8; 32],
+    now_ms: u64,
+) -> Result<BuiltEvent, EventBuildError> {
     // One instant for both `created_at` (seconds) and the `ms` ordering tag so
     // they never straddle a second boundary.
-    let now_ms = now_millis();
-    let event = build_single_event(
+    build_single_event(
         None,
         content,
         role,
         LIVE_EVENT_SOURCE,
         None,
-        &tags,
+        tags,
         Some(session_id),
         cwd,
         Some(now_ms / 1000),
         Some(now_ms),
         threading,
         secret_key,
-    )?;
-
-    threading.record(None, event.note_id, true);
-    Ok(event)
+    )
 }
-
-/// Build a kind-1988 permission request event.
-///
-/// Published to relays so remote clients (phone) can see pending permission
-/// requests and respond. Tags include `perm-id` (UUID), `tool-name`, and
-/// `t: ai-permission` for filtering.
-///
-/// Maximum serialized size for tool_input in permission request events.
-/// Keeps the final PNS-wrapped event well under typical relay limits
-/// (~64KB). Budget: 40KB content + ~500B inner event overhead + ~500B
-/// PNS outer overhead, with 1.33x base64 expansion ≈ 54KB total.
-const MAX_TOOL_INPUT_BYTES: usize = 40_000;
 
 /// Truncate large string values in a tool_input JSON object so that the
 /// serialized result fits within `max_bytes`.
@@ -771,9 +878,12 @@ fn truncate_tool_input(tool_input: &serde_json::Value, max_bytes: usize) -> serd
     for (key, val) in obj {
         if let Some(s) = val.as_str() {
             let trim = trim_amounts.get(key.as_str()).copied().unwrap_or(0);
-            if trim > 0 && s.len() > suffix_len + trim {
-                let keep = s.len() - trim;
-                let cut = crate::util::floor_char_boundary(s, keep);
+            // A share as big as the field cuts it to nothing but the suffix,
+            // rather than keeping it whole: the more that must go, the more
+            // goes, which the wire budget's search relies on. A field the
+            // suffix would lengthen is left alone.
+            let cut = crate::util::floor_char_boundary(s, s.len().saturating_sub(trim));
+            if trim > 0 && cut + suffix_len < s.len() {
                 let truncated = format!("{}{}", &s[..cut], suffix);
                 result.insert(key.clone(), Value::String(truncated));
                 did_truncate = true;
@@ -791,6 +901,16 @@ fn truncate_tool_input(tool_input: &serde_json::Value, max_bytes: usize) -> serd
     Value::Object(result)
 }
 
+/// Build a kind-1988 permission request event.
+///
+/// Published to relays so remote clients (phone) can see pending permission
+/// requests and respond. Tags include `perm-id` (UUID), `tool-name`, and
+/// `t: ai-permission` for filtering.
+///
+/// Large string values in `tool_input` are cut so the note fits
+/// [`MAX_WIRE_EVENT_BYTES`]; the local UI keeps the full tool_input. Fails
+/// with [`EventBuildError::OverWireBudget`] when the rest of it is too big.
+///
 /// Participates in threading so that permission events are correctly
 /// ordered relative to tool_call / assistant events when reconstructed.
 pub fn build_permission_request_event(
@@ -801,20 +921,37 @@ pub fn build_permission_request_event(
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    // Truncate large string values so the event fits within relay size
-    // limits after PNS wrapping.  The local UI keeps the full tool_input.
-    let tool_input_for_event = truncate_tool_input(tool_input, MAX_TOOL_INPUT_BYTES);
+    let now_ms = now_millis();
+    let input_len = serde_json::to_string(tool_input).map_or(0, |json| json.len());
+    let event = build_within_wire_budget(input_len.min(MAX_WIRE_EVENT_BYTES), |cap| {
+        let content = serde_json::json!({
+            "tool_name": tool_name,
+            "tool_input": truncate_tool_input(tool_input, cap),
+        })
+        .to_string();
+        permission_request_event_at(
+            perm_id, tool_name, &content, session_id, threading, secret_key, now_ms,
+        )
+    })?
+    .ok_or(EventBuildError::OverWireBudget)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
+}
 
-    let content = serde_json::json!({
-        "tool_name": tool_name,
-        "tool_input": tool_input_for_event,
-    })
-    .to_string();
-
+/// A permission request note with `content` already built, stamped at
+/// `now_ms`, without recording it in `threading`.
+fn permission_request_event_at(
+    perm_id: &uuid::Uuid,
+    tool_name: &str,
+    content: &str,
+    session_id: &str,
+    threading: &ThreadingState,
+    secret_key: &[u8; 32],
+    now_ms: u64,
+) -> Result<BuiltEvent, EventBuildError> {
     let perm_id_str = perm_id.to_string();
 
-    let now_ms = now_millis();
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, content, Some(now_ms / 1000));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
@@ -840,9 +977,7 @@ pub fn build_permission_request_event(
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
     builder = builder.start_tag().tag_str("t").tag_str("ai-permission");
 
-    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
-    threading.record(None, event.note_id, false);
-    Ok(event)
+    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
 /// Build a kind-1988 permission response event.
@@ -917,11 +1052,6 @@ pub fn build_permission_response_event(
     Ok(event)
 }
 
-/// Wire budget for a subagent note's `output` (its result or error text), in
-/// bytes. Shares the tool-result budget so the PNS-wrapped note stays under
-/// relay size limits.
-const MAX_SUBAGENT_OUTPUT_BYTES: usize = 40_000;
-
 /// Wire form of a `role=subagent` note's `content`.
 ///
 /// The machine-readable lifecycle (task id, type, status, background) rides in
@@ -943,8 +1073,9 @@ pub struct SubagentContent {
 /// background flag — so a reader that only sees the latest note for a
 /// `task-id` still has the whole row. Readers take the latest status per
 /// `task-id` (see [`session_loader::fold_subagent`](crate::session_loader::fold_subagent)).
-/// The output is capped to [`MAX_SUBAGENT_OUTPUT_BYTES`] here, so callers can
-/// pass the host's full in-memory [`SubagentInfo`](crate::messages::SubagentInfo).
+/// The output is cut so the note fits [`MAX_WIRE_EVENT_BYTES`] here, so
+/// callers can pass the host's full in-memory
+/// [`SubagentInfo`](crate::messages::SubagentInfo).
 pub fn build_subagent_event(
     info: &crate::messages::SubagentInfo,
     session_id: &str,
@@ -953,21 +1084,44 @@ pub fn build_subagent_event(
 ) -> Result<BuiltEvent, EventBuildError> {
     use crate::messages::SubagentStatus;
 
-    let output = match info.status {
-        SubagentStatus::Running => None,
-        SubagentStatus::Completed | SubagentStatus::Failed => {
-            let end = crate::util::floor_char_boundary(&info.output, MAX_SUBAGENT_OUTPUT_BYTES);
-            Some(info.output[..end].to_string())
-        }
+    let has_output = match info.status {
+        SubagentStatus::Running => false,
+        SubagentStatus::Completed | SubagentStatus::Failed => true,
     };
-    let content = serde_json::to_string(&SubagentContent {
-        description: info.description.clone(),
-        output,
-    })
-    .map_err(|e| EventBuildError::Serialize(e.to_string()))?;
-
+    let max_cap = if has_output {
+        info.output.len().min(MAX_WIRE_EVENT_BYTES)
+    } else {
+        0
+    };
     let now_ms = now_millis();
-    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
+    let event = build_within_wire_budget(max_cap, |cap| {
+        let output = has_output.then(|| {
+            let end = crate::util::floor_char_boundary(&info.output, cap);
+            info.output[..end].to_string()
+        });
+        let content = serde_json::to_string(&SubagentContent {
+            description: info.description.clone(),
+            output,
+        })
+        .map_err(|e| EventBuildError::Serialize(e.to_string()))?;
+        subagent_event_at(info, &content, session_id, threading, secret_key, now_ms)
+    })?
+    .ok_or(EventBuildError::OverWireBudget)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
+}
+
+/// A subagent note with `content` already built, stamped at `now_ms`, without
+/// recording it in `threading`.
+fn subagent_event_at(
+    info: &crate::messages::SubagentInfo,
+    content: &str,
+    session_id: &str,
+    threading: &ThreadingState,
+    secret_key: &[u8; 32],
+    now_ms: u64,
+) -> Result<BuiltEvent, EventBuildError> {
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, content, Some(now_ms / 1000));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
@@ -1003,9 +1157,7 @@ pub fn build_subagent_event(
     // Discoverability
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
 
-    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
-    threading.record(None, event.note_id, false);
-    Ok(event)
+    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
 /// Decode a `role=subagent` note back into the [`SubagentInfo`](crate::messages::SubagentInfo)
@@ -2053,6 +2205,142 @@ mod tests {
         // Root is set once and never changes.
         threading.seed([9u8; 32], last_b);
         assert_eq!(threading.root_note_id, Some(root));
+    }
+
+    /// The `content` of a built note.
+    fn note_content(event: &BuiltEvent) -> String {
+        let note: serde_json::Value = serde_json::from_str(&event.note_json).unwrap();
+        note["content"].as_str().unwrap().to_string()
+    }
+
+    /// Text whose JSON escaping costs the most: every quote is escaped into a
+    /// note's content JSON and again into the note, so it costs four bytes.
+    fn escape_heavy(len: usize) -> String {
+        "\"\n".repeat(len / 2)
+    }
+
+    /// A note that fits whole is built once, at `max_cap`.
+    #[test]
+    fn wire_budget_builds_a_fitting_note_once() {
+        let sk = test_secret_key();
+        let mut caps = Vec::new();
+        let event = build_within_wire_budget(100, |cap| {
+            caps.push(cap);
+            let content = "x".repeat(cap);
+            build_live_event(
+                &content,
+                "user",
+                "s",
+                None,
+                Default::default(),
+                &mut ThreadingState::new(),
+                &sk,
+            )
+        })
+        .unwrap()
+        .expect("fits");
+        assert_eq!(caps, [100]);
+        assert!(event.note_json.contains(&"x".repeat(100)));
+    }
+
+    /// Too big whole, the payload is cut to the largest cap that fits: one
+    /// byte more would not.
+    #[test]
+    fn wire_budget_keeps_the_largest_cap_that_fits() {
+        let sk = test_secret_key();
+        let payload = escape_heavy(MAX_WIRE_EVENT_BYTES);
+        let build = |cap: usize| {
+            build_live_event(
+                &payload[..cap],
+                "user",
+                "s",
+                None,
+                Default::default(),
+                &mut ThreadingState::new(),
+                &sk,
+            )
+        };
+        let event = build_within_wire_budget(payload.len(), build)
+            .unwrap()
+            .expect("a cut copy fits");
+        assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
+
+        let kept = note_content(&event).len();
+        assert!(
+            kept < payload.len(),
+            "escaping made the whole payload too big"
+        );
+        let one_more = build(kept + 1).unwrap();
+        assert!(one_more.note_json.len() > MAX_WIRE_EVENT_BYTES);
+    }
+
+    /// A note over the budget even with nothing of its payload is not built.
+    #[test]
+    fn wire_budget_gives_up_when_nothing_fits() {
+        let sk = test_secret_key();
+        let fixed = "x".repeat(MAX_WIRE_EVENT_BYTES);
+        let event = build_within_wire_budget(1000, |cap| {
+            let content = format!("{fixed}{}", "y".repeat(cap));
+            build_live_event(
+                &content,
+                "user",
+                "s",
+                None,
+                Default::default(),
+                &mut ThreadingState::new(),
+                &sk,
+            )
+        })
+        .unwrap();
+        assert!(event.is_none());
+    }
+
+    /// A permission request's tool input is cut until the built note fits, and
+    /// it only records in threading the note it keeps.
+    #[test]
+    fn permission_request_fits_the_wire() {
+        let sk = test_secret_key();
+        let input = serde_json::json!({
+            "file_path": "/some/file.rs",
+            "old_string": escape_heavy(MAX_WIRE_EVENT_BYTES),
+            "new_string": escape_heavy(MAX_WIRE_EVENT_BYTES),
+        });
+        let mut threading = ThreadingState::new();
+        let event = build_permission_request_event(
+            &uuid::Uuid::new_v4(),
+            "Edit",
+            &input,
+            "s",
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
+        assert!(event.note_json.contains("_truncated"));
+        assert_eq!(threading.seq, 1);
+        assert_eq!(threading.last_note_id, Some(event.note_id));
+    }
+
+    /// A finished subagent's output is cut until the built note fits.
+    #[test]
+    fn subagent_output_fits_the_wire() {
+        let sk = test_secret_key();
+        let info = crate::messages::SubagentInfo {
+            task_id: "t".to_string(),
+            description: "d".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: crate::messages::SubagentStatus::Completed,
+            output: escape_heavy(2 * MAX_WIRE_EVENT_BYTES),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: false,
+        };
+        let event = build_subagent_event(&info, "s", &mut ThreadingState::new(), &sk).unwrap();
+        assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
+        let content: SubagentContent = serde_json::from_str(&note_content(&event)).unwrap();
+        let output = content.output.expect("a finished subagent has output");
+        assert!(!output.is_empty());
+        assert!(info.output.starts_with(&output));
     }
 
     #[test]

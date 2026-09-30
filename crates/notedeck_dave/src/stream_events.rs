@@ -5,10 +5,10 @@
 
 use crate::backend::{AiBackend, BackendType};
 use crate::publish::{
-    build_user_send_event, ingest_live_event, pns_ingest, publish_auto_accept_response,
-    publish_permission_request, wire_file_update, MAX_TOOL_OUTPUT_WIRE_BYTES,
+    build_user_send_event, ingest_live_event, ingest_live_event_within, pns_ingest,
+    publish_auto_accept_response, publish_permission_request,
 };
-use crate::session_events::LiveEventTags;
+use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
 use crate::{
     backend, get_backend, messages, reconcile, secret_key_bytes, session, session_events,
     session_loader, Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId,
@@ -372,52 +372,71 @@ fn publish_todo(
     sk: &[u8; 32],
 ) {
     let content = todos.to_string();
-    if content.len() > MAX_TOOL_OUTPUT_WIRE_BYTES {
+    let whole = |_cap| content.clone();
+    if ingest_live_event_within(session, ndb, sk, 0, whole, "todo", LiveEventTags::default())
+        .is_none()
+    {
         tracing::warn!(
-            "todo list is {} bytes, over the {} byte wire budget; not publishing it",
+            "todo list is {} bytes, over the {MAX_WIRE_EVENT_BYTES} byte wire budget once \
+             built; not publishing it",
             content.len(),
-            MAX_TOOL_OUTPUT_WIRE_BYTES
         );
-        return;
     }
-    ingest_live_event(session, ndb, sk, &content, "todo", LiveEventTags::default());
 }
 
 /// Publish a finished tool as a `tool_result` live event.
 ///
 /// Encodes summary + raw output so a remote observer can reconstruct the full
 /// result, not just the one-line summary (headway:dave/sting-february-sausage).
-/// The output is capped to a wire budget here (the host keeps the full copy in
-/// memory; the UI truncates for display) so the PNS-wrapped event stays under
-/// relay limits. An edit's diff rides along too (budget permitting): an edit
-/// the CLI auto-approved has no permission_request note to rebuild it from.
-/// The tool name, tool use id and parent task travel as tags.
+/// The output keeps its tail, cut so the built note fits
+/// [`MAX_WIRE_EVENT_BYTES`] (the host keeps the full copy in memory; the UI
+/// truncates for display). An edit's diff rides along when the note fits
+/// with the whole output: an edit the CLI auto-approved has no
+/// permission_request note to rebuild it from. Past that it is dropped whole,
+/// never cut into a diff that didn't happen. The tool name, tool use id and
+/// parent task travel as tags.
 fn publish_tool_result(
     session: &mut session::ChatSession,
     result: &ExecutedTool,
     ndb: &nostrdb::Ndb,
     sk: &[u8; 32],
 ) {
-    let capped_output = result
-        .output
-        .as_deref()
-        .map(|o| backend::truncate_output(o, MAX_TOOL_OUTPUT_WIRE_BYTES));
-    let file_update = wire_file_update(
-        result.file_update.as_ref(),
-        capped_output.as_deref().map_or(0, str::len),
-    );
-    let content = session_loader::ToolResultContent::encode(
-        &result.summary,
-        capped_output.as_deref(),
-        file_update,
-    );
     let tags = LiveEventTags {
         tool_id: result.tool_use_id.as_deref(),
         tool_name: Some(&result.tool_name),
         parent_task: result.parent_task_id.as_deref(),
         ..Default::default()
     };
-    ingest_live_event(session, ndb, sk, &content, "tool_result", tags);
+    let output_len = result.output.as_deref().map_or(0, str::len);
+    let content = |cap: usize, file_update| {
+        let output = result
+            .output
+            .as_deref()
+            .map(|o| backend::truncate_output(o, cap));
+        session_loader::ToolResultContent::encode(&result.summary, output.as_deref(), file_update)
+    };
+
+    // Escaping only grows a payload, so skip building a diff that can't fit.
+    let diff = result
+        .file_update
+        .as_ref()
+        .filter(|update| output_len + update.payload_len() <= MAX_WIRE_EVENT_BYTES);
+    if let Some(diff) = diff {
+        let with_diff = |_cap| content(output_len, Some(diff));
+        if ingest_live_event_within(session, ndb, sk, 0, with_diff, "tool_result", tags).is_some() {
+            return;
+        }
+    }
+
+    let max_cap = output_len.min(MAX_WIRE_EVENT_BYTES);
+    let cut = |cap| content(cap, None);
+    if ingest_live_event_within(session, ndb, sk, max_cap, cut, "tool_result", tags).is_none() {
+        tracing::warn!(
+            "{} tool_result is over the {MAX_WIRE_EVENT_BYTES} byte wire budget even \
+             without its output; not publishing it",
+            result.tool_name
+        );
+    }
 }
 
 /// Whether applying `res` inserts a chat row, ending the open assistant

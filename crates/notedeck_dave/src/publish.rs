@@ -7,8 +7,8 @@
 
 use crate::update::PermissionPublish;
 use crate::{
-    embedded_engine, file_update, secret_key_bytes, session, session_events, session_loader,
-    ChatSession, Dave, ImageAttachment, Message, UserMessage,
+    embedded_engine, secret_key_bytes, session, session_events, session_loader, ChatSession, Dave,
+    ImageAttachment, Message, UserMessage,
 };
 use nostrdb::Transaction;
 use notedeck::AppContext;
@@ -170,32 +170,6 @@ pub(crate) fn session_state_snapshot(
     })
 }
 
-/// Wire safety cap for a tool result's `output`, in bytes.
-///
-/// Truncation is otherwise a display concern — the host keeps the full output in
-/// memory and [`ui::dave::DaveUi::tool_output_ui`] truncates it for display —
-/// but the tool_result note is PNS-wrapped and published, so the serialized
-/// event must stay under typical relay limits (~64KB). This mirrors the
-/// permission event's tool-input budget: ~40KB output plus summary, inner-event,
-/// and PNS overhead, times the ~1.33x base64 expansion, lands under 64KB.
-pub(crate) const MAX_TOOL_OUTPUT_WIRE_BYTES: usize = 40_000;
-
-/// The file update to publish on a tool_result note, or `None` when it would
-/// push the note over the wire budget.
-///
-/// Shares [`MAX_TOOL_OUTPUT_WIRE_BYTES`] with the (already capped) output so
-/// the two together stay under relay limits. An oversized edit is dropped
-/// whole rather than truncated: a clipped old/new string would render a
-/// diff that never happened. Reloaded/remote sessions then show the summary
-/// only, as before.
-pub(crate) fn wire_file_update(
-    file_update: Option<&file_update::FileUpdate>,
-    output_len: usize,
-) -> Option<&file_update::FileUpdate> {
-    let budget = MAX_TOOL_OUTPUT_WIRE_BYTES.saturating_sub(output_len);
-    file_update.filter(|update| update.payload_len() <= budget)
-}
-
 /// Build and ingest a live kind-1988 event into ndb (via PNS wrapping).
 ///
 /// Extracts cwd and session ID from the session's agentic data,
@@ -209,25 +183,63 @@ pub(crate) fn ingest_live_event(
     role: &str,
     tags: session_events::LiveEventTags<'_>,
 ) -> Option<session_events::BuiltEvent> {
+    ingest_built_live_event(session, ndb, secret_key, |session_id, cwd, threading| {
+        session_events::build_live_event(
+            content, role, session_id, cwd, tags, threading, secret_key,
+        )
+        .map(Some)
+    })
+}
+
+/// [`ingest_live_event`] for a note whose payload is cut to fit the wire:
+/// `content(cap)` is its content with the payload cut to `cap` bytes, and the
+/// note keeps the largest cap up to `max_cap` whose built event fits
+/// [`MAX_WIRE_EVENT_BYTES`](session_events::MAX_WIRE_EVENT_BYTES).
+///
+/// `None`, with nothing ingested, when not even `content(0)` fits. A payload
+/// that can't be cut passes a `max_cap` of 0, so it goes whole or not at all.
+pub(crate) fn ingest_live_event_within(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &[u8; 32],
+    max_cap: usize,
+    content: impl Fn(usize) -> String,
+    role: &str,
+    tags: session_events::LiveEventTags<'_>,
+) -> Option<session_events::BuiltEvent> {
+    ingest_built_live_event(session, ndb, secret_key, |session_id, cwd, threading| {
+        session_events::build_live_event_within(
+            max_cap, content, role, session_id, cwd, tags, threading, secret_key,
+        )
+    })
+}
+
+/// Ingest the live event `build` makes from the session's id, cwd and
+/// threading, and record it as waiting to come back through ndb. `build`
+/// returns `None` for a note it declined to build.
+fn ingest_built_live_event(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &[u8; 32],
+    build: impl FnOnce(
+        &str,
+        Option<&str>,
+        &mut session_events::ThreadingState,
+    )
+        -> Result<Option<session_events::BuiltEvent>, session_events::EventBuildError>,
+) -> Option<session_events::BuiltEvent> {
     let agentic = session.agentic.as_mut()?;
     let session_id = agentic.event_session_id().to_string();
     let cwd = agentic.cwd.to_str();
 
-    match session_events::build_live_event(
-        content,
-        role,
-        &session_id,
-        cwd,
-        tags,
-        &mut agentic.live_threading,
-        secret_key,
-    ) {
-        Ok(event) => {
+    match build(&session_id, cwd, &mut agentic.live_threading) {
+        Ok(Some(event)) => {
             if pns_ingest(ndb, &event.note_json, secret_key) {
                 agentic.record_self_note(event.note_id);
             }
             Some(event)
         }
+        Ok(None) => None,
         Err(e) => {
             tracing::warn!("failed to build live event: {}", e);
             None
@@ -746,33 +758,6 @@ mod tests {
     use nostrdb::{IngestMetadata, Ndb};
     use std::path::PathBuf;
     use tempfile::TempDir;
-
-    /// An edit's diff is published with its tool_result only while it fits the
-    /// wire budget left after the output. Past that it is dropped whole, never
-    /// truncated into a diff that didn't happen.
-    #[test]
-    fn wire_file_update_drops_oversized_edits() {
-        let edit = |len: usize| {
-            file_update::FileUpdate::new(
-                "a.rs".to_string(),
-                file_update::FileUpdateType::Write {
-                    content: "x".repeat(len),
-                },
-            )
-        };
-        let small = edit(100);
-        assert!(wire_file_update(Some(&small), 0).is_some());
-        assert!(wire_file_update(None, 0).is_none());
-
-        let huge = edit(MAX_TOOL_OUTPUT_WIRE_BYTES);
-        assert!(
-            wire_file_update(Some(&huge), 0).is_none(),
-            "an edit past the budget is dropped"
-        );
-
-        // The output's share of the budget counts against the edit.
-        assert!(wire_file_update(Some(&small), MAX_TOOL_OUTPUT_WIRE_BYTES - 50).is_none());
-    }
 
     /// A remote-session rename must publish a kind-31988 (so it persists across
     /// restart), carrying the owner's hostname + last-known status — but a
