@@ -69,6 +69,34 @@ pub fn get_font_size(ctx: &egui::Context, text_style: &NotedeckTextStyle) -> f32
     }
 }
 
+/// Inconsolata is drawn this much larger than its nominal size, because at the
+/// same point size it looks smaller than the proportional face (Onest).
+const INCONSOLATA_SCALE: f32 = 1.22;
+
+/// Inconsolata's hhea ascent and descent, in em (859 and -190 of 1000 units).
+const INCONSOLATA_ASCENT_EM: f32 = 0.859;
+const INCONSOLATA_DESCENT_EM: f32 = -0.190;
+
+/// The vertical tweak that keeps scaled Inconsolata on its own baseline.
+///
+/// epaint takes a face's row metrics (ascent, row height) from its *unscaled*
+/// size, then moves the scaled glyphs by `(1 - scale) / 2 * (ascent + descent)`
+/// to "centre" them. With a scale of 1.22 that pushes every monospace glyph
+/// about 1px below the baseline that the row metrics promise. This factor is
+/// that push with its sign flipped, expressed as epaint wants it (a fraction of
+/// the scaled size), so the two cancel. It works out to about -0.060.
+///
+/// The -0.18 used here before overshot and lifted mono ~2px above its
+/// neighbours in a centred row. 0.0 left the push in, so inline code in
+/// markdown prose sat 2-3px low. Both were measured, not eyeballed (see the
+/// baseline tests in `notedeck_ui`'s `widget_tests`). Inline code also needs its
+/// own row height (see `code_fmt` in `notedeck_ui::markdown`), because
+/// Inconsolata's row is shorter than Onest's and a layout job bottom-aligns
+/// each run in its row.
+const INCONSOLATA_Y_OFFSET_FACTOR: f32 =
+    -(INCONSOLATA_SCALE - 1.0) * 0.5 * (INCONSOLATA_ASCENT_EM + INCONSOLATA_DESCENT_EM)
+        / INCONSOLATA_SCALE;
+
 // Use gossip's approach to font loading. This includes japanese fonts
 // for rending stuff from japanese users.
 pub fn setup_fonts(ctx: &egui::Context) {
@@ -130,12 +158,8 @@ pub fn setup_fonts(ctx: &egui::Context) {
                 "../../../assets/fonts/Inconsolata-Regular.ttf"
             ))
             .tweak(FontTweak {
-                scale: 1.22, // This font is smaller than DejaVuSans
-                // No lift: the family's row metrics come from this face itself,
-                // so its glyphs already sit on the row's baseline. The -0.18
-                // that was here drew every monospace glyph ~2px above it, so
-                // inline code rode high in prose and mono text in buttons.
-                y_offset_factor: 0.0,
+                scale: INCONSOLATA_SCALE,
+                y_offset_factor: INCONSOLATA_Y_OFFSET_FACTOR,
                 y_offset: 0.0,
                 baseline_offset_factor: 0.0,
             }),

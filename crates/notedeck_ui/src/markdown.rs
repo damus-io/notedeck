@@ -654,9 +654,23 @@ fn render_inlines(
     // TextFormat background as a tight, unpadded, square rectangle per run, which
     // reads as muddy highlighter blocks in flowing prose; the font and color
     // alone signal code and let it flow with the text.
+    //
+    // Inconsolata's row is shorter than Onest's at the same size, and a layout
+    // job bottom-aligns each run in its row, so left alone the code drops
+    // ~1.5px below the prose baseline. The monospace tweak in `notedeck::fonts`
+    // is tuned for a mono row *centred* on a prose one (a mono label in a
+    // centred `ui.horizontal`). A row height halfway between the two puts the
+    // bottom-aligned code exactly where centring would. It has to be this
+    // rather than `valign: Center`: the label's first row can be taller than
+    // either font (egui pads it to the wrapped layout's row), and centring only
+    // the code would then pull it away from the bottom-aligned prose.
+    let code_font = FontId::new(font_size, FontFamily::Monospace);
+    let (prose_row, code_row) =
+        ui.fonts(|f| (f.row_height(&text_fmt.font_id), f.row_height(&code_font)));
     let code_fmt = TextFormat {
-        font_id: FontId::new(font_size, FontFamily::Monospace),
+        font_id: code_font,
         color: theme.code_text,
+        line_height: Some((prose_row + code_row) / 2.0),
         ..Default::default()
     };
 

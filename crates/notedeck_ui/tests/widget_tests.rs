@@ -375,3 +375,99 @@ fn snapshot_git_patch_narrow() {
         340.0,
     );
 }
+
+/// Prose ink in the baseline tests is pure blue; monospace ink is red or
+/// amber. The bottom row of either set of `H`s is its baseline (no descenders).
+const PROSE_INK: egui::Color32 = egui::Color32::from_rgb(0, 0, 255);
+
+/// The bottom rows of the prose and the monospace ink in `img`, told apart by
+/// colour: prose is blue with no red, monospace carries red.
+fn prose_and_mono_baselines(img: &image::RgbaImage) -> (u32, u32) {
+    let (mut prose, mut mono) = (None, None);
+    for (_, y, p) in img.enumerate_pixels() {
+        let [r, _, b, _] = p.0;
+        if r < 20 && b > 100 {
+            prose = Some(y);
+        } else if r > 80 {
+            mono = Some(y);
+        }
+    }
+    (
+        prose.expect("no prose ink rendered"),
+        mono.expect("no monospace ink rendered"),
+    )
+}
+
+/// Render `ui_fn` with notedeck's fonts on a black panel at body `size`, and
+/// return how far the monospace baseline sits below the prose one, in pixels.
+fn mono_baseline_offset(size: f32, ui_fn: impl Fn(&mut egui::Ui) + 'static) -> i64 {
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(320.0, 60.0))
+        .renderer(notedeck::software_renderer())
+        .build(move |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+                .show(ctx, |ui| {
+                    ui.style_mut().visuals.override_text_color = Some(PROSE_INK);
+                    ui.style_mut()
+                        .text_styles
+                        .insert(egui::TextStyle::Body, egui::FontId::proportional(size));
+                    ui_fn(ui);
+                });
+        });
+    notedeck::fonts::setup_fonts(&harness.ctx);
+    harness.run();
+    let img = harness.render().expect("render");
+    let (prose, mono) = prose_and_mono_baselines(&img);
+    mono as i64 - prose as i64
+}
+
+/// Sizes the baseline tests check: small labels, the desktop body and the
+/// mobile/note body.
+const BASELINE_SIZES: [f32; 3] = [11.0, 13.0, 16.0];
+
+/// Inline code in markdown prose sits on the prose baseline.
+///
+/// Both runs share one `LayoutJob` row. Inconsolata's row is shorter than
+/// Onest's, so this pins the pair of settings that keep them level: the
+/// Inconsolata `y_offset_factor` in `notedeck::fonts` and the inline-code
+/// `line_height` in `notedeck_ui::markdown`. The -0.18 factor that was there first
+/// and the 0.0 that replaced it measured 2-3px off here or in the centred row
+/// below.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn monospace_inline_code_sits_on_the_prose_baseline() {
+    for size in BASELINE_SIZES {
+        let offset = mono_baseline_offset(size, |ui| {
+            notedeck_ui::markdown::render_markdown("HHHH `HHHH`", ui);
+        });
+        assert!(
+            offset.abs() <= 1,
+            "{size}pt inline code baseline is {offset}px off the prose baseline"
+        );
+    }
+}
+
+/// A monospace label beside a proportional one in a centred row (a sha pill, a
+/// session chip, a path after a verb) shares its baseline.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn monospace_label_sits_on_the_baseline_of_a_centred_row() {
+    for size in BASELINE_SIZES {
+        let offset = mono_baseline_offset(size, move |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("HHHH").size(size));
+                ui.label(
+                    egui::RichText::new("HHHH")
+                        .monospace()
+                        .size(size)
+                        .color(egui::Color32::RED),
+                );
+            });
+        });
+        assert!(
+            offset.abs() <= 1,
+            "{size}pt monospace label baseline is {offset}px off its proportional neighbour"
+        );
+    }
+}
