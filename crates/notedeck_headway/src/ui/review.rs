@@ -374,11 +374,15 @@ pub(crate) enum SessionOpen {
     CodeReview,
 }
 
-/// The message `S` sends into a record's session. [`session_open`] appends the
-/// record's commit and card as ` (commit <short sha>, card <card ref>)`, so
-/// the session knows which of its commits is meant.
+/// The message `S` sends into a record's session, followed by
+/// [`record_context`]'s ` (commit <short sha>, card <card ref>)`, so the
+/// session knows which of its commits is meant.
 pub(crate) const CODE_REVIEW_PROMPT: &str =
     "launch a /code-review for the work done in this session";
+
+/// What an `X` send-back's message into the record's session opens with,
+/// before [`record_context`] and the reason.
+pub(crate) const SEND_BACK_PROMPT: &str = "Sent back for changes";
 
 /// The [`AppAction::Open`](notedeck::AppAction::Open) request that opens
 /// `fields`' agentium session `how` asks, or `None` when the record names no
@@ -389,21 +393,53 @@ pub(crate) fn session_open(
     card_ref: &str,
     how: SessionOpen,
 ) -> Option<notedeck::OpenUri> {
-    let session = fields.agentium.as_deref()?;
     let msg = match how {
         SessionOpen::Plain => None,
-        SessionOpen::CodeReview => Some(match fields.commit.as_deref() {
-            Some(sha) => format!(
-                "{CODE_REVIEW_PROMPT} (commit {}, card {card_ref})",
-                short_sha(sha)
-            ),
-            None => format!("{CODE_REVIEW_PROMPT} (card {card_ref})"),
-        }),
+        SessionOpen::CodeReview => Some(format!(
+            "{CODE_REVIEW_PROMPT} {}",
+            record_context(fields, card_ref)
+        )),
     };
+    open_record_session(fields, msg)
+}
+
+/// The [`AppAction::Open`](notedeck::AppAction::Open) request an `X`
+/// send-back raises alongside its `review:` comment: open `fields`' agentium
+/// session with `reason`, as `Sent back for changes (commit <short sha>, card
+/// <card ref>): <reason>`, so the agent that made the commit hears it. `None`
+/// when the record names no session. Built on submit, never per frame.
+pub(crate) fn send_back_open(
+    fields: &ReviewFields,
+    card_ref: &str,
+    reason: &str,
+) -> Option<notedeck::OpenUri> {
+    let msg = format!(
+        "{SEND_BACK_PROMPT} {}: {reason}",
+        record_context(fields, card_ref)
+    );
+    open_record_session(fields, Some(msg))
+}
+
+/// Open `fields`' agentium session with `msg`, or `None` when the record
+/// names no session. The one place [`session_open`] and [`send_back_open`]
+/// build their request.
+fn open_record_session(fields: &ReviewFields, msg: Option<String>) -> Option<notedeck::OpenUri> {
+    let session = fields.agentium.as_deref()?;
     Some(notedeck::OpenUri {
         reference: session.to_owned(),
         msg,
     })
+}
+
+/// Which of a session's commits a message into it is about:
+/// `(commit <short sha>, card <card ref>)`, or `(card <card ref>)` for a
+/// record with no commit. Every message a record sends its session carries
+/// it, so they all name their commit the same way.
+fn record_context(fields: &ReviewFields, card_ref: &str) -> String {
+    match fields.commit.as_deref() {
+        Some(sha) => format!("(commit {}, card {card_ref})", short_sha(sha)),
+        None => format!("(card {card_ref})"),
+    }
 }
 
 /// The review queue: a snapshot of the In Review cards its [`QueueScope`]

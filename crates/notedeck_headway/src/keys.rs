@@ -26,8 +26,8 @@
 //! [`crate::cursor`]'s. This module is only the mapping between them, plus the
 //! which-key strips ([`key_hints_ui`]) that document it. The keymaps run once
 //! per frame from [`crate::ui::board_ui`], before anything lays out, so they
-//! allocate nothing of their own (bar what a key sends: the comment an `X`
-//! posts, a session open).
+//! allocate nothing of their own (bar what a key sends: the comment and
+//! session message an `X` posts, a session open).
 
 use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
@@ -81,8 +81,8 @@ pub(crate) enum CardAction {
     Archive,
     /// `D`: move the card to the end of Done.
     Done,
-    /// `X`: ask for a reason, post it as a `review:` comment and send the card
-    /// back to In Progress.
+    /// `X`: ask for a reason, post it as a `review:` comment, send it to the
+    /// record's agentium session, and send the card back to In Progress.
     SendBack,
     /// `n`/`p`: the next/previous card — the grid's cursor, the queue's card,
     /// or the neighbouring card in the column of a detail or review pane.
@@ -1968,6 +1968,17 @@ mod tests {
             harness.state().commented,
             Some((id(5), "review: no tests".to_string()))
         );
+        let card_ref = headway::wordid::card_ref(&harness.state().view.id, id(5).bytes());
+        assert_eq!(
+            harness.state().session,
+            Some(notedeck::OpenUri {
+                reference: SESSION.to_string(),
+                msg: Some(format!(
+                    "Sent back for changes (commit 136ceb9d3bfa, card {card_ref}): no tests"
+                )),
+            }),
+            "the reason goes to the record's session"
+        );
         assert!(!harness.state().state.rejecting());
         assert_eq!(harness.state().state.review_card(), Some(id(6)));
         harness.step();
@@ -2002,6 +2013,30 @@ mod tests {
         );
         harness.step();
         assert_eq!(harness.state().moved, Some((id(5), 0, 3)));
+    }
+
+    /// `X` on a card whose record names no agentium session still comments
+    /// and sends it back; it just opens no session.
+    #[test]
+    fn x_without_a_session_still_sends_the_card_back() {
+        let mut harness = queue_harness();
+        press(&mut harness, Key::N);
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
+        harness.run();
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("flaky".to_string()));
+        harness.step();
+        press(&mut harness, Key::Enter);
+        assert_eq!(
+            harness.state().commented,
+            Some((id(6), "review: flaky".to_string()))
+        );
+        assert_eq!(harness.state().session, None);
+        harness.step();
+        assert_eq!(harness.state().moved, Some((id(6), 0, 3)));
     }
 
     /// Esc in the composer cancels it without a comment or a move, and is

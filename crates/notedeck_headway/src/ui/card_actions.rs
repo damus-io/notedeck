@@ -11,7 +11,9 @@ use notedeck::ColorTheme;
 use notedeck::tokens::SPACING_LG;
 use notedeck_ui::diff::PatchScroll;
 
-use super::review::{DONE, IN_PROGRESS, Notice, QueueNotice, SessionOpen, session_open};
+use super::review::{
+    DONE, IN_PROGRESS, Notice, QueueNotice, SessionOpen, send_back_open, session_open,
+};
 use super::{BoardEffect, BoardUiState, find_card};
 use crate::nav::NavPos;
 use crate::store::BoardAction;
@@ -26,8 +28,9 @@ pub(crate) enum CardStep {
 }
 
 /// The `X` composer: the one-line reason a send-back posts as a `review:`
-/// comment, the card it sends back, and the view it was asked in, which it
-/// closes with ([`BoardUiState::retire_stale_reason`]).
+/// comment and sends to the record's agentium session, the card it sends
+/// back, and the view it was asked in, which it closes with
+/// ([`BoardUiState::retire_stale_reason`]).
 pub(crate) struct ReasonComposer {
     /// The card being sent back, fixed when `X` opened the composer.
     card: NoteId,
@@ -306,19 +309,35 @@ impl BoardUiState {
 
     /// Enter in the reason composer: post the reason as a `review:` comment
     /// now, move the card to In Progress on the next frame (a frame applies one
-    /// action), and, on the queue's current card, step the queue on. An empty
-    /// reason posts nothing and keeps the composer open.
+    /// action), and, on the queue's current card, step the queue on. The
+    /// reason also goes to the agentium session of the card's record
+    /// ([`acted_record`]) as a [`BoardEffect::Open`], so the agent that made
+    /// the commit hears it; a record with no session just goes without. An
+    /// empty reason posts nothing and keeps the composer open.
+    ///
+    /// [`acted_record`]: Self::acted_record
     pub(crate) fn submit_reject(&mut self, view: &BoardView, now: f64) -> Option<BoardAction> {
         let composer = self.reason.as_ref()?;
         let reason = composer.text.trim();
         if reason.is_empty() {
             return None;
         }
-        let body = format!("review: {reason}");
         let card = composer.card;
+        let Some((_, found)) = find_card(view, card) else {
+            self.reason = None;
+            return None;
+        };
+        let body = format!("review: {reason}");
+        let card_ref = headway::wordid::card_ref(&view.id, card.bytes());
+        // Before the queue steps on: the record is the one the pane shows.
+        let open = self
+            .acted_record(found)
+            .and_then(|r| send_back_open(&r.fields, &card_ref, reason));
         self.reason = None;
-        find_card(view, card)?;
         let to_col = IN_PROGRESS.index(view)?;
+        if let Some(open) = open {
+            self.raise(BoardEffect::Open(open));
+        }
         self.follow_up = Some(move_to_end(view, card, to_col));
         if self.queue.current() == Some(card) {
             self.advance_queue(view, now);
@@ -435,7 +454,9 @@ fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut Reas
         let field = egui::TextEdit::singleline(&mut composer.text)
             .id(reason_field_id())
             .desired_width(f32::INFINITY)
-            .hint_text("Why? Enter comments and moves it to In Progress, Esc cancels");
+            .hint_text(
+                "Why? Enter comments, tells its session, moves it to In Progress; Esc cancels",
+            );
         let response = ui.add(field);
         if std::mem::take(&mut composer.focus) {
             response.request_focus();
