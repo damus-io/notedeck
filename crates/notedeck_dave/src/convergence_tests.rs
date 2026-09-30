@@ -38,8 +38,8 @@ use crate::tests::{test_config, test_secret_key};
 use crate::tools::{Tool, ToolResponses};
 use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
 use agentium_core::session_events::{
-    build_live_event, BuiltEvent, LiveEventTags, ThreadingState, AI_CONVERSATION_KIND,
-    DISPATCHED_ROLE, MAX_WIRE_EVENT_BYTES,
+    build_live_event, build_live_events, BuiltEvent, LiveEventTags, ThreadingState,
+    AI_CONVERSATION_KIND, DISPATCHED_ROLE, MAX_WIRE_EVENT_BYTES,
 };
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
@@ -1119,6 +1119,87 @@ async fn reconcile_keeps_capped_tool_output() {
         output,
         "the host kept its whole output"
     );
+}
+
+/// Text whose note escapes to several times what one wire note may hold.
+fn oversized_text(line: &str) -> String {
+    format!("{line} \"quoted\" é🦀\n").repeat(3 * MAX_WIRE_EVENT_BYTES / 20)
+}
+
+/// A user message and a reply each too big for one wire note go as several
+/// notes, and the fold joins each back into one row: the host, the fold and
+/// a reversed backfill agree, and the session rests.
+///
+/// Each part indexing at all is the split holding: the pinned nostrdb
+/// rejects NIP-44 plaintexts of 32769 to 57344 bytes, so a message sent
+/// whole would never come back and `settle` would time out.
+#[tokio::test]
+async fn oversized_messages_converge_as_one_row_each() {
+    let ask = oversized_text("ask").leak();
+    let reply = oversized_text("reply");
+    let mut script = Vec::from(user_turn(ask));
+    script.extend([token(&reply), Step::StreamEnd]);
+    let mut host = driven(script).await;
+
+    let fold = host.assert_converged("oversized").await;
+    assert_eq!(fold.len(), 2, "one row each: {fold:?}");
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    let texts: Vec<_> = host
+        .session()
+        .chat
+        .iter()
+        .map(|message| match message {
+            Message::User(user) => user.as_str().to_string(),
+            Message::Assistant(assistant) => assistant.text().to_string(),
+            other => panic!("unexpected row {other:?}"),
+        })
+        .collect();
+    assert_eq!(texts, [ask.to_string(), reply]);
+}
+
+/// Another device's message too big for one note reaches the host as parts.
+/// The host takes it once, whole, when its last part arrives.
+#[tokio::test]
+async fn split_remote_message_dispatches_once_whole() {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([token("hi"), Step::StreamEnd]);
+    let mut host = driven(script).await;
+
+    let text = oversized_text("from the phone");
+    let parts = build_live_events(
+        &text,
+        "user",
+        SESSION,
+        None,
+        LiveEventTags::default(),
+        &mut ThreadingState::new(),
+        &test_secret_key(),
+    )
+    .unwrap();
+    let (last, early) = parts.split_last().unwrap();
+    assert!(!early.is_empty());
+    for part in early {
+        host.store_remote(part).await;
+        let polled = host.poll_note(&part.note_id);
+        assert!(
+            polled.remote_user_messages.is_empty(),
+            "not before every part is in"
+        );
+    }
+
+    host.store_remote(last).await;
+    let polled = host.poll_note(&last.note_id);
+    let sent: Vec<&str> = polled
+        .remote_user_messages
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect();
+    assert_eq!(sent, [text.as_str()]);
+    let Some(Message::User(user)) = host.session().chat.last() else {
+        panic!("the message is the trailing row");
+    };
+    assert_eq!(user.note_id, Some(parts[0].note_id));
+    assert_eq!(user.as_str(), text);
 }
 
 /// A row the host shows but never published is drift: the reconcile reports

@@ -173,8 +173,11 @@ pub(crate) fn session_state_snapshot(
 /// Build and ingest a live kind-1988 event into ndb (via PNS wrapping).
 ///
 /// Extracts cwd and session ID from the session's agentic data,
-/// builds the event, PNS-wraps and ingests it, and returns the event
-/// for relay publishing.
+/// builds the event, PNS-wraps and ingests it, and returns the event.
+///
+/// A message too big for one wire note is ingested as several parts that a
+/// reader joins back into one (see [`session_events::build_live_events`]);
+/// the first part is returned, since its id is the message's.
 pub(crate) fn ingest_live_event(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -183,11 +186,10 @@ pub(crate) fn ingest_live_event(
     role: &str,
     tags: session_events::LiveEventTags<'_>,
 ) -> Option<session_events::BuiltEvent> {
-    ingest_built_live_event(session, ndb, secret_key, |session_id, cwd, threading| {
-        session_events::build_live_event(
+    ingest_built_live_events(session, ndb, secret_key, |session_id, cwd, threading| {
+        session_events::build_live_events(
             content, role, session_id, cwd, tags, threading, secret_key,
         )
-        .map(Some)
     })
 }
 
@@ -207,17 +209,19 @@ pub(crate) fn ingest_live_event_within(
     role: &str,
     tags: session_events::LiveEventTags<'_>,
 ) -> Option<session_events::BuiltEvent> {
-    ingest_built_live_event(session, ndb, secret_key, |session_id, cwd, threading| {
+    ingest_built_live_events(session, ndb, secret_key, |session_id, cwd, threading| {
         session_events::build_live_event_within(
             max_cap, content, role, session_id, cwd, tags, threading, secret_key,
         )
+        .map(|event| event.into_iter().collect())
     })
 }
 
-/// Ingest the live event `build` makes from the session's id, cwd and
-/// threading, and record it as waiting to come back through ndb. `build`
-/// returns `None` for a note it declined to build.
-fn ingest_built_live_event(
+/// Ingest the live events `build` makes from the session's id, cwd and
+/// threading, and record each as waiting to come back through ndb. Returns the
+/// first: the note itself, or the first part of a split message. `build`
+/// returns no events for a note it declined to build.
+fn ingest_built_live_events(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
     secret_key: &[u8; 32],
@@ -225,21 +229,21 @@ fn ingest_built_live_event(
         &str,
         Option<&str>,
         &mut session_events::ThreadingState,
-    )
-        -> Result<Option<session_events::BuiltEvent>, session_events::EventBuildError>,
+    ) -> Result<Vec<session_events::BuiltEvent>, session_events::EventBuildError>,
 ) -> Option<session_events::BuiltEvent> {
     let agentic = session.agentic.as_mut()?;
     let session_id = agentic.event_session_id().to_string();
     let cwd = agentic.cwd.to_str();
 
     match build(&session_id, cwd, &mut agentic.live_threading) {
-        Ok(Some(event)) => {
-            if pns_ingest(ndb, &event.note_json, secret_key) {
-                agentic.record_self_note(event.note_id);
+        Ok(events) => {
+            for event in &events {
+                if pns_ingest(ndb, &event.note_json, secret_key) {
+                    agentic.record_self_note(event.note_id);
+                }
             }
-            Some(event)
+            events.into_iter().next()
         }
-        Ok(None) => None,
         Err(e) => {
             tracing::warn!("failed to build live event: {}", e);
             None
@@ -268,10 +272,13 @@ fn ingest_remote_user_message(
     let session_id = agentic.event_session_id().to_string();
     let engine = embedded_engine(ndb, secret_key)?;
     match engine.prepare_message(&session_id, text) {
-        Ok(event) => {
-            // The engine ingested it already.
-            agentic.record_self_note(event.note_id);
-            Some(event)
+        Ok(events) => {
+            // The engine ingested them already.
+            for event in &events {
+                agentic.record_self_note(event.note_id);
+            }
+            // The first part's id is the message's.
+            events.into_iter().next()
         }
         Err(e) => {
             tracing::warn!("failed to build remote user message: {:?}", e);

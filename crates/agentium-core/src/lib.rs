@@ -23,6 +23,7 @@ pub mod session_fold;
 pub mod session_jsonl;
 pub mod session_loader;
 pub mod session_reconstructor;
+pub mod split_message;
 #[cfg(test)]
 mod test_support;
 pub mod tool;

@@ -390,44 +390,57 @@ impl Engine {
     /// whether or not the session is known locally (a brand-new session simply
     /// starts a fresh thread).
     ///
-    /// Returns the [`BuiltEvent`](crate::session_events::BuiltEvent) it published
-    /// so a caller (e.g. `agentium send`) can report the resulting event id;
-    /// callers that don't need it just discard the value.
+    /// A message too big for one note goes as several (see
+    /// [`build_live_events`](crate::session_events::build_live_events)).
+    ///
+    /// Returns the [`BuiltEvent`](crate::session_events::BuiltEvent) it published,
+    /// the first when there are several, so a caller (e.g. `agentium send`) can
+    /// report the message's event id; callers that don't need it just discard
+    /// the value.
     pub fn send_message(
         &self,
         session_id: &str,
         text: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        let built = self.make_user_message(session_id, text)?;
-        self.publish_session_event(&built)?;
-        Ok(built)
+        let mut built = self.make_user_message(session_id, text)?;
+        for event in &built {
+            self.publish_session_event(event)?;
+        }
+        // `build_live_events` never returns an empty list.
+        Ok(built.swap_remove(0))
     }
 
     /// Build a kind-1988 user message, ingest it locally, and return it for the
     /// caller to publish through its own transport — for a host that batches its
     /// own relay writes. Unlike [`send_message`](Engine::send_message), this does
     /// not publish.
+    ///
+    /// A message too big for one note comes back as several, first part first
+    /// (see [`build_live_events`](crate::session_events::build_live_events)).
     pub fn prepare_message(
         &self,
         session_id: &str,
         text: &str,
-    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+    ) -> Result<Vec<crate::session_events::BuiltEvent>, EngineError> {
         let built = self.make_user_message(session_id, text)?;
-        self.wrap_and_ingest(&built)?;
+        for event in &built {
+            self.wrap_and_ingest(event)?;
+        }
         Ok(built)
     }
 
-    /// Build the inner kind-1988 `user` event threaded onto the session's
-    /// existing conversation (no ingest, no publish). A brand-new session simply
-    /// starts a fresh thread.
+    /// Build the inner kind-1988 `user` events threaded onto the session's
+    /// existing conversation (no ingest, no publish): one, or several parts
+    /// for a message too big for one note. A brand-new session simply starts a
+    /// fresh thread.
     fn make_user_message(
         &self,
         session_id: &str,
         text: &str,
-    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+    ) -> Result<Vec<crate::session_events::BuiltEvent>, EngineError> {
         let mut threading = self.session_threading(session_id);
         let cwd = self.session_cwd(session_id);
-        crate::session_events::build_live_event(
+        crate::session_events::build_live_events(
             text,
             "user",
             session_id,
@@ -1359,7 +1372,9 @@ mod tests {
         let message = controller
             .prepare_message(session_id, "also add a test")
             .expect("prepare message");
-        publish_prepared(&controller, &message, &url);
+        for part in &message {
+            publish_prepared(&controller, part, &url);
+        }
 
         // --- host: both the response and the follow-up message land ----------
         let mut host_watch = host.watch_session(session_id).expect("host watch");
@@ -1676,11 +1691,12 @@ mod tests {
         let built = engine
             .prepare_message("chat-session", "hello remote host")
             .expect("prepare message");
+        assert_eq!(built.len(), 1);
 
         assert!(
             await_note(
                 engine.ndb(),
-                built.note_id,
+                built[0].note_id,
                 AI_CONVERSATION_KIND as u64,
                 Duration::from_secs(5)
             )

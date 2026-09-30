@@ -11,8 +11,10 @@ use crate::messages::{
 use crate::session::PermissionTracker;
 use crate::session_events::{
     build_session_state_event, decode_permission_response, get_tag_value, is_conversation_role,
-    is_queued_note, referenced_note_id, AI_CONVERSATION_KIND, DISPATCHED_ROLE, LIVE_EVENT_SOURCE,
+    is_queued_note, referenced_note_id, split_head, AI_CONVERSATION_KIND, DISPATCHED_ROLE,
+    LIVE_EVENT_SOURCE,
 };
+use crate::split_message::SplitParts;
 use crate::tools::ToolResponse;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use std::collections::{HashMap, HashSet};
@@ -337,8 +339,17 @@ fn load_session_messages_with_author(
     // renders to nothing contributes to neither vector).
     let mut messages = Vec::new();
     let mut orders = Vec::new();
+    // A split message shows once, at its first part, with every part's content.
+    let splits = SplitParts::collect(&notes);
     for (order, note) in display {
-        let Some(mut msg) = render_conversation_note(note, &permissions.responded) else {
+        if split_head(note).is_some_and(|head| note_ids.contains(head)) {
+            continue;
+        }
+        let joined = splits.joined(note);
+        let content = joined.as_deref().unwrap_or(note.content());
+        let Some(mut msg) =
+            render_conversation_note_with_content(note, content, &permissions.responded)
+        else {
             continue;
         };
         // A marker means the host took the note off the queue.
@@ -487,7 +498,17 @@ pub fn render_conversation_note(
     note: &nostrdb::Note,
     responded: &HashMap<uuid::Uuid, crate::messages::PermissionDecision>,
 ) -> Option<Message> {
-    let content = note.content();
+    render_conversation_note_with_content(note, note.content(), responded)
+}
+
+/// [`render_conversation_note`] with `content` in place of the note's own: the
+/// joined content of a message split across notes (see
+/// [`SplitParts`](crate::split_message::SplitParts)).
+pub fn render_conversation_note_with_content(
+    note: &nostrdb::Note,
+    content: &str,
+    responded: &HashMap<uuid::Uuid, crate::messages::PermissionDecision>,
+) -> Option<Message> {
     match get_tag_value(note, "role") {
         Some("user") => Some(Message::User(UserMessage {
             note_id: Some(*note.id()),

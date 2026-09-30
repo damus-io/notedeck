@@ -9,7 +9,9 @@ use crate::{
     messages, reconcile, session, session_events, session_loader, Dave, Message,
     PermissionResponse, SessionId,
 };
+use agentium_core::split_message;
 use nostrdb::{NoteKey, Transaction};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// A permission-mode change decoded from a remote command, to apply on the local
@@ -379,6 +381,39 @@ pub(crate) struct ProcessedNotes {
     pub rebuild_chat: bool,
 }
 
+/// The message a remote client's `user` note brings a local session, as its
+/// id and text, or `None` while there is nothing to show yet.
+///
+/// A note is a message of its own. A part of a message split across notes
+/// (see [`split_message`]) brings the whole message, under its first part's
+/// id, once every part is in ndb, and only once: a part that arrives after the
+/// message is shown brings nothing.
+fn remote_user_message<'n>(
+    note: &'n nostrdb::Note,
+    chat: &[Message],
+    ndb: &nostrdb::Ndb,
+) -> Option<([u8; 32], Cow<'n, str>)> {
+    let own = || Some((*note.id(), Cow::Borrowed(note.content())));
+    if !split_message::is_split_part(note) {
+        return own();
+    }
+    let Some(txn) = note.txn() else {
+        tracing::warn!("split user note without a transaction; showing the part alone");
+        return own();
+    };
+    let split = split_message::gather_split(ndb, txn, note)?;
+    if !split.complete {
+        return None;
+    }
+    let shown = chat
+        .iter()
+        .any(|msg| matches!(msg, Message::User(user) if user.note_id == Some(split.head)));
+    if shown {
+        return None;
+    }
+    Some((split.head, Cow::Owned(split.content)))
+}
+
 /// Process a batch of kind-1988 notes for a single session.
 ///
 /// Deduplicates via `seen_note_ids` and runs the side effects each note implies
@@ -424,6 +459,8 @@ pub(crate) fn process_conversation_notes<'a>(
     // Whether a new note moves a queued user message: a dispatch marker, or a
     // queued note (which sorts at the tail, not at its own order).
     let mut queue_moved = false;
+    // Whether a new note is part of a message split across notes.
+    let mut split_arrived = false;
 
     // Sort this batch by wall-clock time at millisecond resolution, keyed off
     // the same `EventOrder` the loader uses. For remote sessions display order
@@ -465,10 +502,13 @@ pub(crate) fn process_conversation_notes<'a>(
                 // it is always queued, and its dispatch marker places it where
                 // the host does (see `record_dispatch`), whether it waits for
                 // a running turn or is dispatched straight away.
+                let Some((message_id, text)) = remote_user_message(note, &session.chat, ndb) else {
+                    continue;
+                };
                 session.chat.push(Message::User(messages::UserMessage {
-                    note_id: Some(note_id),
+                    note_id: Some(message_id),
                     queued: true,
-                    ..messages::UserMessage::from(content)
+                    ..messages::UserMessage::from(text.as_ref())
                 }));
                 // Appended where it arrived; the reconcile at rest moves it to
                 // where the fold sorts it.
@@ -476,7 +516,7 @@ pub(crate) fn process_conversation_notes<'a>(
                     agentic.fold_dirty = true;
                 }
                 session.update_title_from_last_message();
-                remote_user_messages.push((session_id, content.to_string()));
+                remote_user_messages.push((session_id, text.into_owned()));
             }
             continue;
         }
@@ -509,6 +549,8 @@ pub(crate) fn process_conversation_notes<'a>(
         );
         queue_moved |= role == Some(session_events::DISPATCHED_ROLE)
             || (role == Some("user") && session_events::is_queued_note(note));
+        // Only a rebuild joins a split message's parts into one row.
+        split_arrived |= split_message::is_split_part(note);
         if displayable {
             let created_at = note.created_at();
             latest_activity = Some(latest_activity.map_or(created_at, |p| p.max(created_at)));
@@ -605,7 +647,7 @@ pub(crate) fn process_conversation_notes<'a>(
             .chat
             .iter()
             .any(|m| matches!(m, Message::User(user) if user.queued));
-    if queue_moved || queue_waiting {
+    if queue_moved || queue_waiting || split_arrived {
         rebuild_chat = true;
     } else if let (false, Some(agentic)) = (new_display_idxs.is_empty(), &mut session.agentic) {
         let min_new = session_loader::EventOrder::from_note(&notes[new_display_idxs[0]]);

@@ -132,6 +132,7 @@ pub fn wrap_pns(
 }
 
 /// Maintains threading state across a session's events.
+#[derive(Clone)]
 pub struct ThreadingState {
     /// Maps JSONL uuid → nostr note ID (32 bytes).
     uuid_to_note_id: HashMap<String, [u8; 32]>,
@@ -406,7 +407,11 @@ pub fn build_events(
                 &content,
                 role,
                 "claude-code",
-                Some((i, total)),
+                Some(SplitPart {
+                    index: i,
+                    total,
+                    head: None,
+                }),
                 &LiveEventTags {
                     tool_id,
                     tool_name,
@@ -555,8 +560,8 @@ fn build_source_data_event(
 /// line_type, and cwd from the JSONL line. When `None` (live path), only
 /// uses the explicitly passed parameters.
 ///
-/// `split_index`: `Some((i, total))` when this event is part of a split
-/// assistant message.
+/// `split`: where this event sits when it is one of several built from one
+/// message (see [`SplitPart`]).
 ///
 /// `tags`: the optional per-role tags (tool id and name, parent task).
 #[allow(clippy::too_many_arguments)]
@@ -565,7 +570,7 @@ fn build_single_event(
     content: &str,
     role: &str,
     source: &str,
-    split_index: Option<(usize, usize)>,
+    split: Option<SplitPart<'_>>,
     tags: &LiveEventTags<'_>,
     session_id: Option<&str>,
     cwd: Option<&str>,
@@ -638,9 +643,17 @@ fn build_single_event(
     }
 
     // -- Split tag (for split assistant messages) --
-    if let Some((i, total)) = split_index {
-        let split_str = format!("{}/{}", i, total);
+    if let Some(split) = split {
+        let split_str = format!("{}/{}", split.index, split.total);
         builder = builder.start_tag().tag_str("split").tag_str(&split_str);
+        if let Some(head) = split.head {
+            builder = builder
+                .start_tag()
+                .tag_str("e")
+                .tag_id(head)
+                .tag_str("")
+                .tag_str(SPLIT_MARKER);
+        }
     }
 
     // -- Tool ID tag --
@@ -732,6 +745,165 @@ pub fn referenced_note_id<'a>(note: &'a nostrdb::Note<'a>) -> Option<&'a [u8; 32
     })
 }
 
+/// The marker on the `["e", <id>, "", "split"]` tag that every part after the
+/// first of a split live message carries, naming the first part (see
+/// [`split_head`]).
+pub const SPLIT_MARKER: &str = "split";
+
+/// Where a note sits among the notes one message was built into.
+///
+/// A converted JSONL assistant line puts each content block in a note of its
+/// own, `index` of `total`, with no `head`: each part is a message by itself.
+/// A live message too big for one note ([`build_live_events`]) is cut into
+/// parts whose later ones name their `head`, so a reader joins them back into
+/// one message.
+#[derive(Clone, Copy)]
+struct SplitPart<'a> {
+    index: usize,
+    total: usize,
+    /// The first part's id, on every later part; `None` on the first.
+    head: Option<&'a [u8; 32]>,
+}
+
+/// The first part of the split message this note continues: the id on its
+/// `["e", <id>, "", "split"]` tag. `None` for a note that continues none,
+/// the first part itself included.
+pub fn split_head<'a>(note: &'a nostrdb::Note<'a>) -> Option<&'a [u8; 32]> {
+    note.tags().iter().find_map(|tag| {
+        if tag.count() < 4 || tag.get_str(0) != Some("e") {
+            return None;
+        }
+        if tag.get_str(3) != Some(SPLIT_MARKER) {
+            return None;
+        }
+        tag.get_id(1)
+    })
+}
+
+/// A note's `["split", "i/n"]` tag: it is part `i` of `n`.
+pub fn split_index(note: &nostrdb::Note) -> Option<(usize, usize)> {
+    let (index, total) = get_tag_value(note, "split")?.split_once('/')?;
+    Some((index.parse().ok()?, total.parse().ok()?))
+}
+
+/// How much bigger than the empty probe [`build_live_events`] measures a part
+/// can be besides its content: the digits of its index, total and `seq`, and
+/// the `root` and `reply` tags a session's first note lacks but the parts
+/// after it have.
+const SPLIT_PART_SLACK: usize = 256;
+
+/// The bytes nostrdb's note JSON writes `c` as, inside a string. The
+/// characters JSON must escape take a two-byte escape; the rest, other control
+/// characters included, are written as they are.
+fn wire_escaped_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        _ => c.len_utf8(),
+    }
+}
+
+/// Cut `content` at char boundaries into pieces that each escape to at most
+/// `room` bytes (see [`wire_escaped_len`]). `room` must fit the widest char,
+/// four bytes, or a piece could be empty.
+fn split_for_wire(content: &str, room: usize) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let (mut start, mut used) = (0, 0);
+    for (at, c) in content.char_indices() {
+        let cost = wire_escaped_len(c);
+        if used + cost > room {
+            pieces.push(&content[start..at]);
+            (start, used) = (at, 0);
+        }
+        used += cost;
+    }
+    pieces.push(&content[start..]);
+    pieces
+}
+
+/// [`build_live_event`] for a message that may not fit one note: when the note
+/// is over [`MAX_WIRE_EVENT_BYTES`], its content is cut into parts that each
+/// fit, returned in order, the first part first.
+///
+/// Every part carries `["split", "i/n"]` and the message's other tags, and
+/// every part after the first an `["e", <first part>, "", "split"]` tag, so a
+/// reader joins them back into the one message (see [`split_head`]). A device
+/// that predates that shows each part as a message of its own, which beats a
+/// note it can't decrypt at all. Each part records in `threading`, so the
+/// parts reply to each other in turn; nothing is recorded on an error.
+pub fn build_live_events(
+    content: &str,
+    role: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    tags: LiveEventTags<'_>,
+    threading: &mut ThreadingState,
+    secret_key: &[u8; 32],
+) -> Result<Vec<BuiltEvent>, EventBuildError> {
+    // Every part shares one instant; their `seq` orders them.
+    let now_ms = now_millis();
+    let whole = live_event_at(
+        content, role, session_id, cwd, &tags, None, threading, secret_key, now_ms,
+    )?;
+    if whole.note_json.len() <= MAX_WIRE_EVENT_BYTES {
+        threading.record(None, whole.note_id, true);
+        return Ok(vec![whole]);
+    }
+
+    // A part's note is the note with no content, plus its content escaped.
+    let probe_head = [0; 32];
+    let probe = SplitPart {
+        index: 0,
+        total: 0,
+        head: Some(&probe_head),
+    };
+    let empty = live_event_at(
+        "",
+        role,
+        session_id,
+        cwd,
+        &tags,
+        Some(probe),
+        threading,
+        secret_key,
+        now_ms,
+    )?;
+    let room = MAX_WIRE_EVENT_BYTES
+        .checked_sub(empty.note_json.len() + SPLIT_PART_SLACK)
+        .filter(|room| *room >= 4)
+        .ok_or(EventBuildError::OverWireBudget)?;
+    let pieces = split_for_wire(content, room);
+
+    let total = pieces.len();
+    let mut parts_threading = threading.clone();
+    let mut events: Vec<BuiltEvent> = Vec::with_capacity(total);
+    for (index, piece) in pieces.into_iter().enumerate() {
+        let split = SplitPart {
+            index,
+            total,
+            head: events.first().map(|head| &head.note_id),
+        };
+        let event = live_event_at(
+            piece,
+            role,
+            session_id,
+            cwd,
+            &tags,
+            Some(split),
+            &parts_threading,
+            secret_key,
+            now_ms,
+        )?;
+        // The slack is meant to make this unreachable.
+        if event.note_json.len() > MAX_WIRE_EVENT_BYTES {
+            return Err(EventBuildError::OverWireBudget);
+        }
+        parts_threading.record(None, event.note_id, true);
+        events.push(event);
+    }
+    *threading = parts_threading;
+    Ok(events)
+}
+
 /// Build a kind-1988 event for a live conversation message.
 ///
 /// Unlike `build_events()` which works from JSONL lines, this builds directly
@@ -753,6 +925,7 @@ pub fn build_live_event(
         session_id,
         cwd,
         &tags,
+        None,
         threading,
         secret_key,
         now_millis(),
@@ -786,6 +959,7 @@ pub fn build_live_event_within(
             session_id,
             cwd,
             &tags,
+            None,
             threading,
             secret_key,
             now_ms,
@@ -806,6 +980,7 @@ fn live_event_at(
     session_id: &str,
     cwd: Option<&str>,
     tags: &LiveEventTags<'_>,
+    split: Option<SplitPart<'_>>,
     threading: &ThreadingState,
     secret_key: &[u8; 32],
     now_ms: u64,
@@ -817,7 +992,7 @@ fn live_event_at(
         content,
         role,
         LIVE_EVENT_SOURCE,
-        None,
+        split,
         tags,
         Some(session_id),
         cwd,
@@ -2341,6 +2516,77 @@ mod tests {
         let output = content.output.expect("a finished subagent has output");
         assert!(!output.is_empty());
         assert!(info.output.starts_with(&output));
+    }
+
+    /// A message that fits is one note, with no split tag.
+    #[test]
+    fn live_events_keep_a_fitting_message_whole() {
+        let mut threading = ThreadingState::new();
+        let events = build_live_events(
+            "hello",
+            "assistant",
+            "s",
+            None,
+            Default::default(),
+            &mut threading,
+            &test_secret_key(),
+        )
+        .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].note_json.contains(r#""split""#));
+        assert_eq!(threading.seq, 1);
+    }
+
+    /// A message too big for one note is cut into parts that each fit, whose
+    /// contents join back into the message; the later parts name the first,
+    /// and each records in threading in turn.
+    #[test]
+    fn live_events_split_an_oversized_message() {
+        let sk = test_secret_key();
+        let text = format!(
+            "{}{}",
+            escape_heavy(2 * MAX_WIRE_EVENT_BYTES),
+            "é🦀".repeat(MAX_WIRE_EVENT_BYTES / 4)
+        );
+        let mut threading = ThreadingState::new();
+        let tags = LiveEventTags {
+            queued: true,
+            ..Default::default()
+        };
+        let events =
+            build_live_events(&text, "user", "s", None, tags, &mut threading, &sk).unwrap();
+
+        let total = events.len();
+        assert!(total > 2, "{total} parts");
+        let head = hex::encode(events[0].note_id);
+        let mut joined = String::new();
+        for (index, event) in events.iter().enumerate() {
+            assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
+            let note: serde_json::Value = serde_json::from_str(&event.note_json).unwrap();
+            let tags = note["tags"].as_array().unwrap();
+            let has = |tag: serde_json::Value| tags.contains(&tag);
+            assert!(has(serde_json::json!([
+                "split",
+                format!("{index}/{total}")
+            ])));
+            assert!(has(serde_json::json!(["queued", "1"])));
+            assert_eq!(
+                has(serde_json::json!(["e", head, "", SPLIT_MARKER])),
+                index > 0
+            );
+            joined.push_str(note["content"].as_str().unwrap());
+        }
+        assert_eq!(joined, text);
+        assert_eq!(threading.seq as usize, total);
+        assert_eq!(threading.last_note_id, Some(events[total - 1].note_id));
+    }
+
+    /// Cuts land on char boundaries and count each char at its escaped size.
+    #[test]
+    fn split_for_wire_counts_escaped_chars() {
+        assert_eq!(split_for_wire("ab\"cd", 4), ["ab\"", "cd"]);
+        assert_eq!(split_for_wire("🦀🦀", 5), ["🦀", "🦀"]);
+        assert_eq!(split_for_wire("", 4), [""]);
     }
 
     #[test]
