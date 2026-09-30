@@ -106,6 +106,47 @@ pub(super) fn tinted_pill(
         .response
 }
 
+/// A clickable pill of one line of `text`, filled with `fill` (stronger while
+/// hovered), whose box is centred on the text's *ink* rather than its row.
+///
+/// egui sizes a font's rows for the tallest face in its fallback stack, and
+/// notedeck's monospace family falls back to DejaVu, Noto Emoji and Noto CJK,
+/// so Inconsolata's glyphs ride in the top of a row much taller than they are.
+/// A [`egui::Button`] centres that row, which leaves a mono label sitting high
+/// in its pill. Centring on [`egui::Galley::mesh_bounds`] (the glyphs' own
+/// box) puts equal room above and below what the eye actually sees.
+pub(super) fn ink_pill(
+    ui: &mut egui::Ui,
+    text: egui::RichText,
+    fill: egui::Color32,
+) -> egui::Response {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let ink = galley.mesh_bounds;
+    let pad = egui::vec2(SPACING_SM, SPACING_XS);
+    let (rect, response) = ui.allocate_exact_size(ink.size() + 2.0 * pad, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), galley.text())
+    });
+    if ui.is_rect_visible(rect) {
+        let fill = if response.hovered() {
+            fill.gamma_multiply(1.6)
+        } else {
+            fill
+        };
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(RADIUS_PILL as u8), fill);
+        let origin = rect.center() - ink.center().to_vec2();
+        ui.painter()
+            .galley(origin, galley, ui.visuals().text_color());
+    }
+    response
+}
+
 /// A one-line label of small text cut in its middle to fit a width —
 /// `monad:/home/jb…/notedeck-headway` — with the full text on hover. It
 /// re-elides only when the width it's given changes, so a steady frame formats

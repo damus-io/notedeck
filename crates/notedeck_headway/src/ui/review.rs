@@ -13,14 +13,14 @@ use headway::event::{BoardView, CardView, ReviewFields, ReviewView};
 use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
-use notedeck::tokens::{RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
+use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 use notedeck_ui::diff::PatchScroll;
 use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::widgets::{
-    MiddleElided, count_badge, detail_heading, secondary_action_button, section_label, text_pill,
-    tinted_pill,
+    MiddleElided, count_badge, detail_heading, ink_pill, secondary_action_button, section_label,
+    text_pill, tinted_pill,
 };
 use super::{BoardEffect, BoardUiState, find_card, pane_hints_ui};
 use crate::keys::CardAction;
@@ -1036,17 +1036,13 @@ fn elided_location_ui(
 /// section opens the pane on the record.
 ///
 /// The pill wears its own text's hue, a soft accent tint, rather than a
-/// neutral grey fill, which muddied the purple sha.
+/// neutral grey fill, which muddied the purple sha; and it's an [`ink_pill`],
+/// so the monospace sha sits in its middle instead of riding high.
 fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response {
-    let pill = egui::Button::new(
-        egui::RichText::new(short_sha(sha))
-            .monospace()
-            .color(theme.accent),
-    )
-    .fill(theme.accent.gamma_multiply(0.22))
-    .stroke(egui::Stroke::NONE)
-    .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8));
-    ui.add(pill)
+    let text = egui::RichText::new(short_sha(sha))
+        .monospace()
+        .color(theme.accent);
+    ink_pill(ui, text, theme.accent.gamma_multiply(0.22))
 }
 
 /// The load's status and, once it's in, the diff: a spinner while the worker
