@@ -87,7 +87,11 @@ position; with nothing in review under the card it says "Nothing in review
 under this card" and opens nothing, rather than falling back to the board's
 queue. Its history entry carries the epic
 (`HeadwayRoute::ReviewQueue { epic }`), so back lands on the epic's detail and
-forward reopens the same epic's queue where it was left.
+forward reopens the same epic's queue where it was left. Back or forward onto
+a queue entry of the other scope (the board's after an epic's, or the reverse)
+retakes that scope's snapshot from the board as it is now
+(`BoardUiState::refresh_queue`); with nothing left in review there, the entry
+backs off onto the view under it and says so.
 
 The queue takes the same keys as every other view, from one table: the card
 actions (`Enter`/`o`, `e`, `s`/`S`, `r`, `a`, `D`, `X`, `n`/`p`) and a review
@@ -104,7 +108,8 @@ page, `Ctrl-d`/`Ctrl-u` half a page, `gg`/`G`, `]`/`[`). See
   rest say "This card has left the board".
 - `q` / `Esc` leave for the grid, with the cursor on the card last shown; an
   epic's queue leaves for the epic's detail. So does a verdict on its last
-  card.
+  card. An epic that has left the board meanwhile has no detail to land on,
+  so its queue leaves for the grid, as the board's does.
 
 A review pane opened from a card's "Review diff" instead of the queue takes the
 same keys; there `n`/`p` open the neighbouring card's review in its column and

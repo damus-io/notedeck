@@ -109,14 +109,17 @@ pub struct BoardUiState {
     /// Which card the detail edit buffers below were seeded from. When this
     /// differs from `selected`, the buffers are refreshed from the board.
     detail_for: Option<NoteId>,
-    /// The card a review pane's `a` archived, which the pane backs out to the
-    /// detail of. The selection drops once the card leaves the board, as it
-    /// does for a card [`detail_for`](Self::detail_for) names. That one alone
-    /// can't say so here: the chrome's back slides, redrawing the pane's entry
-    /// until it lands, and if the archive folds in meanwhile the pane's frame
-    /// drops the selection and clears `detail_for`, so the detail entry the
-    /// slide lands on would hold a card that never comes back. Cleared when
-    /// the detail draws another card.
+    /// A card known to have left the board whose detail entry a back is about
+    /// to land on: the one a review pane's `a` archived, which the pane backs
+    /// out to the detail of, or an epic that left under its open review queue
+    /// ([`close_queue`](Self::close_queue)). The selection drops once the card
+    /// is off the board, as it does for a card
+    /// [`detail_for`](Self::detail_for) names. That one alone can't say so
+    /// here: the chrome's back slides, redrawing the pane's entry until it
+    /// lands, and if the archive folds in meanwhile the pane's frame drops the
+    /// selection and clears `detail_for`, so the detail entry the slide lands
+    /// on would hold a card that never comes back. Cleared when the detail
+    /// draws another card.
     archived: Option<NoteId>,
     /// Edit buffer for the selected card's title.
     detail_title: String,
@@ -345,31 +348,40 @@ impl BoardUiState {
     /// instead (`now` is egui time); an epic's empty queue says so of the
     /// epic, and doesn't fall back to the board's.
     pub(crate) fn open_review_queue(&mut self, view: &BoardView, scope: QueueScope, now: f64) {
-        if self.queue.start(view, scope, scope.snapshot(view)) {
-            self.notice = None;
-            self.review.seed(self.queue.target());
-            return;
+        if !self.snapshot_queue(view, scope) {
+            self.set_notice(scope.empty_notice(), now);
         }
-        let notice = match scope {
-            QueueScope::Board => QueueNotice::NothingInReview,
-            QueueScope::Epic(_) => QueueNotice::NothingInReviewUnder,
-        };
-        self.set_notice(notice, now);
+    }
+
+    /// Open the queue over `scope`'s In Review cards as they are now, pointing
+    /// the pane at the first. `false`, changing nothing, when there are none.
+    fn snapshot_queue(&mut self, view: &BoardView, scope: QueueScope) -> bool {
+        if !self.queue.start(view, scope, scope.snapshot(view)) {
+            return false;
+        }
+        self.notice = None;
+        self.review.seed(self.queue.target());
+        true
     }
 
     /// Retake the queue's snapshot when a back/forward landed on a queue entry
     /// of another scope than the one it holds (see
     /// [`ReviewQueue::set_open`]). With nothing left in review there the queue
-    /// closes, which the app's nav diff turns into a back off the entry.
-    /// Runs before the frame's keys.
+    /// closes, which the app's nav diff turns into a back off the entry, and
+    /// says why. The notice goes up after the close, so it belongs to the view
+    /// the back lands on rather than the entry it leaves (which
+    /// [`retire_stale_notice`](Self::retire_stale_notice) would take it down
+    /// with). Runs before the frame's keys.
     pub(crate) fn refresh_queue(&mut self, view: &BoardView, now: f64) {
         if !self.queue.needs_snapshot() {
             return;
         }
-        self.open_review_queue(view, self.queue.scope(), now);
-        if self.queue.needs_snapshot() {
-            self.close_queue();
+        let scope = self.queue.scope();
+        if self.snapshot_queue(view, scope) {
+            return;
         }
+        self.close_queue(view);
+        self.set_notice(scope.empty_notice(), now);
     }
 
     /// Step the review queue one card `step`'s way, pointing the pane at it.
@@ -382,17 +394,30 @@ impl BoardUiState {
     /// cursor on the card the queue last showed; an epic's for the epic's
     /// detail it was opened from. A notice about the queue's card (no
     /// explainer) and an open `X` composer go with it.
-    pub(crate) fn close_queue(&mut self) {
+    ///
+    /// An epic that left the board while its queue was open (archived, moved
+    /// to another board) has no detail to land on, so its queue leaves as the
+    /// board's does. The back still lands on the epic's detail entry first;
+    /// [`archived`](Self::archived) marks the epic gone there, so that entry
+    /// backs on to the grid rather than holding the selection as a card not
+    /// folded in yet.
+    pub(crate) fn close_queue(&mut self, view: &BoardView) {
         let card = self.queue.close();
-        match self.queue.scope() {
-            QueueScope::Board => {
+        let epic = self.queue.scope().epic();
+        match epic.filter(|&epic| find_card(view, epic).is_some()) {
+            // The epic is what the queue was opened from, and stays selected
+            // underneath it.
+            Some(epic) => self.selected = Some(epic),
+            // The board's queue, or an epic's whose epic has gone.
+            None => {
+                if let Some(gone) = epic {
+                    self.selected = None;
+                    self.archived = Some(gone);
+                }
                 if let Some(card) = card {
                     self.set_cursor(card);
                 }
             }
-            // The epic is what the queue was opened from, and stays selected
-            // underneath it.
-            QueueScope::Epic(epic) => self.selected = Some(epic),
         }
         self.review.close();
         self.pane_chord.clear();

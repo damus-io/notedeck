@@ -225,7 +225,7 @@ impl BoardUiState {
             return None;
         };
         if self.queue.current() == Some(card) {
-            self.advance_queue(now);
+            self.advance_queue(view, now);
         }
         Some(move_to_end(view, card, to_col))
     }
@@ -288,7 +288,7 @@ impl BoardUiState {
         let to_col = IN_PROGRESS.index(view)?;
         self.follow_up = Some(move_to_end(view, card, to_col));
         if self.queue.current() == Some(card) {
-            self.advance_queue(now);
+            self.advance_queue(view, now);
         }
         Some(BoardAction::AddComment {
             card,
@@ -323,9 +323,9 @@ impl BoardUiState {
 
     /// After a verdict on the queue's card: step to the next card, or, on the
     /// last, leave the queue saying it's done.
-    pub(crate) fn advance_queue(&mut self, now: f64) {
+    pub(crate) fn advance_queue(&mut self, view: &BoardView, now: f64) {
         if self.queue.at_end() {
-            self.close_queue();
+            self.close_queue(view);
             self.set_notice(QueueNotice::QueueDone, now);
         } else {
             self.step_queue(CardStep::Next);

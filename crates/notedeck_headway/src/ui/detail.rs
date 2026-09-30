@@ -863,6 +863,8 @@ fn detail_parent_breadcrumb_ui(
 /// tick), the child's title (click to open when it's on this board) and a
 /// muted column/archived hint — plus a collapsed "+ Add sub-issue" affordance
 /// that opens an inline composer creating a card already parented to this one.
+/// While any sub-issue at any depth is In Review, the header carries a
+/// "Review N" button that opens the review queue over them, as `R` does.
 fn detail_subissues_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,

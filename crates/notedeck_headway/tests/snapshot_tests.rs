@@ -4064,11 +4064,128 @@ fn chrome_nav_loop_epic_review_queue() {
         (0, true),
         "q is one back, no new entry"
     );
+    assert!(
+        top_is_detail_below(&stack, epic),
+        "the back lands on the epic's detail"
+    );
     stack.go_to_route(1);
     chrome_frame(&mut harness, &mut stack);
-    let route = stack.top().token.downcast_ref::<HeadwayRoute>();
-    assert_eq!(route.and_then(|r| r.selected_card()), Some(epic));
     wait_for_label(&mut harness, "Review 2");
+}
+
+/// Archive the demo cards `cards` off the board.
+fn archive_demo_cards(harness: &mut Harness<'static, HeadwayTestState>, cards: &[NoteId]) {
+    for &card in cards {
+        apply_demo_action(harness, store::BoardAction::ArchiveCard { card });
+    }
+}
+
+/// A back onto a queue entry of another scope than the one the queue holds
+/// retakes its snapshot from the board (the board's queue after an epic's,
+/// and the reverse), and one with nothing left in review backs off onto the
+/// grid saying so. Before, the notice went up and was wiped in the same
+/// frame, so the entry backed off with no message.
+#[test]
+fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
+    use notedeck::{AppId, ChromeNavEntry};
+    use notedeck_headway::HeadwayRoute;
+    use std::rc::Rc;
+
+    const CARDS: [&str; 3] = [
+        "Inline card creation",
+        "Sync cards across relays",
+        "Column reordering",
+    ];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(
+        &mut harness,
+        repo.path(),
+        &CARDS,
+        &["src/one.rs", "src/two.rs", "src/three.rs"],
+    );
+    let epic = parent_under_demo_epic(&mut harness, &[CARDS[2]]);
+    let mut stack = chrome_stack_at_board(&mut harness);
+    // The epic's detail says when the relation has folded in.
+    harness.get_by_label(DEMO_EPIC).simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "Review 2");
+    stack.go_to_route(0);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "7 cards · 5 columns");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    chrome_frame(&mut harness, &mut stack);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 3");
+
+    // The epic's detail and its queue over the board's queue, as a history
+    // walk leaves them. The demo epic already holds "Sync cards across
+    // relays", so its queue walks two.
+    for route in [
+        HeadwayRoute::card(epic, None),
+        HeadwayRoute::review_queue(Some(epic), None),
+    ] {
+        stack.route_to(ChromeNavEntry::new(AppId(0), Rc::new(route)));
+    }
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 2");
+
+    stack.go_to_route(1);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 3");
+    assert!(stack.go_forward() && stack.go_forward());
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 2");
+
+    archive_demo_cards(&mut harness, &ids);
+    wait_for_label(&mut harness, "This card is no longer on the board.");
+
+    stack.go_to_route(1);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 1, "the empty queue backs off onto the board");
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "4 cards · 5 columns");
+    wait_for_label(&mut harness, "Nothing in review");
+}
+
+/// An epic archived while its review queue is open: `q` can't land on the
+/// epic's detail, so it ends on the board, one back off the queue and one
+/// off the epic's detail entry. Before, `q` selected the gone epic, the same
+/// frame dropped it and forgot it had shown, and the grid drew under the
+/// epic's detail entry for good. The queue is opened with the detail's
+/// "Review 1" button, the click `R` stands in for elsewhere.
+#[test]
+fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
+    const CARDS: [&str; 1] = ["Column reordering"];
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/one.rs"]);
+    let epic = parent_under_demo_epic(&mut harness, &CARDS);
+    let mut stack = chrome_stack_at_board(&mut harness);
+
+    harness.get_by_label(DEMO_EPIC).simulate_click();
+    chrome_frame(&mut harness, &mut stack);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "Review 1");
+    harness.get_by_label("Review 1").click();
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 3, "the button opens the epic's queue");
+    assert!(top_route(&stack).is_some_and(|r| r.is_review_queue()));
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 1");
+
+    // The queue's card goes too, so the pane says when the archives have
+    // folded in.
+    archive_demo_cards(&mut harness, &[epic, ids[0]]);
+    wait_for_label(&mut harness, "This card is no longer on the board.");
+
+    harness.press_key(egui::Key::Q);
+    chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "5 cards · 5 columns");
+    assert!(harness.query_by_label("← Back").is_none());
 }
 
 /// Behavioural (no lavapipe): `R` on a card's detail with nothing in review

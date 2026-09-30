@@ -183,7 +183,7 @@ fn archive_card(
 ) -> Option<BoardAction> {
     match at {
         ActionView::Grid(filter) => return archive_cursor_card(view, filter, state),
-        ActionView::Queue => state.advance_queue(now),
+        ActionView::Queue => state.advance_queue(view, now),
         ActionView::Pane => state.archive_from_pane(card),
         ActionView::Detail => state.leave_card(),
     }
@@ -614,7 +614,8 @@ pub(crate) fn pane_keys(
 /// `n`/`p` step through and where `q`/`Esc` go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaneMode {
-    /// The review queue: `n`/`p` step the queue, `q` leaves it for the grid.
+    /// The review queue: `n`/`p` step the queue, `q` leaves it: the board's
+    /// for the grid, an epic's for the epic's detail.
     Queue,
     /// A review pane opened from a card: `n`/`p` step to the neighbouring
     /// card's review in its column, `q` backs out to the card's detail.
@@ -695,7 +696,7 @@ pub(crate) fn review_pane_keys(
             (Key::OpenBracket, false) => state.scroll_review(PatchScroll::PrevFile),
             (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
             (Key::Q, false) | (Key::Escape, _) => match (mode, card) {
-                (PaneMode::Queue, _) => state.close_queue(),
+                (PaneMode::Queue, _) => state.close_queue(view),
                 (PaneMode::Plain, Some(card)) => state.back_to_detail(card),
                 (PaneMode::Plain, None) => {}
             },
@@ -985,8 +986,8 @@ mod tests {
     }
 
     /// A harness that runs the keymaps over [`grid`] each frame, unfiltered,
-    /// as [`crate::ui::board_ui`] does: [`pane_keys`] first, then
-    /// [`board_keys`] when no pane shows over the grid.
+    /// as [`crate::ui::board_ui`] does: a queue route's re-snapshot, then
+    /// [`pane_keys`], then [`board_keys`] when no pane shows over the grid.
     fn keys_harness(field: Option<egui::Id>) -> Harness<'static, KeysHarness> {
         let mut harness = Harness::new_ui_state(
             |ui, h: &mut KeysHarness| {
@@ -998,6 +999,7 @@ mod tests {
                 let pane = |s: &BoardUiState| {
                     s.queue_open() || s.review_card().is_some() || s.selected().is_some()
                 };
+                h.state.refresh_queue(&h.view, ui.ctx().input(|i| i.time));
                 let showed_pane = pane(&h.state);
                 h.state.retire_stale_reason();
                 let keyed = pane_keys(ui.ctx(), &h.view, &mut h.state);
@@ -1512,6 +1514,83 @@ mod tests {
         assert!(!harness.state().state.queue_open());
         assert_eq!(harness.state().state.selected(), Some(id(1)));
         assert_eq!(harness.state().state.notice(), Some(QueueNotice::QueueDone));
+    }
+
+    /// An epic that left the board under its open queue has no detail to
+    /// land on, so the queue's `q` leaves for the grid as the board's does,
+    /// cursor on the card it last showed, rather than selecting a card that
+    /// isn't there.
+    #[test]
+    fn an_epic_that_left_the_board_leaves_its_queue_for_the_grid() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = epic_board();
+        harness.state_mut().state.set_selected(Some(id(1)));
+        harness.run();
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        press(&mut harness, Key::N);
+        assert_eq!(harness.state().state.review_card(), Some(id(4)));
+
+        harness.state_mut().view.columns[0]
+            .cards
+            .retain(|c| c.id != id(1));
+        press(&mut harness, Key::Q);
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.selected(), None);
+        assert_eq!(harness.state().state.cursor(), Some(id(4)));
+    }
+
+    /// A back/forward onto a queue entry of another scope than the snapshot's
+    /// retakes it from the board as it is: the board's queue over the whole
+    /// In Review column after an epic's, and the reverse. With nothing left
+    /// in review there it closes, onto the view the entry sat over, and the
+    /// notice saying why stays up there.
+    #[test]
+    fn a_queue_route_of_another_scope_retakes_the_snapshot() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = epic_board();
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        assert_eq!(harness.state().state.review_card(), Some(id(4)));
+
+        // Forward onto the epic's queue, seeded as its route does.
+        let state = &mut harness.state_mut().state;
+        state.set_selected(Some(id(1)));
+        state.set_queue_open(Some(QueueScope::Epic(id(1))));
+        harness.run();
+        assert!(harness.state().state.queue_open());
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
+
+        // Back onto the board's.
+        let state = &mut harness.state_mut().state;
+        state.set_selected(None);
+        state.set_queue_open(Some(QueueScope::Board));
+        harness.run();
+        assert!(harness.state().state.queue_open());
+        assert_eq!(harness.state().state.review_card(), Some(id(4)));
+
+        // In Review empties; forward onto the epic's queue closes it onto
+        // the epic's detail, saying so of the epic.
+        harness.state_mut().view.columns[1].cards.clear();
+        let state = &mut harness.state_mut().state;
+        state.set_selected(Some(id(1)));
+        state.set_queue_open(Some(QueueScope::Epic(id(1))));
+        harness.run();
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().state.selected(), Some(id(1)));
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NothingInReviewUnder)
+        );
+
+        // And back onto the board's closes it onto the grid.
+        let state = &mut harness.state_mut().state;
+        state.set_selected(None);
+        state.set_queue_open(Some(QueueScope::Board));
+        harness.run();
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(
+            harness.state().state.notice(),
+            Some(QueueNotice::NothingInReview)
+        );
     }
 
     /// `R` on a card with nothing in review under it opens nothing, says so

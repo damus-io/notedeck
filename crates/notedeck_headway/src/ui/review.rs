@@ -241,7 +241,9 @@ fn descends_from(view: &BoardView, mut parent: Option<NoteId>, epic: NoteId) -> 
 }
 
 /// The label of the detail's "Review N" button (the Sub-issues header's twin
-/// of `R`), formatted when N changes rather than every frame.
+/// of `R`), formatted only when N changes. That saves the formatting, not the
+/// allocation: egui's `RichText::new` still copies the text into a `String`
+/// every frame.
 #[derive(Default)]
 pub(crate) struct SubtreeReviewLabel {
     /// The N [`text`](Self::text) was formatted for.
@@ -294,6 +296,15 @@ impl QueueScope {
         match self {
             QueueScope::Board => in_review_cards(view),
             QueueScope::Epic(epic) => epic_review_cards(view, epic),
+        }
+    }
+
+    /// What the header says when this scope has nothing in review: an epic's
+    /// empty queue says so of the epic, not the board.
+    pub(crate) fn empty_notice(self) -> QueueNotice {
+        match self {
+            QueueScope::Board => QueueNotice::NothingInReview,
+            QueueScope::Epic(_) => QueueNotice::NothingInReviewUnder,
         }
     }
 }
@@ -589,7 +600,7 @@ pub(super) fn review_queue_ui(
     review_pane_ui(ui, theme, app_ctx, view, card, state);
     // The pane's own ← Back closes the review; in the queue that leaves it.
     if state.review.card().is_none() {
-        state.close_queue();
+        state.close_queue(view);
     }
 }
 
@@ -632,9 +643,10 @@ fn prefetch(
 }
 
 /// Draw the review pane for `card`: a one-row header (back, card ref, title,
-/// session; the queue's position and next card when the pane is the queue's;
-/// explainer), the record picker when there are several, the resolve status, and
-/// the commit's diff filling the rest. ← Back closes it, as `q`/`Esc` do
+/// session; the queue's position, its "in <word-id>" epic label when it walks
+/// an epic, and its next card when the pane is the queue's; explainer), the
+/// record picker when there are several, the resolve status, and the commit's
+/// diff filling the rest. ← Back closes it, as `q`/`Esc` do
 /// ([`crate::keys::review_pane_keys`]).
 pub(super) fn review_pane_ui(
     ui: &mut egui::Ui,
