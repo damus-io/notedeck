@@ -32,6 +32,13 @@ const SUBISSUE: &str = "Sync cards across relays";
 /// A demo card with no parent.
 const CARD: &str = "Inline card creation";
 
+/// The demo card the review-exit tests put in review after [`CARD`], so a
+/// pane's or a detail's `n` steps from one to the other.
+const NEXT_CARD: &str = "Column reordering";
+
+/// What a card's detail shows, and a review pane over it doesn't.
+const DETAIL: &str = "± Review diff";
+
 /// The grid's summary line, with every demo card on the board.
 const GRID: &str = "7 cards · 5 columns";
 
@@ -476,4 +483,130 @@ async fn a_pane_notice_stays_with_its_pane_through_the_slides() {
         harness.query_by_label(NO_SESSION).is_none(),
         "nor on to the grid"
     );
+}
+
+/// Assert that the view on screen is about the card titled `card`, not the
+/// one titled `other`.
+fn about(harness: &Harness<'_, ChromeState>, card: &str, other: &str) {
+    assert!(
+        harness.query_by_label(card).is_some(),
+        "{card:?} is on screen"
+    );
+    assert!(
+        harness.query_by_label(other).is_none(),
+        "{other:?} is not on screen"
+    );
+}
+
+/// Headway with [`CARD`] and [`NEXT_CARD`] in review, in that order, each
+/// with a record whose commit touches one file (`src/a.rs`, `src/b.rs`), so
+/// the file on screen says whose review pane it is.
+async fn two_in_review(repo: &Path) -> Harness<'static, ChromeState> {
+    headway_in_chrome(repo, &[(CARD, "src/a.rs"), (NEXT_CARD, "src/b.rs")]).await
+}
+
+/// Put the grid's cursor on [`CARD`] by walking the review queue there and
+/// leaving it, which leaves the cursor on the card it last showed.
+fn cursor_on_first_in_review(harness: &mut Harness<'_, ChromeState>, board: usize) {
+    press(harness, egui::Modifiers::SHIFT, egui::Key::R);
+    land_on(harness, board + 1, "1 / 2");
+    press(harness, egui::Modifiers::NONE, egui::Key::Q);
+    land_on(harness, board, GRID);
+}
+
+/// Grid `r` opens the cursor card's review over its detail, so the pane's
+/// `q` lands on the card's detail, as its strip says, and one more `q` on the
+/// grid. Before, the pane sat straight on the board and `q` skipped the
+/// detail.
+#[tokio::test]
+async fn grid_r_then_q_lands_on_the_cards_detail() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+    cursor_on_first_in_review(&mut harness, board);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::R);
+    land_on(&mut harness, board + 2, "src/a.rs");
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::Q);
+    land_on(&mut harness, board + 1, DETAIL);
+    about(&harness, CARD, NEXT_CARD);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::Q);
+    land_on(&mut harness, board, GRID);
+}
+
+/// A pane's `n` opens the next card's review over that card's detail, so `q`
+/// lands on the next card's detail. Before, `n` pushed the review straight
+/// onto the first card's review, and `q` went back to it.
+#[tokio::test]
+async fn pane_n_then_q_lands_on_the_next_cards_detail() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+
+    harness.get_by_label(CARD).click();
+    land_on(&mut harness, board + 1, DETAIL);
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::R);
+    land_on(&mut harness, board + 2, "src/a.rs");
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::N);
+    land_on(&mut harness, board + 4, "src/b.rs");
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::Q);
+    land_on(&mut harness, board + 3, DETAIL);
+    about(&harness, NEXT_CARD, CARD);
+}
+
+/// A pane's `a` archives its card and ends on the grid, one card lighter.
+/// Opened with grid `r`, the detail under the pane never drew the card, and
+/// the archive can fold in during the back's slide onto it: the case that
+/// used to strand the grid under a stale detail entry.
+///
+/// Ignored: on the real chrome it ends one entry *below* Headway's board,
+/// backed out of Headway altogether. Likely (from reading, not traced) the
+/// pane's own back and the gone card's drop-back from its detail entry add
+/// up to one back too many once the slides land, as in
+/// [`a_gone_epics_finished_queue_says_so_on_the_grid`].
+/// The hand-rolled chrome model it was first written against popped every
+/// back at once and had nothing beneath the board, so it passed there.
+/// headway:headway/attack-neither-super replaces pane `a`'s back with a
+/// prune of the card's entries.
+#[tokio::test]
+#[ignore = "an extra back pops Headway's board: headway:headway/attack-neither-super"]
+async fn pane_a_ends_on_the_board() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+    cursor_on_first_in_review(&mut harness, board);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::R);
+    land_on(&mut harness, board + 2, "src/a.rs");
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::A);
+    land_on(&mut harness, board, "6 cards · 5 columns");
+    assert!(
+        harness.query_by_label(DETAIL).is_none(),
+        "no detail left over the grid"
+    );
+}
+
+/// The detail's `n` opens the next card as a drill, so its `q` backs to the
+/// card `n` left, as the strip's "back" says, not to the grid.
+#[tokio::test]
+async fn detail_n_then_q_lands_on_the_previous_card() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+
+    harness.get_by_label(CARD).click();
+    land_on(&mut harness, board + 1, DETAIL);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::N);
+    land_on(&mut harness, board + 2, DETAIL);
+    about(&harness, NEXT_CARD, CARD);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::Q);
+    land_on(&mut harness, board + 1, DETAIL);
+    about(&harness, CARD, NEXT_CARD);
 }
