@@ -415,6 +415,12 @@ Invalid_NWC_URI_031b = {"["}Íñvàlíd ÑWÇ ÚRÍ{"]"}
 # Button to dismiss welcome and browse the app without an account
 Just_browsing_17ed = {"["}Júst brówsíñg{"]"}
 
+# Dave chat input placeholder in vim normal mode: i returns to typing, Esc opens the side menu
+k_--_NORMAL_--_i_to_type___Esc_for_menu_c742 = {"["}-- ÑÓRMÀL -- í tó typé · Ésç fór méñú{"]"}
+
+# Dave chat input placeholder in vim normal mode while a turn is running: i returns to typing, s stops the turn, Esc opens the side menu
+k_--_NORMAL_--_i_to_type___s_to_stop___Esc_for_menu_8cd8 = {"["}-- ÑÓRMÀL -- í tó typé · s tó stóp · Ésç fór méñú{"]"}
+
 # Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount.
 k_100K_686c = {"["}100K{"]"}
 

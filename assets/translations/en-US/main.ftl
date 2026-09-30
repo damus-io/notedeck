@@ -415,6 +415,12 @@ Invalid_NWC_URI_031b = Invalid NWC URI
 # Button to dismiss welcome and browse the app without an account
 Just_browsing_17ed = Just browsing
 
+# Dave chat input placeholder in vim normal mode: i returns to typing, Esc opens the side menu
+k_--_NORMAL_--_i_to_type___Esc_for_menu_c742 = -- NORMAL -- i to type · Esc for menu
+
+# Dave chat input placeholder in vim normal mode while a turn is running: i returns to typing, s stops the turn, Esc opens the side menu
+k_--_NORMAL_--_i_to_type___s_to_stop___Esc_for_menu_8cd8 = -- NORMAL -- i to type · s to stop · Esc for menu
+
 # Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount.
 k_100K_686c = 100K
 

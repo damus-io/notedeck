@@ -480,7 +480,7 @@ impl<'a> DaveUi<'a> {
                             bottom: bottom_margin,
                         })
                         .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
-                        .fill(ui.visuals().extreme_bg_color)
+                        .fill(input_fill(ui.visuals(), self.normal_mode.is_some()))
                         .corner_radius(notedeck::tokens::RADIUS_LG)
                         .show(ui, |ui| self.inputbox(app_ctx, ui))
                         .inner;
@@ -1678,7 +1678,14 @@ impl<'a> DaveUi<'a> {
         // publishes an interrupt command the host applies to its backend.
         let show_stop = self.flags.contains(DaveUiFlags::IsWorking);
 
-        let layout = InputboxLayout::new(self.input, i18n)
+        let mode = match self.normal_mode {
+            Some(view) => InputMode::Normal {
+                can_stop: view.interruptible,
+            },
+            None => InputMode::Insert,
+        };
+
+        let layout = InputboxLayout::new(self.input, i18n, mode)
             .show_stop(show_stop)
             .id(input_id(self.session_id));
 
@@ -1867,6 +1874,33 @@ impl InputboxResult {
     }
 }
 
+/// Which vim mode the chat input is in, which decides what it says and how
+/// loudly it draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputMode {
+    /// The default: the input has focus and keys type into it.
+    Insert,
+    /// Normal mode: the input gave up focus and bare keys are commands.
+    Normal {
+        /// Whether `s` would stop a running turn right now, so the cue only
+        /// offers it when it would do something.
+        can_stop: bool,
+    },
+}
+
+/// The chat input's background: its usual fill, or in normal mode halfway to
+/// the panel behind it, so a mode that swallows typing reads as "not
+/// listening" at the spot the user is looking. Only the colour changes, so
+/// entering or leaving the mode never moves anything.
+pub(crate) fn input_fill(visuals: &egui::Visuals, normal_mode: bool) -> egui::Color32 {
+    if !normal_mode {
+        return visuals.extreme_bg_color;
+    }
+    visuals
+        .extreme_bg_color
+        .lerp_to_gamma(visuals.panel_fill, 0.5)
+}
+
 /// Extracted inputbox layout used by both DaveUi and tests.
 ///
 /// Renders the Ask/Stop buttons and text input in a right-to-left layout.
@@ -1874,24 +1908,45 @@ pub struct InputboxLayout<'a> {
     pub input: &'a mut String,
     pub ask_label: String,
     pub stop_label: String,
+    /// The placeholder: "Ask dave anything..." in insert mode, the
+    /// `-- NORMAL --` cue in normal mode.
     pub hint_text: String,
     pub show_stop: bool,
     pub id: Option<egui::Id>,
+    /// Normal mode dims whatever is typed, so it reads as not taking keys.
+    pub mode: InputMode,
 }
 
 impl<'a> InputboxLayout<'a> {
-    pub fn new(input: &'a mut String, i18n: &mut notedeck::Localization) -> Self {
-        Self {
-            input,
-            ask_label: notedeck::tr!(i18n, "Ask", "Button to send message to Dave AI assistant"),
-            stop_label: notedeck::tr!(i18n, "Stop", "Button to interrupt/stop the AI operation"),
-            hint_text: notedeck::tr!(
+    /// The input as `mode` shows it. Normal mode swaps the placeholder for its
+    /// cue rather than adding a line, so it costs the same one `tr!` a frame as
+    /// insert mode and takes no extra room.
+    pub fn new(input: &'a mut String, i18n: &mut notedeck::Localization, mode: InputMode) -> Self {
+        let hint_text = match mode {
+            InputMode::Insert => notedeck::tr!(
                 i18n,
                 "Ask dave anything...",
                 "Placeholder text for Dave AI input field"
             ),
+            InputMode::Normal { can_stop: true } => notedeck::tr!(
+                i18n,
+                "-- NORMAL -- i to type · s to stop · Esc for menu",
+                "Dave chat input placeholder in vim normal mode while a turn is running: i returns to typing, s stops the turn, Esc opens the side menu"
+            ),
+            InputMode::Normal { can_stop: false } => notedeck::tr!(
+                i18n,
+                "-- NORMAL -- i to type · Esc for menu",
+                "Dave chat input placeholder in vim normal mode: i returns to typing, Esc opens the side menu"
+            ),
+        };
+        Self {
+            input,
+            ask_label: notedeck::tr!(i18n, "Ask", "Button to send message to Dave AI assistant"),
+            stop_label: notedeck::tr!(i18n, "Stop", "Button to interrupt/stop the AI operation"),
+            hint_text,
             show_stop: false,
             id: None,
+            mode,
         }
     }
 
@@ -1903,6 +1958,7 @@ impl<'a> InputboxLayout<'a> {
             hint_text: "Ask dave anything...".to_string(),
             show_stop: false,
             id: None,
+            mode: InputMode::Insert,
         }
     }
 
@@ -1951,6 +2007,10 @@ impl<'a> InputboxLayout<'a> {
                                 .frame(
                                     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)),
                                 );
+
+                            if self.mode != InputMode::Insert {
+                                edit = edit.text_color(ui.visuals().weak_text_color());
+                            }
 
                             if let Some(id) = self.id {
                                 edit = edit.id_source(id);
@@ -3925,5 +3985,61 @@ mod tests {
 
         harness.run();
         harness.snapshot("collapsed_bash_header_truncates");
+    }
+
+    /// The chat input in each mode, framed the way `DaveUi` frames it, under
+    /// notedeck's own dark and light visuals rather than egui's defaults: the
+    /// cue is a colour change, so the default theme would show the wrong one.
+    /// Rows: insert, normal while idle, normal while a turn runs, and normal
+    /// with a draft typed (the cue is hidden, so the dimmed text carries it).
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_input_normal_mode_cue() {
+        use super::{input_fill, InputMode, InputboxLayout};
+        use notedeck::Localization;
+
+        let rows = [
+            ("", InputMode::Insert),
+            ("", InputMode::Normal { can_stop: false }),
+            ("", InputMode::Normal { can_stop: true }),
+            ("a draft", InputMode::Normal { can_stop: false }),
+        ];
+        let themes = [
+            notedeck::theme::dark_mode(false),
+            notedeck::theme::light_mode(),
+        ];
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(1000.0, 370.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(
+                move |ui, i18n: &mut Localization| {
+                    ui.columns(themes.len(), |columns| {
+                        for (ui, visuals) in columns.iter_mut().zip(&themes) {
+                            ui.style_mut().visuals = visuals.clone();
+                            ui.painter()
+                                .rect_filled(ui.max_rect(), 0.0, visuals.panel_fill);
+                            for (text, mode) in rows {
+                                let mut text = text.to_string();
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::same(
+                                        notedeck::tokens::SPACING_SM as i8,
+                                    ))
+                                    .fill(input_fill(ui.visuals(), mode != InputMode::Insert))
+                                    .corner_radius(notedeck::tokens::RADIUS_LG)
+                                    .show(ui, |ui| {
+                                        InputboxLayout::new(&mut text, i18n, mode)
+                                            .show_stop(mode == InputMode::Normal { can_stop: true })
+                                            .show(ui);
+                                    });
+                                ui.add_space(notedeck::tokens::SPACING_SM);
+                            }
+                        }
+                    });
+                },
+                Localization::default(),
+            );
+        harness.run();
+        harness.snapshot("dave_input_normal_mode_cue");
     }
 }

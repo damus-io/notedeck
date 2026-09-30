@@ -50,30 +50,84 @@ You can use either mode depending on your needs—simple chat for quick Nostr qu
 - **Session Resume** - Resume previous Claude Code sessions from filesystem
 - **AskUserQuestion Support** - Answer multi-choice questions from the AI
 
-### Keyboard-Driven Workflow (Agentic Mode)
+### Keyboard-Driven Workflow
+
+Dave's keyboard is vim-shaped. **Insert mode** is the default: the chat input
+has focus and keys type into it. **Esc** enters **normal mode**: the input gives
+up focus, dims, and its placeholder turns into a `-- NORMAL --` cue, and bare
+keys become commands. A which-key strip above the input shows what normal mode
+will accept next.
+
+#### Normal mode
+
+| Keys | Action |
+|------|--------|
+| `j` / `k` | Block cursor down / up (in the session list: next / previous session) |
+| `gg` / `G` | First / last block (or session) |
+| `za` / `o` | Toggle the focused block |
+| `zo` / `zc` | Expand / collapse the focused block |
+| `zR` / `zM` | Expand / collapse every block |
+| `h` / `l` | Point the motions at the session list / the chat |
+| `Enter` | In the session list: open that session and go back to typing |
+| `n` | New agent (leaves normal mode for the picker) |
+| `c` | Clone the agent (same working directory) |
+| `r` | Rename the agent (leaves normal mode for the name field) |
+| `dd` | Delete the agent |
+| `v` | Toggle scene / list view |
+| `m` | Cycle permission mode |
+| `e` | Open the external editor (leaves normal mode) |
+| `s` | Stop the running turn (same as the Stop button) |
+| `]q` / `[q` | Next / previous session in the focus queue |
+| `i` / `a` | Back to insert mode |
+| `q` | Drop the block cursor and go back to insert mode |
+| `Esc` | Cancel a half-typed prefix (`z`, `g`, `d`, `]`, `[`); with none, open the side menu |
+
+Normal mode is a latch: it stays on after a command until you leave it.
+Clicking into any text field also returns to insert mode. Unknown letters are
+swallowed rather than typed. Ctrl bindings keep working without leaving normal
+mode, and the permission keys below pass straight through.
+
+Esc goes to whatever owns it first: an open overlay, picker or settings panel,
+the rename field, and a waiting tentative reply (which it cancels) all take Esc
+before it enters normal mode or reaches the side menu.
+
+#### Permissions and questions
+
+| Keys | Action |
+|------|--------|
+| `1` / `2` / `3` | Accept / deny / always allow a permission request |
+| `Shift+1` / `Shift+2` / `Shift+3` | Accept / deny / always allow with a message (leaves normal mode so the input takes the message) |
+
+These read bare keys, so they work in normal mode and whenever the input
+doesn't have focus.
+
+#### Anywhere
 
 | Shortcut | Action |
 |----------|--------|
-| `1` / `2` | Accept / Deny permission requests |
-| `Shift+1` / `Shift+2` | Accept / Deny with custom message |
-| `Esc` `s` | Stop the running turn (normal mode; same as the Stop button) |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Cycle through agents |
+| `Ctrl+J` / `Ctrl+K` | Next / previous agent |
 | `Ctrl+1-9` | Jump to agent by number |
 | `Ctrl+T` | New agent |
 | `Ctrl+Shift+T` | Clone agent (same working directory) |
-| `Ctrl+N` / `Ctrl+P` | Focus queue navigation (higher/lower priority) |
-| `Ctrl+D` | Toggle Done status in focus queue |
-| `Ctrl+M` | Toggle plan mode |
+| `Ctrl+Shift+K` | Clear the agent |
+| `Ctrl+Shift+R` | Rename the agent |
+| `Ctrl+Shift+N` / `Ctrl+Shift+P` | Block cursor down / up |
+| `Ctrl+Shift+O` | Toggle the focused block |
+| `Ctrl+Shift+E` / `Ctrl+Shift+M` | Expand / collapse every block |
+| `Ctrl+N` / `Ctrl+P` | Focus queue navigation (higher / lower priority) |
+| `Ctrl+D` | Toggle Done status in the focus queue |
+| `Ctrl+M` | Cycle permission mode |
 | `Ctrl+\` | Toggle auto-steal focus |
+| `Ctrl+L` | Toggle scene view |
 | `Ctrl+G` | Open external editor for input |
-| `Ctrl+V` | Toggle scene view |
-| `Delete` | Delete selected agent |
+| ``Ctrl+` `` | Open a terminal |
+| `Delete` | Delete the agent (when no text field has focus) |
 
 ### UI Components
 
 - **Diff View** - Syntax-highlighted diff for Edit/Write tool permission requests
 - **Status Badges** - Visual indicators for plan mode, agent status, and keybinds
-- **Keybind Hints** - Contextual hints shown when Ctrl is held
+- **Keybind Hints** - Contextual hints shown when Ctrl is held, and a which-key strip of normal mode's keys
 - **Directory Picker** - Select working directory when creating sessions
 - **Session Picker** - Resume existing Claude Code sessions
 - **Compaction Status** - Visual indicator when `/compact` is running
