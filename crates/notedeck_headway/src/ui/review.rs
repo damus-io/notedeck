@@ -1034,13 +1034,16 @@ fn elided_location_ui(
 /// A commit's short sha as an accent monospace pill, for the caller to give a
 /// hover text and a click: the pane copies the sha, the detail's Review
 /// section opens the pane on the record.
+///
+/// The pill wears its own text's hue, a soft accent tint, rather than a
+/// neutral grey fill, which muddied the purple sha.
 fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response {
     let pill = egui::Button::new(
         egui::RichText::new(short_sha(sha))
             .monospace()
             .color(theme.accent),
     )
-    .fill(theme.surface_elevated)
+    .fill(theme.accent.gamma_multiply(0.22))
     .stroke(egui::Stroke::NONE)
     .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8));
     ui.add(pill)
