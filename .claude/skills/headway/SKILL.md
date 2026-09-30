@@ -240,6 +240,26 @@ headway add "Migration plan" --col todo --desc-file - <<'EOF'
 EOF
 ```
 
+**Every new card says where it came from.** When a Dave agentic session creates
+a card, the description **starts** with a backlink to that session, so whoever
+reads the card later can open the transcript that produced it instead of hunting
+for it:
+
+```bash
+headway add "Cap the media cache" --col todo --desc-file - <<EOF
+Created from $AGENTIUM_SESSION while profiling image loads.
+
+Eviction never runs past 2 GB …
+EOF
+```
+
+`$AGENTIUM_SESSION` is your own `agentium:<word-id>` (see the `agentium` skill
+for the fallback when it's unset). This applies to *every* `add` — follow-ups,
+subissues from an epic breakdown, cards filed in passing — and only at
+creation; later edits to the description keep the line rather than re-adding it.
+Outside a session, name the card or conversation it came from instead (e.g.
+`Split out of headway:dave/maple-river-canyon`).
+
 Other flags: `--board <id>` (target another board for one run; see Multiple
 boards), `--db <path>` (cache dir),
 `--author <pk>` (read someone else's board), `-h`/`--help`. `--on <card>` names
