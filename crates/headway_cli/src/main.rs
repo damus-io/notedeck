@@ -712,8 +712,9 @@ async fn run() -> Result<()> {
 }
 
 /// Print the grouped command list — `headway --help`, or a bare `headway`.
-/// The key that signs `action`: the comment key for a comment when one is set,
-/// the run's signing key for everything else.
+/// The key that signs `action`: the comment key for a comment (on the card or
+/// on a review record's commit) when one is set, the run's signing key for
+/// everything else.
 ///
 /// A comment signed by another key only shows on a sealed board. The shared fold
 /// takes any rumor sealed into the board's channel, whoever signed it, so the
@@ -727,8 +728,11 @@ fn signing_key<'a>(
     channel: &Option<store::SnsChannel>,
     board: &str,
 ) -> Result<&'a [u8; 32]> {
-    let (store::BoardAction::AddComment { .. }, Some(comment_secret)) = (action, comment_secret)
-    else {
+    let is_comment = matches!(
+        action,
+        store::BoardAction::AddComment { .. } | store::BoardAction::AddReviewComments { .. }
+    );
+    let (true, Some(comment_secret)) = (is_comment, comment_secret) else {
         return Ok(secret);
     };
     if channel.is_none() {

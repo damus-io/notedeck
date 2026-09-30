@@ -3098,14 +3098,15 @@ fn post_queue_comment(harness: &mut Harness<'static, HeadwayTestState>, fixture:
             card,
             record,
             comments: vec![store::NewReviewComment {
-                location: event::ReviewLocation {
+                location: Some(event::ReviewLocation {
                     path: "src/queue.rs".to_string(),
                     commit: fixture.queue.clone(),
                     start: 8,
                     end: 10,
                     side: event::LineSide::New,
-                },
+                }),
                 body: POSTED_COMMENT.to_string(),
+                reply_to: None,
             }],
         },
     );

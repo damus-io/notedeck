@@ -5,7 +5,8 @@ use nostrdb_net::{NoteId, Pubkey};
 use serde_json::json;
 
 use headway::event::{
-    self, BoardView, CardView, CommentView, Container, Priority, ReviewView, resolve_card,
+    self, BoardView, CardView, CommentView, Container, LineSide, Priority, ReviewCommentView,
+    ReviewLocation, ReviewView, resolve_card,
 };
 use headway::store::{self, DeclineReason};
 use headway::{traversal, wordid};
@@ -408,6 +409,87 @@ fn print_review(r: &ReviewView) {
     {
         println!("        {line}");
     }
+    print_review_comments(r);
+}
+
+/// Print a review record's inline comments under it: a count, then each
+/// top-level comment with its replies nested beneath (see
+/// [`print_review_comment`]). A reply whose parent isn't on this record shows
+/// as top-level rather than vanishing.
+fn print_review_comments(r: &ReviewView) {
+    let n = r.comments.len();
+    if n == 0 {
+        return;
+    }
+    let noun = if n == 1 { "comment" } else { "comments" };
+    println!(
+        "        {}",
+        nostrdb_net::relay::sync::dim(&format!("{n} review {noun}"))
+    );
+    let on_record = |id: &NoteId| r.comments.iter().any(|c| c.id == *id);
+    for c in r
+        .comments
+        .iter()
+        .filter(|c| !c.parent.as_ref().is_some_and(on_record))
+    {
+        println!();
+        print_review_comment(r, c, None, 0);
+    }
+}
+
+/// Print review comment `c` at `depth` levels of nesting, then its replies one
+/// level deeper, oldest first as [`ReviewView::comments`] holds them. The
+/// header carries the author, age and the comment's own word-id (what
+/// `comment --reply-to` takes), then where it points ([`review_place`]) unless
+/// that's where its parent points too.
+fn print_review_comment(
+    r: &ReviewView,
+    c: &ReviewCommentView,
+    parent: Option<&ReviewCommentView>,
+    depth: usize,
+) {
+    let indent = " ".repeat(8 + 4 * depth);
+    let mut header = format!(
+        "{indent}{}{}  {}  {}",
+        if depth > 0 { "↳ " } else { "" },
+        headway::fmt::short_author(&c.author),
+        nostrdb_net::relay::sync::dim(&headway::fmt::rel_time(c.created_at)),
+        nostrdb_net::relay::sync::dim(&wordid::encode(c.id.bytes())),
+    );
+    if let Some(loc) = &c.location
+        && parent.and_then(|p| p.location.as_ref()) != Some(loc)
+    {
+        header.push_str("  ");
+        header.push_str(&review_place(loc, r.fields.commit.as_deref()));
+    }
+    println!("{header}");
+    for line in c.body.lines() {
+        if line.is_empty() {
+            println!();
+        } else {
+            println!("{indent}    {line}");
+        }
+    }
+    for reply in r.comments.iter().filter(|x| x.parent == Some(c.id)) {
+        print_review_comment(r, reply, Some(c), depth + 1);
+    }
+}
+
+/// Where a review comment points, as `show` prints it: `path:42` or
+/// `path:42-48` on the new side, `path:old 42-48` on the old (deleted) side,
+/// plus `@<short sha>` when the lines are on a commit other than the record's
+/// own `record_commit`.
+fn review_place(loc: &ReviewLocation, record_commit: Option<&str>) -> String {
+    let side = match loc.side {
+        LineSide::New => "",
+        LineSide::Old => "old ",
+    };
+    let mut place = format!("{}:{side}{}", loc.path, loc.line_value());
+    if record_commit != Some(loc.commit.as_str()) {
+        let short = loc.commit.get(..7).unwrap_or(&loc.commit);
+        place.push_str(&format!(" @{short}"));
+    }
+    place
 }
 
 /// Find a card by id anywhere on the board, returning it alongside the name of
@@ -596,5 +678,31 @@ mod tests {
         // Only the already-done half is success.
         assert!(DeclineReason::AlreadyBlocked.is_noop());
         assert!(!DeclineReason::BlockCycle.is_noop());
+    }
+
+    /// A review comment's place names its side, and its commit only when that
+    /// isn't the record's own.
+    #[test]
+    fn review_place_names_side_and_foreign_commit() {
+        let loc = |start, end, side| ReviewLocation {
+            path: "src/a.rs".to_string(),
+            commit: "abcdef0123".to_string(),
+            start,
+            end,
+            side,
+        };
+        let own = Some("abcdef0123");
+        assert_eq!(
+            review_place(&loc(42, 42, LineSide::New), own),
+            "src/a.rs:42"
+        );
+        assert_eq!(
+            review_place(&loc(3, 5, LineSide::Old), own),
+            "src/a.rs:old 3-5"
+        );
+        assert_eq!(
+            review_place(&loc(3, 5, LineSide::New), Some("ffff")),
+            "src/a.rs:3-5 @abcdef0"
+        );
     }
 }

@@ -2084,7 +2084,7 @@ diff --git a/b.txt b/b.txt
             let posted: Vec<_> = comments
                 .iter()
                 .map(|c| {
-                    let loc = &c.location;
+                    let loc = c.location.as_ref().expect("a drafted comment has lines");
                     (
                         loc.path.as_str(),
                         loc.line_value(),
@@ -2110,7 +2110,9 @@ diff --git a/b.txt b/b.txt
                     ),
                 ]
             );
-            assert!(comments.iter().all(|c| c.location.commit == COMMIT));
+            assert!(comments.iter().all(|c| {
+                c.reply_to.is_none() && c.location.as_ref().is_some_and(|l| l.commit == COMMIT)
+            }));
 
             if !session {
                 assert_eq!(h.session, None, "no session, no open");

@@ -482,8 +482,9 @@ impl BoardUiState {
         let comments = drafts
             .into_iter()
             .map(|d| NewReviewComment {
-                location: d.location,
+                location: Some(d.location),
                 body: d.body,
+                reply_to: None,
             })
             .collect();
         Some(BoardAction::AddReviewComments {

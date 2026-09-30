@@ -113,7 +113,8 @@ pub enum BoardAction {
     AddReview { card: NoteId, review: ReviewFields },
     /// Post inline review comments on `card`'s review `record` (kind 1111
     /// rooted on the kind-1626 record, see [`event::build_review_comment`]), one
-    /// event per comment, in order. Unknown card or record -> no-op.
+    /// event per comment, in order. Unknown card or record -> no-op, and so is
+    /// a comment replying to one that isn't on `record`.
     AddReviewComments {
         card: NoteId,
         record: NoteId,
@@ -146,11 +147,17 @@ pub enum BoardAction {
 }
 
 /// One inline review comment for [`BoardAction::AddReviewComments`]: the lines
-/// it points at and what it says.
+/// it points at, what it says, and the comment it answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewReviewComment {
-    pub location: event::ReviewLocation,
+    /// The lines it points at; `None` for a comment on the commit as a whole.
+    pub location: Option<event::ReviewLocation>,
     pub body: String,
+    /// Another review comment on the same record that this one threads under;
+    /// `None` for a top-level comment. The store copies nothing from it but
+    /// its author (the reply's `p`), so a reply that should sit under the same
+    /// lines names them in [`location`](Self::location) itself.
+    pub reply_to: Option<NoteId>,
 }
 
 /// A sink for events that have been ingested locally and should also be fanned
@@ -1335,19 +1342,32 @@ fn apply_edit(
             let c = find_card_any(view, card)?;
             let r = c.reviews.iter().find(|r| r.id == record)?;
             let record_author = Pubkey::new(r.author);
+            // A reply's `p` is the author of the comment it answers, so that
+            // comment has to be on this record. Checked for the whole batch
+            // before any of it is written, so a bad reply doesn't post half.
+            let parents = comments
+                .iter()
+                .map(|comment| match comment.reply_to {
+                    Some(id) => {
+                        let parent = r.comments.iter().find(|c| c.id == id)?;
+                        Some(Some((id, Pubkey::new(parent.author))))
+                    }
+                    None => Some(None),
+                })
+                .collect::<Option<Vec<_>>>()?;
             // A record's comments fold oldest-first (id as tiebreaker), so a
             // batch posted in one second would order at random. Stamp each
             // strictly past the one before, like `AddComment`.
             let mut latest = r.comments.last().map_or(0, |c| c.created_at);
-            for comment in &comments {
+            for (comment, parent) in comments.iter().zip(&parents) {
                 latest = next_after(latest);
                 ingest_signed(
                     ndb,
                     build_review_comment(
                         &record,
                         &record_author,
-                        None,
-                        Some(&comment.location),
+                        parent.as_ref().map(|(id, author)| (id, author)),
+                        comment.location.as_ref(),
                         &comment.body,
                     )
                     .created_at(latest),
@@ -3893,14 +3913,15 @@ mod tests {
         let record = view.card(card).unwrap().reviews[0].id;
 
         let comment = |path: &str, body: &str| NewReviewComment {
-            location: event::ReviewLocation {
+            location: Some(event::ReviewLocation {
                 path: path.to_string(),
                 commit: "aaaa".to_string(),
                 start: 1,
                 end: 2,
                 side: event::LineSide::New,
-            },
+            }),
             body: body.to_string(),
+            reply_to: None,
         };
         apply(
             &view,
@@ -3926,6 +3947,47 @@ mod tests {
             card.comments.is_empty(),
             "review comments stay off the card"
         );
+
+        // A reply threads under its comment on the same record; one naming a
+        // comment the record doesn't hold writes nothing.
+        let first = card.reviews[0].comments[0].id;
+        let reply = |to: NoteId| NewReviewComment {
+            location: None,
+            body: "done".to_string(),
+            reply_to: Some(to),
+        };
+        let stray = BoardAction::AddReviewComments {
+            card: card.id,
+            record,
+            comments: vec![reply(NoteId::new([7; 32]))],
+        };
+        let mut sent = CountPublish(0);
+        super::apply(
+            &t.ndb,
+            "src",
+            &view,
+            &t.kp.pubkey,
+            &signer,
+            stray,
+            &mut sent,
+        );
+        assert_eq!(sent.0, 0, "a stray reply writes nothing");
+        apply(
+            &view,
+            BoardAction::AddReviewComments {
+                card: card.id,
+                record,
+                comments: vec![reply(first)],
+            },
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| {
+            v.card(card.id)
+                .is_some_and(|c| c.reviews.first().is_some_and(|r| r.comments.len() == 3))
+        })
+        .await;
+        let r = &view.card(card.id).unwrap().reviews[0];
+        assert_eq!(r.comments[2].parent, Some(first));
+        assert_eq!(r.comments[2].location, None);
     }
 
     /// [`apply_outcome`] reports the id an `AddCard` minted, on a *sealed* board
