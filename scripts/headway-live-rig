@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+#
+# Stand up a live notedeck (headway + dave) on a private Xvfb display, with a
+# throwaway key and a seeded demo board, for a visual pass of the real app.
+# Snapshot tests render apps outside the chrome; this is the real window.
+#
+# Usage:
+#   scripts/headway-live-rig [up] [options]   build, launch, seed; print the rig
+#   scripts/headway-live-rig session [dir] [--attach]
+#                                             print the rig's Dave sessions as
+#                                             agentium: refs; --attach adds a
+#                                             record naming the newest to every
+#                                             seeded review (same commit)
+#   scripts/headway-live-rig shot [dir] [out.png]
+#                                             screenshot the rig's display
+#   scripts/headway-live-rig down [dir]       stop the rig's processes
+#
+# `dir` defaults to the last rig `up` started (its path is kept in
+# ${TMPDIR:-/tmp}/headway-live-rig.last).
+#
+# up options:
+#   --dir <dir>        Scratch dir for the binary, data, logs and rig.env
+#                      [default: a fresh mktemp dir]
+#   --size <WxH>       Screen and window size [default: 1600x1000]
+#   --bin <path>       Use this notedeck binary instead of building one
+#   --no-build         Reuse <dir>/notedeck from an earlier `up --dir <dir>`
+#   --commits <n>      In Review cards to seed, one per commit HEAD~0.. [default: 4]
+#   --no-seed          Leave the board empty
+#
+# Needs: cargo, Xvfb, xdotool, nak, jq, and for `session` the `ndb` CLI and
+# agentium; for `shot`, ImageMagick's `import`. Everything the rig starts is
+# stopped by pid (never by name, so other sessions' displays survive).
+
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+last_file="${TMPDIR:-/tmp}/headway-live-rig.last"
+board=headway
+
+die() {
+    echo "headway-live-rig: $*" >&2
+    exit 1
+}
+
+need() {
+    local tool
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null || die "needs '$tool' on PATH"
+    done
+}
+
+# Whether something is listening on 127.0.0.1:<port>.
+port_open() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+# The first display number with neither a socket nor a lock file.
+free_display() {
+    local n
+    for n in $(seq 90 199); do
+        if [[ ! -e /tmp/.X11-unix/X$n && ! -e /tmp/.X$n-lock ]]; then
+            echo "$n"
+            return
+        fi
+    done
+    die "no free X display in :90-:199"
+}
+
+# The first free local port from 6690 up.
+free_port() {
+    local p
+    for p in $(seq 6690 6790); do
+        if ! port_open "$p"; then
+            echo "$p"
+            return
+        fi
+    done
+    die "no free port in 6690-6790"
+}
+
+# Poll `cmd…` every 0.2s until it succeeds, for at most <secs>.
+wait_for() {
+    local secs=$1 what=$2
+    shift 2
+    local tries=$((secs * 5))
+    until "$@"; do
+        tries=$((tries - 1))
+        ((tries > 0)) || die "timed out after ${secs}s waiting for $what"
+        sleep 0.2
+    done
+}
+
+# Resolve a rig dir argument, defaulting to the last `up`.
+rig_dir() {
+    local dir=${1:-}
+    if [[ -z $dir ]]; then
+        [[ -f $last_file ]] || die "no rig dir given and no previous rig in $last_file"
+        dir=$(<"$last_file")
+    fi
+    [[ -f $dir/rig.env ]] || die "$dir/rig.env not found (not a rig dir?)"
+    echo "$dir"
+}
+
+# The headway CLI against the rig: its relay, its key, its own cache and data
+# dir, so nothing reaches the user's stored headway config. The env vars that
+# would otherwise leak the caller's identity into the demo are dropped:
+# $AGENTIUM_SESSION would stamp *this* shell's session on every review record,
+# and $HEADWAY_COMMENT_NSEC* would sign comments with a real key.
+rig_headway() {
+    env -u AGENTIUM_SESSION -u HEADWAY_NSEC -u HEADWAY_BOARD -u HEADWAY_RELAY \
+        -u HEADWAY_COMMENT_NSEC -u HEADWAY_COMMENT_NSEC_FILE \
+        XDG_DATA_HOME="$RIG_DIR/xdg" \
+        headway --board "$board" --relay "ws://127.0.0.1:$RIG_PORT" \
+        --db "$RIG_DIR/headway-db" --nsec "$RIG_NSEC" "$@"
+}
+
+# The agentium: ref of a session d-tag. An installed `agentium` older than its
+# `id` command falls back to this checkout's.
+session_ref() {
+    agentium id "$1" 2>/dev/null ||
+        (cd "$repo" && cargo run -q -p agentium_cli -- id "$1")
+}
+
+# The word-id of the card a `headway add` printed.
+added_card() {
+    grep -o "headway:$board/[a-z]*-[a-z]*-[a-z]*" | head -n1
+}
+
+cmd_up() {
+    local dir="" size=1600x1000 bin="" build=1 commits=4 seed=1
+    while (($#)); do
+        case $1 in
+        --dir) dir=$2; shift ;;
+        --size) size=$2; shift ;;
+        --bin) bin=$2; shift ;;
+        --no-build) build=0 ;;
+        --commits) commits=$2; shift ;;
+        --no-seed) seed=0 ;;
+        *) die "unknown option '$1' (see the header of $0)" ;;
+        esac
+        shift
+    done
+    [[ $size =~ ^([0-9]+)x([0-9]+)$ ]] || die "--size wants WxH, got '$size'"
+    local width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]}
+    need Xvfb xdotool nak jq headway
+
+    if [[ -z $dir ]]; then
+        dir=$(mktemp -d "${TMPDIR:-/tmp}/headway-live-rig.XXXXXX")
+    fi
+    mkdir -p "$dir"
+    dir=$(cd "$dir" && pwd)
+    # A reused dir keeps its binary but not its state: every `up` has a new
+    # key, and the last run's board and review-cards list belong to the old one.
+    rm -rf "$dir/data" "$dir/headway-db" "$dir/xdg" "$dir/review-cards"
+
+    # 1. The binary, copied out of target/: sibling worktrees share it and
+    #    overwrite target/release/notedeck under a running rig.
+    if [[ -n $bin ]]; then
+        cp "$bin" "$dir/notedeck"
+    elif ((build)); then
+        need cargo
+        echo "building notedeck (release, headway+dave)..." >&2
+        (cd "$repo" && cargo build --release -p notedeck_chrome --features headway,dave)
+        local target
+        target=$(cd "$repo" && cargo metadata --format-version 1 --no-deps | jq -r .target_directory)
+        cp "$target/release/notedeck" "$dir/notedeck"
+    fi
+    [[ -x $dir/notedeck ]] || die "$dir/notedeck missing (drop --no-build, or pass --bin)"
+
+    # 2. A throwaway key. notedeck takes it as hex, the CLIs as an nsec.
+    #    (nak blocks reading stdin unless it is closed.)
+    local sec nsec
+    sec=$(nak key generate </dev/null)
+    nsec=$(nak encode nsec "$sec" </dev/null)
+
+    # 3. A private display, then notedeck on it with its embedded relay on a
+    #    free port. `-r ws://127.0.0.1:9` keeps it off every real relay; the
+    #    embedded relay ingests what the CLIs publish into the app's ndb.
+    local display port
+    display=$(free_display)
+    port=$(free_port)
+
+    Xvfb ":$display" -screen 0 "${width}x${height}x24" -nolisten tcp \
+        >"$dir/xvfb.log" 2>&1 &
+    local xvfb_pid=$!
+    wait_for 10 "Xvfb :$display" test -S "/tmp/.X11-unix/X$display"
+
+    # setsid so a Ctrl-C in this terminal doesn't reach it; as a background
+    # job it isn't a group leader, so setsid execs in place and $! is notedeck.
+    env -u WAYLAND_DISPLAY DISPLAY=":$display" setsid "$dir/notedeck" \
+        --datapath "$dir/data" --sec "$sec" -r ws://127.0.0.1:9 \
+        --relay-bind "127.0.0.1:$port" >"$dir/notedeck.log" 2>&1 &
+    local notedeck_pid=$!
+
+    cat >"$dir/rig.env" <<EOF
+RIG_DIR=$dir
+RIG_DISPLAY=:$display
+RIG_PORT=$port
+RIG_SEC=$sec
+RIG_NSEC=$nsec
+RIG_XVFB_PID=$xvfb_pid
+RIG_NOTEDECK_PID=$notedeck_pid
+EOF
+    echo "$dir" >"$last_file"
+    # shellcheck source=/dev/null
+    source "$dir/rig.env"
+
+    # 4. Size and focus the window. With no window manager the window opens at
+    #    its saved size (often bigger than the screen), and keys are dropped
+    #    until it has input focus.
+    local win=""
+    find_window() {
+        kill -0 "$notedeck_pid" 2>/dev/null ||
+            die "notedeck exited; see $dir/notedeck.log"
+        # --onlyvisible: focusing a window before it is mapped is a BadMatch.
+        win=$(DISPLAY=":$display" xdotool search --onlyvisible --pid "$notedeck_pid" \
+            2>/dev/null | tail -n1)
+        [[ -n $win ]]
+    }
+    wait_for 60 "the notedeck window" find_window
+    DISPLAY=":$display" xdotool windowmove "$win" 0 0 windowsize "$win" "$width" "$height"
+    DISPLAY=":$display" xdotool windowfocus --sync "$win"
+    echo "RIG_WINDOW=$win" >>"$dir/rig.env"
+
+    wait_for 30 "the embedded relay on :$port" port_open "$port"
+
+    # 5. The demo board: one card per column state, and <commits> In Review
+    #    cards each carrying a review record of a real commit of this repo.
+    if ((seed)); then
+        seed_board "$commits"
+    fi
+
+    cat <<EOF
+
+rig up in $dir
+  display   :$display (${width}x${height})    window $win
+  relay     ws://127.0.0.1:$port
+  pids      Xvfb $xvfb_pid, notedeck $notedeck_pid
+  log       $dir/notedeck.log
+
+Open the board: F11 opens the app drawer; wait ~1.5s, then click Headway (its
+last item). R on the board opens the review queue. Drive it with
+  DISPLAY=:$display xdotool key --window $win <key>
+Screenshot:  $0 shot $dir out.png
+Dave refs:   start a session in Dave, then  $0 session $dir [--attach]
+Headway CLI: source $dir/rig.env, then
+  headway --board $board --relay ws://127.0.0.1:$port --db $dir/headway-db --nsec \$RIG_NSEC show
+Teardown:    $0 down $dir     (kills pids $notedeck_pid $xvfb_pid)
+EOF
+}
+
+seed_board() {
+    local commits=$1
+    echo "seeding the demo board..." >&2
+    rig_headway seed --title "Live rig" >/dev/null
+    rig_headway add "Backlog idea for later" --col backlog >/dev/null
+    rig_headway add "Next up in Todo" --col todo -l ui >/dev/null
+    rig_headway add "Work in progress" --col in-progress -l ui \
+        --desc "A card mid-flight, so the board has one of every state." >/dev/null
+
+    local i rev subject card
+    for ((i = 0; i < commits; i++)); do
+        rev=$(git -C "$repo" rev-parse --verify --quiet "HEAD~$i") || break
+        subject=$(git -C "$repo" log -1 --format=%s "$rev")
+        card=$(rig_headway add "$subject" --col in-review -l review | added_card)
+        [[ -n $card ]] || die "couldn't read the card 'headway add' made for $rev"
+        rig_headway review "$card" --commit "$rev" --repo-dir "$repo" >/dev/null
+        echo "$card $rev" >>"$RIG_DIR/review-cards"
+    done
+}
+
+cmd_session() {
+    local dir="" attach=0
+    while (($#)); do
+        case $1 in
+        --attach) attach=1 ;;
+        -*) die "unknown option '$1'" ;;
+        *) dir=$1 ;;
+        esac
+        shift
+    done
+    dir=$(rig_dir "$dir")
+    need ndb jq
+    # shellcheck source=/dev/null
+    source "$dir/rig.env"
+
+    # Dave's kind-31988 session state: every revision is kept, so fold to the
+    # newest per d-tag (the id the agentium: word-id is derived from), newest
+    # session first.
+    local rows
+    rows=$(ndb -d "$dir/data/db" query --kind 31988 2>/dev/null |
+        jq -rs 'def tag($k): first(.tags[] | select(.[0] == $k) | .[1]) // null;
+                map({d: tag("d"), at: .created_at,
+                     title: (tag("custom_title") // tag("title") // "")})
+                | group_by(.d) | map(max_by(.at)) | sort_by(-.at) | .[]
+                | [.d, .title] | @tsv')
+    [[ -n $rows ]] || die "no Dave sessions in $dir/data/db yet (start one in Dave first)"
+
+    local d_tag title ref newest=""
+    while IFS=$'\t' read -r d_tag title; do
+        ref=$(session_ref "$d_tag")
+        newest=${newest:-$ref}
+        printf '%s\t%s\n' "$ref" "$title"
+    done <<<"$rows"
+
+    ((attach)) || return 0
+    [[ -f $dir/review-cards ]] || die "no seeded review cards to attach to"
+    local card rev
+    while read -r card rev; do
+        rig_headway review "$card" --commit "$rev" --repo-dir "$repo" \
+            --agentium "$newest" >/dev/null
+        echo "attached $newest to $card" >&2
+    done <"$dir/review-cards"
+}
+
+cmd_shot() {
+    local dir out
+    dir=$(rig_dir "${1:-}")
+    out=${2:-$dir/shot-$(date +%H%M%S).png}
+    need import
+    # shellcheck source=/dev/null
+    source "$dir/rig.env"
+    import -display "$RIG_DISPLAY" -window root "$out"
+    echo "$out"
+}
+
+cmd_down() {
+    local dir
+    dir=$(rig_dir "${1:-}")
+    # shellcheck source=/dev/null
+    source "$dir/rig.env"
+    local pid
+    for pid in "$RIG_NOTEDECK_PID" "$RIG_XVFB_PID"; do
+        kill "$pid" 2>/dev/null || continue
+        wait_for 10 "pid $pid to exit" bash -c "! kill -0 $pid 2>/dev/null"
+    done
+    echo "rig in $dir stopped (its files are left for inspection)"
+}
+
+case ${1:-up} in
+up) shift || true; cmd_up "$@" ;;
+session) shift; cmd_session "$@" ;;
+shot) shift; cmd_shot "$@" ;;
+down) shift; cmd_down "$@" ;;
+-h | --help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
+-*) cmd_up "$@" ;;
+*) die "unknown command '$1' (up, session, shot, down)" ;;
+esac

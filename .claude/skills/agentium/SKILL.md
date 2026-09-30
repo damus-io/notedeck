@@ -52,6 +52,11 @@ one-way hash of the session's stable id (its kind-31988 `d`-tag, the field
 the id back from the words. Quote the `agentium:` URI when referring a human to a
 session; keep the raw id when you need to match a session programmatically.
 
+To derive it yourself, `agentium id <d-tag…>` prints each d-tag's
+`agentium:` ref. It is offline (no key, cache or relay), so it also works on a
+d-tag read out of some other store, e.g.
+`ndb -d <datapath>/db query --kind 31988`.
+
 ## Finding your OWN session ref
 
 An agent running **inside** a Dave session (Claude or Codex backend) has its own
@@ -82,6 +87,9 @@ agentium list --json | jq -r \
 # last resort with neither var set — filter by cwd/host and eyeball the row
 # (ambiguous when several sessions share a cwd, so prefer the env vars):
 agentium list --json --cwd "$PWD" --host "$(hostname)"
+
+# or derive it straight from the raw id, with no sync at all
+agentium id "$AGENTIUM_SESSION_ID"
 ```
 
 ## `list` — read sessions

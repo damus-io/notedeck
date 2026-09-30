@@ -158,3 +158,6 @@ fetch is killed after 60 seconds. So:
   locally and never fetches.
 - `review_queue_walks_the_in_review_column`, `chrome_nav_loop_review_queue_is_one_entry`
   and the `keys.rs` unit tests cover stepping, history and verdicts.
+- Snapshots render outside the chrome. For the real window, run
+  `scripts/headway-live-rig`: it seeds In Review cards with records of real
+  commits and runs notedeck on a private display (see [live-rig.md](live-rig.md)).

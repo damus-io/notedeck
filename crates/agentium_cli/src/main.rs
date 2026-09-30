@@ -197,6 +197,13 @@ enum Command {
     Config {
         action: ConfigAction,
     },
+    /// Print the `agentium:` ref for each given kind-31988 d-tag. Pure
+    /// computation — no key, cache or relay — so a script that already holds a
+    /// session's d-tag (say, from `ndb query --kind 31988`) gets its sayable ref
+    /// without resolving it against a corpus.
+    Id {
+        d_tags: Vec<String>,
+    },
     Login {
         nsec: String,
     },
@@ -216,7 +223,9 @@ impl Command {
     /// `login`/`logout` never get here (they return before the engine exists).
     fn needs_relay(&self) -> bool {
         match self {
-            Command::List | Command::Show { .. } | Command::Grep { .. } => false,
+            Command::List | Command::Show { .. } | Command::Grep { .. } | Command::Id { .. } => {
+                false
+            }
             // A follow is a live stream, so it needs the connection even though
             // its initial tail is a cache read.
             Command::Log { view, .. } => view.follow,
@@ -244,11 +253,18 @@ async fn run() -> Result<()> {
         }
     };
 
-    // `login`/`logout` manage the stored key and touch neither the cache nor a
-    // relay, so handle them before any of that machinery spins up.
+    // `login`/`logout` manage the stored key and `id` is pure computation;
+    // none of them touch the cache or a relay, so handle them before any of
+    // that machinery spins up.
     match &cli.command {
         Command::Login { nsec } => return nostrdb_net::relay::sync::login(nsec, APP),
         Command::Logout => return nostrdb_net::relay::sync::logout(APP),
+        Command::Id { d_tags } => {
+            for d_tag in d_tags {
+                println!("{}", agentium_core::wordid::session_ref(d_tag));
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -376,7 +392,9 @@ async fn run() -> Result<()> {
             };
             cmd_config(&engine, &read_pk, &secret, &action, &filters, cli.json).await?
         }
-        Command::Login { .. } | Command::Logout => unreachable!("handled above"),
+        Command::Login { .. } | Command::Logout | Command::Id { .. } => {
+            unreachable!("handled above")
+        }
     }
 
     Ok(())
@@ -678,14 +696,15 @@ impl Cli {
             );
         }
 
-        // `login`/`logout` manage the stored key themselves, so don't parse (and
-        // potentially reject on) whatever key is currently configured.
+        // `login`/`logout` manage the stored key themselves and `id` needs none,
+        // so don't parse (and potentially reject on) whatever key is currently
+        // configured.
         // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
         // (and the `agentium_core` engine) speaks `nostrdb_net::Pubkey`. Both are
         // `[u8; 32]` newtypes, so bridge at this boundary and keep everything
         // downstream in enostr terms.
         let secret = match (&command, nsec) {
-            (Command::Login { .. } | Command::Logout, _) => None,
+            (Command::Login { .. } | Command::Logout | Command::Id { .. }, _) => None,
             (_, Some(nsec)) => {
                 let (sk, pk) = nostrdb_net::relay::sync::parse_nsec(&nsec)?;
                 Some((sk, Pubkey::new(*pk.bytes())))
@@ -750,6 +769,14 @@ fn parse_command(
             nsec: arg(rest, 0, name)?,
         },
         "logout" => Command::Logout,
+        "id" => {
+            if rest.is_empty() {
+                return Err("id needs at least one <d-tag>".into());
+            }
+            Command::Id {
+                d_tags: rest.to_vec(),
+            }
+        }
         other => return Err(format!("unknown command '{other}' (try `agentium --help`)").into()),
     })
 }
@@ -894,6 +921,9 @@ COMMANDS:
                       Rename a run config or change its command; its id stays.
     config rm <config>
                       Delete a run config (Dave kills it if it is running).
+    id <d-tag…>       Print the agentium: ref of each session d-tag (its
+                      kind-31988 d-tag, e.g. from `ndb query --kind 31988`).
+                      Offline: needs no key, cache or relay.
     login <nsec>      Store a signing key for later runs
     logout            Forget the stored signing key
 
@@ -1020,6 +1050,22 @@ mod tests {
             Command::Show { session } => assert_eq!(session.as_deref(), Some("agentium:a-b-c")),
             _ => panic!("expected Show"),
         }
+    }
+
+    #[test]
+    fn id_command_takes_every_d_tag_and_needs_one() {
+        match parse_command(
+            "id",
+            &["d-one".to_string(), "d-two".to_string()],
+            view_all(),
+            CaseMode::Smart,
+        )
+        .unwrap()
+        {
+            Command::Id { d_tags } => assert_eq!(d_tags, ["d-one", "d-two"]),
+            _ => panic!("expected Id"),
+        }
+        assert!(parse_command("id", &[], view_all(), CaseMode::Smart).is_err());
     }
 
     #[test]
