@@ -33,12 +33,6 @@ struct HeadwayTestState {
     /// a test can exercise the board↔card port's seeding both ways (a `Card` token
     /// shows the detail, a `Board`/`()` token returns to the grid).
     nav_token: Option<std::rc::Rc<dyn std::any::Any>>,
-    /// When set, the harness plays the chrome's whole global-nav loop on this
-    /// stack instead, slides included (the entry beneath the top draws in the
-    /// same pass as the top while one runs), and Headway's nav requests land
-    /// on it as the chrome's `apply_nav_requests` lands them. See
-    /// [`chrome_nav_pass`] and [`slide_harness`].
-    chrome_nav: Option<ChromeNav>,
 }
 
 fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
@@ -89,10 +83,6 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
             // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`): a Headway that
             // stops owning its spacing then shows up glued here, as it would live.
             ui.spacing_mut().item_spacing.x = 0.0;
-            if let Some(nav) = &mut state.chrome_nav {
-                chrome_nav_pass(ui, &mut app_ctx, &mut state.headway, nav);
-                return;
-            }
             // Mirror the chrome: when a global-history entry is set, draw it through
             // `render_nav` with its route token (the chrome always reaches an app this
             // way); otherwise the plain `render` root.
@@ -106,82 +96,6 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
             }
         });
     });
-}
-
-/// How many passes a [`ChromeNav`] slide draws two entries for before it
-/// lands. egui_nav's spring takes a few dozen; the bug a slide can hide shows
-/// on its first.
-const SLIDE_PASSES: u8 = 3;
-
-/// The chrome's global stack and the slide running on it, for a harness that
-/// plays the chrome's whole nav loop (see [`chrome_nav_pass`]).
-struct ChromeNav {
-    stack: notedeck::NavStack<notedeck::ChromeNavEntry>,
-    /// Passes the running slide has drawn.
-    slid: u8,
-}
-
-/// One pass of the chrome's global nav, as `Chrome::show` runs it for an app
-/// (`notedeck_chrome/src/chrome/frame.rs`): every entry draws through
-/// [`App::render_nav`] with its own token, and the nav requests the pass
-/// raised land on the stack as `Chrome::apply_nav_requests` lands them — a
-/// push or a back starts a slide, and a back's slide pops when it ends,
-/// handing the popped entry to [`App::cleanup_nav`].
-///
-/// While a slide runs, the entry beneath the top draws first and the top
-/// after it, in one pass, as egui_nav's `show_internal` draws them. This
-/// doesn't call egui_nav itself: its `render_bg` and `render_fg` both build a
-/// `Ui` with the nav's own id, on different layers, which egui
-/// debug-asserts against, so a debug test can't run a real slide.
-fn chrome_nav_pass(
-    ui: &mut egui::Ui,
-    app_ctx: &mut AppContext,
-    headway: &mut Headway,
-    nav: &mut ChromeNav,
-) {
-    use notedeck::NavRequest;
-
-    let stack = &mut nav.stack;
-    let area = ui.available_rect_before_wrap();
-    let sliding = stack.navigating() || stack.returning();
-    if sliding && let Some(under) = stack.prev() {
-        let token = under.token.clone();
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(area).id_salt("slide-under"),
-            |ui| headway.render_nav(app_ctx, ui, &token),
-        );
-    }
-    let token = stack.top().token.clone();
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(area).id_salt("slide-top"),
-        |ui| headway.render_nav(app_ctx, ui, &token),
-    );
-
-    if sliding {
-        nav.slid += 1;
-        ui.ctx().request_repaint();
-        if nav.slid >= SLIDE_PASSES {
-            nav.slid = 0;
-            if stack.returning() {
-                if let Some(popped) = stack.pop() {
-                    headway.cleanup_nav(app_ctx, &popped.token);
-                }
-            } else {
-                stack.navigating_mut(false);
-            }
-        }
-    }
-
-    let active = stack.top().app;
-    for request in app_ctx.navigator.take() {
-        match request {
-            NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
-            NavRequest::Back => {
-                stack.go_back();
-            }
-            _ => panic!("unexpected nav request kind from Headway"),
-        }
-    }
 }
 
 /// Render `note_id` (a kind-1 note) through `NoteView`, the surface the
@@ -289,7 +203,6 @@ fn headway_state() -> HeadwayTestState {
         fonts_installed: false,
         ref_note: None,
         nav_token: None,
-        chrome_nav: None,
     }
 }
 
@@ -4752,143 +4665,6 @@ fn chrome_frame(
     }
 }
 
-/// A [`behavioral_harness`] that plays the chrome's global nav with its
-/// slides (see [`HeadwayTestState::chrome_nav`]), rooted on the app-switch
-/// entry the chrome seeds.
-fn slide_harness() -> Harness<'static, HeadwayTestState> {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
-
-    let mut state = headway_state();
-    state.chrome_nav = Some(ChromeNav {
-        stack: NavStack::new(vec![ChromeNavEntry::new(AppId(0), std::rc::Rc::new(()))]),
-        slid: 0,
-    });
-    let mut harness =
-        harness_builder(egui::Vec2::new(1200.0, 800.0)).build_ui_state(render_headway, state);
-    wait_for_board(&mut harness);
-    harness
-}
-
-/// The [`slide_harness`]'s global stack.
-fn chrome_stack<'h>(
-    harness: &'h Harness<'static, HeadwayTestState>,
-) -> &'h notedeck::NavStack<notedeck::ChromeNavEntry> {
-    &harness
-        .state()
-        .chrome_nav
-        .as_ref()
-        .expect("a slide harness")
-        .stack
-}
-
-/// Pump frames until the [`slide_harness`]'s stack has no slide running and
-/// has `len` entries, or panic after a deadline.
-fn settle_slides(harness: &mut Harness<'static, HeadwayTestState>, len: usize) {
-    let deadline = Instant::now() + SETTLE_TIMEOUT;
-    loop {
-        harness.run_ok();
-        let stack = chrome_stack(harness);
-        if !stack.navigating() && !stack.returning() && stack.len() == len {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for a still stack of {len}; it has {}",
-            stack.len()
-        );
-    }
-}
-
-/// Behavioural (no lavapipe), under the chrome's slides: `D` on the board
-/// queue's last card says "Review queue done" on the grid the back lands on.
-/// Before, the back's slide drew the outgoing queue entry in the same pass,
-/// which reseeded the queue open, and the notice was taken down as left
-/// before it ever showed.
-#[test]
-fn a_finished_queue_says_so_after_the_back_slide() {
-    const CARD: &str = "Inline card creation";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[CARD], &["src/done.rs"]);
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "1 / 1");
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
-    settle_slides(&mut harness, 1);
-    wait_for_label(&mut harness, "7 cards · 5 columns");
-    assert!(
-        harness.query_by_label("Review queue done").is_some(),
-        "the grid says the queue is done"
-    );
-}
-
-/// As [`a_finished_queue_says_so_after_the_back_slide`], for an epic's queue
-/// (`R` from the epic's detail): the notice shows on the epic's detail the
-/// back lands on.
-#[test]
-fn a_finished_epic_queue_says_so_after_the_back_slide() {
-    const EPIC: &str = "Define nostr event model for boards";
-    const SUBISSUE: &str = "Sync cards across relays";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[SUBISSUE], &["src/sync.rs"]);
-
-    harness.get_by_label(EPIC).click();
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "← Back");
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    settle_slides(&mut harness, 3);
-    wait_for_label(&mut harness, "1 / 1");
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "← Back");
-    assert!(
-        harness.query_by_label("1 / 1").is_none(),
-        "the queue has gone"
-    );
-    assert!(
-        harness.query_by_label("Review queue done").is_some(),
-        "the epic's detail says its queue is done"
-    );
-}
-
-/// As [`a_finished_epic_queue_says_so_after_the_back_slide`], with the epic
-/// archived while its queue is open: `D` on the last card closes the queue
-/// onto the grid, by way of the epic's detail entry the back lands on first,
-/// and the grid still says the queue is done once it settles. Before, that
-/// entry's pass drew the grid only after the pass had been checked for the
-/// notice's view (the gone epic's selection drops as the pane draws), so the
-/// next pass took the notice down.
-#[test]
-fn a_gone_epics_finished_queue_says_so_on_the_grid() {
-    const SUBISSUE: &str = "Sync cards across relays";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[SUBISSUE], &["src/sync.rs"]);
-    let epic = harness_card_id(&mut harness, DEMO_EPIC);
-
-    harness.get_by_label(DEMO_EPIC).click();
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "← Back");
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    settle_slides(&mut harness, 3);
-    wait_for_label(&mut harness, "1 / 1");
-
-    archive_demo_cards(&mut harness, &[epic]);
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
-    settle_slides(&mut harness, 1);
-    wait_for_label(&mut harness, "6 cards · 5 columns");
-    assert!(
-        harness.query_by_label("Review queue done").is_some(),
-        "the grid says the queue is done"
-    );
-}
-
 /// Pump frames until the demo board, folded fresh off the db, passes `done`,
 /// or panic after a deadline naming `what`. Board edits land on the async
 /// writer thread, so a helper that applies one waits here before returning:
@@ -4916,45 +4692,6 @@ fn wait_for_demo(
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(25));
     }
-}
-
-/// Behavioural (no lavapipe), under the chrome's slides: a notice is about
-/// the view it went up in. `s` on a sessionless record in a plain review pane
-/// says so there, and it's gone from the detail Esc backs out to, and from the
-/// grid the next Esc reaches.
-#[test]
-fn a_pane_notice_stays_with_its_pane_through_the_slides() {
-    const CARD: &str = "Inline card creation";
-    const NO_SESSION: &str = "No agentium session on this record";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[CARD], &["src/pane.rs"]);
-
-    harness.get_by_label(CARD).click();
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "± Review diff");
-    press_board_keys(&mut harness, &[egui::Key::R]);
-    settle_slides(&mut harness, 3);
-    wait_for_any_label(&mut harness, "src/pane.rs");
-
-    press_board_keys(&mut harness, &[egui::Key::S]);
-    wait_for_label(&mut harness, NO_SESSION);
-
-    press_board_keys(&mut harness, &[egui::Key::Escape]);
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "± Review diff");
-    assert!(
-        harness.query_by_label(NO_SESSION).is_none(),
-        "the pane's notice didn't follow it to the detail"
-    );
-
-    press_board_keys(&mut harness, &[egui::Key::Escape]);
-    settle_slides(&mut harness, 1);
-    wait_for_label(&mut harness, "7 cards · 5 columns");
-    assert!(
-        harness.query_by_label(NO_SESSION).is_none(),
-        "nor on to the grid"
-    );
 }
 
 /// Full chrome round-trip (behavioural, no lavapipe): replicate the chrome's global

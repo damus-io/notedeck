@@ -32,6 +32,8 @@ mod actions;
 mod debug;
 mod frame;
 mod header;
+#[cfg(all(test, feature = "headway", not(debug_assertions)))]
+mod headway_nav_tests;
 mod keyboard;
 mod nav;
 mod roster;
