@@ -4,7 +4,9 @@
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
-use notedeck::tokens::{PALETTE, RADIUS_MD, RADIUS_PILL, SPACING_SM, SPACING_XS, STROKE_THIN};
+use notedeck::tokens::{
+    BUTTON_SM, PALETTE, RADIUS_MD, RADIUS_PILL, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THIN,
+};
 
 use crate::event::{self, Priority};
 
@@ -204,10 +206,11 @@ pub(super) fn detail_heading(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) 
     );
 }
 
-/// A frameless accent-coloured text button for a pane's secondary action —
-/// "± Review diff" in the detail's Review section, "☍ View dependency graph"
-/// under an epic's sub-issues — so both read as the same kind of link: one
-/// leading glyph, one space, the label, all in the body font and accent colour.
+/// A secondary button for a pane's action — "± Review diff" in the detail's
+/// Review section, "☍ View dependency graph" under an epic's sub-issues — so
+/// both read as the same kind of button: accent text (one leading glyph, one
+/// space, the label) on the elevated surface, with a thin border, a
+/// [`BUTTON_SM`] height and the card corner radius.
 ///
 /// The leading glyph must be one the loaded fonts carry (`tests/glyphs.rs`
 /// checks every non-ASCII character in headway's string literals); "⧉", the
@@ -217,11 +220,16 @@ pub(super) fn secondary_action_button(
     theme: &ColorTheme,
     text: &str,
 ) -> egui::Response {
-    // `.frame(false)` must come after `.fill()`: `fill` re-enables the frame.
     let button = egui::Button::new(egui::RichText::new(text).color(theme.accent))
-        .fill(egui::Color32::TRANSPARENT)
-        .frame(false);
-    ui.add(button)
+        .fill(theme.surface_elevated)
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .min_size(egui::vec2(0.0, BUTTON_SM));
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(SPACING_MD, SPACING_XS);
+        ui.add(button)
+    })
+    .inner
 }
 
 /// Which Linear-style status circle to paint for a column or subissue.

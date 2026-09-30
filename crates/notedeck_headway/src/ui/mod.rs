@@ -48,7 +48,8 @@ use graph::graph_view_ui;
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
 use review::{
-    NOTICE_SECS, ReviewQueue, ReviewUi, in_review_cards, review_pane_ui, review_queue_ui,
+    NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, in_review_cards, review_pane_ui,
+    review_queue_ui,
 };
 
 pub(crate) use review::{QueueNotice, QueuePending, QueueStep, reason_field_id};
@@ -192,6 +193,9 @@ pub struct BoardUiState {
     /// route like [`graph_epic`](Self::graph_epic)), the picked record, and the
     /// off-thread loader its diffs arrive through.
     review: ReviewUi,
+    /// The card detail's Review section: its rows' elided locations and
+    /// whether every record shows.
+    review_section: ReviewSection,
     /// The review queue (`R`): its snapshot of the In Review column and which
     /// card the review pane shows. While it's open the pane shows its card.
     queue: ReviewQueue,

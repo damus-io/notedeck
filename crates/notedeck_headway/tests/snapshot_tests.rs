@@ -2465,6 +2465,132 @@ fn snapshot_headway_review_queue_narrow() {
     harness.snapshot("headway_review_queue_narrow");
 }
 
+/// The card the detail Review section tests seed their records on.
+const DETAIL_REVIEW_CARD: &str = "Column reordering";
+
+/// The detail Review section's four records, oldest first: `(sha, subject,
+/// session, explainer)`. Not resolved (the section never loads a diff), so the
+/// shas needn't exist; fixed, so the snapshot is too. The newest names a
+/// session and an explainer, as an `autowork` done step records.
+const DETAIL_RECORDS: [(&str, &str, Option<&str>, Option<&str>); 4] = [
+    (
+        "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+        "headway: drag columns by their header",
+        None,
+        None,
+    ),
+    (
+        "1b2c3d4e5f60718293a4b5c6d7e8f9012345678a",
+        "headway: persist the column order as ranks",
+        None,
+        None,
+    ),
+    (
+        "2c3d4e5f60718293a4b5c6d7e8f9012345678ab9",
+        "headway: animate a column sliding into its new slot",
+        None,
+        Some(QUEUE_EXPLAINER),
+    ),
+    (
+        "3d4e5f60718293a4b5c6d7e8f9012345678ab9c0",
+        "headway: keyboard column reordering with a long subject that has to elide",
+        Some(QUEUE_SESSION),
+        Some(QUEUE_EXPLAINER),
+    ),
+];
+
+/// Record [`DETAIL_RECORDS`] on [`DETAIL_REVIEW_CARD`], oldest first, each
+/// from [`REVIEW_HOST`] with a deep checkout path. Waits for each to fold before
+/// adding the next, so `AddReview` stamps it past the last and the order is
+/// the listed one.
+fn seed_detail_reviews(harness: &mut Harness<'static, HeadwayTestState>) {
+    let card = harness_card_id(harness, DETAIL_REVIEW_CARD);
+    for (i, (sha, subject, session, explainer)) in DETAIL_RECORDS.iter().enumerate() {
+        apply_demo_action(
+            harness,
+            store::BoardAction::AddReview {
+                card,
+                review: event::ReviewFields {
+                    commit: Some(sha.to_string()),
+                    title: Some(subject.to_string()),
+                    branch: Some("headway".to_string()),
+                    host: Some(REVIEW_HOST.to_string()),
+                    path: Some("/home/jb55/dev/github/damus-io/notedeck-headway".to_string()),
+                    agentium: session.map(str::to_string),
+                    explainer: explainer.map(str::to_string),
+                    ..Default::default()
+                },
+            },
+        );
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            let folded = {
+                let state = harness.state_mut();
+                let author = state.account.pubkey;
+                let app_ctx = state.notedeck.app_context();
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+                    .expect("folded")
+                    .finalize();
+                headway::event::find_board(&boards, &author, store::BOARD_ID)
+                    .and_then(|view| view.card(card))
+                    .map_or(0, |c| c.reviews.len())
+            };
+            if folded > i {
+                break;
+            }
+            assert!(Instant::now() < deadline, "record {i} never folded");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+/// Behavioural (no lavapipe): the detail's Review section lists a card's
+/// records newest first, but only the newest three until "Show all 4" is
+/// clicked; "Show fewer" folds it back.
+#[test]
+fn detail_review_section_shows_the_newest_three_until_show_all() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_detail_reviews(&mut harness);
+    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+
+    let short = |i: usize| &DETAIL_RECORDS[i].0[..12];
+    for i in 1..4 {
+        wait_for_label(&mut harness, short(i));
+    }
+    assert!(
+        harness.query_by_label(short(0)).is_none(),
+        "the oldest record waits behind Show all"
+    );
+
+    harness.get_by_label("Show all 4").click();
+    wait_for_label(&mut harness, short(0));
+    harness.get_by_label("Show fewer").click();
+    wait_for_absent(&mut harness, short(0));
+}
+
+/// Snapshot: a card detail's Review section with four records — the newest
+/// three as two-line rows (sha pill and subject; then where it was made, the
+/// session and the explainer) and the "Show all 4" toggle — above the
+/// "Review diff" button. Then on a phone-width screen, where each record's
+/// second line wraps under its subject.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_detail_review() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 900.0));
+    seed_detail_reviews(&mut harness);
+    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    wait_for_label(&mut harness, &DETAIL_RECORDS[3].0[..12]);
+    for &(name, w, h) in &[
+        ("headway_detail_review", 1200.0, 900.0),
+        ("headway_detail_review_mobile", 400.0, 900.0),
+    ] {
+        harness.set_size(egui::Vec2::new(w, h));
+        harness.run_steps(3);
+        harness.snapshot(name);
+    }
+}
+
 /// Behavioural (no lavapipe): clicking a card also puts the board's keyboard
 /// cursor on it, and the cursor survives the detail closing, so backing out
 /// lands with the ring on the card you came from. The cursor is deliberately

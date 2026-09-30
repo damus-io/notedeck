@@ -913,8 +913,10 @@ fn record_summary_ui(
                 elided_location_ui(ui, theme, fields, location, location_width);
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                if let Some(sha) = fields.commit.as_deref() {
-                    sha_pill_ui(ui, theme, sha);
+                if let Some(sha) = fields.commit.as_deref()
+                    && sha_pill(ui, theme, sha).on_hover_text(sha).clicked()
+                {
+                    ui.ctx().copy_text(sha.to_owned());
                 }
                 if let Some(subject) = fields.title.as_deref().filter(|t| *t != card_title) {
                     let subject = egui::RichText::new(subject).color(theme.text_primary);
@@ -944,9 +946,10 @@ fn elided_location_ui(
     }
 }
 
-/// A commit's short sha as an accent monospace pill. Hovering shows the full
-/// sha; a click copies it.
-fn sha_pill_ui(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) {
+/// A commit's short sha as an accent monospace pill, for the caller to give a
+/// hover text and a click: the pane copies the sha, the detail's Review
+/// section opens the pane on the record.
+fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response {
     let pill = egui::Button::new(
         egui::RichText::new(short_sha(sha))
             .monospace()
@@ -955,30 +958,7 @@ fn sha_pill_ui(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) {
     .fill(theme.surface_elevated)
     .stroke(egui::Stroke::NONE)
     .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8));
-    if ui.add(pill).on_hover_text(sha).clicked() {
-        ui.ctx().copy_text(sha.to_owned());
-    }
-}
-
-/// Where a record was made — `host:path ⎇ branch` in small muted text, each
-/// part its own label (host and path packed tight) so nothing is formatted per
-/// frame. Parts the record lacks are left out.
-fn record_location_ui(ui: &mut egui::Ui, theme: &ColorTheme, fields: &ReviewFields) {
-    let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
-    if let Some(host) = fields.host.as_deref() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.label(muted(host));
-            if let Some(path) = fields.path.as_deref() {
-                ui.label(muted(":"));
-                ui.label(muted(path));
-            }
-        });
-    }
-    if let Some(branch) = fields.branch.as_deref() {
-        ui.label(muted("⎇"));
-        ui.label(muted(branch));
-    }
+    ui.add(pill)
 }
 
 /// The load's status and, once it's in, the diff: a spinner while the worker
@@ -1056,9 +1036,19 @@ fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, sou
 
 /// A frameless "Explainer ↗" link that opens `url` in a new browser tab.
 fn explainer_link_ui(ui: &mut egui::Ui, theme: &ColorTheme, url: &str) {
-    let link =
-        egui::Button::new(egui::RichText::new("Explainer ↗").color(theme.accent)).frame(false);
-    if ui.add(link).on_hover_text(url).clicked() {
+    explainer_link(ui, url, egui::RichText::new(EXPLAINER).color(theme.accent));
+}
+
+/// The explainer link's text.
+const EXPLAINER: &str = "Explainer ↗";
+
+/// A frameless link drawn as `text` that opens `url` in a new browser tab.
+fn explainer_link(ui: &mut egui::Ui, url: &str, text: egui::RichText) {
+    if ui
+        .add(egui::Button::new(text).frame(false))
+        .on_hover_text(url)
+        .clicked()
+    {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
 }
@@ -1110,13 +1100,72 @@ fn agentium_chip_ui(
     }
 }
 
-/// The card detail's Review section: a heading, one row per review record
-/// (newest first; its sha and subject open the review pane on that record), and
-/// a "Review diff" button. A card with no records but sitting in a terminal
-/// column still offers the pane, which then looks the commit up by the card's
-/// `Headway:` trailer — how cards finished before review records existed stay
-/// reviewable. The caller draws it only for a card with records or in a
-/// terminal column.
+/// The least room a record's session chip is squeezed into before it moves to
+/// the next line of the record's second line.
+const SESSION_CHIP_MIN_WIDTH: f32 = 96.0;
+
+/// How many records the detail's Review section lists before "Show all N".
+const RECORDS_SHOWN: usize = 3;
+
+/// A record's `host:path` in the detail's Review section, elided in its middle
+/// to fit its row.
+struct RecordLocation {
+    /// The record it was built for.
+    record: NoteId,
+    text: MiddleElided,
+}
+
+/// The card detail's Review section's slice of [`BoardUiState`]: what its rows
+/// draw that has to be built, built once per card and set of records rather
+/// than each frame, and whether every record shows.
+#[derive(Default)]
+pub(crate) struct ReviewSection {
+    /// The card the state below is for.
+    card: Option<NoteId>,
+    /// One per record, in the card's order (newest first).
+    locations: Vec<RecordLocation>,
+    /// "Show all N", for the card's N records.
+    show_all_label: String,
+    /// Whether every record shows rather than the newest [`RECORDS_SHOWN`].
+    /// Starts off again for each card.
+    show_all: bool,
+}
+
+impl ReviewSection {
+    /// Rebuild for `card`'s `reviews` if the card or its records changed since
+    /// the last frame; a new card also starts with the list folded.
+    fn sync(&mut self, card: NoteId, reviews: &[ReviewView]) {
+        let same_records = self.locations.len() == reviews.len()
+            && self
+                .locations
+                .iter()
+                .zip(reviews)
+                .all(|(l, r)| l.record == r.id);
+        if self.card == Some(card) && same_records {
+            return;
+        }
+        if self.card != Some(card) {
+            self.show_all = false;
+        }
+        self.card = Some(card);
+        self.locations = reviews
+            .iter()
+            .map(|r| RecordLocation {
+                record: r.id,
+                text: MiddleElided::new(host_path(&r.fields)),
+            })
+            .collect();
+        self.show_all_label = format!("Show all {}", reviews.len());
+    }
+}
+
+/// The card detail's Review section: a heading with the record count, the
+/// records newest first (at most [`RECORDS_SHOWN`] of them until "Show all N"),
+/// and a "Review diff" button that opens the pane on the newest. A card with no
+/// records but sitting in a terminal column still offers the pane, which then
+/// looks the commit up by the card's `Headway:` trailer — how cards finished
+/// before review records existed stay reviewable. The caller draws it only for
+/// a card with records or in a terminal column.
 pub(super) fn review_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1125,44 +1174,47 @@ pub(super) fn review_section_ui(
     reviews: &[ReviewView],
     state: &mut BoardUiState,
 ) {
+    let section = &mut state.review_section;
+    section.sync(card_id, reviews);
+
     ui.horizontal(|ui| {
         detail_heading(ui, theme, "Review");
         if !reviews.is_empty() {
             count_badge(ui, theme, reviews.len());
         }
     });
-    ui.add_space(SPACING_XS);
+    ui.add_space(SPACING_SM);
 
     // `Some(record)` once a row or the button was clicked; the inner `None`
     // (the button) opens on the newest record.
     let mut open: Option<Option<NoteId>> = None;
-    for r in reviews {
-        ui.horizontal_wrapped(|ui| {
-            let fields = &r.fields;
-            let sha = fields.commit.as_deref().map_or("(no commit)", short_sha);
-            let title = fields.title.as_deref().unwrap_or("");
-            let row = egui::Button::new(egui::RichText::new(sha).monospace().color(theme.accent))
-                .frame(false);
-            if ui
-                .add(row)
-                .on_hover_text("Review this commit's diff")
-                .clicked()
-            {
-                open = Some(Some(r.id));
-            }
-            let subject = egui::Button::new(egui::RichText::new(title).color(theme.text_primary))
-                .frame(false);
-            if ui.add(subject).clicked() {
-                open = Some(Some(r.id));
-            }
-            record_location_ui(ui, theme, fields);
-            if let Some(session) = fields.agentium.as_deref() {
-                agentium_chip_ui(ui, theme, app_ctx, session);
-            }
-            if let Some(url) = fields.explainer.as_deref() {
-                explainer_link_ui(ui, theme, url);
-            }
-        });
+    let shown = if section.show_all {
+        reviews.len()
+    } else {
+        RECORDS_SHOWN
+    };
+    let rows = reviews.iter().zip(&mut section.locations).take(shown);
+    for (i, (r, location)) in rows.enumerate() {
+        if i > 0 {
+            ui.add_space(SPACING_SM);
+        }
+        if record_row_ui(ui, theme, app_ctx, &r.fields, &mut location.text) {
+            open = Some(Some(r.id));
+        }
+    }
+    if reviews.len() > RECORDS_SHOWN {
+        ui.add_space(SPACING_XS);
+        let label = if section.show_all {
+            "Show fewer"
+        } else {
+            section.show_all_label.as_str()
+        };
+        let toggle = egui::RichText::new(label)
+            .small()
+            .color(theme.text_secondary);
+        if ui.add(egui::Button::new(toggle).frame(false)).clicked() {
+            section.show_all = !section.show_all;
+        }
     }
     if reviews.is_empty() {
         ui.label(
@@ -1174,13 +1226,92 @@ pub(super) fn review_section_ui(
         );
     }
 
-    ui.add_space(SPACING_XS);
+    ui.add_space(SPACING_MD);
     if secondary_action_button(ui, theme, "± Review diff").clicked() {
         open = Some(None);
     }
     if let Some(record) = open {
         state.review.open(card_id, record);
     }
+}
+
+/// One record in the detail's Review section, on two lines. First the sha pill
+/// and the commit subject, elided to the row (in full on hover); then, indented
+/// under the subject in small muted text, where it was made — `location`
+/// (`host:path`, elided in its middle), `⎇ branch` — its agentium session chip
+/// and its explainer link, `·` between those it has. Returns whether the sha or
+/// the subject was clicked, which opens the pane on this record.
+fn record_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    fields: &ReviewFields,
+    location: &mut MiddleElided,
+) -> bool {
+    let mut clicked = false;
+    let mut indent = 0.0;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_SM;
+        let sha = fields.commit.as_deref().unwrap_or("(no commit)");
+        let pill = sha_pill(ui, theme, sha).on_hover_text("Review this commit's diff");
+        clicked |= pill.clicked();
+        indent = pill.rect.width() + ui.spacing().item_spacing.x;
+        if let Some(subject) = fields.title.as_deref() {
+            let subject = egui::Label::new(egui::RichText::new(subject).color(theme.text_primary))
+                .truncate()
+                .sense(egui::Sense::click());
+            clicked |= ui
+                .add(subject)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked();
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_XS;
+            let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
+            // A `·` before every part but the first the record has.
+            let mut first = true;
+            let mut dot = |ui: &mut egui::Ui| {
+                if !std::mem::take(&mut first) {
+                    ui.label(muted("·"));
+                }
+            };
+            if !location.is_empty() {
+                dot(ui);
+                let width = ui.available_width() * LOCATION_SHARE;
+                location.ui(ui, theme.text_muted, width);
+            }
+            if let Some(branch) = fields.branch.as_deref() {
+                dot(ui);
+                ui.label(muted("⎇"));
+                ui.label(muted(branch));
+            }
+            if let Some(session) = fields.agentium.as_deref() {
+                dot(ui);
+                // The chip's scope doesn't wrap by itself: it would overflow the
+                // line and widen the whole column. So it takes the room left on
+                // the line, or starts a new one when that's too little. (In a
+                // wrapping layout `available_width` is a whole line's.)
+                if ui.available_size_before_wrap().x < SESSION_CHIP_MIN_WIDTH {
+                    ui.end_row();
+                }
+                let width = ui
+                    .available_size_before_wrap()
+                    .x
+                    .min(SESSION_CHIP_MAX_WIDTH);
+                session_chip_ui(ui, theme, app_ctx, session, width);
+            }
+            if let Some(url) = fields.explainer.as_deref() {
+                dot(ui);
+                let text = egui::RichText::new(EXPLAINER).small().color(theme.accent);
+                explainer_link(ui, url, text);
+            }
+        });
+    });
+    clicked
 }
 
 #[cfg(test)]
