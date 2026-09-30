@@ -61,7 +61,12 @@ pub enum PatchScroll {
     PrevFile,
     /// Move by this many rows (negative scrolls up).
     Rows(isize),
-    /// Move by this fraction of the view's height (negative scrolls up).
+    /// Move by this many pages (negative scrolls up). A whole page is exact:
+    /// forward, the first row that wasn't fully shown lands as the first one
+    /// readable (just under the pinned file header, when one is pinned);
+    /// back is its inverse. So paging neither skips a line nor shows one
+    /// twice. A fractional part moves by that share of the view's height.
+    /// Either way the view lands on a row boundary.
     Pages(f32),
 }
 
@@ -416,9 +421,61 @@ impl GitPatchState {
         ((self.viewport_height / row_step) as usize).saturating_sub(1)
     }
 
+    /// How many rows at the top of a view whose top row is `top` the pinned
+    /// file header hides: one while it's pinned (see [`sticky_header`]), none
+    /// on a file's own header row or in the summary.
+    fn pinned_rows(&self, top: usize) -> usize {
+        match self.file_at(top) {
+            Some(f) if self.file_rows[f] != top => 1,
+            _ => 0,
+        }
+    }
+
+    /// The offset one page on from `offset`: the first row not fully shown
+    /// becomes the first readable one. When a header would be pinned over
+    /// it, the view starts a row higher so the header covers a row already
+    /// read instead.
+    fn page_down(&self, offset: f32, rows: RowMetrics) -> f32 {
+        let top = row_at(offset, rows.step);
+        // The first row whose bottom edge is below the view's.
+        let bottom = offset + self.viewport_height + ROW_SLACK;
+        let next = ((bottom - rows.height) / rows.step).floor() as usize + 1;
+        let new_top = next - self.pinned_rows(next).min(next);
+        new_top.max(top + 1) as f32 * rows.step
+    }
+
+    /// The offset one page back from `offset`, the inverse of
+    /// [`Self::page_down`]: the row above the first readable one becomes the
+    /// last fully shown.
+    fn page_up(&self, offset: f32, rows: RowMetrics) -> f32 {
+        let top = row_at(offset, rows.step);
+        let hidden = self.pinned_rows(top) as f32 * rows.height;
+        let first_read = ((offset + hidden - ROW_SLACK) / rows.step).ceil() as usize;
+        // Rows fully shown below an aligned top row.
+        let below = ((self.viewport_height + ROW_SLACK - rows.height) / rows.step).floor() as usize;
+        let new_top = first_read.saturating_sub(below + 1);
+        new_top.min(top.saturating_sub(1)) as f32 * rows.step
+    }
+
+    /// The target of a [`PatchScroll::Pages`] request.
+    fn pages_target(&self, pages: f32, total_rows: usize, rows: RowMetrics) -> f32 {
+        let mut offset = self.offset;
+        for _ in 0..(pages.trunc().abs() as usize) {
+            offset = if pages > 0.0 {
+                self.page_down(offset, rows)
+            } else {
+                self.page_up(offset, rows)
+            };
+            offset = self.clamp(offset, total_rows, rows.step);
+        }
+        let rest = offset + pages.fract() * self.viewport_height;
+        (rest / rows.step).round() * rows.step
+    }
+
     /// Turn the pending request into a target offset. Runs after
     /// [`Self::layout`], against this pass's rows.
-    fn take_target(&mut self, content_rows: usize, row_step: f32) -> Option<f32> {
+    fn take_target(&mut self, content_rows: usize, rows: RowMetrics) -> Option<f32> {
+        let row_step = rows.step;
         let total_rows = content_rows + self.padding_rows(row_step);
         let request = self.pending.take()?;
         let n = self.file_rows.len();
@@ -442,7 +499,7 @@ impl GitPatchState {
             PatchScroll::Top | PatchScroll::PrevFile => 0.0,
             PatchScroll::Bottom => content_rows as f32 * row_step - self.viewport_height,
             PatchScroll::Rows(rows) => self.offset + rows as f32 * row_step,
-            PatchScroll::Pages(pages) => self.offset + pages * self.viewport_height,
+            PatchScroll::Pages(pages) => self.pages_target(pages, total_rows, rows),
             // Past the last file: stay put.
             PatchScroll::File(_) | PatchScroll::NextFile => self.offset,
         };
@@ -474,7 +531,19 @@ enum Row {
 /// The row at scroll offset `offset`. The half-pixel slack keeps an offset
 /// that is exactly a row's top (a jump) from rounding down to the row above.
 fn row_at(offset: f32, row_step: f32) -> usize {
-    ((offset + 0.5) / row_step) as usize
+    ((offset + ROW_SLACK) / row_step) as usize
+}
+
+/// Slack, in points, when asking which row an edge falls on, so an edge that
+/// is exactly on a row boundary isn't rounded to its neighbour.
+const ROW_SLACK: f32 = 0.5;
+
+/// The geometry every row shares: drawn `height` tall, one every `step`
+/// (the height plus the item spacing below it).
+#[derive(Debug, Clone, Copy)]
+struct RowMetrics {
+    height: f32,
+    step: f32,
 }
 
 /// Rows a file's body takes when expanded.
@@ -524,7 +593,11 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
     let row_height = row_height(ui);
     let row_step = row_height + ui.spacing().item_spacing.y;
     let content_rows = state.layout(patch);
-    let target = state.take_target(content_rows, row_step);
+    let rows = RowMetrics {
+        height: row_height,
+        step: row_step,
+    };
+    let target = state.take_target(content_rows, rows);
     let total_rows = content_rows + state.padding_rows(row_step);
 
     let mut area = ScrollArea::both()
@@ -1214,6 +1287,121 @@ mod tests {
         harness.state_mut().1.scroll(PatchScroll::Top);
         harness.run();
         assert_eq!(harness.state().1.current_file(), None);
+    }
+
+    /// The rows a reader can read in full at `offset`, worked out row by row
+    /// from the geometry rather than by the paging arithmetic: each row's
+    /// drawn rect must sit inside the view and below the pinned header.
+    /// `None` when no row is readable.
+    fn readable(
+        state: &GitPatchState,
+        offset: f32,
+        rows: RowMetrics,
+        content: usize,
+    ) -> Option<(usize, usize)> {
+        let pinned = state.pinned_rows(row_at(offset, rows.step)) as f32 * rows.height;
+        let mut shown = (0..content).filter(|&r| {
+            let top = r as f32 * rows.step - offset;
+            top >= pinned - ROW_SLACK && top + rows.height <= state.viewport_height + ROW_SLACK
+        });
+        let first = shown.next()?;
+        Some((first, shown.next_back().unwrap_or(first)))
+    }
+
+    /// Paging a page down and back up, from aligned and unaligned offsets,
+    /// in views that fit a whole number of rows and views that don't: a page
+    /// down starts reading on the row after the last one read (or on that
+    /// row's own file header, which a pinned header would otherwise hide),
+    /// and a page up ends on the row before the first one read. So no line
+    /// is skipped and none is read twice.
+    #[test]
+    fn a_page_neither_skips_nor_repeats_a_row() {
+        let rows = RowMetrics {
+            height: 18.0,
+            step: 21.0,
+        };
+        for patch in [GitPatch::parse(MULTI), tall_patch(120)] {
+            let mut state = GitPatchState::new(&patch, &mut Localization::default());
+            let content = state.layout(&patch);
+            let max = |state: &GitPatchState| content as f32 * rows.step - state.viewport_height;
+            for viewport in [100.0, 147.0, 210.0, 333.0] {
+                state.viewport_height = viewport;
+                for start in (0..content).map(|r| r as f32 * rows.step + [0.0, 7.5][r % 2]) {
+                    if start > max(&state) {
+                        break;
+                    }
+                    let Some((_, last)) = readable(&state, start, rows, content) else {
+                        continue;
+                    };
+                    let down = state.page_down(start, rows);
+                    assert_eq!(down % rows.step, 0.0, "page down lands on a row");
+                    if down <= max(&state) {
+                        let (first, _) = readable(&state, down, rows, content).unwrap();
+                        let header = state.file_rows.contains(&first);
+                        assert!(
+                            first == last + 1 || (first == last && header),
+                            "viewport {viewport}, from {start}: read to {last}, then from {first}"
+                        );
+                    }
+
+                    let (first, _) = readable(&state, start, rows, content).unwrap();
+                    let up = state.page_up(start, rows);
+                    assert_eq!(up % rows.step, 0.0, "page up lands on a row");
+                    if up > 0.0 {
+                        let (_, back_last) = readable(&state, up, rows, content).unwrap();
+                        assert_eq!(
+                            back_last + 1,
+                            first,
+                            "viewport {viewport}, from {start}: read from {first}, back to {back_last}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// In the widget, pages move by whole rows: a page down lands on a row
+    /// boundary short of a full view, two pages up return to the top, and a
+    /// half page lands on a row too.
+    #[test]
+    fn pages_scroll_the_view_by_whole_rows() {
+        let mut harness = harness(tall_patch(600), 400.0);
+        harness.run();
+        let offset = |h: &Harness<'_, (GitPatch, GitPatchState)>| h.state().1.offset;
+        // One row's step, as the widget lays it out.
+        harness.state_mut().1.scroll(PatchScroll::Rows(1));
+        harness.run();
+        let step = offset(&harness);
+        harness.state_mut().1.scroll(PatchScroll::Top);
+        harness.run();
+        let on_a_row = |y: f32| (y / step - (y / step).round()).abs() < 1e-3;
+
+        harness.state_mut().1.scroll(PatchScroll::Pages(1.0));
+        harness.run();
+        let paged = offset(&harness);
+        let viewport = harness.state().1.viewport_height;
+        assert!(on_a_row(paged), "{paged} is on a {step}pt row");
+        assert!(
+            paged <= viewport && paged > viewport - 2.0 * step,
+            "{paged} vs {viewport}"
+        );
+
+        harness.state_mut().1.scroll(PatchScroll::Pages(1.0));
+        harness.run();
+        assert!(on_a_row(offset(&harness)));
+        harness.state_mut().1.scroll(PatchScroll::Pages(-1.0));
+        harness.run();
+        harness.state_mut().1.scroll(PatchScroll::Pages(-1.0));
+        harness.run();
+        assert_eq!(offset(&harness), 0.0, "back at the top");
+
+        harness.state_mut().1.scroll(PatchScroll::Pages(0.5));
+        harness.run();
+        let half = offset(&harness);
+        assert!(
+            on_a_row(half) && half > 0.0 && half < paged,
+            "half a page: {half}"
+        );
     }
 
     #[test]
