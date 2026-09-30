@@ -75,6 +75,10 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
     }
 
     egui::CentralPanel::default().show(ctx, |ui| {
+        // Mirror the chrome, which zeroes the horizontal item gap for every app
+        // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`): a Headway that
+        // stops owning its spacing then shows up glued here, as it would live.
+        ui.spacing_mut().item_spacing.x = 0.0;
         // Mirror the chrome: when a global-history entry is set, draw it through
         // `render_nav` with its route token (the chrome always reaches an app this
         // way); otherwise the plain `render` root.
@@ -2050,6 +2054,7 @@ fn review_queue_walks_the_in_review_column() {
     wait_for_label(&mut harness, "1 / 3");
     wait_for_label(&mut harness, CARDS[0]);
     wait_for_any_label(&mut harness, FILES[0]);
+    assert_labels_gapped(&harness, "Review queue", "1 / 3");
 
     press_board_keys(&mut harness, &[egui::Key::N, egui::Key::N]);
     wait_for_label(&mut harness, "3 / 3");
@@ -2072,6 +2077,26 @@ fn review_queue_walks_the_in_review_column() {
     let (pushes, last_back) = queue_pushes_and_last_back(&mut harness);
     assert_eq!(pushes, 1, "stepping the queue pushes nothing more");
     assert!(last_back, "leaving the queue is one back");
+}
+
+/// Assert `right` starts a real gap after `left` ends on the same row. The
+/// harness hands Headway the chrome's zero item gap (see [`render_headway`]),
+/// so this fails if Headway stops owning its own spacing and the two labels
+/// glue together as "Review queue1 / 3".
+fn assert_labels_gapped(harness: &Harness<'static, HeadwayTestState>, left: &str, right: &str) {
+    let left_box = harness
+        .get_by_label(left)
+        .bounding_box()
+        .expect("left bounds");
+    let right_box = harness
+        .get_by_label(right)
+        .bounding_box()
+        .expect("right bounds");
+    let gap = right_box.x0 - left_box.x1;
+    assert!(
+        gap >= f64::from(notedeck::tokens::SPACING_XS),
+        "{left:?} and {right:?} are glued together (gap {gap})"
+    );
 }
 
 /// Behavioural (no lavapipe): with nothing in In Review, `R` says so in the

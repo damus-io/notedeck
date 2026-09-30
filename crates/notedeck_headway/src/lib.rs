@@ -849,6 +849,11 @@ impl Headway {
     /// [`AppId`](notedeck::AppId) on drain, since `render_nav` never tells the app
     /// its own slot.
     fn render_board(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        // The chrome hands every app a zero horizontal item gap
+        // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`), which glues
+        // adjacent labels together; Headway's layout assumes a real gap, so it
+        // owns one rather than inheriting the chrome's.
+        ui.spacing_mut().item_spacing.x = notedeck::tokens::SPACING_SM;
         let theme = ColorTheme::current(ui.ctx());
 
         let author = *ctx.accounts.selected_account_pubkey();
