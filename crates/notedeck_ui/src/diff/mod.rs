@@ -38,6 +38,10 @@ const GUTTER_FONT_SIZE: f32 = 11.0;
 /// Uses premultiplied alpha: rgb(200,60,60) @ alpha=40 and rgb(60,180,60) @ alpha=40.
 const DELETE_BG: Color32 = Color32::from_rgba_premultiplied(31, 9, 9, 40);
 const INSERT_BG: Color32 = Color32::from_rgba_premultiplied(9, 28, 9, 40);
+/// Stronger tints of the same hues, for the line-number gutter of a changed
+/// row: rgb(200,60,60) @ alpha=70 and rgb(60,180,60) @ alpha=70.
+const DELETE_GUTTER_BG: Color32 = Color32::from_rgba_premultiplied(55, 16, 16, 70);
+const INSERT_GUTTER_BG: Color32 = Color32::from_rgba_premultiplied(16, 49, 16, 70);
 
 /// Whether a diff line is unchanged context, removed, or added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,37 +187,83 @@ fn row_job(
             ..Default::default()
         },
     );
-
-    let content = row.text.trim_end_matches('\n');
-    for (token, text) in tokenize_code(content, lang) {
-        let mut fmt = theme.format(token, font_id);
-        fmt.background = line_bg;
-        job.append(text, 0.0, fmt);
-    }
+    append_tokens(&mut job, row.text, lang, theme, font_id, line_bg);
     job
 }
 
+/// Append `text`'s syntax-highlighted tokens to `job`, each on `background`.
+/// A trailing newline is dropped.
+fn append_tokens(
+    job: &mut LayoutJob,
+    text: &str,
+    lang: &str,
+    theme: &SandCodeTheme,
+    font_id: &FontId,
+    background: Color32,
+) {
+    let content = text.trim_end_matches('\n');
+    for (token, text) in tokenize_code(content, lang) {
+        let mut fmt = theme.format(token, font_id);
+        fmt.background = background;
+        job.append(text, 0.0, fmt);
+    }
+}
+
 /// A diff row laid out once, for callers that keep it across frames instead
-/// of laying the row out every frame like [`DiffLines`] does. Both galleys
-/// are unwrapped; an unchanged line's prefix is coloured `plain`.
+/// of laying the row out every frame like [`DiffLines`] does. Unlike
+/// [`DiffLines`]' rows, the `+`/`-` marker is its own galley and nothing
+/// carries a background: the caller places the columns and tints the whole
+/// row (see [`DiffTag::tints`]). All three galleys are unwrapped.
 #[derive(Clone)]
 pub(crate) struct RowGalleys {
+    pub tag: DiffTag,
     /// The old/new line numbers, as [`DiffLines`]' gutter shows them.
     pub gutter: Arc<Galley>,
-    /// The prefix and highlighted content.
+    /// `+`, `-`, or a space for an unchanged line, in the content's font so
+    /// the marker column is one content glyph wide.
+    pub marker: Arc<Galley>,
+    /// The highlighted content, without the marker.
     pub content: Arc<Galley>,
 }
 
 impl RowGalleys {
     /// Lay out `row`, highlighting its content as `lang`.
-    pub fn layout(row: &DiffRow<'_>, lang: &str, plain: Color32, ui: &Ui) -> Self {
+    pub fn layout(row: &DiffRow<'_>, lang: &str, ui: &Ui) -> Self {
         let theme = SandCodeTheme::from_visuals(ui.visuals());
-        let job = row_job(row, lang, &theme, &diff_font(), plain);
+        let font_id = diff_font();
+        let mut job = LayoutJob::default();
+        append_tokens(
+            &mut job,
+            row.text,
+            lang,
+            &theme,
+            &font_id,
+            Color32::TRANSPARENT,
+        );
+        let (marker, marker_color) = match row.tag {
+            DiffTag::Equal => (" ", LINE_NUMBER_COLOR),
+            DiffTag::Delete => ("-", DELETE_COLOR),
+            DiffTag::Insert => ("+", INSERT_COLOR),
+        };
         let gutter = gutter_text(row.old_no, row.new_no);
         ui.fonts(|fonts| Self {
+            tag: row.tag,
             gutter: fonts.layout_no_wrap(gutter, gutter_font(), LINE_NUMBER_COLOR),
+            marker: fonts.layout_no_wrap(marker.to_owned(), font_id.clone(), marker_color),
             content: fonts.layout_job(job),
         })
+    }
+}
+
+impl DiffTag {
+    /// The row tint and the stronger gutter tint of a changed line; `None`
+    /// for an unchanged one, which isn't tinted.
+    pub(crate) fn tints(self) -> Option<(Color32, Color32)> {
+        match self {
+            DiffTag::Equal => None,
+            DiffTag::Delete => Some((DELETE_BG, DELETE_GUTTER_BG)),
+            DiffTag::Insert => Some((INSERT_BG, INSERT_GUTTER_BG)),
+        }
     }
 }
 

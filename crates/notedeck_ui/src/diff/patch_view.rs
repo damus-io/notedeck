@@ -11,7 +11,8 @@
 
 use super::patch::{FilePatch, FileStatus, GitPatch, LineKind};
 use super::{
-    file_extension, RowGalleys, DELETE_COLOR, DIFF_FONT_SIZE, INSERT_COLOR, LINE_NUMBER_COLOR,
+    file_extension, DiffTag, RowGalleys, DELETE_COLOR, DIFF_FONT_SIZE, INSERT_COLOR,
+    LINE_NUMBER_COLOR,
 };
 use egui::emath::GuiRounding;
 use egui::epaint::{mutex::Mutex, TextShape, TextureAtlas};
@@ -40,6 +41,11 @@ const BAR_BLOCK: f32 = 7.0;
 const BAR_BLOCK_GAP: f32 = 2.0;
 /// Width of the whole bar.
 const BAR_WIDTH: f32 = BAR_BLOCKS as f32 * (BAR_BLOCK + BAR_BLOCK_GAP) - BAR_BLOCK_GAP;
+
+/// Gap between a diff line's line numbers and its `+`/`-` marker.
+const GUTTER_GAP: f32 = 8.0;
+/// Gap between a diff line's marker and its content.
+const MARKER_GAP: f32 = 6.0;
 
 /// A scroll the caller asks for; applied on the next [`git_patch_ui`] pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,8 +122,6 @@ struct GalleyKey {
     atlas: Arc<Mutex<TextureAtlas>>,
     /// Picks the syntax theme.
     dark_mode: bool,
-    /// Colours an unchanged line's prefix.
-    text_color: Color32,
 }
 
 impl GalleyKey {
@@ -125,14 +129,11 @@ impl GalleyKey {
         Self {
             atlas: ui.fonts(|f| f.texture_atlas()),
             dark_mode: ui.visuals().dark_mode,
-            text_color: ui.visuals().text_color(),
         }
     }
 
     fn same_as(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.atlas, &other.atlas)
-            && self.dark_mode == other.dark_mode
-            && self.text_color == other.text_color
+        Arc::ptr_eq(&self.atlas, &other.atlas) && self.dark_mode == other.dark_mode
     }
 }
 
@@ -164,7 +165,7 @@ impl LineGalleys {
         let file = &patch.files()[f];
         let row = patch.diff_row(&file.lines[i])?;
         let lang = file_extension(file.path()).unwrap_or("text");
-        let galleys = RowGalleys::layout(&row, lang, ui.visuals().text_color(), ui);
+        let galleys = RowGalleys::layout(&row, lang, ui);
         self.lines.insert(
             (f, i),
             CachedLine {
@@ -628,14 +629,21 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
         Row::HunkHeader(f, h) => {
             let header = patch.text(patch.files()[f].hunks[h].header);
             ui.horizontal(|ui| {
+                // A band with a rule along its top, and text a step brighter
+                // than the line numbers, so each hunk reads as a section.
                 let rect = full_row(ui);
-                ui.painter()
-                    .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+                let visuals = ui.visuals();
+                ui.painter().rect_filled(rect, 0.0, visuals.faint_bg_color);
+                ui.painter().hline(
+                    rect.x_range(),
+                    rect.top(),
+                    visuals.widgets.noninteractive.bg_stroke,
+                );
                 ui.label(
                     RichText::new(header)
                         .monospace()
                         .size(DIFF_FONT_SIZE)
-                        .color(LINE_NUMBER_COLOR),
+                        .color(visuals.text_color()),
                 );
             });
         }
@@ -657,32 +665,63 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
     }
 }
 
-/// One diff line from its laid-out galleys: the gutter, then the content,
-/// placed as a `horizontal` of two labels would place them (left to right,
-/// vertically centred in the row) but without one, because a child `Ui`
-/// allocates, and so does building the labels' text.
+/// One diff line from its laid-out galleys, in three columns at fixed gaps:
+/// the line numbers, the `+`/`-` marker, then the content. Placed as a
+/// `horizontal` of labels would place them (left to right, vertically centred
+/// in the row) but without one, because a child `Ui` allocates, and so does
+/// building the labels' text. The gaps are constants, not the parent's item
+/// spacing, which the chrome sets to zero.
 ///
-/// The content is selectable like a label's; the gutter is only painted, so
-/// selecting code doesn't pick up its line numbers.
+/// A changed line is tinted across the whole row, out to the view's right
+/// edge, with a stronger tint behind its line numbers. The tint also fills
+/// the item spacing above and below, so a run of changed lines is one band.
+///
+/// The content is selectable like a label's; the numbers and marker are only
+/// painted, so selecting code picks up neither.
 fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) {
-    let RowGalleys { gutter, content } = galleys;
+    let RowGalleys {
+        tag,
+        gutter,
+        marker,
+        content,
+    } = galleys;
     let height = ui.spacing().interact_size.y;
-    let gap = ui.spacing().item_spacing.x;
     let min = ui.cursor().min;
-    let width = gutter.size().x + gap + content.size().x;
-    let row = Rect::from_min_size(min, egui::vec2(width, height));
+    let marker_x = min.x + gutter.size().x + GUTTER_GAP;
+    let content_x = marker_x + marker.size().x + MARKER_GAP;
+    let row = Rect::from_min_size(
+        min,
+        egui::vec2(content_x - min.x + content.size().x, height),
+    );
     let id = ui.advance_cursor_after_rect(row);
+
+    if let Some((line_bg, gutter_bg)) = tag.tints() {
+        let tint = row
+            .expand2(egui::vec2(0.0, ui.spacing().item_spacing.y / 2.0))
+            .with_max_x(row.right().max(ui.clip_rect().right()));
+        let split = marker_x - GUTTER_GAP / 2.0;
+        let painter = ui.painter();
+        painter.rect_filled(tint.with_max_x(split), 0.0, gutter_bg);
+        painter.rect_filled(tint.with_min_x(split), 0.0, line_bg);
+    }
 
     let centred = |x: f32, size: egui::Vec2| {
         Rect::from_min_size(egui::pos2(x, row.center().y - size.y / 2.0), size).round_ui()
     };
     let gutter_rect = centred(min.x, gutter.size());
-    let content_rect = centred(gutter_rect.right() + gap, content.size());
+    let marker_rect = centred(marker_x, marker.size());
+    let content_rect = centred(content_x, content.size());
 
     let response = ui.interact(gutter_rect, id.with("gutter"), Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, gutter.text()));
     ui.painter()
         .add(TextShape::new(gutter_rect.min, gutter, LINE_NUMBER_COLOR));
+    if tag != DiffTag::Equal {
+        let response = ui.interact(marker_rect, id.with("marker"), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, marker.text()));
+    }
+    ui.painter()
+        .add(TextShape::new(marker_rect.min, marker, LINE_NUMBER_COLOR));
 
     let selectable = ui.style().interaction.selectable_labels;
     let mut sense = Sense::hover();
@@ -1064,7 +1103,7 @@ mod tests {
         harness.get_by_role_and_label(Role::Link, "main.rs");
         harness.get_by_role_and_label(Role::Button, "main.rs");
         assert_eq!(shown(&harness, "@@ -1,3 +1,4 @@"), 1);
-        assert_eq!(shown(&harness, "+     new();"), 1);
+        assert_eq!(shown(&harness, "    new();"), 1);
         assert_eq!(shown(&harness, "Binary file not shown"), 1);
         assert_eq!(shown(&harness, "No content changes"), 1);
 
@@ -1146,31 +1185,27 @@ mod tests {
     fn only_rows_in_view_are_laid_out_and_jumps_land() {
         let mut harness = harness(tall_patch(600), 400.0);
         harness.run();
-        assert_eq!(shown(&harness, "+ big 1"), 1);
-        assert_eq!(
-            shown(&harness, "+ big 600"),
-            0,
-            "off-screen rows are virtual"
-        );
+        assert_eq!(shown(&harness, "big 1"), 1);
+        assert_eq!(shown(&harness, "big 600"), 0, "off-screen rows are virtual");
         assert_eq!(harness.state().1.current_file(), None);
 
         harness.state_mut().1.scroll(PatchScroll::File(1));
         harness.run();
-        assert_eq!(shown(&harness, "+ new"), 1);
-        assert_eq!(shown(&harness, "+ big 1"), 0);
+        assert_eq!(shown(&harness, "new"), 1);
+        assert_eq!(shown(&harness, "big 1"), 0);
         assert_eq!(harness.state().1.current_file(), Some(1));
 
         harness.state_mut().1.scroll(PatchScroll::PrevFile);
         harness.run();
         assert_eq!(harness.state().1.current_file(), Some(0));
-        assert_eq!(shown(&harness, "+ big 1"), 1);
+        assert_eq!(shown(&harness, "big 1"), 1);
 
         harness.state_mut().1.scroll(PatchScroll::Rows(100));
         harness.run();
         assert_eq!(harness.state().1.current_file(), Some(0));
         // Deep in big.txt: its header is pinned over the top row.
         harness.get_by_role_and_label(Role::Button, "big.txt");
-        assert_eq!(shown(&harness, "+ big 100"), 1);
+        assert_eq!(shown(&harness, "big 100"), 1);
 
         harness.state_mut().1.scroll(PatchScroll::NextFile);
         harness.run();
@@ -1187,15 +1222,15 @@ mod tests {
         harness.run();
         assert!(harness.state().1.is_collapsed(0));
         assert!(!harness.state().1.is_collapsed(1));
-        assert_eq!(shown(&harness, "+ big 1"), 0);
-        assert_eq!(shown(&harness, "+ new"), 1);
+        assert_eq!(shown(&harness, "big 1"), 0);
+        assert_eq!(shown(&harness, "new"), 1);
 
         harness
             .get_by_role_and_label(Role::Button, "big.txt")
             .click();
         harness.run();
         assert!(!harness.state().1.is_collapsed(0));
-        assert_eq!(shown(&harness, "+ big 1"), 1);
+        assert_eq!(shown(&harness, "big 1"), 1);
     }
 
     #[test]
@@ -1212,6 +1247,78 @@ mod tests {
 
         harness.state_mut().1.scroll(PatchScroll::Bottom);
         harness.run();
-        assert_eq!(shown(&harness, "+ no eol now"), 1);
+        assert_eq!(shown(&harness, "no eol now"), 1);
+    }
+
+    /// One changed line each way, numbered so its gutter labels are unique.
+    const ONE_CHANGE: &str =
+        "diff --git a/x.txt b/x.txt\n--- a/x.txt\n+++ b/x.txt\n@@ -10 +10 @@\n-old\n+new\n";
+
+    /// A harness with the chrome's zero horizontal item spacing, which the
+    /// diff rows must not depend on; `render` attaches the software renderer.
+    fn chrome_harness(
+        patch: GitPatch,
+        render: bool,
+    ) -> Harness<'static, (GitPatch, GitPatchState)> {
+        let state = GitPatchState::new(&patch, &mut Localization::default());
+        let mut builder = Harness::builder().with_size(egui::vec2(400.0, 300.0));
+        if render {
+            builder = builder.renderer(notedeck::software_renderer());
+        }
+        builder.build_ui_state(
+            |ui, (patch, state)| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                git_patch_ui(patch, state, ui)
+            },
+            (patch, state),
+        )
+    }
+
+    /// Screen x-extent of the one node labelled `label`.
+    fn span(harness: &Harness<'_, (GitPatch, GitPatchState)>, label: &str) -> (f64, f64, f64) {
+        let b = harness
+            .get_by_label(label)
+            .bounding_box()
+            .expect("laid out");
+        (b.x0, b.x1, (b.y0 + b.y1) / 2.0)
+    }
+
+    #[test]
+    fn diff_line_columns_sit_at_fixed_gaps() {
+        let mut harness = chrome_harness(GitPatch::parse(ONE_CHANGE), false);
+        harness.run();
+        // Numbers, marker, content: each column a fixed gap after the last,
+        // even with no item spacing to lean on. (Rounding to pixels moves an
+        // edge by up to one.)
+        for (gutter, marker, content) in [("  10     ", "-", "old"), ("       10", "+", "new")] {
+            let (gutter, marker, content) = (
+                span(&harness, gutter),
+                span(&harness, marker),
+                span(&harness, content),
+            );
+            let gap = marker.0 - gutter.1;
+            assert!((gap - GUTTER_GAP as f64).abs() <= 1.0, "gutter gap {gap}");
+            let gap = content.0 - marker.1;
+            assert!((gap - MARKER_GAP as f64).abs() <= 1.0, "marker gap {gap}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn diff_row_tints_rasterize_across_the_row() {
+        let mut harness = chrome_harness(GitPatch::parse(ONE_CHANGE), true);
+        harness.run();
+        let old = span(&harness, "old");
+        let new = span(&harness, "new");
+        // Rasterize: tessellates the row fills, which a harness that only
+        // runs never does.
+        let image = harness.render().expect("software render");
+        let ppp = harness.ctx.pixels_per_point() as f64;
+        // Well past the end of the text, the row is still tinted its hue.
+        let at = |y: f64| image.get_pixel((300.0 * ppp) as u32, (y * ppp) as u32).0;
+        let [r, g, _, _] = at(old.2);
+        assert!(r > g + 8, "deleted row not red at the far edge: {r},{g}");
+        let [r, g, _, _] = at(new.2);
+        assert!(g > r + 8, "inserted row not green at the far edge: {r},{g}");
     }
 }
