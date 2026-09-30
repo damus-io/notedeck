@@ -1720,6 +1720,14 @@ fn comment_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, comment: &CommentView) 
     ui.add_space(SPACING_SM);
 }
 
+/// The id of the detail's comment composer. Fixed rather than egui's auto
+/// id, which counts the widgets laid out before it: a fold that adds a row
+/// above the composer (the card's status change, a new activity line) would
+/// otherwise rename the field and drop its focus while someone is typing.
+fn comment_field_id() -> egui::Id {
+    egui::Id::new("headway-detail-comment")
+}
+
 /// The "leave a comment" composer at the foot of the thread, Linear-style: a
 /// bordered rounded panel holding a frameless multiline field with a round ↑
 /// submit button in its bottom-right corner. Posts on the button or
@@ -1741,6 +1749,7 @@ fn detail_comment_composer_ui(
             ui.set_width(ui.available_width());
             let resp = ui.add(
                 egui::TextEdit::multiline(&mut state.comment_draft)
+                    .id(comment_field_id())
                     .frame(false)
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)
