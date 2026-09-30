@@ -11,7 +11,7 @@ use notedeck::tokens::{
 use notedeck_ui::diff::PatchScroll;
 
 use super::card_actions::detail_scroll_ui;
-use super::review::{QueueScope, epic_review_count, review_section_ui};
+use super::review::{QueueScope, epic_review_count, review_section_ui, review_sidebar_ui};
 use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
     priority_label, secondary_action_button, section_label, status_icon_ui,
@@ -20,6 +20,7 @@ use super::{BoardUiState, EditMode, find_card, notice_ui, pane_hints_ui, seed_ed
 use crate::event::{
     self, ActivityKind, ActivityView, BoardView, ColumnPos, CommentView, Priority, ReviewView,
 };
+use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::store::{self, BoardAction};
 
 /// Max width the full-pane card detail body is constrained to, so a card reads
@@ -221,7 +222,7 @@ pub(super) fn card_detail_pane_ui(
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(DETAIL_SIDEBAR_WIDTH);
-                            detail_properties_ui(ui, theme, &ctx, state, &mut outcome);
+                            detail_properties_ui(ui, theme, app_ctx, &ctx, state, &mut outcome);
                         },
                     );
                 });
@@ -235,7 +236,7 @@ pub(super) fn card_detail_pane_ui(
                         ui.add_space(SPACING_MD);
                         ui.separator();
                         ui.add_space(SPACING_MD);
-                        detail_properties_ui(ui, theme, &ctx, state, &mut outcome);
+                        detail_properties_ui(ui, theme, app_ctx, &ctx, state, &mut outcome);
                         ui.add_space(SPACING_MD);
                         ui.separator();
                         ui.add_space(SPACING_MD);
@@ -245,8 +246,7 @@ pub(super) fn card_detail_pane_ui(
             }
         });
 
-    let now = ui.ctx().input(|i| i.time);
-    resolve_detail_outcome(state, action, view, &ctx, outcome, now);
+    resolve_detail_outcome(ui.ctx(), state, action, view, &ctx, outcome);
 }
 
 /// The full-pane detail top bar, a Linear-style breadcrumb: a back affordance,
@@ -448,6 +448,9 @@ enum DetailOutcome {
     DetachParent,
     /// Lift a blocker: remove the `card`-blocked-by-`on` dependency edge.
     Unblock(NoteId),
+    /// A card action clicked in the sidebar's Review block, applied as its
+    /// key would be.
+    CardAction(CardAction),
 }
 
 /// The dimmed full-screen backdrop behind the sheet. Returns true if it was
@@ -565,6 +568,7 @@ fn detail_body_ui(
 fn detail_properties_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
     ctx: &DetailCtx,
     state: &mut BoardUiState,
     outcome: &mut DetailOutcome,
@@ -612,6 +616,18 @@ fn detail_properties_ui(
     if !ctx.blocked_by.is_empty() || !ctx.blocks.is_empty() {
         ui.add_space(SPACING_LG);
         detail_dependencies_section_ui(ui, theme, ctx, outcome);
+    }
+
+    // The newest review, kept here beside the thread rather than only in the
+    // body's Review section, so it stays reachable under a long thread.
+    if !ctx.reviews.is_empty() {
+        ui.add_space(SPACING_LG);
+        let section = &mut state.review_section;
+        if let Some(card_action) =
+            review_sidebar_ui(ui, theme, app_ctx, ctx.card_id, ctx.reviews, section)
+        {
+            *outcome = DetailOutcome::CardAction(card_action);
+        }
     }
 
     // Quiet, frameless actions under the groups — Linear keeps these out of
@@ -1744,12 +1760,12 @@ fn detail_comment_composer_ui(
 
 /// Resolve the collected [`DetailOutcome`] into a single [`BoardAction`].
 fn resolve_detail_outcome(
+    egui_ctx: &egui::Context,
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
     view: &BoardView,
     ctx: &DetailCtx,
     outcome: DetailOutcome,
-    now: f64,
 ) {
     // Removing a card from the board also dismisses its (now stale) sheet.
     let mut close = || {
@@ -1826,7 +1842,18 @@ fn resolve_detail_outcome(
             state.selected = Some(id);
         }
         DetailOutcome::ReviewQueue => {
+            let now = egui_ctx.input(|i| i.time);
             state.open_review_queue(view, QueueScope::Epic(ctx.card_id), now)
+        }
+        DetailOutcome::CardAction(card_action) => {
+            *action = apply_card_action(
+                egui_ctx,
+                view,
+                state,
+                ctx.card_id,
+                card_action,
+                ActionView::Detail,
+            );
         }
         DetailOutcome::AddSubissue => {
             let title = state.new_subissue.trim().to_string();

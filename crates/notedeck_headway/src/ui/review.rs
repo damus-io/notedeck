@@ -19,9 +19,11 @@ use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::widgets::{
-    MiddleElided, count_badge, detail_heading, secondary_action_button, text_pill, tinted_pill,
+    MiddleElided, count_badge, detail_heading, secondary_action_button, section_label, text_pill,
+    tinted_pill,
 };
 use super::{BoardUiState, find_card, pane_hints_ui};
+use crate::keys::CardAction;
 use crate::nav::ReviewTarget;
 use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
 
@@ -1162,6 +1164,10 @@ pub(crate) struct ReviewSection {
     locations: Vec<RecordLocation>,
     /// "Show all N", for the card's N records.
     show_all_label: String,
+    /// The card's record count, for the sidebar block's heading pill.
+    count_label: String,
+    /// "All N records ›", the sidebar block's line into the pane.
+    records_label: String,
     /// Whether every record shows rather than the newest [`RECORDS_SHOWN`].
     /// Starts off again for each card.
     show_all: bool,
@@ -1192,6 +1198,8 @@ impl ReviewSection {
             })
             .collect();
         self.show_all_label = format!("Show all {}", reviews.len());
+        self.count_label = reviews.len().to_string();
+        self.records_label = format!("All {} records ›", reviews.len());
     }
 }
 
@@ -1348,6 +1356,116 @@ fn record_row_ui(
         });
     });
     clicked
+}
+
+/// The card detail sidebar's Review block: the newest record's sha pill and
+/// subject, its agentium session chip, a "Review in session" link and its
+/// explainer, and, with several records, an "All N records ›" line into the
+/// pane. On a wide pane the sidebar stays put beside the scrolling thread, so
+/// the review is a click away however far down the comments someone has read.
+///
+/// Each affordance is the mouse twin of a detail key, and its hover names the
+/// key: the sha and the records line are `r`, the link is `S` (`s` opens the
+/// session plain), the explainer is `e`. A click comes back as that key's
+/// [`CardAction`] for the detail to apply through
+/// [`crate::keys::apply_card_action`], the path the keys take, so a click and
+/// its key can't drift apart. Draws nothing for a card with no records.
+pub(super) fn review_sidebar_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    card_id: NoteId,
+    reviews: &[ReviewView],
+    section: &mut ReviewSection,
+) -> Option<CardAction> {
+    let newest = reviews.first()?;
+    let fields = &newest.fields;
+    section.sync(card_id, reviews);
+    let mut picked = None;
+
+    ui.horizontal(|ui| {
+        section_label(ui, theme, "Review");
+        if reviews.len() > 1 {
+            text_pill(ui, theme, &section.count_label);
+        }
+    });
+    ui.add_space(SPACING_XS);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_SM;
+        let sha = fields.commit.as_deref().unwrap_or("(no commit)");
+        if sha_pill(ui, theme, sha)
+            .on_hover_text("Review this commit's diff (r)")
+            .clicked()
+        {
+            picked = Some(CardAction::Review);
+        }
+        // A truncated label shows its full text on hover by itself.
+        if let Some(subject) = fields.title.as_deref() {
+            let subject = egui::RichText::new(subject)
+                .small()
+                .color(theme.text_secondary);
+            ui.add(egui::Label::new(subject).truncate());
+        }
+    });
+
+    let session = fields.agentium.as_deref();
+    if let Some(session) = session {
+        ui.add_space(SPACING_XS);
+        let width = ui.available_width().min(SESSION_CHIP_MAX_WIDTH);
+        session_chip_ui(ui, theme, app_ctx, session, width);
+    }
+
+    let explainer = fields.explainer.as_deref();
+    if session.is_some() || explainer.is_some() {
+        ui.add_space(SPACING_XS);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_XS;
+            if session.is_some()
+                && sidebar_link(ui, theme, "Review in session")
+                    .on_hover_text(
+                        "Open the session and ask it to /code-review this commit (S; s opens it)",
+                    )
+                    .clicked()
+            {
+                picked = Some(CardAction::Session(SessionOpen::CodeReview));
+            }
+            let Some(url) = explainer else {
+                return;
+            };
+            if session.is_some() {
+                ui.label(egui::RichText::new("·").small().color(theme.text_muted));
+            }
+            let link = sidebar_link(ui, theme, EXPLAINER).on_hover_ui(|ui| {
+                ui.label("Open the explainer (e)");
+                ui.label(egui::RichText::new(url).small().color(theme.text_muted));
+            });
+            if link.clicked() {
+                picked = Some(CardAction::Explainer);
+            }
+        });
+    }
+
+    if reviews.len() > 1 {
+        ui.add_space(SPACING_XS);
+        let text = egui::RichText::new(&section.records_label)
+            .small()
+            .color(theme.text_secondary);
+        if ui
+            .add(egui::Button::new(text).frame(false))
+            .on_hover_text("Open the review pane (r)")
+            .clicked()
+        {
+            picked = Some(CardAction::Review);
+        }
+    }
+    picked
+}
+
+/// A small frameless accent link in the sidebar's Review block.
+fn sidebar_link(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> egui::Response {
+    let text = egui::RichText::new(text).small().color(theme.accent);
+    ui.add(egui::Button::new(text).frame(false))
 }
 
 #[cfg(test)]

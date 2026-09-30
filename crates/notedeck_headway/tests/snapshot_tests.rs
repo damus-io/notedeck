@@ -1753,8 +1753,9 @@ fn review_diff_opens_the_review_pane_with_the_commit() {
     };
 
     harness.get_by_label(CARD).simulate_click();
-    // The record's short sha is the detail row's own button, once it folds in.
-    wait_for_label(&mut harness, &sha[..12]);
+    // The record's short sha is the detail row's own button, once it folds in
+    // (and the sidebar's too, as the newest record).
+    wait_for_any_label(&mut harness, &sha[..12]);
     harness.get_by_label("± Review diff").click();
     wait_for_any_label(&mut harness, FILE);
 
@@ -1870,8 +1871,9 @@ fn review_route_opens_the_record_it_names() {
 
     // Both records fold in: each is a row in the card detail's Review section.
     harness.get_by_label(CARD).simulate_click();
+    // (The newest is in the sidebar's Review block too.)
     for sha in &shas {
-        wait_for_label(&mut harness, &sha[..12]);
+        wait_for_any_label(&mut harness, &sha[..12]);
     }
     // The head's commit, and the other record's id and commit.
     let (head, (other, other_commit)) = {
@@ -2575,7 +2577,7 @@ fn the_detail_takes_the_card_actions() {
         },
     );
     harness.get_by_label(FIRST).simulate_click();
-    wait_for_label(&mut harness, &sha[..12]);
+    wait_for_any_label(&mut harness, &sha[..12]);
     raised_opens(&mut harness);
 
     press_board_keys(&mut harness, &[egui::Key::S]);
@@ -2604,6 +2606,39 @@ fn the_detail_takes_the_card_actions() {
         .find(|n| n.is_focused())
         .expect("the focused comment composer");
     assert_eq!(composer.value().as_deref(), Some("s"));
+}
+
+/// The detail's sidebar keeps the newest review in reach under the thread:
+/// its sha, "Review in session" and "Explainer ↗". Clicking "Review in
+/// session" raises exactly one `AppAction::Open` for the record's session,
+/// asking it to `/code-review` the commit, as `S` does; "All 4 records ›"
+/// opens the review pane, as `r` does.
+#[test]
+fn the_detail_sidebar_review_block_opens_the_session_and_the_pane() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    seed_detail_reviews(&mut harness);
+    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    let newest = DETAIL_RECORDS[3].0;
+    wait_for_label(&mut harness, "All 4 records ›");
+    // The newest record is in the body's Review section and the sidebar.
+    assert_eq!(harness.get_all_by_label(&newest[..12]).count(), 2);
+    // Only the sidebar has the link; the body's rows each carry an explainer.
+    assert_eq!(harness.get_all_by_label("Review in session").count(), 1);
+    assert_eq!(harness.get_all_by_label("Explainer ↗").count(), 3);
+    raised_opens(&mut harness);
+
+    harness.get_by_label("Review in session").click();
+    harness.run_ok();
+    let raised = raised_opens(&mut harness);
+    assert_eq!(raised.len(), 1, "one open: {raised:?}");
+    assert_eq!(raised[0].reference, QUEUE_SESSION);
+    let msg = raised[0].msg.as_deref().expect("a /code-review message");
+    assert!(msg.starts_with("launch a /code-review"), "{msg}");
+    assert!(msg.contains(&format!("commit {}", &newest[..12])), "{msg}");
+
+    harness.get_by_label("All 4 records ›").click();
+    wait_for_absent(&mut harness, "± Review diff");
+    assert!(harness.query_by_label("All 4 records ›").is_none());
 }
 
 /// Snapshot: the review queue open on the first of two In Review cards — the
@@ -2793,8 +2828,9 @@ fn detail_review_section_shows_the_newest_three_until_show_all() {
     harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
 
     let short = |i: usize| &DETAIL_RECORDS[i].0[..12];
+    // The newest is in the sidebar's Review block too.
     for i in 1..4 {
-        wait_for_label(&mut harness, short(i));
+        wait_for_any_label(&mut harness, short(i));
     }
     assert!(
         harness.query_by_label(short(0)).is_none(),
@@ -2818,7 +2854,8 @@ fn snapshot_headway_detail_review() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 900.0));
     seed_detail_reviews(&mut harness);
     harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
-    wait_for_label(&mut harness, &DETAIL_RECORDS[3].0[..12]);
+    // The newest sha shows twice (the section and the sidebar); this is once.
+    wait_for_label(&mut harness, "All 4 records ›");
     for &(name, w, h) in &[
         ("headway_detail_review", 1200.0, 900.0),
         ("headway_detail_review_mobile", 400.0, 900.0),
@@ -2828,6 +2865,72 @@ fn snapshot_headway_detail_review() {
         harness.snapshot(name);
     }
 }
+
+/// Snapshot: a card detail with four review records and a long comment
+/// thread scrolled to its end, where the fixed sidebar still shows the newest
+/// review under Properties: the sha pill and subject, the session chip, "Review
+/// in session", "Explainer ↗" and "All 4 records ›".
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_detail_review_sidebar() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 700.0));
+    seed_detail_reviews(&mut harness);
+    let card = harness_card_id(&mut harness, DETAIL_REVIEW_CARD);
+    // One comment, since comments added in the same second would order by id
+    // and so differ from run to run.
+    apply_demo_action(
+        &mut harness,
+        store::BoardAction::AddComment {
+            card,
+            body: SIDEBAR_THREAD.to_string(),
+            reply_to: None,
+        },
+    );
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let folded = {
+            let state = harness.state_mut();
+            let author = state.account.pubkey;
+            let app_ctx = state.notedeck.app_context();
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+                .expect("folded")
+                .finalize();
+            headway::event::find_board(&boards, &author, store::BOARD_ID)
+                .and_then(|view| view.card(card))
+                .is_some_and(|c| !c.comments.is_empty())
+        };
+        if folded {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the comment never folded");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    wait_for_label(&mut harness, "All 4 records ›");
+    harness.run_steps(3);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::G);
+    harness.run_steps(3);
+    harness.snapshot("headway_detail_review_sidebar");
+}
+
+/// A comment long enough to scroll the detail's main column past its Review
+/// section, for [`snapshot_headway_detail_review_sidebar`].
+const SIDEBAR_THREAD: &str = "Picked this up: the reorder keys go on the column header.
+
+First pass drags fine but loses the order on reload.
+
+Ranks now persist; the column slides into its slot.
+
+The slide overshoots on a narrow window, looking at it.
+
+Fixed the overshoot, and the keys wrap at the ends now.
+
+The header hit area was a bit small on touch.
+
+Grew the hit area to the whole header row.
+
+Ready for another look.";
 
 /// Behavioural (no lavapipe): clicking a card also puts the board's keyboard
 /// cursor on it, and the cursor survives the detail closing, so backing out
