@@ -65,13 +65,14 @@ impl BuiltEvent {
 
 /// The most a wire note's event JSON may be, in bytes.
 ///
-/// It is the plaintext a PNS envelope encrypts with NIP-44. nostrdb's C
-/// `unpad` did its padding arithmetic in 16 bits until 38c407f1b073 ("nip44:
-/// pad plaintexts over 32KB the way the spec does"), so it rejects NIP-44
-/// plaintexts of 32769 to 57344 bytes. Such a note reaches no device still on
-/// that nostrdb, the host that wrote it included: it never indexes, so no
-/// observer, restart or CLI sees it, and the host's session never reconciles.
-/// Keep every note within this until every device has the fix.
+/// It is the plaintext a PNS envelope encrypts with NIP-44. Before C nostrdb
+/// 38c407f1b073 ("nip44: pad plaintexts over 32KB the way the spec does"),
+/// which this build pins through nostrdb-rs c2f770a85c1d, `unpad` did its
+/// padding arithmetic in 16 bits and rejected NIP-44 plaintexts of 32769 to
+/// 57344 bytes. Such a note reaches no device still on an older nostrdb: it
+/// never indexes there, so no observer, restart or CLI on it sees the note,
+/// and a host on it never reconciles the session. Keep every note within this
+/// until every device has the fix.
 ///
 /// It bounds the built note, not the payload in it. A payload is JSON-escaped
 /// into the note's content and then again into the note, so a newline in tool
